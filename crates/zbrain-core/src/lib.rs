@@ -1,8 +1,16 @@
 //! `zbrain-core` — core engine, types and operation contracts.
 //!
-//! This crate is the heart of the zbrain Rust rewrite. Slice 1 only sets up
-//! the scaffold; richer modules (types, error, engine, singleton, ...) land in
-//! later slices per `docs/plans/20260526/04-plan.md`.
+//! Slice 2 adds the structured-error envelope (`error`) and the pure
+//! enum/constant subset of the type system (`types`). DB-backed entities and
+//! the engine trait land in later slices per `docs/plans/20260526/04-plan.md`.
+
+pub mod error;
+pub mod types;
+
+pub use error::{from_std_error, Result, StructuredError};
+pub use types::{
+    is_base_page_type, CRMode, EffectiveDateSource, PageKind, PageType, ALL_PAGE_TYPES,
+};
 
 /// Static crate name. Used by callers (CLI, web, mcp) for diagnostics.
 #[must_use]

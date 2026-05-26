@@ -10,8 +10,8 @@
 
 | Slice | Scope                       | Tag             | Status |
 |-------|-----------------------------|-----------------|--------|
-| 1     | Workspace 脚手架（4 crates） | `rust-slice-1`  | 🟡 in progress |
-| 2     | core 类型 + error            | `rust-slice-2`  | ⏳ pending |
+| 1     | Workspace 脚手架（4 crates） | `rust-slice-1`  | ✅ done |
+| 2     | core 类型 + error            | `rust-slice-2`  | ✅ done |
 | 3     | Engine trait                 | `rust-slice-3`  | ⏳ pending |
 | 4     | Postgres 引擎                | `rust-slice-4`  | ⏳ pending |
 | 5     | libsql 引擎                  | `rust-slice-5`  | ⏳ pending |

@@ -12,5 +12,8 @@ description = "Core engine, types and operation contracts for zbrain."
 workspace = true
 
 [dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
