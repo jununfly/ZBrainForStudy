@@ -1,0 +1,25 @@
+[package]
+name = "zbrain-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Command-line interface for zbrain."
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "zbrain"
+path = "src/main.rs"
+
+[lib]
+name = "zbrain_cli"
+path = "src/lib.rs"
+
+[dependencies]
+zbrain-core = { path = "../zbrain-core" }
+
+[dev-dependencies]

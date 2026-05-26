@@ -41,3 +41,14 @@ test/fixtures/pglite-snapshot.version
 
 # Private brain reports — never check these in (per CLAUDE.md privacy rule)
 reports/network-intelligence/
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Rust rewrite (rust-rewrite branch / zbrain-rust worktree)
+# ─────────────────────────────────────────────────────────────────────────────
+# Cargo build artifacts. Live only on this branch; master never has Rust files.
+target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# rust-analyzer / IDE-local caches
+.rust-analyzer/

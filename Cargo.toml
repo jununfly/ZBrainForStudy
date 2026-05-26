@@ -1,0 +1,42 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/zbrain-core",
+    "crates/zbrain-cli",
+    "crates/zbrain-web",
+    "crates/zbrain-mcp",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+authors = ["zbrain contributors"]
+license = "MIT"
+repository = "https://github.com/jununfly/zbrain"
+rust-version = "1.82"  # MSRV — built/tested on stable (currently 1.95.x).
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Pragmatic exclusions for early scaffolding; tighten later as code stabilizes.
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+[workspace.dependencies]
+# Re-exported by member crates as `{ workspace = true }`.
+# Versions kept conservative and bumped when needed.
+anyhow = "1"
+thiserror = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tracing = "0.1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

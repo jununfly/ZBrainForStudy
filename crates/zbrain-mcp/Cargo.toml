@@ -1,0 +1,17 @@
+[package]
+name = "zbrain-mcp"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Model Context Protocol server for zbrain. MVP placeholder."
+
+[lints]
+workspace = true
+
+[dependencies]
+zbrain-core = { path = "../zbrain-core" }
+
+[dev-dependencies]
