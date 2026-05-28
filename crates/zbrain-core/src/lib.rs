@@ -1,9 +1,13 @@
 //! `zbrain-core` — core engine, types and operation contracts.
 //!
-//! Slice 2 adds the structured-error envelope (`error`) and the pure
-//! enum/constant subset of the type system (`types`). DB-backed entities and
-//! the engine trait land in later slices per `docs/plans/20260526/04-plan.md`.
+//! Slice 2 added the structured-error envelope (`error`) and the pure
+//! enum/constant subset of the type system (`types`). Slice 3 introduces the
+//! `engine` module with the `BrainEngine` trait skeleton and a minimal
+//! in-memory mock used to validate object-safety + Page CRUD round-trips.
+//! DB-backed engines (postgres / libsql) land in later slices per
+//! `docs/plans/20260526/04-plan.md`.
 
+pub mod engine;
 pub mod error;
 pub mod types;
 
