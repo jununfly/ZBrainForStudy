@@ -410,3 +410,213 @@ async fn slice_6a_generation_trigger_bumps_on_insert_and_update() {
         "non-allow-listed column UPDATE must NOT bump generation"
     );
 }
+
+// ── Slice 6a S3 — 0003 migration shape verification ────────────────────
+//
+// 0003_pages_salience_and_trigger.sql lands two things:
+//   (1) a `salience_score REAL` column on `pages`, mirroring the PG baseline
+//       that backs getSalienceScores / refreshPageSalience.
+//   (2) a rebuilt `bump_page_generation_update` trigger whose UPDATE OF list
+//       AND WHEN clause both cover the FULL 10-column allow-list from
+//       `pglite-schema.ts` bump_page_generation_fn — adding timeline, type,
+//       and page_kind on top of the 7 already in 0002.
+//
+// salience_score is deliberately OMITTED from the trigger: the PG baseline's
+// allow-list excludes it (salience writes are read-time signal mutations
+// that must not invalidate the query cache).
+
+#[tokio::test]
+async fn slice_6a_s3_migration_adds_salience_score_column() {
+    let path = temp_db();
+    let path_str = path.path().to_string_lossy().into_owned();
+
+    let engine = LibsqlEngine::new();
+    engine
+        .connect(&EngineConfig {
+            database_url: None,
+            database_path: Some(path_str.clone()),
+        })
+        .await
+        .expect("connect");
+    engine.init_schema().await.expect("init_schema");
+
+    let db = Builder::new_local(&path_str)
+        .build()
+        .await
+        .expect("verification db");
+    let conn = db.connect().expect("verification conn");
+
+    let mut rows = conn
+        .query("PRAGMA table_info(pages)", ())
+        .await
+        .expect("table_info query");
+    let mut found: Option<String> = None;
+    while let Some(row) = rows.next().await.expect("rows iter") {
+        let name: String = row.get(1).expect("decode column name");
+        if name == "salience_score" {
+            let ty: String = row.get(2).expect("decode column type");
+            found = Some(ty);
+            break;
+        }
+    }
+    let ty = found.expect("0003 must add salience_score column");
+    assert!(
+        ty.eq_ignore_ascii_case("REAL"),
+        "salience_score must be REAL, got {ty:?}"
+    );
+}
+
+/// Full 10-column allow-list from PG bump_page_generation_fn.
+/// 0003 must widen the SQLite trigger to cover ALL of these.
+const SLICE_6A_S3_TRIGGER_COLUMNS: &[&str] = &[
+    "compiled_truth",
+    "timeline",
+    "frontmatter",
+    "deleted_at",
+    "contextual_retrieval_mode",
+    "title",
+    "type",
+    "page_kind",
+    "corpus_generation",
+    "content_hash",
+];
+
+#[tokio::test]
+async fn slice_6a_s3_generation_trigger_covers_full_pg_allow_list() {
+    let path = temp_db();
+    let path_str = path.path().to_string_lossy().into_owned();
+
+    let engine = LibsqlEngine::new();
+    engine
+        .connect(&EngineConfig {
+            database_url: None,
+            database_path: Some(path_str.clone()),
+        })
+        .await
+        .expect("connect");
+    engine.init_schema().await.expect("init_schema");
+
+    let db = Builder::new_local(&path_str)
+        .build()
+        .await
+        .expect("verification db");
+    let conn = db.connect().expect("verification conn");
+
+    // sqlite_master.sql preserves the DDL verbatim — we grep it for both the
+    // UPDATE OF column list and the WHEN clause references.
+    let mut rows = conn
+        .query(
+            "SELECT sql FROM sqlite_master \
+             WHERE type='trigger' AND name='bump_page_generation_update'",
+            (),
+        )
+        .await
+        .expect("trigger sql query");
+    let row = rows
+        .next()
+        .await
+        .expect("rows")
+        .expect("bump_page_generation_update trigger must exist");
+    let sql: String = row.get(0).expect("decode trigger sql");
+
+    for col in SLICE_6A_S3_TRIGGER_COLUMNS {
+        assert!(
+            sql.contains(col),
+            "trigger DDL must reference column {col:?} \
+             (in both UPDATE OF list and WHEN clause), got:\n{sql}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn slice_6a_s3_trigger_bumps_on_type_and_skips_salience() {
+    let path = temp_db();
+    let path_str = path.path().to_string_lossy().into_owned();
+
+    let engine = LibsqlEngine::new();
+    engine
+        .connect(&EngineConfig {
+            database_url: None,
+            database_path: Some(path_str.clone()),
+        })
+        .await
+        .expect("connect");
+    engine.init_schema().await.expect("init_schema");
+
+    let db = Builder::new_local(&path_str)
+        .build()
+        .await
+        .expect("verification db");
+    let conn = db.connect().expect("verification conn");
+
+    conn.execute(
+        "INSERT INTO pages (slug, type, title, compiled_truth) \
+         VALUES ('s3', 'doc', 'S3', 'body s3')",
+        (),
+    )
+    .await
+    .expect("insert page s3");
+
+    let mut rows = conn
+        .query("SELECT generation FROM pages WHERE slug = 's3'", ())
+        .await
+        .expect("select gen for s3");
+    let gen_after_insert: i64 = rows
+        .next()
+        .await
+        .expect("rows")
+        .expect("row s3 exists")
+        .get(0)
+        .expect("decode gen");
+
+    // UPDATE `type` (newly added to allow-list in 0003) must bump generation.
+    conn.execute(
+        "UPDATE pages SET type = 'note' WHERE slug = 's3'",
+        (),
+    )
+    .await
+    .expect("update type");
+
+    let mut rows = conn
+        .query("SELECT generation FROM pages WHERE slug = 's3'", ())
+        .await
+        .expect("select gen after type update");
+    let gen_after_type: i64 = rows
+        .next()
+        .await
+        .expect("rows")
+        .expect("row s3 exists")
+        .get(0)
+        .expect("decode gen");
+    assert!(
+        gen_after_type > gen_after_insert,
+        "UPDATE type must bump generation (0003 widened allow-list): \
+         was {gen_after_insert}, now {gen_after_type}"
+    );
+
+    // UPDATE `salience_score` must NOT bump generation — it is deliberately
+    // excluded from the PG allow-list (read-time signal, no cache impact).
+    conn.execute(
+        "UPDATE pages SET salience_score = 0.5 WHERE slug = 's3'",
+        (),
+    )
+    .await
+    .expect("update salience_score");
+
+    let mut rows = conn
+        .query("SELECT generation FROM pages WHERE slug = 's3'", ())
+        .await
+        .expect("select gen after salience update");
+    let gen_after_salience: i64 = rows
+        .next()
+        .await
+        .expect("rows")
+        .expect("row s3 exists")
+        .get(0)
+        .expect("decode gen");
+    assert_eq!(
+        gen_after_salience, gen_after_type,
+        "UPDATE salience_score must NOT bump generation \
+         (excluded from PG allow-list)"
+    );
+}
