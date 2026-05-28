@@ -18,6 +18,7 @@ fn page_input(title: &str, body: &str) -> PageInput {
         page_type: "note".to_string(),
         title: title.to_string(),
         compiled_truth: body.to_string(),
+        ..Default::default()
     }
 }
 

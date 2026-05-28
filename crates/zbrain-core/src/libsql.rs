@@ -342,6 +342,12 @@ fn row_to_page(row: &::libsql::Row) -> Result<Page> {
     let id_u64 = u64::try_from(id)
         .map_err(|_| Error::engine(format!("page id {id} negative; corrupt row")))?;
 
+    // S2 placeholder: only the 7 columns the legacy SELECT projects are
+    // populated. Slice 6a S3 widens this SELECT + decoder to cover the new
+    // 0002 columns (frontmatter/content_hash/timestamps/effective-date chain/
+    // salience/source/contextual-retrieval). Until then the new fields land
+    // with safe defaults so callers can still observe the legacy 7-column
+    // surface without behaviour change.
     Ok(Page {
         id: id_u64,
         slug,
@@ -350,6 +356,23 @@ fn row_to_page(row: &::libsql::Row) -> Result<Page> {
         title,
         compiled_truth,
         timeline,
+        frontmatter: serde_json::Value::Object(serde_json::Map::new()),
+        content_hash: None,
+        emotional_weight: None,
+        created_at: String::new(),
+        updated_at: String::new(),
+        deleted_at: None,
+        effective_date: None,
+        effective_date_source: None,
+        import_filename: None,
+        salience_touched_at: None,
+        source_id: "default".to_string(),
+        source_kind: None,
+        source_uri: None,
+        ingested_via: None,
+        ingested_at: None,
+        contextual_retrieval_mode: None,
+        corpus_generation: None,
     })
 }
 

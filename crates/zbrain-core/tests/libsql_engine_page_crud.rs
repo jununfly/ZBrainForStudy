@@ -38,6 +38,7 @@ fn note_input(title: &str, body: &str) -> PageInput {
         page_type: "note".to_string(),
         title: title.to_string(),
         compiled_truth: body.to_string(),
+        ..Default::default()
     }
 }
 
@@ -178,6 +179,7 @@ async fn list_pages_filters_by_page_type() {
                 page_type: "person".to_string(),
                 title: "P1".to_string(),
                 compiled_truth: "z".to_string(),
+                ..Default::default()
             },
         )
         .await
@@ -188,6 +190,7 @@ async fn list_pages_filters_by_page_type() {
             page_type: Some("note".to_string()),
             limit: None,
             source_id: None,
+            ..Default::default()
         })
         .await
         .expect("list_pages note");
@@ -199,6 +202,7 @@ async fn list_pages_filters_by_page_type() {
             page_type: Some("person".to_string()),
             limit: None,
             source_id: None,
+            ..Default::default()
         })
         .await
         .expect("list_pages person");
@@ -224,6 +228,7 @@ async fn list_pages_respects_limit() {
             page_type: None,
             limit: Some(3),
             source_id: None,
+            ..Default::default()
         })
         .await
         .expect("list_pages");

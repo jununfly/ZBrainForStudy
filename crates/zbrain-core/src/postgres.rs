@@ -259,6 +259,9 @@ fn row_to_page(row: &sqlx::postgres::PgRow) -> Result<Page> {
     let id_u64 = u64::try_from(id)
         .map_err(|_| Error::engine(format!("page id {id} negative; corrupt row")))?;
 
+    // S2 placeholder: same pattern as libsql — only the 7 legacy columns
+    // are decoded; the rest default. Slice 6a S3 widens this to the full
+    // 0002 projection.
     Ok(Page {
         id: id_u64,
         slug,
@@ -267,6 +270,23 @@ fn row_to_page(row: &sqlx::postgres::PgRow) -> Result<Page> {
         title,
         compiled_truth,
         timeline,
+        frontmatter: serde_json::Value::Object(serde_json::Map::new()),
+        content_hash: None,
+        emotional_weight: None,
+        created_at: String::new(),
+        updated_at: String::new(),
+        deleted_at: None,
+        effective_date: None,
+        effective_date_source: None,
+        import_filename: None,
+        salience_touched_at: None,
+        source_id: "default".to_string(),
+        source_kind: None,
+        source_uri: None,
+        ingested_via: None,
+        ingested_at: None,
+        contextual_retrieval_mode: None,
+        corpus_generation: None,
     })
 }
 
