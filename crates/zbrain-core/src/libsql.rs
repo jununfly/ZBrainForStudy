@@ -22,7 +22,7 @@ use crate::engine::{
     BrainEngine, EngineConfig, EngineKind, GetPageOpts, Page, PageFilters, PageInput,
 };
 use crate::error::{Error, Result};
-use crate::types::PageKind;
+use crate::types::{CRMode, EffectiveDateSource, FindDuplicatePageOpts, PageKind};
 
 /// Embedded `SQLite` schema. Mirrors the PG migration semantics:
 /// `sources` (with seeded 'default' row), `pages` with `UNIQUE (source_id,
@@ -316,6 +316,42 @@ impl BrainEngine for LibsqlEngine {
         }
         Ok(out)
     }
+
+    async fn find_duplicate_page(
+        &self,
+        source_id: &str,
+        opts: &FindDuplicatePageOpts,
+    ) -> Result<Option<Page>> {
+        let conn = self.conn()?;
+        let mut rows = conn
+            .query(
+                "SELECT id, slug, type, page_kind, title, compiled_truth, timeline, \
+                        frontmatter, content_hash, emotional_weight, created_at, updated_at, \
+                        deleted_at, last_retrieved_at, effective_date, effective_date_source, \
+                        import_filename, salience_touched_at, salience_score, generation, \
+                        embedding, chunker_version, source_path, source_id, source_kind, \
+                        source_uri, ingested_via, ingested_at, contextual_retrieval_mode, \
+                        corpus_generation \
+                 FROM pages \
+                 WHERE source_id = ?1 \
+                   AND deleted_at IS NULL \
+                   AND (content_hash = ?2 OR (?3 IS NOT NULL AND json_extract(frontmatter, '$.id') = ?3)) \
+                 ORDER BY id ASC \
+                 LIMIT 1",
+                ::libsql::params![source_id, opts.content_hash.clone(), opts.frontmatter_id.clone()],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("find_duplicate_page query failed: {e}")))?;
+
+        match rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("find_duplicate_page row fetch failed: {e}")))?
+        {
+            Some(row) => Ok(Some(full_row_to_page(&row)?)),
+            None => Ok(None),
+        }
+    }
 }
 
 /// Decode one `pages` row into [`Page`]. Mirrors `postgres::row_to_page`
@@ -395,6 +431,98 @@ fn row_to_page(row: &::libsql::Row) -> Result<Page> {
     })
 }
 
+/// Decode one full-width `pages` row into [`Page`]. Column order is the SELECT
+/// projection used by `find_duplicate_page` and mirrors the complete 6a page
+/// shape.
+fn full_row_to_page(row: &::libsql::Row) -> Result<Page> {
+    macro_rules! get_col {
+        ($idx:expr, $name:literal, $ty:ty) => {
+            row.get::<$ty>($idx)
+                .map_err(|e| Error::engine(format!("row decode {}: {e}", $name)))?
+        };
+    }
+
+    let id = get_col!(0, "id", i64);
+    let slug = get_col!(1, "slug", String);
+    let page_type = get_col!(2, "type", String);
+    let page_kind_str = get_col!(3, "page_kind", String);
+    let title = get_col!(4, "title", String);
+    let compiled_truth = get_col!(5, "compiled_truth", String);
+    let timeline = get_col!(6, "timeline", String);
+    let frontmatter_raw = get_col!(7, "frontmatter", String);
+    let content_hash = get_col!(8, "content_hash", Option<String>);
+    let emotional_weight = get_col!(9, "emotional_weight", Option<f64>);
+    let created_at = get_col!(10, "created_at", String);
+    let updated_at = get_col!(11, "updated_at", String);
+    let deleted_at = get_col!(12, "deleted_at", Option<String>);
+    let last_retrieved_at = get_col!(13, "last_retrieved_at", Option<String>);
+    let effective_date = get_col!(14, "effective_date", Option<String>);
+    let effective_date_source_raw = get_col!(15, "effective_date_source", Option<String>);
+    let import_filename = get_col!(16, "import_filename", Option<String>);
+    let salience_touched_at = get_col!(17, "salience_touched_at", Option<String>);
+    let salience_score = get_col!(18, "salience_score", Option<f64>);
+    let generation = get_col!(19, "generation", i64);
+    let embedding = get_col!(20, "embedding", Option<Vec<u8>>);
+    let chunker_version_raw = get_col!(21, "chunker_version", Option<i64>);
+    let source_path = get_col!(22, "source_path", Option<String>);
+    let source_id = get_col!(23, "source_id", String);
+    let source_kind = get_col!(24, "source_kind", Option<String>);
+    let source_uri = get_col!(25, "source_uri", Option<String>);
+    let ingested_via = get_col!(26, "ingested_via", Option<String>);
+    let ingested_at = get_col!(27, "ingested_at", Option<String>);
+    let contextual_retrieval_mode_raw = get_col!(28, "contextual_retrieval_mode", Option<String>);
+    let corpus_generation = get_col!(29, "corpus_generation", Option<String>);
+
+    let page_kind = decode_page_kind(&page_kind_str)?;
+    let id_u64 = u64::try_from(id)
+        .map_err(|_| Error::engine(format!("page id {id} negative; corrupt row")))?;
+    let chunker_version = chunker_version_raw
+        .map_or(Ok(1), |v| i32::try_from(v).map_err(|_| Error::engine(format!("chunker_version {v} overflows i32"))))?;
+    let frontmatter = serde_json::from_str(&frontmatter_raw)
+        .map_err(|e| Error::engine(format!("row decode frontmatter json: {e}")))?;
+    let effective_date_source = effective_date_source_raw
+        .as_deref()
+        .map(decode_effective_date_source)
+        .transpose()?;
+    let contextual_retrieval_mode = contextual_retrieval_mode_raw
+        .as_deref()
+        .map(decode_cr_mode)
+        .transpose()?;
+
+    Ok(Page {
+        id: id_u64,
+        slug,
+        page_type,
+        page_kind,
+        title,
+        compiled_truth,
+        timeline,
+        frontmatter,
+        content_hash,
+        emotional_weight,
+        created_at,
+        updated_at,
+        deleted_at,
+        last_retrieved_at,
+        effective_date,
+        effective_date_source,
+        import_filename,
+        salience_touched_at,
+        salience_score,
+        generation,
+        embedding,
+        chunker_version,
+        source_path,
+        source_id,
+        source_kind,
+        source_uri,
+        ingested_via,
+        ingested_at,
+        contextual_retrieval_mode,
+        corpus_generation,
+    })
+}
+
 /// Map the `SQLite` `pages.page_kind` TEXT column (constrained by CHECK) to
 /// the [`PageKind`] enum. Kept private and duplicated with `postgres.rs`
 /// on purpose — when the column moves into `types.rs` (slice 9?) both
@@ -406,6 +534,30 @@ fn decode_page_kind(value: &str) -> Result<PageKind> {
         "image" => Ok(PageKind::Image),
         other => Err(Error::engine(format!(
             "unknown page_kind value {other:?}; SQLite CHECK should prevent this"
+        ))),
+    }
+}
+
+fn decode_effective_date_source(value: &str) -> Result<EffectiveDateSource> {
+    match value {
+        "event_date" => Ok(EffectiveDateSource::EventDate),
+        "date" => Ok(EffectiveDateSource::Date),
+        "published" => Ok(EffectiveDateSource::Published),
+        "filename" => Ok(EffectiveDateSource::Filename),
+        "fallback" => Ok(EffectiveDateSource::Fallback),
+        other => Err(Error::engine(format!(
+            "unknown effective_date_source value {other:?}"
+        ))),
+    }
+}
+
+fn decode_cr_mode(value: &str) -> Result<CRMode> {
+    match value {
+        "none" => Ok(CRMode::None),
+        "title" => Ok(CRMode::Title),
+        "per_chunk_synopsis" => Ok(CRMode::PerChunkSynopsis),
+        other => Err(Error::engine(format!(
+            "unknown contextual_retrieval_mode value {other:?}"
         ))),
     }
 }

@@ -1,14 +1,14 @@
-//! Slice 6a S6-T1 placeholder-lock test: `find_duplicate_page` placeholder lock.
+//! Slice 6a S6-T2 semantic tests: `find_duplicate_page`.
 //!
-//! Locks the `Err(Unsupported("pending slice 6a"))` contract so that
-//! S6-T2 green phase has a guaranteed trigger when the real impl lands.
-//! When this test starts failing, replace it with the real semantic
-//! assertions (mirror behaviour from TS `findDuplicatePage`).
+//! Mirrors TS `findDuplicatePage`: within one source, a live page is a duplicate
+//! when either `content_hash` matches or `frontmatter.id` matches. Soft-deleted
+//! rows are ignored.
 
+use serde_json::json;
 use tempfile::NamedTempFile;
-use zbrain_core::engine::{BrainEngine, EngineConfig};
-use zbrain_core::FindDuplicatePageOpts;
+use zbrain_core::engine::{BrainEngine, EngineConfig, InMemoryEngine, PageInput};
 use zbrain_core::libsql::LibsqlEngine;
+use zbrain_core::FindDuplicatePageOpts;
 
 async fn init_clean_engine() -> (LibsqlEngine, NamedTempFile) {
     let path = NamedTempFile::new().expect("alloc temp db file");
@@ -22,21 +22,200 @@ async fn init_clean_engine() -> (LibsqlEngine, NamedTempFile) {
     (engine, path)
 }
 
-#[tokio::test]
-async fn slice_6a_page_methods_find_duplicate_page_returns_unsupported() {
-    let (engine, _tmp) = init_clean_engine().await;
-    let opts = FindDuplicatePageOpts {
-        content_hash: "hash-1".to_string(),
-        frontmatter_id: None,
-    };
-    let err = engine
-        .find_duplicate_page("src-1", &opts)
+async fn seed_libsql_page(
+    path: &NamedTempFile,
+    source_id: &str,
+    slug: &str,
+    content_hash: Option<&str>,
+    frontmatter: serde_json::Value,
+    deleted_at: Option<&str>,
+) {
+    let db_path = path.path().to_string_lossy().into_owned();
+    let db = ::libsql::Builder::new_local(db_path)
+        .build()
         .await
-        .expect_err("6a placeholder-lock: find_duplicate_page must be Unsupported");
-    let msg = err.to_string();
-    assert!(
-        msg.contains("pending slice 6a"),
-        "expected placeholder marker, got: {msg}"
-    );
+        .expect("open seed db");
+    let conn = db.connect().expect("seed connect");
+    conn.execute(
+        "INSERT OR IGNORE INTO sources (id, name) VALUES (?1, ?2)",
+        ::libsql::params![source_id, format!("source-{source_id}")],
+    )
+    .await
+    .expect("seed source");
+    conn.execute(
+        "INSERT INTO pages (source_id, slug, type, title, compiled_truth, frontmatter, content_hash, deleted_at) \
+         VALUES (?1, ?2, 'note', ?3, 'body', ?4, ?5, ?6)",
+        ::libsql::params![
+            source_id,
+            slug,
+            format!("Title {slug}"),
+            frontmatter.to_string(),
+            content_hash,
+            deleted_at,
+        ],
+    )
+    .await
+    .expect("seed page");
+}
+
+#[tokio::test]
+async fn libsql_find_duplicate_page_matches_content_hash() {
+    let (engine, tmp) = init_clean_engine().await;
+    seed_libsql_page(
+        &tmp,
+        "src-1",
+        "hash-hit",
+        Some("hash-1"),
+        json!({"id": "fm-other"}),
+        None,
+    )
+    .await;
+
+    let found = engine
+        .find_duplicate_page(
+            "src-1",
+            &FindDuplicatePageOpts {
+                content_hash: "hash-1".to_string(),
+                frontmatter_id: None,
+            },
+        )
+        .await
+        .expect("find duplicate");
+
+    let page = found.expect("matching content_hash should return a page");
+    assert_eq!(page.slug, "hash-hit");
+    assert_eq!(page.source_id, "src-1");
+    assert_eq!(page.content_hash.as_deref(), Some("hash-1"));
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn libsql_find_duplicate_page_matches_frontmatter_id() {
+    let (engine, tmp) = init_clean_engine().await;
+    seed_libsql_page(
+        &tmp,
+        "src-1",
+        "frontmatter-hit",
+        Some("hash-other"),
+        json!({"id": "fm-1"}),
+        None,
+    )
+    .await;
+
+    let found = engine
+        .find_duplicate_page(
+            "src-1",
+            &FindDuplicatePageOpts {
+                content_hash: "hash-miss".to_string(),
+                frontmatter_id: Some("fm-1".to_string()),
+            },
+        )
+        .await
+        .expect("find duplicate");
+
+    let page = found.expect("matching frontmatter.id should return a page");
+    assert_eq!(page.slug, "frontmatter-hit");
+    assert_eq!(page.frontmatter["id"], "fm-1");
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn libsql_find_duplicate_page_ignores_soft_deleted_rows() {
+    let (engine, tmp) = init_clean_engine().await;
+    seed_libsql_page(
+        &tmp,
+        "src-1",
+        "deleted-hit",
+        Some("hash-1"),
+        json!({"id": "fm-1"}),
+        Some("2026-01-01T00:00:00Z"),
+    )
+    .await;
+
+    let found = engine
+        .find_duplicate_page(
+            "src-1",
+            &FindDuplicatePageOpts {
+                content_hash: "hash-1".to_string(),
+                frontmatter_id: Some("fm-1".to_string()),
+            },
+        )
+        .await
+        .expect("find duplicate");
+
+    assert!(found.is_none(), "soft-deleted duplicates must be ignored");
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn in_memory_find_duplicate_page_matches_content_hash_and_frontmatter_id() {
+    let engine = InMemoryEngine::default();
+    engine.connect(&EngineConfig::default()).await.expect("connect");
+    engine
+        .put_page(
+            "hash-hit",
+            &PageInput {
+                page_type: "note".to_string(),
+                title: "Hash Hit".to_string(),
+                compiled_truth: "body".to_string(),
+                content_hash: Some("hash-1".to_string()),
+                frontmatter: Some(json!({"id": "fm-other"})),
+                ..PageInput::default()
+            },
+        )
+        .await
+        .expect("seed hash page");
+    engine
+        .put_page(
+            "frontmatter-hit",
+            &PageInput {
+                page_type: "note".to_string(),
+                title: "Frontmatter Hit".to_string(),
+                compiled_truth: "body".to_string(),
+                content_hash: Some("hash-other".to_string()),
+                frontmatter: Some(json!({"id": "fm-1"})),
+                ..PageInput::default()
+            },
+        )
+        .await
+        .expect("seed frontmatter page");
+
+    let hash_hit = engine
+        .find_duplicate_page(
+            "default",
+            &FindDuplicatePageOpts {
+                content_hash: "hash-1".to_string(),
+                frontmatter_id: None,
+            },
+        )
+        .await
+        .expect("find duplicate")
+        .expect("content_hash match");
+    assert_eq!(hash_hit.slug, "hash-hit");
+
+    let frontmatter_hit = engine
+        .find_duplicate_page(
+            "default",
+            &FindDuplicatePageOpts {
+                content_hash: "hash-miss".to_string(),
+                frontmatter_id: Some("fm-1".to_string()),
+            },
+        )
+        .await
+        .expect("find duplicate")
+        .expect("frontmatter.id match");
+    assert_eq!(frontmatter_hit.slug, "frontmatter-hit");
+
+    let miss = engine
+        .find_duplicate_page(
+            "other-source",
+            &FindDuplicatePageOpts {
+                content_hash: "hash-1".to_string(),
+                frontmatter_id: Some("fm-1".to_string()),
+            },
+        )
+        .await
+        .expect("find duplicate");
+    assert!(miss.is_none(), "source_id must scope duplicate lookup");
     engine.disconnect().await.expect("disconnect");
 }

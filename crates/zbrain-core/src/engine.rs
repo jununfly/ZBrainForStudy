@@ -548,4 +548,23 @@ impl BrainEngine for InMemoryEngine {
             .map(|p| p.slug.clone())
             .collect())
     }
+
+    async fn find_duplicate_page(
+        &self,
+        source_id: &str,
+        opts: &FindDuplicatePageOpts,
+    ) -> crate::Result<Option<Page>> {
+        let store = self.store.lock().expect("InMemoryEngine store mutex poisoned");
+        Ok(store
+            .iter()
+            .find(|p| {
+                p.source_id == source_id
+                    && p.deleted_at.is_none()
+                    && (p.content_hash.as_deref() == Some(opts.content_hash.as_str())
+                        || opts.frontmatter_id.as_deref().is_some_and(|id| {
+                            p.frontmatter.get("id").and_then(Value::as_str) == Some(id)
+                        }))
+            })
+            .cloned())
+    }
 }
