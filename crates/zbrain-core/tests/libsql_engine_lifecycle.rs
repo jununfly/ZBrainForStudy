@@ -466,8 +466,8 @@ async fn slice_6a_s3_migration_adds_salience_score_column() {
     );
 }
 
-/// Full 10-column allow-list from PG bump_page_generation_fn.
-/// 0003 must widen the SQLite trigger to cover ALL of these.
+/// Full 10-column allow-list from PG `bump_page_generation_fn`.
+/// 0003 must widen the `SQLite` trigger to cover ALL of these.
 const SLICE_6A_S3_TRIGGER_COLUMNS: &[&str] = &[
     "compiled_truth",
     "timeline",

@@ -34,15 +34,21 @@ const MIGRATION_0001: &str = include_str!("../migrations-sqlite/0001_init.sql");
 /// generation-bump triggers. See file header in `0002_pages_full_columns.sql`.
 const MIGRATION_0002: &str = include_str!("../migrations-sqlite/0002_pages_full_columns.sql");
 
+/// Slice 6a S4 — adds `salience_score` and rebuilds `bump_page_generation_update`
+/// to cover the full 10-column PG allow-list (adds `timeline` / `type` / `page_kind`).
+/// See file header in `0003_salience_and_full_generation_trigger.sql`.
+const MIGRATION_0003: &str =
+    include_str!("../migrations-sqlite/0003_salience_and_full_generation_trigger.sql");
+
 /// Ordered list of migrations. Index `i` is applied when `user_version <= i`,
 /// then `user_version` is set to `i + 1`. Append-only — never reorder.
-const MIGRATIONS: &[&str] = &[MIGRATION_0001, MIGRATION_0002];
+const MIGRATIONS: &[&str] = &[MIGRATION_0001, MIGRATION_0002, MIGRATION_0003];
 
 /// Highest schema version we know how to produce. Equals `MIGRATIONS.len()`.
 /// Guarded via `PRAGMA user_version`. Hand-kept in sync with `MIGRATIONS`
 /// because `len() as i64` is not const-evaluable in stable Rust and casting
 /// `usize → i64` trips `clippy::cast_possible_wrap`.
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 /// Embedded `SQLite` engine. Use [`LibsqlEngine::new`] then [`connect`] before
 /// any other method. Calling `connect` twice on the same instance is
