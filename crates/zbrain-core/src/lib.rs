@@ -11,6 +11,7 @@ pub mod engine;
 pub mod error;
 pub mod libsql;
 pub mod postgres;
+pub mod time;
 pub mod types;
 
 pub use error::{from_std_error, Error, Result, StructuredError};

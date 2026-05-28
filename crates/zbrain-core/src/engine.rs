@@ -9,14 +9,13 @@
 //! so this trait boundary stays reviewable in a single PR.
 
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use serde_json::{Map, Value};
 
 use crate::{
-    CRMode, EffectiveDateSource, Error, FindDuplicatePageOpts, OrphanPage, PageKind, PageRef,
-    PageType, PurgeResult, RefreshPageBodyArgs,
+    time::current_utc_iso8601, CRMode, EffectiveDateSource, Error, FindDuplicatePageOpts,
+    OrphanPage, PageKind, PageRef, PageType, PurgeResult, RefreshPageBodyArgs,
 };
 
 // ─── Value types ─────────────────────────────────────────────────────────────
@@ -247,11 +246,7 @@ pub trait BrainEngine: Send + Sync {
 
     /// Fetch a single page by `slug`. Returns `None` if not found or
     /// soft-deleted (unless `opts.include_deleted` is true).
-    async fn get_page(
-        &self,
-        slug: &str,
-        opts: &GetPageOpts,
-    ) -> crate::Result<Option<Page>>;
+    async fn get_page(&self, slug: &str, opts: &GetPageOpts) -> crate::Result<Option<Page>>;
 
     /// Insert or update a page (upsert semantics — same slug → same `id`).
     async fn put_page(&self, slug: &str, input: &PageInput) -> crate::Result<Page>;
@@ -299,21 +294,14 @@ pub trait BrainEngine: Send + Sync {
 
     /// Restore a previously soft-deleted page. Returns `true` if a row was
     /// affected, `false` otherwise. Mirrors TS `restorePage`.
-    async fn restore_page(
-        &self,
-        _slug: &str,
-        _source_id: Option<&str>,
-    ) -> crate::Result<bool> {
+    async fn restore_page(&self, _slug: &str, _source_id: Option<&str>) -> crate::Result<bool> {
         Err(Error::unsupported("pending slice 6a"))
     }
 
     /// Hard-delete pages whose `deleted_at` is older than `older_than_hours`
     /// ago. Returns the cleared slugs plus the count. Mirrors TS
     /// `purgeDeletedPages`.
-    async fn purge_deleted_pages(
-        &self,
-        _older_than_hours: u32,
-    ) -> crate::Result<PurgeResult> {
+    async fn purge_deleted_pages(&self, _older_than_hours: u32) -> crate::Result<PurgeResult> {
         Err(Error::unsupported("pending slice 6a"))
     }
 
@@ -321,10 +309,7 @@ pub trait BrainEngine: Send + Sync {
     /// Update `compiled_truth`, `timeline`, `content_hash` for an existing
     /// page (typically after a re-importer pass). Mirrors TS
     /// `refreshPageBody`.
-    async fn refresh_page_body(
-        &self,
-        _args: &RefreshPageBodyArgs,
-    ) -> crate::Result<()> {
+    async fn refresh_page_body(&self, _args: &RefreshPageBodyArgs) -> crate::Result<()> {
         Err(Error::unsupported("pending slice 6a"))
     }
 
@@ -436,48 +421,6 @@ impl InMemoryEngine {
     }
 }
 
-// TODO(slice-time-utils): keep this local and dependency-free for S6-T3, then
-// move it into a shared time utility when the dedicated time-tooling slice lands.
-fn in_memory_timestamp_now() -> String {
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock must be after Unix epoch")
-        .as_secs();
-    unix_seconds_to_utc_iso8601(secs)
-}
-
-fn unix_seconds_to_utc_iso8601(secs: u64) -> String {
-    let days = i64::try_from(secs / 86_400).expect("current timestamp day count fits in i64");
-    let remaining = secs % 86_400;
-    let hour = remaining / 3_600;
-    let minute = (remaining % 3_600) / 60;
-    let second = remaining % 60;
-    let (year, month, day) = civil_from_unix_days(days);
-
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
-}
-
-fn civil_from_unix_days(days_since_epoch: i64) -> (i32, u32, u32) {
-    let z = days_since_epoch + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let day_of_era = z - era * 146_097;
-    let year_of_era = (day_of_era - day_of_era / 1_460 + day_of_era / 36_524
-        - day_of_era / 146_096)
-        / 365;
-    let mut year = year_of_era + era * 400;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_prime = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
-    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
-    year += i64::from(month <= 2);
-
-    (
-        i32::try_from(year).expect("current timestamp year fits in i32"),
-        u32::try_from(month).expect("calendar month fits in u32"),
-        u32::try_from(day).expect("calendar day fits in u32"),
-    )
-}
-
 #[async_trait]
 impl BrainEngine for InMemoryEngine {
     fn kind(&self) -> EngineKind {
@@ -497,13 +440,22 @@ impl BrainEngine for InMemoryEngine {
     }
 
     async fn get_page(&self, slug: &str, _opts: &GetPageOpts) -> crate::Result<Option<Page>> {
-        let store = self.store.lock().expect("InMemoryEngine store mutex poisoned");
+        let store = self
+            .store
+            .lock()
+            .expect("InMemoryEngine store mutex poisoned");
         Ok(store.iter().find(|p| p.slug == slug).cloned())
     }
 
     async fn put_page(&self, slug: &str, input: &PageInput) -> crate::Result<Page> {
-        let mut store = self.store.lock().expect("InMemoryEngine store mutex poisoned");
-        let mut id_guard = self.next_id.lock().expect("InMemoryEngine next_id mutex poisoned");
+        let mut store = self
+            .store
+            .lock()
+            .expect("InMemoryEngine store mutex poisoned");
+        let mut id_guard = self
+            .next_id
+            .lock()
+            .expect("InMemoryEngine next_id mutex poisoned");
 
         if let Some(existing) = store.iter_mut().find(|p| p.slug == slug) {
             existing.page_type.clone_from(&input.page_type);
@@ -516,7 +468,7 @@ impl BrainEngine for InMemoryEngine {
         }
 
         *id_guard += 1;
-        let now = in_memory_timestamp_now();
+        let now = current_utc_iso8601();
         let page = Page {
             id: *id_guard,
             slug: slug.to_string(),
@@ -525,7 +477,10 @@ impl BrainEngine for InMemoryEngine {
             title: input.title.clone(),
             compiled_truth: input.compiled_truth.clone(),
             timeline: input.timeline.clone().unwrap_or_default(),
-            frontmatter: input.frontmatter.clone().unwrap_or(Value::Object(Map::default())),
+            frontmatter: input
+                .frontmatter
+                .clone()
+                .unwrap_or(Value::Object(Map::default())),
             content_hash: input.content_hash.clone(),
             emotional_weight: None,
             created_at: now.clone(),
@@ -560,13 +515,19 @@ impl BrainEngine for InMemoryEngine {
     }
 
     async fn delete_page(&self, slug: &str) -> crate::Result<()> {
-        let mut store = self.store.lock().expect("InMemoryEngine store mutex poisoned");
+        let mut store = self
+            .store
+            .lock()
+            .expect("InMemoryEngine store mutex poisoned");
         store.retain(|p| p.slug != slug);
         Ok(())
     }
 
     async fn list_pages(&self, filters: &PageFilters) -> crate::Result<Vec<Page>> {
-        let store = self.store.lock().expect("InMemoryEngine store mutex poisoned");
+        let store = self
+            .store
+            .lock()
+            .expect("InMemoryEngine store mutex poisoned");
         let mut pages: Vec<Page> = store
             .iter()
             .filter(|p| {
@@ -584,7 +545,10 @@ impl BrainEngine for InMemoryEngine {
     }
 
     async fn resolve_slugs(&self, partial: &str) -> crate::Result<Vec<String>> {
-        let store = self.store.lock().expect("InMemoryEngine store mutex poisoned");
+        let store = self
+            .store
+            .lock()
+            .expect("InMemoryEngine store mutex poisoned");
         Ok(store
             .iter()
             .filter(|p| p.slug.contains(partial))
@@ -597,7 +561,10 @@ impl BrainEngine for InMemoryEngine {
         source_id: &str,
         opts: &FindDuplicatePageOpts,
     ) -> crate::Result<Option<Page>> {
-        let store = self.store.lock().expect("InMemoryEngine store mutex poisoned");
+        let store = self
+            .store
+            .lock()
+            .expect("InMemoryEngine store mutex poisoned");
         Ok(store
             .iter()
             .find(|p| {
@@ -616,7 +583,10 @@ impl BrainEngine for InMemoryEngine {
         slug: &str,
         source_id: Option<&str>,
     ) -> crate::Result<Option<String>> {
-        let mut store = self.store.lock().expect("InMemoryEngine store mutex poisoned");
+        let mut store = self
+            .store
+            .lock()
+            .expect("InMemoryEngine store mutex poisoned");
         let Some(page) = store.iter_mut().find(|p| {
             p.slug == slug
                 && p.deleted_at.is_none()
@@ -625,7 +595,7 @@ impl BrainEngine for InMemoryEngine {
             return Ok(None);
         };
 
-        page.deleted_at = Some(in_memory_timestamp_now());
+        page.deleted_at = Some(current_utc_iso8601());
         Ok(Some(page.slug.clone()))
     }
 }
