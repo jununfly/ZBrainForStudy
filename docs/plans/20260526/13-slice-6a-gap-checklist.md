@@ -89,7 +89,7 @@ TS `pages` 表有 27 列，0002 migration 对齐后也应有 27 列。
 
 ## 4 6a 目标方法 vs trait 签名
 
-审计文档 §6 列出 12 个方法。当前 trait 只有 7 个方法（kind + 3 lifecycle + 4 CRUD + resolve_slugs）。
+审计文档 §6 原列 12 个方法。**本轮 S6-T0 勘测发现遗漏 1 个**：`findOrphanPages`（TS `pglite-engine.ts:2619`）。修订为 **13 个方法**。当前 trait 只有 7 个方法（kind + 3 lifecycle + 4 CRUD + resolve_slugs）。
 
 | # | 方法 | trait 签名 | InMemory 桩 | Libsql 实现 | 状态 |
 |---|------|----------|------------|------------|------|
@@ -103,10 +103,11 @@ TS `pages` 表有 27 列，0002 migration 对齐后也应有 27 列。
 | 8 | listAllPageRefs | ❌ 未加 | ❌ | ❌ | 待加 |
 | 9 | updateSlug | ❌ 未加 | ❌ | ❌ | 待加 |
 | 10 | getPageTimestamps | ❌ 未加 | ❌ | ❌ | 待加 |
-| 11 | getEffectiveDates | ❌ 未加 | ❌ | ❌ | 待快 |
+| 11 | getEffectiveDates | ❌ 未加 | ❌ | ❌ | 待加 |
 | 12 | getSalienceScores | ❌ 未加 | ❌ | ❌ | 待加 |
+| 13 | **findOrphanPages** ⚠️ S6-T0 新增 | ❌ 未加 | ❌ | ❌ | 待加 |
 
-> **结论**: 12 个方法签名全部待加，这是 S3 (trait 签名) 的核心工作量。
+> **结论**: 13 个方法签名全部待加，这是 S6-T1/T2 的核心工作量；§12 中所有写 "12 方法" 的位置已在 S6-T0 收口阶段同步改为 "13 方法"（含 §6 list_pages 9 项过滤、§9 测试覆盖表、§12 实施 todo）。
 
 ---
 
@@ -292,15 +293,193 @@ TS `pages` 表有 27 列，0002 migration 对齐后也应有 27 列。
 
 **S6-T3 三连绿 + commit + tag**: `slice-6a-s6-12-methods-libsql`
 
-**S6-T4 重构机会扫描** (可选 commit): 12 方法实现完后扫一遍 libsql.rs 是否有 SQL 模板重复，可抽 helper；若 < 30 行重复不抽。
+**S6-T4 重构机会扫描** (可选 commit): 13 方法实现完后扫一遍 libsql.rs 是否有 SQL 模板重复，可抽 helper；若 < 30 行重复不抽。
 
-**S6-T5 镜像切片 6a-pg 入口**: 在 docs/plans/20260526/14-slice-6a-pg-plan.md 新建文件 (S6 完成后)，列 12 方法的 PG SQL 等价实现 + 9 项过滤的 PG 方言 (LIKE → ILIKE / FTS5 → tsvector 等)。
+**S6-T5 镜像切片 6a-pg 入口**: 在 docs/plans/20260526/14-slice-6a-pg-plan.md 新建文件 (S6 完成后)，列 13 方法的 PG SQL 等价实现 + 9 项过滤的 PG 方言 (LIKE → ILIKE / FTS5 → tsvector 等)。
 
 ### 防遗漏三重保险机制 (再次重申)
 
-1. **源切片留 stub**: postgres.rs 12 方法全部 `Err(Error::Unsupported("pending slice 6a-pg"))`
+1. **源切片留 stub**: postgres.rs 13 方法全部 `Err(Error::Unsupported("pending slice 6a-pg"))`
 2. **红测试锁定**: `page_methods_tag_filter_unsupported.rs` 锁定 6c tag 过滤回归点；postgres 端可在 6a-pg 开始时写 `postgres_engine_methods_unsupported_until_6a_pg.rs` 锁定
 3. **checklist 显式列附属切片**: §11 item 7 + 本节 S6-T5 双重提醒 6a-pg 必须落地
 
 ---
 
+
+
+---
+
+## 13 S6 设计冻结 (T0 — 在编码前 lock 13 方法签名 + 4 helper 类型)
+
+> **来源**: 本节由 S6-T0 勘测 `pglite-engine.ts` 13 个方法源码后拍板，作为 S6-T1 红测试与 S6-T2 绿实现的契约。**任何对签名的修改都必须先回到本节修订并重新征求确认**，不允许在 T1/T2 阶段静悄悄变更签名。
+
+### 13.1 辅助类型 (4 个，加入 `crates/zbrain-core/src/types.rs`)
+
+```rust
+/// findDuplicatePage 的查询条件。content_hash 必填；frontmatter_id 可选 (TS 行为：OR 匹配)。
+#[derive(Debug, Clone)]
+pub struct FindDuplicatePageOpts {
+    pub content_hash: String,
+    pub frontmatter_id: Option<String>,
+}
+
+/// listAllPageRefs 返回的 (slug, source_id) 对。
+/// 排序：ORDER BY (source_id, slug)，与 TS 一致。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageRef {
+    pub slug: String,
+    pub source_id: String,
+}
+
+/// purgeDeletedPages 返回：被清除的 slug 列表 + 计数。
+/// TS 同时返回这两者 (源码 933-946)，Rust 镜像保留。
+#[derive(Debug, Clone)]
+pub struct PurgeResult {
+    pub slugs: Vec<String>,
+    pub count: u64,
+}
+
+/// refreshPageBody 入参聚合。
+/// 选择 struct 而非多位置参数：5 个字段已超过 4-arg rust-lang style 阈值。
+#[derive(Debug, Clone)]
+pub struct RefreshPageBodyArgs {
+    pub slug: String,
+    pub source_id: String,
+    pub compiled_truth: String,
+    pub timeline: serde_json::Value, // TS: any[]，Rust 用 Value 容纳
+    pub content_hash: String,
+}
+```
+
+> 注：`ContextualRetrievalState` 已在 §5 撤销（核查 TS schema 无独立列，分散在 `contextual_retrieval_mode` + `corpus_generation` 两列），trait 直接接位置参数。
+> 注：`CRMode` 枚举待 S6-T1 实现时核查 TS 端的字符串字面量集合，本 T0 阶段先用 `String` 容纳，T2 阶段若发现枚举集稳定再升级为 `enum`。
+
+### 13.2 13 方法 trait 签名 (加入 `crates/zbrain-core/src/engine.rs::BrainEngine`)
+
+> **方言适配总则** (S6-T2 绿阶段执行)：
+> - PG `$N` 占位 → libsql `?`
+> - PG `now()` → SQLite `CURRENT_TIMESTAMP`
+> - PG `ANY($1::text[])` → SQLite 多 `?` 展开 (Rust 端循环 push placeholder)
+> - PG `jsonb` → SQLite `TEXT` + `serde_json`
+> - PG `unnest($1::text[], $2::text[])` → SQLite `VALUES (?,?),(?,?)...` + JOIN，或客户端循环
+> - PG `interval` → SQLite `datetime('now', '-N hours')`
+> - PG `ln()` → SQLite 无内置 `ln`，需在客户端用 `f64::ln` 计算 (影响 getSalienceScores)
+> - PG `frontmatter->>'id'` → SQLite `json_extract(frontmatter, '$.id')`
+
+```rust
+// === 重复检测 (1) ===
+async fn find_duplicate_page(
+    &self,
+    source_id: &str,
+    opts: &FindDuplicatePageOpts,
+) -> Result<Option<Page>>;
+
+// === 软删除生命周期 (3) ===
+async fn soft_delete_page(
+    &self,
+    slug: &str,
+    source_id: Option<&str>,
+) -> Result<Option<String>>; // Some(slug) on hit, None on miss; TS 返回 {slug}|null
+
+async fn restore_page(
+    &self,
+    slug: &str,
+    source_id: Option<&str>,
+) -> Result<bool>; // TS 返回 boolean (rowsAffected > 0)
+
+async fn purge_deleted_pages(
+    &self,
+    older_than_hours: u32, // clamp at u32::MAX；TS 客户端已 clamp
+) -> Result<PurgeResult>;
+
+// === 内容刷新 (2) ===
+async fn refresh_page_body(
+    &self,
+    args: &RefreshPageBodyArgs,
+) -> Result<()>;
+
+async fn update_page_contextual_retrieval_state(
+    &self,
+    slug: &str,
+    source_id: &str,
+    mode: &str,                       // S6-T1 暂用 &str；T2 视枚举稳定性升级
+    corpus_generation: Option<&str>,
+) -> Result<()>;
+
+// === 列表/查询 (4) ===
+async fn list_pages(
+    &self,
+    filters: Option<&PageFilters>,
+) -> Result<Vec<Page>>;
+// 实现注意：
+//   - 9 项过滤：type / tag / updated_after / slug_prefix / source_id / source_ids / include_deleted / sort / limit / offset
+//   - tag 过滤在 6a 返回 Err(Error::Unsupported("tag filter lands in slice 6c"))，由测试 9 锁定
+//   - sourceIds 数组优先级 > sourceId 标量 (TS v0.34.1 federated 语义)
+//   - 默认 includeDeleted=false → 自动追加 deleted_at IS NULL
+//   - sort 用白名单映射 PAGE_SORT_SQL (updated_desc / updated_asc / created_desc / slug)
+//   - slug_prefix 需 escape % _ \ 三个 LIKE 元字符 (与 TS 一致)
+
+async fn get_all_slugs(&self, source_id: Option<&str>) -> Result<HashSet<String>>;
+
+async fn list_all_page_refs(&self) -> Result<Vec<PageRef>>;
+
+async fn find_orphan_pages(&self) -> Result<Vec<OrphanPage>>;
+// OrphanPage struct 见 §13.1 后续补充；TS 返回 {slug, title, domain: string|null}
+// 实现注意：双侧软删除过滤 (候选页 p.deleted_at IS NULL AND 链接源 src.deleted_at IS NULL)
+
+// === 批量时间戳/打分 (3) ===
+async fn get_page_timestamps(
+    &self,
+    slugs: &[String],
+) -> Result<HashMap<String, chrono::DateTime<chrono::Utc>>>;
+// COALESCE(updated_at, created_at)；返回 slug → ts map
+
+async fn get_effective_dates(
+    &self,
+    refs: &[PageRef],
+) -> Result<HashMap<String, chrono::DateTime<chrono::Utc>>>;
+// COALESCE(effective_date, updated_at, created_at)；Key = "{source_id}::{slug}"
+// SQLite 无 unnest → 客户端循环或 VALUES 表
+
+async fn get_salience_scores(
+    &self,
+    refs: &[PageRef],
+) -> Result<HashMap<String, f64>>;
+// score = COALESCE(emotional_weight, 0) * 5 + ln(1 + distinct_active_take_count)
+// SQLite 无 ln → 子查询取 count，外层用 Rust f64::ln 计算
+// 依赖 takes 表 → 6a 暂用 LEFT JOIN takes (假定 6a 落地或 stub 0 计数)
+//   * S6-T0 决策：takes 表归属 6c (Tags/Takes 切片)，6a 阶段返回 score 中
+//     distinct_active_take_count 永远为 0 (LEFT JOIN takes ON ... AND takes.active = 1，
+//     6a 因为没建 takes 表，必须用 0 hardcoded 占位，并写红测试
+//     `page_methods_salience_scores_takes_zero_until_6c.rs` 锁定)
+```
+
+### 13.3 OrphanPage 类型 (S6-T0 追加，§13.1 漏列)
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrphanPage {
+    pub slug: String,
+    pub title: String,           // COALESCE(title, slug)
+    pub domain: Option<String>,  // frontmatter->>'domain'
+}
+```
+
+### 13.4 与 §12 实施 todo 的衔接
+
+- §12 S6-T1 红测试清单原列 10 个 + 1 个 (tag filter unsupported) = 11 个；本 T0 决策**追加 2 个**：
+  - `page_methods_find_orphan_pages.rs`（findOrphanPages，含双侧软删除过滤验证）
+  - `page_methods_salience_scores_takes_zero_until_6c.rs`（锁定 6a 阶段 take count 强制为 0）
+- 合计 **13 个测试文件 / 13 个方法**，与 §4 表 1:1 对齐。
+- §12 S6-T2 绿阶段需新增 `find_orphan_pages` 与 `get_salience_scores` 的 helper（如 takes 表占位 / OrphanPage 投影）。
+
+### 13.5 一次性 review 清单 (用户确认后即冻结，进入 T1)
+
+- [ ] 4 helper 类型签名 (FindDuplicatePageOpts / PageRef / PurgeResult / RefreshPageBodyArgs / OrphanPage = 5 个)
+- [ ] 13 方法 trait 签名顺序与命名 (snake_case 已转换)
+- [ ] tag filter 在 6a 返回 Unsupported 的回归策略
+- [ ] salience_scores takes 表 6a 占位为 0 的回归策略
+- [ ] CRMode 暂用 &str、T2 视情况升级 enum 的策略
+- [ ] 方言适配总则 (8 条) 接受
+
+> **冻结后产出**: T1 红阶段一次性写 13 个测试文件，对应 commit `slice 6a S6 (red): 13 failing tests for 13 new BrainEngine methods`。
