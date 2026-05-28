@@ -47,6 +47,11 @@ sqlx = { version = "0.8", default-features = false, features = [
     "chrono",
     "json",
 ] }
+# Slice 5: libsql embedded SQLite engine. Local-file mode (no replication /
+# remote sync features needed for the embedded engine variant). Replaces the
+# TS PGLite WASM-Postgres choice with a native pure-Rust SQLite driver.
+libsql = "0.9"
+tempfile = "3"
 
 [profile.release]
 lto = "thin"

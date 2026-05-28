@@ -9,6 +9,7 @@
 
 pub mod engine;
 pub mod error;
+pub mod libsql;
 pub mod postgres;
 pub mod types;
 

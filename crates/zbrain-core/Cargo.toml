@@ -17,8 +17,10 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
 sqlx = { workspace = true }
+libsql = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
 sqlx = { workspace = true }
+tempfile = { workspace = true }
