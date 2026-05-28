@@ -352,6 +352,40 @@ impl BrainEngine for LibsqlEngine {
             None => Ok(None),
         }
     }
+
+    async fn soft_delete_page(
+        &self,
+        slug: &str,
+        source_id: Option<&str>,
+    ) -> Result<Option<String>> {
+        let conn = self.conn()?;
+        let mut rows = conn
+            .query(
+                "UPDATE pages \
+                 SET deleted_at = CURRENT_TIMESTAMP \
+                 WHERE slug = ?1 \
+                   AND deleted_at IS NULL \
+                   AND (?2 IS NULL OR source_id = ?2) \
+                 RETURNING slug",
+                ::libsql::params![slug, source_id],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("soft_delete_page update failed: {e}")))?;
+
+        match rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("soft_delete_page row fetch failed: {e}")))?
+        {
+            Some(row) => {
+                let slug: String = row
+                    .get(0)
+                    .map_err(|e| Error::engine(format!("soft_delete_page decode failed: {e}")))?;
+                Ok(Some(slug))
+            }
+            None => Ok(None),
+        }
+    }
 }
 
 /// Decode one `pages` row into [`Page`]. Mirrors `postgres::row_to_page`
