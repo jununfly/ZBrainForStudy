@@ -20,10 +20,11 @@ use zbrain_core::{CRMode, EffectiveDateSource, PageKind};
 
 // ─── Page shape ───────────────────────────────────────────────────────────────
 
-/// Page must carry the full 19-column projection so that `rowToPage`
-/// equivalent code in libsql/postgres engines has somewhere to land each
-/// column. NULL-able TS fields map to `Option<…>`; required ones to owned
-/// values.
+/// Page must carry the full S2 24-column projection plus the 5 columns added
+/// by S5 (`salience_score`, `last_retrieved_at`, `generation`, `embedding`,
+/// `chunker_version`, `source_path`) so that `rowToPage` equivalent code in
+/// libsql/postgres engines has somewhere to land each column. NULL-able TS
+/// fields map to `Option<…>`; required ones to owned values.
 #[test]
 fn page_has_full_column_projection() {
     let page = Page {
@@ -51,6 +52,13 @@ fn page_has_full_column_projection() {
         ingested_at: Some("2026-05-28T00:00:00Z".to_string()),
         contextual_retrieval_mode: Some(CRMode::Title),
         corpus_generation: Some("abc123".to_string()),
+        // S5 additions — mirror types.ts:73 (salience_score + 5 others).
+        salience_score: Some(0.42_f64),
+        last_retrieved_at: Some("2026-05-28T02:00:00Z".to_string()),
+        generation: 1,
+        embedding: None,
+        chunker_version: 1,
+        source_path: Some("notes/alpha.md".to_string()),
     };
 
     // Spot-check round-trip + struct equality so the test fails loudly if any
@@ -90,6 +98,9 @@ fn page_input_has_full_optional_surface() {
         source_uri: Some("file:///tmp/t.md".to_string()),
         ingested_via: Some("capture-cli".to_string()),
         ingested_at: Some("2026-05-28T00:00:00Z".to_string()),
+        // S5 additions — mirror types.ts:199.
+        last_retrieved_at: Some("2026-05-28T03:00:00Z".to_string()),
+        embedding: Some(vec![1_u8, 2, 3, 4]),
     };
 
     assert_eq!(input.chunker_version, Some(2));

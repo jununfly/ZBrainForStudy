@@ -38,10 +38,13 @@ pub struct EngineConfig {
 
 /// A persisted brain page. Mirrors `Page` in `src/core/types.ts:73`.
 ///
-/// Slice 6a S2 expanded the struct to carry the full 19-column projection
-/// matching the 0002 schema migration. TS `Date` fields are `String` (ISO-8601)
-/// to avoid depending on `chrono` in this slice; `frontmatter` is
-/// `serde_json::Value` (TEXT-stored JSON in `SQLite`, JSONB in Postgres).
+/// Slice 6a S2 expanded the struct to carry the 0002 projection (24 fields).
+/// Slice 6a S5 added the last five columns — `last_retrieved_at`,
+/// `generation`, `embedding`, `chunker_version`, `source_path` — bringing
+/// the total to **29 fields**, matching the full TS shape after the 0003
+/// migration. TS `Date` fields are `String` (ISO-8601) to avoid depending
+/// on `chrono` in this slice; `frontmatter` is `serde_json::Value`
+/// (TEXT-stored JSON in `SQLite`, JSONB in Postgres).
 ///
 /// `Eq` is intentionally dropped because `emotional_weight: Option<f64>` and
 /// `frontmatter: Value` do not implement `Eq`.
@@ -71,6 +74,10 @@ pub struct Page {
     pub updated_at: String,
     /// Soft-delete marker. `None` = live; `Some(ts)` = pending purge.
     pub deleted_at: Option<String>,
+    /// ISO-8601 timestamp of the last read access. Powers salience decay;
+    /// updated by the retrieval pipeline (`brain.recordPageRead`) rather
+    /// than the schema trigger. `None` until first read after import.
+    pub last_retrieved_at: Option<String>,
 
     // ── effective-date chain ─────────────────────────────────────────────
     pub effective_date: Option<String>,
@@ -80,6 +87,31 @@ pub struct Page {
     // ── salience ─────────────────────────────────────────────────────────
     /// Bumped by `recompute_emotional_weight` so salient old pages surface.
     pub salience_touched_at: Option<String>,
+    /// Persisted salience score (TS migration adds the column; structurally
+    /// catch-up landed in S5 alongside `last_retrieved_at`). Intentionally
+    /// excluded from the `bump_page_generation` allow-list — salience is a
+    /// background recomputation and bumping `generation` on every salience
+    /// touch would over-invalidate the query cache.
+    pub salience_score: Option<f64>,
+
+    // ── revision counter + embedding ────────────────────────────────────
+    /// Monotonic per-page revision counter. Starts at `1`; the
+    /// `bump_page_generation_fn` trigger (0002 + 0003) bumps it whenever a
+    /// watched column changes. Consumers use this to invalidate caches.
+    pub generation: i64,
+    /// Vector embedding bytes (PG `BYTEA` / `SQLite` `BLOB`). `None` until
+    /// the embedding worker writes it. Encoding format (f32 LE flat
+    /// array vs f16 vs other) is deferred to slice 6e per C4; this slice
+    /// only carries the column.
+    pub embedding: Option<Vec<u8>>,
+
+    // ── chunker + source path ───────────────────────────────────────────
+    /// Chunker generation marker (`NOT NULL DEFAULT 1`). Bumped when the
+    /// chunker contract changes so reindex jobs can detect stale chunks.
+    pub chunker_version: i32,
+    /// Original on-disk path of the imported page (TS migration 2698).
+    /// `None` for pages that were never on disk (e.g. captured via API).
+    pub source_path: Option<String>,
 
     // ── source / provenance ──────────────────────────────────────────────
     /// Required (`NOT NULL DEFAULT 'default'`). Which source owns this page.
@@ -99,6 +131,10 @@ pub struct Page {
 /// Only `page_type`, `title`, `compiled_truth` are required; everything else
 /// is `Option<…>` with safe `Default::default()` so existing callers compile
 /// unchanged.
+///
+/// Slice 6a S5 added the last two write-side fields (`last_retrieved_at`,
+/// `embedding`) so the importer / retrieval pipeline can persist them via
+/// the engine without a side-channel. The remaining 14 fields landed in S2.
 #[derive(Debug, Clone, Default)]
 pub struct PageInput {
     pub page_type: PageType,
@@ -117,6 +153,13 @@ pub struct PageInput {
     pub source_uri: Option<String>,
     pub ingested_via: Option<String>,
     pub ingested_at: Option<String>,
+    /// NEW in S5: ISO-8601 timestamp of the last read access. Lets callers
+    /// (e.g. retrieval pipeline) push the value through `put_page` instead
+    /// of touching the column out-of-band.
+    pub last_retrieved_at: Option<String>,
+    /// NEW in S5: vector embedding bytes. `None` leaves the column
+    /// untouched on upsert (per C4, encoding deferred to slice 6e).
+    pub embedding: Option<Vec<u8>>,
 }
 
 /// Sort ordering for [`PageFilters::sort`]. Mirrors the TS `PageFilters.sort`
@@ -292,10 +335,22 @@ impl BrainEngine for InMemoryEngine {
             created_at: now.clone(),
             updated_at: now,
             deleted_at: None,
+            // Mirrors the input on the way in; `None` for fresh rows.
+            last_retrieved_at: input.last_retrieved_at.clone(),
             effective_date: input.effective_date.clone(),
             effective_date_source: input.effective_date_source,
             import_filename: input.import_filename.clone(),
             salience_touched_at: None,
+            // S5 catch-up: salience_score column added in S4 SQL; fresh rows
+            // start with no score (recomputed by background salience job).
+            salience_score: None,
+            // PG `BIGINT DEFAULT 1` — fresh rows start at generation 1, not 0.
+            generation: 1,
+            embedding: input.embedding.clone(),
+            // PG `INT NOT NULL DEFAULT 1` — fresh rows start at chunker v1
+            // unless the caller pins an explicit version.
+            chunker_version: input.chunker_version.unwrap_or(1),
+            source_path: input.source_path.clone(),
             source_id: "default".to_string(),
             source_kind: input.source_kind.clone(),
             source_uri: input.source_uri.clone(),

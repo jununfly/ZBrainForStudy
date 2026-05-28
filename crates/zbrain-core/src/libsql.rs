@@ -354,6 +354,13 @@ fn row_to_page(row: &::libsql::Row) -> Result<Page> {
     // salience/source/contextual-retrieval). Until then the new fields land
     // with safe defaults so callers can still observe the legacy 7-column
     // surface without behaviour change.
+    //
+    // Slice 6a S5 added five more columns to `Page` (`last_retrieved_at`,
+    // `generation`, `embedding`, `chunker_version`, `source_path`). Same
+    // placeholder pattern: defaults that mirror the PG defaults
+    // (`generation = 1`, `chunker_version = 1`, optionals `None`) so the
+    // shape is correct even though the SELECT still does not project them.
+    // Slice 6a S6 (libsql leg) replaces this with a real read.
     Ok(Page {
         id: id_u64,
         slug,
@@ -368,10 +375,16 @@ fn row_to_page(row: &::libsql::Row) -> Result<Page> {
         created_at: String::new(),
         updated_at: String::new(),
         deleted_at: None,
+        last_retrieved_at: None,
         effective_date: None,
         effective_date_source: None,
         import_filename: None,
         salience_touched_at: None,
+        salience_score: None,
+        generation: 1,
+        embedding: None,
+        chunker_version: 1,
+        source_path: None,
         source_id: "default".to_string(),
         source_kind: None,
         source_uri: None,

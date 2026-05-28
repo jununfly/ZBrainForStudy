@@ -1,18 +1,19 @@
 //! Slice 6a S5 — `Page` / `PageInput` field-completeness check.
 //!
-//! S2 expanded the structs to 24 / 14 fields, but five `Page` columns and
+//! S2 expanded the structs to 24 / 14 fields, but six `Page` columns and
 //! two `PageInput` columns that exist in the 0002 / 0003 schema are still
 //! missing in the Rust value types. This slice closes that gap so S6 can
 //! teach the libsql / postgres engines to read and write every column.
 //!
 //! Missing in `Page`:
+//!   - `salience_score: Option<f64>` (added to SQL in S4; struct catch-up)
 //!   - `last_retrieved_at: Option<String>`
 //!   - `generation: i64`
 //!   - `embedding: Option<Vec<u8>>` (BLOB; format deferred to 6e per C4)
 //!   - `chunker_version: i32`
 //!   - `source_path: Option<String>`
 //!
-//! Missing in `PageInput` (chunker_version + source_path already landed in S2):
+//! Missing in `PageInput` (`chunker_version` + `source_path` already landed in S2):
 //!   - `last_retrieved_at: Option<String>`
 //!   - `embedding: Option<Vec<u8>>`
 //!
@@ -26,12 +27,12 @@ use zbrain_core::engine::{
 };
 use zbrain_core::{CRMode, EffectiveDateSource, PageKind};
 
-// ─── Page full-29-field projection ────────────────────────────────────────────
+// ─── Page full-30-field projection ────────────────────────────────────────────
 
 /// Build a `Page` with **all** columns set so that any missing field fails
 /// compilation. This is the single most-load-bearing red assertion for S5.
 #[test]
-fn page_struct_has_all_29_fields_including_s5_additions() {
+fn page_struct_has_all_30_fields_including_s5_additions() {
     let page = Page {
         // ── identity (unchanged from S2) ────────────────────────────────
         id: 7,
@@ -61,6 +62,10 @@ fn page_struct_has_all_29_fields_including_s5_additions() {
 
         // ── salience ───────────────────────────────────────────────────
         salience_touched_at: None,
+        // NEW IN S5 (catch-up for S4's SQL column): per-page salience
+        // score persisted alongside `salience_touched_at`. Excluded from
+        // the bump_generation allow-list per S4 commit.
+        salience_score: Some(0.75_f64),
 
         // ── generation / embedding (NEW IN S5) ─────────────────────────
         // generation: monotonic per-page revision counter, bumped by the
@@ -85,7 +90,8 @@ fn page_struct_has_all_29_fields_including_s5_additions() {
         corpus_generation: Some("gen-abc".to_string()),
     };
 
-    // Spot-check the five new fields so a rename fails loudly.
+    // Spot-check the six new fields so a rename fails loudly.
+    assert_eq!(page.salience_score, Some(0.75_f64));
     assert_eq!(page.last_retrieved_at.as_deref(), Some("2026-05-28T02:00:00Z"));
     assert_eq!(page.generation, 3);
     assert_eq!(page.embedding.as_deref(), Some(&[0x00, 0x01, 0x02, 0x03][..]));
@@ -125,7 +131,7 @@ fn page_input_default_leaves_new_fields_none() {
 
 // ─── InMemoryEngine default-value compatibility ───────────────────────────────
 
-/// `InMemoryEngine::put_page` must initialise the five new `Page` fields to
+/// `InMemoryEngine::put_page` must initialise the six new `Page` fields to
 /// safe defaults so existing tests that only set three input fields keep
 /// passing. `generation` starts at `1` to mirror PG's `BIGINT DEFAULT 1`.
 #[tokio::test]
@@ -151,7 +157,8 @@ async fn in_memory_engine_initialises_new_page_fields_with_safe_defaults() {
     assert_eq!(fetched.generation, 1);
     // chunker_version defaults to 1 (PG `DEFAULT 1`).
     assert_eq!(fetched.chunker_version, 1);
-    // Three optional fields default to None.
+    // Four optional fields default to None.
+    assert!(fetched.salience_score.is_none());
     assert!(fetched.last_retrieved_at.is_none());
     assert!(fetched.embedding.is_none());
     assert!(fetched.source_path.is_none());

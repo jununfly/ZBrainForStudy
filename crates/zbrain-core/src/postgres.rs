@@ -262,6 +262,12 @@ fn row_to_page(row: &sqlx::postgres::PgRow) -> Result<Page> {
     // S2 placeholder: same pattern as libsql — only the 7 legacy columns
     // are decoded; the rest default. Slice 6a S3 widens this to the full
     // 0002 projection.
+    //
+    // Slice 6a S5 added five more columns (`last_retrieved_at`,
+    // `generation`, `embedding`, `chunker_version`, `source_path`). Until
+    // the PG SELECT is widened (slice 6a-pg / S6 PG leg), they default to
+    // PG-equivalent values (`generation = 1`, `chunker_version = 1`,
+    // optionals `None`).
     Ok(Page {
         id: id_u64,
         slug,
@@ -276,10 +282,16 @@ fn row_to_page(row: &sqlx::postgres::PgRow) -> Result<Page> {
         created_at: String::new(),
         updated_at: String::new(),
         deleted_at: None,
+        last_retrieved_at: None,
         effective_date: None,
         effective_date_source: None,
         import_filename: None,
         salience_touched_at: None,
+        salience_score: None,
+        generation: 1,
+        embedding: None,
+        chunker_version: 1,
+        source_path: None,
         source_id: "default".to_string(),
         source_kind: None,
         source_uri: None,
