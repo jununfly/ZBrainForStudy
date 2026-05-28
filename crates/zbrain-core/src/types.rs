@@ -101,6 +101,80 @@ pub enum EffectiveDateSource {
     Fallback,
 }
 
+// ─── Slice 6a S6 helper types ───────────────────────────────────────────────
+//
+// These 5 structs are inputs/outputs for the 13 new `BrainEngine` methods
+// landing in slice 6a S6 (see `docs/plans/20260526/13-slice-6a-gap-checklist.md`
+// §13.1 + §13.3). They live in `types.rs` (not `engine.rs`) because they are
+// pure value shapes — no behaviour, no trait dependency.
+
+/// Query options for [`BrainEngine::find_duplicate_page`].
+///
+/// Mirrors `FindDuplicatePageOpts` in `src/core/pglite-engine.ts:815`.
+/// `content_hash` is required (the primary dedup key);
+/// `frontmatter_id` is optional and matched via `OR` so the page is
+/// considered a duplicate if **either** identifier collides.
+#[derive(Debug, Clone)]
+pub struct FindDuplicatePageOpts {
+    pub content_hash: String,
+    pub frontmatter_id: Option<String>,
+}
+
+/// `(slug, source_id)` pair returned by [`BrainEngine::list_all_page_refs`]
+/// and consumed by [`BrainEngine::get_effective_dates`] /
+/// [`BrainEngine::get_salience_scores`] as the canonical addressing form.
+///
+/// Equivalent to the TS shape `{ slug: string; sourceId: string }` returned
+/// by `pglite-engine.ts:2577`. Ordering convention: `(source_id, slug)`
+/// ascending, matching the TS `ORDER BY` clause.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PageRef {
+    pub slug: String,
+    pub source_id: String,
+}
+
+/// Result of [`BrainEngine::purge_deleted_pages`].
+///
+/// Mirrors the TS return `{ slugs: string[]; count: number }` at
+/// `pglite-engine.ts:933`. Both are returned (vs just one) because the TS
+/// callers consume both — `slugs` for cascade-cleanup notifications, `count`
+/// for the audit log.
+#[derive(Debug, Clone, Default)]
+pub struct PurgeResult {
+    pub slugs: Vec<String>,
+    pub count: u64,
+}
+
+/// Aggregated args for [`BrainEngine::refresh_page_body`].
+///
+/// Mirrors the positional args of `pglite-engine.ts:948` (5 inputs:
+/// `slug`, `sourceId`, `compiledTruth`, `timeline`, `contentHash`).
+/// We use a struct rather than a 5-arg method because the rust-lang style
+/// guide caps positional args at 4 for readability.
+///
+/// `timeline` is `serde_json::Value` because the TS source type is `any[]`
+/// (event timeline objects with heterogeneous shapes per event source).
+#[derive(Debug, Clone)]
+pub struct RefreshPageBodyArgs {
+    pub slug: String,
+    pub source_id: String,
+    pub compiled_truth: String,
+    pub timeline: serde_json::Value,
+    pub content_hash: String,
+}
+
+/// Row shape returned by [`BrainEngine::find_orphan_pages`].
+///
+/// Mirrors the TS return at `pglite-engine.ts:2619`: `{ slug, title, domain }`
+/// where `title` falls back to `slug` via `COALESCE` and `domain` is
+/// extracted from `frontmatter->>'domain'` (so it can be `NULL`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrphanPage {
+    pub slug: String,
+    pub title: String,
+    pub domain: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

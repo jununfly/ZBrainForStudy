@@ -13,7 +13,10 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use serde_json::{Map, Value};
 
-use crate::{CRMode, EffectiveDateSource, PageKind, PageType};
+use crate::{
+    CRMode, EffectiveDateSource, Error, FindDuplicatePageOpts, OrphanPage, PageKind, PageRef,
+    PageType, PurgeResult, RefreshPageBodyArgs,
+};
 
 // ─── Value types ─────────────────────────────────────────────────────────────
 
@@ -261,6 +264,156 @@ pub trait BrainEngine: Send + Sync {
     /// Fuzzy slug resolver — returns all slugs containing `partial` as a
     /// substring. Mirrors `resolveSlugs` in `engine.ts:708`.
     async fn resolve_slugs(&self, partial: &str) -> crate::Result<Vec<String>>;
+
+    // ── Slice 6a S6 method group (13 new methods) ─────────────────────────
+    //
+    // Default implementations return `Error::Unsupported("pending slice 6a")`
+    // so existing backends (postgres / libsql / in-memory) compile unchanged.
+    // The S6-T2 green phase overrides them per backend; postgres holds on
+    // `pending slice 6a-pg` until slice 6a-pg lands.
+    //
+    // Method ordering: §13.2 of `13-slice-6a-gap-checklist.md`.
+
+    // — Duplicate detection (1) —
+    async fn find_duplicate_page(
+        &self,
+        _source_id: &str,
+        _opts: &FindDuplicatePageOpts,
+    ) -> crate::Result<Option<Page>> {
+        Err(Error::unsupported("pending slice 6a"))
+    }
+
+    // — Soft-delete lifecycle (3) —
+    /// Soft-delete a page (set `deleted_at = CURRENT_TIMESTAMP`).
+    /// Returns `Some(slug)` if a row was hit, `None` if the slug was already
+    /// missing or already soft-deleted. Mirrors TS `softDeletePage` which
+    /// returns `{ slug } | null`.
+    async fn soft_delete_page(
+        &self,
+        _slug: &str,
+        _source_id: Option<&str>,
+    ) -> crate::Result<Option<String>> {
+        Err(Error::unsupported("pending slice 6a"))
+    }
+
+    /// Restore a previously soft-deleted page. Returns `true` if a row was
+    /// affected, `false` otherwise. Mirrors TS `restorePage`.
+    async fn restore_page(
+        &self,
+        _slug: &str,
+        _source_id: Option<&str>,
+    ) -> crate::Result<bool> {
+        Err(Error::unsupported("pending slice 6a"))
+    }
+
+    /// Hard-delete pages whose `deleted_at` is older than `older_than_hours`
+    /// ago. Returns the cleared slugs plus the count. Mirrors TS
+    /// `purgeDeletedPages`.
+    async fn purge_deleted_pages(
+        &self,
+        _older_than_hours: u32,
+    ) -> crate::Result<PurgeResult> {
+        Err(Error::unsupported("pending slice 6a"))
+    }
+
+    // — Content refresh (2) —
+    /// Update `compiled_truth`, `timeline`, `content_hash` for an existing
+    /// page (typically after a re-importer pass). Mirrors TS
+    /// `refreshPageBody`.
+    async fn refresh_page_body(
+        &self,
+        _args: &RefreshPageBodyArgs,
+    ) -> crate::Result<()> {
+        Err(Error::unsupported("pending slice 6a"))
+    }
+
+    /// Update the `contextual_retrieval_mode` + `corpus_generation` columns.
+    /// `mode` is `&str` (not `CRMode`) in 6a so we can ship without
+    /// re-validating every TS string literal; the S6-T2 review may upgrade
+    /// the param to `CRMode` if the enum is found to be stable.
+    async fn update_page_contextual_retrieval_state(
+        &self,
+        _slug: &str,
+        _source_id: &str,
+        _mode: &str,
+        _corpus_generation: Option<&str>,
+    ) -> crate::Result<()> {
+        Err(Error::unsupported("pending slice 6a"))
+    }
+
+    // — Bulk slug / ref enumeration (3) —
+    /// Return the set of all live (non-soft-deleted) slugs, optionally
+    /// scoped to `source_id`. Mirrors TS `getAllSlugs`.
+    async fn get_all_slugs(
+        &self,
+        _source_id: Option<&str>,
+    ) -> crate::Result<std::collections::HashSet<String>> {
+        Err(Error::unsupported("pending slice 6a"))
+    }
+
+    /// Return every live `(slug, source_id)` pair, ordered by
+    /// `(source_id, slug)` ascending. Mirrors TS `listAllPageRefs`.
+    async fn list_all_page_refs(&self) -> crate::Result<Vec<PageRef>> {
+        Err(Error::unsupported("pending slice 6a"))
+    }
+
+    /// Return pages with zero inbound links from live pages. Mirrors TS
+    /// `findOrphanPages` — discovered late in S6-T0 (was missing from the
+    /// initial 12-method tally). Both sides of the join must filter out
+    /// soft-deleted rows.
+    async fn find_orphan_pages(&self) -> crate::Result<Vec<OrphanPage>> {
+        Err(Error::unsupported("pending slice 6a"))
+    }
+
+    // — Batch timestamps / scores (3) —
+    /// Resolve `slug` → `COALESCE(updated_at, created_at)` for many slugs at
+    /// once. Mirrors TS `getPageTimestamps`. Missing slugs are omitted from
+    /// the returned map (caller must handle absence).
+    ///
+    /// Values are ISO-8601 strings, matching the rest of the core API (see
+    /// `Page::created_at` / `Page::updated_at`). §13 originally specified
+    /// `chrono::DateTime<Utc>`; we keep `String` to avoid pulling `chrono`
+    /// into `zbrain-core` and to stay aligned with `Page`'s field types.
+    /// Deviation logged in §13.6.
+    async fn get_page_timestamps(
+        &self,
+        _slugs: &[String],
+    ) -> crate::Result<std::collections::HashMap<String, String>> {
+        Err(Error::unsupported("pending slice 6a"))
+    }
+
+    /// Resolve `(slug, source_id)` → `COALESCE(effective_date, updated_at,
+    /// created_at)`. Key format: `"{source_id}::{slug}"` so the caller can
+    /// disambiguate slugs that collide across sources. Mirrors TS
+    /// `getEffectiveDates`.
+    ///
+    /// Values are ISO-8601 strings; see `get_page_timestamps` for rationale.
+    async fn get_effective_dates(
+        &self,
+        _refs: &[PageRef],
+    ) -> crate::Result<std::collections::HashMap<String, String>> {
+        Err(Error::unsupported("pending slice 6a"))
+    }
+
+    /// Compute the salience score for each ref. Formula (mirrors TS
+    /// `getSalienceScores`):
+    ///
+    /// ```text
+    /// score = COALESCE(emotional_weight, 0) * 5
+    ///       + ln(1 + distinct_active_take_count)
+    /// ```
+    ///
+    /// **6a quirk**: the `takes` table lands in slice 6c. Until then,
+    /// `distinct_active_take_count` is hard-coded to `0`, so every score
+    /// degenerates to `emotional_weight * 5`. The dedicated red test
+    /// `page_methods_salience_scores_takes_zero_until_6c.rs` locks this
+    /// behaviour so we cannot accidentally claim 6a is "done with takes".
+    async fn get_salience_scores(
+        &self,
+        _refs: &[PageRef],
+    ) -> crate::Result<std::collections::HashMap<String, f64>> {
+        Err(Error::unsupported("pending slice 6a"))
+    }
 }
 
 // ─── InMemoryEngine ──────────────────────────────────────────────────────────

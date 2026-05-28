@@ -15,7 +15,8 @@ pub mod types;
 
 pub use error::{from_std_error, Error, Result, StructuredError};
 pub use types::{
-    is_base_page_type, CRMode, EffectiveDateSource, PageKind, PageType, ALL_PAGE_TYPES,
+    is_base_page_type, CRMode, EffectiveDateSource, FindDuplicatePageOpts, OrphanPage, PageKind,
+    PageRef, PageType, PurgeResult, RefreshPageBodyArgs, ALL_PAGE_TYPES,
 };
 
 /// Static crate name. Used by callers (CLI, web, mcp) for diagnostics.

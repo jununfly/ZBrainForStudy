@@ -239,7 +239,7 @@ TS `pages` 表有 27 列，0002 migration 对齐后也应有 27 列。
 
 > **粒度决策**: 原 §11 item 3 ("S5 扩 Page/PageInput 5 字段") 在动手前重新评估后，确认其与 item 4 ("S3: 12 方法 + 4 helper + 10 测试") 体量差距过大 (80 行 vs 600 行)，**拆为两个独立切片**：
 > - **S5 (本切片)**: 仅做 Page/PageInput 字段扩展 + 三引擎适配 default 值，体量 ~80 行，1 个 commit。
-> - **S6 (下个切片)**: 12 方法 trait + 4 helper 类型 + InMemory 实现 + libsql 实现 + 10 组红测试，体量 ~600 行，按红/绿/重构 3 个 commit 拆分。
+> - **S6 (下个切片)**: 13 方法 trait + 5 helper 类型 + placeholder-lock 测试 + 后续 libsql/InMemory 真语义实现，体量约 600+ 行；T1-B 口径以 §13.8 为准。
 >
 > 理由：保持单切片 commit ≤ 200 行的项目铁律；S5 即使失败也不会阻塞 S6 设计；分两切片便于 review 时定位回归。
 
@@ -269,7 +269,7 @@ TS `pages` 表有 27 列，0002 migration 对齐后也应有 27 列。
 
 **S6-T0 设计冻结**: 在 13-slice-6a-gap-checklist.md §13 新增"S6 设计契约"小节，列 12 方法签名 + 4 helper 类型签名 (供 review 后再动 trait)。
 
-**S6-T1 红阶段** (~10 个测试，预计 1 个 commit `slice 6a S6 (red): 10 failing tests for 12 new BrainEngine methods`):
+**S6-T1 原计划（已被 §13.8 修订）**：原计划写成红阶段测试；实际 T1-B 采用 placeholder-lock 测试，commit 口径以 §13.8 为准。下表保留为 T2 真实语义测试的候选清单：
 | # | 测试文件 | 覆盖方法 | 关键断言 |
 |---|---------|---------|---------|
 | 1 | `tests/page_methods_find_duplicate.rs` | findDuplicatePage | content_hash + frontmatter.id OR 匹配；deleted 过滤 |
@@ -482,4 +482,91 @@ pub struct OrphanPage {
 - [ ] CRMode 暂用 &str、T2 视情况升级 enum 的策略
 - [ ] 方言适配总则 (8 条) 接受
 
-> **冻结后产出**: T1 红阶段一次性写 13 个测试文件，对应 commit `slice 6a S6 (red): 13 failing tests for 13 new BrainEngine methods`。
+> **冻结后产出**: T1-B 阶段一次性写 13 个 placeholder-lock 测试文件，对应 commit `slice 6a S6-T1 (lock): add 13 placeholder-lock tests for new BrainEngine methods`。
+
+### 13.6 T1 不接受偏差与后续切片追踪（rejected deviations）
+
+在 T1 编码 trait 骨架时发现两条偏离 §13.1/§13.2 冻结签名的临时落地状态。
+经复核，这两条**不作为已接受偏差**处理；它们只是为了不阻断当前 S6-T1 骨架编译而形成的临时状态，必须另开切片追踪，避免在 6a 完成定义中被静默吞掉。
+
+| # | 项目 | §13 冻结口径 | T1 临时状态 | 不接受原因 | 后续切片 |
+|---|------|-------------|-------------|------------|----------|
+| D1 | `list_pages` 过滤参数语义 | 计划文 §13.2 隐含 `Option<&PageFilters>`，用于表达"无过滤" | 暂保留 S3 已落地的 `filters: &PageFilters`，调用方用 `&PageFilters::default()` 表达"无过滤" | 这不是纯风格差异：API 是否显式支持 `None` 会影响 trait 语义、调用方 ergonomics、TS 迁移一致性；不能在 6a 中默认为已接受 | **S6-signature**：统一 `list_pages` 可选过滤器语义，评估并同步改 InMemory/Libsql/Postgres impl 与调用方 |
+| D2 | 批量时间返回类型 | §13.1 第 12-13 条标注 `HashMap<String, chrono::DateTime<Utc>>` | 暂用 `HashMap<String, String>` (ISO-8601)，避免当前 T1 引入 chrono 依赖并扩大 Page/PageInput 改动 | 时间类型是核心 API 边界，不应因为当前依赖缺口被静默降级；是否引入 chrono、是否保持 String，需要独立拍板 | **S6-time-types**：统一 Page 时间字段与批量时间 API 类型，评估 `chrono` 依赖、序列化边界、现有字段迁移成本 |
+
+**回标动作**：
+- §13.1 第 12-13 条返回类型表述维持原文，不能被 §13.6 D2 覆盖。
+- §13.2 `list_pages` 行的注释维持原文，不能被 §13.6 D1 覆盖。
+- D1/D2 均进入后续切片 TODO；当前 S6-T1 commit 只能记录"临时状态 + 后续追踪"，不得表述为"影响面 0"或"已接受偏差"。
+- 在 S6-signature / S6-time-types 完成前，6a 完整性审查必须显式检查这两项是否仍为 open。
+
+### 13.7 T1 落地基线（commit-time evidence）
+
+| 项目 | 状态 | 证据 |
+|------|------|------|
+| `types.rs` +5 helper 类型 | ✅ | `FindDuplicatePageOpts / PageRef / PurgeResult / RefreshPageBodyArgs / OrphanPage` 全部带 rustdoc + TS 行号 |
+| `lib.rs` re-export | ✅ | 5 个新类型挂在 `pub use types::{...}` |
+| `engine.rs` +13 trait 方法 | ✅ | 全部含默认实现 `Err(Error::unsupported("pending slice 6a"))`，不破坏 3 个现有 impl 编译 |
+| `cargo build -p zbrain-core` | ✅ | 1.33s 通过 |
+| `cargo build` (workspace) | ✅ | 全部 4 个 crate 通过 |
+| `cargo test -p zbrain-core` | ✅ | 既有 12+10 测试零回归 |
+| 13 个 placeholder-lock 测试文件 | ⏳ | T1-B 阶段追加（见 §13.8） |
+
+### 13.8 T1-B placeholder-lock 测试编写计划
+
+13 个测试文件统一放在 `crates/zbrain-core/tests/`，命名 `page_methods_<verb>.rs`。这些测试不是经典 TDD 的 failing-red 测试，而是锁定当前 trait 默认实现的占位语义：T2 真实现落地后，它们会反向失败，强制 T2 同步改写为真实语义测试，避免"实现完成但测试仍停留在 Unsupported"。
+
+每个文件至少包含：
+
+1. 一个 `#[tokio::test]` 用例，调用对应方法
+2. 断言 `result.is_err()` 且错误 message 包含 `"pending slice 6a"`（锁定占位语义）
+3. 测试名前缀 `slice_6a_page_methods_*` 便于过滤
+
+| # | 文件名 | 测试方法 | 关键断言 |
+|---|--------|---------|----------|
+| 1 | `page_methods_find_duplicate_page.rs` | `find_duplicate_page` | Unsupported 占位 |
+| 2 | `page_methods_soft_delete_page.rs` | `soft_delete_page` | Unsupported 占位 |
+| 3 | `page_methods_restore_page.rs` | `restore_page` | Unsupported 占位 |
+| 4 | `page_methods_purge_deleted_pages.rs` | `purge_deleted_pages` | Unsupported 占位 |
+| 5 | `page_methods_refresh_page_body.rs` | `refresh_page_body` | Unsupported 占位 |
+| 6 | `page_methods_update_cr_state.rs` | `update_page_contextual_retrieval_state` | Unsupported 占位 |
+| 7 | `page_methods_get_all_slugs.rs` | `get_all_slugs` | Unsupported 占位 |
+| 8 | `page_methods_list_all_page_refs.rs` | `list_all_page_refs` | Unsupported 占位 |
+| 9 | `page_methods_find_orphan_pages.rs` | `find_orphan_pages` | Unsupported 占位 |
+| 10 | `page_methods_get_page_timestamps.rs` | `get_page_timestamps` | Unsupported 占位 |
+| 11 | `page_methods_get_effective_dates.rs` | `get_effective_dates` | Unsupported 占位 |
+| 12 | `page_methods_get_salience_scores.rs` | `get_salience_scores` | Unsupported 占位 |
+| 13 | `page_methods_salience_scores_takes_zero_until_6c.rs` | `get_salience_scores`（强语义） | 6a 阶段 take count 必须为 0；T2 实现时仍需通过 |
+
+**复用样板**：测试 fixture 沿用 `libsql_engine_page_crud.rs` 的 `init_clean_engine`（`tempfile::NamedTempFile` 创建后立刻 `init_schema()`）。
+
+**commit message**：`slice 6a S6-T1 (lock): add 13 placeholder-lock tests for new BrainEngine methods`。
+
+### 13.9 后续切片 TODO：D1/D2 不接受偏差防遗漏
+
+> 状态：由 T1 实施期发现；用户明确表示"两条偏差不接受，另开切片避免遗漏"。
+> 原则：当前 S6-T1 不因 D1/D2 阻断 trait 骨架落地，但也不能把 D1/D2 视为 6a 已解决项。
+
+#### S6-signature：统一 `list_pages` 可选过滤器语义
+
+- [ ] 明确最终 API：`list_pages(&self, filters: Option<&PageFilters>)` vs `list_pages(&self, filters: &PageFilters)`。
+- [ ] 对齐 TS `listPages` 的"无过滤"表达方式与 Rust trait ergonomics。
+- [ ] 如选择 `Option<&PageFilters>`：同步修改 `BrainEngine` trait、`InMemoryEngine`、`LibsqlEngine`、`PostgresEngine` 三处 impl。
+- [ ] 同步修改所有调用方与测试，不允许保留双口径。
+- [ ] 增加至少 1 个测试覆盖"无过滤"调用路径。
+- [ ] 完成后回填本节，关闭 D1。
+
+#### S6-time-types：统一 Page 时间字段与批量时间 API 类型
+
+- [ ] 拍板是否引入 `chrono` 到 `zbrain-core` 公共 API。
+- [ ] 如引入 `chrono`：同步设计 serde 序列化、DB 字符串解析、`Page::created_at` / `Page::updated_at` / `PageInput` 相关字段迁移。
+- [ ] 如不引入 `chrono`：必须更新 §13.1 冻结口径，明确批量时间 API 永久使用 ISO-8601 `String`，并说明与 TS 迁移一致性的取舍。
+- [ ] `get_page_timestamps` / `get_effective_dates` 返回类型必须与最终口径一致。
+- [ ] 增加测试覆盖有效时间 fallback：`effective_date -> updated_at -> created_at`。
+- [ ] 完成后回填本节，关闭 D2。
+
+#### 6a 完整性闸口新增检查
+
+- [ ] S6-signature 未关闭前，6a 完整性状态不得标记为"签名完全对齐"。
+- [ ] S6-time-types 未关闭前，6a 完整性状态不得标记为"时间 API 完全对齐"。
+- [ ] 任一项若延期到 6b+，目标切片必须在其计划中显式列出 D1/D2 继承行。
