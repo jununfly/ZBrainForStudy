@@ -85,6 +85,18 @@ impl StructuredError {
     pub fn engine(message: impl Into<String>) -> Self {
         Self::new("Engine", "engine", message)
     }
+
+    /// Convenience constructor for "feature requested but not yet implemented
+    /// at this slice boundary" faults. Used when a trait method receives an
+    /// option (e.g. `GetPageOpts.include_deleted = true`) that the current
+    /// schema cannot honor — surfacing an explicit error beats silently
+    /// returning a wrong shape.
+    ///
+    /// Equivalent to `StructuredError::new("Unsupported", "unsupported", message)`.
+    #[must_use]
+    pub fn unsupported(message: impl Into<String>) -> Self {
+        Self::new("Unsupported", "unsupported", message)
+    }
 }
 
 /// Crate-wide alias for [`StructuredError`]. Lets call sites write

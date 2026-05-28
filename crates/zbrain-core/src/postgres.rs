@@ -1,20 +1,29 @@
-//! Slice 4a — `PostgresEngine` lifecycle skeleton.
+//! Slice 4b — `PostgresEngine` Page CRUD on top of the 4a lifecycle skeleton.
 //!
-//! Implements [`BrainEngine`] identity + lifecycle (`connect` / `disconnect`
-//! / `init_schema`) against a `sqlx::PgPool`. Page CRUD lands in slice 4b so
-//! this file stays a reviewable contract surface and the trait coverage can
-//! be filled in incrementally.
+//! Implements the [`BrainEngine`] page-level surface (`get_page` /
+//! `put_page` / `delete_page` / `list_pages` / `resolve_slugs`) against the
+//! 4a `pages` schema. The schema deliberately omits `deleted_at`,
+//! `frontmatter`, `content_hash`, and embedding columns — those land in
+//! later patch slices (6.5a / 6.5b) alongside the trait methods that
+//! actually consult them. As a result two narrow behaviors are explicit:
+//!
+//! - `GetPageOpts.include_deleted = true` returns `Error::unsupported`
+//!   (the schema has no `deleted_at` column to filter by; silently
+//!   ignoring the flag would mask the gap).
+//! - `resolve_slugs` is exact-match only; fuzzy `ILIKE` matching is
+//!   deferred to slice 6.5c so this slice stays reviewable.
 
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use sqlx::postgres::PgPoolOptions;
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 
 use crate::engine::{
     BrainEngine, EngineConfig, EngineKind, GetPageOpts, Page, PageFilters, PageInput,
 };
 use crate::error::{Error, Result};
+use crate::types::PageKind;
 
 /// Embedded SQL migrations, baked into the binary at compile time. Driven by
 /// `init_schema`. Future migrations are append-only files under `migrations/`.
@@ -108,37 +117,168 @@ impl BrainEngine for PostgresEngine {
     }
 
     // ── Page CRUD — slice 4b ──────────────────────────────────────────────
-    // These return `Error::engine("not yet implemented")` so the trait is
-    // satisfied without silently returning empty results that would mask
-    // missing implementations in downstream tests.
+    // Hand-rolled SQL against the 4a schema. We use `sqlx::query` (not the
+    // compile-time-checked `query!` macro) so the crate builds without a
+    // live database at compile time — the integration suite still exercises
+    // the real round-trip when `ZBRAIN_TEST_PG_URL` is set.
 
-    async fn get_page(&self, _slug: &str, _opts: &GetPageOpts) -> Result<Option<Page>> {
-        Err(Error::engine(
-            "PostgresEngine::get_page lands in slice 4b",
-        ))
+    async fn get_page(&self, slug: &str, opts: &GetPageOpts) -> Result<Option<Page>> {
+        if opts.include_deleted {
+            // FixMe: soft-delete column lands in slice 6.5a; the 4a schema
+            // has no `deleted_at` to filter on, so honoring this flag would
+            // be a lie. Surface it explicitly until the column exists.
+            return Err(Error::unsupported(
+                "GetPageOpts.include_deleted requires a deleted_at column (slice 6.5a)",
+            ));
+        }
+        let pool = self.pool()?;
+        let row = sqlx::query(
+            "SELECT id, slug, type, page_kind, title, compiled_truth, timeline \
+             FROM pages WHERE slug = $1",
+        )
+        .bind(slug)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_page query failed: {e}")))?;
+
+        row.as_ref().map(row_to_page).transpose()
     }
 
-    async fn put_page(&self, _slug: &str, _input: &PageInput) -> Result<Page> {
-        Err(Error::engine(
-            "PostgresEngine::put_page lands in slice 4b",
-        ))
+    async fn put_page(&self, slug: &str, input: &PageInput) -> Result<Page> {
+        let pool = self.pool()?;
+        // Upsert by (source_id, slug). source_id defaults to 'default' in
+        // the 4a schema so we let it fall through. ON CONFLICT keeps the
+        // original `id` (BIGSERIAL) stable across re-puts, matching the
+        // TS engine + InMemoryEngine contract.
+        let row = sqlx::query(
+            "INSERT INTO pages (slug, type, title, compiled_truth) \
+             VALUES ($1, $2, $3, $4) \
+             ON CONFLICT ON CONSTRAINT pages_source_slug_key DO UPDATE SET \
+                 type = EXCLUDED.type, \
+                 title = EXCLUDED.title, \
+                 compiled_truth = EXCLUDED.compiled_truth, \
+                 updated_at = now() \
+             RETURNING id, slug, type, page_kind, title, compiled_truth, timeline",
+        )
+        .bind(slug)
+        .bind(&input.page_type)
+        .bind(&input.title)
+        .bind(&input.compiled_truth)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| Error::engine(format!("put_page upsert failed: {e}")))?;
+
+        row_to_page(&row)
     }
 
-    async fn delete_page(&self, _slug: &str) -> Result<()> {
-        Err(Error::engine(
-            "PostgresEngine::delete_page lands in slice 4b",
-        ))
+    async fn delete_page(&self, slug: &str) -> Result<()> {
+        let pool = self.pool()?;
+        // No-op on missing slug, matching the TS engine + InMemoryEngine
+        // contract. `DELETE` returns affected-row count which we ignore on
+        // purpose — callers that want a "did it exist" probe should
+        // `get_page` first.
+        sqlx::query("DELETE FROM pages WHERE slug = $1")
+            .bind(slug)
+            .execute(pool)
+            .await
+            .map_err(|e| Error::engine(format!("delete_page failed: {e}")))?;
+        Ok(())
     }
 
-    async fn list_pages(&self, _filters: &PageFilters) -> Result<Vec<Page>> {
-        Err(Error::engine(
-            "PostgresEngine::list_pages lands in slice 4b",
-        ))
+    async fn list_pages(&self, filters: &PageFilters) -> Result<Vec<Page>> {
+        let pool = self.pool()?;
+        // Single SQL with optional filter — `type = $1 OR $1 IS NULL` keeps
+        // the query string static so we do not have to assemble fragments.
+        // Limit is applied with `LIMIT $2` when set, otherwise we pass NULL
+        // (postgres `LIMIT NULL` = unbounded).
+        let rows = sqlx::query(
+            "SELECT id, slug, type, page_kind, title, compiled_truth, timeline \
+             FROM pages \
+             WHERE ($1::text IS NULL OR type = $1) \
+             ORDER BY id ASC \
+             LIMIT $2",
+        )
+        .bind(filters.page_type.as_deref())
+        // `Option<i64>::None` becomes SQL NULL → LIMIT NULL (unbounded).
+        .bind(filters.limit.map(|n| i64::try_from(n).unwrap_or(i64::MAX)))
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("list_pages failed: {e}")))?;
+
+        rows.iter().map(row_to_page).collect()
     }
 
-    async fn resolve_slugs(&self, _partial: &str) -> Result<Vec<String>> {
-        Err(Error::engine(
-            "PostgresEngine::resolve_slugs lands in slice 4b",
-        ))
+    async fn resolve_slugs(&self, partial: &str) -> Result<Vec<String>> {
+        // FixMe: slug ILIKE '%partial%' fuzzy matching from TS source code
+        // lands in slice 6.5c. For 4b we deliberately do exact matching so
+        // callers get a deterministic, schema-honest answer.
+        let pool = self.pool()?;
+        let rows = sqlx::query("SELECT slug FROM pages WHERE slug = $1 ORDER BY slug ASC")
+            .bind(partial)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| Error::engine(format!("resolve_slugs failed: {e}")))?;
+
+        rows.into_iter()
+            .map(|r| {
+                r.try_get::<String, _>("slug")
+                    .map_err(|e| Error::engine(format!("resolve_slugs decode failed: {e}")))
+            })
+            .collect()
+    }
+}
+
+/// Decode a single `pages` row into the engine-level [`Page`] value.
+///
+/// Centralised so every read path (get / list) shares the same column
+/// projection and `page_kind` enum mapping.
+fn row_to_page(row: &sqlx::postgres::PgRow) -> Result<Page> {
+    let id: i64 = row
+        .try_get("id")
+        .map_err(|e| Error::engine(format!("row decode id: {e}")))?;
+    let slug: String = row
+        .try_get("slug")
+        .map_err(|e| Error::engine(format!("row decode slug: {e}")))?;
+    let page_type: String = row
+        .try_get("type")
+        .map_err(|e| Error::engine(format!("row decode type: {e}")))?;
+    let page_kind_str: String = row
+        .try_get("page_kind")
+        .map_err(|e| Error::engine(format!("row decode page_kind: {e}")))?;
+    let title: String = row
+        .try_get("title")
+        .map_err(|e| Error::engine(format!("row decode title: {e}")))?;
+    let compiled_truth: String = row
+        .try_get("compiled_truth")
+        .map_err(|e| Error::engine(format!("row decode compiled_truth: {e}")))?;
+    let timeline: String = row
+        .try_get("timeline")
+        .map_err(|e| Error::engine(format!("row decode timeline: {e}")))?;
+
+    let page_kind = decode_page_kind(&page_kind_str)?;
+    let id_u64 = u64::try_from(id)
+        .map_err(|_| Error::engine(format!("page id {id} negative; corrupt row")))?;
+
+    Ok(Page {
+        id: id_u64,
+        slug,
+        page_type,
+        page_kind,
+        title,
+        compiled_truth,
+        timeline,
+    })
+}
+
+/// Map the `pages.page_kind` TEXT column (constrained to
+/// `'markdown'|'code'|'image'` by the schema) to the [`PageKind`] enum.
+fn decode_page_kind(value: &str) -> Result<PageKind> {
+    match value {
+        "markdown" => Ok(PageKind::Markdown),
+        "code" => Ok(PageKind::Code),
+        "image" => Ok(PageKind::Image),
+        other => Err(Error::engine(format!(
+            "unknown page_kind value {other:?}; schema CHECK should prevent this"
+        ))),
     }
 }
