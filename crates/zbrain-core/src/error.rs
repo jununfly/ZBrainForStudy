@@ -75,7 +75,22 @@ impl StructuredError {
         self.docs_url = Some(docs_url.into());
         self
     }
+
+    /// Convenience constructor for engine-layer faults (DB pool errors,
+    /// schema migration failures, lifecycle violations). Used by
+    /// `PostgresEngine` and future backends so call sites stay terse.
+    ///
+    /// Equivalent to `StructuredError::new("Engine", "engine", message)`.
+    #[must_use]
+    pub fn engine(message: impl Into<String>) -> Self {
+        Self::new("Engine", "engine", message)
+    }
 }
+
+/// Crate-wide alias for [`StructuredError`]. Lets call sites write
+/// `crate::error::Error` (or imported `Error`) without losing the structured
+/// envelope contract.
+pub type Error = StructuredError;
 
 impl fmt::Display for StructuredError {
     /// Renders the same way `StructuredAgentError.message` does in TS:

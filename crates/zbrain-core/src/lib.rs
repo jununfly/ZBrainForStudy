@@ -9,9 +9,10 @@
 
 pub mod engine;
 pub mod error;
+pub mod postgres;
 pub mod types;
 
-pub use error::{from_std_error, Result, StructuredError};
+pub use error::{from_std_error, Error, Result, StructuredError};
 pub use types::{
     is_base_page_type, CRMode, EffectiveDateSource, PageKind, PageType, ALL_PAGE_TYPES,
 };
