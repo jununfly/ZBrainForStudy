@@ -117,9 +117,11 @@
 
 | 子切片 | 方法族 | 方法数 | 新增表 | 依赖 |
 |--------|--------|--------|--------|------|
-| **6a** | Page 完整 CRUD (soft-delete 4 变体 + 补充查询) | ~12 | pages 增列(deleted_at, body 等) | 无 |
+| **6a** | Page 完整 CRUD (soft-delete 4 变体 + 补充查询) — **仅 libsql + InMemory** | ~12 | pages 增列(deleted_at, body 等) | 无 |
+| **6a-pg** | 把 6a 在 PostgresEngine 镜像落地（全列投影 + upsert + 12 方法实现） | ~12 | — (仅 trait impl) | 6a |
 | **6b** | Sources + Config + Ingest + Migrations | ~8 | config, ingest_log | 6a |
 | **6c** | Tags + Timeline + Raw Data + Files + Dream | ~10 | tags, timeline_entries, raw_data, files | 6a |
+| **6c-followup-tag-filter** (附属) | **回头补齐 `list_pages` 的 tag 过滤** — 6a 把 tag 字段挂 `Error::Unsupported` 占位，6c 建好 tags 表后立刻在 libsql/postgres/in-memory 三引擎补 `JOIN tags ON page_id WHERE tag = ?`，并把 6a 的红测试 `list_pages_tag_filter_returns_unsupported_until_6c` 翻绿（改为正向断言）。**禁止** 6c 主切片完成后仍留此 stub。 | 1 (扩展现有 list_pages) | — | 6c |
 | **6d** | Links / Graph (含 traverse, backlinks) | ~11 | links | 6a |
 | **6e** | Chunks / Embeddings / Search | ~10 | content_chunks | 6a, 6d |
 | **6f** | Facts / Trajectory | ~12 | facts 相关(见 schema) | 6a, 6e |
@@ -129,6 +131,7 @@
 
 > 总计: ~108 方法 (engine.ts 89 核心 + pglite 独有 29 = 118, 减去已实现 7 ≈ 111 新增方法, 上表按族聚合后 ~108)
 > 总计: 32 张新表
+> **PG 双引擎对齐策略**: 6a → 6i 每个子切片都仅做 libsql + InMemory 主路径，**postgres.rs 用 `Err(Error::Unsupported("pending slice <N>-pg"))` 占位**，每个主切片完成后追加一个 `<N>-pg` 镜像切片做 PostgresEngine 同步。这是 C7 决议（见 13-slice-6a-gap-checklist.md §10）。
 
 ## 4 方言适配备忘 (PG → SQLite)
 
@@ -151,6 +154,11 @@
 | 2 | Minion / Subagent / OAuth 等运行时基础设施表 | **全量建空表**：保证 schema 一致性，幂等迁移一次建完。 | 6i |
 | 3 | 全文搜索 (searchKeyword / searchKeywordChunks) | **FTS5 VIRTUAL TABLE + trigger 同步**：建 `pages_fts` / `chunks_fts` 虚拟表，CREATE TRIGGER AFTER INSERT/UPDATE/DELETE 镜像主表内容。**否决** LIKE %query% 临时路线。 | 6e |
 | 4 | 子切片粒度 | **9 子切片（细粒度 6a–6i）**：保留 §3 表中拆分，便于每个 PR 单审。 | — |
+| 5 | **PostgresEngine 双引擎全列实现节奏** (2026-05-28) | **延迟到镜像切片**：每个主切片（6a-6i）仅完成 libsql + InMemory；postgres.rs 12 方法用 `Err(Error::Unsupported("pending slice <N>-pg"))` 占位保持 trait 契约。主切片合并后立即追加镜像切片 (6a-pg、6b-pg …) 把 Postgres 实现补齐。**禁止** 跳过镜像切片直接进入下一族方法，避免长期累积 unsupported 占位。**豁免脚注**：已有 trait 方法的 bug 修复 / 行为对齐型修改（如 6a 把 `resolve_slugs` 从精确匹配改 LIKE）**不受**此延迟约束，必须三引擎同步——理由是 trait 行为一致性优先于 PR 体积控制，且这类改动只是修 WHERE 子句而非新增方法。 | 每族主切片完成后紧跟 `<N>-pg` |
+| 6 | **list_pages tag 过滤实现节奏** (2026-05-28 C9) | **6a 排除 tag，6c 回头补齐**：6a 实现 PageFilters 其余 9 项 (type/updated_after/slugPrefix/sourceId/sourceIds/includeDeleted/sort/limit/offset)；tag 过滤需 `JOIN tags` 而 tags 表归属 6c，6a 提前建表会越界。6a 阶段 tag 字段非空时返回 `Error::Unsupported("tag filter lands in slice 6c")`，并写红测试锁定回归点。6c 建好 tags 表后立即三引擎补齐 `JOIN tags ON page_id WHERE tag = ?`，翻绿回归测试。**禁止** 6c 完成后仍留 stub。 | 6c |
+| 7 | **findDuplicatePage 语义** (2026-05-28 C10) | **完全镜像 TS**：`WHERE (content_hash = ? OR frontmatter_id_match) AND deleted_at IS NULL`，返回 `Option<Page>` (取首条匹配)。属"行为对齐"豁免，6a 主切片三引擎同步实现，不延迟到 6a-pg。 | 6a |
+| 8 | **refreshPageBody 入参签名** (2026-05-28 C11) | **`(slug: &str, source_id: i64, new_body: String, content_hash: Option<String>)`**：slug 在多 source 下不唯一须带 source_id 消歧；content_hash 保持 `Option` 与 TS 同语义；同时刷新 `updated_at` 由 0002 trigger 自动 bump `generation`。 | 6a |
+| 9 | **InMemoryEngine 12 方法桩策略** (2026-05-28 C14) | **写最小正确逻辑**（HashMap 操作 + 迭代器链），不用 `todo!()`/`unimplemented!()`/`Err::Unsupported`——红测试需在 InMemory 跑通；桩 panic 阻塞测试启动。复杂度集中在 `findDuplicatePage` (OR 两条件) 与 `list_pages` (9 过滤)，<50 行可表达。 | 6a |
 
 ---
 
