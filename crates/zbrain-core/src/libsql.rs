@@ -27,10 +27,22 @@ use crate::types::PageKind;
 /// Embedded `SQLite` schema. Mirrors the PG migration semantics:
 /// `sources` (with seeded 'default' row), `pages` with `UNIQUE (source_id,
 /// slug)` and a `page_kind` CHECK, plus an index on `type`.
-const MIGRATION_SQL: &str = include_str!("../migrations-sqlite/0001_init.sql");
+const MIGRATION_0001: &str = include_str!("../migrations-sqlite/0001_init.sql");
 
-/// Bumped whenever `MIGRATION_SQL` changes. Guarded via `PRAGMA user_version`.
-const SCHEMA_VERSION: i64 = 1;
+/// Slice 6a — fills in every `pages` column the 12 Page-CRUD methods need
+/// (`frontmatter`, `emotional_weight`, `deleted_at`, …, `embedding`) plus the
+/// generation-bump triggers. See file header in `0002_pages_full_columns.sql`.
+const MIGRATION_0002: &str = include_str!("../migrations-sqlite/0002_pages_full_columns.sql");
+
+/// Ordered list of migrations. Index `i` is applied when `user_version <= i`,
+/// then `user_version` is set to `i + 1`. Append-only — never reorder.
+const MIGRATIONS: &[&str] = &[MIGRATION_0001, MIGRATION_0002];
+
+/// Highest schema version we know how to produce. Equals `MIGRATIONS.len()`.
+/// Guarded via `PRAGMA user_version`. Hand-kept in sync with `MIGRATIONS`
+/// because `len() as i64` is not const-evaluable in stable Rust and casting
+/// `usize → i64` trips `clippy::cast_possible_wrap`.
+const SCHEMA_VERSION: i64 = 2;
 
 /// Embedded `SQLite` engine. Use [`LibsqlEngine::new`] then [`connect`] before
 /// any other method. Calling `connect` twice on the same instance is
@@ -117,7 +129,7 @@ impl BrainEngine for LibsqlEngine {
         let conn = self.conn()?;
 
         // PRAGMA user_version is SQLite's standard "schema version" slot.
-        // Read it as a single-row query, run the migration only when behind.
+        // 0 = fresh database, N = migration N has been applied.
         let mut rows = conn
             .query("PRAGMA user_version", ())
             .await
@@ -134,17 +146,26 @@ impl BrainEngine for LibsqlEngine {
             return Ok(());
         }
 
-        // execute_batch runs multiple statements separated by `;`.
-        conn.execute_batch(MIGRATION_SQL)
-            .await
-            .map_err(|e| Error::engine(format!("migration failed: {e}")))?;
-
-        // Bump version so the next init_schema becomes a cheap no-op.
-        // We have to format the literal into the SQL — SQLite does not
-        // accept bound parameters in PRAGMA statements.
-        conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))
-            .await
-            .map_err(|e| Error::engine(format!("set user_version failed: {e}")))?;
+        // Apply each migration whose 1-based version > current user_version.
+        // Migrations are `execute_batch`-compatible (multiple `;`-separated
+        // statements). After each one, bump `user_version` so a crash
+        // mid-way resumes from the right slot on the next `init_schema`.
+        for (idx, sql) in MIGRATIONS.iter().enumerate() {
+            // `idx + 1` is the schema version this migration produces.
+            // `usize → i64` via `try_from` keeps clippy happy and guards
+            // the (impossible-in-practice) overflow case explicitly.
+            let ver = i64::try_from(idx + 1)
+                .map_err(|_| Error::engine("MIGRATIONS length overflows i64"))?;
+            if ver <= current {
+                continue;
+            }
+            conn.execute_batch(sql)
+                .await
+                .map_err(|e| Error::engine(format!("migration {ver} failed: {e}")))?;
+            conn.execute_batch(&format!("PRAGMA user_version = {ver}"))
+                .await
+                .map_err(|e| Error::engine(format!("set user_version = {ver} failed: {e}")))?;
+        }
 
         Ok(())
     }
