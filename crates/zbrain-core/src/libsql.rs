@@ -41,15 +41,26 @@ const MIGRATION_0002: &str = include_str!("../migrations-sqlite/0002_pages_full_
 const MIGRATION_0003: &str =
     include_str!("../migrations-sqlite/0003_salience_and_full_generation_trigger.sql");
 
+/// Slice 6a S6-T5c — adds `page_tags` table for tag filter in `list_pages`.
+/// Composite primary key `(page_id, tag)` + `ON DELETE CASCADE` so hard
+/// page deletes cleanly remove dangling tag rows. See file header in
+/// `0004_page_tags.sql` for the TS reference and FK semantics.
+const MIGRATION_0004: &str = include_str!("../migrations-sqlite/0004_page_tags.sql");
+
 /// Ordered list of migrations. Index `i` is applied when `user_version <= i`,
 /// then `user_version` is set to `i + 1`. Append-only — never reorder.
-const MIGRATIONS: &[&str] = &[MIGRATION_0001, MIGRATION_0002, MIGRATION_0003];
+const MIGRATIONS: &[&str] = &[
+    MIGRATION_0001,
+    MIGRATION_0002,
+    MIGRATION_0003,
+    MIGRATION_0004,
+];
 
 /// Highest schema version we know how to produce. Equals `MIGRATIONS.len()`.
 /// Guarded via `PRAGMA user_version`. Hand-kept in sync with `MIGRATIONS`
 /// because `len() as i64` is not const-evaluable in stable Rust and casting
 /// `usize → i64` trips `clippy::cast_possible_wrap`.
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 /// Embedded `SQLite` engine. Use [`LibsqlEngine::new`] then [`connect`] before
 /// any other method. Calling `connect` twice on the same instance is
@@ -73,12 +84,24 @@ impl LibsqlEngine {
             .ok_or_else(|| Error::engine("LibsqlEngine is not connected"))
     }
 
-    /// Open a fresh connection on the live database. `libsql::Connection`
-    /// is cheap to acquire (just an FFI handle bound to the open file).
-    fn conn(&self) -> Result<::libsql::Connection> {
-        self.database()?
+    /// Open a fresh connection on the live database and enable foreign
+    /// key enforcement on it.
+    ///
+    /// `libsql::Connection` is cheap to acquire (just an FFI handle bound
+    /// to the open file), but `SQLite`'s `PRAGMA foreign_keys` is **per
+    /// connection** — flipping it once on the `Database` does nothing for
+    /// subsequent connections. So we re-issue the PRAGMA after every
+    /// `connect()` call here. This guarantees `ON DELETE CASCADE` from
+    /// `migration 0004` (`page_tags.page_id` → `pages.id`) actually fires.
+    async fn conn(&self) -> Result<::libsql::Connection> {
+        let conn = self
+            .database()?
             .connect()
-            .map_err(|e| Error::engine(format!("libsql connect failed: {e}")))
+            .map_err(|e| Error::engine(format!("libsql connect failed: {e}")))?;
+        conn.execute("PRAGMA foreign_keys = ON", ())
+            .await
+            .map_err(|e| Error::engine(format!("enable foreign_keys failed: {e}")))?;
+        Ok(conn)
     }
 }
 
@@ -133,7 +156,7 @@ impl BrainEngine for LibsqlEngine {
     }
 
     async fn init_schema(&self) -> Result<()> {
-        let conn = self.conn()?;
+        let conn = self.conn().await?;
 
         // PRAGMA user_version is SQLite's standard "schema version" slot.
         // 0 = fresh database, N = migration N has been applied.
@@ -195,7 +218,7 @@ impl BrainEngine for LibsqlEngine {
         // `include_deleted` is bound as an INTEGER (0/1) because libsql /
         // SQLite type affinity coerces TEXT booleans loosely; explicit i64
         // avoids any surprise.
-        let conn = self.conn()?;
+        let conn = self.conn().await?;
         let include_deleted_flag: i64 = i64::from(opts.include_deleted);
         let source_id_param = opts.source_id.clone();
         let mut rows = conn
@@ -228,7 +251,7 @@ impl BrainEngine for LibsqlEngine {
     }
 
     async fn put_page(&self, slug: &str, input: &PageInput) -> Result<Page> {
-        let conn = self.conn()?;
+        let conn = self.conn().await?;
         // Upsert keyed by (source_id, slug). source_id defaults to 'default'
         // in the migration. SQLite's ON CONFLICT names the conflicting
         // columns directly (no constraint-name spelling).
@@ -257,7 +280,7 @@ impl BrainEngine for LibsqlEngine {
     }
 
     async fn delete_page(&self, slug: &str) -> Result<()> {
-        let conn = self.conn()?;
+        let conn = self.conn().await?;
         // No-op on missing slug (matches PG + InMemory contracts).
         conn.execute(
             "DELETE FROM pages WHERE slug = ?1",
@@ -268,9 +291,9 @@ impl BrainEngine for LibsqlEngine {
         Ok(())
     }
 
-    #[allow(clippy::too_many_lines)] // Dynamic SQL builder for 9 filters — extracting helpers is deferred until S6-T5c lands tag JOIN.
+    #[allow(clippy::too_many_lines)] // Dynamic SQL builder for 10 filters — extracting helpers is deferred to a later refactor slice.
     async fn list_pages(&self, filters: &PageFilters) -> Result<Vec<Page>> {
-        let conn = self.conn()?;
+        let conn = self.conn().await?;
 
         // ── Empty source_ids short-circuit ───────────────────────────────
         // `source_ids: Some(vec![])` semantically means "match no source",
@@ -287,6 +310,13 @@ impl BrainEngine for LibsqlEngine {
         // We alias `pages AS p` so the whitelisted ORDER BY fragments from
         // `page_sort_sql` (which use `p.` prefixes for future JOIN reuse)
         // bind cleanly.
+        //
+        // tag filter (S6-T5c): when `filters.tag.is_some()`, we INNER JOIN
+        // `page_tags AS pt` and pin `pt.tag = ?` in WHERE.  Mirrors the TS
+        // PGLite engine's `JOIN tags t ON t.page_id = p.id WHERE t.tag = $N`
+        // shape.  The `(page_id, tag)` composite PK on `page_tags` guarantees
+        // at most one matching row per page, so the JOIN cannot duplicate
+        // results — semantically equivalent to EXISTS without the subquery.
         let mut sql = "SELECT p.id, p.slug, p.type, p.page_kind, p.title, p.compiled_truth, \
                        p.timeline, p.frontmatter, p.content_hash, p.emotional_weight, \
                        p.created_at, p.updated_at, p.deleted_at, p.last_retrieved_at, \
@@ -295,8 +325,14 @@ impl BrainEngine for LibsqlEngine {
                        p.chunker_version, p.source_path, p.source_id, p.source_kind, \
                        p.source_uri, p.ingested_via, p.ingested_at, \
                        p.contextual_retrieval_mode, p.corpus_generation \
-                       FROM pages AS p WHERE 1=1"
+                       FROM pages AS p"
             .to_owned();
+
+        if filters.tag.is_some() {
+            sql.push_str(" JOIN page_tags AS pt ON pt.page_id = p.id");
+        }
+
+        sql.push_str(" WHERE 1=1");
 
         let mut param_idx: u32 = 1;
 
@@ -364,6 +400,21 @@ impl BrainEngine for LibsqlEngine {
             sql.push_str(frag);
         }
 
+        // Filter: tag (S6-T5c, single-tag exact match via JOIN page_tags)
+        // The JOIN was emitted above when `filters.tag.is_some()`; here we
+        // add the bound WHERE predicate.  Composite PK (page_id, tag) ensures
+        // no row duplication on join.
+        let tag_param = if filters.tag.is_some() {
+            let frag = format!(" AND pt.tag = ?{param_idx}");
+            param_idx += 1;
+            Some(frag)
+        } else {
+            None
+        };
+        if let Some(ref frag) = tag_param {
+            sql.push_str(frag);
+        }
+
         // Filter: include_deleted (default = false → exclude soft-deleted rows)
         if !filters.include_deleted {
             sql.push_str(" AND p.deleted_at IS NULL");
@@ -408,8 +459,8 @@ impl BrainEngine for LibsqlEngine {
         //
         // ORDER CONTRACT: the push order below MUST match the `param_idx`
         // bumps above — page_type → slug_prefix → source_id → source_ids
-        // → updated_after → limit → offset.  Reordering either side without
-        // the other will silently misbind.
+        // → updated_after → tag → limit → offset.  Reordering either side
+        // without the other will silently misbind.
         let mut param_vals: Vec<::libsql::Value> = Vec::new();
 
         if let Some(ref pt) = filters.page_type {
@@ -428,6 +479,9 @@ impl BrainEngine for LibsqlEngine {
         }
         if let Some(ref ts) = filters.updated_after {
             param_vals.push(::libsql::Value::from(ts.clone()));
+        }
+        if let Some(ref tag) = filters.tag {
+            param_vals.push(::libsql::Value::from(tag.clone()));
         }
         if let Some(n) = filters.limit {
             let limit_i64 = i64::try_from(n).unwrap_or(i64::MAX);
@@ -461,7 +515,7 @@ impl BrainEngine for LibsqlEngine {
         // FixMe: fuzzy LIKE %partial% lands in slice 6.5c — keep exact
         // matching in lockstep with PostgresEngine so the two engines are
         // observationally identical at this slice.
-        let conn = self.conn()?;
+        let conn = self.conn().await?;
         let mut rows = conn
             .query(
                 "SELECT slug FROM pages WHERE slug = ?1 ORDER BY slug ASC",
@@ -494,7 +548,7 @@ impl BrainEngine for LibsqlEngine {
         source_id: &str,
         opts: &FindDuplicatePageOpts,
     ) -> Result<Option<Page>> {
-        let conn = self.conn()?;
+        let conn = self.conn().await?;
         let mut rows = conn
             .query(
                 "SELECT id, slug, type, page_kind, title, compiled_truth, timeline, \
@@ -530,7 +584,7 @@ impl BrainEngine for LibsqlEngine {
         slug: &str,
         source_id: Option<&str>,
     ) -> Result<Option<String>> {
-        let conn = self.conn()?;
+        let conn = self.conn().await?;
         let mut rows = conn
             .query(
                 "UPDATE pages \
