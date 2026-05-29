@@ -57,6 +57,40 @@ fn note_input(title: &str, body: &str) -> PageInput {
     }
 }
 
+async fn seed_source(id: &str) {
+    let url = pg_url().expect("ZBRAIN_TEST_PG_URL set for source seed");
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .expect("source seed pool");
+    sqlx::query("INSERT INTO sources (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING")
+        .bind(id)
+        .bind(id)
+        .execute(&pool)
+        .await
+        .expect("seed source");
+    pool.close().await;
+}
+
+async fn source_ids_for_slug(slug: &str) -> Vec<String> {
+    let url = pg_url().expect("ZBRAIN_TEST_PG_URL set for source verification");
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .expect("source verification pool");
+    let rows = sqlx::query_scalar::<_, String>(
+        "SELECT source_id FROM pages WHERE slug = $1 ORDER BY source_id ASC",
+    )
+    .bind(slug)
+    .fetch_all(&pool)
+    .await
+    .expect("select page source ids");
+    pool.close().await;
+    rows
+}
+
 // -- get_page --------------------------------------------------------------
 
 #[tokio::test]
@@ -93,6 +127,51 @@ async fn get_page_round_trips_after_put() {
     assert_eq!(got.compiled_truth, "body-1");
     assert_eq!(got.page_type, "note");
     assert_eq!(got.id, inserted.id);
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn get_page_respects_source_id_scope() {
+    let Some(engine) = init_clean_engine().await else {
+        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
+        return;
+    };
+    seed_source("pg-alt").await;
+
+    let default_page = engine
+        .put_page(
+            "same-slug-get-source",
+            None,
+            &note_input("Default title", "default-body"),
+        )
+        .await
+        .expect("put default source");
+    let alt_page = engine
+        .put_page(
+            "same-slug-get-source",
+            Some("pg-alt"),
+            &note_input("Alt title", "alt-body"),
+        )
+        .await
+        .expect("put alt source");
+
+    let got = engine
+        .get_page(
+            "same-slug-get-source",
+            &GetPageOpts {
+                source_id: Some("pg-alt".to_string()),
+                include_deleted: false,
+            },
+        )
+        .await
+        .expect("get_page")
+        .expect("Some(page)");
+
+    assert_eq!(got.id, alt_page.id);
+    assert_ne!(got.id, default_page.id);
+    assert_eq!(got.title, "Alt title");
+    assert_eq!(got.compiled_truth, "alt-body");
+    assert_eq!(got.source_id, "pg-alt");
     engine.disconnect().await.expect("disconnect");
 }
 
@@ -144,6 +223,44 @@ async fn put_page_upsert_updates_existing_row() {
         .expect("Some(page)");
     assert_eq!(got.title, "Beta v2");
     assert_eq!(got.compiled_truth, "body-v2");
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn put_page_respects_source_id_as_part_of_identity() {
+    let Some(engine) = init_clean_engine().await else {
+        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
+        return;
+    };
+    seed_source("pg-alt").await;
+
+    let default_page = engine
+        .put_page(
+            "same-slug-different-source",
+            None,
+            &note_input("Default title", "default-body"),
+        )
+        .await
+        .expect("put default source");
+    let alt_page = engine
+        .put_page(
+            "same-slug-different-source",
+            Some("pg-alt"),
+            &note_input("Alt title", "alt-body"),
+        )
+        .await
+        .expect("put alt source");
+
+    assert_eq!(default_page.source_id, "default");
+    assert_eq!(alt_page.source_id, "pg-alt");
+    assert_ne!(
+        default_page.id, alt_page.id,
+        "same slug under distinct source_id values must be distinct rows"
+    );
+    assert_eq!(
+        source_ids_for_slug("same-slug-different-source").await,
+        vec!["default".to_string(), "pg-alt".to_string()]
+    );
     engine.disconnect().await.expect("disconnect");
 }
 

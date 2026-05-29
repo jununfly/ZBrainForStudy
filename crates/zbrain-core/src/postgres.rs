@@ -133,10 +133,13 @@ impl BrainEngine for PostgresEngine {
         }
         let pool = self.pool()?;
         let row = sqlx::query(
-            "SELECT id, slug, type, page_kind, title, compiled_truth, timeline \
-             FROM pages WHERE slug = $1",
+            "SELECT id, slug, type, page_kind, title, compiled_truth, timeline, source_id \
+             FROM pages \
+             WHERE slug = $1 \
+               AND ($2::text IS NULL OR source_id = $2)",
         )
         .bind(slug)
+        .bind(opts.source_id.as_deref())
         .fetch_optional(pool)
         .await
         .map_err(|e| Error::engine(format!("get_page query failed: {e}")))?;
@@ -147,35 +150,30 @@ impl BrainEngine for PostgresEngine {
     async fn put_page(
         &self,
         slug: &str,
-        _source_id: Option<&str>,
+        source_id: Option<&str>,
         input: &PageInput,
     ) -> Result<Page> {
         let pool = self.pool()?;
-        // Upsert by (source_id, slug). source_id defaults to 'default' in
-        // the 4a schema so we let it fall through. ON CONFLICT keeps the
-        // original `id` (BIGSERIAL) stable across re-puts, matching the
-        // TS engine + InMemoryEngine contract.
-        //
-        // S6-T8 — `_source_id` is accepted on the trait surface for parity
-        // with InMemory / LibSQL but not yet wired into the INSERT column
-        // list here. The current Postgres slice still relies on the schema
-        // default of 'default'; lifting this is tracked alongside the
-        // Postgres list_pages / get_page upgrades (slated for later
-        // postgres-parity slices).
+        let source_id = source_id.unwrap_or("default");
+        // Upsert by (source_id, slug). ON CONFLICT keeps the original `id`
+        // (BIGSERIAL) stable across re-puts within the same source, matching
+        // the TS engine + InMemoryEngine contract while allowing the same slug
+        // to exist independently under different sources.
         let row = sqlx::query(
-            "INSERT INTO pages (slug, type, title, compiled_truth) \
-             VALUES ($1, $2, $3, $4) \
+            "INSERT INTO pages (slug, type, title, compiled_truth, source_id) \
+             VALUES ($1, $2, $3, $4, $5) \
              ON CONFLICT ON CONSTRAINT pages_source_slug_key DO UPDATE SET \
                  type = EXCLUDED.type, \
                  title = EXCLUDED.title, \
                  compiled_truth = EXCLUDED.compiled_truth, \
                  updated_at = now() \
-             RETURNING id, slug, type, page_kind, title, compiled_truth, timeline",
+             RETURNING id, slug, type, page_kind, title, compiled_truth, timeline, source_id",
         )
         .bind(slug)
         .bind(&input.page_type)
         .bind(&input.title)
         .bind(&input.compiled_truth)
+        .bind(source_id)
         .fetch_one(pool)
         .await
         .map_err(|e| Error::engine(format!("put_page upsert failed: {e}")))?;
@@ -204,7 +202,7 @@ impl BrainEngine for PostgresEngine {
         // Limit is applied with `LIMIT $2` when set, otherwise we pass NULL
         // (postgres `LIMIT NULL` = unbounded).
         let rows = sqlx::query(
-            "SELECT id, slug, type, page_kind, title, compiled_truth, timeline \
+            "SELECT id, slug, type, page_kind, title, compiled_truth, timeline, source_id \
              FROM pages \
              WHERE ($1::text IS NULL OR type = $1) \
              ORDER BY id ASC \
@@ -266,20 +264,22 @@ fn row_to_page(row: &sqlx::postgres::PgRow) -> Result<Page> {
     let timeline: String = row
         .try_get("timeline")
         .map_err(|e| Error::engine(format!("row decode timeline: {e}")))?;
+    let source_id: String = row
+        .try_get("source_id")
+        .map_err(|e| Error::engine(format!("row decode source_id: {e}")))?;
 
     let page_kind = decode_page_kind(&page_kind_str)?;
     let id_u64 = u64::try_from(id)
         .map_err(|_| Error::engine(format!("page id {id} negative; corrupt row")))?;
 
-    // S2 placeholder: same pattern as libsql — only the 7 legacy columns
-    // are decoded; the rest default. Slice 6a S3 widens this to the full
-    // 0002 projection.
+    // S2/S6a-pg placeholder: decode the current narrow PG projection,
+    // including `source_id`; the remaining Page fields default until the PG
+    // SELECT is widened to the full 0002+ projection in a later slice.
     //
     // Slice 6a S5 added five more columns (`last_retrieved_at`,
     // `generation`, `embedding`, `chunker_version`, `source_path`). Until
-    // the PG SELECT is widened (slice 6a-pg / S6 PG leg), they default to
-    // PG-equivalent values (`generation = 1`, `chunker_version = 1`,
-    // optionals `None`).
+    // the PG SELECT is widened, they default to PG-equivalent values
+    // (`generation = 1`, `chunker_version = 1`, optionals `None`).
     Ok(Page {
         id: id_u64,
         slug,
@@ -304,7 +304,7 @@ fn row_to_page(row: &sqlx::postgres::PgRow) -> Result<Page> {
         embedding: None,
         chunker_version: 1,
         source_path: None,
-        source_id: "default".to_string(),
+        source_id,
         source_kind: None,
         source_uri: None,
         ingested_via: None,

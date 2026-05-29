@@ -13,7 +13,7 @@
 
 1. **13 方法真实语义实现** — 替换 `Err(Error::unsupported("pending slice 6a-pg"))` 占位
 2. **全列投影** — `row_to_page` 从 7 列扩展到 27+ 列，消除硬编码 default
-3. **`put_page` 全列 upsert** — 从 4 列 INSERT 升级到完整列
+3. **`put_page` 全列 upsert** — 从 4 列 INSERT 升级到完整列，并按 S6-T8 契约使用参数化 `source_id`
 4. **`get_page` deleted_at 过滤** — 支持 `include_deleted` 选项
 5. **`list_pages` 9 项过滤** — 完整实现 `PageFilters` 的 PG 方言
 6. **`resolve_slugs` ILIKE** — 从精确匹配改为模糊匹配
@@ -215,9 +215,20 @@ if opts.include_deleted {
 }
 ```
 
-#### 5.2 `put_page(slug, input) → Page`
+#### 5.2 `put_page(slug, source_id, input) → Page`
 
-**现状**: 4 列 INSERT (slug, type, title, compiled_truth)，ON CONFLICT UPDATE 3 列。
+**现状**: 4 列 INSERT (slug, type, title, compiled_truth)，ON CONFLICT UPDATE 3 列；S6-T8 后 trait 已接受 `source_id: Option<&str>`，但当前 `PostgresEngine` 仍以 `_source_id` 占位且未接入 SQL，实际依赖 schema default `'default'`。
+
+**S6-T8 契约**:
+```rust
+let source_id = source_id.unwrap_or("default");
+```
+
+- `None` 必须归一为 `"default"`。
+- `Some(id)` 必须写入指定 source。
+- 同一 `slug` 在不同 `source_id` 下必须是独立 Page。
+- 只有同一 `(source_id, slug)` 才应触发 upsert。
+- 写入非 default source 前，测试 fixture 必须先 seed `sources(id)`，否则会违反 `pages.source_id -> sources(id)` 外键。
 
 **PG SQL — 全列 upsert**:
 ```sql
@@ -234,8 +245,9 @@ INSERT INTO pages (
     $10, $11, $12,
     $13, $14, $15, $16,
     $17, $18, $19, $20,
-    $21, $22, 'default'
+    $21, $22, $23
 )
+-- $23 = source_id.unwrap_or("default")
 ON CONFLICT (source_id, slug) DO UPDATE SET
     type = EXCLUDED.type,
     page_kind = EXCLUDED.page_kind,
@@ -558,7 +570,7 @@ Slice 6a 已创建 13 个 placeholder-lock 测试文件，验证 `PostgresEngine
 ### Phase 3: 基础 CRUD 升级 (预估 1-2 个 commit)
 
 8. `get_page` — 支持 `include_deleted` 过滤
-9. `put_page` — 全列 upsert
+9. `put_page` — 全列 upsert，并接入 S6-T8 `source_id.unwrap_or("default")` 参数化语义
 10. `list_pages` — 9 项过滤 + ORDER BY + OFFSET
 11. `resolve_slugs` — ILIKE 模糊匹配
 12. `cargo build` + `cargo clippy` 验证
@@ -618,7 +630,7 @@ Slice 6a 已创建 13 个 placeholder-lock 测试文件，验证 `PostgresEngine
 - [ ] `migrations/0003_salience_and_full_generation_trigger.sql` 创建且 PG 方言正确
 - [ ] `row_to_page` / `full_row_to_page` 解码 27+ 列，无硬编码 default
 - [ ] `get_page` 支持 `include_deleted` 过滤
-- [ ] `put_page` 全列 upsert (INSERT 20+ 列, ON CONFLICT UPDATE 20+ 列)
+- [ ] `put_page` 全列 upsert (INSERT 20+ 列, ON CONFLICT UPDATE 20+ 列)，并按 S6-T8 契约绑定 `source_id.unwrap_or("default")`，不得继续硬编码 `'default'`
 - [ ] `delete_page` 保持不变 (硬删除)
 - [ ] `list_pages` 9 项过滤 + ORDER BY + OFFSET + LIMIT
 - [ ] `resolve_slugs` ILIKE 模糊匹配 + deleted_at 过滤
