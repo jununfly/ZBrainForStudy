@@ -67,10 +67,28 @@ CREATE INDEX IF NOT EXISTS pages_last_retrieved_at_idx
 -- new page existed. UPDATE: bump by 1 only when one of the allow-listed
 -- content columns actually changed (matches the PG `IS DISTINCT FROM` list).
 
--- NOTE: SQLite does not allow assignment to NEW.* in a BEFORE trigger the
--- way PG does (`NEW.generation := ...`). The idiomatic SQLite path is an
--- AFTER INSERT / AFTER UPDATE trigger that re-UPDATEs the just-touched row,
--- which sidesteps the NEW-mutation restriction.
+-- HISTORICAL NOTE (kept for migration immutability — body is frozen, comment
+-- is corrected here and superseded by 0003):
+--
+-- The original 0002 commentary claimed that AFTER UPDATE was the only viable
+-- SQLite path because SQLite forbids `NEW.generation := ...` in a BEFORE
+-- trigger. That conflated two separate facts:
+--   (a) BEFORE UPDATE indeed cannot directly assign NEW.* (NEW is read-only
+--       in BEFORE UPDATE; only BEFORE INSERT can mutate NEW).
+--   (b) BUT a BEFORE UPDATE trigger CAN run a nested
+--           UPDATE pages SET col = ... WHERE id = NEW.id
+--       to write the same row, and that write IS visible to the outer
+--       statement's RETURNING projection.
+-- An AFTER UPDATE trigger with the same nested UPDATE persists the bump but
+-- the outer statement's RETURNING has already snapshotted the row, so
+-- callers like put_page's 30-col UPSERT RETURNING see the stale value.
+--
+-- 0003 rebuilds bump_page_generation_update as a BEFORE UPDATE trigger to
+-- fix this. The bump_page_generation_insert trigger below is intentionally
+-- left as AFTER INSERT (its bump does not need to surface in any RETURNING
+-- in current usage). If a future caller needs the post-insert generation in
+-- a RETURNING, switch this insert trigger to BEFORE INSERT and use a nested
+-- UPDATE (same pattern as 0003), not direct NEW.* assignment.
 
 DROP TRIGGER IF EXISTS bump_page_generation_insert;
 CREATE TRIGGER bump_page_generation_insert
