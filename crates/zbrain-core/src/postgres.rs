@@ -144,12 +144,24 @@ impl BrainEngine for PostgresEngine {
         row.as_ref().map(row_to_page).transpose()
     }
 
-    async fn put_page(&self, slug: &str, input: &PageInput) -> Result<Page> {
+    async fn put_page(
+        &self,
+        slug: &str,
+        _source_id: Option<&str>,
+        input: &PageInput,
+    ) -> Result<Page> {
         let pool = self.pool()?;
         // Upsert by (source_id, slug). source_id defaults to 'default' in
         // the 4a schema so we let it fall through. ON CONFLICT keeps the
         // original `id` (BIGSERIAL) stable across re-puts, matching the
         // TS engine + InMemoryEngine contract.
+        //
+        // S6-T8 — `_source_id` is accepted on the trait surface for parity
+        // with InMemory / LibSQL but not yet wired into the INSERT column
+        // list here. The current Postgres slice still relies on the schema
+        // default of 'default'; lifting this is tracked alongside the
+        // Postgres list_pages / get_page upgrades (slated for later
+        // postgres-parity slices).
         let row = sqlx::query(
             "INSERT INTO pages (slug, type, title, compiled_truth) \
              VALUES ($1, $2, $3, $4) \

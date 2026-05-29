@@ -205,7 +205,7 @@ async fn in_memory_engine_round_trips_after_struct_expansion() {
         compiled_truth: "Body".to_string(),
         ..Default::default()
     };
-    let stored = engine.put_page("hi", &input).await.expect("put ok");
+    let stored = engine.put_page("hi", None, &input).await.expect("put ok");
 
     let fetched = engine
         .get_page("hi", &GetPageOpts::default())

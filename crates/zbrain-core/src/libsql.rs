@@ -251,7 +251,12 @@ impl BrainEngine for LibsqlEngine {
         }
     }
 
-    async fn put_page(&self, slug: &str, input: &PageInput) -> Result<Page> {
+    async fn put_page(
+        &self,
+        slug: &str,
+        source_id: Option<&str>,
+        input: &PageInput,
+    ) -> Result<Page> {
         let conn = self.conn().await?;
 
         // S6-T6 — 19-col INSERT mirroring TS pglite-engine.ts:866-887.
@@ -275,12 +280,13 @@ impl BrainEngine for LibsqlEngine {
         // The caller's `input.ingested_at` is intentionally ignored to match TS.
         //
         // Defaults / coercions:
-        //   * source_id literal 'default' (S6-T7 will lift this).
+        //   * source_id defaults to "default" when caller passes `None`
+        //     (S6-T8 lifted the S6-T6 hardcoded literal).
         //   * page_kind defaults to "markdown" when input omits it.
         //   * timeline defaults to "" (NOT NULL column).
         //   * frontmatter defaults to "{}" (NOT NULL JSON column).
         //   * chunker_version uses SQL COALESCE(?14, 1) so null binds to 1.
-        let source_id = "default";
+        let source_id = source_id.unwrap_or("default");
         let page_kind_wire = encode_page_kind(input.page_kind.unwrap_or(PageKind::Markdown));
         let timeline = input.timeline.clone().unwrap_or_default();
         let frontmatter_json = match &input.frontmatter {

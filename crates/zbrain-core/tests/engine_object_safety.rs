@@ -50,7 +50,7 @@ async fn put_then_get_page_round_trip() {
     engine.connect(&EngineConfig::default()).await.unwrap();
 
     let stored: Page = engine
-        .put_page("hello-world", &page_input("Hello", "compiled body"))
+        .put_page("hello-world", None, &page_input("Hello", "compiled body"))
         .await
         .expect("put_page ok");
 
@@ -86,11 +86,11 @@ async fn list_pages_returns_inserted_in_insertion_order() {
     engine.connect(&EngineConfig::default()).await.unwrap();
 
     engine
-        .put_page("alpha", &page_input("A", "body-a"))
+        .put_page("alpha", None, &page_input("A", "body-a"))
         .await
         .unwrap();
     engine
-        .put_page("beta", &page_input("B", "body-b"))
+        .put_page("beta", None, &page_input("B", "body-b"))
         .await
         .unwrap();
 
@@ -107,7 +107,7 @@ async fn delete_page_removes_row() {
     let engine = InMemoryEngine::default();
     engine.connect(&EngineConfig::default()).await.unwrap();
     engine
-        .put_page("to-delete", &page_input("X", "y"))
+        .put_page("to-delete", None, &page_input("X", "y"))
         .await
         .unwrap();
     engine.delete_page("to-delete").await.expect("delete ok");
@@ -123,7 +123,7 @@ async fn resolve_slugs_does_substring_match() {
     let engine = InMemoryEngine::default();
     engine.connect(&EngineConfig::default()).await.unwrap();
     for slug in ["alpha-one", "alpha-two", "beta-one"] {
-        engine.put_page(slug, &page_input(slug, "body")).await.unwrap();
+        engine.put_page(slug, None, &page_input(slug, "body")).await.unwrap();
     }
 
     let mut hits = engine.resolve_slugs("alpha").await.expect("resolve ok");
@@ -136,11 +136,11 @@ async fn put_page_upserts_existing_slug() {
     let engine = InMemoryEngine::default();
     engine.connect(&EngineConfig::default()).await.unwrap();
     let v1 = engine
-        .put_page("doc", &page_input("v1", "old body"))
+        .put_page("doc", None, &page_input("v1", "old body"))
         .await
         .unwrap();
     let v2 = engine
-        .put_page("doc", &page_input("v2", "new body"))
+        .put_page("doc", None, &page_input("v2", "new body"))
         .await
         .unwrap();
     assert_eq!(v1.id, v2.id, "upsert keeps the same id");

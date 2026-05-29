@@ -154,7 +154,7 @@ async fn in_memory_find_duplicate_page_matches_content_hash_and_frontmatter_id()
     engine
         .put_page(
             "hash-hit",
-            &PageInput {
+            None, &PageInput {
                 page_type: "note".to_string(),
                 title: "Hash Hit".to_string(),
                 compiled_truth: "body".to_string(),
@@ -168,7 +168,7 @@ async fn in_memory_find_duplicate_page_matches_content_hash_and_frontmatter_id()
     engine
         .put_page(
             "frontmatter-hit",
-            &PageInput {
+            None, &PageInput {
                 page_type: "note".to_string(),
                 title: "Frontmatter Hit".to_string(),
                 compiled_truth: "body".to_string(),

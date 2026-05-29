@@ -165,7 +165,7 @@ async fn in_memory_put_page_uses_current_timestamp_shape_not_old_sentinel() {
     let page = engine
         .put_page(
             "memory-timestamp-slug",
-            &PageInput {
+            None, &PageInput {
                 page_type: "note".to_string(),
                 title: "Memory Timestamp".to_string(),
                 compiled_truth: "body".to_string(),
@@ -187,7 +187,7 @@ async fn in_memory_soft_delete_page_matches_libsql_contract() {
     engine
         .put_page(
             "memory-slug",
-            &PageInput {
+            None, &PageInput {
                 page_type: "note".to_string(),
                 title: "Memory".to_string(),
                 compiled_truth: "body".to_string(),

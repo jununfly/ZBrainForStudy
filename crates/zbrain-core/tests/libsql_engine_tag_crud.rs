@@ -52,7 +52,7 @@ fn note_input(title: &str, body: &str) -> PageInput {
 async fn s6t7_add_tag_succeeds_on_existing_page() {
     let (engine, _tmp) = init_clean_engine().await;
     engine
-        .put_page("alpha", &note_input("Alpha", "body"))
+        .put_page("alpha", None, &note_input("Alpha", "body"))
         .await
         .expect("put_page");
     engine
@@ -69,7 +69,7 @@ async fn s6t7_add_tag_succeeds_on_existing_page() {
 async fn s6t7_add_tag_idempotent_on_duplicate() {
     let (engine, _tmp) = init_clean_engine().await;
     engine
-        .put_page("beta", &note_input("Beta", "body"))
+        .put_page("beta", None, &note_input("Beta", "body"))
         .await
         .expect("put_page");
     engine
@@ -111,7 +111,7 @@ async fn s6t7_add_tag_with_explicit_source_id() {
     // source must produce PageNotFound because no such page row exists.
     let (engine, _tmp) = init_clean_engine().await;
     engine
-        .put_page("gamma", &note_input("Gamma", "body"))
+        .put_page("gamma", None, &note_input("Gamma", "body"))
         .await
         .expect("put_page");
 
@@ -142,7 +142,7 @@ async fn s6t7_add_tag_none_equivalent_to_default() {
     // `None` and `Some("default")` must be semantically identical.
     let (engine, _tmp) = init_clean_engine().await;
     engine
-        .put_page("delta", &note_input("Delta", "body"))
+        .put_page("delta", None, &note_input("Delta", "body"))
         .await
         .expect("put_page");
     engine
@@ -166,7 +166,7 @@ async fn s6t7_add_tag_none_equivalent_to_default() {
 async fn s6t7_remove_tag_deletes_existing_tag() {
     let (engine, _tmp) = init_clean_engine().await;
     engine
-        .put_page("eps", &note_input("Eps", "body"))
+        .put_page("eps", None, &note_input("Eps", "body"))
         .await
         .expect("put_page");
     engine.add_tag("eps", "rust", None).await.expect("add_tag");
@@ -185,7 +185,7 @@ async fn s6t7_remove_tag_absent_tag_is_silent() {
     // AND tag=$3. If the tag doesn't exist, affected=0, no error.
     let (engine, _tmp) = init_clean_engine().await;
     engine
-        .put_page("zeta", &note_input("Zeta", "body"))
+        .put_page("zeta", None, &note_input("Zeta", "body"))
         .await
         .expect("put_page");
     engine
@@ -213,7 +213,7 @@ async fn s6t7_remove_tag_source_mismatch_is_silent() {
     // the sub-select returns NULL → silent success, same as TS.
     let (engine, _tmp) = init_clean_engine().await;
     engine
-        .put_page("eta", &note_input("Eta", "body"))
+        .put_page("eta", None, &note_input("Eta", "body"))
         .await
         .expect("put_page");
     engine.add_tag("eta", "rust", None).await.expect("add_tag");
@@ -235,7 +235,7 @@ async fn s6t7_remove_tag_source_mismatch_is_silent() {
 async fn s6t7_get_tags_returns_empty_for_page_with_no_tags() {
     let (engine, _tmp) = init_clean_engine().await;
     engine
-        .put_page("theta", &note_input("Theta", "body"))
+        .put_page("theta", None, &note_input("Theta", "body"))
         .await
         .expect("put_page");
     let tags = engine.get_tags("theta", None).await.expect("get_tags");
@@ -248,7 +248,7 @@ async fn s6t7_get_tags_returns_sorted_tags() {
     // TS: `ORDER BY tag`. Insert out-of-order to prove sorting.
     let (engine, _tmp) = init_clean_engine().await;
     engine
-        .put_page("iota", &note_input("Iota", "body"))
+        .put_page("iota", None, &note_input("Iota", "body"))
         .await
         .expect("put_page");
     engine.add_tag("iota", "zinc", None).await.expect("add zinc");
@@ -276,7 +276,7 @@ async fn s6t7_get_tags_page_missing_returns_empty() {
 async fn s6t7_get_tags_source_mismatch_returns_empty() {
     let (engine, _tmp) = init_clean_engine().await;
     engine
-        .put_page("kappa", &note_input("Kappa", "body"))
+        .put_page("kappa", None, &note_input("Kappa", "body"))
         .await
         .expect("put_page");
     engine.add_tag("kappa", "rust", None).await.expect("add_tag");
@@ -298,7 +298,7 @@ async fn s6t7_add_tag_fails_on_soft_deleted_page() {
     // live pages), so add_tag must return PageNotFound.
     let (engine, _tmp) = init_clean_engine().await;
     engine
-        .put_page("lambda", &note_input("Lambda", "body"))
+        .put_page("lambda", None, &note_input("Lambda", "body"))
         .await
         .expect("put_page");
     engine
@@ -332,7 +332,7 @@ async fn s6t7_hard_delete_page_cascades_to_page_tags() {
     // bug — so we also COUNT before-delete to prove the dependency existed.
     let (engine, tmp) = init_clean_engine().await;
     engine
-        .put_page("mu", &note_input("Mu", "body"))
+        .put_page("mu", None, &note_input("Mu", "body"))
         .await
         .expect("put_page");
     engine.add_tag("mu", "rust", None).await.expect("add_tag");

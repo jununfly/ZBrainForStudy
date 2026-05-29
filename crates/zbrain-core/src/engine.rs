@@ -248,8 +248,19 @@ pub trait BrainEngine: Send + Sync {
     /// soft-deleted (unless `opts.include_deleted` is true).
     async fn get_page(&self, slug: &str, opts: &GetPageOpts) -> crate::Result<Option<Page>>;
 
-    /// Insert or update a page (upsert semantics — same slug → same `id`).
-    async fn put_page(&self, slug: &str, input: &PageInput) -> crate::Result<Page>;
+    /// Insert or update a page (upsert semantics — same `(source_id, slug)` →
+    /// same `id`).
+    ///
+    /// `source_id = None` is normalised to `"default"` to mirror the TS
+    /// `opts?.sourceId ?? 'default'` rule
+    /// (`zbrain/src/core/pglite-engine.ts:838`). Pages in different sources
+    /// with the same slug are independent rows.
+    async fn put_page(
+        &self,
+        slug: &str,
+        source_id: Option<&str>,
+        input: &PageInput,
+    ) -> crate::Result<Page>;
 
     /// Hard-delete a page row by slug.
     async fn delete_page(&self, slug: &str) -> crate::Result<()>;
@@ -484,7 +495,16 @@ impl BrainEngine for InMemoryEngine {
         Ok(store.iter().find(|p| p.slug == slug).cloned())
     }
 
-    async fn put_page(&self, slug: &str, input: &PageInput) -> crate::Result<Page> {
+    async fn put_page(
+        &self,
+        slug: &str,
+        source_id: Option<&str>,
+        input: &PageInput,
+    ) -> crate::Result<Page> {
+        // S6-T8 — normalise `source_id = None` to "default" to mirror TS
+        // `opts?.sourceId ?? 'default'` (pglite-engine.ts:838).
+        let source_id_norm = source_id.unwrap_or("default");
+
         let mut store = self
             .store
             .lock()
@@ -494,7 +514,13 @@ impl BrainEngine for InMemoryEngine {
             .lock()
             .expect("InMemoryEngine next_id mutex poisoned");
 
-        if let Some(existing) = store.iter_mut().find(|p| p.slug == slug) {
+        // S6-T8 — match on compound key `(slug, source_id)` so two sources
+        // can hold independent rows under the same slug. NOTE: get_page /
+        // delete_page still match slug-only (slated for S6-T9).
+        if let Some(existing) = store
+            .iter_mut()
+            .find(|p| p.slug == slug && p.source_id == source_id_norm)
+        {
             existing.page_type.clone_from(&input.page_type);
             existing.title.clone_from(&input.title);
             existing.compiled_truth.clone_from(&input.compiled_truth);
@@ -539,7 +565,7 @@ impl BrainEngine for InMemoryEngine {
             // unless the caller pins an explicit version.
             chunker_version: input.chunker_version.unwrap_or(1),
             source_path: input.source_path.clone(),
-            source_id: "default".to_string(),
+            source_id: source_id_norm.to_string(),
             source_kind: input.source_kind.clone(),
             source_uri: input.source_uri.clone(),
             ingested_via: input.ingested_via.clone(),

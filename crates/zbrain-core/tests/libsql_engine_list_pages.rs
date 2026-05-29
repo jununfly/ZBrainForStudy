@@ -78,7 +78,7 @@ async fn list_pages_projects_all_30_columns() {
     //   - created_at / updated_at  (should be non-empty ISO-8601)
     let (engine, _tmp) = init_clean_engine().await;
     engine
-        .put_page("proj-30col", &note_input("Thirty", "body"))
+        .put_page("proj-30col", None, &note_input("Thirty", "body"))
         .await
         .expect("put_page");
 
@@ -107,15 +107,15 @@ async fn list_pages_projects_all_30_columns() {
 async fn list_pages_filters_by_page_type() {
     let (engine, _tmp) = init_clean_engine().await;
     engine
-        .put_page("note-a", &note_input("NoteA", "n"))
+        .put_page("note-a", None, &note_input("NoteA", "n"))
         .await
         .expect("put_page note");
     engine
-        .put_page("topic-b", &topic_input("TopicB", "t"))
+        .put_page("topic-b", None, &topic_input("TopicB", "t"))
         .await
         .expect("put_page topic");
     engine
-        .put_page("note-c", &note_input("NoteC", "n2"))
+        .put_page("note-c", None, &note_input("NoteC", "n2"))
         .await
         .expect("put_page note 2");
 
@@ -149,7 +149,7 @@ async fn list_pages_respects_limit() {
     let (engine, _tmp) = init_clean_engine().await;
     for i in 0..5 {
         engine
-            .put_page(&format!("lim-{i}"), &note_input(&format!("L{i}"), "b"))
+            .put_page(&format!("lim-{i}"), None, &note_input(&format!("L{i}"), "b"))
             .await
             .expect("put_page");
     }
@@ -182,7 +182,7 @@ async fn list_pages_respects_offset() {
     let (engine, _tmp) = init_clean_engine().await;
     for i in 0..5 {
         engine
-            .put_page(&format!("off-{i}"), &note_input(&format!("O{i}"), "b"))
+            .put_page(&format!("off-{i}"), None, &note_input(&format!("O{i}"), "b"))
             .await
             .expect("put_page");
     }
@@ -214,11 +214,11 @@ async fn list_pages_respects_offset() {
 async fn list_pages_excludes_soft_deleted_by_default() {
     let (engine, _tmp) = init_clean_engine().await;
     engine
-        .put_page("alive", &note_input("Alive", "b"))
+        .put_page("alive", None, &note_input("Alive", "b"))
         .await
         .expect("put_page alive");
     engine
-        .put_page("zombie", &note_input("Zombie", "b"))
+        .put_page("zombie", None, &note_input("Zombie", "b"))
         .await
         .expect("put_page zombie");
 
@@ -245,11 +245,11 @@ async fn list_pages_excludes_soft_deleted_by_default() {
 async fn list_pages_includes_soft_deleted_when_flag_set() {
     let (engine, _tmp) = init_clean_engine().await;
     engine
-        .put_page("alive", &note_input("Alive", "b"))
+        .put_page("alive", None, &note_input("Alive", "b"))
         .await
         .expect("put_page alive");
     engine
-        .put_page("zombie", &note_input("Zombie", "b"))
+        .put_page("zombie", None, &note_input("Zombie", "b"))
         .await
         .expect("put_page zombie");
 
@@ -291,17 +291,17 @@ async fn list_pages_sort_by_updated_desc_default() {
     // `strftime('%Y-%m-%d %H:%M:%f', 'now')` for millisecond precision.
     let (engine, _tmp) = init_clean_engine().await;
     engine
-        .put_page("first", &note_input("First", "b"))
+        .put_page("first", None, &note_input("First", "b"))
         .await
         .expect("put_page first");
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     engine
-        .put_page("second", &note_input("Second", "b"))
+        .put_page("second", None, &note_input("Second", "b"))
         .await
         .expect("put_page second");
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     engine
-        .put_page("third", &note_input("Third", "b"))
+        .put_page("third", None, &note_input("Third", "b"))
         .await
         .expect("put_page third");
 
@@ -327,15 +327,15 @@ async fn list_pages_sort_by_updated_desc_default() {
 async fn list_pages_sort_by_slug_asc() {
     let (engine, _tmp) = init_clean_engine().await;
     engine
-        .put_page("charlie", &note_input("C", "b"))
+        .put_page("charlie", None, &note_input("C", "b"))
         .await
         .expect("put_page");
     engine
-        .put_page("alpha", &note_input("A", "b"))
+        .put_page("alpha", None, &note_input("A", "b"))
         .await
         .expect("put_page");
     engine
-        .put_page("bravo", &note_input("B", "b"))
+        .put_page("bravo", None, &note_input("B", "b"))
         .await
         .expect("put_page");
 
@@ -364,22 +364,22 @@ async fn list_pages_combined_page_type_limit_offset_sort() {
     // Insert 2 notes + 2 topics, filter to notes, apply limit + offset + sort
     let (engine, _tmp) = init_clean_engine().await;
     engine
-        .put_page("note-d", &note_input("D", "b"))
+        .put_page("note-d", None, &note_input("D", "b"))
         .await
         .expect("put_page");
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     engine
-        .put_page("topic-x", &topic_input("X", "b"))
+        .put_page("topic-x", None, &topic_input("X", "b"))
         .await
         .expect("put_page");
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     engine
-        .put_page("note-e", &note_input("E", "b"))
+        .put_page("note-e", None, &note_input("E", "b"))
         .await
         .expect("put_page");
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     engine
-        .put_page("topic-y", &topic_input("Y", "b"))
+        .put_page("topic-y", None, &topic_input("Y", "b"))
         .await
         .expect("put_page");
 
@@ -410,19 +410,19 @@ async fn list_pages_combined_page_type_limit_offset_sort() {
 async fn list_pages_filters_by_slug_prefix() {
     let (engine, _tmp) = init_clean_engine().await;
     engine
-        .put_page("docs/readme", &note_input("Readme", "b"))
+        .put_page("docs/readme", None, &note_input("Readme", "b"))
         .await
         .expect("put_page");
     engine
-        .put_page("docs/changelog", &note_input("Changelog", "b"))
+        .put_page("docs/changelog", None, &note_input("Changelog", "b"))
         .await
         .expect("put_page");
     engine
-        .put_page("src/main", &note_input("Main", "b"))
+        .put_page("src/main", None, &note_input("Main", "b"))
         .await
         .expect("put_page");
     engine
-        .put_page("src/lib", &note_input("Lib", "b"))
+        .put_page("src/lib", None, &note_input("Lib", "b"))
         .await
         .expect("put_page");
 
@@ -478,7 +478,7 @@ async fn list_pages_filters_by_source_id() {
 
     // Insert via put_page (source_id = 'default')
     engine
-        .put_page("default-page", &note_input("Default", "b"))
+        .put_page("default-page", None, &note_input("Default", "b"))
         .await
         .expect("put_page default");
 
@@ -552,7 +552,7 @@ async fn list_pages_filters_by_source_ids() {
 
     // Insert default row via put_page
     engine
-        .put_page("default-page", &note_input("Default", "b"))
+        .put_page("default-page", None, &note_input("Default", "b"))
         .await
         .expect("put_page default");
 
@@ -637,7 +637,7 @@ async fn list_pages_filters_by_updated_after() {
     let (engine, _tmp) = init_clean_engine().await;
 
     engine
-        .put_page("old-page", &note_input("Old", "b"))
+        .put_page("old-page", None, &note_input("Old", "b"))
         .await
         .expect("put_page old");
 
@@ -653,7 +653,7 @@ async fn list_pages_filters_by_updated_after() {
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
 
     engine
-        .put_page("new-page", &note_input("New", "b"))
+        .put_page("new-page", None, &note_input("New", "b"))
         .await
         .expect("put_page new");
 
@@ -739,7 +739,7 @@ async fn schema_page_tags_composite_pk() {
     let (engine, tmp) = init_clean_engine().await;
 
     engine
-        .put_page("test-page", &note_input("Test", "b"))
+        .put_page("test-page", None, &note_input("Test", "b"))
         .await
         .expect("put_page");
 
@@ -793,7 +793,7 @@ async fn schema_page_tags_cascade_on_page_delete() {
     let (engine, tmp) = init_clean_engine().await;
 
     engine
-        .put_page("doom-page", &note_input("Doom", "b"))
+        .put_page("doom-page", None, &note_input("Doom", "b"))
         .await
         .expect("put_page");
 
@@ -845,11 +845,11 @@ async fn list_pages_filters_by_tag_basic() {
     let (engine, tmp) = init_clean_engine().await;
 
     engine
-        .put_page("tagged-page", &note_input("Tagged", "b"))
+        .put_page("tagged-page", None, &note_input("Tagged", "b"))
         .await
         .expect("put_page tagged");
     engine
-        .put_page("untagged-page", &note_input("Untagged", "b"))
+        .put_page("untagged-page", None, &note_input("Untagged", "b"))
         .await
         .expect("put_page untagged");
 
@@ -891,11 +891,11 @@ async fn list_pages_tag_filter_excludes_others() {
     let (engine, tmp) = init_clean_engine().await;
 
     engine
-        .put_page("rust-page", &note_input("Rust", "b"))
+        .put_page("rust-page", None, &note_input("Rust", "b"))
         .await
         .expect("put_page rust");
     engine
-        .put_page("ai-page", &note_input("AI", "b"))
+        .put_page("ai-page", None, &note_input("AI", "b"))
         .await
         .expect("put_page ai");
 
@@ -942,7 +942,7 @@ async fn list_pages_tag_filter_no_dup_multi_tags() {
     let (engine, tmp) = init_clean_engine().await;
 
     engine
-        .put_page("multi-page", &note_input("Multi", "b"))
+        .put_page("multi-page", None, &note_input("Multi", "b"))
         .await
         .expect("put_page");
 
@@ -987,7 +987,7 @@ async fn list_pages_tag_filter_unknown_tag() {
     let (engine, tmp) = init_clean_engine().await;
 
     engine
-        .put_page("some-page", &note_input("Some", "b"))
+        .put_page("some-page", None, &note_input("Some", "b"))
         .await
         .expect("put_page");
 
@@ -1027,11 +1027,11 @@ async fn list_pages_tag_filter_combines_page_type() {
     let (engine, tmp) = init_clean_engine().await;
 
     engine
-        .put_page("note-rust", &note_input("Note Rust", "b"))
+        .put_page("note-rust", None, &note_input("Note Rust", "b"))
         .await
         .expect("put_page note");
     engine
-        .put_page("topic-rust", &topic_input("Topic Rust", "b"))
+        .put_page("topic-rust", None, &topic_input("Topic Rust", "b"))
         .await
         .expect("put_page topic");
 
@@ -1078,11 +1078,11 @@ async fn list_pages_tag_filter_with_include_deleted() {
     let (engine, tmp) = init_clean_engine().await;
 
     engine
-        .put_page("alive-page", &note_input("Alive", "b"))
+        .put_page("alive-page", None, &note_input("Alive", "b"))
         .await
         .expect("put_page alive");
     engine
-        .put_page("deleted-page", &note_input("Deleted", "b"))
+        .put_page("deleted-page", None, &note_input("Deleted", "b"))
         .await
         .expect("put_page deleted");
 
@@ -1145,7 +1145,7 @@ async fn list_pages_tag_filter_with_limit_offset() {
     // Insert 3 pages, all tagged 'rust'
     for i in 0..3 {
         engine
-            .put_page(&format!("page-{i}"), &note_input(&format!("P{i}"), "b"))
+            .put_page(&format!("page-{i}"), None, &note_input(&format!("P{i}"), "b"))
             .await
             .expect("put_page");
     }

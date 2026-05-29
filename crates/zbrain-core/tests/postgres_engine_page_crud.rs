@@ -80,7 +80,7 @@ async fn get_page_round_trips_after_put() {
         return;
     };
     let inserted = engine
-        .put_page("alpha", &note_input("Alpha", "body-1"))
+        .put_page("alpha", None, &note_input("Alpha", "body-1"))
         .await
         .expect("put_page");
     let got = engine
@@ -124,11 +124,11 @@ async fn put_page_upsert_updates_existing_row() {
         return;
     };
     let first = engine
-        .put_page("beta", &note_input("Beta v1", "body-v1"))
+        .put_page("beta", None, &note_input("Beta v1", "body-v1"))
         .await
         .expect("first put");
     let second = engine
-        .put_page("beta", &note_input("Beta v2", "body-v2"))
+        .put_page("beta", None, &note_input("Beta v2", "body-v2"))
         .await
         .expect("second put");
 
@@ -156,7 +156,7 @@ async fn delete_page_removes_row() {
         return;
     };
     engine
-        .put_page("gamma", &note_input("Gamma", "body"))
+        .put_page("gamma", None, &note_input("Gamma", "body"))
         .await
         .expect("put_page");
     engine.delete_page("gamma").await.expect("delete_page");
@@ -205,17 +205,17 @@ async fn list_pages_filters_by_page_type() {
         return;
     };
     engine
-        .put_page("n1", &note_input("N1", "x"))
+        .put_page("n1", None, &note_input("N1", "x"))
         .await
         .expect("put n1");
     engine
-        .put_page("n2", &note_input("N2", "y"))
+        .put_page("n2", None, &note_input("N2", "y"))
         .await
         .expect("put n2");
     engine
         .put_page(
             "p1",
-            &PageInput {
+            None, &PageInput {
                 page_type: "person".to_string(),
                 title: "P1".to_string(),
                 compiled_truth: "z".to_string(),
@@ -261,7 +261,7 @@ async fn list_pages_respects_limit() {
         engine
             .put_page(
                 &format!("slug-{i}"),
-                &note_input(&format!("T{i}"), "body"),
+                None, &note_input(&format!("T{i}"), "body"),
             )
             .await
             .expect("put_page");
@@ -288,11 +288,11 @@ async fn resolve_slugs_exact_match_only_in_slice_4b() {
         return;
     };
     engine
-        .put_page("alpha-beta", &note_input("AB", "x"))
+        .put_page("alpha-beta", None, &note_input("AB", "x"))
         .await
         .expect("put_page");
     engine
-        .put_page("alpha-gamma", &note_input("AG", "x"))
+        .put_page("alpha-gamma", None, &note_input("AG", "x"))
         .await
         .expect("put_page");
 

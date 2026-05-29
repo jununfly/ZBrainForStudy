@@ -68,7 +68,7 @@ async fn get_page_returns_none_when_slug_missing() {
 async fn get_page_round_trips_after_put() {
     let (engine, _tmp) = init_clean_engine().await;
     let inserted = engine
-        .put_page("alpha", &note_input("Alpha", "body-1"))
+        .put_page("alpha", None, &note_input("Alpha", "body-1"))
         .await
         .expect("put_page");
     let got = engine
@@ -92,7 +92,7 @@ async fn get_page_default_excludes_soft_deleted() {
     // opts.include_deleted is true)".
     let (engine, _tmp) = init_clean_engine().await;
     engine
-        .put_page("doomed", &note_input("Doomed", "body"))
+        .put_page("doomed", None, &note_input("Doomed", "body"))
         .await
         .expect("put_page");
     let hit = engine
@@ -119,7 +119,7 @@ async fn get_page_with_include_deleted_returns_soft_deleted_row() {
     // (not just defaulted by the stub `row_to_page`).
     let (engine, _tmp) = init_clean_engine().await;
     engine
-        .put_page("zombie", &note_input("Zombie", "body"))
+        .put_page("zombie", None, &note_input("Zombie", "body"))
         .await
         .expect("put_page");
     engine
@@ -152,7 +152,7 @@ async fn get_page_with_matching_source_id_returns_row() {
     // requesting that exact source must succeed.
     let (engine, _tmp) = init_clean_engine().await;
     engine
-        .put_page("scoped", &note_input("Scoped", "body"))
+        .put_page("scoped", None, &note_input("Scoped", "body"))
         .await
         .expect("put_page");
     let opts = GetPageOpts {
@@ -175,7 +175,7 @@ async fn get_page_with_mismatched_source_id_returns_none() {
     // source, even if the slug matches.
     let (engine, _tmp) = init_clean_engine().await;
     engine
-        .put_page("scoped", &note_input("Scoped", "body"))
+        .put_page("scoped", None, &note_input("Scoped", "body"))
         .await
         .expect("put_page");
     let opts = GetPageOpts {
@@ -202,7 +202,7 @@ async fn get_page_returns_full_column_projection() {
     // 7-column stub fails immediately.
     let (engine, _tmp) = init_clean_engine().await;
     engine
-        .put_page("full-cols", &note_input("Full Cols", "body"))
+        .put_page("full-cols", None, &note_input("Full Cols", "body"))
         .await
         .expect("put_page");
     let got = engine
@@ -255,11 +255,11 @@ async fn get_page_returns_full_column_projection() {
 async fn put_page_upsert_updates_existing_row() {
     let (engine, _tmp) = init_clean_engine().await;
     let first = engine
-        .put_page("beta", &note_input("Beta v1", "body-v1"))
+        .put_page("beta", None, &note_input("Beta v1", "body-v1"))
         .await
         .expect("first put");
     let second = engine
-        .put_page("beta", &note_input("Beta v2", "body-v2"))
+        .put_page("beta", None, &note_input("Beta v2", "body-v2"))
         .await
         .expect("second put");
 
@@ -316,7 +316,7 @@ async fn s6t6_insert_new_page_writes_19_columns() {
     // via get_page (30-col projection). Source_id defaults to 'default'.
     let (engine, _tmp) = init_clean_engine().await;
     let result = engine
-        .put_page("full-insert", &full_input())
+        .put_page("full-insert", None, &full_input())
         .await
         .expect("put_page full insert");
 
@@ -371,13 +371,13 @@ async fn s6t6_update_same_slug_uses_update_branch() {
     // Second put_page with the same slug must UPDATE (reuse id), not INSERT.
     let (engine, _tmp) = init_clean_engine().await;
     let first = engine
-        .put_page("upsert-target", &full_input())
+        .put_page("upsert-target", None, &full_input())
         .await
         .expect("first put");
     let mut second_input = full_input();
     second_input.title = "Updated Title".to_string();
     let second = engine
-        .put_page("upsert-target", &second_input)
+        .put_page("upsert-target", None, &second_input)
         .await
         .expect("second put (update)");
 
@@ -394,7 +394,7 @@ async fn s6t6_coalesce_preserve_effective_date() {
     let mut input = full_input();
     input.effective_date = Some("2026-03-01".to_string());
     engine
-        .put_page("coalesce-eff", &input)
+        .put_page("coalesce-eff", None, &input)
         .await
         .expect("first put");
 
@@ -402,7 +402,7 @@ async fn s6t6_coalesce_preserve_effective_date() {
     let mut update = full_input();
     update.effective_date = None;
     let updated = engine
-        .put_page("coalesce-eff", &update)
+        .put_page("coalesce-eff", None, &update)
         .await
         .expect("second put (coalesce)");
     assert_eq!(
@@ -415,7 +415,7 @@ async fn s6t6_coalesce_preserve_effective_date() {
     let mut overwrite = full_input();
     overwrite.effective_date = Some("2026-06-15".to_string());
     let overwritten = engine
-        .put_page("coalesce-eff", &overwrite)
+        .put_page("coalesce-eff", None, &overwrite)
         .await
         .expect("third put (overwrite)");
     assert_eq!(
@@ -433,14 +433,14 @@ async fn s6t6_coalesce_preserve_import_filename() {
     let mut input = full_input();
     input.import_filename = Some("original.md".to_string());
     engine
-        .put_page("coalesce-impf", &input)
+        .put_page("coalesce-impf", None, &input)
         .await
         .expect("first put");
 
     let mut update = full_input();
     update.import_filename = None;
     let updated = engine
-        .put_page("coalesce-impf", &update)
+        .put_page("coalesce-impf", None, &update)
         .await
         .expect("second put");
     assert_eq!(
@@ -458,7 +458,7 @@ async fn s6t6_coalesce_preserve_ingested_at() {
     let mut input = full_input();
     input.source_kind = Some("file".to_string());
     engine
-        .put_page("coalesce-ingat", &input)
+        .put_page("coalesce-ingat", None, &input)
         .await
         .expect("first put with provenance → ingested_at stamped");
     let first_ingested = engine
@@ -476,7 +476,7 @@ async fn s6t6_coalesce_preserve_ingested_at() {
     update.source_uri = None;
     update.ingested_via = None;
     let updated = engine
-        .put_page("coalesce-ingat", &update)
+        .put_page("coalesce-ingat", None, &update)
         .await
         .expect("second put");
     assert_eq!(
@@ -496,7 +496,7 @@ async fn s6t6_excluded_overwrites_title_and_compiled_truth() {
     input.title = "Original Title".to_string();
     input.compiled_truth = "original body".to_string();
     engine
-        .put_page("excluded-ovr", &input)
+        .put_page("excluded-ovr", None, &input)
         .await
         .expect("first put");
 
@@ -504,7 +504,7 @@ async fn s6t6_excluded_overwrites_title_and_compiled_truth() {
     update.title = "New Title".to_string();
     update.compiled_truth = "new body".to_string();
     let updated = engine
-        .put_page("excluded-ovr", &update)
+        .put_page("excluded-ovr", None, &update)
         .await
         .expect("second put");
     assert_eq!(updated.title, "New Title");
@@ -518,11 +518,11 @@ async fn s6t6_updated_at_monotonically_increases() {
     // CURRENT_TIMESTAMP has second granularity, so we only assert not-less.
     let (engine, _tmp) = init_clean_engine().await;
     let first = engine
-        .put_page("mono-ts", &full_input())
+        .put_page("mono-ts", None, &full_input())
         .await
         .expect("first put");
     let second = engine
-        .put_page("mono-ts", &full_input())
+        .put_page("mono-ts", None, &full_input())
         .await
         .expect("second put");
     assert!(
@@ -543,7 +543,7 @@ async fn s6t6_ingested_at_server_stamp_with_provenance() {
     input.source_kind = Some("file".to_string());
     input.ingested_at = Some("1999-01-01T00:00:00Z".to_string()); // must be ignored
     let result = engine
-        .put_page("stamp-prov", &input)
+        .put_page("stamp-prov", None, &input)
         .await
         .expect("put_page");
     assert!(
@@ -574,7 +574,7 @@ async fn s6t6_ingested_at_no_stamp_without_provenance() {
     input.source_uri = None;
     input.ingested_via = None;
     let result = engine
-        .put_page("stamp-none", &input)
+        .put_page("stamp-none", None, &input)
         .await
         .expect("put_page");
     assert!(
@@ -593,7 +593,7 @@ async fn s6t6_chunker_version_defaults_to_1() {
     let mut input = full_input();
     input.chunker_version = None;
     let result = engine
-        .put_page("chunker-def", &input)
+        .put_page("chunker-def", None, &input)
         .await
         .expect("put_page");
     assert_eq!(result.chunker_version, 1, "null chunker_version must default to 1");
@@ -602,7 +602,7 @@ async fn s6t6_chunker_version_defaults_to_1() {
     let mut explicit = full_input();
     explicit.chunker_version = Some(3);
     let explicit_result = engine
-        .put_page("chunker-explicit", &explicit)
+        .put_page("chunker-explicit", None, &explicit)
         .await
         .expect("put_page explicit");
     assert_eq!(explicit_result.chunker_version, 3);
@@ -622,7 +622,7 @@ async fn s6t6_frontmatter_json_roundtrip() {
     let mut input = full_input();
     input.frontmatter = Some(fm.clone());
     let result = engine
-        .put_page("fm-roundtrip", &input)
+        .put_page("fm-roundtrip", None, &input)
         .await
         .expect("put_page");
     assert_eq!(result.frontmatter, fm, "frontmatter must roundtrip exactly");
@@ -644,7 +644,7 @@ async fn s6t6_generation_bumps_on_watched_column_update() {
     // Two puts with different compiled_truth values must show generation >= 2.
     let (engine, _tmp) = init_clean_engine().await;
     let first = engine
-        .put_page("gen-bump", &full_input())
+        .put_page("gen-bump", None, &full_input())
         .await
         .expect("first put");
     assert_eq!(first.generation, 1, "initial generation must be 1");
@@ -653,7 +653,7 @@ async fn s6t6_generation_bumps_on_watched_column_update() {
     let mut update = full_input();
     update.compiled_truth = "changed body".to_string();
     let second = engine
-        .put_page("gen-bump", &update)
+        .put_page("gen-bump", None, &update)
         .await
         .expect("second put");
     assert!(
@@ -677,7 +677,7 @@ async fn s6t6_returning_projection_covers_all_30_columns() {
     input.import_filename = Some("doc.md".to_string());
     input.content_hash = Some("sha256:deadbeef".to_string());
     let result = engine
-        .put_page("proj-30col", &input)
+        .put_page("proj-30col", None, &input)
         .await
         .expect("put_page");
 
@@ -703,7 +703,7 @@ async fn s6t6_returning_projection_covers_all_30_columns() {
 async fn delete_page_removes_row() {
     let (engine, _tmp) = init_clean_engine().await;
     engine
-        .put_page("gamma", &note_input("Gamma", "body"))
+        .put_page("gamma", None, &note_input("Gamma", "body"))
         .await
         .expect("put_page");
     engine.delete_page("gamma").await.expect("delete_page");
@@ -742,17 +742,17 @@ async fn list_pages_empty_when_no_rows() {
 async fn list_pages_filters_by_page_type() {
     let (engine, _tmp) = init_clean_engine().await;
     engine
-        .put_page("n1", &note_input("N1", "x"))
+        .put_page("n1", None, &note_input("N1", "x"))
         .await
         .expect("put n1");
     engine
-        .put_page("n2", &note_input("N2", "y"))
+        .put_page("n2", None, &note_input("N2", "y"))
         .await
         .expect("put n2");
     engine
         .put_page(
             "p1",
-            &PageInput {
+            None, &PageInput {
                 page_type: "person".to_string(),
                 title: "P1".to_string(),
                 compiled_truth: "z".to_string(),
@@ -795,7 +795,7 @@ async fn list_pages_respects_limit() {
         engine
             .put_page(
                 &format!("slug-{i}"),
-                &note_input(&format!("T{i}"), "body"),
+                None, &note_input(&format!("T{i}"), "body"),
             )
             .await
             .expect("put_page");
@@ -819,11 +819,11 @@ async fn list_pages_respects_limit() {
 async fn resolve_slugs_exact_match_only_in_slice_5() {
     let (engine, _tmp) = init_clean_engine().await;
     engine
-        .put_page("alpha-beta", &note_input("AB", "x"))
+        .put_page("alpha-beta", None, &note_input("AB", "x"))
         .await
         .expect("put_page");
     engine
-        .put_page("alpha-gamma", &note_input("AG", "x"))
+        .put_page("alpha-gamma", None, &note_input("AG", "x"))
         .await
         .expect("put_page");
 

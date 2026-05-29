@@ -145,7 +145,7 @@ async fn in_memory_engine_initialises_new_page_fields_with_safe_defaults() {
         compiled_truth: "Body".to_string(),
         ..Default::default()
     };
-    engine.put_page("hi", &input).await.expect("put ok");
+    engine.put_page("hi", None, &input).await.expect("put ok");
 
     let fetched = engine
         .get_page("hi", &GetPageOpts::default())
