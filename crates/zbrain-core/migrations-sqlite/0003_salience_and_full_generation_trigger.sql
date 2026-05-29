@@ -17,6 +17,19 @@
 --    edits that change a page's `type` or `timeline` would silently skip the
 --    cache-invalidation bump and downstream readers would serve stale plans.
 --
+-- 3. Switch the trigger timing from AFTER UPDATE to BEFORE UPDATE. The 0002
+--    comment claimed AFTER was the only viable SQLite path because SQLite
+--    forbids NEW.* assignment in BEFORE triggers. That is true, but it
+--    misses the actual issue: an AFTER UPDATE trigger that nests an
+--    `UPDATE pages SET generation = OLD.generation + 1 WHERE id = NEW.id`
+--    runs after the outer statement's row image is already projected, so
+--    the bumped generation never surfaces in the outer statement's
+--    RETURNING clause. The bump persists in the table (a follow-up SELECT
+--    sees it) but `put_page`'s 30-col RETURNING returns the stale value.
+--    BEFORE UPDATE + the same nested UPDATE solves it: SQLite applies the
+--    nested write first, then the outer UPDATE projects the post-trigger
+--    row (verified empirically — see slice-6a S6-T6 notes).
+--
 -- The INSERT trigger from 0002 (bump_page_generation_insert) is unchanged and
 -- is intentionally not rebuilt here.
 
@@ -24,7 +37,7 @@ ALTER TABLE pages ADD COLUMN salience_score REAL;
 
 DROP TRIGGER IF EXISTS bump_page_generation_update;
 CREATE TRIGGER bump_page_generation_update
-AFTER UPDATE OF
+BEFORE UPDATE OF
     compiled_truth,
     timeline,
     frontmatter,

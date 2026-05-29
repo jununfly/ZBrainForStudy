@@ -23,6 +23,7 @@ use crate::engine::{
     PageInput,
 };
 use crate::error::{Error, Result};
+use crate::time::current_utc_iso8601;
 use crate::types::{CRMode, EffectiveDateSource, FindDuplicatePageOpts, PageKind};
 
 /// Embedded `SQLite` schema. Mirrors the PG migration semantics:
@@ -252,21 +253,112 @@ impl BrainEngine for LibsqlEngine {
 
     async fn put_page(&self, slug: &str, input: &PageInput) -> Result<Page> {
         let conn = self.conn().await?;
-        // Upsert keyed by (source_id, slug). source_id defaults to 'default'
-        // in the migration. SQLite's ON CONFLICT names the conflicting
-        // columns directly (no constraint-name spelling).
-        // RETURNING is supported by SQLite 3.35+, which libsql ships.
+
+        // S6-T6 — 19-col INSERT mirroring TS pglite-engine.ts:866-887.
+        // Column order (TS-locked): source_id, slug, type, page_kind, title,
+        // compiled_truth, timeline, frontmatter, content_hash, updated_at (now()),
+        // effective_date, effective_date_source, import_filename,
+        // chunker_version (COALESCE), source_path, source_kind, source_uri,
+        // ingested_via, ingested_at.
+        //
+        // ON CONFLICT path:
+        //   * 8 cols unconditionally overwritten via `excluded.*`
+        //     (type, page_kind, title, compiled_truth, timeline, frontmatter,
+        //      content_hash, updated_at).
+        //   * 9 cols COALESCE-preserved so null input keeps the prior value
+        //     (effective_date, effective_date_source, import_filename,
+        //      chunker_version, source_path, source_kind, source_uri,
+        //      ingested_via, ingested_at).
+        //
+        // Server-stamp rule: `ingested_at = now()` ONLY when any of source_kind /
+        // source_uri / ingested_via is non-null this call (provenance write-through).
+        // The caller's `input.ingested_at` is intentionally ignored to match TS.
+        //
+        // Defaults / coercions:
+        //   * source_id literal 'default' (S6-T7 will lift this).
+        //   * page_kind defaults to "markdown" when input omits it.
+        //   * timeline defaults to "" (NOT NULL column).
+        //   * frontmatter defaults to "{}" (NOT NULL JSON column).
+        //   * chunker_version uses SQL COALESCE(?14, 1) so null binds to 1.
+        let source_id = "default";
+        let page_kind_wire = encode_page_kind(input.page_kind.unwrap_or(PageKind::Markdown));
+        let timeline = input.timeline.clone().unwrap_or_default();
+        let frontmatter_json = match &input.frontmatter {
+            Some(value) => serde_json::to_string(value)
+                .map_err(|e| Error::engine(format!("put_page frontmatter encode: {e}")))?,
+            None => "{}".to_string(),
+        };
+        let effective_date_source_wire = input
+            .effective_date_source
+            .map(encode_effective_date_source);
+        let ingested_at = if input.source_kind.is_some()
+            || input.source_uri.is_some()
+            || input.ingested_via.is_some()
+        {
+            Some(current_utc_iso8601())
+        } else {
+            None
+        };
+
+        let sql = "INSERT INTO pages (\
+                source_id, slug, type, page_kind, title, compiled_truth, timeline, \
+                frontmatter, content_hash, updated_at, effective_date, \
+                effective_date_source, import_filename, chunker_version, \
+                source_path, source_kind, source_uri, ingested_via, ingested_at\
+            ) VALUES (\
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, \
+                COALESCE(?14, 1), ?15, ?16, ?17, ?18, ?19\
+            ) ON CONFLICT(source_id, slug) DO UPDATE SET \
+                type = excluded.type, \
+                page_kind = excluded.page_kind, \
+                title = excluded.title, \
+                compiled_truth = excluded.compiled_truth, \
+                timeline = excluded.timeline, \
+                frontmatter = excluded.frontmatter, \
+                content_hash = excluded.content_hash, \
+                updated_at = excluded.updated_at, \
+                effective_date = COALESCE(excluded.effective_date, pages.effective_date), \
+                effective_date_source = COALESCE(excluded.effective_date_source, pages.effective_date_source), \
+                import_filename = COALESCE(excluded.import_filename, pages.import_filename), \
+                chunker_version = COALESCE(excluded.chunker_version, pages.chunker_version), \
+                source_path = COALESCE(excluded.source_path, pages.source_path), \
+                source_kind = COALESCE(excluded.source_kind, pages.source_kind), \
+                source_uri = COALESCE(excluded.source_uri, pages.source_uri), \
+                ingested_via = COALESCE(excluded.ingested_via, pages.ingested_via), \
+                ingested_at = COALESCE(excluded.ingested_at, pages.ingested_at) \
+            RETURNING id, slug, type, page_kind, title, compiled_truth, timeline, \
+                frontmatter, content_hash, emotional_weight, created_at, updated_at, \
+                deleted_at, last_retrieved_at, effective_date, effective_date_source, \
+                import_filename, salience_touched_at, salience_score, generation, \
+                embedding, chunker_version, source_path, source_id, source_kind, \
+                source_uri, ingested_via, ingested_at, contextual_retrieval_mode, \
+                corpus_generation";
+
+        let now = current_utc_iso8601();
         let mut rows = conn
             .query(
-                "INSERT INTO pages (slug, type, title, compiled_truth) \
-                 VALUES (?1, ?2, ?3, ?4) \
-                 ON CONFLICT(source_id, slug) DO UPDATE SET \
-                     type = excluded.type, \
-                     title = excluded.title, \
-                     compiled_truth = excluded.compiled_truth, \
-                     updated_at = CURRENT_TIMESTAMP \
-                 RETURNING id, slug, type, page_kind, title, compiled_truth, timeline",
-                ::libsql::params![slug, input.page_type.clone(), input.title.clone(), input.compiled_truth.clone()],
+                sql,
+                ::libsql::params![
+                    source_id,                       // ?1  source_id
+                    slug,                            // ?2  slug
+                    input.page_type.clone(),         // ?3  type
+                    page_kind_wire,                  // ?4  page_kind
+                    input.title.clone(),             // ?5  title
+                    input.compiled_truth.clone(),    // ?6  compiled_truth
+                    timeline,                        // ?7  timeline
+                    frontmatter_json,                // ?8  frontmatter (JSON TEXT)
+                    input.content_hash.clone(),      // ?9  content_hash
+                    now,                             // ?10 updated_at (server now)
+                    input.effective_date.clone(),    // ?11 effective_date
+                    effective_date_source_wire,      // ?12 effective_date_source
+                    input.import_filename.clone(),   // ?13 import_filename
+                    input.chunker_version.map(i64::from), // ?14 chunker_version (COALESCE 1)
+                    input.source_path.clone(),       // ?15 source_path
+                    input.source_kind.clone(),       // ?16 source_kind
+                    input.source_uri.clone(),        // ?17 source_uri
+                    input.ingested_via.clone(),      // ?18 ingested_via
+                    ingested_at,                     // ?19 ingested_at (server-stamp)
+                ],
             )
             .await
             .map_err(|e| Error::engine(format!("put_page upsert failed: {e}")))?;
@@ -276,7 +368,7 @@ impl BrainEngine for LibsqlEngine {
             .await
             .map_err(|e| Error::engine(format!("put_page row fetch failed: {e}")))?
             .ok_or_else(|| Error::engine("put_page RETURNING produced no row"))?;
-        row_to_page(&row)
+        full_row_to_page(&row)
     }
 
     async fn delete_page(&self, slug: &str) -> Result<()> {
@@ -614,83 +706,6 @@ impl BrainEngine for LibsqlEngine {
     }
 }
 
-/// Decode one `pages` row into [`Page`]. Mirrors `postgres::row_to_page`
-/// but uses libsql's positional `Row::get` API instead of sqlx's named
-/// `try_get`. Column order is the literal SELECT projection above.
-fn row_to_page(row: &::libsql::Row) -> Result<Page> {
-    let id: i64 = row
-        .get(0)
-        .map_err(|e| Error::engine(format!("row decode id: {e}")))?;
-    let slug: String = row
-        .get(1)
-        .map_err(|e| Error::engine(format!("row decode slug: {e}")))?;
-    let page_type: String = row
-        .get(2)
-        .map_err(|e| Error::engine(format!("row decode type: {e}")))?;
-    let page_kind_str: String = row
-        .get(3)
-        .map_err(|e| Error::engine(format!("row decode page_kind: {e}")))?;
-    let title: String = row
-        .get(4)
-        .map_err(|e| Error::engine(format!("row decode title: {e}")))?;
-    let compiled_truth: String = row
-        .get(5)
-        .map_err(|e| Error::engine(format!("row decode compiled_truth: {e}")))?;
-    let timeline: String = row
-        .get(6)
-        .map_err(|e| Error::engine(format!("row decode timeline: {e}")))?;
-
-    let page_kind = decode_page_kind(&page_kind_str)?;
-    let id_u64 = u64::try_from(id)
-        .map_err(|_| Error::engine(format!("page id {id} negative; corrupt row")))?;
-
-    // S2 placeholder: only the 7 columns the legacy SELECT projects are
-    // populated. Slice 6a S3 widens this SELECT + decoder to cover the new
-    // 0002 columns (frontmatter/content_hash/timestamps/effective-date chain/
-    // salience/source/contextual-retrieval). Until then the new fields land
-    // with safe defaults so callers can still observe the legacy 7-column
-    // surface without behaviour change.
-    //
-    // Slice 6a S5 added five more columns to `Page` (`last_retrieved_at`,
-    // `generation`, `embedding`, `chunker_version`, `source_path`). Same
-    // placeholder pattern: defaults that mirror the PG defaults
-    // (`generation = 1`, `chunker_version = 1`, optionals `None`) so the
-    // shape is correct even though the SELECT still does not project them.
-    // Slice 6a S6 (libsql leg) replaces this with a real read.
-    Ok(Page {
-        id: id_u64,
-        slug,
-        page_type,
-        page_kind,
-        title,
-        compiled_truth,
-        timeline,
-        frontmatter: serde_json::Value::Object(serde_json::Map::new()),
-        content_hash: None,
-        emotional_weight: None,
-        created_at: String::new(),
-        updated_at: String::new(),
-        deleted_at: None,
-        last_retrieved_at: None,
-        effective_date: None,
-        effective_date_source: None,
-        import_filename: None,
-        salience_touched_at: None,
-        salience_score: None,
-        generation: 1,
-        embedding: None,
-        chunker_version: 1,
-        source_path: None,
-        source_id: "default".to_string(),
-        source_kind: None,
-        source_uri: None,
-        ingested_via: None,
-        ingested_at: None,
-        contextual_retrieval_mode: None,
-        corpus_generation: None,
-    })
-}
-
 /// Decode one full-width `pages` row into [`Page`]. Column order is the SELECT
 /// projection used by `find_duplicate_page` and mirrors the complete 6a page
 /// shape.
@@ -781,6 +796,28 @@ fn full_row_to_page(row: &::libsql::Row) -> Result<Page> {
         contextual_retrieval_mode,
         corpus_generation,
     })
+}
+
+/// Encode [`PageKind`] to its `SQLite` wire value (lowercase TEXT).
+/// Inverse of [`decode_page_kind`]; panics on new variants (add them here!).
+fn encode_page_kind(kind: PageKind) -> &'static str {
+    match kind {
+        PageKind::Markdown => "markdown",
+        PageKind::Code => "code",
+        PageKind::Image => "image",
+    }
+}
+
+/// Encode [`EffectiveDateSource`] to its `SQLite` wire value (`snake_case` TEXT).
+/// Inverse of [`decode_effective_date_source`].
+fn encode_effective_date_source(src: EffectiveDateSource) -> &'static str {
+    match src {
+        EffectiveDateSource::EventDate => "event_date",
+        EffectiveDateSource::Date => "date",
+        EffectiveDateSource::Published => "published",
+        EffectiveDateSource::Filename => "filename",
+        EffectiveDateSource::Fallback => "fallback",
+    }
 }
 
 /// Map the `SQLite` `pages.page_kind` TEXT column (constrained by CHECK) to

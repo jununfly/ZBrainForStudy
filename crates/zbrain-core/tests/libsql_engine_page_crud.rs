@@ -19,12 +19,13 @@
 //! `find_duplicate_page`. The old "`include_deleted` returns Unsupported"
 //! contract is dropped in favour of a real soft-deleted round trip.
 
+use serde_json::json;
 use tempfile::NamedTempFile;
 use zbrain_core::engine::{
     BrainEngine, EngineConfig, GetPageOpts, PageFilters, PageInput,
 };
 use zbrain_core::libsql::LibsqlEngine;
-use zbrain_core::PageKind;
+use zbrain_core::{EffectiveDateSource, PageKind};
 
 /// Build a connected, schema-initialized engine on a fresh temp file.
 /// Returns `(engine, NamedTempFile)` so the caller can keep the temp file
@@ -248,7 +249,7 @@ async fn get_page_returns_full_column_projection() {
     engine.disconnect().await.expect("disconnect");
 }
 
-// -- put_page --------------------------------------------------------------
+// -- put_page (S5 stub) ---------------------------------------------------
 
 #[tokio::test]
 async fn put_page_upsert_updates_existing_row() {
@@ -274,6 +275,425 @@ async fn put_page_upsert_updates_existing_row() {
         .expect("Some(page)");
     assert_eq!(got.title, "Beta v2");
     assert_eq!(got.compiled_truth, "body-v2");
+    engine.disconnect().await.expect("disconnect");
+}
+
+// -- put_page (S6-T6 19-col upsert) ----------------------------------------
+//
+// 12 test cases covering INSERT / UPDATE / COALESCE-preserve / excluded
+// overwrite / ingested_at server-stamp / updated_at monotonic /
+// chunker_version default / frontmatter JSON roundtrip / generation trigger /
+// RETURNING 30-col projection / source_id default 'default'.
+
+/// Build a `PageInput` with every optional field populated, giving a
+/// deterministic fixture that exercises the full 19-column INSERT path.
+fn full_input() -> PageInput {
+    PageInput {
+        page_type: "note".to_string(),
+        title: "Full Input".to_string(),
+        compiled_truth: "body".to_string(),
+        timeline: Some("T1 → T2".to_string()),
+        frontmatter: Some(json!({"key": "value"})),
+        content_hash: Some("sha256:abcdef".to_string()),
+        page_kind: Some(PageKind::Markdown),
+        effective_date: Some("2026-01-15".to_string()),
+        effective_date_source: Some(EffectiveDateSource::Filename),
+        import_filename: Some("test.md".to_string()),
+        chunker_version: Some(2),
+        source_path: Some("/path/to/test.md".to_string()),
+        source_kind: Some("file".to_string()),
+        source_uri: Some("file:///path/to/test.md".to_string()),
+        ingested_via: Some("cli".to_string()),
+        ingested_at: None, // server-stamp; None so we verify engine sets it
+        last_retrieved_at: None, // S5 — put_page does not write
+        embedding: None,         // S5 — put_page does not write
+    }
+}
+
+#[tokio::test]
+async fn s6t6_insert_new_page_writes_19_columns() {
+    // INSERT path: all 19 columns must land in the row and be readable
+    // via get_page (30-col projection). Source_id defaults to 'default'.
+    let (engine, _tmp) = init_clean_engine().await;
+    let result = engine
+        .put_page("full-insert", &full_input())
+        .await
+        .expect("put_page full insert");
+
+    // Identity + content
+    assert_eq!(result.slug, "full-insert");
+    assert_eq!(result.page_type, "note");
+    assert_eq!(result.page_kind, PageKind::Markdown);
+    assert_eq!(result.title, "Full Input");
+    assert_eq!(result.compiled_truth, "body");
+    assert_eq!(result.timeline, "T1 → T2");
+    assert_eq!(result.content_hash.as_deref(), Some("sha256:abcdef"));
+    assert_eq!(result.source_id, "default");
+
+    // Effective-date chain
+    assert_eq!(result.effective_date.as_deref(), Some("2026-01-15"));
+    assert_eq!(
+        result.effective_date_source,
+        Some(EffectiveDateSource::Filename)
+    );
+    assert_eq!(result.import_filename.as_deref(), Some("test.md"));
+
+    // Provenance
+    assert_eq!(result.source_path.as_deref(), Some("/path/to/test.md"));
+    assert_eq!(result.source_kind.as_deref(), Some("file"));
+    assert_eq!(
+        result.source_uri.as_deref(),
+        Some("file:///path/to/test.md")
+    );
+    assert_eq!(result.ingested_via.as_deref(), Some("cli"));
+    assert!(result.ingested_at.is_some(), "ingested_at must be server-stamped when source_kind is set");
+
+    // Chunker
+    assert_eq!(result.chunker_version, 2);
+
+    // Timestamps
+    assert!(!result.created_at.is_empty());
+    assert!(!result.updated_at.is_empty());
+
+    // Cross-check via get_page
+    let got = engine
+        .get_page("full-insert", &GetPageOpts::default())
+        .await
+        .expect("get_page")
+        .expect("Some(page)");
+    assert_eq!(got.title, result.title);
+    assert_eq!(got.source_kind, result.source_kind);
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn s6t6_update_same_slug_uses_update_branch() {
+    // Second put_page with the same slug must UPDATE (reuse id), not INSERT.
+    let (engine, _tmp) = init_clean_engine().await;
+    let first = engine
+        .put_page("upsert-target", &full_input())
+        .await
+        .expect("first put");
+    let mut second_input = full_input();
+    second_input.title = "Updated Title".to_string();
+    let second = engine
+        .put_page("upsert-target", &second_input)
+        .await
+        .expect("second put (update)");
+
+    assert_eq!(first.id, second.id, "upsert must reuse row id");
+    assert_eq!(second.title, "Updated Title");
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn s6t6_coalesce_preserve_effective_date() {
+    // On UPDATE, null input for effective_date must preserve the old value
+    // (COALESCE-preserve). Conversely, a non-null input must overwrite.
+    let (engine, _tmp) = init_clean_engine().await;
+    let mut input = full_input();
+    input.effective_date = Some("2026-03-01".to_string());
+    engine
+        .put_page("coalesce-eff", &input)
+        .await
+        .expect("first put");
+
+    // UPDATE with null effective_date → old value preserved
+    let mut update = full_input();
+    update.effective_date = None;
+    let updated = engine
+        .put_page("coalesce-eff", &update)
+        .await
+        .expect("second put (coalesce)");
+    assert_eq!(
+        updated.effective_date.as_deref(),
+        Some("2026-03-01"),
+        "null input must COALESCE-preserve old effective_date"
+    );
+
+    // UPDATE with new value → overwrites
+    let mut overwrite = full_input();
+    overwrite.effective_date = Some("2026-06-15".to_string());
+    let overwritten = engine
+        .put_page("coalesce-eff", &overwrite)
+        .await
+        .expect("third put (overwrite)");
+    assert_eq!(
+        overwritten.effective_date.as_deref(),
+        Some("2026-06-15"),
+        "non-null input must overwrite effective_date"
+    );
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn s6t6_coalesce_preserve_import_filename() {
+    // Null import_filename on UPDATE must not blank a previously set value.
+    let (engine, _tmp) = init_clean_engine().await;
+    let mut input = full_input();
+    input.import_filename = Some("original.md".to_string());
+    engine
+        .put_page("coalesce-impf", &input)
+        .await
+        .expect("first put");
+
+    let mut update = full_input();
+    update.import_filename = None;
+    let updated = engine
+        .put_page("coalesce-impf", &update)
+        .await
+        .expect("second put");
+    assert_eq!(
+        updated.import_filename.as_deref(),
+        Some("original.md"),
+        "null import_filename must COALESCE-preserve old value"
+    );
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn s6t6_coalesce_preserve_ingested_at() {
+    // Null provenance on UPDATE must preserve the old ingested_at.
+    let (engine, _tmp) = init_clean_engine().await;
+    let mut input = full_input();
+    input.source_kind = Some("file".to_string());
+    engine
+        .put_page("coalesce-ingat", &input)
+        .await
+        .expect("first put with provenance → ingested_at stamped");
+    let first_ingested = engine
+        .get_page("coalesce-ingat", &GetPageOpts::default())
+        .await
+        .expect("get")
+        .expect("page")
+        .ingested_at
+        .clone();
+    assert!(first_ingested.is_some(), "first put must stamp ingested_at");
+
+    // UPDATE without provenance → ingested_at preserved (COALESCE)
+    let mut update = full_input();
+    update.source_kind = None;
+    update.source_uri = None;
+    update.ingested_via = None;
+    let updated = engine
+        .put_page("coalesce-ingat", &update)
+        .await
+        .expect("second put");
+    assert_eq!(
+        updated.ingested_at, first_ingested,
+        "COALESCE must preserve old ingested_at when no provenance fields"
+    );
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn s6t6_excluded_overwrites_title_and_compiled_truth() {
+    // title and compiled_truth are on the excluded-override list — they
+    // must always reflect the latest input, even if it differs from the
+    // stored value.
+    let (engine, _tmp) = init_clean_engine().await;
+    let mut input = full_input();
+    input.title = "Original Title".to_string();
+    input.compiled_truth = "original body".to_string();
+    engine
+        .put_page("excluded-ovr", &input)
+        .await
+        .expect("first put");
+
+    let mut update = full_input();
+    update.title = "New Title".to_string();
+    update.compiled_truth = "new body".to_string();
+    let updated = engine
+        .put_page("excluded-ovr", &update)
+        .await
+        .expect("second put");
+    assert_eq!(updated.title, "New Title");
+    assert_eq!(updated.compiled_truth, "new body");
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn s6t6_updated_at_monotonically_increases() {
+    // updated_at on the second put must be >= the first. SQLite
+    // CURRENT_TIMESTAMP has second granularity, so we only assert not-less.
+    let (engine, _tmp) = init_clean_engine().await;
+    let first = engine
+        .put_page("mono-ts", &full_input())
+        .await
+        .expect("first put");
+    let second = engine
+        .put_page("mono-ts", &full_input())
+        .await
+        .expect("second put");
+    assert!(
+        second.updated_at >= first.updated_at,
+        "updated_at must not go backwards: first={} second={}",
+        first.updated_at,
+        second.updated_at,
+    );
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn s6t6_ingested_at_server_stamp_with_provenance() {
+    // When any of source_kind / source_uri / ingested_via is non-null, the
+    // engine must compute ingested_at server-side (ignoring PageInput.ingested_at).
+    let (engine, _tmp) = init_clean_engine().await;
+    let mut input = full_input();
+    input.source_kind = Some("file".to_string());
+    input.ingested_at = Some("1999-01-01T00:00:00Z".to_string()); // must be ignored
+    let result = engine
+        .put_page("stamp-prov", &input)
+        .await
+        .expect("put_page");
+    assert!(
+        result.ingested_at.is_some(),
+        "provenance fields present → ingested_at must be server-stamped"
+    );
+    assert_ne!(
+        result.ingested_at.as_deref(),
+        Some("1999-01-01T00:00:00Z"),
+        "server stamp must ignore input.ingested_at"
+    );
+    // Must be a plausible recent timestamp (starts with 202)
+    assert!(
+        result.ingested_at.as_ref().unwrap().starts_with("202"),
+        "server stamp must be a recent timestamp, got {:?}",
+        result.ingested_at,
+    );
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn s6t6_ingested_at_no_stamp_without_provenance() {
+    // When none of source_kind / source_uri / ingested_via are set, ingested_at
+    // must remain null (server does not stamp).
+    let (engine, _tmp) = init_clean_engine().await;
+    let mut input = full_input();
+    input.source_kind = None;
+    input.source_uri = None;
+    input.ingested_via = None;
+    let result = engine
+        .put_page("stamp-none", &input)
+        .await
+        .expect("put_page");
+    assert!(
+        result.ingested_at.is_none(),
+        "no provenance fields → ingested_at must be null, got {:?}",
+        result.ingested_at,
+    );
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn s6t6_chunker_version_defaults_to_1() {
+    // When chunker_version is None in PageInput, INSERT must use COALESCE
+    // to default to 1 (matching TS COALESCE($13, 1)).
+    let (engine, _tmp) = init_clean_engine().await;
+    let mut input = full_input();
+    input.chunker_version = None;
+    let result = engine
+        .put_page("chunker-def", &input)
+        .await
+        .expect("put_page");
+    assert_eq!(result.chunker_version, 1, "null chunker_version must default to 1");
+
+    // Explicit value must be stored
+    let mut explicit = full_input();
+    explicit.chunker_version = Some(3);
+    let explicit_result = engine
+        .put_page("chunker-explicit", &explicit)
+        .await
+        .expect("put_page explicit");
+    assert_eq!(explicit_result.chunker_version, 3);
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn s6t6_frontmatter_json_roundtrip() {
+    // frontmatter must survive a full JSON roundtrip: write via put_page,
+    // read back via get_page, compare structure.
+    let (engine, _tmp) = init_clean_engine().await;
+    let fm = json!({
+        "string": "hello",
+        "number": 42,
+        "nested": { "a": true }
+    });
+    let mut input = full_input();
+    input.frontmatter = Some(fm.clone());
+    let result = engine
+        .put_page("fm-roundtrip", &input)
+        .await
+        .expect("put_page");
+    assert_eq!(result.frontmatter, fm, "frontmatter must roundtrip exactly");
+
+    // Verify through get_page as well (full 30-col projection)
+    let got = engine
+        .get_page("fm-roundtrip", &GetPageOpts::default())
+        .await
+        .expect("get_page")
+        .expect("Some(page)");
+    assert_eq!(got.frontmatter, fm, "frontmatter via get_page must match");
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn s6t6_generation_bumps_on_watched_column_update() {
+    // The bump_page_generation_fn trigger (migration 0002+0003) bumps
+    // generation when a watched column (e.g. compiled_truth) changes.
+    // Two puts with different compiled_truth values must show generation >= 2.
+    let (engine, _tmp) = init_clean_engine().await;
+    let first = engine
+        .put_page("gen-bump", &full_input())
+        .await
+        .expect("first put");
+    assert_eq!(first.generation, 1, "initial generation must be 1");
+
+    // Change a watched column
+    let mut update = full_input();
+    update.compiled_truth = "changed body".to_string();
+    let second = engine
+        .put_page("gen-bump", &update)
+        .await
+        .expect("second put");
+    assert!(
+        second.generation > first.generation,
+        "generation must bump on watched-column update, got first={} second={}",
+        first.generation,
+        second.generation,
+    );
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn s6t6_returning_projection_covers_all_30_columns() {
+    // The RETURNING clause must feed full_row_to_page so that every Page
+    // field is populated (not defaulted). We assert a representative set
+    // of columns that the 7-col stub would leave as schema defaults.
+    let (engine, _tmp) = init_clean_engine().await;
+    let mut input = full_input();
+    input.effective_date = Some("2026-05-01".to_string());
+    input.effective_date_source = Some(EffectiveDateSource::Date);
+    input.import_filename = Some("doc.md".to_string());
+    input.content_hash = Some("sha256:deadbeef".to_string());
+    let result = engine
+        .put_page("proj-30col", &input)
+        .await
+        .expect("put_page");
+
+    // Fields the 7-col stub would fabricate — must come from the DB row
+    assert_eq!(result.source_id, "default");
+    assert_eq!(result.generation, 1);
+    assert!(!result.created_at.is_empty(), "created_at from DB");
+    assert!(!result.updated_at.is_empty(), "updated_at from DB");
+    assert!(result.deleted_at.is_none(), "live row has no deleted_at");
+    assert_eq!(result.effective_date.as_deref(), Some("2026-05-01"));
+    assert_eq!(result.effective_date_source, Some(EffectiveDateSource::Date));
+    assert_eq!(result.import_filename.as_deref(), Some("doc.md"));
+    assert_eq!(result.content_hash.as_deref(), Some("sha256:deadbeef"));
+    assert_eq!(result.chunker_version, 2); // set in full_input()
+    assert!(result.frontmatter.is_object(), "frontmatter must be an object");
+    assert_eq!(result.ingested_via.as_deref(), Some("cli"));
     engine.disconnect().await.expect("disconnect");
 }
 
