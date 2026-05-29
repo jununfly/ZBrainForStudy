@@ -182,20 +182,36 @@ impl BrainEngine for LibsqlEngine {
     // DO UPDATE` (SQLite spelling), `LIMIT -1` as the unbounded sentinel.
 
     async fn get_page(&self, slug: &str, opts: &GetPageOpts) -> Result<Option<Page>> {
-        if opts.include_deleted {
-            // FixMe: soft-delete column lands in slice 6.5a; the schema has
-            // no `deleted_at` to filter on, so honoring this flag would be a
-            // lie. Surface it explicitly until the column exists.
-            return Err(Error::unsupported(
-                "GetPageOpts.include_deleted requires a deleted_at column (slice 6.5a)",
-            ));
-        }
+        // Slice 6a S6-T4: full 30-column projection backed by
+        // `full_row_to_page`, with `deleted_at` filtering and `source_id`
+        // scoping that mirror `soft_delete_page` / `find_duplicate_page`.
+        //
+        // Filters:
+        // - `slug = ?1` (primary key after source_id scoping)
+        // - `(?2 IS NULL OR source_id = ?2)` – optional scope match
+        // - `(?3 = 1 OR deleted_at IS NULL)` – default hides soft-deleted
+        //
+        // `include_deleted` is bound as an INTEGER (0/1) because libsql /
+        // SQLite type affinity coerces TEXT booleans loosely; explicit i64
+        // avoids any surprise.
         let conn = self.conn()?;
+        let include_deleted_flag: i64 = i64::from(opts.include_deleted);
+        let source_id_param = opts.source_id.clone();
         let mut rows = conn
             .query(
-                "SELECT id, slug, type, page_kind, title, compiled_truth, timeline \
-                 FROM pages WHERE slug = ?1",
-                ::libsql::params![slug],
+                "SELECT id, slug, type, page_kind, title, compiled_truth, timeline, \
+                        frontmatter, content_hash, emotional_weight, created_at, updated_at, \
+                        deleted_at, last_retrieved_at, effective_date, effective_date_source, \
+                        import_filename, salience_touched_at, salience_score, generation, \
+                        embedding, chunker_version, source_path, source_id, source_kind, \
+                        source_uri, ingested_via, ingested_at, contextual_retrieval_mode, \
+                        corpus_generation \
+                 FROM pages \
+                 WHERE slug = ?1 \
+                   AND (?2 IS NULL OR source_id = ?2) \
+                   AND (?3 = 1 OR deleted_at IS NULL) \
+                 LIMIT 1",
+                ::libsql::params![slug, source_id_param, include_deleted_flag],
             )
             .await
             .map_err(|e| Error::engine(format!("get_page query failed: {e}")))?;
@@ -205,7 +221,7 @@ impl BrainEngine for LibsqlEngine {
             .await
             .map_err(|e| Error::engine(format!("get_page row fetch failed: {e}")))?
         {
-            Some(row) => Ok(Some(row_to_page(&row)?)),
+            Some(row) => Ok(Some(full_row_to_page(&row)?)),
             None => Ok(None),
         }
     }

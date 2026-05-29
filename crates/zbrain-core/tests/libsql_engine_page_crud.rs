@@ -6,17 +6,25 @@
 //! file is born empty.
 //!
 //! Test groups (same shape as the PG side):
-//! - `get_page`: not-found / found / `include_deleted` unsupported error
+//! - `get_page`: not-found / found / soft-delete filter / `include_deleted`
+//!   semantics / `source_id` scoping / 30-column projection defaults
 //! - `put_page`: insert / upsert (same slug -> updated row, id reused)
 //! - `delete_page`: row vanishes, no-op on missing
 //! - `list_pages`: empty / `page_type` filter / limit truncation
 //! - `resolve_slugs`: exact match only (fuzzy deferred to slice 6.5c)
+//!
+//! Slice 6a S6-T4: `get_page` upgraded from a 7-column stub to the full
+//! 30-column projection backed by `full_row_to_page`, with `deleted_at`
+//! filtering and `source_id` scoping mirroring `soft_delete_page` /
+//! `find_duplicate_page`. The old "`include_deleted` returns Unsupported"
+//! contract is dropped in favour of a real soft-deleted round trip.
 
 use tempfile::NamedTempFile;
 use zbrain_core::engine::{
     BrainEngine, EngineConfig, GetPageOpts, PageFilters, PageInput,
 };
 use zbrain_core::libsql::LibsqlEngine;
+use zbrain_core::PageKind;
 
 /// Build a connected, schema-initialized engine on a fresh temp file.
 /// Returns `(engine, NamedTempFile)` so the caller can keep the temp file
@@ -76,18 +84,167 @@ async fn get_page_round_trips_after_put() {
 }
 
 #[tokio::test]
-async fn get_page_with_include_deleted_returns_unsupported() {
+async fn get_page_default_excludes_soft_deleted() {
+    // Default GetPageOpts has include_deleted=false. A row that has been
+    // soft-deleted must vanish from the default read path, mirroring the
+    // trait doc: "Returns None if not found or soft-deleted (unless
+    // opts.include_deleted is true)".
     let (engine, _tmp) = init_clean_engine().await;
+    engine
+        .put_page("doomed", &note_input("Doomed", "body"))
+        .await
+        .expect("put_page");
+    let hit = engine
+        .soft_delete_page("doomed", None)
+        .await
+        .expect("soft_delete_page");
+    assert_eq!(hit.as_deref(), Some("doomed"), "soft_delete must hit");
+
+    let got = engine
+        .get_page("doomed", &GetPageOpts::default())
+        .await
+        .expect("get_page");
+    assert!(
+        got.is_none(),
+        "default get_page must skip soft-deleted rows, got {got:?}"
+    );
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn get_page_with_include_deleted_returns_soft_deleted_row() {
+    // With include_deleted=true the row must be visible AND carry a
+    // non-empty deleted_at marker, proving the column is actually projected
+    // (not just defaulted by the stub `row_to_page`).
+    let (engine, _tmp) = init_clean_engine().await;
+    engine
+        .put_page("zombie", &note_input("Zombie", "body"))
+        .await
+        .expect("put_page");
+    engine
+        .soft_delete_page("zombie", None)
+        .await
+        .expect("soft_delete_page");
+
     let opts = GetPageOpts {
         source_id: None,
         include_deleted: true,
     };
-    let err = engine
-        .get_page("any-slug", &opts)
+    let got = engine
+        .get_page("zombie", &opts)
         .await
-        .expect_err("include_deleted must error in slice 5");
-    assert_eq!(err.class, "Unsupported", "got class={}", err.class);
-    assert_eq!(err.code, "unsupported", "got code={}", err.code);
+        .expect("get_page")
+        .expect("Some(page) with include_deleted=true");
+    assert_eq!(got.slug, "zombie");
+    assert!(
+        got.deleted_at.is_some(),
+        "soft-deleted row must surface deleted_at, got {:?}",
+        got.deleted_at
+    );
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn get_page_with_matching_source_id_returns_row() {
+    // source_id filter must match the stored value. `put_page` uses the
+    // schema default ('default') when PageInput leaves source_id None, so
+    // requesting that exact source must succeed.
+    let (engine, _tmp) = init_clean_engine().await;
+    engine
+        .put_page("scoped", &note_input("Scoped", "body"))
+        .await
+        .expect("put_page");
+    let opts = GetPageOpts {
+        source_id: Some("default".to_string()),
+        include_deleted: false,
+    };
+    let got = engine
+        .get_page("scoped", &opts)
+        .await
+        .expect("get_page")
+        .expect("Some(page) with matching source_id");
+    assert_eq!(got.slug, "scoped");
+    assert_eq!(got.source_id, "default");
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn get_page_with_mismatched_source_id_returns_none() {
+    // source_id scoping must filter out rows that belong to a different
+    // source, even if the slug matches.
+    let (engine, _tmp) = init_clean_engine().await;
+    engine
+        .put_page("scoped", &note_input("Scoped", "body"))
+        .await
+        .expect("put_page");
+    let opts = GetPageOpts {
+        source_id: Some("other-source".to_string()),
+        include_deleted: false,
+    };
+    let got = engine
+        .get_page("scoped", &opts)
+        .await
+        .expect("get_page");
+    assert!(
+        got.is_none(),
+        "wrong source_id must yield None, got {got:?}"
+    );
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn get_page_returns_full_column_projection() {
+    // Lock the 30-column projection: after S6-T4, get_page must hydrate
+    // every documented Page field from the row instead of synthesising
+    // defaults in `row_to_page`. We assert the schema-default values
+    // returned by an unannotated put_page so that any regression to the
+    // 7-column stub fails immediately.
+    let (engine, _tmp) = init_clean_engine().await;
+    engine
+        .put_page("full-cols", &note_input("Full Cols", "body"))
+        .await
+        .expect("put_page");
+    let got = engine
+        .get_page("full-cols", &GetPageOpts::default())
+        .await
+        .expect("get_page")
+        .expect("Some(page)");
+
+    // Identity / content
+    assert_eq!(got.slug, "full-cols");
+    assert_eq!(got.title, "Full Cols");
+    assert_eq!(got.compiled_truth, "body");
+    assert_eq!(got.page_type, "note");
+    // PageInput leaves page_kind unset, so put_page falls back to the
+    // schema/engine default of Markdown (see engine.rs:476).
+    assert_eq!(got.page_kind, PageKind::Markdown);
+
+    // 0002 / 0003 columns that the stub used to fabricate.
+    assert_eq!(
+        got.source_id, "default",
+        "source_id must come from the row, not a literal default"
+    );
+    assert_eq!(
+        got.generation, 1,
+        "generation must hydrate from the row (DB default 1)"
+    );
+    assert_eq!(
+        got.chunker_version, 1,
+        "chunker_version must hydrate from the row (DB default 1)"
+    );
+    assert!(
+        got.deleted_at.is_none(),
+        "live row must report deleted_at=None"
+    );
+    assert!(
+        got.frontmatter.is_object(),
+        "frontmatter must decode to an object, got {:?}",
+        got.frontmatter
+    );
+
+    // Timestamps must come from the DB, not be empty.
+    assert!(!got.created_at.is_empty(), "created_at must be populated");
+    assert!(!got.updated_at.is_empty(), "updated_at must be populated");
     engine.disconnect().await.expect("disconnect");
 }
 
