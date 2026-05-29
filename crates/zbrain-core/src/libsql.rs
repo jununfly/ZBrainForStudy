@@ -19,7 +19,8 @@ use std::sync::OnceLock;
 use async_trait::async_trait;
 
 use crate::engine::{
-    BrainEngine, EngineConfig, EngineKind, GetPageOpts, Page, PageFilters, PageInput,
+    page_sort_sql, BrainEngine, EngineConfig, EngineKind, GetPageOpts, Page, PageFilters,
+    PageInput,
 };
 use crate::error::{Error, Result};
 use crate::types::{CRMode, EffectiveDateSource, FindDuplicatePageOpts, PageKind};
@@ -269,21 +270,98 @@ impl BrainEngine for LibsqlEngine {
 
     async fn list_pages(&self, filters: &PageFilters) -> Result<Vec<Page>> {
         let conn = self.conn()?;
-        // SQLite parses `?1 IS NULL` happily; we bind the optional type and
-        // an optional limit (NULL → no upper bound, matching the PG
-        // behaviour via LIMIT -1 trick).
-        let limit: i64 = filters
-            .limit
-            .map_or(-1, |n| i64::try_from(n).unwrap_or(i64::MAX));
+
+        // ── Build dynamic SQL ────────────────────────────────────────────
+        // Full 30-column projection, same column order as `full_row_to_page`.
+        // We alias `pages AS p` so the whitelisted ORDER BY fragments from
+        // `page_sort_sql` (which use `p.` prefixes for future JOIN reuse)
+        // bind cleanly.
+        let mut sql = "SELECT p.id, p.slug, p.type, p.page_kind, p.title, p.compiled_truth, \
+                       p.timeline, p.frontmatter, p.content_hash, p.emotional_weight, \
+                       p.created_at, p.updated_at, p.deleted_at, p.last_retrieved_at, \
+                       p.effective_date, p.effective_date_source, p.import_filename, \
+                       p.salience_touched_at, p.salience_score, p.generation, p.embedding, \
+                       p.chunker_version, p.source_path, p.source_id, p.source_kind, \
+                       p.source_uri, p.ingested_via, p.ingested_at, \
+                       p.contextual_retrieval_mode, p.corpus_generation \
+                       FROM pages AS p WHERE 1=1"
+            .to_owned();
+
+        let mut param_idx: u32 = 1;
+
+        // Filter: page_type
+        let page_type_param = if filters.page_type.is_some() {
+            let frag = format!(" AND p.type = ?{param_idx}");
+            param_idx += 1;
+            Some(frag)
+        } else {
+            None
+        };
+        if let Some(ref frag) = page_type_param {
+            sql.push_str(frag);
+        }
+
+        // Filter: include_deleted (default = false → exclude soft-deleted rows)
+        if !filters.include_deleted {
+            sql.push_str(" AND p.deleted_at IS NULL");
+        }
+
+        // ORDER BY — default UpdatedDesc when sort is None
+        let sort_sql = page_sort_sql(filters.sort.unwrap_or_default());
+        sql.push_str(" ORDER BY ");
+        sql.push_str(sort_sql);
+
+        // LIMIT — SQLite requires LIMIT before OFFSET.  When only OFFSET is
+        // requested we still must emit a LIMIT clause; the SQLite convention
+        // is `LIMIT -1` meaning "no upper bound".
+        let limit_param = if filters.limit.is_some() {
+            let frag = format!(" LIMIT ?{param_idx}");
+            param_idx += 1;
+            Some(frag)
+        } else if filters.offset.is_some() {
+            // Sentinel literal; not a bound parameter.
+            Some(" LIMIT -1".to_owned())
+        } else {
+            None
+        };
+        if let Some(ref frag) = limit_param {
+            sql.push_str(frag);
+        }
+
+        // OFFSET — last param slot; no further increment needed.
+        let offset_param = if filters.offset.is_some() {
+            let frag = format!(" OFFSET ?{param_idx}");
+            Some(frag)
+        } else {
+            None
+        };
+        if let Some(ref frag) = offset_param {
+            sql.push_str(frag);
+        }
+
+        // ── Bind parameters positionally ────────────────────────────────
+        // libsql `params!` macro requires concrete types; we build a Vec of
+        // `Value` for positional binding.
+        //
+        // ORDER CONTRACT: the push order below MUST match the `param_idx`
+        // bumps above — page_type → limit → offset.  Reordering either side
+        // without the other will silently misbind.
+        let mut param_vals: Vec<::libsql::Value> = Vec::new();
+
+        if let Some(ref pt) = filters.page_type {
+            param_vals.push(::libsql::Value::from(pt.clone()));
+        }
+        if let Some(n) = filters.limit {
+            let limit_i64 = i64::try_from(n).unwrap_or(i64::MAX);
+            param_vals.push(::libsql::Value::from(limit_i64));
+        }
+        if let Some(n) = filters.offset {
+            let offset_i64 = i64::try_from(n).unwrap_or(i64::MAX);
+            param_vals.push(::libsql::Value::from(offset_i64));
+        }
+
         let mut rows = conn
-            .query(
-                "SELECT id, slug, type, page_kind, title, compiled_truth, timeline \
-                 FROM pages \
-                 WHERE (?1 IS NULL OR type = ?1) \
-                 ORDER BY id ASC \
-                 LIMIT ?2",
-                ::libsql::params![filters.page_type.clone(), limit],
-            )
+            .query(&sql, ::libsql::params_from_iter(param_vals))
             .await
             .map_err(|e| Error::engine(format!("list_pages query failed: {e}")))?;
 
@@ -294,7 +372,7 @@ impl BrainEngine for LibsqlEngine {
                 .await
                 .map_err(|e| Error::engine(format!("list_pages row fetch failed: {e}")))?;
             match next {
-                Some(row) => out.push(row_to_page(&row)?),
+                Some(row) => out.push(full_row_to_page(&row)?),
                 None => break,
             }
         }
