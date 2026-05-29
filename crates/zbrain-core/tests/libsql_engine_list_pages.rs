@@ -1,22 +1,25 @@
-//! Slice 6a S6-T5 + S6-T5b — `LibsqlEngine::list_pages` integration tests.
+//! Slice 6a S6-T5 + S6-T5b + S6-T5c — `LibsqlEngine::list_pages` integration tests.
 //!
 //! Upgrades `list_pages` from a 7-column stub (`row_to_page`) to the full
-//! 30-column projection (`full_row_to_page`) with 9 filter dimensions:
+//! 30-column projection (`full_row_to_page`) with 10 filter dimensions:
 //!
-//! | # | Filter          | Slice  | Field                          |
-//! |---|-----------------|--------|--------------------------------|
-//! | 1 | `page_type`       | S6-T5  | `PageFilters::page_type`       |
-//! | 2 | `limit`           | S6-T5  | `PageFilters::limit`           |
-//! | 3 | `offset`          | S6-T5  | `PageFilters::offset`          |
-//! | 4 | `include_deleted` | S6-T5  | `PageFilters::include_deleted` |
-//! | 5 | `sort`            | S6-T5  | `PageFilters::sort`            |
-//! | 6 | `slug_prefix`     | S6-T5b | `PageFilters::slug_prefix`     |
-//! | 7 | `source_id`       | S6-T5b | `PageFilters::source_id`       |
-//! | 8 | `source_ids`      | S6-T5b | `PageFilters::source_ids`      |
-//! | 9 | `updated_after`   | S6-T5b | `PageFilters::updated_after`   |
+//! | #  | Filter          | Slice  | Field                          |
+//! |----|-----------------|--------|--------------------------------|
+//! |  1 | `page_type`       | S6-T5  | `PageFilters::page_type`       |
+//! |  2 | `limit`           | S6-T5  | `PageFilters::limit`           |
+//! |  3 | `offset`          | S6-T5  | `PageFilters::offset`          |
+//! |  4 | `include_deleted` | S6-T5  | `PageFilters::include_deleted` |
+//! |  5 | `sort`            | S6-T5  | `PageFilters::sort`            |
+//! |  6 | `slug_prefix`     | S6-T5b | `PageFilters::slug_prefix`     |
+//! |  7 | `source_id`       | S6-T5b | `PageFilters::source_id`       |
+//! |  8 | `source_ids`      | S6-T5b | `PageFilters::source_ids`      |
+//! |  9 | `updated_after`   | S6-T5b | `PageFilters::updated_after`   |
+//! | 10 | `tag`             | S6-T5c | `PageFilters::tag`             |
 //!
-//! `tag` filter is deferred to S6-T5c because it requires a new `page_tags`
-//! table that the current migrations do not create.
+//! Tag filter mirrors the TS `PGLite` prototype (single-tag exact match via
+//! INNER JOIN on `page_tags`). S6-T5c adds migration 0004 (`page_tags` table
+//! with composite PK + FK CASCADE) and enables `PRAGMA foreign_keys = ON`
+//! per-connection in `LibsqlEngine::conn()`.
 //!
 //! Test strategy:
 //! - Each test allocates its own `NamedTempFile` (no cross-contamination).
@@ -676,6 +679,517 @@ async fn list_pages_filters_by_updated_after() {
         !pages.iter().any(|p| p.slug == "old-page"),
         "old-page must NOT appear (updated_at = cutoff, not strictly after)"
     );
+
+    engine.disconnect().await.expect("disconnect");
+}
+
+// ─── S6-T5c: tag filter (JOIN on page_tags) ─────────────────────────────
+//
+// Test matrix (10 cases):
+//  1. schema_creates_page_tags_table          — migration 0004 created the table
+//  2. schema_page_tags_composite_pk           — (page_id, tag) PK prevents duplicates
+//  3. schema_page_tags_cascade_on_page_delete — FK CASCADE fires when PRAGMA FK=ON
+//  4. list_pages_filters_by_tag_basic         — single-tag exact match
+//  5. list_pages_tag_filter_excludes_others   — pages without the tag are excluded
+//  6. list_pages_tag_filter_no_dup_multi_tags — page with many tags → no duplicate rows
+//  7. list_pages_tag_filter_unknown_tag       — non-existent tag → empty result
+//  8. list_pages_tag_filter_combines_page_type — tag + page_type AND
+//  9. list_pages_tag_filter_with_include_deleted — tag respects soft-delete
+// 10. list_pages_tag_filter_with_limit_offset — tag + pagination
+
+/// Helper: open a raw libsql connection to the same temp file, enabling FK.
+/// Used to inject `page_tags` rows since `put_page` does not write tags (deferred
+/// to S6-T6).
+async fn raw_conn_for(tmp: &NamedTempFile) -> (::libsql::Database, ::libsql::Connection) {
+    let path_str = tmp.path().to_string_lossy().into_owned();
+    let db = ::libsql::Builder::new_local(&path_str)
+        .build()
+        .await
+        .expect("raw db open");
+    let conn = db.connect().expect("raw conn");
+    conn.execute("PRAGMA foreign_keys = ON", ())
+        .await
+        .expect("enable FK on raw conn");
+    (db, conn)
+}
+
+// --- Schema tests (1-3) ---
+
+#[tokio::test]
+async fn schema_creates_page_tags_table() {
+    // Verify that init_schema creates the `page_tags` table.
+    let (engine, tmp) = init_clean_engine().await;
+
+    let (_, raw_conn) = raw_conn_for(&tmp).await;
+
+    // Table must exist
+    let mut rows = raw_conn
+        .query("SELECT name FROM sqlite_master WHERE type='table' AND name='page_tags'", ())
+        .await
+        .expect("query sqlite_master");
+    let row = rows.next().await.expect("fetch row");
+    assert!(row.is_some(), "page_tags table must exist after migration 0004");
+
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn schema_page_tags_composite_pk() {
+    // Verify that (page_id, tag) composite PK prevents duplicate entries.
+    let (engine, tmp) = init_clean_engine().await;
+
+    engine
+        .put_page("test-page", &note_input("Test", "b"))
+        .await
+        .expect("put_page");
+
+    let (_, raw_conn) = raw_conn_for(&tmp).await;
+
+    // Get the page id
+    let mut rows = raw_conn
+        .query("SELECT id FROM pages WHERE slug = 'test-page'", ())
+        .await
+        .expect("get page id");
+    let row = rows.next().await.expect("fetch").expect("must exist");
+    let page_id: i64 = row.get(0).expect("page_id");
+
+    // First insert succeeds
+    raw_conn
+        .execute(
+            "INSERT INTO page_tags (page_id, tag) VALUES (?, 'rust')",
+            [page_id],
+        )
+        .await
+        .expect("first tag insert");
+
+    // Duplicate insert should fail (PK violation)
+    let dup_result = raw_conn
+        .execute(
+            "INSERT INTO page_tags (page_id, tag) VALUES (?, 'rust')",
+            [page_id],
+        )
+        .await;
+    assert!(
+        dup_result.is_err(),
+        "duplicate (page_id, tag) must violate composite PK"
+    );
+
+    // Different tag for same page is fine
+    raw_conn
+        .execute(
+            "INSERT INTO page_tags (page_id, tag) VALUES (?, 'ai')",
+            [page_id],
+        )
+        .await
+        .expect("second tag insert");
+
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn schema_page_tags_cascade_on_page_delete() {
+    // Verify ON DELETE CASCADE: deleting a page removes its page_tags rows.
+    // This requires PRAGMA foreign_keys = ON, which conn() now enforces.
+    let (engine, tmp) = init_clean_engine().await;
+
+    engine
+        .put_page("doom-page", &note_input("Doom", "b"))
+        .await
+        .expect("put_page");
+
+    let (_, raw_conn) = raw_conn_for(&tmp).await;
+
+    // Get the page id
+    let mut rows = raw_conn
+        .query("SELECT id FROM pages WHERE slug = 'doom-page'", ())
+        .await
+        .expect("get page id");
+    let row = rows.next().await.expect("fetch").expect("must exist");
+    let page_id: i64 = row.get(0).expect("page_id");
+
+    // Insert tags for this page
+    raw_conn
+        .execute(
+            "INSERT INTO page_tags (page_id, tag) VALUES (?, 'cascade-test')",
+            [page_id],
+        )
+        .await
+        .expect("insert tag");
+
+    // Hard-delete the page via raw SQL (bypassing soft-delete)
+    raw_conn
+        .execute("DELETE FROM pages WHERE id = ?", [page_id])
+        .await
+        .expect("hard delete page");
+
+    // Verify tag row is gone (CASCADE)
+    let mut rows = raw_conn
+        .query(
+            "SELECT COUNT(*) FROM page_tags WHERE page_id = ?",
+            [page_id],
+        )
+        .await
+        .expect("count tags");
+    let row = rows.next().await.expect("fetch").expect("must exist");
+    let count: i64 = row.get(0).expect("count");
+    assert_eq!(count, 0, "page_tags rows must be cascade-deleted with page");
+
+    engine.disconnect().await.expect("disconnect");
+}
+
+// --- Functional tests (4-10) ---
+
+#[tokio::test]
+async fn list_pages_filters_by_tag_basic() {
+    // Basic tag filter: only pages with the specified tag should appear.
+    let (engine, tmp) = init_clean_engine().await;
+
+    engine
+        .put_page("tagged-page", &note_input("Tagged", "b"))
+        .await
+        .expect("put_page tagged");
+    engine
+        .put_page("untagged-page", &note_input("Untagged", "b"))
+        .await
+        .expect("put_page untagged");
+
+    // Tag only the first page
+    let (_, raw_conn) = raw_conn_for(&tmp).await;
+    let mut rows = raw_conn
+        .query("SELECT id FROM pages WHERE slug = 'tagged-page'", ())
+        .await
+        .expect("get page id");
+    let row = rows.next().await.expect("fetch").expect("must exist");
+    let page_id: i64 = row.get(0).expect("page_id");
+    raw_conn
+        .execute(
+            "INSERT INTO page_tags (page_id, tag) VALUES (?, 'rust')",
+            [page_id],
+        )
+        .await
+        .expect("insert tag");
+
+    let filters = PageFilters {
+        tag: Some("rust".to_string()),
+        ..Default::default()
+    };
+
+    let pages = engine
+        .list_pages(&filters)
+        .await
+        .expect("list_pages tag=rust");
+
+    assert_eq!(pages.len(), 1, "only tagged page should appear");
+    assert_eq!(pages[0].slug, "tagged-page");
+
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn list_pages_tag_filter_excludes_others() {
+    // Page with tag 'ai' should NOT appear when filtering for tag 'rust'.
+    let (engine, tmp) = init_clean_engine().await;
+
+    engine
+        .put_page("rust-page", &note_input("Rust", "b"))
+        .await
+        .expect("put_page rust");
+    engine
+        .put_page("ai-page", &note_input("AI", "b"))
+        .await
+        .expect("put_page ai");
+
+    let (_, raw_conn) = raw_conn_for(&tmp).await;
+
+    // Tag both pages with different tags
+    for (slug, tag) in [("rust-page", "rust"), ("ai-page", "ai")] {
+        let mut rows = raw_conn
+            .query(&format!("SELECT id FROM pages WHERE slug = '{slug}'"), ())
+            .await
+            .expect("get page id");
+        let row = rows.next().await.expect("fetch").expect("must exist");
+        let page_id: i64 = row.get(0).expect("page_id");
+        raw_conn
+            .execute(
+                "INSERT INTO page_tags (page_id, tag) VALUES (?, ?)",
+                ::libsql::params![page_id, tag],
+            )
+            .await
+            .expect("insert tag");
+    }
+
+    let filters = PageFilters {
+        tag: Some("rust".to_string()),
+        ..Default::default()
+    };
+
+    let pages = engine
+        .list_pages(&filters)
+        .await
+        .expect("list_pages tag=rust");
+
+    assert_eq!(pages.len(), 1, "only rust-tagged page");
+    assert_eq!(pages[0].slug, "rust-page");
+
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn list_pages_tag_filter_no_dup_multi_tags() {
+    // A page with 3 tags should still appear exactly once when filtering
+    // for any one of those tags — composite PK + single-tag exact match
+    // guarantees at most 1 matching row per page, so JOIN produces no dups.
+    let (engine, tmp) = init_clean_engine().await;
+
+    engine
+        .put_page("multi-page", &note_input("Multi", "b"))
+        .await
+        .expect("put_page");
+
+    let (_, raw_conn) = raw_conn_for(&tmp).await;
+
+    let mut rows = raw_conn
+        .query("SELECT id FROM pages WHERE slug = 'multi-page'", ())
+        .await
+        .expect("get page id");
+    let row = rows.next().await.expect("fetch").expect("must exist");
+    let page_id: i64 = row.get(0).expect("page_id");
+
+    for tag in &["rust", "ai", "research"] {
+        raw_conn
+            .execute(
+                "INSERT INTO page_tags (page_id, tag) VALUES (?, ?)",
+                ::libsql::params![page_id, tag],
+            )
+            .await
+            .expect("insert tag");
+    }
+
+    let filters = PageFilters {
+        tag: Some("rust".to_string()),
+        ..Default::default()
+    };
+
+    let pages = engine
+        .list_pages(&filters)
+        .await
+        .expect("list_pages tag=rust");
+
+    assert_eq!(pages.len(), 1, "multi-tagged page appears exactly once");
+    assert_eq!(pages[0].slug, "multi-page");
+
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn list_pages_tag_filter_unknown_tag() {
+    // Filtering by a tag that no page has → empty result.
+    let (engine, tmp) = init_clean_engine().await;
+
+    engine
+        .put_page("some-page", &note_input("Some", "b"))
+        .await
+        .expect("put_page");
+
+    let (_, raw_conn) = raw_conn_for(&tmp).await;
+    let mut rows = raw_conn
+        .query("SELECT id FROM pages WHERE slug = 'some-page'", ())
+        .await
+        .expect("get page id");
+    let row = rows.next().await.expect("fetch").expect("must exist");
+    let page_id: i64 = row.get(0).expect("page_id");
+    raw_conn
+        .execute(
+            "INSERT INTO page_tags (page_id, tag) VALUES (?, 'existing')",
+            [page_id],
+        )
+        .await
+        .expect("insert tag");
+
+    let filters = PageFilters {
+        tag: Some("nonexistent".to_string()),
+        ..Default::default()
+    };
+
+    let pages = engine
+        .list_pages(&filters)
+        .await
+        .expect("list_pages tag=nonexistent");
+
+    assert_eq!(pages.len(), 0, "unknown tag must return empty");
+
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn list_pages_tag_filter_combines_page_type() {
+    // tag + page_type AND: only pages matching BOTH should appear.
+    let (engine, tmp) = init_clean_engine().await;
+
+    engine
+        .put_page("note-rust", &note_input("Note Rust", "b"))
+        .await
+        .expect("put_page note");
+    engine
+        .put_page("topic-rust", &topic_input("Topic Rust", "b"))
+        .await
+        .expect("put_page topic");
+
+    let (_, raw_conn) = raw_conn_for(&tmp).await;
+
+    for slug in &["note-rust", "topic-rust"] {
+        let mut rows = raw_conn
+            .query(&format!("SELECT id FROM pages WHERE slug = '{slug}'"), ())
+            .await
+            .expect("get page id");
+        let row = rows.next().await.expect("fetch").expect("must exist");
+        let page_id: i64 = row.get(0).expect("page_id");
+        raw_conn
+            .execute(
+                "INSERT INTO page_tags (page_id, tag) VALUES (?, 'rust')",
+                [page_id],
+            )
+            .await
+            .expect("insert tag");
+    }
+
+    // Filter: tag=rust AND page_type=note
+    let filters = PageFilters {
+        tag: Some("rust".to_string()),
+        page_type: Some("note".to_string()),
+        ..Default::default()
+    };
+
+    let pages = engine
+        .list_pages(&filters)
+        .await
+        .expect("list_pages tag=rust + page_type=note");
+
+    assert_eq!(pages.len(), 1, "only note+rust page should appear");
+    assert_eq!(pages[0].slug, "note-rust");
+
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn list_pages_tag_filter_with_include_deleted() {
+    // Tag filter should respect include_deleted semantics:
+    // soft-deleted page should be excluded by default, included when flagged.
+    let (engine, tmp) = init_clean_engine().await;
+
+    engine
+        .put_page("alive-page", &note_input("Alive", "b"))
+        .await
+        .expect("put_page alive");
+    engine
+        .put_page("deleted-page", &note_input("Deleted", "b"))
+        .await
+        .expect("put_page deleted");
+
+    // Soft-delete one page
+    engine
+        .soft_delete_page("deleted-page", None)
+        .await
+        .expect("soft delete");
+
+    // Tag both pages
+    let (_, raw_conn) = raw_conn_for(&tmp).await;
+    for slug in &["alive-page", "deleted-page"] {
+        let mut rows = raw_conn
+            .query(&format!("SELECT id FROM pages WHERE slug = '{slug}'"), ())
+            .await
+            .expect("get page id");
+        let row = rows.next().await.expect("fetch").expect("must exist");
+        let page_id: i64 = row.get(0).expect("page_id");
+        raw_conn
+            .execute(
+                "INSERT INTO page_tags (page_id, tag) VALUES (?, 'rust')",
+                [page_id],
+            )
+            .await
+            .expect("insert tag");
+    }
+
+    // Default: exclude soft-deleted
+    let filters_default = PageFilters {
+        tag: Some("rust".to_string()),
+        ..Default::default()
+    };
+    let pages = engine
+        .list_pages(&filters_default)
+        .await
+        .expect("list_pages tag=rust (default)");
+    assert_eq!(pages.len(), 1, "soft-deleted page excluded by default");
+    assert_eq!(pages[0].slug, "alive-page");
+
+    // include_deleted = true
+    let filters_include = PageFilters {
+        tag: Some("rust".to_string()),
+        include_deleted: true,
+        ..Default::default()
+    };
+    let pages_all = engine
+        .list_pages(&filters_include)
+        .await
+        .expect("list_pages tag=rust + include_deleted");
+    assert_eq!(pages_all.len(), 2, "both pages with include_deleted=true");
+
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn list_pages_tag_filter_with_limit_offset() {
+    // Tag filter + limit/offset: pagination works on tag-filtered results.
+    let (engine, tmp) = init_clean_engine().await;
+
+    // Insert 3 pages, all tagged 'rust'
+    for i in 0..3 {
+        engine
+            .put_page(&format!("page-{i}"), &note_input(&format!("P{i}"), "b"))
+            .await
+            .expect("put_page");
+    }
+
+    let (_, raw_conn) = raw_conn_for(&tmp).await;
+    for i in 0..3 {
+        let slug = format!("page-{i}");
+        let mut rows = raw_conn
+            .query(&format!("SELECT id FROM pages WHERE slug = '{slug}'"), ())
+            .await
+            .expect("get page id");
+        let row = rows.next().await.expect("fetch").expect("must exist");
+        let page_id: i64 = row.get(0).expect("page_id");
+        raw_conn
+            .execute(
+                "INSERT INTO page_tags (page_id, tag) VALUES (?, 'rust')",
+                [page_id],
+            )
+            .await
+            .expect("insert tag");
+    }
+
+    // Page 1: limit=2, offset=0
+    let page1 = engine
+        .list_pages(&PageFilters {
+            tag: Some("rust".to_string()),
+            limit: Some(2),
+            ..Default::default()
+        })
+        .await
+        .expect("list_pages tag=rust limit=2");
+    assert_eq!(page1.len(), 2, "first page should have 2 results");
+
+    // Page 2: limit=2, offset=2
+    let page2 = engine
+        .list_pages(&PageFilters {
+            tag: Some("rust".to_string()),
+            limit: Some(2),
+            offset: Some(2),
+            ..Default::default()
+        })
+        .await
+        .expect("list_pages tag=rust limit=2 offset=2");
+    assert_eq!(page2.len(), 1, "second page should have 1 result");
 
     engine.disconnect().await.expect("disconnect");
 }
