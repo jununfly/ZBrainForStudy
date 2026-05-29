@@ -704,6 +704,131 @@ impl BrainEngine for LibsqlEngine {
             None => Ok(None),
         }
     }
+
+    async fn add_tag(
+        &self,
+        slug: &str,
+        tag: &str,
+        source_id: Option<&str>,
+    ) -> Result<()> {
+        // TS semantic: `opts?.sourceId ?? 'default'`. Mirror exactly.
+        let sid = source_id.unwrap_or("default");
+        let conn = self.conn().await?;
+
+        // Single-statement insert: only proceeds when a *live* page row exists
+        // (slug, source_id, deleted_at IS NULL). The INSERT…SELECT pattern
+        // returns 0 affected rows for both "page missing" and "(page_id, tag)
+        // duplicate", so we disambiguate with a follow-up EXISTS probe.
+        //
+        // Stronger-than-TS clause: `AND deleted_at IS NULL`. TS allows tagging
+        // soft-deleted pages (likely an oversight — those rows are hidden from
+        // every read path and will eventually be purged). Rust deliberately
+        // surfaces this as PageNotFound. See commit message / S6-T7 plan node 5.
+        let affected = conn
+            .execute(
+                "INSERT INTO page_tags (page_id, tag) \
+                 SELECT id, ?2 FROM pages \
+                 WHERE slug = ?1 AND source_id = ?3 AND deleted_at IS NULL \
+                 ON CONFLICT (page_id, tag) DO NOTHING",
+                ::libsql::params![slug, tag, sid],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("add_tag insert failed: {e}")))?;
+
+        if affected > 0 {
+            return Ok(());
+        }
+
+        // Zero rows affected → either the page is missing/soft-deleted, OR
+        // the (page_id, tag) pair already existed (ON CONFLICT DO NOTHING).
+        // Probe live page existence to decide between PageNotFound and
+        // idempotent success.
+        let mut rows = conn
+            .query(
+                "SELECT 1 FROM pages \
+                 WHERE slug = ?1 AND source_id = ?2 AND deleted_at IS NULL \
+                 LIMIT 1",
+                ::libsql::params![slug, sid],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("add_tag existence probe failed: {e}")))?;
+
+        let page_exists = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("add_tag probe row fetch failed: {e}")))?
+            .is_some();
+
+        if page_exists {
+            // Page is live; affected==0 must be the DO NOTHING branch ⇒ tag
+            // already attached. Idempotent success, exactly like TS where the
+            // unique constraint silently absorbs the dup.
+            Ok(())
+        } else {
+            Err(Error::page_not_found(slug, source_id))
+        }
+    }
+
+    async fn remove_tag(
+        &self,
+        slug: &str,
+        tag: &str,
+        source_id: Option<&str>,
+    ) -> Result<()> {
+        // TS `removeTag` uses a sub-select; when the page is missing the
+        // sub-select returns NULL and the DELETE matches zero rows — silent
+        // no-op. Rust preserves that asymmetry vs addTag.
+        let sid = source_id.unwrap_or("default");
+        let conn = self.conn().await?;
+        conn.execute(
+            "DELETE FROM page_tags \
+             WHERE tag = ?2 \
+               AND page_id = ( \
+                   SELECT id FROM pages \
+                   WHERE slug = ?1 AND source_id = ?3 AND deleted_at IS NULL \
+               )",
+            ::libsql::params![slug, tag, sid],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("remove_tag delete failed: {e}")))?;
+        Ok(())
+    }
+
+    async fn get_tags(
+        &self,
+        slug: &str,
+        source_id: Option<&str>,
+    ) -> Result<Vec<String>> {
+        // TS `getTags` returns [] for missing pages (sub-select → NULL →
+        // page_id IS NULL never matches). Same shape in Rust.
+        let sid = source_id.unwrap_or("default");
+        let conn = self.conn().await?;
+        let mut rows = conn
+            .query(
+                "SELECT tag FROM page_tags \
+                 WHERE page_id = ( \
+                     SELECT id FROM pages \
+                     WHERE slug = ?1 AND source_id = ?2 AND deleted_at IS NULL \
+                 ) \
+                 ORDER BY tag",
+                ::libsql::params![slug, sid],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("get_tags query failed: {e}")))?;
+
+        let mut out = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("get_tags row fetch failed: {e}")))?
+        {
+            let tag: String = row
+                .get(0)
+                .map_err(|e| Error::engine(format!("get_tags decode failed: {e}")))?;
+            out.push(tag);
+        }
+        Ok(out)
+    }
 }
 
 /// Decode one full-width `pages` row into [`Page`]. Column order is the SELECT

@@ -305,6 +305,43 @@ pub trait BrainEngine: Send + Sync {
         Err(Error::unsupported("pending slice 6a"))
     }
 
+    // — Tag CRUD (3) —
+    /// Attach `tag` to the page identified by (`slug`, `source_id`). Mirrors
+    /// TS `addTag` which throws when the page is missing — Rust returns
+    /// `Err(Error::page_not_found(..))` in that case. Idempotent on duplicate
+    /// (tag, page) pairs.
+    async fn add_tag(
+        &self,
+        _slug: &str,
+        _tag: &str,
+        _source_id: Option<&str>,
+    ) -> crate::Result<()> {
+        Err(Error::unsupported("pending slice 6a"))
+    }
+
+    /// Detach `tag` from the page identified by (`slug`, `source_id`). Mirrors
+    /// TS `removeTag` whose sub-select silently no-ops when the page is
+    /// missing — Rust preserves that asymmetry and returns `Ok(())`.
+    async fn remove_tag(
+        &self,
+        _slug: &str,
+        _tag: &str,
+        _source_id: Option<&str>,
+    ) -> crate::Result<()> {
+        Err(Error::unsupported("pending slice 6a"))
+    }
+
+    /// List the tags currently attached to (`slug`, `source_id`), ordered by
+    /// tag ascending. Mirrors TS `getTags` which returns `[]` for missing
+    /// pages.
+    async fn get_tags(
+        &self,
+        _slug: &str,
+        _source_id: Option<&str>,
+    ) -> crate::Result<Vec<String>> {
+        Err(Error::unsupported("pending slice 6a"))
+    }
+
     // — Content refresh (2) —
     /// Update `compiled_truth`, `timeline`, `content_hash` for an existing
     /// page (typically after a re-importer pass). Mirrors TS

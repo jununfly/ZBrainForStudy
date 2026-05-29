@@ -97,6 +97,28 @@ impl StructuredError {
     pub fn unsupported(message: impl Into<String>) -> Self {
         Self::new("Unsupported", "unsupported", message)
     }
+
+    /// Convenience constructor for "the targeted page does not exist (or is
+    /// soft-deleted) within the given source scope". Used by mutation paths
+    /// that demand a live row — e.g. `add_tag` mirrors the TS `addTag` which
+    /// throws `addTag failed: page "<slug>" (source=<sid>) not found`.
+    ///
+    /// `source_id = None` is normalized to `"default"` because that is the
+    /// exact TS semantic (`opts?.sourceId ?? 'default'`). The rendered
+    /// message therefore always shows a concrete source name and stays
+    /// byte-for-byte aligned with the TS error string — no `<unspecified>`
+    /// or other synthetic placeholder appears.
+    ///
+    /// Equivalent to `StructuredError::new("PageNotFound", "page_not_found", message)`.
+    #[must_use]
+    pub fn page_not_found(slug: &str, source_id: Option<&str>) -> Self {
+        let source = source_id.unwrap_or("default");
+        Self::new(
+            "PageNotFound",
+            "page_not_found",
+            format!("addTag failed: page \"{slug}\" (source={source}) not found"),
+        )
+    }
 }
 
 /// Crate-wide alias for [`StructuredError`]. Lets call sites write
@@ -206,5 +228,30 @@ mod tests {
         let e = StructuredError::new("X", "x", "y");
         let boxed: Box<dyn StdError> = Box::new(e);
         assert!(boxed.to_string().starts_with("X: "));
+    }
+
+    #[test]
+    fn page_not_found_with_source_renders_ts_message_shape() {
+        let e = StructuredError::page_not_found("alpha", Some("docs"));
+        assert_eq!(e.class, "PageNotFound");
+        assert_eq!(e.code, "page_not_found");
+        assert_eq!(
+            e.message,
+            "addTag failed: page \"alpha\" (source=docs) not found"
+        );
+    }
+
+    #[test]
+    fn page_not_found_without_source_defaults_to_default() {
+        // TS: `opts?.sourceId ?? 'default'`. Rust mirrors this exactly — None
+        // is normalized to the literal "default", NOT to a synthetic
+        // placeholder. Keeps the error message byte-aligned with TS.
+        let e = StructuredError::page_not_found("ghost", None);
+        assert_eq!(e.class, "PageNotFound");
+        assert_eq!(e.code, "page_not_found");
+        assert_eq!(
+            e.message,
+            "addTag failed: page \"ghost\" (source=default) not found"
+        );
     }
 }
