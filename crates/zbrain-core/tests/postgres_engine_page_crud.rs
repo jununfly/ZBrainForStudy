@@ -176,6 +176,35 @@ async fn get_page_respects_source_id_scope() {
 }
 
 #[tokio::test]
+async fn get_page_without_source_id_does_not_fall_back_to_non_default_source() {
+    let Some(engine) = init_clean_engine().await else {
+        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
+        return;
+    };
+    seed_source("pg-alt").await;
+
+    engine
+        .put_page(
+            "alt-only-slug",
+            Some("pg-alt"),
+            &note_input("Alt title", "alt-body"),
+        )
+        .await
+        .expect("put alt source");
+
+    let got = engine
+        .get_page("alt-only-slug", &GetPageOpts::default())
+        .await
+        .expect("get_page");
+
+    assert!(
+        got.is_none(),
+        "GetPageOpts::default() must only search the default source, got {got:?}"
+    );
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
 async fn get_page_with_include_deleted_returns_unsupported() {
     let Some(engine) = init_clean_engine().await else {
         eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");

@@ -132,14 +132,15 @@ impl BrainEngine for PostgresEngine {
             ));
         }
         let pool = self.pool()?;
+        let source_id = opts.source_id.as_deref().unwrap_or("default");
         let row = sqlx::query(
             "SELECT id, slug, type, page_kind, title, compiled_truth, timeline, source_id \
              FROM pages \
              WHERE slug = $1 \
-               AND ($2::text IS NULL OR source_id = $2)",
+               AND source_id = $2",
         )
         .bind(slug)
-        .bind(opts.source_id.as_deref())
+        .bind(source_id)
         .fetch_optional(pool)
         .await
         .map_err(|e| Error::engine(format!("get_page query failed: {e}")))?;

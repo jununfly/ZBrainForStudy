@@ -209,6 +209,9 @@ pub struct PageFilters {
 /// Options for [`BrainEngine::get_page`]. Mirrors `GetPageOpts`.
 #[derive(Debug, Default, Clone)]
 pub struct GetPageOpts {
+    /// Source scope for slug lookup. `None` is normalised to `"default"`,
+    /// matching [`BrainEngine::put_page`] rather than performing an unscoped
+    /// cross-source search.
     pub source_id: Option<String>,
     pub include_deleted: bool,
 }
@@ -244,8 +247,11 @@ pub trait BrainEngine: Send + Sync {
 
     // ── Page CRUD (slice 3 subset) ────────────────────────────────────────
 
-    /// Fetch a single page by `slug`. Returns `None` if not found or
-    /// soft-deleted (unless `opts.include_deleted` is true).
+    /// Fetch a single page by `slug` within `opts.source_id`.
+    ///
+    /// `opts.source_id = None` is normalised to `"default"`; callers that need
+    /// a non-default source must pass it explicitly. Returns `None` if not found
+    /// or soft-deleted (unless `opts.include_deleted` is true).
     async fn get_page(&self, slug: &str, opts: &GetPageOpts) -> crate::Result<Option<Page>>;
 
     /// Insert or update a page (upsert semantics — same `(source_id, slug)` →
