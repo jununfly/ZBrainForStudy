@@ -51,6 +51,24 @@ fn note_input(title: &str, body: &str) -> PageInput {
     }
 }
 
+/// Seed an additional source on the same temp DB. `pages.source_id` has a FK
+/// to `sources(id)`, and `init_schema` only seeds `"default"`.
+async fn seed_source(tmp: &NamedTempFile, id: &str) {
+    let path_str = tmp.path().to_string_lossy().into_owned();
+    let db = ::libsql::Builder::new_local(&path_str)
+        .build()
+        .await
+        .expect("raw db open");
+    let raw_conn = db.connect().expect("raw conn");
+    raw_conn
+        .execute(
+            "INSERT OR IGNORE INTO sources (id, name) VALUES (?1, ?2)",
+            ::libsql::params![id, id],
+        )
+        .await
+        .expect("seed source");
+}
+
 // -- get_page --------------------------------------------------------------
 
 #[tokio::test]
@@ -189,6 +207,34 @@ async fn get_page_with_mismatched_source_id_returns_none() {
     assert!(
         got.is_none(),
         "wrong source_id must yield None, got {got:?}"
+    );
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn get_page_without_source_id_does_not_fall_back_to_non_default_source() {
+    // GetPageOpts::default() must mirror put_page(..., None, ...) by reading
+    // only the "default" source. It must not degrade into an unscoped slug
+    // lookup that returns a page from another source.
+    let (engine, tmp) = init_clean_engine().await;
+    seed_source(&tmp, "libsql-alt").await;
+    engine
+        .put_page(
+            "alt-only-slug",
+            Some("libsql-alt"),
+            &note_input("Alt title", "alt-body"),
+        )
+        .await
+        .expect("put alt source");
+
+    let got = engine
+        .get_page("alt-only-slug", &GetPageOpts::default())
+        .await
+        .expect("get_page");
+
+    assert!(
+        got.is_none(),
+        "GetPageOpts::default() must only search the default source, got {got:?}"
     );
     engine.disconnect().await.expect("disconnect");
 }

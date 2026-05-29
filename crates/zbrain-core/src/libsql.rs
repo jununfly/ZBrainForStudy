@@ -213,7 +213,7 @@ impl BrainEngine for LibsqlEngine {
         //
         // Filters:
         // - `slug = ?1` (primary key after source_id scoping)
-        // - `(?2 IS NULL OR source_id = ?2)` – optional scope match
+        // - `source_id = ?2` with `None` normalised to "default"
         // - `(?3 = 1 OR deleted_at IS NULL)` – default hides soft-deleted
         //
         // `include_deleted` is bound as an INTEGER (0/1) because libsql /
@@ -221,7 +221,7 @@ impl BrainEngine for LibsqlEngine {
         // avoids any surprise.
         let conn = self.conn().await?;
         let include_deleted_flag: i64 = i64::from(opts.include_deleted);
-        let source_id_param = opts.source_id.clone();
+        let source_id_param = opts.source_id.as_deref().unwrap_or("default");
         let mut rows = conn
             .query(
                 "SELECT id, slug, type, page_kind, title, compiled_truth, timeline, \
@@ -233,7 +233,7 @@ impl BrainEngine for LibsqlEngine {
                         corpus_generation \
                  FROM pages \
                  WHERE slug = ?1 \
-                   AND (?2 IS NULL OR source_id = ?2) \
+                   AND source_id = ?2 \
                    AND (?3 = 1 OR deleted_at IS NULL) \
                  LIMIT 1",
                 ::libsql::params![slug, source_id_param, include_deleted_flag],
