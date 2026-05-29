@@ -268,8 +268,19 @@ impl BrainEngine for LibsqlEngine {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)] // Dynamic SQL builder for 9 filters — extracting helpers is deferred until S6-T5c lands tag JOIN.
     async fn list_pages(&self, filters: &PageFilters) -> Result<Vec<Page>> {
         let conn = self.conn()?;
+
+        // ── Empty source_ids short-circuit ───────────────────────────────
+        // `source_ids: Some(vec![])` semantically means "match no source",
+        // which would produce an invalid `IN ()` SQL clause.  Return empty
+        // immediately so we never round-trip a degenerate query.
+        if let Some(ids) = filters.source_ids.as_ref() {
+            if ids.is_empty() {
+                return Ok(Vec::new());
+            }
+        }
 
         // ── Build dynamic SQL ────────────────────────────────────────────
         // Full 30-column projection, same column order as `full_row_to_page`.
@@ -298,6 +309,58 @@ impl BrainEngine for LibsqlEngine {
             None
         };
         if let Some(ref frag) = page_type_param {
+            sql.push_str(frag);
+        }
+
+        // Filter: slug_prefix (prefix match, no leading-wildcard fuzziness)
+        let slug_prefix_param = if filters.slug_prefix.is_some() {
+            let frag = format!(" AND p.slug LIKE ?{param_idx} || '%'");
+            param_idx += 1;
+            Some(frag)
+        } else {
+            None
+        };
+        if let Some(ref frag) = slug_prefix_param {
+            sql.push_str(frag);
+        }
+
+        // Filter: source_id (single)
+        let source_id_param = if filters.source_id.is_some() {
+            let frag = format!(" AND p.source_id = ?{param_idx}");
+            param_idx += 1;
+            Some(frag)
+        } else {
+            None
+        };
+        if let Some(ref frag) = source_id_param {
+            sql.push_str(frag);
+        }
+
+        // Filter: source_ids (IN clause, dynamic length)
+        // Empty vec was already short-circuited above; here len >= 1.
+        let source_id_in_param = if let Some(ids) = filters.source_ids.as_ref() {
+            let mut placeholders: Vec<String> = Vec::with_capacity(ids.len());
+            for _ in ids {
+                placeholders.push(format!("?{param_idx}"));
+                param_idx += 1;
+            }
+            Some(format!(" AND p.source_id IN ({})", placeholders.join(", ")))
+        } else {
+            None
+        };
+        if let Some(ref frag) = source_id_in_param {
+            sql.push_str(frag);
+        }
+
+        // Filter: updated_after (strictly after — `>` not `>=`)
+        let updated_after_param = if filters.updated_after.is_some() {
+            let frag = format!(" AND p.updated_at > ?{param_idx}");
+            param_idx += 1;
+            Some(frag)
+        } else {
+            None
+        };
+        if let Some(ref frag) = updated_after_param {
             sql.push_str(frag);
         }
 
@@ -344,12 +407,27 @@ impl BrainEngine for LibsqlEngine {
         // `Value` for positional binding.
         //
         // ORDER CONTRACT: the push order below MUST match the `param_idx`
-        // bumps above — page_type → limit → offset.  Reordering either side
-        // without the other will silently misbind.
+        // bumps above — page_type → slug_prefix → source_id → source_ids
+        // → updated_after → limit → offset.  Reordering either side without
+        // the other will silently misbind.
         let mut param_vals: Vec<::libsql::Value> = Vec::new();
 
         if let Some(ref pt) = filters.page_type {
             param_vals.push(::libsql::Value::from(pt.clone()));
+        }
+        if let Some(ref prefix) = filters.slug_prefix {
+            param_vals.push(::libsql::Value::from(prefix.clone()));
+        }
+        if let Some(ref sid) = filters.source_id {
+            param_vals.push(::libsql::Value::from(sid.clone()));
+        }
+        if let Some(ref ids) = filters.source_ids {
+            for id in ids {
+                param_vals.push(::libsql::Value::from(id.clone()));
+            }
+        }
+        if let Some(ref ts) = filters.updated_after {
+            param_vals.push(::libsql::Value::from(ts.clone()));
         }
         if let Some(n) = filters.limit {
             let limit_i64 = i64::try_from(n).unwrap_or(i64::MAX);
