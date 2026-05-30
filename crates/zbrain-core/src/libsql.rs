@@ -66,6 +66,7 @@ const SCHEMA_VERSION: i64 = 4;
 /// Embedded `SQLite` engine. Use [`LibsqlEngine::new`] then [`connect`] before
 /// any other method. Calling `connect` twice on the same instance is
 /// rejected to keep ownership of the underlying `Database` handle clean.
+/// TODO：单例中单线程，借助线程的消息循环序列化所有对数据库的读写操作，避免竞态问题。
 pub struct LibsqlEngine {
     db: OnceLock<::libsql::Database>,
 }
