@@ -129,13 +129,13 @@ impl BrainEngine for PostgresEngine {
         // - `(deleted_at IS NULL OR $3)` — default hides soft-deleted rows;
         //   `include_deleted=true` returns them. Mirrors libsql get_page
         //   semantics (`?3 = 1 OR deleted_at IS NULL`).
-        // - `deleted_at` is not yet in the SELECT projection. Field-level
-        //   fidelity for `Page.deleted_at` is owned by the full-column
-        //   projection slice (#72); this slice only enables visibility.
+        // Slice #72-a: `deleted_at` is now part of the SELECT projection so
+        //   `Page.deleted_at` round-trips faithfully. Other 0002+ columns
+        //   stay out of scope until #72-b.
         let pool = self.pool()?;
         let source_id = opts.source_id.as_deref().unwrap_or("default");
         let row = sqlx::query(
-            "SELECT id, slug, type, page_kind, title, compiled_truth, timeline, source_id \
+            "SELECT id, slug, type, page_kind, title, compiled_truth, timeline, source_id, deleted_at \
              FROM pages \
              WHERE slug = $1 \
                AND source_id = $2 \
@@ -171,7 +171,7 @@ impl BrainEngine for PostgresEngine {
                  title = EXCLUDED.title, \
                  compiled_truth = EXCLUDED.compiled_truth, \
                  updated_at = now() \
-             RETURNING id, slug, type, page_kind, title, compiled_truth, timeline, source_id",
+             RETURNING id, slug, type, page_kind, title, compiled_truth, timeline, source_id, deleted_at",
         )
         .bind(slug)
         .bind(&input.page_type)
@@ -206,7 +206,7 @@ impl BrainEngine for PostgresEngine {
         // Limit is applied with `LIMIT $2` when set, otherwise we pass NULL
         // (postgres `LIMIT NULL` = unbounded).
         let rows = sqlx::query(
-            "SELECT id, slug, type, page_kind, title, compiled_truth, timeline, source_id \
+            "SELECT id, slug, type, page_kind, title, compiled_truth, timeline, source_id, deleted_at \
              FROM pages \
              WHERE ($1::text IS NULL OR type = $1) \
              ORDER BY id ASC \
@@ -271,14 +271,25 @@ fn row_to_page(row: &sqlx::postgres::PgRow) -> Result<Page> {
     let source_id: String = row
         .try_get("source_id")
         .map_err(|e| Error::engine(format!("row decode source_id: {e}")))?;
+    // Slice #72-a: decode `deleted_at` (TIMESTAMPTZ NULL) into ISO8601 to
+    // match the engine-level `Option<String>` shape and the libsql side
+    // (which stores the SQLite TEXT timestamp directly). Using RFC3339 keeps
+    // round-trip lossless and parseable. We use sqlx's re-exported `chrono`
+    // (gated by the `chrono` feature already enabled in workspace deps) so
+    // this crate does not need a direct `chrono` dependency.
+    let deleted_at: Option<sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>> = row
+        .try_get("deleted_at")
+        .map_err(|e| Error::engine(format!("row decode deleted_at: {e}")))?;
+    let deleted_at = deleted_at.map(|ts| ts.to_rfc3339());
 
     let page_kind = decode_page_kind(&page_kind_str)?;
     let id_u64 = u64::try_from(id)
         .map_err(|_| Error::engine(format!("page id {id} negative; corrupt row")))?;
 
     // S2/S6a-pg placeholder: decode the current narrow PG projection,
-    // including `source_id`; the remaining Page fields default until the PG
-    // SELECT is widened to the full 0002+ projection in a later slice.
+    // including `source_id` and (since #72-a) `deleted_at`; the remaining
+    // Page fields default until the PG SELECT is widened to the full 0002+
+    // projection in #72-b.
     //
     // Slice 6a S5 added five more columns (`last_retrieved_at`,
     // `generation`, `embedding`, `chunker_version`, `source_path`). Until
@@ -297,7 +308,7 @@ fn row_to_page(row: &sqlx::postgres::PgRow) -> Result<Page> {
         emotional_weight: None,
         created_at: String::new(),
         updated_at: String::new(),
-        deleted_at: None,
+        deleted_at,
         last_retrieved_at: None,
         effective_date: None,
         effective_date_source: None,

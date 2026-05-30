@@ -272,6 +272,41 @@ async fn get_page_returns_soft_deleted_row_when_include_deleted_true() {
         .expect("Some(page) when include_deleted=true");
     assert_eq!(got.id, inserted.id);
     assert_eq!(got.slug, "soft-del-visible");
+    // Slice #72-a: `Page.deleted_at` field fidelity — the PG SELECT must
+    // include the column and `row_to_page` must decode it into the engine
+    // struct. `soft_delete_via_sql` stamped `now()`, so this must be Some.
+    assert!(
+        got.deleted_at.is_some(),
+        "include_deleted=true must surface the deleted_at timestamp, got {:?}",
+        got.deleted_at
+    );
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn get_page_live_row_has_no_deleted_at() {
+    // Slice #72-a guard: a never-deleted row must round-trip
+    // `deleted_at == None`. Prevents an accidental projection that always
+    // populates the field (e.g. defaulting to `now()` instead of NULL).
+    let Some(engine) = init_clean_engine().await else {
+        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
+        return;
+    };
+    engine
+        .put_page("live-page", None, &note_input("Live", "body"))
+        .await
+        .expect("put_page");
+
+    let got = engine
+        .get_page("live-page", &GetPageOpts::default())
+        .await
+        .expect("get_page")
+        .expect("Some(page)");
+    assert!(
+        got.deleted_at.is_none(),
+        "live row must have deleted_at = None, got {:?}",
+        got.deleted_at
+    );
     engine.disconnect().await.expect("disconnect");
 }
 
