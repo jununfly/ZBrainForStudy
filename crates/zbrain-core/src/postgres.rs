@@ -2,14 +2,15 @@
 //!
 //! Implements the [`BrainEngine`] page-level surface (`get_page` /
 //! `put_page` / `delete_page` / `list_pages` / `resolve_slugs`) against the
-//! 4a `pages` schema. The schema deliberately omits `deleted_at`,
-//! `frontmatter`, `content_hash`, and embedding columns — those land in
-//! later patch slices (6.5a / 6.5b) alongside the trait methods that
-//! actually consult them. As a result two narrow behaviors are explicit:
+//! 4a `pages` schema, plus the 6.5a (#73) `deleted_at` column needed by
+//! `get_page`'s `include_deleted` flag. `frontmatter`, `content_hash`, and
+//! embedding columns still land in later patch slices (#72 / 6.5b) alongside
+//! the trait methods that actually consult them. Two narrow behaviors remain
+//! explicit:
 //!
-//! - `GetPageOpts.include_deleted = true` returns `Error::unsupported`
-//!   (the schema has no `deleted_at` column to filter by; silently
-//!   ignoring the flag would mask the gap).
+//! - `get_page` consults `deleted_at` for filtering only; the returned
+//!   `Page.deleted_at` stays `None` until the full-column projection slice
+//!   (#72) wires the decoder. The flag affects visibility, not field fidelity.
 //! - `resolve_slugs` is exact-match only; fuzzy `ILIKE` matching is
 //!   deferred to slice 6.5c so this slice stays reviewable.
 
@@ -123,24 +124,26 @@ impl BrainEngine for PostgresEngine {
     // the real round-trip when `ZBRAIN_TEST_PG_URL` is set.
 
     async fn get_page(&self, slug: &str, opts: &GetPageOpts) -> Result<Option<Page>> {
-        if opts.include_deleted {
-            // FixMe: soft-delete column lands in slice 6.5a; the 4a schema
-            // has no `deleted_at` to filter on, so honoring this flag would
-            // be a lie. Surface it explicitly until the column exists.
-            return Err(Error::unsupported(
-                "GetPageOpts.include_deleted requires a deleted_at column (slice 6.5a)",
-            ));
-        }
+        // Slice 6.5a (#73): `deleted_at` exists in PG (migration 0002).
+        // - `source_id = $2` with `None` normalised to "default" (S6a-pg).
+        // - `(deleted_at IS NULL OR $3)` — default hides soft-deleted rows;
+        //   `include_deleted=true` returns them. Mirrors libsql get_page
+        //   semantics (`?3 = 1 OR deleted_at IS NULL`).
+        // - `deleted_at` is not yet in the SELECT projection. Field-level
+        //   fidelity for `Page.deleted_at` is owned by the full-column
+        //   projection slice (#72); this slice only enables visibility.
         let pool = self.pool()?;
         let source_id = opts.source_id.as_deref().unwrap_or("default");
         let row = sqlx::query(
             "SELECT id, slug, type, page_kind, title, compiled_truth, timeline, source_id \
              FROM pages \
              WHERE slug = $1 \
-               AND source_id = $2",
+               AND source_id = $2 \
+               AND (deleted_at IS NULL OR $3)",
         )
         .bind(slug)
         .bind(source_id)
+        .bind(opts.include_deleted)
         .fetch_optional(pool)
         .await
         .map_err(|e| Error::engine(format!("get_page query failed: {e}")))?;

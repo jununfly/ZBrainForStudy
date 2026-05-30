@@ -5,7 +5,8 @@
 //! the `pages` table from prior test runs, then exercises one CRUD method.
 //!
 //! Test groups:
-//! - `get_page`: not-found / found / `include_deleted` unsupported error
+//! - `get_page`: not-found / found / source scoping / `include_deleted`
+//!   hides soft-deleted rows by default and returns them when set
 //! - `put_page`: insert / upsert (same slug -> updated row, id may change)
 //! - `delete_page`: row vanishes, no-op on missing
 //! - `list_pages`: empty / `page_type` filter / limit truncation
@@ -202,22 +203,75 @@ async fn get_page_without_source_id_does_not_fall_back_to_non_default_source() {
     engine.disconnect().await.expect("disconnect");
 }
 
+/// Side-channel: soft-delete a page by stamping `deleted_at = now()` directly
+/// via SQL. `BrainEngine::soft_delete_page` is still `unsupported` in PG until
+/// a later slice, so the test sets the column itself to exercise the read path.
+async fn soft_delete_via_sql(slug: &str) {
+    let url = pg_url().expect("ZBRAIN_TEST_PG_URL set for soft-delete side-channel");
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .expect("soft-delete pool");
+    let rows = sqlx::query("UPDATE pages SET deleted_at = now() WHERE slug = $1")
+        .bind(slug)
+        .execute(&pool)
+        .await
+        .expect("update deleted_at")
+        .rows_affected();
+    assert!(
+        rows >= 1,
+        "soft_delete_via_sql expected to update at least one row for slug={slug}, got {rows}"
+    );
+    pool.close().await;
+}
+
 #[tokio::test]
-async fn get_page_with_include_deleted_returns_unsupported() {
+async fn get_page_hides_soft_deleted_row_by_default() {
     let Some(engine) = init_clean_engine().await else {
         eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
         return;
     };
+    engine
+        .put_page("soft-del-hidden", None, &note_input("X", "body"))
+        .await
+        .expect("put_page");
+    soft_delete_via_sql("soft-del-hidden").await;
+
+    let got = engine
+        .get_page("soft-del-hidden", &GetPageOpts::default())
+        .await
+        .expect("get_page");
+    assert!(
+        got.is_none(),
+        "default GetPageOpts must hide soft-deleted rows, got {got:?}"
+    );
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn get_page_returns_soft_deleted_row_when_include_deleted_true() {
+    let Some(engine) = init_clean_engine().await else {
+        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
+        return;
+    };
+    let inserted = engine
+        .put_page("soft-del-visible", None, &note_input("X", "body"))
+        .await
+        .expect("put_page");
+    soft_delete_via_sql("soft-del-visible").await;
+
     let opts = GetPageOpts {
         source_id: None,
         include_deleted: true,
     };
-    let err = engine
-        .get_page("any-slug", &opts)
+    let got = engine
+        .get_page("soft-del-visible", &opts)
         .await
-        .expect_err("include_deleted must error in slice 4b");
-    assert_eq!(err.class, "Unsupported", "got class={}", err.class);
-    assert_eq!(err.code, "unsupported", "got code={}", err.code);
+        .expect("get_page")
+        .expect("Some(page) when include_deleted=true");
+    assert_eq!(got.id, inserted.id);
+    assert_eq!(got.slug, "soft-del-visible");
     engine.disconnect().await.expect("disconnect");
 }
 
