@@ -122,9 +122,32 @@ let ingested_at_ts = match input.ingested_at.as_deref() {
    - 由于 #110-c 已确认 put_page **不**写 embedding/last_retrieved_at，需要为 vector index 和 retrieval tracker 各自的 trait 接口写契约测试
    - 目标：明确"谁写"的边界，避免后续切片误把这两列塞回 put_page
 
-4. **杂物切片（非阻塞）** — `.codegraph/` 目录加入 `.gitignore`
+4. **#110-g（新增）** — 测试并发隔离（PG 与 libsql 双端）
+   - **触发**：本会话开启 `ZBRAIN_TEST_PG_URL` 后，`cargo test --workspace`（默认多线程）出现两类间歇性失败：
+     - PG 侧：`postgres_engine_page_crud::list_pages_filters_by_page_type` 等用例间数据互污（`TRUNCATE` 与其他用例 INSERT 并行抢库）
+     - libsql 侧：`libsql_engine_list_pages::list_pages_respects_offset` 同毫秒 tie-break 不确定
+   - **临时绕过**：`cargo test --workspace -- --test-threads=1` 全绿（15 PG + 23 libsql + 全部其他 100% pass）
+   - **正解候选**：
+     - PG：引入 `serial_test` crate 或每用例独立 schema（`SET search_path TO test_<uuid>`），或 testcontainers per-test
+     - libsql：list_pages 排序在 `updated_desc` tie 时加 `slug ASC` 二级排序键（与 TS 端对齐审计）
+   - 单切片完成；非阻塞，但默认 `cargo test` 红会污染 CI 信号，优先级建议紧随 #110-d
+
+5. **杂物切片（非阻塞）** — `.codegraph/` 目录加入 `.gitignore`
    - 当前 codegraph.db 已 ignore 但目录本身 untracked
    - 一行改动，与 #110 系列无关，可任意时机收口
+
+## 本地 PG 真实执行路径首次启用（2026-05-30 收尾）
+
+- `.env`（gitignored）写入：
+  ```
+  ZBRAIN_TEST_PG_URL=postgres://postgres:postgres@localhost:5434/zbrain_test
+  ```
+- 本地 PG 16.14 (Homebrew) 监听 `localhost:5434`；库 `zbrain_test` 已存在
+- 启用方法（每次新 shell）：`set -a; source .env; set +a`
+- 首次真实路径验证（本切片）：
+  - `cargo test -p zbrain-core --test postgres_engine_full_columns` → **7/7 全绿**（#110-c 4 个契约 + 2 个 carried trigger + 1 个 roundtrip 全部真实 PG 通过）
+  - `cargo test --workspace -- --test-threads=1` → **全绿**（验证 #110-c 不破坏 workspace 基线）
+  - 默认多线程跑 workspace → 出现 #110-g 描述的间歇性失败（与 #110-c 代码无关）
 
 ## 三连绿命令（复制即用）
 
