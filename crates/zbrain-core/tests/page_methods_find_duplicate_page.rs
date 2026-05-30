@@ -150,11 +150,15 @@ async fn libsql_find_duplicate_page_ignores_soft_deleted_rows() {
 #[tokio::test]
 async fn in_memory_find_duplicate_page_matches_content_hash_and_frontmatter_id() {
     let engine = InMemoryEngine::default();
-    engine.connect(&EngineConfig::default()).await.expect("connect");
+    engine
+        .connect(&EngineConfig::default())
+        .await
+        .expect("connect");
     engine
         .put_page(
             "hash-hit",
-            None, &PageInput {
+            None,
+            &PageInput {
                 page_type: "note".to_string(),
                 title: "Hash Hit".to_string(),
                 compiled_truth: "body".to_string(),
@@ -168,7 +172,8 @@ async fn in_memory_find_duplicate_page_matches_content_hash_and_frontmatter_id()
     engine
         .put_page(
             "frontmatter-hit",
-            None, &PageInput {
+            None,
+            &PageInput {
                 page_type: "note".to_string(),
                 title: "Frontmatter Hit".to_string(),
                 compiled_truth: "body".to_string(),

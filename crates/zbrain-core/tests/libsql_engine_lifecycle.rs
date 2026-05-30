@@ -35,7 +35,10 @@ async fn connect_succeeds_against_local_file() {
         database_path: Some(path.path().to_string_lossy().into_owned()),
     };
     engine.connect(&cfg).await.expect("connect should succeed");
-    engine.disconnect().await.expect("disconnect should succeed");
+    engine
+        .disconnect()
+        .await
+        .expect("disconnect should succeed");
 }
 
 #[tokio::test]
@@ -78,7 +81,10 @@ async fn init_schema_creates_pages_and_sources_tables() {
         .await
         .expect("pages existence query");
     let pages_row = rows.next().await.expect("rows iter");
-    assert!(pages_row.is_some(), "pages table must exist after init_schema");
+    assert!(
+        pages_row.is_some(),
+        "pages table must exist after init_schema"
+    );
 
     let mut rows = conn
         .query(
@@ -88,7 +94,10 @@ async fn init_schema_creates_pages_and_sources_tables() {
         .await
         .expect("sources existence query");
     let sources_row = rows.next().await.expect("rows iter");
-    assert!(sources_row.is_some(), "sources table must exist after init_schema");
+    assert!(
+        sources_row.is_some(),
+        "sources table must exist after init_schema"
+    );
 
     let mut rows = conn
         .query(
@@ -164,10 +173,7 @@ const SLICE_6A_INDEXES: &[&str] = &[
 ];
 
 /// All triggers 0002 promises to add.
-const SLICE_6A_TRIGGERS: &[&str] = &[
-    "bump_page_generation_insert",
-    "bump_page_generation_update",
-];
+const SLICE_6A_TRIGGERS: &[&str] = &["bump_page_generation_insert", "bump_page_generation_update"];
 
 #[tokio::test]
 async fn slice_6a_migration_adds_all_pages_columns() {
@@ -324,10 +330,7 @@ async fn slice_6a_generation_trigger_bumps_on_insert_and_update() {
     .expect("insert page a");
 
     let mut rows = conn
-        .query(
-            "SELECT generation FROM pages WHERE slug = 'a'",
-            (),
-        )
+        .query("SELECT generation FROM pages WHERE slug = 'a'", ())
         .await
         .expect("select gen for a");
     let first_insert_gen: i64 = rows
@@ -359,7 +362,10 @@ async fn slice_6a_generation_trigger_bumps_on_insert_and_update() {
         .expect("row b exists")
         .get(0)
         .expect("decode gen");
-    assert_eq!(second_insert_gen, 2, "second row should land at generation=2");
+    assert_eq!(
+        second_insert_gen, 2,
+        "second row should land at generation=2"
+    );
 
     // UPDATE allow-listed column on row a — generation should bump.
     conn.execute(
@@ -570,12 +576,9 @@ async fn slice_6a_s3_trigger_bumps_on_type_and_skips_salience() {
         .expect("decode gen");
 
     // UPDATE `type` (newly added to allow-list in 0003) must bump generation.
-    conn.execute(
-        "UPDATE pages SET type = 'note' WHERE slug = 's3'",
-        (),
-    )
-    .await
-    .expect("update type");
+    conn.execute("UPDATE pages SET type = 'note' WHERE slug = 's3'", ())
+        .await
+        .expect("update type");
 
     let mut rows = conn
         .query("SELECT generation FROM pages WHERE slug = 's3'", ())

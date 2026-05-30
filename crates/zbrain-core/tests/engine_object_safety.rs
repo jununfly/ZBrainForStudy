@@ -123,7 +123,10 @@ async fn resolve_slugs_does_substring_match() {
     let engine = InMemoryEngine::default();
     engine.connect(&EngineConfig::default()).await.unwrap();
     for slug in ["alpha-one", "alpha-two", "beta-one"] {
-        engine.put_page(slug, None, &page_input(slug, "body")).await.unwrap();
+        engine
+            .put_page(slug, None, &page_input(slug, "body"))
+            .await
+            .unwrap();
     }
 
     let mut hits = engine.resolve_slugs("alpha").await.expect("resolve ok");

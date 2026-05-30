@@ -112,7 +112,13 @@ async fn libsql_soft_delete_page_marks_live_row_and_returns_slug() {
 #[tokio::test]
 async fn libsql_soft_delete_page_returns_none_for_missing_or_already_deleted_rows() {
     let (engine, tmp) = init_clean_engine().await;
-    seed_libsql_page(&tmp, "src-1", "already-deleted", Some("2026-01-01T00:00:00Z")).await;
+    seed_libsql_page(
+        &tmp,
+        "src-1",
+        "already-deleted",
+        Some("2026-01-01T00:00:00Z"),
+    )
+    .await;
 
     let missing = engine
         .soft_delete_page("missing-slug", Some("src-1"))
@@ -160,12 +166,16 @@ async fn libsql_soft_delete_page_honors_source_id_filter() {
 #[tokio::test]
 async fn in_memory_put_page_uses_current_timestamp_shape_not_old_sentinel() {
     let engine = InMemoryEngine::default();
-    engine.connect(&EngineConfig::default()).await.expect("connect");
+    engine
+        .connect(&EngineConfig::default())
+        .await
+        .expect("connect");
 
     let page = engine
         .put_page(
             "memory-timestamp-slug",
-            None, &PageInput {
+            None,
+            &PageInput {
                 page_type: "note".to_string(),
                 title: "Memory Timestamp".to_string(),
                 compiled_truth: "body".to_string(),
@@ -183,11 +193,15 @@ async fn in_memory_put_page_uses_current_timestamp_shape_not_old_sentinel() {
 #[tokio::test]
 async fn in_memory_soft_delete_page_matches_libsql_contract() {
     let engine = InMemoryEngine::default();
-    engine.connect(&EngineConfig::default()).await.expect("connect");
+    engine
+        .connect(&EngineConfig::default())
+        .await
+        .expect("connect");
     engine
         .put_page(
             "memory-slug",
-            None, &PageInput {
+            None,
+            &PageInput {
                 page_type: "note".to_string(),
                 title: "Memory".to_string(),
                 compiled_truth: "body".to_string(),

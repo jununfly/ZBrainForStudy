@@ -11,9 +11,7 @@
 //! - `list_pages`: empty / `page_type` filter / limit truncation
 //! - `resolve_slugs`: exact match only (fuzzy deferred to slice 6.5c)
 
-use zbrain_core::engine::{
-    BrainEngine, EngineConfig, GetPageOpts, PageFilters, PageInput,
-};
+use zbrain_core::engine::{BrainEngine, EngineConfig, GetPageOpts, PageFilters, PageInput};
 use zbrain_core::postgres::PostgresEngine;
 
 fn pg_url() -> Option<String> {
@@ -361,7 +359,8 @@ async fn list_pages_filters_by_page_type() {
     engine
         .put_page(
             "p1",
-            None, &PageInput {
+            None,
+            &PageInput {
                 page_type: "person".to_string(),
                 title: "P1".to_string(),
                 compiled_truth: "z".to_string(),
@@ -407,7 +406,8 @@ async fn list_pages_respects_limit() {
         engine
             .put_page(
                 &format!("slug-{i}"),
-                None, &note_input(&format!("T{i}"), "body"),
+                None,
+                &note_input(&format!("T{i}"), "body"),
             )
             .await
             .expect("put_page");

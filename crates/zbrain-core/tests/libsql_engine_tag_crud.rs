@@ -81,7 +81,11 @@ async fn s6t7_add_tag_idempotent_on_duplicate() {
         .await
         .expect("second add_tag must be idempotent");
     let tags = engine.get_tags("beta", None).await.expect("get_tags");
-    assert_eq!(tags, vec!["ai"], "duplicate add must not produce a second row");
+    assert_eq!(
+        tags,
+        vec!["ai"],
+        "duplicate add must not produce a second row"
+    );
     engine.disconnect().await.expect("disconnect");
 }
 
@@ -120,7 +124,10 @@ async fn s6t7_add_tag_with_explicit_source_id() {
         .add_tag("gamma", "rust", Some("default"))
         .await
         .expect("add_tag with explicit 'default' must succeed");
-    let tags = engine.get_tags("gamma", Some("default")).await.expect("get_tags");
+    let tags = engine
+        .get_tags("gamma", Some("default"))
+        .await
+        .expect("get_tags");
     assert_eq!(tags, vec!["rust"]);
 
     // Mismatched source → page not found
@@ -149,7 +156,10 @@ async fn s6t7_add_tag_none_equivalent_to_default() {
         .add_tag("delta", "ml", None)
         .await
         .expect("add_tag with None");
-    let tags_none = engine.get_tags("delta", None).await.expect("get_tags(None)");
+    let tags_none = engine
+        .get_tags("delta", None)
+        .await
+        .expect("get_tags(None)");
     let tags_default = engine
         .get_tags("delta", Some("default"))
         .await
@@ -223,7 +233,11 @@ async fn s6t7_remove_tag_source_mismatch_is_silent() {
         .expect("source mismatch must be silent");
     // Original tag still present
     let tags = engine.get_tags("eta", None).await.expect("get_tags");
-    assert_eq!(tags, vec!["rust"], "wrong-source remove must not affect real tag");
+    assert_eq!(
+        tags,
+        vec!["rust"],
+        "wrong-source remove must not affect real tag"
+    );
     engine.disconnect().await.expect("disconnect");
 }
 
@@ -251,11 +265,21 @@ async fn s6t7_get_tags_returns_sorted_tags() {
         .put_page("iota", None, &note_input("Iota", "body"))
         .await
         .expect("put_page");
-    engine.add_tag("iota", "zinc", None).await.expect("add zinc");
-    engine.add_tag("iota", "alpha", None).await.expect("add alpha");
+    engine
+        .add_tag("iota", "zinc", None)
+        .await
+        .expect("add zinc");
+    engine
+        .add_tag("iota", "alpha", None)
+        .await
+        .expect("add alpha");
     engine.add_tag("iota", "mid", None).await.expect("add mid");
     let tags = engine.get_tags("iota", None).await.expect("get_tags");
-    assert_eq!(tags, vec!["alpha", "mid", "zinc"], "must be alphabetically sorted");
+    assert_eq!(
+        tags,
+        vec!["alpha", "mid", "zinc"],
+        "must be alphabetically sorted"
+    );
     engine.disconnect().await.expect("disconnect");
 }
 
@@ -279,7 +303,10 @@ async fn s6t7_get_tags_source_mismatch_returns_empty() {
         .put_page("kappa", None, &note_input("Kappa", "body"))
         .await
         .expect("put_page");
-    engine.add_tag("kappa", "rust", None).await.expect("add_tag");
+    engine
+        .add_tag("kappa", "rust", None)
+        .await
+        .expect("add_tag");
     let tags = engine
         .get_tags("kappa", Some("other"))
         .await
@@ -373,10 +400,7 @@ async fn s6t7_hard_delete_page_cascades_to_page_tags() {
     // rows must disappear; without it, this would either fail (FK violation
     // when FK is on) or leave orphans (FK off).
     let affected = raw
-        .execute(
-            "DELETE FROM pages WHERE slug = ?1",
-            ::libsql::params!["mu"],
-        )
+        .execute("DELETE FROM pages WHERE slug = ?1", ::libsql::params!["mu"])
         .await
         .expect("hard delete pages row");
     assert_eq!(affected, 1, "expected 1 page row deleted");

@@ -36,7 +36,10 @@ async fn connect_succeeds_against_live_postgres() {
         database_path: None,
     };
     engine.connect(&cfg).await.expect("connect should succeed");
-    engine.disconnect().await.expect("disconnect should succeed");
+    engine
+        .disconnect()
+        .await
+        .expect("disconnect should succeed");
 }
 
 #[tokio::test]
@@ -86,13 +89,15 @@ async fn init_schema_creates_pages_and_sources_tables() {
     .fetch_one(&pool)
     .await
     .expect("sources table existence check");
-    assert!(sources_exists.0, "sources table must exist after init_schema");
+    assert!(
+        sources_exists.0,
+        "sources table must exist after init_schema"
+    );
 
-    let default_source: (String,) =
-        sqlx::query_as("SELECT id FROM sources WHERE id = 'default'")
-            .fetch_one(&pool)
-            .await
-            .expect("default source row must be seeded");
+    let default_source: (String,) = sqlx::query_as("SELECT id FROM sources WHERE id = 'default'")
+        .fetch_one(&pool)
+        .await
+        .expect("default source row must be seeded");
     assert_eq!(default_source.0, "default");
 
     engine.disconnect().await.expect("disconnect");

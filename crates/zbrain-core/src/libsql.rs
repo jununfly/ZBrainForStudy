@@ -19,8 +19,7 @@ use std::sync::OnceLock;
 use async_trait::async_trait;
 
 use crate::engine::{
-    page_sort_sql, BrainEngine, EngineConfig, EngineKind, GetPageOpts, Page, PageFilters,
-    PageInput,
+    page_sort_sql, BrainEngine, EngineConfig, EngineKind, GetPageOpts, Page, PageFilters, PageInput,
 };
 use crate::error::{Error, Result};
 use crate::time::current_utc_iso8601;
@@ -134,9 +133,7 @@ impl BrainEngine for LibsqlEngine {
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| {
-                Error::engine("LibsqlEngine requires EngineConfig.database_path")
-            })?;
+            .ok_or_else(|| Error::engine("LibsqlEngine requires EngineConfig.database_path"))?;
 
         let db = ::libsql::Builder::new_local(path)
             .build()
@@ -345,25 +342,25 @@ impl BrainEngine for LibsqlEngine {
             .query(
                 sql,
                 ::libsql::params![
-                    source_id,                       // ?1  source_id
-                    slug,                            // ?2  slug
-                    input.page_type.clone(),         // ?3  type
-                    page_kind_wire,                  // ?4  page_kind
-                    input.title.clone(),             // ?5  title
-                    input.compiled_truth.clone(),    // ?6  compiled_truth
-                    timeline,                        // ?7  timeline
-                    frontmatter_json,                // ?8  frontmatter (JSON TEXT)
-                    input.content_hash.clone(),      // ?9  content_hash
-                    now,                             // ?10 updated_at (server now)
-                    input.effective_date.clone(),    // ?11 effective_date
-                    effective_date_source_wire,      // ?12 effective_date_source
-                    input.import_filename.clone(),   // ?13 import_filename
+                    source_id,                            // ?1  source_id
+                    slug,                                 // ?2  slug
+                    input.page_type.clone(),              // ?3  type
+                    page_kind_wire,                       // ?4  page_kind
+                    input.title.clone(),                  // ?5  title
+                    input.compiled_truth.clone(),         // ?6  compiled_truth
+                    timeline,                             // ?7  timeline
+                    frontmatter_json,                     // ?8  frontmatter (JSON TEXT)
+                    input.content_hash.clone(),           // ?9  content_hash
+                    now,                                  // ?10 updated_at (server now)
+                    input.effective_date.clone(),         // ?11 effective_date
+                    effective_date_source_wire,           // ?12 effective_date_source
+                    input.import_filename.clone(),        // ?13 import_filename
                     input.chunker_version.map(i64::from), // ?14 chunker_version (COALESCE 1)
-                    input.source_path.clone(),       // ?15 source_path
-                    input.source_kind.clone(),       // ?16 source_kind
-                    input.source_uri.clone(),        // ?17 source_uri
-                    input.ingested_via.clone(),      // ?18 ingested_via
-                    ingested_at,                     // ?19 ingested_at (server-stamp)
+                    input.source_path.clone(),            // ?15 source_path
+                    input.source_kind.clone(),            // ?16 source_kind
+                    input.source_uri.clone(),             // ?17 source_uri
+                    input.ingested_via.clone(),           // ?18 ingested_via
+                    ingested_at,                          // ?19 ingested_at (server-stamp)
                 ],
             )
             .await
@@ -380,12 +377,9 @@ impl BrainEngine for LibsqlEngine {
     async fn delete_page(&self, slug: &str) -> Result<()> {
         let conn = self.conn().await?;
         // No-op on missing slug (matches PG + InMemory contracts).
-        conn.execute(
-            "DELETE FROM pages WHERE slug = ?1",
-            ::libsql::params![slug],
-        )
-        .await
-        .map_err(|e| Error::engine(format!("delete_page failed: {e}")))?;
+        conn.execute("DELETE FROM pages WHERE slug = ?1", ::libsql::params![slug])
+            .await
+            .map_err(|e| Error::engine(format!("delete_page failed: {e}")))?;
         Ok(())
     }
 
@@ -711,12 +705,7 @@ impl BrainEngine for LibsqlEngine {
         }
     }
 
-    async fn add_tag(
-        &self,
-        slug: &str,
-        tag: &str,
-        source_id: Option<&str>,
-    ) -> Result<()> {
+    async fn add_tag(&self, slug: &str, tag: &str, source_id: Option<&str>) -> Result<()> {
         // TS semantic: `opts?.sourceId ?? 'default'`. Mirror exactly.
         let sid = source_id.unwrap_or("default");
         let conn = self.conn().await?;
@@ -775,12 +764,7 @@ impl BrainEngine for LibsqlEngine {
         }
     }
 
-    async fn remove_tag(
-        &self,
-        slug: &str,
-        tag: &str,
-        source_id: Option<&str>,
-    ) -> Result<()> {
+    async fn remove_tag(&self, slug: &str, tag: &str, source_id: Option<&str>) -> Result<()> {
         // TS `removeTag` uses a sub-select; when the page is missing the
         // sub-select returns NULL and the DELETE matches zero rows — silent
         // no-op. Rust preserves that asymmetry vs addTag.
@@ -800,11 +784,7 @@ impl BrainEngine for LibsqlEngine {
         Ok(())
     }
 
-    async fn get_tags(
-        &self,
-        slug: &str,
-        source_id: Option<&str>,
-    ) -> Result<Vec<String>> {
+    async fn get_tags(&self, slug: &str, source_id: Option<&str>) -> Result<Vec<String>> {
         // TS `getTags` returns [] for missing pages (sub-select → NULL →
         // page_id IS NULL never matches). Same shape in Rust.
         let sid = source_id.unwrap_or("default");
@@ -882,8 +862,9 @@ fn full_row_to_page(row: &::libsql::Row) -> Result<Page> {
     let page_kind = decode_page_kind(&page_kind_str)?;
     let id_u64 = u64::try_from(id)
         .map_err(|_| Error::engine(format!("page id {id} negative; corrupt row")))?;
-    let chunker_version = chunker_version_raw
-        .map_or(Ok(1), |v| i32::try_from(v).map_err(|_| Error::engine(format!("chunker_version {v} overflows i32"))))?;
+    let chunker_version = chunker_version_raw.map_or(Ok(1), |v| {
+        i32::try_from(v).map_err(|_| Error::engine(format!("chunker_version {v} overflows i32")))
+    })?;
     let frontmatter = serde_json::from_str(&frontmatter_raw)
         .map_err(|e| Error::engine(format!("row decode frontmatter json: {e}")))?;
     let effective_date_source = effective_date_source_raw

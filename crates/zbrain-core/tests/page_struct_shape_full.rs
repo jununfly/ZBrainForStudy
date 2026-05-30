@@ -92,9 +92,15 @@ fn page_struct_has_all_30_fields_including_s5_additions() {
 
     // Spot-check the six new fields so a rename fails loudly.
     assert_eq!(page.salience_score, Some(0.75_f64));
-    assert_eq!(page.last_retrieved_at.as_deref(), Some("2026-05-28T02:00:00Z"));
+    assert_eq!(
+        page.last_retrieved_at.as_deref(),
+        Some("2026-05-28T02:00:00Z")
+    );
     assert_eq!(page.generation, 3);
-    assert_eq!(page.embedding.as_deref(), Some(&[0x00, 0x01, 0x02, 0x03][..]));
+    assert_eq!(
+        page.embedding.as_deref(),
+        Some(&[0x00, 0x01, 0x02, 0x03][..])
+    );
     assert_eq!(page.chunker_version, 2);
     assert_eq!(page.source_path.as_deref(), Some("notes/s5.md"));
 }
@@ -116,8 +122,14 @@ fn page_input_accepts_last_retrieved_at_and_embedding() {
         ..Default::default()
     };
 
-    assert_eq!(input.last_retrieved_at.as_deref(), Some("2026-05-28T00:00:00Z"));
-    assert_eq!(input.embedding.as_deref(), Some(&[0xDE, 0xAD, 0xBE, 0xEF][..]));
+    assert_eq!(
+        input.last_retrieved_at.as_deref(),
+        Some("2026-05-28T00:00:00Z")
+    );
+    assert_eq!(
+        input.embedding.as_deref(),
+        Some(&[0xDE, 0xAD, 0xBE, 0xEF][..])
+    );
 }
 
 /// Minimal-callers regression: `..Default::default()` must still yield

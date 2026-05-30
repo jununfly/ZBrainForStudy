@@ -37,11 +37,7 @@ pub struct StructuredError {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub hint: Option<String>,
     /// Optional link to docs/runbook.
-    #[serde(
-        rename = "docs_url",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "docs_url", skip_serializing_if = "Option::is_none", default)]
     pub docs_url: Option<String>,
 }
 

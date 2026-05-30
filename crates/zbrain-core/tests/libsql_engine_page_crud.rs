@@ -21,9 +21,7 @@
 
 use serde_json::json;
 use tempfile::NamedTempFile;
-use zbrain_core::engine::{
-    BrainEngine, EngineConfig, GetPageOpts, PageFilters, PageInput,
-};
+use zbrain_core::engine::{BrainEngine, EngineConfig, GetPageOpts, PageFilters, PageInput};
 use zbrain_core::libsql::LibsqlEngine;
 use zbrain_core::{EffectiveDateSource, PageKind};
 
@@ -200,10 +198,7 @@ async fn get_page_with_mismatched_source_id_returns_none() {
         source_id: Some("other-source".to_string()),
         include_deleted: false,
     };
-    let got = engine
-        .get_page("scoped", &opts)
-        .await
-        .expect("get_page");
+    let got = engine.get_page("scoped", &opts).await.expect("get_page");
     assert!(
         got.is_none(),
         "wrong source_id must yield None, got {got:?}"
@@ -350,7 +345,7 @@ fn full_input() -> PageInput {
         source_kind: Some("file".to_string()),
         source_uri: Some("file:///path/to/test.md".to_string()),
         ingested_via: Some("cli".to_string()),
-        ingested_at: None, // server-stamp; None so we verify engine sets it
+        ingested_at: None,       // server-stamp; None so we verify engine sets it
         last_retrieved_at: None, // S5 — put_page does not write
         embedding: None,         // S5 — put_page does not write
     }
@@ -392,7 +387,10 @@ async fn s6t6_insert_new_page_writes_19_columns() {
         Some("file:///path/to/test.md")
     );
     assert_eq!(result.ingested_via.as_deref(), Some("cli"));
-    assert!(result.ingested_at.is_some(), "ingested_at must be server-stamped when source_kind is set");
+    assert!(
+        result.ingested_at.is_some(),
+        "ingested_at must be server-stamped when source_kind is set"
+    );
 
     // Chunker
     assert_eq!(result.chunker_version, 2);
@@ -642,7 +640,10 @@ async fn s6t6_chunker_version_defaults_to_1() {
         .put_page("chunker-def", None, &input)
         .await
         .expect("put_page");
-    assert_eq!(result.chunker_version, 1, "null chunker_version must default to 1");
+    assert_eq!(
+        result.chunker_version, 1,
+        "null chunker_version must default to 1"
+    );
 
     // Explicit value must be stored
     let mut explicit = full_input();
@@ -734,11 +735,17 @@ async fn s6t6_returning_projection_covers_all_30_columns() {
     assert!(!result.updated_at.is_empty(), "updated_at from DB");
     assert!(result.deleted_at.is_none(), "live row has no deleted_at");
     assert_eq!(result.effective_date.as_deref(), Some("2026-05-01"));
-    assert_eq!(result.effective_date_source, Some(EffectiveDateSource::Date));
+    assert_eq!(
+        result.effective_date_source,
+        Some(EffectiveDateSource::Date)
+    );
     assert_eq!(result.import_filename.as_deref(), Some("doc.md"));
     assert_eq!(result.content_hash.as_deref(), Some("sha256:deadbeef"));
     assert_eq!(result.chunker_version, 2); // set in full_input()
-    assert!(result.frontmatter.is_object(), "frontmatter must be an object");
+    assert!(
+        result.frontmatter.is_object(),
+        "frontmatter must be an object"
+    );
     assert_eq!(result.ingested_via.as_deref(), Some("cli"));
     engine.disconnect().await.expect("disconnect");
 }
@@ -798,7 +805,8 @@ async fn list_pages_filters_by_page_type() {
     engine
         .put_page(
             "p1",
-            None, &PageInput {
+            None,
+            &PageInput {
                 page_type: "person".to_string(),
                 title: "P1".to_string(),
                 compiled_truth: "z".to_string(),
@@ -841,7 +849,8 @@ async fn list_pages_respects_limit() {
         engine
             .put_page(
                 &format!("slug-{i}"),
-                None, &note_input(&format!("T{i}"), "body"),
+                None,
+                &note_input(&format!("T{i}"), "body"),
             )
             .await
             .expect("put_page");

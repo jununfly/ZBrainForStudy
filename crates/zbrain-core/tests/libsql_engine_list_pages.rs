@@ -91,11 +91,28 @@ async fn list_pages_projects_all_30_columns() {
     let p = &pages[0];
 
     // Columns that the 7-col stub cannot populate:
-    assert_eq!(p.source_id, "default", "source_id must be 'default' from schema");
-    assert!(matches!(p.page_kind, zbrain_core::PageKind::Markdown), "page_kind must be Markdown (schema default)");
-    assert!(p.created_at.len() > 8, "created_at must be a real timestamp, got '{}'", p.created_at);
-    assert!(p.updated_at.len() > 8, "updated_at must be a real timestamp, got '{}'", p.updated_at);
-    assert!(p.deleted_at.is_none(), "non-deleted row must have deleted_at = None");
+    assert_eq!(
+        p.source_id, "default",
+        "source_id must be 'default' from schema"
+    );
+    assert!(
+        matches!(p.page_kind, zbrain_core::PageKind::Markdown),
+        "page_kind must be Markdown (schema default)"
+    );
+    assert!(
+        p.created_at.len() > 8,
+        "created_at must be a real timestamp, got '{}'",
+        p.created_at
+    );
+    assert!(
+        p.updated_at.len() > 8,
+        "updated_at must be a real timestamp, got '{}'",
+        p.updated_at
+    );
+    assert!(
+        p.deleted_at.is_none(),
+        "non-deleted row must have deleted_at = None"
+    );
     assert!(p.content_hash.is_none(), "content_hash default = None");
 
     engine.disconnect().await.expect("disconnect");
@@ -130,7 +147,10 @@ async fn list_pages_filters_by_page_type() {
         .expect("list_pages filtered");
 
     assert_eq!(notes.len(), 2, "only 'note' pages should appear");
-    assert!(notes.iter().all(|p| p.page_type == "note"), "all results must be note type");
+    assert!(
+        notes.iter().all(|p| p.page_type == "note"),
+        "all results must be note type"
+    );
 
     // Without filter → all 3 pages
     let all = engine
@@ -149,7 +169,11 @@ async fn list_pages_respects_limit() {
     let (engine, _tmp) = init_clean_engine().await;
     for i in 0..5 {
         engine
-            .put_page(&format!("lim-{i}"), None, &note_input(&format!("L{i}"), "b"))
+            .put_page(
+                &format!("lim-{i}"),
+                None,
+                &note_input(&format!("L{i}"), "b"),
+            )
             .await
             .expect("put_page");
     }
@@ -182,7 +206,11 @@ async fn list_pages_respects_offset() {
     let (engine, _tmp) = init_clean_engine().await;
     for i in 0..5 {
         engine
-            .put_page(&format!("off-{i}"), None, &note_input(&format!("O{i}"), "b"))
+            .put_page(
+                &format!("off-{i}"),
+                None,
+                &note_input(&format!("O{i}"), "b"),
+            )
             .await
             .expect("put_page");
     }
@@ -235,7 +263,11 @@ async fn list_pages_excludes_soft_deleted_by_default() {
         .await
         .expect("list_pages default");
 
-    assert_eq!(pages.len(), 1, "soft-deleted rows must be excluded by default");
+    assert_eq!(
+        pages.len(),
+        1,
+        "soft-deleted rows must be excluded by default"
+    );
     assert_eq!(pages[0].slug, "alive", "only the non-deleted page remains");
 
     engine.disconnect().await.expect("disconnect");
@@ -271,8 +303,14 @@ async fn list_pages_includes_soft_deleted_when_flag_set() {
     assert_eq!(pages.len(), 2, "include_deleted must show both rows");
 
     // Verify the deleted row actually carries a deleted_at marker
-    let zombie = pages.iter().find(|p| p.slug == "zombie").expect("zombie must be present");
-    assert!(zombie.deleted_at.is_some(), "soft-deleted row must have deleted_at set");
+    let zombie = pages
+        .iter()
+        .find(|p| p.slug == "zombie")
+        .expect("zombie must be present");
+    assert!(
+        zombie.deleted_at.is_some(),
+        "soft-deleted row must have deleted_at set"
+    );
 
     engine.disconnect().await.expect("disconnect");
 }
@@ -398,8 +436,14 @@ async fn list_pages_combined_page_type_limit_offset_sort() {
 
     // Notes sorted by slug: [note-d, note-e], offset 1 → [note-e]
     assert_eq!(pages.len(), 1, "2 notes minus offset 1 = 1");
-    assert_eq!(pages[0].slug, "note-e", "after skipping note-d, only note-e remains");
-    assert_eq!(pages[0].page_type, "note", "result must match page_type filter");
+    assert_eq!(
+        pages[0].slug, "note-e",
+        "after skipping note-d, only note-e remains"
+    );
+    assert_eq!(
+        pages[0].page_type, "note",
+        "result must match page_type filter"
+    );
 
     engine.disconnect().await.expect("disconnect");
 }
@@ -490,10 +534,7 @@ async fn list_pages_filters_by_source_id() {
         .expect("raw db open");
     let raw_conn = db.connect().expect("raw conn");
     raw_conn
-        .execute(
-            "INSERT INTO sources (id, name) VALUES ('wiki', 'wiki')",
-            (),
-        )
+        .execute("INSERT INTO sources (id, name) VALUES ('wiki', 'wiki')", ())
         .await
         .expect("inject wiki source");
     raw_conn
@@ -516,7 +557,11 @@ async fn list_pages_filters_by_source_id() {
         .await
         .expect("list_pages source_id=default");
 
-    assert_eq!(default_pages.len(), 1, "only default-source page should appear");
+    assert_eq!(
+        default_pages.len(),
+        1,
+        "only default-source page should appear"
+    );
     assert_eq!(default_pages[0].slug, "default-page");
 
     // Filter: source_id = 'wiki'
@@ -564,10 +609,7 @@ async fn list_pages_filters_by_source_ids() {
         .expect("raw db open");
     let raw_conn = db.connect().expect("raw conn");
     raw_conn
-        .execute(
-            "INSERT INTO sources (id, name) VALUES ('wiki', 'wiki')",
-            (),
-        )
+        .execute("INSERT INTO sources (id, name) VALUES ('wiki', 'wiki')", ())
         .await
         .expect("inject wiki source");
     raw_conn
@@ -608,8 +650,14 @@ async fn list_pages_filters_by_source_ids() {
     assert_eq!(pages.len(), 2, "only wiki + notion pages should appear");
     let slugs: Vec<&str> = pages.iter().map(|p| p.slug.as_str()).collect();
     assert!(slugs.contains(&"wiki-page"), "wiki-page must be present");
-    assert!(slugs.contains(&"notion-page"), "notion-page must be present");
-    assert!(!slugs.contains(&"default-page"), "default-page must be excluded");
+    assert!(
+        slugs.contains(&"notion-page"),
+        "notion-page must be present"
+    );
+    assert!(
+        !slugs.contains(&"default-page"),
+        "default-page must be excluded"
+    );
 
     // source_ids = [] should return nothing (empty IN set)
     let empty_filters = PageFilters {
@@ -724,11 +772,17 @@ async fn schema_creates_page_tags_table() {
 
     // Table must exist
     let mut rows = raw_conn
-        .query("SELECT name FROM sqlite_master WHERE type='table' AND name='page_tags'", ())
+        .query(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='page_tags'",
+            (),
+        )
         .await
         .expect("query sqlite_master");
     let row = rows.next().await.expect("fetch row");
-    assert!(row.is_some(), "page_tags table must exist after migration 0004");
+    assert!(
+        row.is_some(),
+        "page_tags table must exist after migration 0004"
+    );
 
     engine.disconnect().await.expect("disconnect");
 }
@@ -1145,7 +1199,11 @@ async fn list_pages_tag_filter_with_limit_offset() {
     // Insert 3 pages, all tagged 'rust'
     for i in 0..3 {
         engine
-            .put_page(&format!("page-{i}"), None, &note_input(&format!("P{i}"), "b"))
+            .put_page(
+                &format!("page-{i}"),
+                None,
+                &note_input(&format!("P{i}"), "b"),
+            )
             .await
             .expect("put_page");
     }

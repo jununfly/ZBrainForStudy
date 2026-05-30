@@ -212,9 +212,15 @@ mod tests {
 
     #[test]
     fn page_kind_serializes_lowercase() {
-        assert_eq!(serde_json::to_string(&PageKind::Markdown).unwrap(), "\"markdown\"");
+        assert_eq!(
+            serde_json::to_string(&PageKind::Markdown).unwrap(),
+            "\"markdown\""
+        );
         assert_eq!(serde_json::to_string(&PageKind::Code).unwrap(), "\"code\"");
-        assert_eq!(serde_json::to_string(&PageKind::Image).unwrap(), "\"image\"");
+        assert_eq!(
+            serde_json::to_string(&PageKind::Image).unwrap(),
+            "\"image\""
+        );
     }
 
     #[test]
@@ -241,7 +247,10 @@ mod tests {
     #[test]
     fn cr_mode_rejects_unknown() {
         let bad: serde_json::Result<CRMode> = serde_json::from_str("\"per-chunk-synopsis\"");
-        assert!(bad.is_err(), "kebab-case must NOT parse — TS uses snake_case");
+        assert!(
+            bad.is_err(),
+            "kebab-case must NOT parse — TS uses snake_case"
+        );
     }
 
     // --- EffectiveDateSource ----------------------------------------------

@@ -351,11 +351,7 @@ pub trait BrainEngine: Send + Sync {
     /// List the tags currently attached to (`slug`, `source_id`), ordered by
     /// tag ascending. Mirrors TS `getTags` which returns `[]` for missing
     /// pages.
-    async fn get_tags(
-        &self,
-        _slug: &str,
-        _source_id: Option<&str>,
-    ) -> crate::Result<Vec<String>> {
+    async fn get_tags(&self, _slug: &str, _source_id: Option<&str>) -> crate::Result<Vec<String>> {
         Err(Error::unsupported("pending slice 6a"))
     }
 

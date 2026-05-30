@@ -22,7 +22,9 @@ async fn slice_6a_page_methods_update_cr_state_returns_unsupported() {
     let err = engine
         .update_page_contextual_retrieval_state("slug-1", "src-1", "off", None)
         .await
-        .expect_err("6a placeholder-lock: update_page_contextual_retrieval_state must be Unsupported");
+        .expect_err(
+            "6a placeholder-lock: update_page_contextual_retrieval_state must be Unsupported",
+        );
     let msg = err.to_string();
     assert!(
         msg.contains("pending slice 6a"),
