@@ -1,27 +1,32 @@
-//! Slice #110-a (DDL only) - tests for PG `pages` full-column migration
-//! + `bump_page_generation` trigger.
+//! Slice #110-c - PG ↔ TS source-of-truth contract alignment.
 //!
-//! Three RED tests:
+//! Reworks #110-b's roundtrip test to encode three contracts that TS
+//! `postgres-engine.ts` + `pglite-engine.ts` + `schema.sql` actually enforce,
+//! which #110-b's "intentional divergence" doc-comment got wrong:
 //!
-//! 1. `roundtrip_all_full_columns` - `put_page` + `get_page` should preserve
-//!    every non-identity field. Expected to FAIL until #110-b lands the
-//!    projection / decoder expansion. Today only the 10 init + `deleted_at`
-//!    columns survive the roundtrip; the 19 new columns vanish.
+//!   - `embedding` / `last_retrieved_at`: NOT persisted via `put_page`.
+//!     PUT accepts them in `PageInput` (write-through schema convenience) but
+//!     GET must return `None`. Source of truth: TS engines' putPage SQL has
+//!     19 columns, no `embedding`, no `last_retrieved_at`. Those columns are
+//!     written by separate code paths (embedder / retrieval-tracker).
 //!
-//! 2. `generation_bumps_on_watched_column_change` - SQL-side observation:
-//!    after a `put_page` that touches `compiled_truth`, `generation` should
-//!    increment by exactly 1. Verifies the trigger fires on UPDATE for an
-//!    allow-listed column. Expected GREEN once 0003 is applied (the trigger
-//!    runs at the DB layer regardless of decoder state).
+//!   - `ingested_at`: server-stamped, not client-provided. When any of
+//!     `source_kind` / `source_uri` / `ingested_via` is present and the
+//!     caller does not supply `ingested_at`, the engine stamps `NOW()`.
+//!     When all three are None, `ingested_at` stays None.
+//!     Source of truth: TS pglite-engine.ts:849 — `(sourceKind || sourceUri
+//!     || ingestedVia) ? new Date().toISOString() : null;`
 //!
-//! 3. `generation_does_not_bump_on_unwatched_column_change` - SQL-side
-//!    observation: after a `put_page` whose payload only changes a non-watched
-//!    column (e.g. `last_retrieved_at`), `generation` should stay constant.
-//!    Verifies the IS DISTINCT FROM allow-list correctly excludes salience-
-//!    style columns. Expected GREEN once 0003 is applied AND #110-b lands
-//!    projection for `last_retrieved_at` via `put_page`; for now this asserts
-//!    against the SQL-level state after a manual UPDATE that touches only
-//!    the unwatched column.
+//!   - `corpus_generation`: TEXT, not INTEGER. Source of truth: TS
+//!     schema.sql:131 + both engines' `ALTER TABLE pages ADD COLUMN IF NOT
+//!     EXISTS corpus_generation TEXT;`. #110-a 0003 migration wrote INTEGER
+//!     by mistake; #110-c 0004 fixes the column type and 0004 also enforces
+//!     `frontmatter NOT NULL DEFAULT '{}'::jsonb` (TS schema.sql:93).
+//!
+//! Six tests total. Three roundtrip-shape tests (one per contract above)
+//! plus the two trigger tests carried forward unchanged from #110-b, plus a
+//! new `frontmatter_defaults_to_empty_object_when_omitted` and a new
+//! `corpus_generation_column_is_text` (`pg_typeof` probe).
 //!
 //! Gated on `ZBRAIN_TEST_PG_URL` (same pattern as the lifecycle suite).
 //! Local runs without the env var skip silently; CI exercises the DB path.
@@ -85,12 +90,15 @@ fn unique_slug() -> String {
     format!("p-{nanos:x}-{n}")
 }
 
-/// RED-1: full-column roundtrip via `put_page` + `get_page`.
+/// RED-1: 17-column roundtrip via `put_page` + `get_page`.
 ///
-/// Constructs a `PageInput` populating every write-side optional column,
-/// then asserts `get_page` returns matching values. Will FAIL until #110-b
-/// lands projection/decoder for the 19 new columns (today they roundtrip
-/// as None / default).
+/// Aligned to TS source of truth (#110-c contract refresh):
+///   - 16 plain optionals roundtrip normally.
+///   - `ingested_at` client-provided value is honoured (server-stamp path
+///     covered by the next two tests).
+///   - `embedding` + `last_retrieved_at` are NOT persisted by `put_page`;
+///     PUT accepts them as a write-through schema convenience but GET
+///     must return None. (TS engines write these via separate code paths.)
 #[tokio::test]
 async fn roundtrip_all_full_columns() {
     let Some(engine) = init_clean_engine().await else {
@@ -169,21 +177,177 @@ async fn roundtrip_all_full_columns() {
     assert_eq!(
         page.ingested_at.as_deref(),
         Some("2026-05-30T00:00:00+00:00"),
-        "ingested_at"
+        "ingested_at (client-provided)"
+    );
+    // Contract (#110-c): embedding + last_retrieved_at are NOT persisted by
+    // put_page. TS engines write these via separate code paths (embedder /
+    // retrieval-tracker). PUT accepts them as a write-through schema
+    // convenience but GET must return None.
+    assert_eq!(
+        page.last_retrieved_at, None,
+        "last_retrieved_at must not be persisted by put_page"
     );
     assert_eq!(
-        page.last_retrieved_at.as_deref(),
-        Some("2026-05-30T01:00:00+00:00"),
-        "last_retrieved_at"
+        page.embedding, None,
+        "embedding must not be persisted by put_page"
     );
-    assert_eq!(page.embedding.as_deref(), Some(&[1u8, 2, 3, 4][..]), "embedding");
 }
 
-/// RED-2: trigger should bump `generation` when an allow-listed column
-/// (`compiled_truth`) changes.
+/// RED-2 (new in #110-c): `ingested_at` is server-stamped when any ingestion
+/// metadata is present and the caller does not supply a value.
 ///
-/// Bypasses the engine for inspection so we see the trigger result even if
-/// the decoder still drops `generation`. Should PASS once 0003 lands.
+/// TS source of truth (pglite-engine.ts:849):
+///   `(sourceKind || sourceUri || ingestedVia) ? new Date().toISOString() : null`
+#[tokio::test]
+async fn ingested_at_server_stamped_when_any_ingestion_metadata_present() {
+    let Some(engine) = init_clean_engine().await else {
+        eprintln!("skip: ZBRAIN_TEST_PG_URL not set");
+        return;
+    };
+
+    let slug = unique_slug();
+    let input = PageInput {
+        page_type: "note".to_string(),
+        title: "Server-stamp test".to_string(),
+        compiled_truth: "body".to_string(),
+        source_kind: Some("file".to_string()),
+        // ingested_at intentionally omitted; source_kind alone must trigger
+        // server-stamp.
+        ..Default::default()
+    };
+
+    engine
+        .put_page(&slug, None, &input)
+        .await
+        .expect("put_page");
+
+    let page = engine
+        .get_page(&slug, &GetPageOpts::default())
+        .await
+        .expect("get_page")
+        .expect("page exists");
+
+    assert!(
+        page.ingested_at.is_some(),
+        "ingested_at must be server-stamped when source_kind is present"
+    );
+}
+
+/// RED-3 (new in #110-c): `ingested_at` stays None when no ingestion
+/// metadata is present and the caller does not supply a value.
+#[tokio::test]
+async fn ingested_at_remains_none_without_ingestion_metadata() {
+    let Some(engine) = init_clean_engine().await else {
+        eprintln!("skip: ZBRAIN_TEST_PG_URL not set");
+        return;
+    };
+
+    let slug = unique_slug();
+    let input = PageInput {
+        page_type: "note".to_string(),
+        title: "No-stamp test".to_string(),
+        compiled_truth: "body".to_string(),
+        ..Default::default()
+    };
+
+    engine
+        .put_page(&slug, None, &input)
+        .await
+        .expect("put_page");
+
+    let page = engine
+        .get_page(&slug, &GetPageOpts::default())
+        .await
+        .expect("get_page")
+        .expect("page exists");
+
+    assert_eq!(
+        page.ingested_at, None,
+        "ingested_at must remain None when no ingestion metadata is provided"
+    );
+}
+
+/// RED-4 (new in #110-c): `frontmatter` defaults to `{}` when omitted, and
+/// the column itself is NOT NULL.
+///
+/// TS source of truth: schema.sql:93 — `frontmatter JSONB NOT NULL DEFAULT '{}'`.
+#[tokio::test]
+async fn frontmatter_defaults_to_empty_object_when_omitted() {
+    let Some(engine) = init_clean_engine().await else {
+        eprintln!("skip: ZBRAIN_TEST_PG_URL not set");
+        return;
+    };
+
+    let slug = unique_slug();
+    let input = PageInput {
+        page_type: "note".to_string(),
+        title: "Frontmatter default test".to_string(),
+        compiled_truth: "body".to_string(),
+        // frontmatter intentionally omitted
+        ..Default::default()
+    };
+
+    engine
+        .put_page(&slug, None, &input)
+        .await
+        .expect("put_page");
+
+    let page = engine
+        .get_page(&slug, &GetPageOpts::default())
+        .await
+        .expect("get_page")
+        .expect("page exists");
+
+    assert_eq!(
+        page.frontmatter,
+        serde_json::json!({}),
+        "frontmatter must default to empty object when omitted"
+    );
+
+    let pool = side_pool().await;
+    let is_nullable: String = sqlx::query_scalar(
+        "SELECT is_nullable FROM information_schema.columns \
+         WHERE table_name = 'pages' AND column_name = 'frontmatter'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read is_nullable");
+    assert_eq!(
+        is_nullable, "NO",
+        "frontmatter column must be NOT NULL (TS schema.sql:93)"
+    );
+    pool.close().await;
+}
+
+/// RED-5 (new in #110-c): `corpus_generation` is a TEXT column.
+///
+/// TS source of truth: schema.sql:131 + both engines'
+/// `ALTER TABLE pages ADD COLUMN IF NOT EXISTS corpus_generation TEXT;`.
+/// #110-a 0003 wrote INTEGER by mistake; 0004 fixes it.
+#[tokio::test]
+async fn corpus_generation_column_is_text() {
+    let Some(_engine) = init_clean_engine().await else {
+        eprintln!("skip: ZBRAIN_TEST_PG_URL not set");
+        return;
+    };
+
+    let pool = side_pool().await;
+    let data_type: String = sqlx::query_scalar(
+        "SELECT data_type FROM information_schema.columns \
+         WHERE table_name = 'pages' AND column_name = 'corpus_generation'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read data_type");
+    assert_eq!(
+        data_type, "text",
+        "corpus_generation must be TEXT (TS schema.sql:131)"
+    );
+    pool.close().await;
+}
+
+/// Trigger test (carried from #110-b): `generation` bumps when an
+/// allow-listed column (`compiled_truth`) changes via direct SQL UPDATE.
 #[tokio::test]
 async fn generation_bumps_on_watched_column_change() {
     let Some(engine) = init_clean_engine().await else {
@@ -233,8 +397,8 @@ async fn generation_bumps_on_watched_column_change() {
     pool.close().await;
 }
 
-/// RED-3: trigger must NOT bump `generation` when only an unwatched
-/// column changes (e.g. `salience_score`, which is intentionally excluded
+/// Trigger test (carried from #110-b): `generation` must NOT bump when only
+/// an unwatched column changes (e.g. `salience_score`, intentionally excluded
 /// from the 10-column allow-list to keep the cache warm during background
 /// salience recompute).
 #[tokio::test]

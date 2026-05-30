@@ -1,23 +1,31 @@
-//! Slice 4b → #110-b — `PostgresEngine` Page CRUD on top of the 4a lifecycle skeleton.
+//! Slice 4b → #110-b → #110-c — `PostgresEngine` Page CRUD on top of the 4a
+//! lifecycle skeleton.
 //!
 //! Implements the [`BrainEngine`] page-level surface (`get_page` /
 //! `put_page` / `delete_page` / `list_pages` / `resolve_slugs`) against the
-//! 0001 + 0002 + 0003 `pages` schema.
+//! 0001 + 0002 + 0003 + 0004 `pages` schema.
 //!
-//! Slice #110-b widens both the write and read paths to the full 30-column
-//! `Page` shape introduced by migration 0003, mirroring the libsql engine.
-//! Three explicit divergences from libsql are intentional and locked to the
-//! PG integration suite (`postgres_engine_full_columns.rs`):
+//! Slice #110-c aligns this engine to TS source-of-truth (postgres-engine.ts +
+//! pglite-engine.ts + schema.sql). The #110-b PG↔libsql contract review found
+//! three "intentional divergences" that were actually bugs; this slice fixes
+//! the PG side:
 //!
-//! 1. `input.embedding`, `input.last_retrieved_at`, and `input.ingested_at`
-//!    are **written verbatim** by `put_page` (libsql ignores them and only
-//!    server-stamps `ingested_at` on ingestion paths). The PG suite asserts
-//!    direct round-trip of these three fields from `PageInput` through
-//!    `put_page` to `get_page`.
-//! 2. `corpus_generation` is `INTEGER` on PG vs `TEXT` on libsql / engine
-//!    type; we decode `i32` → `String` on read.
-//! 3. `frontmatter` is nullable JSONB on PG; we default-write `'{}'::jsonb`
-//!    and decode `NULL` → `serde_json::Value::Object({})` for parity.
+//!   - `put_page` writes 19 columns (not 20). `embedding` and
+//!     `last_retrieved_at` are owned by separate code paths
+//!     (embedder / retrieval-tracker, ported in a later slice); `put_page`
+//!     never writes them and `get_page` always returns `None` for both,
+//!     mirroring TS `putPage` in postgres-engine.ts / pglite-engine.ts.
+//!   - `ingested_at` is server-stamped when ingestion metadata is present.
+//!     If the caller does not supply `ingested_at` and any of `source_kind`,
+//!     `source_uri`, `ingested_via` is set, the engine writes `NOW()`.
+//!     Mirrors TS pglite-engine.ts:849.
+//!   - `corpus_generation` is TEXT (TS schema.sql:131); migration 0004
+//!     widens it from the INTEGER mistake introduced by 0003. `frontmatter`
+//!     is `JSONB NOT NULL DEFAULT '{}'::jsonb` (TS schema.sql:93); 0004
+//!     enforces NOT NULL and the default.
+//!
+//! libsql parity for the same three behaviours is tracked in slice #110-d
+//! (separate task — libsql `put_page` currently has the same shape bug).
 //!
 //! `resolve_slugs` is still exact-match only; fuzzy `ILIKE` matching is
 //! deferred to slice 6.5c so this slice stays reviewable.
@@ -38,13 +46,17 @@ use crate::types::{CRMode, EffectiveDateSource, PageKind};
 /// `init_schema`. Future migrations are append-only files under `migrations/`.
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
-/// Full 30-column projection used by every read path (`get_page`,
+/// Full 28-column projection used by every read path (`get_page`,
 /// `list_pages`, and the `RETURNING` clause of `put_page`). Centralised so
 /// `row_to_page` and SQL stay in lock-step.
+///
+/// `embedding` and `last_retrieved_at` are intentionally absent: they are
+/// owned by the embedder / retrieval-tracker code paths (later slice) and
+/// `get_page` always reports `None` for both — mirrors TS `putPage`.
 const FULL_PAGE_PROJECTION: &str = "id, slug, type, page_kind, title, compiled_truth, timeline, \
      frontmatter, content_hash, emotional_weight, created_at, updated_at, deleted_at, \
-     last_retrieved_at, effective_date, effective_date_source, import_filename, \
-     salience_touched_at, salience_score, generation, embedding, chunker_version, \
+     effective_date, effective_date_source, import_filename, \
+     salience_touched_at, salience_score, generation, chunker_version, \
      source_path, source_id, source_kind, source_uri, ingested_via, ingested_at, \
      contextual_retrieval_mode, corpus_generation";
 
@@ -176,19 +188,25 @@ impl BrainEngine for PostgresEngine {
         let pool = self.pool()?;
         let source_id = source_id.unwrap_or("default");
 
-        // Slice #110-b: widen the INSERT from 5 to 20 columns to cover every
-        // `PageInput` field plus `source_id`/`slug`. ON CONFLICT keeps the
-        // original `id` (BIGSERIAL) stable across re-puts within the same
-        // source, matching the TS engine + InMemoryEngine contract. UPDATE
-        // overwrites the 18 user-provided columns unconditionally (the PG
-        // suite asserts direct round-trip — see module doc-comment for the
-        // libsql-vs-PG contract divergence on embedding /
-        // last_retrieved_at / ingested_at).
+        // Slice #110-c: 19-column INSERT mirroring TS `putPage`
+        // (postgres-engine.ts + pglite-engine.ts). `embedding` and
+        // `last_retrieved_at` are NOT written by `put_page`; the embedder
+        // and retrieval-tracker code paths own those columns (later slice).
+        //
+        // `ingested_at` is server-stamped when any ingestion metadata
+        // (`source_kind`, `source_uri`, `ingested_via`) is present and the
+        // caller did not supply an explicit value — mirrors TS
+        // pglite-engine.ts:849.
+        //
+        // ON CONFLICT keeps the original `id` (BIGSERIAL) stable across
+        // re-puts within the same source. UPDATE overwrites the 17
+        // user-provided columns unconditionally.
         //
         // Server-managed columns NOT in this INSERT:
         //   id, created_at, updated_at, deleted_at, salience_touched_at,
         //   salience_score, generation (trigger-bumped),
-        //   contextual_retrieval_mode, corpus_generation.
+        //   contextual_retrieval_mode, corpus_generation,
+        //   embedding, last_retrieved_at.
 
         let page_kind_str =
             encode_page_kind(input.page_kind.unwrap_or(PageKind::Markdown));
@@ -201,21 +219,34 @@ impl BrainEngine for PostgresEngine {
             .clone()
             .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
         let chunker_version = input.chunker_version.unwrap_or(1);
-        let ingested_at_ts = parse_rfc3339_opt(input.ingested_at.as_deref(), "ingested_at")?;
-        let last_retrieved_at_ts =
-            parse_rfc3339_opt(input.last_retrieved_at.as_deref(), "last_retrieved_at")?;
+        // Server-stamp `ingested_at` when caller omits it AND at least one
+        // ingestion-provenance field is present. Otherwise pass through
+        // whatever the caller supplied (which may also be None).
+        let ingested_at_ts = match input.ingested_at.as_deref() {
+            Some(ts) => parse_rfc3339_opt(Some(ts), "ingested_at")?,
+            None => {
+                if input.source_kind.is_some()
+                    || input.source_uri.is_some()
+                    || input.ingested_via.is_some()
+                {
+                    Some(sqlx::types::chrono::Utc::now())
+                } else {
+                    None
+                }
+            }
+        };
 
         let sql = format!(
             "INSERT INTO pages (\
                  source_id, slug, type, page_kind, title, compiled_truth, timeline, frontmatter, \
                  content_hash, effective_date, effective_date_source, import_filename, \
                  chunker_version, source_path, source_kind, source_uri, ingested_via, \
-                 ingested_at, last_retrieved_at, embedding\
+                 ingested_at\
              ) VALUES (\
                  $1, $2, $3, $4, $5, $6, $7, $8::jsonb, \
                  $9, $10, $11, $12, \
                  $13, $14, $15, $16, $17, \
-                 $18, $19, $20\
+                 $18\
              ) \
              ON CONFLICT ON CONSTRAINT pages_source_slug_key DO UPDATE SET \
                  type = EXCLUDED.type, \
@@ -234,8 +265,6 @@ impl BrainEngine for PostgresEngine {
                  source_uri = EXCLUDED.source_uri, \
                  ingested_via = EXCLUDED.ingested_via, \
                  ingested_at = EXCLUDED.ingested_at, \
-                 last_retrieved_at = EXCLUDED.last_retrieved_at, \
-                 embedding = EXCLUDED.embedding, \
                  updated_at = now() \
              RETURNING {FULL_PAGE_PROJECTION}"
         );
@@ -259,8 +288,6 @@ impl BrainEngine for PostgresEngine {
             .bind(input.source_uri.as_deref())
             .bind(input.ingested_via.as_deref())
             .bind(ingested_at_ts)
-            .bind(last_retrieved_at_ts)
-            .bind(input.embedding.as_deref())
             .fetch_one(pool)
             .await
             .map_err(|e| Error::engine(format!("put_page upsert failed: {e}")))?;
@@ -288,7 +315,8 @@ impl BrainEngine for PostgresEngine {
         // the query string static so we do not have to assemble fragments.
         // Limit is applied with `LIMIT $2` when set, otherwise we pass NULL
         // (postgres `LIMIT NULL` = unbounded).
-        // Slice #110-b: projection widened to the full 30-column shape.
+        // Slice #110-c: projection is the 28-column TS-aligned shape
+        // (no embedding / last_retrieved_at).
         let sql = format!(
             "SELECT {FULL_PAGE_PROJECTION} \
              FROM pages \
@@ -331,7 +359,7 @@ impl BrainEngine for PostgresEngine {
 ///
 /// Centralised so every read path (get / list) shares the same column
 /// projection and `page_kind` enum mapping.
-#[allow(clippy::too_many_lines)] // 30-column decoder — extracting per-field helpers would obscure column→field mapping.
+#[allow(clippy::too_many_lines)] // 28-column decoder — extracting per-field helpers would obscure column→field mapping.
 fn row_to_page(row: &sqlx::postgres::PgRow) -> Result<Page> {
     let id: i64 = row
         .try_get("id")
@@ -372,27 +400,23 @@ fn row_to_page(row: &sqlx::postgres::PgRow) -> Result<Page> {
     let id_u64 = u64::try_from(id)
         .map_err(|_| Error::engine(format!("page id {id} negative; corrupt row")))?;
 
-    // Slice #110-b: widen PG decoder to the full 30-column Page projection
-    // shipped by `FULL_PAGE_PROJECTION`. PG/libsql type asymmetries handled
-    // here:
-    //   * `frontmatter` JSONB → `serde_json::Value`, NULL → `{}` (libsql
-    //     parity — libsql stores `'{}'` when caller leaves it None).
+    // Slice #110-c: PG decoder for the 28-column TS-aligned projection.
+    // `embedding` and `last_retrieved_at` are NOT in `FULL_PAGE_PROJECTION`;
+    // we always emit `None` for both — they are owned by separate code paths
+    // (embedder / retrieval-tracker, later slice). PG/libsql type
+    // asymmetries handled here:
+    //   * `frontmatter` JSONB NOT NULL DEFAULT '{}' → `serde_json::Value`.
     //   * `created_at`/`updated_at` TIMESTAMPTZ NOT NULL → RFC3339 String.
-    //   * `deleted_at`/`salience_touched_at`/`last_retrieved_at`/
-    //     `ingested_at` TIMESTAMPTZ NULL → `Option<String>` RFC3339.
-    //   * `generation` BIGINT → `u64`; `chunker_version` INTEGER → `i64`
-    //     (engine type).
-    //   * `corpus_generation` INTEGER NULL → `Option<String>` (engine type
-    //     is `Option<String>`; libsql stores TEXT, PG stores INT — we
-    //     stringify on read).
+    //   * `deleted_at`/`salience_touched_at`/`ingested_at` TIMESTAMPTZ NULL
+    //     → `Option<String>` RFC3339.
+    //   * `generation` BIGINT → `i64`; `chunker_version` INTEGER → `i32`.
+    //   * `corpus_generation` TEXT NULL → `Option<String>` direct
+    //     (TS schema.sql:131 — 0004 widens from the 0003 INTEGER mistake).
     //   * `emotional_weight`/`salience_score` DOUBLE PRECISION NULL →
     //     `Option<f64>`.
-    //   * `embedding` BYTEA NULL → `Option<Vec<u8>>`.
-    let frontmatter: Option<serde_json::Value> = row
+    let frontmatter: serde_json::Value = row
         .try_get("frontmatter")
         .map_err(|e| Error::engine(format!("row decode frontmatter: {e}")))?;
-    let frontmatter =
-        frontmatter.unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
     let content_hash: Option<String> = row
         .try_get("content_hash")
         .map_err(|e| Error::engine(format!("row decode content_hash: {e}")))?;
@@ -405,9 +429,7 @@ fn row_to_page(row: &sqlx::postgres::PgRow) -> Result<Page> {
     let updated_at: sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc> = row
         .try_get("updated_at")
         .map_err(|e| Error::engine(format!("row decode updated_at: {e}")))?;
-    let last_retrieved_at: Option<sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>> = row
-        .try_get("last_retrieved_at")
-        .map_err(|e| Error::engine(format!("row decode last_retrieved_at: {e}")))?;
+    // `last_retrieved_at` is intentionally not in the projection — always None.
     let effective_date: Option<String> = row
         .try_get("effective_date")
         .map_err(|e| Error::engine(format!("row decode effective_date: {e}")))?;
@@ -432,9 +454,7 @@ fn row_to_page(row: &sqlx::postgres::PgRow) -> Result<Page> {
         .map_err(|e| Error::engine(format!("row decode generation: {e}")))?;
     // Engine type for `generation` is `i64` (matches PG `BIGINT` directly).
     let generation = generation_i64;
-    let embedding: Option<Vec<u8>> = row
-        .try_get("embedding")
-        .map_err(|e| Error::engine(format!("row decode embedding: {e}")))?;
+    // `embedding` is intentionally not in the projection — always None.
     let chunker_version_i32: Option<i32> = row
         .try_get("chunker_version")
         .map_err(|e| Error::engine(format!("row decode chunker_version: {e}")))?;
@@ -463,10 +483,9 @@ fn row_to_page(row: &sqlx::postgres::PgRow) -> Result<Page> {
         .as_deref()
         .map(decode_cr_mode)
         .transpose()?;
-    let corpus_generation_i32: Option<i32> = row
+    let corpus_generation: Option<String> = row
         .try_get("corpus_generation")
         .map_err(|e| Error::engine(format!("row decode corpus_generation: {e}")))?;
-    let corpus_generation = corpus_generation_i32.map(|n| n.to_string());
 
     Ok(Page {
         id: id_u64,
@@ -482,14 +501,14 @@ fn row_to_page(row: &sqlx::postgres::PgRow) -> Result<Page> {
         created_at: created_at.to_rfc3339(),
         updated_at: updated_at.to_rfc3339(),
         deleted_at,
-        last_retrieved_at: last_retrieved_at.map(|ts| ts.to_rfc3339()),
+        last_retrieved_at: None,
         effective_date,
         effective_date_source,
         import_filename,
         salience_touched_at: salience_touched_at.map(|ts| ts.to_rfc3339()),
         salience_score,
         generation,
-        embedding,
+        embedding: None,
         chunker_version,
         source_path,
         source_id,
