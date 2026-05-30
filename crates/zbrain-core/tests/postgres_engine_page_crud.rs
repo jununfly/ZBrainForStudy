@@ -17,7 +17,9 @@
 //! - `list_pages`: empty / `page_type` filter / limit truncation
 //! - `resolve_slugs`: exact match only (fuzzy deferred to slice 6.5c)
 
-use zbrain_core::engine::{BrainEngine, EngineConfig, GetPageOpts, PageFilters, PageInput};
+use zbrain_core::engine::{
+    BrainEngine, EngineConfig, GetPageOpts, PageFilters, PageInput, PageSort,
+};
 use zbrain_core::postgres::PostgresEngine;
 
 fn pg_url() -> Option<String> {
@@ -544,7 +546,11 @@ async fn list_pages_filters_by_source_id() {
     seed_source("pg-beta").await;
 
     engine
-        .put_page("source-default", None, &note_input("Default", "default-body"))
+        .put_page(
+            "source-default",
+            None,
+            &note_input("Default", "default-body"),
+        )
         .await
         .expect("put default source");
     engine
@@ -589,7 +595,11 @@ async fn list_pages_filters_by_source_ids() {
     seed_source("pg-beta").await;
 
     engine
-        .put_page("source-default", None, &note_input("Default", "default-body"))
+        .put_page(
+            "source-default",
+            None,
+            &note_input("Default", "default-body"),
+        )
         .await
         .expect("put default source");
     engine
@@ -612,6 +622,7 @@ async fn list_pages_filters_by_source_ids() {
     let pages = engine
         .list_pages(&PageFilters {
             source_ids: Some(vec!["default".to_string(), "pg-beta".to_string()]),
+            sort: Some(PageSort::Slug),
             ..Default::default()
         })
         .await
@@ -620,14 +631,249 @@ async fn list_pages_filters_by_source_ids() {
     let slugs: Vec<&str> = pages.iter().map(|p| p.slug.as_str()).collect();
     assert_eq!(
         slugs,
-        vec!["source-default", "source-beta"],
-        "source_ids filter must include only selected sources in insertion order"
+        vec!["source-beta", "source-default"],
+        "source_ids filter must include only selected sources with requested slug ordering"
     );
     assert!(
         pages
             .iter()
             .all(|p| p.source_id == "default" || p.source_id == "pg-beta"),
         "all results must belong to selected source ids"
+    );
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn list_pages_filters_by_slug_prefix() {
+    let Some(engine) = init_clean_engine().await else {
+        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
+        return;
+    };
+
+    engine
+        .put_page("docs/alpha", None, &note_input("Docs Alpha", "body"))
+        .await
+        .expect("put docs alpha");
+    engine
+        .put_page("docs/beta", None, &note_input("Docs Beta", "body"))
+        .await
+        .expect("put docs beta");
+    engine
+        .put_page("notes/gamma", None, &note_input("Notes Gamma", "body"))
+        .await
+        .expect("put notes gamma");
+
+    let pages = engine
+        .list_pages(&PageFilters {
+            slug_prefix: Some("docs/".to_string()),
+            sort: Some(PageSort::Slug),
+            ..Default::default()
+        })
+        .await
+        .expect("list_pages slug_prefix=docs/");
+
+    let slugs: Vec<&str> = pages.iter().map(|p| p.slug.as_str()).collect();
+    assert_eq!(slugs, vec!["docs/alpha", "docs/beta"]);
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn list_pages_filters_by_updated_after() {
+    let Some(engine) = init_clean_engine().await else {
+        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
+        return;
+    };
+
+    let old = engine
+        .put_page("updated-old", None, &note_input("Old", "body"))
+        .await
+        .expect("put old");
+    let new = engine
+        .put_page("updated-new", None, &note_input("New", "body"))
+        .await
+        .expect("put new");
+
+    let pages = engine
+        .list_pages(&PageFilters {
+            updated_after: Some(old.updated_at.clone()),
+            sort: Some(PageSort::Slug),
+            ..Default::default()
+        })
+        .await
+        .expect("list_pages updated_after=old.updated_at");
+
+    let slugs: Vec<&str> = pages.iter().map(|p| p.slug.as_str()).collect();
+    assert_eq!(
+        slugs,
+        vec!["updated-new"],
+        "updated_after must be a strict greater-than filter; cutoff={:?}, new={:?}",
+        old.updated_at,
+        new.updated_at
+    );
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn list_pages_excludes_soft_deleted_by_default() {
+    let Some(engine) = init_clean_engine().await else {
+        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
+        return;
+    };
+
+    engine
+        .put_page("visible-page", None, &note_input("Visible", "body"))
+        .await
+        .expect("put visible");
+    engine
+        .put_page("soft-deleted-page", None, &note_input("Deleted", "body"))
+        .await
+        .expect("put deleted");
+    soft_delete_via_sql("soft-deleted-page").await;
+
+    let pages = engine
+        .list_pages(&PageFilters {
+            sort: Some(PageSort::Slug),
+            ..Default::default()
+        })
+        .await
+        .expect("list_pages default");
+
+    let slugs: Vec<&str> = pages.iter().map(|p| p.slug.as_str()).collect();
+    assert_eq!(slugs, vec!["visible-page"]);
+    assert!(pages.iter().all(|p| p.deleted_at.is_none()));
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn list_pages_includes_soft_deleted_when_flag_set() {
+    let Some(engine) = init_clean_engine().await else {
+        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
+        return;
+    };
+
+    engine
+        .put_page("visible-page", None, &note_input("Visible", "body"))
+        .await
+        .expect("put visible");
+    engine
+        .put_page("soft-deleted-page", None, &note_input("Deleted", "body"))
+        .await
+        .expect("put deleted");
+    soft_delete_via_sql("soft-deleted-page").await;
+
+    let pages = engine
+        .list_pages(&PageFilters {
+            include_deleted: true,
+            sort: Some(PageSort::Slug),
+            ..Default::default()
+        })
+        .await
+        .expect("list_pages include_deleted=true");
+
+    let slugs: Vec<&str> = pages.iter().map(|p| p.slug.as_str()).collect();
+    assert_eq!(slugs, vec!["soft-deleted-page", "visible-page"]);
+    let deleted = pages
+        .iter()
+        .find(|p| p.slug == "soft-deleted-page")
+        .expect("soft-deleted page should be present");
+    assert!(deleted.deleted_at.is_some());
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn list_pages_respects_offset() {
+    let Some(engine) = init_clean_engine().await else {
+        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
+        return;
+    };
+
+    for slug in ["offset-a", "offset-b", "offset-c", "offset-d"] {
+        engine
+            .put_page(slug, None, &note_input(slug, "body"))
+            .await
+            .expect("put offset page");
+    }
+
+    let pages = engine
+        .list_pages(&PageFilters {
+            offset: Some(2),
+            sort: Some(PageSort::Slug),
+            ..Default::default()
+        })
+        .await
+        .expect("list_pages offset=2");
+
+    let slugs: Vec<&str> = pages.iter().map(|p| p.slug.as_str()).collect();
+    assert_eq!(slugs, vec!["offset-c", "offset-d"]);
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn list_pages_sorts_by_slug_asc() {
+    let Some(engine) = init_clean_engine().await else {
+        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
+        return;
+    };
+
+    for slug in ["slug-c", "slug-a", "slug-b"] {
+        engine
+            .put_page(slug, None, &note_input(slug, "body"))
+            .await
+            .expect("put slug sort page");
+    }
+
+    let pages = engine
+        .list_pages(&PageFilters {
+            sort: Some(PageSort::Slug),
+            ..Default::default()
+        })
+        .await
+        .expect("list_pages sort=Slug");
+
+    let slugs: Vec<&str> = pages.iter().map(|p| p.slug.as_str()).collect();
+    assert_eq!(slugs, vec!["slug-a", "slug-b", "slug-c"]);
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn list_pages_sorts_by_updated_desc_by_default() {
+    let Some(engine) = init_clean_engine().await else {
+        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
+        return;
+    };
+
+    let first = engine
+        .put_page("updated-default-first", None, &note_input("First", "body"))
+        .await
+        .expect("put first");
+    let second = engine
+        .put_page(
+            "updated-default-second",
+            None,
+            &note_input("Second", "body"),
+        )
+        .await
+        .expect("put second");
+
+    let pages = engine
+        .list_pages(&PageFilters::default())
+        .await
+        .expect("list_pages default sort");
+
+    let slugs: Vec<&str> = pages.iter().map(|p| p.slug.as_str()).collect();
+    assert_eq!(
+        slugs,
+        vec!["updated-default-second", "updated-default-first"],
+        "default list_pages sort should be updated_at DESC with slug tie-breaker; first={:?}, second={:?}",
+        first.updated_at,
+        second.updated_at
     );
     engine.disconnect().await.expect("disconnect");
 }

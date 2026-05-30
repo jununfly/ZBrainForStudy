@@ -37,7 +37,8 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
 
 use crate::engine::{
-    BrainEngine, EngineConfig, EngineKind, GetPageOpts, Page, PageFilters, PageInput,
+    page_sort_sql, BrainEngine, EngineConfig, EngineKind, GetPageOpts, Page, PageFilters,
+    PageInput, PageSort,
 };
 use crate::error::{Error, Result};
 use crate::types::{CRMode, EffectiveDateSource, PageKind};
@@ -99,6 +100,95 @@ impl std::fmt::Debug for PostgresEngine {
         f.debug_struct("PostgresEngine")
             .field("connected", &self.pool.get().is_some())
             .finish()
+    }
+}
+
+fn push_filter_clause(sql: &mut String, param_idx: &mut u32, active: bool, clause: &str) {
+    if active {
+        let frag = format!(" AND {clause} ${param_idx}");
+        sql.push_str(&frag);
+        *param_idx += 1;
+    }
+}
+
+fn build_list_pages_sql(filters: &PageFilters) -> Option<String> {
+    // Empty source_ids short-circuit: `source_ids: Some(vec![])` means
+    // "match no source" → return empty immediately (mirrors libsql).
+    if filters.source_ids.as_ref().is_some_and(Vec::is_empty) {
+        return None;
+    }
+
+    // Dynamic SQL with optional filters. Only active filters produce bind
+    // parameters, keeping the query plan cache-friendly and avoiding
+    // `OR $N IS NULL` noise for every possible column.
+    let mut sql = format!("SELECT {FULL_PAGE_PROJECTION} FROM pages AS p WHERE 1=1");
+    let mut param_idx: u32 = 1;
+
+    push_filter_clause(
+        &mut sql,
+        &mut param_idx,
+        filters.page_type.is_some(),
+        "p.type =",
+    );
+    push_filter_clause(
+        &mut sql,
+        &mut param_idx,
+        filters.source_id.is_some(),
+        "p.source_id =",
+    );
+    push_filter_clause(
+        &mut sql,
+        &mut param_idx,
+        filters.source_ids.is_some(),
+        "p.source_id = ANY(",
+    );
+    if filters.source_ids.is_some() {
+        sql.push_str("::text[])");
+    }
+    push_filter_clause(
+        &mut sql,
+        &mut param_idx,
+        filters.slug_prefix.is_some(),
+        "p.slug LIKE",
+    );
+    if filters.slug_prefix.is_some() {
+        sql.push_str(" || '%'");
+    }
+    push_filter_clause(
+        &mut sql,
+        &mut param_idx,
+        filters.updated_after.is_some(),
+        "p.updated_at >",
+    );
+    if filters.updated_after.is_some() {
+        sql.push_str("::timestamptz");
+    }
+    if !filters.include_deleted {
+        sql.push_str(" AND p.deleted_at IS NULL");
+    }
+
+    push_list_pages_sort(&mut sql, filters.sort.unwrap_or_default());
+    push_list_pages_pagination(&mut sql, &mut param_idx, filters);
+    Some(sql)
+}
+
+fn push_list_pages_sort(sql: &mut String, sort_mode: PageSort) {
+    sql.push_str(" ORDER BY ");
+    sql.push_str(page_sort_sql(sort_mode));
+    if sort_mode != PageSort::Slug {
+        sql.push_str(", p.slug ASC");
+    }
+}
+
+fn push_list_pages_pagination(sql: &mut String, param_idx: &mut u32, filters: &PageFilters) {
+    if filters.limit.is_some() {
+        let frag = format!(" LIMIT ${param_idx}");
+        sql.push_str(&frag);
+        *param_idx += 1;
+    }
+    if filters.offset.is_some() {
+        let frag = format!(" OFFSET ${param_idx}");
+        sql.push_str(&frag);
     }
 }
 
@@ -208,8 +298,7 @@ impl BrainEngine for PostgresEngine {
         //   contextual_retrieval_mode, corpus_generation,
         //   embedding, last_retrieved_at.
 
-        let page_kind_str =
-            encode_page_kind(input.page_kind.unwrap_or(PageKind::Markdown));
+        let page_kind_str = encode_page_kind(input.page_kind.unwrap_or(PageKind::Markdown));
         let effective_date_source_str = input
             .effective_date_source
             .map(encode_effective_date_source);
@@ -311,86 +400,15 @@ impl BrainEngine for PostgresEngine {
 
     async fn list_pages(&self, filters: &PageFilters) -> Result<Vec<Page>> {
         let pool = self.pool()?;
-        // Dynamic SQL with optional filters. We build fragments so that only
-        // active filters produce bind parameters — keeping the query plan
-        // cache-friendly while avoiding the `OR $N IS NULL` noise for every
-        // possible column.
-        //
-        // Slice #74: adds `source_id` and `source_ids` filters.
-        // Slice #110-c: projection is the 28-column TS-aligned shape
-        // (no embedding / last_retrieved_at).
-        //
-        // Slice #110-g (tie-break note): PG uses `ORDER BY id ASC` here, and
-        // `id` is a monotonically increasing serial PK — already deterministic
-        // without a secondary key. The libsql engine appends `, p.slug ASC`
-        // because its sort key is `updated_at` and same-ms inserts collide.
-        // When the full `PageFilters.sort/offset` surface lands on PG in a
-        // later slice, mirror the libsql tie-breaker then.
-
-        // Empty source_ids short-circuit: `source_ids: Some(vec![])` means
-        // "match no source" → return empty immediately (mirrors libsql).
-        if let Some(ids) = filters.source_ids.as_ref() {
-            if ids.is_empty() {
-                return Ok(Vec::new());
-            }
-        }
-
-        let mut sql = format!("SELECT {FULL_PAGE_PROJECTION} FROM pages WHERE 1=1");
-        let mut param_idx: u32 = 1;
-
-        // Filter: page_type
-        let page_type_param = if filters.page_type.is_some() {
-            let frag = format!(" AND type = ${param_idx}");
-            param_idx += 1;
-            Some(frag)
-        } else {
-            None
+        let Some(sql) = build_list_pages_sql(filters) else {
+            return Ok(Vec::new());
         };
-        if let Some(ref frag) = page_type_param {
-            sql.push_str(frag);
-        }
-
-        // Filter: source_id (single exact match)
-        let source_eq_clause = if filters.source_id.is_some() {
-            let frag = format!(" AND source_id = ${param_idx}");
-            param_idx += 1;
-            Some(frag)
-        } else {
-            None
-        };
-        if let Some(ref frag) = source_eq_clause {
-            sql.push_str(frag);
-        }
-
-        // Filter: source_ids (ANY array match, PG-native)
-        // Empty vec was already short-circuited above; here len >= 1.
-        let source_any_clause = if filters.source_ids.is_some() {
-            let frag = format!(" AND source_id = ANY(${param_idx}::text[])");
-            param_idx += 1;
-            Some(frag)
-        } else {
-            None
-        };
-        if let Some(ref frag) = source_any_clause {
-            sql.push_str(frag);
-        }
-
-        sql.push_str(" ORDER BY id ASC");
-
-        // Limit is currently the final bind parameter in this query builder,
-        // so do not advance `param_idx` after formatting it; doing so creates
-        // an unused-assignment warning under `-D warnings`.
-        let limit_param = if filters.limit.is_some() {
-            Some(format!(" LIMIT ${param_idx}"))
-        } else {
-            None
-        };
-        if let Some(ref frag) = limit_param {
-            sql.push_str(frag);
-        }
-
         let mut query = sqlx::query(&sql);
 
+        // ORDER CONTRACT: bind order must match `param_idx` advancement in
+        // `build_list_pages_sql`: page_type → source_id → source_ids →
+        // slug_prefix → updated_after → limit → offset. Reordering either side
+        // silently misbinds PG `$N`.
         if let Some(pt) = filters.page_type.as_deref() {
             query = query.bind(pt);
         }
@@ -400,8 +418,17 @@ impl BrainEngine for PostgresEngine {
         if let Some(ref ids) = filters.source_ids {
             query = query.bind(ids.as_slice());
         }
+        if let Some(prefix) = filters.slug_prefix.as_deref() {
+            query = query.bind(prefix);
+        }
+        if let Some(cutoff) = filters.updated_after.as_deref() {
+            query = query.bind(cutoff);
+        }
         if let Some(limit) = filters.limit {
             query = query.bind(i64::try_from(limit).unwrap_or(i64::MAX));
+        }
+        if let Some(offset) = filters.offset {
+            query = query.bind(i64::try_from(offset).unwrap_or(i64::MAX));
         }
 
         let rows = query
@@ -556,10 +583,7 @@ fn row_to_page(row: &sqlx::postgres::PgRow) -> Result<Page> {
     let cr_mode_str: Option<String> = row
         .try_get("contextual_retrieval_mode")
         .map_err(|e| Error::engine(format!("row decode contextual_retrieval_mode: {e}")))?;
-    let contextual_retrieval_mode = cr_mode_str
-        .as_deref()
-        .map(decode_cr_mode)
-        .transpose()?;
+    let contextual_retrieval_mode = cr_mode_str.as_deref().map(decode_cr_mode).transpose()?;
     let corpus_generation: Option<String> = row
         .try_get("corpus_generation")
         .map_err(|e| Error::engine(format!("row decode corpus_generation: {e}")))?;

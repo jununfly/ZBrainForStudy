@@ -104,6 +104,7 @@ cargo clippy  --manifest-path <root>/Cargo.toml --workspace --all-targets -- -D 
 | `9ce9773` | #72-a | pg row_to_page decodes deleted_at into Page |
 | `b2314b6` | **#110-a** | **PG pages full-column migration + bump_generation trigger (DDL only)** |
 | `3899b4d` | docs | session state snapshot after slice #110-a |
+| `07f6f86` | #74 | PG `list_pages` source filters (`source_id` / `source_ids`) |
 
 
 ## 4. bump_generation trigger 设计跨 backend 对齐
@@ -203,7 +204,7 @@ async fn find_duplicate_page(&self, content_hash: &str, source_id: Option<&str>)
 | ID | 范围 | 状态 | 前置依赖 |
 |---|---|---|---|
 | **#110-b** | PG `pages` 全列 projection / `row_to_page` decoder / `put_page` 30-col UPSERT，推 `roundtrip_all_full_columns` RED → GREEN | RED 已挂 | #110-a ✅ |
-| #74 | PG `list_pages` source filters | 待启动 | #110-b |
+| #74 | PG `list_pages` source filters | 已完成（`07f6f86`） | #110-b ✅ |
 | #75 | PG integration test isolation（CI runner 共享 DB trigger 残留风险） | 待启动 | #110-b |
 | **S6-T5b** | libsql `list_pages` +4 filters: slug_prefix / source_id / source_ids / updated_after | 进行中 | — |
 | S6-T5c | libsql `page_tags` JOIN filter；评估 put_page 原子写 tag 语义 | 待启动 | S6-T5b + `0004_page_tags.sql` ✅ |
