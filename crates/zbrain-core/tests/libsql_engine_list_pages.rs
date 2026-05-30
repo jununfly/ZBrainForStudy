@@ -25,6 +25,12 @@
 //! - Each test allocates its own `NamedTempFile` (no cross-contamination).
 //! - Tests insert rows via `put_page`, then call `list_pages` with various
 //!   filters and assert on count, ordering, and 30-column field defaults.
+//! - Slice #110-h: every test is `#[serial_test::serial]` because concurrent
+//!   libtest execution creates multiple independent `#[tokio::test]` runtimes
+//!   that can enter libsql local `init_schema()` at the same time. On macOS,
+//!   `--test-threads=8` reproduced SIGSEGV/SIGABRT inside `init_schema()` even
+//!   though every test used a distinct temp DB file. Serialising this file is a
+//!   test-isolation fix; it does not change engine semantics.
 //! - Red phase: all tests should fail because the current `list_pages`
 //!   implementation only returns 7 columns and ignores `offset` / `sort` /
 //!   `include_deleted`.
@@ -67,6 +73,7 @@ fn topic_input(title: &str, body: &str) -> PageInput {
 // ─── T5-1: 30-column projection defaults ──────────────────────────────────
 
 #[tokio::test]
+#[serial_test::serial]
 async fn list_pages_projects_all_30_columns() {
     // A single row inserted via `put_page` should come back with non-default
     // 30-column fields.  Specifically we assert on columns that the 7-col stub
@@ -121,6 +128,7 @@ async fn list_pages_projects_all_30_columns() {
 // ─── T5-2: page_type filter ──────────────────────────────────────────────
 
 #[tokio::test]
+#[serial_test::serial]
 async fn list_pages_filters_by_page_type() {
     let (engine, _tmp) = init_clean_engine().await;
     engine
@@ -165,6 +173,7 @@ async fn list_pages_filters_by_page_type() {
 // ─── T5-3: limit ─────────────────────────────────────────────────────────
 
 #[tokio::test]
+#[serial_test::serial]
 async fn list_pages_respects_limit() {
     let (engine, _tmp) = init_clean_engine().await;
     for i in 0..5 {
@@ -202,6 +211,7 @@ async fn list_pages_respects_limit() {
 // ─── T5-4: offset ────────────────────────────────────────────────────────
 
 #[tokio::test]
+#[serial_test::serial]
 async fn list_pages_respects_offset() {
     let (engine, _tmp) = init_clean_engine().await;
     for i in 0..5 {
@@ -246,6 +256,7 @@ async fn list_pages_respects_offset() {
 // ─── T5-5: include_deleted ───────────────────────────────────────────────
 
 #[tokio::test]
+#[serial_test::serial]
 async fn list_pages_excludes_soft_deleted_by_default() {
     let (engine, _tmp) = init_clean_engine().await;
     engine
@@ -281,6 +292,7 @@ async fn list_pages_excludes_soft_deleted_by_default() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn list_pages_includes_soft_deleted_when_flag_set() {
     let (engine, _tmp) = init_clean_engine().await;
     engine
@@ -325,6 +337,7 @@ async fn list_pages_includes_soft_deleted_when_flag_set() {
 // ─── T5-6: sort ──────────────────────────────────────────────────────────
 
 #[tokio::test]
+#[serial_test::serial]
 async fn list_pages_sort_by_updated_desc_default() {
     // Insert pages, then verify that the default sort (UpdatedDesc) returns
     // them with the most-recently-updated first.  We insert in order and
@@ -369,6 +382,7 @@ async fn list_pages_sort_by_updated_desc_default() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn list_pages_sort_by_slug_asc() {
     let (engine, _tmp) = init_clean_engine().await;
     engine
@@ -405,6 +419,7 @@ async fn list_pages_sort_by_slug_asc() {
 // ─── T5-7: combined filters ──────────────────────────────────────────────
 
 #[tokio::test]
+#[serial_test::serial]
 async fn list_pages_combined_page_type_limit_offset_sort() {
     // Insert 2 notes + 2 topics, filter to notes, apply limit + offset + sort
     let (engine, _tmp) = init_clean_engine().await;
@@ -458,6 +473,7 @@ async fn list_pages_combined_page_type_limit_offset_sort() {
 // ─── S6-T5b: slug_prefix filter ─────────────────────────────────────────
 
 #[tokio::test]
+#[serial_test::serial]
 async fn list_pages_filters_by_slug_prefix() {
     let (engine, _tmp) = init_clean_engine().await;
     engine
@@ -521,6 +537,7 @@ async fn list_pages_filters_by_slug_prefix() {
 // ─── S6-T5b: source_id filter ───────────────────────────────────────────
 
 #[tokio::test]
+#[serial_test::serial]
 async fn list_pages_filters_by_source_id() {
     // `put_page` always inserts source_id = 'default' (schema default).
     // To test source_id filtering we need rows with different source_ids,
@@ -599,6 +616,7 @@ async fn list_pages_filters_by_source_id() {
 // ─── S6-T5b: source_ids filter (IN clause) ──────────────────────────────
 
 #[tokio::test]
+#[serial_test::serial]
 async fn list_pages_filters_by_source_ids() {
     let (engine, tmp) = init_clean_engine().await;
 
@@ -685,6 +703,7 @@ async fn list_pages_filters_by_source_ids() {
 // ─── S6-T5b: updated_after filter ───────────────────────────────────────
 
 #[tokio::test]
+#[serial_test::serial]
 async fn list_pages_filters_by_updated_after() {
     // SQLite CURRENT_TIMESTAMP is second-precision. We insert a row,
     // capture its updated_at, sleep 1.1s, insert another, then filter
@@ -771,6 +790,7 @@ async fn raw_conn_for(tmp: &NamedTempFile) -> (::libsql::Database, ::libsql::Con
 // --- Schema tests (1-3) ---
 
 #[tokio::test]
+#[serial_test::serial]
 async fn schema_creates_page_tags_table() {
     // Verify that init_schema creates the `page_tags` table.
     let (engine, tmp) = init_clean_engine().await;
@@ -795,6 +815,7 @@ async fn schema_creates_page_tags_table() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn schema_page_tags_composite_pk() {
     // Verify that (page_id, tag) composite PK prevents duplicate entries.
     let (engine, tmp) = init_clean_engine().await;
@@ -848,6 +869,7 @@ async fn schema_page_tags_composite_pk() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn schema_page_tags_cascade_on_page_delete() {
     // Verify ON DELETE CASCADE: deleting a page removes its page_tags rows.
     // This requires PRAGMA foreign_keys = ON, which conn() now enforces.
@@ -901,6 +923,7 @@ async fn schema_page_tags_cascade_on_page_delete() {
 // --- Functional tests (4-10) ---
 
 #[tokio::test]
+#[serial_test::serial]
 async fn list_pages_filters_by_tag_basic() {
     // Basic tag filter: only pages with the specified tag should appear.
     let (engine, tmp) = init_clean_engine().await;
@@ -947,6 +970,7 @@ async fn list_pages_filters_by_tag_basic() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn list_pages_tag_filter_excludes_others() {
     // Page with tag 'ai' should NOT appear when filtering for tag 'rust'.
     let (engine, tmp) = init_clean_engine().await;
@@ -996,6 +1020,7 @@ async fn list_pages_tag_filter_excludes_others() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn list_pages_tag_filter_no_dup_multi_tags() {
     // A page with 3 tags should still appear exactly once when filtering
     // for any one of those tags — composite PK + single-tag exact match
@@ -1043,6 +1068,7 @@ async fn list_pages_tag_filter_no_dup_multi_tags() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn list_pages_tag_filter_unknown_tag() {
     // Filtering by a tag that no page has → empty result.
     let (engine, tmp) = init_clean_engine().await;
@@ -1083,6 +1109,7 @@ async fn list_pages_tag_filter_unknown_tag() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn list_pages_tag_filter_combines_page_type() {
     // tag + page_type AND: only pages matching BOTH should appear.
     let (engine, tmp) = init_clean_engine().await;
@@ -1133,6 +1160,7 @@ async fn list_pages_tag_filter_combines_page_type() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn list_pages_tag_filter_with_include_deleted() {
     // Tag filter should respect include_deleted semantics:
     // soft-deleted page should be excluded by default, included when flagged.
@@ -1199,6 +1227,7 @@ async fn list_pages_tag_filter_with_include_deleted() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn list_pages_tag_filter_with_limit_offset() {
     // Tag filter + limit/offset: pagination works on tag-filtered results.
     let (engine, tmp) = init_clean_engine().await;
