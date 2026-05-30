@@ -16,7 +16,7 @@
 //! readback and instead use the `Page` returned by `put_page` itself, which
 //! is the row authority in the `InMemory` impl.
 
-use zbrain_core::engine::{BrainEngine, EngineConfig, InMemoryEngine, PageInput};
+use zbrain_core::engine::{BrainEngine, EngineConfig, GetPageOpts, InMemoryEngine, PageInput};
 
 async fn init_inmemory() -> InMemoryEngine {
     let engine = InMemoryEngine::default();
@@ -92,6 +92,73 @@ async fn inmemory_put_page_same_slug_different_source_ids_produces_two_rows() {
         "same (slug, source_id) must reuse existing row id"
     );
     assert_eq!(a2.title, "Shared A v2");
+
+    engine.disconnect().await.expect("disconnect");
+}
+
+// -- S6a follow-up — get_page source scope --------------------------------
+
+#[tokio::test]
+async fn inmemory_get_page_respects_source_id_filter_for_same_slug() {
+    let engine = init_inmemory().await;
+
+    let default_page = engine
+        .put_page(
+            "shared-get",
+            None,
+            &note_input("Default title", "default-body"),
+        )
+        .await
+        .expect("put default source");
+    let alt_page = engine
+        .put_page(
+            "shared-get",
+            Some("alt-source"),
+            &note_input("Alt title", "alt-body"),
+        )
+        .await
+        .expect("put alt source");
+
+    let default_lookup = engine
+        .get_page("shared-get", &GetPageOpts::default())
+        .await
+        .expect("get default source")
+        .expect("default page exists");
+    assert_eq!(
+        default_lookup.id, default_page.id,
+        "GetPageOpts::default() must read only the default source"
+    );
+
+    let alt_lookup = engine
+        .get_page(
+            "shared-get",
+            &GetPageOpts {
+                source_id: Some("alt-source".to_string()),
+                include_deleted: false,
+            },
+        )
+        .await
+        .expect("get alt source")
+        .expect("alt page exists");
+    assert_eq!(
+        alt_lookup.id, alt_page.id,
+        "explicit source_id must read the matching source row"
+    );
+
+    let missing_source_lookup = engine
+        .get_page(
+            "shared-get",
+            &GetPageOpts {
+                source_id: Some("missing-source".to_string()),
+                include_deleted: false,
+            },
+        )
+        .await
+        .expect("get missing source");
+    assert!(
+        missing_source_lookup.is_none(),
+        "get_page must not fall back across sources when source_id is explicit"
+    );
 
     engine.disconnect().await.expect("disconnect");
 }

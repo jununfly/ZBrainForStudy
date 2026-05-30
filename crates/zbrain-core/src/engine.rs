@@ -493,12 +493,16 @@ impl BrainEngine for InMemoryEngine {
         Ok(())
     }
 
-    async fn get_page(&self, slug: &str, _opts: &GetPageOpts) -> crate::Result<Option<Page>> {
+    async fn get_page(&self, slug: &str, opts: &GetPageOpts) -> crate::Result<Option<Page>> {
+        let source_id = opts.source_id.as_deref().unwrap_or("default");
         let store = self
             .store
             .lock()
             .expect("InMemoryEngine store mutex poisoned");
-        Ok(store.iter().find(|p| p.slug == slug).cloned())
+        Ok(store
+            .iter()
+            .find(|p| p.slug == slug && p.source_id == source_id)
+            .cloned())
     }
 
     async fn put_page(
