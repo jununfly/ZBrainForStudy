@@ -4,6 +4,11 @@
 //! Each test connects to a clean schema via `init_clean_engine()`, truncates
 //! the `pages` table from prior test runs, then exercises one CRUD method.
 //!
+//! Slice #110-g: every test is `#[serial_test::serial]` because all of them
+//! share the same `pages` table in the test database. Cargo runs tests
+//! multi-threaded by default, which races TRUNCATE against sibling INSERTs
+//! and causes flaky failures. `#[serial]` enforces a global mutex.
+//!
 //! Test groups:
 //! - `get_page`: not-found / found / source scoping / `include_deleted`
 //!   hides soft-deleted rows by default and returns them when set
@@ -93,6 +98,7 @@ async fn source_ids_for_slug(slug: &str) -> Vec<String> {
 // -- get_page --------------------------------------------------------------
 
 #[tokio::test]
+#[serial_test::serial]
 async fn get_page_returns_none_when_slug_missing() {
     let Some(engine) = init_clean_engine().await else {
         eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
@@ -107,6 +113,7 @@ async fn get_page_returns_none_when_slug_missing() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn get_page_round_trips_after_put() {
     let Some(engine) = init_clean_engine().await else {
         eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
@@ -130,6 +137,7 @@ async fn get_page_round_trips_after_put() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn get_page_respects_source_id_scope() {
     let Some(engine) = init_clean_engine().await else {
         eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
@@ -175,6 +183,7 @@ async fn get_page_respects_source_id_scope() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn get_page_without_source_id_does_not_fall_back_to_non_default_source() {
     let Some(engine) = init_clean_engine().await else {
         eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
@@ -227,6 +236,7 @@ async fn soft_delete_via_sql(slug: &str) {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn get_page_hides_soft_deleted_row_by_default() {
     let Some(engine) = init_clean_engine().await else {
         eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
@@ -250,6 +260,7 @@ async fn get_page_hides_soft_deleted_row_by_default() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn get_page_returns_soft_deleted_row_when_include_deleted_true() {
     let Some(engine) = init_clean_engine().await else {
         eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
@@ -284,6 +295,7 @@ async fn get_page_returns_soft_deleted_row_when_include_deleted_true() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn get_page_live_row_has_no_deleted_at() {
     // Slice #72-a guard: a never-deleted row must round-trip
     // `deleted_at == None`. Prevents an accidental projection that always
@@ -313,6 +325,7 @@ async fn get_page_live_row_has_no_deleted_at() {
 // -- put_page --------------------------------------------------------------
 
 #[tokio::test]
+#[serial_test::serial]
 async fn put_page_upsert_updates_existing_row() {
     let Some(engine) = init_clean_engine().await else {
         eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
@@ -343,6 +356,7 @@ async fn put_page_upsert_updates_existing_row() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn put_page_respects_source_id_as_part_of_identity() {
     let Some(engine) = init_clean_engine().await else {
         eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
@@ -383,6 +397,7 @@ async fn put_page_respects_source_id_as_part_of_identity() {
 // -- delete_page -----------------------------------------------------------
 
 #[tokio::test]
+#[serial_test::serial]
 async fn delete_page_removes_row() {
     let Some(engine) = init_clean_engine().await else {
         eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
@@ -402,6 +417,7 @@ async fn delete_page_removes_row() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn delete_page_is_noop_on_missing_slug() {
     let Some(engine) = init_clean_engine().await else {
         eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
@@ -418,6 +434,7 @@ async fn delete_page_is_noop_on_missing_slug() {
 // -- list_pages ------------------------------------------------------------
 
 #[tokio::test]
+#[serial_test::serial]
 async fn list_pages_empty_when_no_rows() {
     let Some(engine) = init_clean_engine().await else {
         eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
@@ -432,6 +449,7 @@ async fn list_pages_empty_when_no_rows() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn list_pages_filters_by_page_type() {
     let Some(engine) = init_clean_engine().await else {
         eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
@@ -486,6 +504,7 @@ async fn list_pages_filters_by_page_type() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn list_pages_respects_limit() {
     let Some(engine) = init_clean_engine().await else {
         eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
@@ -517,6 +536,7 @@ async fn list_pages_respects_limit() {
 // -- resolve_slugs ---------------------------------------------------------
 
 #[tokio::test]
+#[serial_test::serial]
 async fn resolve_slugs_exact_match_only_in_slice_4b() {
     let Some(engine) = init_clean_engine().await else {
         eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");

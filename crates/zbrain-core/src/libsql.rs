@@ -19,7 +19,8 @@ use std::sync::OnceLock;
 use async_trait::async_trait;
 
 use crate::engine::{
-    page_sort_sql, BrainEngine, EngineConfig, EngineKind, GetPageOpts, Page, PageFilters, PageInput,
+    page_sort_sql, BrainEngine, EngineConfig, EngineKind, GetPageOpts, Page, PageFilters,
+    PageInput, PageSort,
 };
 use crate::error::{Error, Result};
 use crate::time::current_utc_iso8601;
@@ -512,10 +513,20 @@ impl BrainEngine for LibsqlEngine {
             sql.push_str(" AND p.deleted_at IS NULL");
         }
 
-        // ORDER BY — default UpdatedDesc when sort is None
-        let sort_sql = page_sort_sql(filters.sort.unwrap_or_default());
+        // ORDER BY — default UpdatedDesc when sort is None.
+        //
+        // Slice #110-g: append `p.slug ASC` as a deterministic tie-breaker
+        // for non-slug sort modes. Without it, rows inserted at the same
+        // millisecond (common in tests) produce a non-deterministic order
+        // under SQLite, which flakes paginated `offset` assertions. `Slug`
+        // already orders by slug so skip the duplicate.
+        let sort_mode = filters.sort.unwrap_or_default();
+        let sort_sql = page_sort_sql(sort_mode);
         sql.push_str(" ORDER BY ");
         sql.push_str(sort_sql);
+        if sort_mode != PageSort::Slug {
+            sql.push_str(", p.slug ASC");
+        }
 
         // LIMIT — SQLite requires LIMIT before OFFSET.  When only OFFSET is
         // requested we still must emit a LIMIT clause; the SQLite convention

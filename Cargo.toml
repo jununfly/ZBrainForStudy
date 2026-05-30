@@ -52,6 +52,12 @@ sqlx = { version = "0.8", default-features = false, features = [
 # TS PGLite WASM-Postgres choice with a native pure-Rust SQLite driver.
 libsql = "0.9"
 tempfile = "3"
+# Slice #110-g: force PG integration tests to run serially. Cargo's default
+# multi-threaded test runner races on the shared `pages` table (TRUNCATE vs
+# INSERT from sibling tests), causing flaky CI. `#[serial]` enforces a global
+# mutex so only one PG test runs at a time. libsql tests are not annotated —
+# each test owns its own in-memory database, so no cross-test contention.
+serial_test = "3"
 
 [profile.release]
 lto = "thin"

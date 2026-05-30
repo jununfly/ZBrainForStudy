@@ -215,8 +215,15 @@ async fn list_pages_respects_offset() {
             .expect("put_page");
     }
 
+    // Slice #110-g (fix F): explicitly sort by `Slug` so the offset
+    // assertion has a deterministic source-of-truth, independent of the
+    // millisecond-precision `updated_at` timestamps which can collide
+    // under concurrent test load (5 puts in a tight loop). With `Slug`
+    // ascending, the canonical order is [off-0, off-1, off-2, off-3, off-4],
+    // and offset=3 must skip the first three.
     let filters = PageFilters {
         offset: Some(3),
+        sort: Some(PageSort::Slug),
         ..Default::default()
     };
 

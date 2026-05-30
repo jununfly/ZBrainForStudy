@@ -317,6 +317,13 @@ impl BrainEngine for PostgresEngine {
         // (postgres `LIMIT NULL` = unbounded).
         // Slice #110-c: projection is the 28-column TS-aligned shape
         // (no embedding / last_retrieved_at).
+        //
+        // Slice #110-g (tie-break note): PG uses `ORDER BY id ASC` here, and
+        // `id` is a monotonically increasing serial PK — already deterministic
+        // without a secondary key. The libsql engine appends `, p.slug ASC`
+        // because its sort key is `updated_at` and same-ms inserts collide.
+        // When the full `PageFilters.sort/offset` surface lands on PG in a
+        // later slice, mirror the libsql tie-breaker then.
         let sql = format!(
             "SELECT {FULL_PAGE_PROJECTION} \
              FROM pages \
