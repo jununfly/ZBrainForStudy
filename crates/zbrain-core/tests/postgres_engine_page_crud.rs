@@ -533,6 +533,105 @@ async fn list_pages_respects_limit() {
     engine.disconnect().await.expect("disconnect");
 }
 
+#[tokio::test]
+#[serial_test::serial]
+async fn list_pages_filters_by_source_id() {
+    let Some(engine) = init_clean_engine().await else {
+        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
+        return;
+    };
+    seed_source("pg-alpha").await;
+    seed_source("pg-beta").await;
+
+    engine
+        .put_page("source-default", None, &note_input("Default", "default-body"))
+        .await
+        .expect("put default source");
+    engine
+        .put_page(
+            "source-alpha",
+            Some("pg-alpha"),
+            &note_input("Alpha", "alpha-body"),
+        )
+        .await
+        .expect("put alpha source");
+    engine
+        .put_page(
+            "source-beta",
+            Some("pg-beta"),
+            &note_input("Beta", "beta-body"),
+        )
+        .await
+        .expect("put beta source");
+
+    let pages = engine
+        .list_pages(&PageFilters {
+            source_id: Some("pg-alpha".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("list_pages source_id=pg-alpha");
+
+    assert_eq!(pages.len(), 1, "only pg-alpha pages should appear");
+    assert_eq!(pages[0].slug, "source-alpha");
+    assert_eq!(pages[0].source_id, "pg-alpha");
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn list_pages_filters_by_source_ids() {
+    let Some(engine) = init_clean_engine().await else {
+        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
+        return;
+    };
+    seed_source("pg-alpha").await;
+    seed_source("pg-beta").await;
+
+    engine
+        .put_page("source-default", None, &note_input("Default", "default-body"))
+        .await
+        .expect("put default source");
+    engine
+        .put_page(
+            "source-alpha",
+            Some("pg-alpha"),
+            &note_input("Alpha", "alpha-body"),
+        )
+        .await
+        .expect("put alpha source");
+    engine
+        .put_page(
+            "source-beta",
+            Some("pg-beta"),
+            &note_input("Beta", "beta-body"),
+        )
+        .await
+        .expect("put beta source");
+
+    let pages = engine
+        .list_pages(&PageFilters {
+            source_ids: Some(vec!["default".to_string(), "pg-beta".to_string()]),
+            ..Default::default()
+        })
+        .await
+        .expect("list_pages source_ids=[default,pg-beta]");
+
+    let slugs: Vec<&str> = pages.iter().map(|p| p.slug.as_str()).collect();
+    assert_eq!(
+        slugs,
+        vec!["source-default", "source-beta"],
+        "source_ids filter must include only selected sources in insertion order"
+    );
+    assert!(
+        pages
+            .iter()
+            .all(|p| p.source_id == "default" || p.source_id == "pg-beta"),
+        "all results must belong to selected source ids"
+    );
+    engine.disconnect().await.expect("disconnect");
+}
+
 // -- resolve_slugs ---------------------------------------------------------
 
 #[tokio::test]

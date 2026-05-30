@@ -311,10 +311,12 @@ impl BrainEngine for PostgresEngine {
 
     async fn list_pages(&self, filters: &PageFilters) -> Result<Vec<Page>> {
         let pool = self.pool()?;
-        // Single SQL with optional filter — `type = $1 OR $1 IS NULL` keeps
-        // the query string static so we do not have to assemble fragments.
-        // Limit is applied with `LIMIT $2` when set, otherwise we pass NULL
-        // (postgres `LIMIT NULL` = unbounded).
+        // Dynamic SQL with optional filters. We build fragments so that only
+        // active filters produce bind parameters — keeping the query plan
+        // cache-friendly while avoiding the `OR $N IS NULL` noise for every
+        // possible column.
+        //
+        // Slice #74: adds `source_id` and `source_ids` filters.
         // Slice #110-c: projection is the 28-column TS-aligned shape
         // (no embedding / last_retrieved_at).
         //
@@ -324,17 +326,85 @@ impl BrainEngine for PostgresEngine {
         // because its sort key is `updated_at` and same-ms inserts collide.
         // When the full `PageFilters.sort/offset` surface lands on PG in a
         // later slice, mirror the libsql tie-breaker then.
-        let sql = format!(
-            "SELECT {FULL_PAGE_PROJECTION} \
-             FROM pages \
-             WHERE ($1::text IS NULL OR type = $1) \
-             ORDER BY id ASC \
-             LIMIT $2"
-        );
-        let rows = sqlx::query(&sql)
-            .bind(filters.page_type.as_deref())
-            // `Option<i64>::None` becomes SQL NULL → LIMIT NULL (unbounded).
-            .bind(filters.limit.map(|n| i64::try_from(n).unwrap_or(i64::MAX)))
+
+        // Empty source_ids short-circuit: `source_ids: Some(vec![])` means
+        // "match no source" → return empty immediately (mirrors libsql).
+        if let Some(ids) = filters.source_ids.as_ref() {
+            if ids.is_empty() {
+                return Ok(Vec::new());
+            }
+        }
+
+        let mut sql = format!("SELECT {FULL_PAGE_PROJECTION} FROM pages WHERE 1=1");
+        let mut param_idx: u32 = 1;
+
+        // Filter: page_type
+        let page_type_param = if filters.page_type.is_some() {
+            let frag = format!(" AND type = ${param_idx}");
+            param_idx += 1;
+            Some(frag)
+        } else {
+            None
+        };
+        if let Some(ref frag) = page_type_param {
+            sql.push_str(frag);
+        }
+
+        // Filter: source_id (single exact match)
+        let source_eq_clause = if filters.source_id.is_some() {
+            let frag = format!(" AND source_id = ${param_idx}");
+            param_idx += 1;
+            Some(frag)
+        } else {
+            None
+        };
+        if let Some(ref frag) = source_eq_clause {
+            sql.push_str(frag);
+        }
+
+        // Filter: source_ids (ANY array match, PG-native)
+        // Empty vec was already short-circuited above; here len >= 1.
+        let source_any_clause = if filters.source_ids.is_some() {
+            let frag = format!(" AND source_id = ANY(${param_idx}::text[])");
+            param_idx += 1;
+            Some(frag)
+        } else {
+            None
+        };
+        if let Some(ref frag) = source_any_clause {
+            sql.push_str(frag);
+        }
+
+        sql.push_str(" ORDER BY id ASC");
+
+        // Limit is currently the final bind parameter in this query builder,
+        // so do not advance `param_idx` after formatting it; doing so creates
+        // an unused-assignment warning under `-D warnings`.
+        let limit_param = if filters.limit.is_some() {
+            Some(format!(" LIMIT ${param_idx}"))
+        } else {
+            None
+        };
+        if let Some(ref frag) = limit_param {
+            sql.push_str(frag);
+        }
+
+        let mut query = sqlx::query(&sql);
+
+        if let Some(pt) = filters.page_type.as_deref() {
+            query = query.bind(pt);
+        }
+        if let Some(sid) = filters.source_id.as_deref() {
+            query = query.bind(sid);
+        }
+        if let Some(ref ids) = filters.source_ids {
+            query = query.bind(ids.as_slice());
+        }
+        if let Some(limit) = filters.limit {
+            query = query.bind(i64::try_from(limit).unwrap_or(i64::MAX));
+        }
+
+        let rows = query
             .fetch_all(pool)
             .await
             .map_err(|e| Error::engine(format!("list_pages failed: {e}")))?;
