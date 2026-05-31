@@ -282,8 +282,39 @@
 - **commit 序**：
   - `2370190` 实现 + 测试（单一切片合并 commit）。
   - 本 doc-only follow-up（handoff closure 回填 hash）。
-- **未尽事项 / 下一步候选切片**：
-  - **6c 完整 salience 公式**：补 `+ ln(1 + N_tags)`、激活 takes 维度（解锁 `salience_scores_takes_zero_until_6c.rs` 中的 "until 6c" 约束）。
-  - **PG-advanced-writes**：`refresh_page_body` + `update_page_contextual_retrieval_state`（plan 14 §10.2 仅剩这两行未勾选）。
-  - **plan 14 §11.4 清理**：D1 锁定 "libsql advanced-reads 等 6c+ 切片再处理" 已过期，可在下一个 doc-only commit 中刷新。
-  - **postgres.rs L685-688 注释清理**：libsql override 已落地，"libsql side intentionally keeps the default Unsupported" 注释需删除。
+- **未尽事项 / 下一步候选切片（历史项，后续已刷新）**：
+  - **6c 完整 salience 公式**：已由 `494da1d feat(core): add takes dimension to salience scoring` 完成。
+  - **PG-advanced-writes**：已由 `98761e4 feat(core): implement postgres advanced page writes` 完成。
+  - **plan 14 §11.4 清理**：已在 PG-advanced-writes doc/chore follow-up 中刷新为后续切片状态。
+  - **postgres.rs advanced reads 注释清理**：已在 PG-advanced-writes doc/chore follow-up 中删除过期的 libsql `Unsupported` 描述。
+
+---
+
+## PG-advanced-writes 切片闭环（追加，commit 98761e4）
+
+- **范围**：`PostgresEngine` override 两个 advanced write 方法：
+  - `refresh_page_body(&RefreshPageBodyArgs) -> Result<()>`
+  - `update_page_contextual_retrieval_state(slug, source_id, mode, corpus_generation) -> Result<()>`
+- **实现 commit**：`98761e4 feat(core): implement postgres advanced page writes`。
+- **改动文件**：
+  - `crates/zbrain-core/src/postgres.rs`
+  - `crates/zbrain-core/tests/page_methods_refresh_page_body.rs`
+  - `crates/zbrain-core/tests/page_methods_update_cr_state.rs`
+- **行为契约**：
+  - 严格按 `(source_id, slug)` 定位 live row。
+  - `deleted_at IS NULL`：soft-deleted rows no-op。
+  - missing row no-op，对齐 TS `postgres-engine.ts` / `pglite-engine.ts`。
+  - 每次成功命中更新 `updated_at = NOW()`。
+  - `refresh_page_body` 更新 `compiled_truth` / `timeline` / `content_hash`；`timeline` 由 `serde_json::Value::to_string()` 写入当前字符串列。
+  - `update_page_contextual_retrieval_state` 更新 `contextual_retrieval_mode` / `corpus_generation`，并覆盖 `corpus_generation = None` 写入 NULL 的 case。
+- **测试形态**：
+  - PG 正向测试覆盖 live row 精确更新、同 slug 不同 source 不误更新、soft-deleted no-op、`updated_at` bump。
+  - libsql advanced writes 尚未 override，相关测试继续锁定 trait 默认 `Unsupported("pending slice 6a")`。
+- **验证门禁（实现 commit 前 fresh verification）**：
+  - `cargo test --manifest-path ... -p zbrain-core --no-fail-fast` ✅
+  - `cargo clippy --manifest-path ... -p zbrain-core --all-targets -- -D warnings` ✅
+  - `cargo build --manifest-path ... -p zbrain-core` ✅
+- **doc/chore follow-up 内容**：
+  - plan 14 §10.2 勾选 `refresh_page_body` / `update_page_contextual_retrieval_state`，回填 `98761e4`。
+  - plan 14 §11.4 刷新 libsql advanced reads / 6c 后续切片状态。
+  - `postgres.rs` advanced reads 注释删除过期的 "libsql keeps Unsupported until slice 6a-libsql" 描述。

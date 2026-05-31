@@ -582,15 +582,15 @@ Slice 6a 的 placeholder-lock 测试**并不在 `postgres_*` 文件里**,而是�
 | `page_methods_soft_delete_page.rs` | trait 默认 unsupported | InMemory / PG / libsql | ✅ 已完成（`2568268`） |
 | `page_methods_restore_page.rs` | trait 默认 unsupported | InMemory / PG | ✅ 已完成（`2568268`） |
 | `page_methods_purge_deleted_pages.rs` | trait 默认 unsupported | InMemory / PG | ✅ 已完成（`2568268`） |
-| `page_methods_refresh_page_body.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-advanced-writes |
-| `page_methods_update_cr_state.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-advanced-writes |
-| `page_methods_get_all_slugs.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-advanced-reads |
-| `page_methods_list_all_page_refs.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-advanced-reads |
-| `page_methods_find_orphan_pages.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-find-orphan-pages（独立切片） |
-| `page_methods_get_page_timestamps.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-advanced-reads |
-| `page_methods_get_effective_dates.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-advanced-reads |
-| `page_methods_get_salience_scores.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-advanced-reads(或 6c) |
-| `page_methods_salience_scores_takes_zero_until_6c.rs` | 6c takes 偏差锁 | InMemory(已 override 但 takes=0) | ❌ 6c 闭合 |
+| `page_methods_refresh_page_body.rs` | trait 默认 unsupported | InMemory / libsql | ✅ PG 已完成（`98761e4`）；libsql 仍锁 trait 默认 |
+| `page_methods_update_cr_state.rs` | trait 默认 unsupported | InMemory / libsql | ✅ PG 已完成（`98761e4`）；libsql 仍锁 trait 默认 |
+| `page_methods_get_all_slugs.rs` | trait 默认 unsupported | InMemory | ✅ PG 已完成（`a747ed5`）；libsql 已完成（`2370190`） |
+| `page_methods_list_all_page_refs.rs` | trait 默认 unsupported | InMemory | ✅ PG 已完成（`a747ed5`）；libsql 已完成（`2370190`） |
+| `page_methods_find_orphan_pages.rs` | trait 默认 unsupported | InMemory / libsql | ✅ PG 已完成（`a56c9ae`）；libsql 仍锁 trait 默认 |
+| `page_methods_get_page_timestamps.rs` | trait 默认 unsupported | InMemory | ✅ PG 已完成（`a747ed5`）；libsql 已完成（`2370190`） |
+| `page_methods_get_effective_dates.rs` | trait 默认 unsupported | InMemory | ✅ PG 已完成（`a747ed5`）；libsql 已完成（`2370190`） |
+| `page_methods_get_salience_scores.rs` | trait 默认 unsupported | InMemory | ✅ PG 已完成（`a747ed5`）；libsql 已完成（`2370190`）；6c takes salience 已完成（`494da1d`） |
+| `page_methods_salience_scores_takes_zero_until_6c.rs` | 6c takes 偏差锁 | 已归档 | ✅ 6c 已闭合（`494da1d`） |
 | **(tag CRUD 无对应 `page_methods_*` 红测)** | — | libsql + PG 已 override | ✅ 由 `libsql_engine_tag_crud.rs` 覆盖;PG 侧暂缺独立 `postgres_engine_tag_crud.rs`(留待 PG 集成测试基础设施切片) |
 
 ### 6.3 PG-tag slice 后的处置
@@ -645,9 +645,9 @@ CI 上跑真实 PG 集成测试单独留 slice。
 |---|---|---|
 | `PG-find-duplicate` | `find_duplicate_page` | `page_methods_find_duplicate_page.rs` |
 | `PG-soft-delete` | `soft_delete_page` / `restore_page` / `purge_deleted_pages` | `page_methods_soft_delete_page.rs` / `_restore_page.rs` / `_purge_deleted_pages.rs` |
-| `PG-advanced-writes` | `refresh_page_body` / `update_page_contextual_retrieval_state` | `page_methods_refresh_page_body.rs` / `_update_cr_state.rs` |
-| `PG-advanced-reads` | `get_all_slugs` / `list_all_page_refs` / `get_page_timestamps` / `get_effective_dates` / `get_salience_scores` (5 个) | `page_methods_get_all_slugs.rs` / `_list_all_page_refs.rs` / `_get_page_timestamps.rs` / `_get_effective_dates.rs` / `_get_salience_scores.rs` |
-| `PG-find-orphan-pages` | `find_orphan_pages` (单独切片，独立小切片落地) | `page_methods_find_orphan_pages.rs` |
+| `PG-advanced-writes` | `refresh_page_body` / `update_page_contextual_retrieval_state` | ✅ 已完成（`98761e4`）；`page_methods_refresh_page_body.rs` / `_update_cr_state.rs` |
+| `PG-advanced-reads` | `get_all_slugs` / `list_all_page_refs` / `get_page_timestamps` / `get_effective_dates` / `get_salience_scores` (5 个) | ✅ 已完成（`a747ed5`）；`page_methods_get_all_slugs.rs` / `_list_all_page_refs.rs` / `_get_page_timestamps.rs` / `_get_effective_dates.rs` / `_get_salience_scores.rs` |
+| `PG-find-orphan-pages` | `find_orphan_pages` (单独切片，独立小切片落地) | ✅ 已完成（`a56c9ae`）；`page_methods_find_orphan_pages.rs` |
 
 每个后续切片的"完成准则": (a) PG 实现 + clippy; (b) 对应红测改写为正向断言或保留为"仍有引擎未实现"的负向锁; (c) 独立 commit + git tag。
 
@@ -718,8 +718,8 @@ CI 上跑真实 PG 集成测试单独留 slice。
 - [x] `soft_delete_page` PG 方言 (now()) — 切片: **PG-soft-delete**（`2568268`）
 - [x] `restore_page` 实现 — 切片: **PG-soft-delete**（`2568268`）
 - [x] `purge_deleted_pages` 实现 — 切片: **PG-soft-delete**（`2568268`）
-- [ ] `refresh_page_body` 实现 — 切片: **PG-advanced-writes**
-- [ ] `update_page_contextual_retrieval_state` 实现 — 切片: **PG-advanced-writes**
+- [x] `refresh_page_body` 实现 — 切片: **PG-advanced-writes**（`98761e4`）
+- [x] `update_page_contextual_retrieval_state` 实现 — 切片: **PG-advanced-writes**（`98761e4`）
 - [x] `get_all_slugs` 实现 — 切片: **PG-advanced-reads**（`a747ed5`）
 - [x] `list_all_page_refs` 实现 — 切片: **PG-advanced-reads**（`a747ed5`）
 - [x] `find_orphan_pages` 实现 — 切片: **PG-find-orphan-pages**（`a56c9ae`；含 0006_links.sql migration + 双侧 soft-delete 过滤 C11）
@@ -778,11 +778,11 @@ CI 上跑真实 PG 集成测试单独留 slice。
 - **S5 四连绿门禁**: `cargo fmt --all -- --check` / `cargo build --workspace --all-targets` / `cargo test --workspace --all-targets` / `cargo clippy --workspace --all-targets -- -D warnings`; libsql 并行 SIGABRT flake 命中则按 plan 16 §8 line 231 重跑单 crate, 不掩盖。
 - **S6 提交 + 文档**: 一次性 commit (实现 + 测试 + plan 收口); commit message 模板 `slice 6a-pg(advanced_reads): override PG for 5 read methods, mirror TS pglite-engine`; 在 §10.2 把 5 行勾选为 ✅ 并补 commit hash。
 
-### 11.4 与 libsql 的契约边界
+### 11.4 与 libsql 的契约边界（后续切片已刷新）
 
-- 本切片 **不** 实现 libsql 的 5 个 advanced-reads, 维持 `engine.rs` trait 默认 `Err(EngineError::Unsupported(...))`;
-- 现有 5 个 `page_methods_*.rs` placeholder-lock 红测除 `salience_scores_takes_zero_until_6c.rs` 外保持不动, 锁住 trait 默认;
-- 决策 D1 锁定: libsql advanced-reads 等 6c+ 切片再处理, 不下放到本切片。
+- PG-advanced-reads 落地时，本节曾锁定 libsql 5 个 advanced reads 维持 trait 默认 `Unsupported`；该边界已被后续 **6a-libsql advanced reads** 切片解除（`2370190`）。
+- `page_methods_get_all_slugs.rs` / `_list_all_page_refs.rs` / `_get_page_timestamps.rs` / `_get_effective_dates.rs` / `_get_salience_scores.rs` 已同时覆盖 PG 与 libsql 正向语义；trait 默认保留为未来 backend 兜底。
+- `salience_scores_takes_zero_until_6c.rs` 的 "takes=0 until 6c" 偏差已由 **6c takes salience** 切片闭合（`494da1d`）。
 
 ---
 

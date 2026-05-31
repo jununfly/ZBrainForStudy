@@ -748,10 +748,10 @@ impl BrainEngine for PostgresEngine {
         Ok(())
     }
 
-    // ─── PG-advanced-reads overrides (slice 6a-pg) ───────────────────────────
+    // ─── Advanced reads overrides (PG parity) ────────────────────────────────
     // Five read-only methods promoted from trait-default `Unsupported` to
-    // real SQL on PostgresEngine. libsql side intentionally keeps the
-    // default `Unsupported` until slice 6a-libsql. Contracts: see
+    // real SQL on PostgresEngine. libsql implements the same trait surface in
+    // the 6a-libsql advanced reads slice. Contracts: see
     // docs/plans/20260526/14-slice-6a-pg-plan.md §11.1.
 
     /// Return all live slugs, optionally scoped to `source_id`.
