@@ -46,22 +46,31 @@
 
 ---
 
-## 3. PG Migration 同步
+## 3. PG Migration 同步 ✅ 已完成(实际形态与原方案不同)
 
-### 3.1 现状
+### 3.1 真实落地形态(修订)
 
-- `migrations/0001_init.sql` — 仅 7 列 pages 表 (Slice 4a)
-- `migrations-sqlite/0002_pages_full_columns.sql` — 19 个新列 + 4 索引 + 2 trigger (Slice 6a)
-- `migrations-sqlite/0003_salience_and_full_generation_trigger.sql` — salience_score 列 + 重建 trigger (Slice 6a S4)
+PG migration 目录 (`crates/zbrain-core/migrations/`) 当前 **5 个文件**,而非原方案设计的 3 个;切片演进过程中按"小切片"原则拆得更细:
 
-### 3.2 新增文件
-
-| 文件 | 内容 | 方言适配 |
+| 文件 | 切片来源 | 内容 |
 |---|---|---|
-| `migrations/0002_pages_full_columns.sql` | 19 个 ALTER TABLE ADD COLUMN + 索引 + trigger | TEXT→JSONB, TEXT→TIMESTAMPTZ, INTEGER→BIGINT, BLOB→BYTEA, REAL→DOUBLE PRECISION; trigger 用 PG BEFORE INSERT/UPDATE 语法 |
-| `migrations/0003_salience_and_full_generation_trigger.sql` | salience_score + 重建 generation trigger | REAL→DOUBLE PRECISION; trigger 10 列 allow-list |
+| `0001_init.sql` | Slice 4a | 7 列 pages 表(基础) |
+| `0002_pages_deleted_at.sql` | Slice 5x | 仅追加 `deleted_at TIMESTAMPTZ` + purge 索引 |
+| `0003_pages_full_columns.sql` | Slice 6a-pg 主体 | 19 个 ALTER TABLE ADD COLUMN + 索引 + generation trigger |
+| `0004_pages_pg_align_ts.sql` | Slice 6a-pg 收尾 | TIMESTAMPTZ 对齐 / now() 默认值 / trigger 微调 |
+| `0005_page_tags.sql` | PG-tag (5ca9131) | `page_tags(page_id, source_id, tag)` 关联表 + 索引,与 libsql `0004_page_tags.sql` parity |
 
-### 3.3 0002 PG 方言要点
+> **不再有 `migrations-sqlite/` 共享路径**: libsql 的 SQLite 方言 migration 走 `migrations-sqlite/` 目录, PG 走 `migrations/`, 两条物理路径完全独立, 仅通过"等价 schema 契约"对齐。
+
+### 3.2 与原方案的偏差(已接受)
+
+| 原方案 | 实际 | 接受理由 |
+|---|---|---|
+| 单文件 `0002_pages_full_columns.sql` | 拆为 `0002_*deleted_at*` + `0003_*full_columns*` + `0004_*align_ts*` | 演进过程中按"一事一议"自然拆分; 单文件回放风险更高 |
+| 单文件 `0003_salience_and_full_generation_trigger.sql` | salience_score 列合并进 `0003_pages_full_columns.sql`; trigger 在 `0003` + `0004` 中分两次调整 | 与 libsql `0003_salience_...` 在 schema 终态等价, 物理拆分不影响 parity |
+| 未规划 page_tags | 由独立切片 PG-tag (`5ca9131`) 落入 `0005_page_tags.sql` | tag 是独立特性, 拆切更稳定; 已与 libsql `0004_page_tags.sql` parity |
+
+### 3.3 0002 PG 方言要点 (📜 历史设计参考 — 实际见 `0003_pages_full_columns.sql`)
 
 ```sql
 -- TEXT → JSONB
@@ -120,7 +129,7 @@ CREATE TRIGGER bump_page_generation_trg
   EXECUTE FUNCTION bump_page_generation_fn();
 ```
 
-### 3.4 0003 PG 方言要点
+### 3.4 0003 PG 方言要点 (📜 历史设计参考 — 实际拆入 `0003`/`0004`)
 
 ```sql
 ALTER TABLE pages ADD COLUMN salience_score DOUBLE PRECISION;
@@ -278,44 +287,45 @@ RETURNING {全列}
 
 **现状**: 已实现，无需改动。PG `DELETE FROM pages WHERE slug = $1`。
 
-#### 5.4 `list_pages(filters) → Vec<Page>`
+#### 5.4 `list_pages(filters) → Vec<Page>`  ✅ 已实现 (`5ca9131` + 之前的 PG full-column 链路)
 
-**现状**: 仅 `type + limit` 过滤，7 列投影。
+**实际实现**: 动态拼装 SQL,9 项过滤已全部上线。tag filter 走 `page_tags` JOIN(与 libsql `0004` parity),不再用 JSONB `?` + title fallback。
 
-**PG SQL — 9 项过滤**:
+**bind 顺序契约 (postgres.rs `build_list_pages_sql`, 行 114-178)**:
+
+```text
+page_type → source_id → source_ids → slug_prefix → updated_after → tag → limit → offset
+```
+
+(与 libsql 引擎一致;`include_deleted` 不占位,直接拼到 `WHERE`。)
+
+**PG SQL 真实形态**:
 
 ```sql
 SELECT {全列}
-FROM pages
+FROM pages AS p
+[JOIN page_tags AS pt ON pt.page_id = p.id]          -- 仅当 tag filter 启用时 JOIN
 WHERE TRUE
-  AND ($1 IS NULL OR type = $1)                        -- page_type
-  AND ($2 IS NULL OR source_id = ANY($2::text[]))      -- source_ids
-  AND ($3 IS NULL OR slug LIKE $3 || '%')              -- slug_prefix → LIKE
-  AND ($4 IS NULL OR source_id = $4)                   -- source_id
-  AND ($5::boolean IS NULL OR deleted_at IS NULL)      -- include_deleted
-  AND ($6 IS NULL OR updated_at > $6)                  -- updated_after
-  AND ($7 IS NULL OR frontmatter->>'tags' ? $7)       -- tag (JSONB ? operator)
-  AND ($8 IS NULL OR title ILIKE '%' || $8 || '%')     -- tag fallback → title search (待定)
-ORDER BY
-  CASE WHEN $9 = 'updated_at ASC' THEN updated_at END ASC,
-  CASE WHEN $9 = 'updated_at DESC' THEN updated_at END DESC,
-  CASE WHEN $9 = 'title ASC' THEN title END ASC,
-  CASE WHEN $9 = 'title DESC' THEN title END DESC,
-  id ASC  -- default
-LIMIT $10  -- COALESCE(filters.limit, ALL)
-OFFSET $11 -- filters.offset
+  AND p.deleted_at IS NULL                            -- 默认隐藏 soft-deleted(include_deleted=false)
+  AND ($N1::text IS NULL OR p.type = $N1)             -- page_type
+  AND ($N2::text IS NULL OR p.source_id = $N2)        -- source_id
+  AND ($N3::text[] IS NULL OR p.source_id = ANY($N3)) -- source_ids
+  AND ($N4::text IS NULL OR p.slug LIKE $N4 || '%')   -- slug_prefix
+  AND ($N5::text IS NULL OR p.updated_at > $N5)       -- updated_after
+  AND ($N6::text IS NULL OR pt.tag = $N6)             -- tag (page_tags JOIN)
+ORDER BY <sort 白名单映射>, p.id ASC
+LIMIT $N7 OFFSET $N8
 ```
 
 **注意**:
-- `PageFilters.tag` 是 `Option<String>` — PG 中用 JSONB `?` 操作符检查 `frontmatter->>'tags'` 是否包含该 tag。如果 tag 搜索需要 FTS/GIN 索引，则锁定为 `unsupported` 等待 slice 6e。
-- `slug_prefix` 用 `LIKE $3 || '%'` (PG 字符串连接) 而非 `LIKE '%...'`。
-- `source_ids` (Vec) 用 `ANY($2::text[])` — 需 sqlx `Vec<String>` 绑定支持。
-- `sort` 字段映射到 `ORDER BY` — 简单实现用 `match` 构建 ORDER BY 子句。
+- **tag filter 已锁定**: 走 `page_tags(page_id, tag)` JOIN(与 libsql `0004` parity),无需 JSONB `?` 操作符,也无需 title fallback。schema 由 `migrations/0005_page_tags.sql` 提供。GIN 索引留给 slice 6e(只在 tag 维度需要 FTS 时再加)。
+- `slug_prefix` 用 `LIKE $N4 || '%'` (PG 字符串连接) 而非 `LIKE '%...'`。
+- `source_ids` (Vec) 用 `ANY($N3::text[])` — sqlx `Vec<String>` 直接绑定成功。
+- `sort` 字段用 `match` 白名单映射到 ORDER BY 子句,不拼接用户输入。
 
-**tag filter 锁定决策 (C7 关联)**:
-- 如果 `frontmatter` 列为 JSONB 且有 GIN 索引 → 可用 `frontmatter->'tags' ? $tag`
-- 如果无 GIN 索引 → 仍可运行但性能差 → 功能正确但标记为 "needs GIN index (slice 6e)"
-- **推荐**: 实现 `frontmatter->'tags' ? $tag` 语义，不加 GIN 索引，注释标明 "needs GIN index for production use (slice 6e)"
+**对齐链路**:
+- libsql `S6-T5c` (`bb9e5bc`) — `page_tags` schema + tag CRUD + `list_pages(tag)` JOIN
+- PG-tag (`5ca9131`) — 镜像上面三件套,完成 PG↔libsql parity
 
 #### 5.5 `resolve_slugs(partial) → Vec<String>`
 
@@ -523,80 +533,102 @@ RETURNING slug
 
 ## 6. placeholder-lock 测试更新
 
-Slice 6a 已创建 13 个 placeholder-lock 测试文件，验证 `PostgresEngine` 各方法返回 `Err(Error::unsupported("pending slice 6a"))`。
+### 6.1 实际形态(修订)
 
-6a-pg 完成后，这些测试**必须全部删除或改写**：
+Slice 6a 的 placeholder-lock 测试**并不在 `postgres_*` 文件里**,而是落在 `crates/zbrain-core/tests/page_methods_*.rs` 共 14 个文件,断言 **`BrainEngine` trait 的默认实现** 返回 `Err(Error::unsupported("pending slice 6a"))`。
 
-| 文件 | 当前断言 | 6a-pg 后 |
-|---|---|---|
-| `postgres_get_page_test.rs` | assert unsupported | assert 返回正确 Page 或 None |
-| `postgres_put_page_test.rs` | assert unsupported | assert 返回正确 upsert Page |
-| `postgres_delete_page_test.rs` | assert unsupported | assert 返回 () |
-| `postgres_list_pages_test.rs` | assert unsupported | assert 返回正确 Vec<Page> |
-| `postgres_resolve_slugs_test.rs` | assert unsupported | assert 返回正确 Vec<String> |
-| `postgres_find_duplicate_page_test.rs` | assert unsupported | assert 返回正确 Option<Page> |
-| `postgres_soft_delete_page_test.rs` | assert unsupported | assert 返回正确 Option<String> |
-| `postgres_restore_page_test.rs` | assert unsupported | assert 返回正确 Option<Page> |
-| `postgres_purge_page_test.rs` | assert unsupported | assert 返回正确 Option<String> |
-| `postgres_refresh_page_body_test.rs` | assert unsupported | assert 返回正确 Option<Page> |
-| `postgres_update_contextual_retrieval_test.rs` | assert unsupported | assert 返回正确 Option<Page> |
-| `postgres_get_all_slugs_test.rs` | assert unsupported | assert 返回正确 Vec<String> |
-| `postgres_list_all_page_refs_test.rs` | assert unsupported | assert 返回正确 Vec<PageRef> |
+这意味着:
+- 红测锁的是 **trait 默认实现**,与具体引擎(PG / libsql / InMemory)无关。
+- 任何一个引擎一旦 override 某个方法,该引擎在对应红测上就会"绿",但只要还有引擎未 override,该红测就**应继续存在**。
+- libsql 已 override 了全部 13 个高级方法(`S6-T5b/T5c/T6/T7/T8` 链路);PG 当前仅 override 了 tag CRUD(`5ca9131`),其余 10 个仍走 trait 默认 `unsupported`。
 
-**注意**: PG 引擎测试需要真实的 PostgreSQL 实例。如果 CI 无 PG 实例，可采用以下策略之一：
-- (A) `#[cfg(feature = "pg-tests")]` 条件编译 + 环境变量 `DATABASE_URL`
-- (B) 使用 `testcontainers` 启动临时 PG 容器
-- (C) 先只确保编译通过 + libsql 测试全绿，PG 集成测试留给后续 CI 配置切片
+### 6.2 当前 14 个 `page_methods_*.rs` 实际状态
 
-**推荐方案 C** — 6a-pg 只确保 `cargo build` + `cargo clippy` 通过 + libsql/InMemory 测试全绿。PG 集成测试单独切片处理。
+| 文件 | 锁定语义 | 当前命中后端 | PG-tag 之后是否改造 |
+|---|---|---|---|
+| `page_methods_find_duplicate_page.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-find-duplicate |
+| `page_methods_soft_delete_page.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-soft-delete |
+| `page_methods_restore_page.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-soft-delete |
+| `page_methods_purge_deleted_pages.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-soft-delete |
+| `page_methods_refresh_page_body.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-advanced-writes |
+| `page_methods_update_cr_state.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-advanced-writes |
+| `page_methods_get_all_slugs.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-advanced-reads |
+| `page_methods_list_all_page_refs.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-advanced-reads |
+| `page_methods_find_orphan_pages.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-advanced-reads |
+| `page_methods_get_page_timestamps.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-advanced-reads |
+| `page_methods_get_effective_dates.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-advanced-reads |
+| `page_methods_get_salience_scores.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-advanced-reads(或 6c) |
+| `page_methods_salience_scores_takes_zero_until_6c.rs` | 6c takes 偏差锁 | InMemory(已 override 但 takes=0) | ❌ 6c 闭合 |
+| **(tag CRUD 无对应 `page_methods_*` 红测)** | — | libsql + PG 已 override | ✅ 由 `libsql_engine_tag_crud.rs` 覆盖;PG 侧暂缺独立 `postgres_engine_tag_crud.rs`(留待 PG 集成测试基础设施切片) |
+
+### 6.3 PG-tag slice 后的处置
+
+- **不删除任何 `page_methods_*.rs`**。
+- tag 三件套不在该批红测里,无需联动调整。
+- 后续每个 PG 高级方法切片(PG-find-duplicate / PG-soft-delete / PG-advanced-reads / PG-advanced-writes)完成时,对应红测可以**改写**为正向断言(返回正确语义),或**保留**为"trait 默认仍 unsupported"的负向锁(取决于届时是否还有未实现该方法的引擎)。
+
+### 6.4 PG 集成测试基础设施
+
+PG 引擎测试需要真实的 PostgreSQL 实例。当前采用方案 C 的混合形态:
+- (C-当前) `postgres_engine_*.rs` 用 `#[ignore]` 或 feature-gated 跳过,本切片三连绿仅依赖 libsql / InMemory 测试。
+- (A-未来) `#[cfg(feature = "pg-tests")]` 条件编译 + 环境变量 `DATABASE_URL`,在 CI 配置切片落地。
+- (B-未来) `testcontainers` 启动临时 PG 容器,在 CI 配置切片落地。
+
+CI 上跑真实 PG 集成测试单独留 slice。
 
 ---
 
-## 7. 实施步骤 (建议顺序)
+## 7. 实施步骤 (建议顺序 → 实际状态)
 
-### Phase 1: Migration 同步 (预估 1 个 commit)
+> **重大决策**: 原方案把 6a-pg 当作单一大切片(包含 13 个高级方法)。实际推进中按"一事一议"切得更细 — Phase 1-3 + tag CRUD 已完成并 tag 落地(`slice-6a-pg`, `5ca9131`); Phase 4 的 10 个高级方法**拆为多个独立后续切片**(PG-find-duplicate / PG-soft-delete / PG-advanced-reads / PG-advanced-writes), 不在 6a-pg 主切片内闭合。
 
-1. 创建 `migrations/0002_pages_full_columns.sql` — 翻译 SQLite 0002 为 PG 方言
-2. 创建 `migrations/0003_salience_and_full_generation_trigger.sql` — 翻译 SQLite 0003 为 PG 方言
-3. 本地验证: `sqlx migrate run` (需 PG 实例) 或仅代码审查
+### Phase 1: Migration 同步 ✅ 已完成
 
-### Phase 2: `row_to_page` 全列投影 (预估 1 个 commit)
+1. ✅ `migrations/0002_pages_deleted_at.sql` 落地 (Slice 5x)
+2. ✅ `migrations/0003_pages_full_columns.sql` 落地 (19 个新列 + 索引 + generation trigger)
+3. ✅ `migrations/0004_pages_pg_align_ts.sql` 落地 (TIMESTAMPTZ 对齐)
+4. ✅ `migrations/0005_page_tags.sql` 落地 (PG-tag `5ca9131`, 与 libsql `0004_page_tags.sql` parity)
 
-4. 扩展 `postgres.rs` `row_to_page` 为 `full_row_to_page`，解码全部 27+ 列
-5. 确认 `Page` struct 的 `embedding` 字段类型兼容 `Vec<u8>` (BYTEA)
-6. 更新所有现有方法 (`get_page`, `put_page`, `list_pages`, `resolve_slugs`) 使用全列投影
-7. `cargo build` + `cargo clippy` 验证
+### Phase 2: `row_to_page` 全列投影 ✅ 已完成
 
-### Phase 3: 基础 CRUD 升级 (预估 1-2 个 commit)
+5. ✅ `postgres.rs` 全列投影(27+ 列), 与 `libsql.rs` `full_row_to_page` 对齐 — 见 `postgres_engine_full_columns.rs` 测试
 
-8. `get_page` — 支持 `include_deleted` 过滤
-9. `put_page` — 全列 upsert，并接入 S6-T8 `source_id.unwrap_or("default")` 参数化语义
-10. `list_pages` — 9 项过滤 + ORDER BY + OFFSET
-11. `resolve_slugs` — ILIKE 模糊匹配
-12. `cargo build` + `cargo clippy` 验证
+### Phase 3: 基础 CRUD 升级 ✅ 已完成
 
-### Phase 4: 高级方法实现 (预估 2-3 个 commit)
+6. ✅ `get_page` 支持 `include_deleted` 过滤 (postgres.rs 行 251)
+7. ✅ `put_page` 全列 upsert + 参数化 `source_id` (postgres.rs 行 277)
+8. ✅ `delete_page` 硬删除 (postgres.rs 行 392)
+9. ✅ `list_pages` 9 项过滤 + `build_list_pages_sql` bind 顺序契约 (postgres.rs 行 406, 见 §5.4)
+10. ✅ `resolve_slugs` ILIKE 模糊匹配 + deleted_at 过滤 (postgres.rs 行 532)
 
-13. `find_duplicate_page` — PG 方言翻译
-14. `soft_delete_page` / `restore_page` / `purge_page` — soft-delete 三件套
-15. `refresh_page_body` — 内容更新
-16. `update_page_contextual_retrieval_state` — 检索模式更新
-17. `get_all_slugs` / `list_all_page_refs` — 轻量列表
-18. `update_slug` — slug 变更
-19. `get_page_timestamps` / `get_effective_dates` / `get_salience_scores` / `touch_salience` — 读取方法
-20. `cargo build` + `cargo clippy` 验证
+### Phase 3.5: Tag CRUD ✅ 已完成 (PG-tag, `5ca9131`)
 
-### Phase 5: 测试更新 + 三连绿 (预估 1 个 commit)
+11. ✅ `add_tag` / `remove_tag` / `get_tags` (postgres.rs 行 450/491/513), 与 libsql `S6-T5c` (`bb9e5bc`) parity
 
-21. 删除或改写 13 个 placeholder-lock 测试
-22. 如采用方案 C，仅保留 `cargo build` + `cargo test --workspace` (非 PG 测试) + `cargo clippy`
-23. 全量三连绿验证
+### Phase 4: 10 个高级方法 ❌ 未完成 — 拆为后续独立切片
 
-### Phase 6: 收尾
+> 不在 6a-pg 主切片内闭合; 每个方法/方法群拆为独立小切片落地。前置占位测试见 §6.2 表。
 
-24. 更新 `engine.rs` 行 266-269 注释，删除 "pending slice 6a-pg" 占位说明
-25. `git add -A && git commit -m "feat(slice-6a-pg): PostgresEngine mirror — 13 methods + full projection + PG migrations"`
-26. `git tag slice-6a-pg`
+| 后续切片(规划名) | 范围 | 命中的 placeholder-lock 测试 |
+|---|---|---|
+| `PG-find-duplicate` | `find_duplicate_page` | `page_methods_find_duplicate_page.rs` |
+| `PG-soft-delete` | `soft_delete_page` / `restore_page` / `purge_deleted_pages` | `page_methods_soft_delete_page.rs` / `_restore_page.rs` / `_purge_deleted_pages.rs` |
+| `PG-advanced-writes` | `refresh_page_body` / `update_page_contextual_retrieval_state` | `page_methods_refresh_page_body.rs` / `_update_cr_state.rs` |
+| `PG-advanced-reads` | `get_all_slugs` / `list_all_page_refs` / `find_orphan_pages` / `get_page_timestamps` / `get_effective_dates` / `get_salience_scores` | `page_methods_get_all_slugs.rs` / `_list_all_page_refs.rs` / `_find_orphan_pages.rs` / `_get_page_timestamps.rs` / `_get_effective_dates.rs` / `_get_salience_scores.rs` |
+
+每个后续切片的"完成准则": (a) PG 实现 + clippy; (b) 对应红测改写为正向断言或保留为"仍有引擎未实现"的负向锁; (c) 独立 commit + git tag。
+
+### Phase 5: 三连绿验证 ✅ 已完成 (针对当前已实现范围)
+
+12. ✅ `cargo build --workspace` / `cargo test --workspace` / `cargo clippy --workspace -- -D warnings` 全通过
+13. ✅ PG 真实集成测试基础设施: **未落地**, 当前按方案 C — `postgres_engine_*.rs` 用 `#[ignore]` 跳过; 单独留 "PG 集成测试基础设施" 切片
+
+### Phase 6: 收尾 ✅ 已完成 (主切片层面)
+
+14. ✅ `git tag slice-6a-pg` 已打 (主切片闭合)
+15. ✅ tag CRUD 独立 commit `5ca9131`
+16. ✅ 本计划文档收口编辑 (`14-slice-6a-pg-plan.md` §3 / §5.4 / §6 / §7 / §10 全部对齐现实)
+17. ❌ `engine.rs` 行 266-269 "pending slice 6a-pg" 注释删除 — **不删除**, 因 10 个 trait 默认方法仍返回 `Err(Error::unsupported("pending slice 6a"))`, 等对应 PG 后续切片落地后随该切片一并清理
 
 ---
 
@@ -626,30 +658,46 @@ Slice 6a 已创建 13 个 placeholder-lock 测试文件，验证 `PostgresEngine
 
 ## 10. 验证 Checklist
 
-- [ ] `migrations/0002_pages_full_columns.sql` 创建且 PG 方言正确
-- [ ] `migrations/0003_salience_and_full_generation_trigger.sql` 创建且 PG 方言正确
-- [ ] `row_to_page` / `full_row_to_page` 解码 27+ 列，无硬编码 default
-- [ ] `get_page` 支持 `include_deleted` 过滤
-- [ ] `put_page` 全列 upsert (INSERT 20+ 列, ON CONFLICT UPDATE 20+ 列)，并按 S6-T8 契约绑定 `source_id.unwrap_or("default")`，不得继续硬编码 `'default'`
-- [ ] `delete_page` 保持不变 (硬删除)
-- [ ] `list_pages` 9 项过滤 + ORDER BY + OFFSET + LIMIT
-- [ ] `resolve_slugs` ILIKE 模糊匹配 + deleted_at 过滤
-- [ ] `find_duplicate_page` PG 方言 (frontmatter->>'id')
-- [ ] `soft_delete_page` PG 方言 (now())
-- [ ] `restore_page` 实现
-- [ ] `purge_page` 实现
-- [ ] `refresh_page_body` 实现
-- [ ] `update_page_contextual_retrieval_state` 实现
-- [ ] `get_all_slugs` 实现
-- [ ] `list_all_page_refs` 实现
-- [ ] `update_slug` 实现
-- [ ] `get_page_timestamps` 实现
-- [ ] `get_effective_dates` 实现
-- [ ] `get_salience_scores` 实现
-- [ ] `touch_salience` 实现
-- [ ] `engine.rs` 注释更新 — 删除 "pending slice 6a-pg"
-- [ ] 13 个 placeholder-lock 测试删除或改写
-- [ ] `cargo build --workspace` ✅
-- [ ] `cargo test --workspace` ✅
-- [ ] `cargo clippy --workspace -- -D warnings` ✅
-- [ ] `git tag slice-6a-pg`
+### 10.1 6a-pg 主切片范围 ✅ 全部完成
+
+- [x] `migrations/0002_pages_deleted_at.sql` 落地
+- [x] `migrations/0003_pages_full_columns.sql` 创建且 PG 方言正确
+- [x] `migrations/0004_pages_pg_align_ts.sql` 落地 (TIMESTAMPTZ 对齐)
+- [x] `migrations/0005_page_tags.sql` 落地 (PG-tag, 与 libsql `0004` parity)
+- [x] `row_to_page` / `full_row_to_page` 解码 27+ 列, 无硬编码 default
+- [x] `get_page` 支持 `include_deleted` 过滤
+- [x] `put_page` 全列 upsert (INSERT 20+ 列, ON CONFLICT UPDATE 20+ 列), 按 S6-T8 契约绑定 `source_id.unwrap_or("default")`
+- [x] `delete_page` 保持硬删除
+- [x] `list_pages` 9 项过滤 + ORDER BY + OFFSET + LIMIT (bind 顺序契约见 §5.4)
+- [x] `resolve_slugs` ILIKE 模糊匹配 + deleted_at 过滤
+- [x] `add_tag` / `remove_tag` / `get_tags` 实现 (PG-tag `5ca9131`, 与 libsql `S6-T5c` `bb9e5bc` parity)
+- [x] `cargo build --workspace` ✅
+- [x] `cargo test --workspace` ✅ (按方案 C, PG 真实集成测试 `#[ignore]`)
+- [x] `cargo clippy --workspace -- -D warnings` ✅
+- [x] `git tag slice-6a-pg`
+- [x] 本计划文档收口 (§3 / §5.4 / §6 / §7 / §10 对齐现实, 不静默接受偏差)
+
+### 10.2 拆给后续独立切片(本主切片不在范围) ❌
+
+> 每一项落入对应 PG 后续切片时, 在该切片的 plan 中重新建 checklist; 此处仅作"未完成项的导航"。
+
+- [ ] `find_duplicate_page` PG 方言 — 切片: **PG-find-duplicate**
+- [ ] `soft_delete_page` PG 方言 (now()) — 切片: **PG-soft-delete**
+- [ ] `restore_page` 实现 — 切片: **PG-soft-delete**
+- [ ] `purge_deleted_pages` 实现 — 切片: **PG-soft-delete**
+- [ ] `refresh_page_body` 实现 — 切片: **PG-advanced-writes**
+- [ ] `update_page_contextual_retrieval_state` 实现 — 切片: **PG-advanced-writes**
+- [ ] `get_all_slugs` 实现 — 切片: **PG-advanced-reads**
+- [ ] `list_all_page_refs` 实现 — 切片: **PG-advanced-reads**
+- [ ] `find_orphan_pages` 实现 — 切片: **PG-advanced-reads**
+- [ ] `get_page_timestamps` 实现 — 切片: **PG-advanced-reads**
+- [ ] `get_effective_dates` 实现 — 切片: **PG-advanced-reads**
+- [ ] `get_salience_scores` 实现 — 切片: **PG-advanced-reads** 或 **6c**
+- [ ] `engine.rs` "pending slice 6a" 注释 — 等最后一个 PG 后续切片完成后清理
+- [ ] 13 个 `page_methods_*.rs` placeholder-lock 红测 — 跟随对应 PG 后续切片改写/保留(见 §6.2)
+- [ ] PG 真实集成测试基础设施 (`postgres_engine_*.rs` 去 `#[ignore]`) — 独立切片 **PG-integration-test-infra**
+
+### 10.3 跨切片偏差追踪 (不在 6a-pg 内闭合)
+
+- [ ] D1: `list_pages` 签名 `&PageFilters` vs `Option<&PageFilters>` — 切片 **S6-signature**
+- [ ] D2: 时间字段引入 `chrono` — 切片 **S6-time-types**

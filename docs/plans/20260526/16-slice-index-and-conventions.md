@@ -105,6 +105,10 @@ cargo clippy  --manifest-path <root>/Cargo.toml --workspace --all-targets -- -D 
 | `b2314b6` | **#110-a** | **PG pages full-column migration + bump_generation trigger (DDL only)** |
 | `3899b4d` | docs | session state snapshot after slice #110-a |
 | `07f6f86` | #74 | PG `list_pages` source filters (`source_id` / `source_ids`) |
+| `defdf04` | #74-b | PG `list_pages` follow-up filters (`slug_prefix` / `updated_after`) |
+| `d4bf032` | chore | rustfmt drift in `libsql_engine_full_columns` test |
+| `5ca9131` | **PG-tag** | PG `page_tags` migration (`0005_page_tags.sql`) + tag CRUD (`add_tag`/`remove_tag`/`get_tags`) + `list_pages(tag)` JOIN |
+| `0daed6c` | docs | handoff `handoff-260531.md` 入库（PG tag slice 收口快照） |
 
 
 ## 4. bump_generation trigger 设计跨 backend 对齐
@@ -160,16 +164,18 @@ crates/zbrain-core/
 ├── migrations/                              # PostgreSQL (sqlx)
 │   ├── 0001_init.sql                        # 10 业务列 + sources 种子
 │   ├── 0002_pages_deleted_at.sql            # + deleted_at TIMESTAMPTZ
-│   └── 0003_pages_full_columns.sql          # ★ #110-a: +19 列 + bump_generation trigger (DDL only)
+│   ├── 0003_pages_full_columns.sql          # ★ #110-a: +19 列 + bump_generation trigger (DDL only)
+│   ├── 0004_pages_pg_align_ts.sql           # PG 列形与 TS PGLite 对齐补丁
+│   └── 0005_page_tags.sql                   # ★ PG-tag: page_tags 表（tag CRUD + list_pages JOIN）
 │
 └── migrations-sqlite/                       # libsql/SQLite
     ├── 0001_init.sql                        # 10 业务列 + sources 种子
     ├── 0002_pages_full_columns.sql          # 20 列扩展
     ├── 0003_salience_and_full_generation_trigger.sql  # trigger + salience_score
-    └── 0004_page_tags.sql                   # page_tags 表（S6-T5c 准备）
+    └── 0004_page_tags.sql                   # page_tags 表（S6-T5c 已 GREEN）
 ```
 
-**对齐缺口**：PG `0003` 是 DDL only；DML/decoder/UPSERT 在 **#110-b** 完成（只动 `postgres.rs`，不再加 migration）。
+**对齐缺口**：PG `0003` 是 DDL only；DML/decoder/UPSERT 在 **#110-b** 完成（只动 `postgres.rs`，不再加 migration）。PG `0005` 与 libsql `0004` 是 PG↔libsql `page_tags` schema parity（tag 子集已对齐）。
 
 ## 6. Page / PageInput 字段形状
 
@@ -203,12 +209,20 @@ async fn find_duplicate_page(&self, content_hash: &str, source_id: Option<&str>)
 
 | ID | 范围 | 状态 | 前置依赖 |
 |---|---|---|---|
-| **#110-b** | PG `pages` 全列 projection / `row_to_page` decoder / `put_page` 30-col UPSERT，推 `roundtrip_all_full_columns` RED → GREEN | RED 已挂 | #110-a ✅ |
-| #74 | PG `list_pages` source filters | 已完成（`07f6f86`） | #110-b ✅ |
-| #75 | PG integration test isolation（CI runner 共享 DB trigger 残留风险） | 待启动 | #110-b |
-| **S6-T5b** | libsql `list_pages` +4 filters: slug_prefix / source_id / source_ids / updated_after | 进行中 | — |
-| S6-T5c | libsql `page_tags` JOIN filter；评估 put_page 原子写 tag 语义 | 待启动 | S6-T5b + `0004_page_tags.sql` ✅ |
-| S6-T6 | libsql `put_page` 30-col UPSERT，移除最后一个 `row_to_page` 调用点 | 待启动 | S6-T5c |
+| **#110-b** | PG `pages` 全列 projection / `row_to_page` decoder / `put_page` 30-col UPSERT，推 `roundtrip_all_full_columns` RED → GREEN | ✅ 已完成（落在 `5ca9131` 之前的 PG full-column 链路） | #110-a ✅ |
+| #74 | PG `list_pages` source filters (`source_id` / `source_ids`) | ✅ 已完成（`07f6f86`） | #110-b ✅ |
+| #74-b | PG `list_pages` follow-up filters (`slug_prefix` / `updated_after`) | ✅ 已完成（`defdf04`） | #74 ✅ |
+| **PG-tag** | PG `page_tags` migration + tag CRUD (`add_tag`/`remove_tag`/`get_tags`) + `list_pages(tag)` JOIN | ✅ 已完成（`5ca9131`），收口 `0daed6c` | #74-b ✅ + libsql tag parity (`bb9e5bc`) |
+| #75 | PG integration test isolation（CI runner 共享 DB trigger 残留风险） | 待启动 | PG-tag ✅ |
+| **S6-T5b** | libsql `list_pages` +4 filters: slug_prefix / source_id / source_ids / updated_after | ✅ 已完成（`20bef5c` + `9c0ffbe`） | — |
+| **S6-T5c** | libsql `page_tags` JOIN filter + tag CRUD 语义 | ✅ 已完成（`bb9e5bc` + `ae33056`） | S6-T5b ✅ + `0004_page_tags.sql` ✅ |
+| **S6-T6** | libsql `put_page` 19-col TS-aligned UPSERT + trigger 修正 | ✅ 已完成（`6daeb02`） | S6-T5c ✅ |
+| **S6-T7** | libsql tag CRUD (add/remove/get) with source_id parameterisation | ✅ 已完成（`1a8de0e`） | S6-T6 ✅ |
+| **S6-T8** | put_page source_id 参数化跨 3 backend | ✅ 已完成（`8065bbe`） | S6-T7 ✅ |
+| **PG-soft-delete** | PG `soft_delete_page` / `restore_page` / `purge_page` 三件套（libsql 已有 `9ec05a4`，PG 缺口） | 🔜 候选下一切片 | PG-tag ✅ |
+| **PG-find-duplicate** | PG `find_duplicate_page`（libsql 已有 `32f81b6`，PG 缺口） | 🔜 候选下一切片 | PG-tag ✅ |
+| **PG-advanced-reads** | PG `get_all_slugs` / `list_all_page_refs` / `get_page_timestamps` / `get_effective_dates` / `get_salience_scores` | 待启动 | PG-soft-delete |
+| **PG-advanced-writes** | PG `refresh_page_body` / `update_page_contextual_retrieval_state` / `update_slug` / `touch_salience` | 待启动 | PG-soft-delete |
 | libsql schema 升级 | `updated_at` 毫秒精度（`strftime('%Y-%m-%d %H:%M:%f', 'now')`）—— 解除"跨秒边界排序需 sleep ≥1.1s"约束 | 独立切片 | — |
 
 ## 9. 关键技术备忘
