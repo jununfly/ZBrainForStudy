@@ -111,7 +111,11 @@ async fn libsql_page_id(tmp: &NamedTempFile, slug: &str, source_id: &str) -> i64
         )
         .await
         .expect("page_id query");
-    let row = rows.next().await.expect("page_id row").expect("page_id present");
+    let row = rows
+        .next()
+        .await
+        .expect("page_id row")
+        .expect("page_id present");
     row.get::<i64>(0).expect("page_id value")
 }
 
@@ -188,8 +192,8 @@ async fn libsql_salience_inactive_takes_excluded() {
     libsql_set_emotional_weight(&tmp, "scored", "src-1", Some(0.4)).await;
 
     let pid = libsql_page_id(&tmp, "scored", "src-1").await;
-    libsql_insert_take(&tmp, pid, true).await;   // 1 active
-    libsql_insert_take(&tmp, pid, false).await;  // 1 inactive — must NOT count
+    libsql_insert_take(&tmp, pid, true).await; // 1 active
+    libsql_insert_take(&tmp, pid, false).await; // 1 inactive — must NOT count
 
     let refs = vec![PageRef {
         slug: "scored".to_string(),
@@ -259,8 +263,14 @@ async fn libsql_salience_cross_page_isolation() {
     libsql_insert_take(&tmp, pid_b, true).await;
 
     let refs = vec![
-        PageRef { slug: "page-a".to_string(), source_id: "src-1".to_string() },
-        PageRef { slug: "page-b".to_string(), source_id: "src-1".to_string() },
+        PageRef {
+            slug: "page-a".to_string(),
+            source_id: "src-1".to_string(),
+        },
+        PageRef {
+            slug: "page-b".to_string(),
+            source_id: "src-1".to_string(),
+        },
     ];
     let scores = engine
         .get_salience_scores(&refs)
@@ -376,14 +386,12 @@ async fn pg_page_id(slug: &str, source_id: &str) -> i64 {
         .connect(&url)
         .await
         .expect("page_id pool");
-    let row: (i64,) = sqlx::query_as(
-        "SELECT id FROM pages WHERE slug = $1 AND source_id = $2",
-    )
-    .bind(slug)
-    .bind(source_id)
-    .fetch_one(&pool)
-    .await
-    .expect("page_id row");
+    let row: (i64,) = sqlx::query_as("SELECT id FROM pages WHERE slug = $1 AND source_id = $2")
+        .bind(slug)
+        .bind(source_id)
+        .fetch_one(&pool)
+        .await
+        .expect("page_id row");
     pool.close().await;
     row.0
 }
@@ -539,8 +547,14 @@ async fn postgres_salience_cross_page_isolation() {
     pg_insert_take(pid_b, true).await;
 
     let refs = vec![
-        PageRef { slug: "page-a".to_string(), source_id: "src-1".to_string() },
-        PageRef { slug: "page-b".to_string(), source_id: "src-1".to_string() },
+        PageRef {
+            slug: "page-a".to_string(),
+            source_id: "src-1".to_string(),
+        },
+        PageRef {
+            slug: "page-b".to_string(),
+            source_id: "src-1".to_string(),
+        },
     ];
     let scores = engine
         .get_salience_scores(&refs)

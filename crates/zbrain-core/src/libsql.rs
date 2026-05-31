@@ -917,8 +917,10 @@ impl BrainEngine for LibsqlEngine {
              FROM pages \
              WHERE slug IN ({placeholders}) AND deleted_at IS NULL"
         );
-        let params: Vec<::libsql::Value> =
-            slugs.iter().map(|s| ::libsql::Value::from(s.clone())).collect();
+        let params: Vec<::libsql::Value> = slugs
+            .iter()
+            .map(|s| ::libsql::Value::from(s.clone()))
+            .collect();
         let mut rows = conn
             .query(&sql, ::libsql::params_from_iter(params))
             .await
@@ -979,9 +981,9 @@ impl BrainEngine for LibsqlEngine {
             let slug: String = row
                 .get(0)
                 .map_err(|e| Error::engine(format!("get_effective_dates decode slug: {e}")))?;
-            let source_id: String = row.get(1).map_err(|e| {
-                Error::engine(format!("get_effective_dates decode source_id: {e}"))
-            })?;
+            let source_id: String = row
+                .get(1)
+                .map_err(|e| Error::engine(format!("get_effective_dates decode source_id: {e}")))?;
             let ts: String = row
                 .get(2)
                 .map_err(|e| Error::engine(format!("get_effective_dates decode ts: {e}")))?;
@@ -1061,14 +1063,10 @@ impl BrainEngine for LibsqlEngine {
                 .get(1)
                 .map_err(|e| Error::engine(format!("get_salience_scores decode source_id: {e}")))?;
             let weighted_emotion: f64 = row.get(2).map_err(|e| {
-                Error::engine(format!(
-                    "get_salience_scores decode weighted_emotion: {e}"
-                ))
+                Error::engine(format!("get_salience_scores decode weighted_emotion: {e}"))
             })?;
             let active_take_count: i64 = row.get(3).map_err(|e| {
-                Error::engine(format!(
-                    "get_salience_scores decode active_take_count: {e}"
-                ))
+                Error::engine(format!("get_salience_scores decode active_take_count: {e}"))
             })?;
             // ln(1 + N) computed in Rust because libsql lacks `ln()`.
             // `as f64` cast is safe: take counts in practice fit well within f64's 52-bit mantissa.

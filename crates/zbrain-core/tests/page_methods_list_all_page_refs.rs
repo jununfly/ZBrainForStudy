@@ -151,11 +151,7 @@ async fn libsql_list_all_page_refs_returns_empty_vec_when_no_live_rows() {
     // Single tombstone row → still empty (no live rows).
     libsql_seed_source(&tmp, "src-1").await;
     engine
-        .put_page(
-            "only-tombstone",
-            Some("src-1"),
-            &note_input("Tomb", "body"),
-        )
+        .put_page("only-tombstone", Some("src-1"), &note_input("Tomb", "body"))
         .await
         .expect("seed page");
     engine
