@@ -309,7 +309,7 @@
   - `update_page_contextual_retrieval_state` 更新 `contextual_retrieval_mode` / `corpus_generation`，并覆盖 `corpus_generation = None` 写入 NULL 的 case。
 - **测试形态**：
   - PG 正向测试覆盖 live row 精确更新、同 slug 不同 source 不误更新、soft-deleted no-op、`updated_at` bump。
-  - libsql advanced writes 尚未 override，相关测试继续锁定 trait 默认 `Unsupported("pending slice 6a")`。
+  - 历史状态：本切片完成时 libsql advanced writes 尚未 override，相关测试继续锁定 trait 默认 `Unsupported("pending slice 6a")`；该历史状态已由后续 libsql advanced writes 切片 `a62e4d4` 闭合。
 - **验证门禁（实现 commit 前 fresh verification）**：
   - `cargo test --manifest-path ... -p zbrain-core --no-fail-fast` ✅
   - `cargo clippy --manifest-path ... -p zbrain-core --all-targets -- -D warnings` ✅
@@ -318,3 +318,87 @@
   - plan 14 §10.2 勾选 `refresh_page_body` / `update_page_contextual_retrieval_state`，回填 `98761e4`。
   - plan 14 §11.4 刷新 libsql advanced reads / 6c 后续切片状态。
   - `postgres.rs` advanced reads 注释删除过期的 "libsql keeps Unsupported until slice 6a-libsql" 描述。
+
+---
+
+## libsql advanced writes 切片闭环（追加，commit a62e4d4）
+
+- **范围**：`LibsqlEngine` override 两个 advanced write 方法：
+  - `refresh_page_body(&RefreshPageBodyArgs) -> Result<()>`
+  - `update_page_contextual_retrieval_state(slug, source_id, mode, corpus_generation) -> Result<()>`
+- **实现 commit**：`a62e4d4 feat(core): implement libsql advanced page writes`。
+- **改动文件**：
+  - `crates/zbrain-core/src/libsql.rs`
+  - `crates/zbrain-core/tests/page_methods_refresh_page_body.rs`
+  - `crates/zbrain-core/tests/page_methods_update_cr_state.rs`
+- **行为契约**：
+  - 严格按 `(source_id, slug)` 定位 live row。
+  - `deleted_at IS NULL`：soft-deleted rows no-op。
+  - missing row no-op，对齐 TS `postgres-engine.ts` / `pglite-engine.ts` 及 PG 实现 `98761e4`。
+  - 每次成功命中更新 `updated_at = CURRENT_TIMESTAMP`。
+  - `refresh_page_body` 更新 `compiled_truth` / `timeline` / `content_hash`；`timeline` 由 `serde_json::Value::to_string()` 写入当前字符串列。
+  - `update_page_contextual_retrieval_state` 更新 `contextual_retrieval_mode` / `corpus_generation`，并覆盖 `corpus_generation = None` 写入 SQL NULL 的 case。
+- **测试形态**：
+  - 翻转 `page_methods_refresh_page_body.rs` 的 libsql placeholder-lock 为正向行为测试：live exact row update、同 slug 不同 source 不误更新、soft-deleted no-op、`updated_at` bump。
+  - 翻转 `page_methods_update_cr_state.rs` 的 libsql placeholder-lock 为正向行为测试：live exact row update、NULL `corpus_generation`、soft-deleted no-op、`updated_at` bump。
+  - PG mirror tests 在完整验证中加载 `.env` 后实际运行；未把 `ZBRAIN_TEST_PG_URL unset` skip 误判为 PG pass。
+- **验证门禁（实现 commit 前 fresh verification）**：
+  - `cargo fmt --all --manifest-path ... -- --check` ✅
+  - `cargo test --manifest-path ... -p zbrain-core --no-fail-fast` ✅
+  - `cargo clippy --manifest-path ... -p zbrain-core --all-targets -- -D warnings` ✅
+  - `cargo build --manifest-path ... -p zbrain-core` ✅
+- **doc-only follow-up 内容**：
+  - plan 14 §6.2 将 `page_methods_refresh_page_body.rs` / `page_methods_update_cr_state.rs` 的 libsql 状态从 placeholder-lock 刷新为已完成（`a62e4d4`）。
+  - plan 14 §10.2 为两个 advanced write 方法分别记录 PG 与 libsql 实现 commit，避免把 PG-only 状态误读为双后端闭环。
+  - 当前仍保留 `find_orphan_pages` 的 libsql placeholder-lock，因此 `engine.rs` 的 trait 默认 `Unsupported("pending slice 6a")` 暂不清理。
+- **下一步候选切片**：
+  - **libsql find_orphan_pages**：翻转 `page_methods_find_orphan_pages.rs` 的 libsql placeholder-lock，按 TS / PG 已落地契约实现 libsql override。
+  - **engine.rs pending slice cleanup**：等 libsql `find_orphan_pages` 闭合后再统一清理，避免提前扩大边界。
+
+---
+
+## 当前会话交接（追加，doc-only closure 待提交）
+
+### 会话目标
+
+- 按用户要求将当前会话 handoff 到 `docs/plans/20260526/`。
+- 收口 `libsql advanced writes` 的文档闭环，并准备独立 doc-only follow-up commit，避免实现 commit hash 自指循环。
+
+### 已完成
+
+- `libsql advanced writes` 实现 commit 已落地：`a62e4d4 feat(core): implement libsql advanced page writes`。
+- 已在本文件追加 `libsql advanced writes 切片闭环（追加，commit a62e4d4）`。
+- 已更新计划文档 `docs/plans/20260526/14-slice-6a-pg-plan.md`：
+  - §6.2：`page_methods_refresh_page_body.rs` / `page_methods_update_cr_state.rs` 记录 PG 与 libsql 均已完成。
+  - §10.2：将 `refresh_page_body` / `update_page_contextual_retrieval_state` 拆成 PG 与 libsql 两项并回填 `98761e4` / `a62e4d4`。
+
+### 待办 / 下一步
+
+- [ ] 检查当前 diff，确认只包含文档变更。
+- [ ] 提交 doc-only follow-up commit，建议信息：`docs(core): close libsql advanced writes follow-up`。
+- [ ] 若继续开发，优先进入 **libsql find_orphan_pages**：翻转 `crates/zbrain-core/tests/page_methods_find_orphan_pages.rs` 的 libsql placeholder-lock，再实现 `LibsqlEngine::find_orphan_pages`。
+- [ ] `engine.rs` 中 trait 默认 `Unsupported("pending slice 6a")` 需等 libsql `find_orphan_pages` 闭合后再统一清理，不要提前扩大边界。
+
+### 已知问题 / 注意事项
+
+- 当前仍有 libsql `find_orphan_pages` placeholder-lock，因此不能宣称 Slice 6a Page method trait surface 已完全真实语义闭环。
+- PG 集成测试必须加载 `.env` 中的 `ZBRAIN_TEST_PG_URL`；不能把 `ZBRAIN_TEST_PG_URL unset` 的 skip 当作 PG pass。
+- 保持实现 commit 与 doc-only follow-up commit 分离：实现 commit `a62e4d4` 不再 amend，文档 hash 回填走独立提交。
+- 若出现 libsql native transient `SIGSEGV`，先单测复现再全量重跑，不要直接归因于业务实现失败。
+
+### 相关产物
+
+- 计划：`docs/plans/20260526/14-slice-6a-pg-plan.md`
+- 主 handoff：`docs/plans/20260526/handoff-260531.md`
+- 最新实现 commit：`a62e4d4 feat(core): implement libsql advanced page writes`
+- PG advanced writes 参照 commit：`98761e4 feat(core): implement postgres advanced page writes`
+
+### 建议下一个会话使用的技能
+
+- `test-driven-development`：下一候选切片需要先翻转 placeholder-lock，再最小 GREEN。
+- `verification-before-completion`：提交前必须 fresh verification，尤其防止 PG skip 误判。
+- `session-handoff`：跨会话继续推进时更新 handoff，保持状态可追溯。
+
+### 敏感信息检查
+
+- 未写入 API key、密码、私有 token 或数据库连接串；仅引用 `.env` 路径和公开代码路径。

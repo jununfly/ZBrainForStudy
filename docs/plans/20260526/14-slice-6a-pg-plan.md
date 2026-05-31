@@ -572,7 +572,7 @@ Slice 6a 的 placeholder-lock 测试**并不在 `postgres_*` 文件里**,而是�
 这意味着:
 - 红测锁的是 **trait 默认实现**,与具体引擎(PG / libsql / InMemory)无关。
 - 任何一个引擎一旦 override 某个方法,该引擎在对应红测上就会"绿",但只要还有引擎未 override,该红测就**应继续存在**。
-- libsql 已 override 了全部 13 个高级方法(`S6-T5b/T5c/T6/T7/T8` 链路);PG 当前仅 override 了 tag CRUD(`5ca9131`),其余 10 个仍走 trait 默认 `unsupported`。
+- libsql 已 override 大部分高级 Page 方法（含 advanced reads `2370190`、advanced writes `a62e4d4`、6c takes salience `494da1d`）；当前仍保留 `find_orphan_pages` 的 trait 默认 `Unsupported("pending slice 6a")` placeholder-lock。PG 侧高级方法已按多个独立后续切片逐步闭合。
 
 ### 6.2 当前 14 个 `page_methods_*.rs` 实际状态
 
@@ -582,8 +582,8 @@ Slice 6a 的 placeholder-lock 测试**并不在 `postgres_*` 文件里**,而是�
 | `page_methods_soft_delete_page.rs` | trait 默认 unsupported | InMemory / PG / libsql | ✅ 已完成（`2568268`） |
 | `page_methods_restore_page.rs` | trait 默认 unsupported | InMemory / PG | ✅ 已完成（`2568268`） |
 | `page_methods_purge_deleted_pages.rs` | trait 默认 unsupported | InMemory / PG | ✅ 已完成（`2568268`） |
-| `page_methods_refresh_page_body.rs` | trait 默认 unsupported | InMemory / libsql | ✅ PG 已完成（`98761e4`）；libsql 仍锁 trait 默认 |
-| `page_methods_update_cr_state.rs` | trait 默认 unsupported | InMemory / libsql | ✅ PG 已完成（`98761e4`）；libsql 仍锁 trait 默认 |
+| `page_methods_refresh_page_body.rs` | trait 默认 unsupported | InMemory | ✅ PG 已完成（`98761e4`）；libsql 已完成（`a62e4d4`） |
+| `page_methods_update_cr_state.rs` | trait 默认 unsupported | InMemory | ✅ PG 已完成（`98761e4`）；libsql 已完成（`a62e4d4`） |
 | `page_methods_get_all_slugs.rs` | trait 默认 unsupported | InMemory | ✅ PG 已完成（`a747ed5`）；libsql 已完成（`2370190`） |
 | `page_methods_list_all_page_refs.rs` | trait 默认 unsupported | InMemory | ✅ PG 已完成（`a747ed5`）；libsql 已完成（`2370190`） |
 | `page_methods_find_orphan_pages.rs` | trait 默认 unsupported | InMemory / libsql | ✅ PG 已完成（`a56c9ae`）；libsql 仍锁 trait 默认 |
@@ -597,7 +597,7 @@ Slice 6a 的 placeholder-lock 测试**并不在 `postgres_*` 文件里**,而是�
 
 - **不删除任何 `page_methods_*.rs`**。
 - tag 三件套不在该批红测里,无需联动调整。
-- 后续每个 PG 高级方法切片(PG-find-duplicate / PG-soft-delete / PG-advanced-reads / PG-advanced-writes)完成时,对应红测可以**改写**为正向断言(返回正确语义),或**保留**为"trait 默认仍 unsupported"的负向锁(取决于届时是否还有未实现该方法的引擎)。
+- 后续每个高级方法切片(PG-find-duplicate / PG-soft-delete / PG-advanced-reads / PG-advanced-writes / 6a-libsql advanced reads / libsql advanced writes)完成时,对应红测可以**改写**为正向断言(返回正确语义),或**保留**为"trait 默认仍 unsupported"的负向锁(取决于届时是否还有未实现该方法的引擎)。
 
 ### 6.4 PG 集成测试基础设施
 
@@ -645,7 +645,7 @@ CI 上跑真实 PG 集成测试单独留 slice。
 |---|---|---|
 | `PG-find-duplicate` | `find_duplicate_page` | `page_methods_find_duplicate_page.rs` |
 | `PG-soft-delete` | `soft_delete_page` / `restore_page` / `purge_deleted_pages` | `page_methods_soft_delete_page.rs` / `_restore_page.rs` / `_purge_deleted_pages.rs` |
-| `PG-advanced-writes` | `refresh_page_body` / `update_page_contextual_retrieval_state` | ✅ 已完成（`98761e4`）；`page_methods_refresh_page_body.rs` / `_update_cr_state.rs` |
+| `PG-advanced-writes` / `libsql advanced writes` | `refresh_page_body` / `update_page_contextual_retrieval_state` | ✅ PG 已完成（`98761e4`）；libsql 已完成（`a62e4d4`）；`page_methods_refresh_page_body.rs` / `_update_cr_state.rs` |
 | `PG-advanced-reads` | `get_all_slugs` / `list_all_page_refs` / `get_page_timestamps` / `get_effective_dates` / `get_salience_scores` (5 个) | ✅ 已完成（`a747ed5`）；`page_methods_get_all_slugs.rs` / `_list_all_page_refs.rs` / `_get_page_timestamps.rs` / `_get_effective_dates.rs` / `_get_salience_scores.rs` |
 | `PG-find-orphan-pages` | `find_orphan_pages` (单独切片，独立小切片落地) | ✅ 已完成（`a56c9ae`）；`page_methods_find_orphan_pages.rs` |
 
@@ -718,8 +718,10 @@ CI 上跑真实 PG 集成测试单独留 slice。
 - [x] `soft_delete_page` PG 方言 (now()) — 切片: **PG-soft-delete**（`2568268`）
 - [x] `restore_page` 实现 — 切片: **PG-soft-delete**（`2568268`）
 - [x] `purge_deleted_pages` 实现 — 切片: **PG-soft-delete**（`2568268`）
-- [x] `refresh_page_body` 实现 — 切片: **PG-advanced-writes**（`98761e4`）
-- [x] `update_page_contextual_retrieval_state` 实现 — 切片: **PG-advanced-writes**（`98761e4`）
+- [x] `refresh_page_body` PG 实现 — 切片: **PG-advanced-writes**（`98761e4`）
+- [x] `refresh_page_body` libsql 实现 — 切片: **libsql advanced writes**（`a62e4d4`）
+- [x] `update_page_contextual_retrieval_state` PG 实现 — 切片: **PG-advanced-writes**（`98761e4`）
+- [x] `update_page_contextual_retrieval_state` libsql 实现 — 切片: **libsql advanced writes**（`a62e4d4`）
 - [x] `get_all_slugs` 实现 — 切片: **PG-advanced-reads**（`a747ed5`）
 - [x] `list_all_page_refs` 实现 — 切片: **PG-advanced-reads**（`a747ed5`）
 - [x] `find_orphan_pages` 实现 — 切片: **PG-find-orphan-pages**（`a56c9ae`；含 0006_links.sql migration + 双侧 soft-delete 过滤 C11）
