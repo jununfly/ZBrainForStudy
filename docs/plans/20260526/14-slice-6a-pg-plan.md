@@ -722,7 +722,7 @@ CI 上跑真实 PG 集成测试单独留 slice。
 - [ ] `update_page_contextual_retrieval_state` 实现 — 切片: **PG-advanced-writes**
 - [x] `get_all_slugs` 实现 — 切片: **PG-advanced-reads**（`a747ed5`）
 - [x] `list_all_page_refs` 实现 — 切片: **PG-advanced-reads**（`a747ed5`）
-- [ ] `find_orphan_pages` 实现 — 切片: **PG-find-orphan-pages**（已从 PG-advanced-reads 摘出，独立小切片）
+- [x] `find_orphan_pages` 实现 — 切片: **PG-find-orphan-pages**（`a56c9ae`；含 0006_links.sql migration + 双侧 soft-delete 过滤 C11）
 - [x] `get_page_timestamps` 实现 — 切片: **PG-advanced-reads**（`a747ed5`）
 - [x] `get_effective_dates` 实现 — 切片: **PG-advanced-reads**（`a747ed5`）
 - [x] `get_salience_scores` 实现 — 切片: **PG-advanced-reads**（`a747ed5`；6a 阶段退化为 `emotional_weight * 5`，6c 再补 `+ ln(1 + N_tags)`）
@@ -783,3 +783,59 @@ CI 上跑真实 PG 集成测试单独留 slice。
 - 本切片 **不** 实现 libsql 的 5 个 advanced-reads, 维持 `engine.rs` trait 默认 `Err(EngineError::Unsupported(...))`;
 - 现有 5 个 `page_methods_*.rs` placeholder-lock 红测除 `salience_scores_takes_zero_until_6c.rs` 外保持不动, 锁住 trait 默认;
 - 决策 D1 锁定: libsql advanced-reads 等 6c+ 切片再处理, 不下放到本切片。
+
+---
+
+## §12 PG-find-orphan-pages 切片落地修订（独立小切片）
+
+> 背景: §11 中 R3 把 `find_orphan_pages` 从 PG-advanced-reads 摘出为独立小切片。本节为该切片的真实落地记录, commit `a56c9ae`。
+
+### 12.1 实施范围
+
+- `crates/zbrain-core/migrations/0006_links.sql` 新增 — 移植 TS `src/db/pglite-schema.ts:209-231` 完整 `links` DDL + 4 索引。
+- `crates/zbrain-core/src/postgres.rs` 追加 `BrainEngine::find_orphan_pages` PG override（53 行）。
+- `crates/zbrain-core/tests/page_methods_find_orphan_pages.rs` 重写为 5 PG case + 1 libsql `Unsupported` placeholder。
+
+### 12.2 关键设计与偏差登记
+
+| ID | 项 | 决策 / 状态 |
+|----|----|------------|
+| O1 | `links` FK 列类型 | TS schema 用 `INTEGER REFERENCES pages(id)`, PG 端 `pages.id` 为 `BIGSERIAL`, 因此 FK 列升级为 `BIGINT`; `links.id` 保留 `SERIAL`（与 TS 一致, 链路本身规模远小）。**记录在案, 不视为偏差** —— 是 PG 端 ID 类型决策的必然下游。 |
+| O2 | `page_links` VIEW | TS schema 中存在, 但 6a 阶段无任何 Rust 方法依赖, **YAGNI 暂不移植**; 后续若需要, 单独 migration 添加。 |
+| O3 | C11 双侧 soft-delete 过滤 | TS `findOrphanPages` 实际 SQL 对候选侧 (`p.deleted_at IS NULL`) **和** 入链源侧 (`src.deleted_at IS NULL`) 都过滤 —— 即软删除页发出的链接不算作"有入链"。Rust 实现镜像该 invariant, 测试 case `treats_link_from_deleted_page_as_absent` 锁定。 |
+| O4 | `COALESCE(title, slug)` 是防御性死代码 | TS schema 声明 `title TEXT NOT NULL`, `putPage` 直接 bind `page.title` (无 NULL 转换), 因此空 title 在 TS 端存为空串而非 NULL。Rust 端保留 COALESCE 仅作为"未来 NULL 漂移"的兜底; 测试 `title_coalesce_and_domain_extraction` 断言 empty title **保持为空串** (TS parity), 不测试 COALESCE 的 fallback 分支。Doc 注释 (`postgres.rs:865-868`) 与测试注释同步解释该 nuance。 |
+| O5 | `BrainEngine::put_link` 未存在 | 链接写入不在 trait surface; 测试 helper `pg_insert_link` 走 raw `sqlx::query` 直接 INSERT `links` 表。后续若 `put_link`/`putLink` 进入 trait, 测试 helper 可以替换为 trait 调用。 |
+
+### 12.3 真实契约
+
+```rust
+async fn find_orphan_pages(&self) -> Result<Vec<OrphanPage>>;
+// OrphanPage { slug: String, title: String, domain: Option<String> }
+```
+
+SQL (PG 方言):
+
+```sql
+SELECT p.slug, COALESCE(p.title, p.slug) AS title,
+       p.frontmatter->>'domain' AS domain
+FROM pages p
+WHERE p.deleted_at IS NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM links l
+    JOIN pages src ON src.id = l.from_page_id
+    WHERE l.to_page_id = p.id AND src.deleted_at IS NULL
+  )
+ORDER BY p.slug
+```
+
+### 12.4 四连绿门禁
+
+- `cargo fmt --all -- --check`: clean
+- `cargo build --workspace --all-targets`: ok
+- `cargo test --workspace --all-targets`: **239 passed, 0 failed, 0 ignored**
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean
+
+### 12.5 commit 与 hash
+
+- 实现 commit: `a56c9ae` — `slice 6a-pg(find_orphan_pages): add links migration + override PG, mirror TS`
+- 文档 commit: 本节落地于 doc-only follow-up (回填 hash 避免自指循环)。
