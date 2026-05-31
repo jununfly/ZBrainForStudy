@@ -151,3 +151,113 @@
   - **6a-libsql advanced reads**：5 个方法 libsql 落地，移除 `Unsupported`。
   - **PG-advanced-writes**：`refresh_page_body` + `update_page_contextual_retrieval_state`（plan 14 §10.2 仅剩这两行未勾选）。
   - **6c 完整 salience**：补 `+ ln(1 + N_tags)` + takes 维度。
+
+---
+
+## 会话交接 — 6a-libsql advanced reads（S1 调研完成，S2 RED 待执行）
+
+- **会话时间**：2026-05-31 17:13 CST
+- **当前 HEAD**：`d6de087 docs(handoff): append PG-find-orphan-pages slice closure`
+- **工作树**：clean
+- **本会话实际产出**：0 代码改动；多次 context 压缩/恢复导致反复 skill 加载，未进入 S2 RED。但 S1 调研结论已充分消化，下个会话可直接跳到 S2。
+
+### S1 调研结论（5 个 advanced read 方法 libsql 落地方案）
+
+#### 目标方法 + SQL 方言适配
+
+| 方法 | PG SQL 关键 | libsql 适配 |
+|------|------------|-------------|
+| `get_all_slugs(Option<&str>)` | `$1::text IS NULL OR source_id = $1` | `?1 IS NULL OR source_id = ?1`；bind `Option<&str>` → NULL 自动 |
+| `list_all_page_refs()` | `WHERE deleted_at IS NULL ORDER BY source_id ASC, slug ASC` | 同 PG，无参数绑定 |
+| `get_page_timestamps(&[String])` | `slug = ANY($1::text[])` | 动态展开 `IN (?1, ?2, …)` + 逐个 bind |
+| `get_effective_dates(&[PageRef])` | `unnest($1::text[], $2::text[]) AS u(slug, source_id)` | 用 `json_each` 或循环逐条 SELECT；key=`"{source_id}::{slug}"` |
+| `get_salience_scores(&[PageRef])` | 同 get_effective_dates 的 unnest | 同上；公式 `COALESCE(emotional_weight,0.0)*5.0` |
+
+#### libsql.rs 实施要点
+
+1. **imports 补充**：需补 `use std::collections::{HashMap, HashSet}` + `use crate::engine::PageRef`（当前 L1-28 缺失）。
+2. **插入位置**：在 `impl BrainEngine for LibsqlEngine` 块末尾（L829 `}` 之前）追加 5 个 async fn override。
+3. **conn() 可见性**：`conn()` 是 `async fn` 私有方法（L686 模式），override 内直接调用即可，无需改可见性。
+4. **streaming 模板**：参考 `soft_delete_page`（L686-718）和 `get_tags`（L799-829）的 `conn.query(...) → rows.next() → row.get::<T>(idx)` 循环。
+5. **unnest 替代**：`get_effective_dates` 和 `get_salience_scores` 的 PG `unnest($1::text[], $2::text[])` 在 libsql 中不可用。推荐方案：**逐条拼接 WHERE OR** 或用 `json_each`——逐条更简单可靠：
+   ```rust
+   // 伪代码
+   for pref in page_refs {
+     let row = conn.query(
+       "SELECT COALESCE(updated_at, created_at) AS ts FROM pages WHERE slug = ?1 AND source_id = ?2 AND deleted_at IS NULL",
+       ::libsql::params![pref.slug, pref.source_id]
+     ).await?;
+     // 累积到 HashMap
+   }
+   ```
+   若性能敏感可改用 `json_each` 单条查询，但 6a 阶段逐条足够。
+6. **IN 动态展开**：`get_page_timestamps` 的 `slug = ANY($1::text[])` → 运行时拼 `WHERE slug IN (?1, ?2, …)` + 对应 bind 列表。
+7. **module shadow**：所有 `libsql` crate 引用走 `::libsql::params![]` / `::libsql::Row` 前缀，避免与 `crate::libsql` module 冲突。
+
+#### 测试翻转计划
+
+| 测试文件 | 当前 libsql 段 | 翻转目标 |
+|---------|--------------|---------|
+| `page_methods_get_all_slugs.rs` | `assert!(matches!(err, Error::Unsupported))` | 正向行为：返回含 seeded slug 的 HashSet |
+| `page_methods_list_all_page_refs.rs` | 同上 | 正向行为：返回 Vec<PageRef>，soft-deleted 排除 |
+| `page_methods_get_page_timestamps.rs` | 同上 | 正向行为：返回 HashMap<slug, ISO-8601 ts> |
+| `page_methods_get_effective_dates.rs` | 同上 | 正向行为：返回 HashMap<"{sid}::{slug}", ts> |
+| `page_methods_get_salience_scores.rs` | 同上 | 正向行为：返回 HashMap<"{sid}::{slug}", f64> |
+| `salience_scores_takes_zero_until_6c.rs` | libsql 段断 Unsupported | 翻为代数不变式 `(0.4*5.0 - score).abs() < 1e-9`；**仍保留** takes=0 不变式 |
+
+#### salience 测试 emotional_weight 注入问题
+
+- PG 测试用 `pg_set_emotional_weight` helper 直接 UPDATE 表设值。
+- libsql 侧 `conn()` 是私有的，测试文件无法直接访问。
+- **推荐方案**：在 `LibsqlEngine` 上新增 `pub(crate) async fn set_emotional_weight(&self, slug: &str, source_id: &str, weight: f64)` 辅助方法，仅供测试用；或通过 `database()` 拿 `Connection` 执行 raw SQL。
+- **备选**：在测试 helper 模块中用 `init_clean_engine()` 返回的 engine 直接走 `put_page` 然后手动 raw SQL UPDATE（需确认 `database()` 能拿到可 query 的 conn）。
+
+#### trait 默认实现清理
+
+- `engine.rs` L383-452 的 5 个 `Err(Error::unsupported("pending slice 6a"))` 默认体在 libsql override 落地后**可保留**（作为未来新 backend 的兜底），无需删除。
+- `postgres.rs` L685-688 注释 "libsql side intentionally keeps the default Unsupported until slice 6a-libsql" 需**删除/更新**。
+
+#### 契约冲突已澄清
+
+- plan 14 §11.4 写 "D1 锁定 libsql advanced-reads 等 6c+ 切片再处理" 是过期描述。
+- handoff 多处把 6a-libsql 列为下一切片优先级 → handoff 是更新的 ground truth。
+- 本切片完成后需在 doc-only follow-up 中清理 plan 14 §11.4。
+
+### 待办 / 下一步（6a-libsql 切片）
+
+- [ ] S2 RED：翻转 6 个测试文件 libsql 段为正向行为测试（含 salience 代数不变式）
+- [ ] S3 GREEN：在 libsql.rs 补 imports + 追加 5 个 async fn override
+- [ ] S4 REFACTOR：提取公共 unnest 替代逻辑、IN 动态展开 helper
+- [ ] S5 四连绿门禁：fmt / build / test / clippy
+- [ ] S6 commit：实现 commit + doc-only follow-up（回填 hash + 刷新 plan 14 + 清理 postgres.rs 注释）
+
+### 已知问题
+
+- libsql 并行 flake：`cargo test --workspace` 偶发 libsql SIGABRT，单独跑通过，属 pre-existing。
+- `get_effective_dates` / `get_salience_scores` 的 unnest 替代方案尚未写代码验证，可能需迭代。
+- `get_all_slugs` 不过滤 `deleted_at`——这是 TS parity quirk，不是 bug，但测试需显式验证。
+
+### 相关产物
+
+- Plan: `docs/plans/20260526/14-slice-6a-pg-plan.md`（§11 PG-advanced-reads 落地段，§11.4 需清理）
+- Gap checklist: `docs/plans/20260526/13-slice-6a-gap-checklist.md`
+- 本 handoff: `docs/plans/20260526/handoff-260531.md`
+- 最新 commit: `d6de087`
+- libsql 实现: `crates/zbrain-core/src/libsql.rs`（984 行，L829 前插入）
+- PG 参照面: `crates/zbrain-core/src/postgres.rs`（L685-870）
+- Trait 定义: `crates/zbrain-core/src/engine.rs`（L383-452）
+- 测试: `crates/zbrain-core/tests/page_methods_*.rs`（6 文件）
+
+### 建议下一个会话使用的技能
+
+- `test-driven-development`：严格红绿重构，S2→S6 必备
+- `executing-plans`：S1 调研已完成，按 S2-S6 步骤执行
+- `codegraph-assistant`：unnest 替代方案可能需快速检索 libsql query API
+
+### 注意事项
+
+- **跳过 S1**：调研结论已在上文沉淀，下一个会话直接从 S2 RED 开始。
+- **module shadow**：所有 libsql crate 引用走 `::libsql::` 前缀。
+- **commit hash 自指循环**：实现 commit 先落地拿稳定 hash，再开独立 doc-only follow-up commit 回填，永不 amend 实现 commit。
+- **PG 集成测试**：`ZBRAIN_TEST_PG_URL` env + `set -a; source .env; set +a` + `#[serial_test::serial]`。
+- **types 导入**：`PageRef` 从 `crate::engine` 导入；`FindDuplicatePageOpts` 等从 `crate::types` 导入。
