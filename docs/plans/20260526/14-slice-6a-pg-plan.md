@@ -572,7 +572,7 @@ Slice 6a 的 placeholder-lock 测试**并不在 `postgres_*` 文件里**,而是�
 这意味着:
 - 红测锁的是 **trait 默认实现**,与具体引擎(PG / libsql / InMemory)无关。
 - 任何一个引擎一旦 override 某个方法,该引擎在对应红测上就会"绿",但只要还有引擎未 override,该红测就**应继续存在**。
-- libsql 已 override 大部分高级 Page 方法（含 advanced reads `2370190`、advanced writes `a62e4d4`、6c takes salience `494da1d`）；当前仍保留 `find_orphan_pages` 的 trait 默认 `Unsupported("pending slice 6a")` placeholder-lock。PG 侧高级方法已按多个独立后续切片逐步闭合。
+- libsql 已 override 大部分高级 Page 方法（含 advanced reads `2370190`、advanced writes `a62e4d4`、6c takes salience `494da1d`、find_orphan_pages `dc75168`）；当前 `find_orphan_pages` 的 libsql placeholder-lock 已闭合，trait 默认 `Unsupported("pending slice 6a")` 仅作为未 override backend（如 InMemory）的兜底。PG 侧高级方法已按多个独立后续切片逐步闭合。
 
 ### 6.2 当前 14 个 `page_methods_*.rs` 实际状态
 
@@ -586,7 +586,7 @@ Slice 6a 的 placeholder-lock 测试**并不在 `postgres_*` 文件里**,而是�
 | `page_methods_update_cr_state.rs` | trait 默认 unsupported | InMemory | ✅ PG 已完成（`98761e4`）；libsql 已完成（`a62e4d4`） |
 | `page_methods_get_all_slugs.rs` | trait 默认 unsupported | InMemory | ✅ PG 已完成（`a747ed5`）；libsql 已完成（`2370190`） |
 | `page_methods_list_all_page_refs.rs` | trait 默认 unsupported | InMemory | ✅ PG 已完成（`a747ed5`）；libsql 已完成（`2370190`） |
-| `page_methods_find_orphan_pages.rs` | trait 默认 unsupported | InMemory / libsql | ✅ PG 已完成（`a56c9ae`）；libsql 仍锁 trait 默认 |
+| `page_methods_find_orphan_pages.rs` | trait 默认 unsupported | InMemory / libsql | ✅ PG 已完成（`a56c9ae`）；✅ libsql 已完成（`dc75168`） |
 | `page_methods_get_page_timestamps.rs` | trait 默认 unsupported | InMemory | ✅ PG 已完成（`a747ed5`）；libsql 已完成（`2370190`） |
 | `page_methods_get_effective_dates.rs` | trait 默认 unsupported | InMemory | ✅ PG 已完成（`a747ed5`）；libsql 已完成（`2370190`） |
 | `page_methods_get_salience_scores.rs` | trait 默认 unsupported | InMemory | ✅ PG 已完成（`a747ed5`）；libsql 已完成（`2370190`）；6c takes salience 已完成（`494da1d`） |
@@ -647,7 +647,7 @@ CI 上跑真实 PG 集成测试单独留 slice。
 | `PG-soft-delete` | `soft_delete_page` / `restore_page` / `purge_deleted_pages` | `page_methods_soft_delete_page.rs` / `_restore_page.rs` / `_purge_deleted_pages.rs` |
 | `PG-advanced-writes` / `libsql advanced writes` | `refresh_page_body` / `update_page_contextual_retrieval_state` | ✅ PG 已完成（`98761e4`）；libsql 已完成（`a62e4d4`）；`page_methods_refresh_page_body.rs` / `_update_cr_state.rs` |
 | `PG-advanced-reads` | `get_all_slugs` / `list_all_page_refs` / `get_page_timestamps` / `get_effective_dates` / `get_salience_scores` (5 个) | ✅ 已完成（`a747ed5`）；`page_methods_get_all_slugs.rs` / `_list_all_page_refs.rs` / `_get_page_timestamps.rs` / `_get_effective_dates.rs` / `_get_salience_scores.rs` |
-| `PG-find-orphan-pages` | `find_orphan_pages` (单独切片，独立小切片落地) | ✅ 已完成（`a56c9ae`）；`page_methods_find_orphan_pages.rs` |
+| `PG-find-orphan-pages` / `libsql-find-orphan-pages` | `find_orphan_pages` (单独切片，独立小切片落地) | ✅ PG 已完成（`a56c9ae`）；✅ libsql 已完成（`dc75168`）；`page_methods_find_orphan_pages.rs` |
 
 每个后续切片的"完成准则": (a) PG 实现 + clippy; (b) 对应红测改写为正向断言或保留为"仍有引擎未实现"的负向锁; (c) 独立 commit + git tag。
 
@@ -724,12 +724,13 @@ CI 上跑真实 PG 集成测试单独留 slice。
 - [x] `update_page_contextual_retrieval_state` libsql 实现 — 切片: **libsql advanced writes**（`a62e4d4`）
 - [x] `get_all_slugs` 实现 — 切片: **PG-advanced-reads**（`a747ed5`）
 - [x] `list_all_page_refs` 实现 — 切片: **PG-advanced-reads**（`a747ed5`）
-- [x] `find_orphan_pages` 实现 — 切片: **PG-find-orphan-pages**（`a56c9ae`；含 0006_links.sql migration + 双侧 soft-delete 过滤 C11）
+- [x] `find_orphan_pages` PG 实现 — 切片: **PG-find-orphan-pages**（`a56c9ae`；含 PG `0006_links.sql` migration + 双侧 soft-delete 过滤 C11）
+- [x] `find_orphan_pages` libsql 实现 — 切片: **libsql-find-orphan-pages**（`dc75168`；含 SQLite `migrations-sqlite/0006_links.sql` 最小 links migration + `json_extract(frontmatter, '$.domain')` + 双侧 soft-delete 过滤）
 - [x] `get_page_timestamps` 实现 — 切片: **PG-advanced-reads**（`a747ed5`）
 - [x] `get_effective_dates` 实现 — 切片: **PG-advanced-reads**（`a747ed5`）
 - [x] `get_salience_scores` 实现 — 切片: **PG-advanced-reads**（`a747ed5`；6a 阶段退化为 `emotional_weight * 5`，6c 再补 `+ ln(1 + N_tags)`）
-- [ ] `engine.rs` "pending slice 6a" 注释 — 等最后一个 PG 后续切片完成后清理
-- [ ] 13 个 `page_methods_*.rs` placeholder-lock 红测 — 跟随对应 PG 后续切片改写/保留(见 §6.2)
+- [ ] `engine.rs` "pending slice 6a" 默认体/注释 cleanup — `find_orphan_pages` 双后端闭合后可独立清理；默认 `Unsupported` 是否保留为新 backend 兜底需单独决策，不在 `dc75168` 实现 commit 中扩大边界
+- [ ] 13 个 `page_methods_*.rs` placeholder-lock 红测 — 跟随对应后续切片改写/保留(见 §6.2)
 - [ ] PG 真实集成测试基础设施 (`postgres_engine_*.rs` 去 `#[ignore]`) — 独立切片 **PG-integration-test-infra**
 
 ### 10.3 跨切片偏差追踪 (不在 6a-pg 内闭合)

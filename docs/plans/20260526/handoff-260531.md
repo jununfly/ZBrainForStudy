@@ -402,3 +402,37 @@
 ### 敏感信息检查
 
 - 未写入 API key、密码、私有 token 或数据库连接串；仅引用 `.env` 路径和公开代码路径。
+
+---
+
+## libsql find_orphan_pages 切片闭环（追加，commit dc75168）
+
+- **范围**：`LibsqlEngine::find_orphan_pages` 真实语义落地，闭合 `page_methods_find_orphan_pages.rs` 中 libsql placeholder-lock。
+- **实现 commit**：`dc75168 feat(core): implement libsql find orphan pages`。
+- **改动文件**：
+  - `crates/zbrain-core/src/libsql.rs`
+  - `crates/zbrain-core/tests/page_methods_find_orphan_pages.rs`
+  - `crates/zbrain-core/migrations-sqlite/0006_links.sql`
+- **行为契约**：
+  - 候选页过滤 `p.deleted_at IS NULL`。
+  - 入链来源页过滤 `src.deleted_at IS NULL`，即来自 soft-deleted page 的 link 不算有效入链。
+  - `frontmatter.domain` 通过 SQLite `json_extract(p.frontmatter, '$.domain')` 读取，对齐 PG 侧 `frontmatter->>'domain'`。
+  - 返回 `OrphanPage { slug, title, domain }`，与 PG `a56c9ae` / TS PGLite 行为保持 parity。
+  - SQLite 侧补最小 `links` migration：`migrations-sqlite/0006_links.sql`，仅覆盖当前方法所需的 graph links 表/索引契约。
+- **测试形态**：
+  - `page_methods_find_orphan_pages.rs` 的 libsql 段已从 trait 默认 `Unsupported("pending slice 6a")` 翻转为正向行为测试。
+  - PG mirror case 继续作为参照面；未把 `ZBRAIN_TEST_PG_URL unset` 的 skip 误判为 PG pass。
+- **验证门禁（实现 commit 前 fresh verification）**：
+  - `cargo fmt --all --manifest-path ... -- --check` ✅
+  - `cargo test --manifest-path ... -p zbrain-core --no-fail-fast` ✅
+  - `cargo clippy --manifest-path ... -p zbrain-core --all-targets -- -D warnings` ✅
+  - `cargo build --manifest-path ... -p zbrain-core` ✅
+- **doc-only follow-up 内容**：
+  - plan 14 §6.2 将 `page_methods_find_orphan_pages.rs` 的 libsql 状态从 placeholder-lock 刷新为已完成（`dc75168`）。
+  - plan 14 §10.2 将 `find_orphan_pages` 拆为 PG `a56c9ae` 与 libsql `dc75168` 两个已完成实现，避免误读为 PG-only。
+  - 本 handoff 追加当前闭环段，明确实现 commit 与文档回填 commit 分离；不 amend `dc75168`。
+- **未尽事项 / 下一步候选切片**：
+  - **engine.rs pending slice cleanup**：`find_orphan_pages` 双后端闭合后可独立清理 `pending slice 6a` 默认体/注释；是否保留 trait 默认 `Unsupported` 作为新 backend 兜底需单独决策。
+  - **PG-integration-test-infra**：PG 真实集成测试基础设施，避免依赖 `ZBRAIN_TEST_PG_URL unset` skip。
+  - **S6-signature**：`list_pages` 签名 `&PageFilters` vs `Option<&PageFilters>` 偏差追踪。
+  - **S6-time-types**：时间字段是否引入 `chrono` 偏差追踪。
