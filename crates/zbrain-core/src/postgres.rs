@@ -41,6 +41,7 @@ use crate::engine::{
     PageInput, PageSort,
 };
 use crate::error::{Error, Result};
+use crate::types::FindDuplicatePageOpts;
 use crate::types::{CRMode, EffectiveDateSource, PageKind};
 
 /// Embedded SQL migrations, baked into the binary at compile time. Driven by
@@ -387,6 +388,42 @@ impl BrainEngine for PostgresEngine {
             .map_err(|e| Error::engine(format!("put_page upsert failed: {e}")))?;
 
         row_to_page(&row)
+    }
+
+    async fn find_duplicate_page(
+        &self,
+        source_id: &str,
+        opts: &FindDuplicatePageOpts,
+    ) -> Result<Option<Page>> {
+        // PG mirror of libsql `find_duplicate_page` (slice 6a-pg).
+        // Reverse-mapped per 14-plan §2 dialect table:
+        //   - `?N`           → `$N`
+        //   - `json_extract(frontmatter, '$.id')` → `frontmatter->>'id'`
+        //     (PG JSONB native operator; column is JSONB on this side).
+        // Behavior contract: within a single `source_id`, ignore soft-deleted
+        // rows, then return the lowest-`id` row whose `content_hash` matches OR
+        // (when supplied) whose `frontmatter.id` matches. Re-uses the same 28-
+        // column `FULL_PAGE_PROJECTION` and `row_to_page` decoder as `get_page`.
+        let pool = self.pool()?;
+        let sql = format!(
+            "SELECT {FULL_PAGE_PROJECTION} \
+             FROM pages \
+             WHERE source_id = $1 \
+               AND deleted_at IS NULL \
+               AND (content_hash = $2 \
+                    OR ($3::text IS NOT NULL AND (frontmatter->>'id') = $3)) \
+             ORDER BY id ASC \
+             LIMIT 1"
+        );
+        let row = sqlx::query(&sql)
+            .bind(source_id)
+            .bind(&opts.content_hash)
+            .bind(opts.frontmatter_id.as_deref())
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| Error::engine(format!("find_duplicate_page query failed: {e}")))?;
+
+        row.as_ref().map(row_to_page).transpose()
     }
 
     async fn delete_page(&self, slug: &str) -> Result<()> {

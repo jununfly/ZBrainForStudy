@@ -224,3 +224,200 @@ async fn in_memory_find_duplicate_page_matches_content_hash_and_frontmatter_id()
     assert!(miss.is_none(), "source_id must scope duplicate lookup");
     engine.disconnect().await.expect("disconnect");
 }
+
+// ---------------------------------------------------------------------------
+// PostgresEngine mirror tests (slice 6a-pg PG-find-duplicate)
+//
+// Mirrors the libsql tests above to prove behavior parity. Gated on
+// `ZBRAIN_TEST_PG_URL` (same convention as `postgres_engine_page_crud.rs`).
+// Each test is `#[serial_test::serial]` because they share the `pages` table
+// in the configured test database.
+// ---------------------------------------------------------------------------
+
+use zbrain_core::postgres::PostgresEngine;
+
+fn pg_url() -> Option<String> {
+    std::env::var("ZBRAIN_TEST_PG_URL").ok()
+}
+
+async fn pg_init_clean_engine() -> Option<PostgresEngine> {
+    let url = pg_url()?;
+    let engine = PostgresEngine::new();
+    let cfg = EngineConfig {
+        database_url: Some(url.clone()),
+        database_path: None,
+    };
+    engine.connect(&cfg).await.expect("connect");
+    engine.init_schema().await.expect("init_schema");
+
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .expect("verification pool");
+    sqlx::query("TRUNCATE TABLE pages RESTART IDENTITY CASCADE")
+        .execute(&pool)
+        .await
+        .expect("truncate pages");
+    pool.close().await;
+    Some(engine)
+}
+
+async fn pg_seed_source(id: &str) {
+    let url = pg_url().expect("ZBRAIN_TEST_PG_URL set for source seed");
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .expect("source seed pool");
+    sqlx::query("INSERT INTO sources (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING")
+        .bind(id)
+        .bind(id)
+        .execute(&pool)
+        .await
+        .expect("seed source");
+    pool.close().await;
+}
+
+async fn pg_soft_delete_via_sql(slug: &str) {
+    let url = pg_url().expect("ZBRAIN_TEST_PG_URL set for soft-delete side-channel");
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .expect("soft-delete pool");
+    let rows = sqlx::query("UPDATE pages SET deleted_at = now() WHERE slug = $1")
+        .bind(slug)
+        .execute(&pool)
+        .await
+        .expect("update deleted_at")
+        .rows_affected();
+    assert!(
+        rows >= 1,
+        "pg_soft_delete_via_sql expected to update at least one row for slug={slug}, got {rows}"
+    );
+    pool.close().await;
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn postgres_find_duplicate_page_matches_content_hash() {
+    let Some(engine) = pg_init_clean_engine().await else {
+        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
+        return;
+    };
+    pg_seed_source("src-1").await;
+    engine
+        .put_page(
+            "hash-hit",
+            Some("src-1"),
+            &PageInput {
+                page_type: "note".to_string(),
+                title: "Hash Hit".to_string(),
+                compiled_truth: "body".to_string(),
+                content_hash: Some("hash-1".to_string()),
+                frontmatter: Some(json!({"id": "fm-other"})),
+                ..PageInput::default()
+            },
+        )
+        .await
+        .expect("seed hash page");
+
+    let found = engine
+        .find_duplicate_page(
+            "src-1",
+            &FindDuplicatePageOpts {
+                content_hash: "hash-1".to_string(),
+                frontmatter_id: None,
+            },
+        )
+        .await
+        .expect("find duplicate");
+
+    let page = found.expect("matching content_hash should return a page");
+    assert_eq!(page.slug, "hash-hit");
+    assert_eq!(page.source_id, "src-1");
+    assert_eq!(page.content_hash.as_deref(), Some("hash-1"));
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn postgres_find_duplicate_page_matches_frontmatter_id() {
+    let Some(engine) = pg_init_clean_engine().await else {
+        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
+        return;
+    };
+    pg_seed_source("src-1").await;
+    engine
+        .put_page(
+            "frontmatter-hit",
+            Some("src-1"),
+            &PageInput {
+                page_type: "note".to_string(),
+                title: "Frontmatter Hit".to_string(),
+                compiled_truth: "body".to_string(),
+                content_hash: Some("hash-other".to_string()),
+                frontmatter: Some(json!({"id": "fm-1"})),
+                ..PageInput::default()
+            },
+        )
+        .await
+        .expect("seed frontmatter page");
+
+    let found = engine
+        .find_duplicate_page(
+            "src-1",
+            &FindDuplicatePageOpts {
+                content_hash: "hash-miss".to_string(),
+                frontmatter_id: Some("fm-1".to_string()),
+            },
+        )
+        .await
+        .expect("find duplicate");
+
+    let page = found.expect("matching frontmatter.id should return a page");
+    assert_eq!(page.slug, "frontmatter-hit");
+    assert_eq!(page.frontmatter["id"], "fm-1");
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn postgres_find_duplicate_page_ignores_soft_deleted_rows() {
+    let Some(engine) = pg_init_clean_engine().await else {
+        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
+        return;
+    };
+    pg_seed_source("src-1").await;
+    engine
+        .put_page(
+            "deleted-hit",
+            Some("src-1"),
+            &PageInput {
+                page_type: "note".to_string(),
+                title: "Deleted Hit".to_string(),
+                compiled_truth: "body".to_string(),
+                content_hash: Some("hash-1".to_string()),
+                frontmatter: Some(json!({"id": "fm-1"})),
+                ..PageInput::default()
+            },
+        )
+        .await
+        .expect("seed deleted page");
+    pg_soft_delete_via_sql("deleted-hit").await;
+
+    let found = engine
+        .find_duplicate_page(
+            "src-1",
+            &FindDuplicatePageOpts {
+                content_hash: "hash-1".to_string(),
+                frontmatter_id: Some("fm-1".to_string()),
+            },
+        )
+        .await
+        .expect("find duplicate");
+
+    assert!(found.is_none(), "soft-deleted duplicates must be ignored");
+    engine.disconnect().await.expect("disconnect");
+}
