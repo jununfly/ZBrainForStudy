@@ -459,26 +459,31 @@ WHERE slug = $1
 RETURNING {全列}
 ```
 
-#### 5.12 `get_all_slugs() → Vec<String>`
+#### 5.12 `get_all_slugs(source_id: Option<&str>) → HashSet<String>`
 
-**PG SQL**:
+> ⚠️ 此处原签名与 `engine.rs` L383-388 不符，且原 SQL 与 TS 行为相反。**真实签名 + TS-aligned SQL 已在 §11.1 / §11.2 重写**；本节保留作为历史记录，落地以 §11 为准。
+
+**PG SQL（TS-aligned，**不**过滤 `deleted_at`，见 §11.6 偏差 D11-r1）**:
 ```sql
+-- source_id = Some
+SELECT slug FROM pages WHERE source_id = $1
+-- source_id = None
 SELECT slug FROM pages
-WHERE deleted_at IS NULL
-ORDER BY slug ASC
 ```
 
 #### 5.13 `list_all_page_refs() → Vec<PageRef>`
 
-**PG SQL**:
+> ⚠️ 此处原列投影与 `PageRef` 实际字段不符（`PageRef` 仅 `slug, source_id`），且 ORDER BY 与 TS `pglite-engine.ts` L1088-1098 不一致。**真实签名 + TS-aligned SQL 已在 §11.3 重写**；本节保留作为历史记录，落地以 §11 为准。
+
+**PG SQL（TS-aligned，ORDER BY source_id, slug）**:
 ```sql
-SELECT id, slug, type, title, source_id
+SELECT slug, source_id
 FROM pages
 WHERE deleted_at IS NULL
-ORDER BY slug ASC
+ORDER BY source_id, slug
 ```
 
-- `PageRef` = 轻量引用结构 (id, slug, type, title, source_id)
+- `PageRef` 真实结构（详见 `engine.rs`）: `{ slug: String, source_id: Option<String> }`
 
 #### 5.14 `update_slug(old_slug, new_slug) → Option<Page>`
 
@@ -492,40 +497,58 @@ WHERE slug = $1
 RETURNING {全列}
 ```
 
-#### 5.15 `get_page_timestamps(source_id) → Vec<(String, String, String)>`
+#### 5.15 `get_page_timestamps(slugs: &[String]) → HashMap<String, String>`
 
-**PG SQL**:
+> ⚠️ 此处原签名（按 `source_id` 拉所有页）与 `engine.rs` L414-419 不符（实际按 slug 数组查询，返回 `COALESCE(updated_at, created_at)` 单一时间戳）。**真实签名 + TS-aligned SQL 已在 §11.4 重写**；本节保留作为历史记录，落地以 §11 为准。
+
+**PG SQL（TS-aligned，按 slug 数组、COALESCE 单时间戳）**:
 ```sql
-SELECT slug, created_at::text, updated_at::text
+SELECT slug, COALESCE(updated_at, created_at) AS ts
 FROM pages
-WHERE source_id = $1
+WHERE slug = ANY($1::text[])
   AND deleted_at IS NULL
-ORDER BY slug ASC
 ```
 
-- `::text` 显式转换 TIMESTAMPTZ → String
-- 返回类型: `Vec<(slug, created_at, updated_at)>`
+- 返回类型: `HashMap<slug, ts>`，ts 为 ISO-8601 字符串
 
-#### 5.16 `get_effective_dates(source_id) → Vec<(String, Option<String>)>`
+#### 5.16 `get_effective_dates(refs: &[PageRef]) → HashMap<String, String>`
 
-**PG SQL**:
+> ⚠️ 此处原签名（按 `source_id` 拉所有页）与 `engine.rs` L427-432 不符（实际按 `PageRef` 数组 `(slug, source_id)` 二维查询，key 为 `"{source_id}::{slug}"`）。**真实签名 + TS-aligned SQL 已在 §11.5 重写**；本节保留作为历史记录，落地以 §11 为准。
+
+**PG SQL（TS-aligned，`unnest` 二维 join，key=`source_id::slug`）**:
 ```sql
-SELECT slug, effective_date::text
-FROM pages
-WHERE source_id = $1
-  AND deleted_at IS NULL
-ORDER BY slug ASC
+SELECT p.slug,
+       COALESCE(p.source_id, '') AS source_id,
+       p.effective_date::text     AS effective_date
+FROM pages p
+JOIN unnest($1::text[], $2::text[]) AS u(slug, source_id)
+  ON p.slug = u.slug
+  AND COALESCE(p.source_id, '') = COALESCE(u.source_id, '')
+WHERE p.deleted_at IS NULL
+  AND p.effective_date IS NOT NULL
 ```
 
-#### 5.17 `get_salience_scores() → Vec<(String, Option<f64>)>`
+- 返回类型: `HashMap<"{source_id}::{slug}", effective_date>`，仅含有 effective_date 的条目
 
-**PG SQL**:
+#### 5.17 `get_salience_scores(refs: &[PageRef]) → HashMap<String, f64>`
+
+> ⚠️ 此处原签名（无参数、按 `salience_score` 列读出）与 `engine.rs` L447-452 不符（实际按 `PageRef` 数组查询、返回 6a 退化公式 `emotional_weight * 5`，6c 补全为 `+ ln(1 + tag_count)`）。**真实签名 + TS-aligned SQL 已在 §11.6 重写**；本节保留作为历史记录，落地以 §11 为准。
+
+**PG SQL（TS-aligned，6a 退化为 `emotional_weight * 5`，key=`source_id::slug`）**:
 ```sql
-SELECT slug, salience_score
-FROM pages
-WHERE deleted_at IS NULL
-ORDER BY slug ASC
+SELECT p.slug,
+       COALESCE(p.source_id, '') AS source_id,
+       (p.emotional_weight * 5)  AS score
+FROM pages p
+JOIN unnest($1::text[], $2::text[]) AS u(slug, source_id)
+  ON p.slug = u.slug
+  AND COALESCE(p.source_id, '') = COALESCE(u.source_id, '')
+WHERE p.deleted_at IS NULL
+  AND p.emotional_weight IS NOT NULL
 ```
+
+- 返回类型: `HashMap<"{source_id}::{slug}", score>`
+- 6c 阶段公式补全为 `emotional_weight * 5 + ln(1 + tag_count)`（详见 6c 切片）
 
 #### 5.18 `touch_salience(slug) → Option<String>`
 
@@ -563,7 +586,7 @@ Slice 6a 的 placeholder-lock 测试**并不在 `postgres_*` 文件里**,而是�
 | `page_methods_update_cr_state.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-advanced-writes |
 | `page_methods_get_all_slugs.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-advanced-reads |
 | `page_methods_list_all_page_refs.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-advanced-reads |
-| `page_methods_find_orphan_pages.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-advanced-reads |
+| `page_methods_find_orphan_pages.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-find-orphan-pages（独立切片） |
 | `page_methods_get_page_timestamps.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-advanced-reads |
 | `page_methods_get_effective_dates.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-advanced-reads |
 | `page_methods_get_salience_scores.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-advanced-reads(或 6c) |
@@ -623,7 +646,8 @@ CI 上跑真实 PG 集成测试单独留 slice。
 | `PG-find-duplicate` | `find_duplicate_page` | `page_methods_find_duplicate_page.rs` |
 | `PG-soft-delete` | `soft_delete_page` / `restore_page` / `purge_deleted_pages` | `page_methods_soft_delete_page.rs` / `_restore_page.rs` / `_purge_deleted_pages.rs` |
 | `PG-advanced-writes` | `refresh_page_body` / `update_page_contextual_retrieval_state` | `page_methods_refresh_page_body.rs` / `_update_cr_state.rs` |
-| `PG-advanced-reads` | `get_all_slugs` / `list_all_page_refs` / `find_orphan_pages` / `get_page_timestamps` / `get_effective_dates` / `get_salience_scores` | `page_methods_get_all_slugs.rs` / `_list_all_page_refs.rs` / `_find_orphan_pages.rs` / `_get_page_timestamps.rs` / `_get_effective_dates.rs` / `_get_salience_scores.rs` |
+| `PG-advanced-reads` | `get_all_slugs` / `list_all_page_refs` / `get_page_timestamps` / `get_effective_dates` / `get_salience_scores` (5 个) | `page_methods_get_all_slugs.rs` / `_list_all_page_refs.rs` / `_get_page_timestamps.rs` / `_get_effective_dates.rs` / `_get_salience_scores.rs` |
+| `PG-find-orphan-pages` | `find_orphan_pages` (单独切片，独立小切片落地) | `page_methods_find_orphan_pages.rs` |
 
 每个后续切片的"完成准则": (a) PG 实现 + clippy; (b) 对应红测改写为正向断言或保留为"仍有引擎未实现"的负向锁; (c) 独立 commit + git tag。
 
@@ -698,7 +722,7 @@ CI 上跑真实 PG 集成测试单独留 slice。
 - [ ] `update_page_contextual_retrieval_state` 实现 — 切片: **PG-advanced-writes**
 - [ ] `get_all_slugs` 实现 — 切片: **PG-advanced-reads**
 - [ ] `list_all_page_refs` 实现 — 切片: **PG-advanced-reads**
-- [ ] `find_orphan_pages` 实现 — 切片: **PG-advanced-reads**
+- [ ] `find_orphan_pages` 实现 — 切片: **PG-find-orphan-pages**（已从 PG-advanced-reads 摘出，独立小切片）
 - [ ] `get_page_timestamps` 实现 — 切片: **PG-advanced-reads**
 - [ ] `get_effective_dates` 实现 — 切片: **PG-advanced-reads**
 - [ ] `get_salience_scores` 实现 — 切片: **PG-advanced-reads** 或 **6c**
@@ -710,3 +734,52 @@ CI 上跑真实 PG 集成测试单独留 slice。
 
 - [ ] D1: `list_pages` 签名 `&PageFilters` vs `Option<&PageFilters>` — 切片 **S6-signature**
 - [ ] D2: 时间字段引入 `chrono` — 切片 **S6-time-types**
+
+---
+
+## §11 PG-advanced-reads 切片落地修订（来自 critical review）
+
+> 背景: 本计划 §5.12–§5.17 起草时, 5 个只读方法的 trait 签名、返回类型、SQL 与 `engine.rs` L350-465 真实 trait 默认实现严重不符 (R1–R5)。
+> 落地切片 **PG-advanced-reads** 时必须以 `engine.rs` 实际签名为权威源, 并按 TS `pglite-engine.ts` 行为反向适配 PG 方言。
+> §5.12–§5.17 已加 ⚠️ 警示 + 重写; 本节作为偏差登记 + 切片落地"真"契约的单一信源。
+> `find_orphan_pages` 已从本切片摘出, 归 **PG-find-orphan-pages** 独立小切片处理 (§626 / §10.2 / §6.2 已同步)。
+
+### 11.1 5 个只读方法真实契约 (engine.rs 权威)
+
+| # | 方法 | trait 签名 (engine.rs L350-465) | TS 锚点 (pglite-engine.ts) | PG 方言要点 |
+|---|------|----------------------------------|----------------------------|---------------|
+| 1 | `get_all_slugs` | `(&self, source_id: Option<&str>) -> Result<HashSet<String>>` | L1071-1086, **不过滤** `deleted_at` | `SELECT slug FROM pages [WHERE source_id = $1]`; `$1::text IS NULL OR source_id = $1` 守卫; 收 `HashSet<String>` |
+| 2 | `list_all_page_refs` | `(&self) -> Result<Vec<PageRef>>` | L1088-1098, 过滤 `deleted_at IS NULL`, `ORDER BY source_id, slug` | `SELECT slug, source_id FROM pages WHERE deleted_at IS NULL ORDER BY source_id, slug`; `PageRef { slug, source_id }` 仅 2 字段 |
+| 3 | `get_page_timestamps` | `(&self, slugs: &[String]) -> Result<HashMap<String, String>>` | L2567-2575, `COALESCE(updated_at, created_at)` ISO-8601 | `SELECT slug, COALESCE(updated_at, created_at)::text AS ts FROM pages WHERE slug = ANY($1::text[]) AND deleted_at IS NULL`; key=slug |
+| 4 | `get_effective_dates` | `(&self, refs: &[PageRef]) -> Result<HashMap<String, String>>` | L2577-2594, `unnest(...)` 二维 join, key=`"{source_id}::{slug}"` | `SELECT p.slug, p.source_id, COALESCE(p.updated_at, p.created_at)::text AS ts FROM pages p JOIN unnest($1::text[], $2::text[]) AS u(slug, source_id) ON p.slug = u.slug AND p.source_id = u.source_id WHERE p.deleted_at IS NULL`; key=`format!("{source_id}::{slug}")` |
+| 5 | `get_salience_scores` | `(&self, refs: &[PageRef]) -> Result<HashMap<String, f64>>` | L2596-2617, **6a 退化** `emotional_weight * 5` (6c 补 `+ ln(1 + COUNT DISTINCT tag)`) | `SELECT p.slug, p.source_id, COALESCE(p.emotional_weight, 0.0) * 5.0 AS score FROM pages p JOIN unnest($1::text[], $2::text[]) AS u(slug, source_id) ON p.slug = u.slug AND p.source_id = u.source_id WHERE p.deleted_at IS NULL`; key=`format!("{source_id}::{slug}")` |
+
+### 11.2 偏差登记 (R1–R5)
+
+| ID | 位置 | 原始计划错处 | 修订 | 状态 |
+|----|------|--------------|------|------|
+| R1 | §5.12 `get_all_slugs` | 起草时假设过滤 `deleted_at IS NULL`, 与 TS L1071-1086 实际行为不符 | 改为不过滤 `deleted_at`, 仅按 `source_id` 守卫 | ✅ §5.12 已修订 |
+| R2 | §5.13 `list_all_page_refs` | 起草时假设 `PageRef` 含更多字段, 与 struct 实际 `{slug, source_id}` 不符 | 收紧为 2 字段, `ORDER BY source_id, slug` | ✅ §5.13 已修订 |
+| R3 | §5.14 `find_orphan_pages` | 错归入 PG-advanced-reads, 实为 source-graph 跨表查询, 复杂度独立 | 摘出为 **PG-find-orphan-pages** 独立切片 (§626 / §10.2 / §6.2 同步) | ✅ 已摘出 |
+| R4 | §5.15 `get_page_timestamps` | 起草时按 `refs` 取参, 与 trait 实际 `slugs: &[String]` 不符 | 改为按 slug 数组 `WHERE slug = ANY($1::text[])`, key=slug | ✅ §5.15 已修订 |
+| R5 | §5.16 / §5.17 `get_effective_dates` / `get_salience_scores` | 起草时按单参数 / 单 array 取参, 与 `&[PageRef]` 二维结构不符 | 改为 `unnest($1::text[], $2::text[]) AS u(slug, source_id)` 二维 join, key=`"{source_id}::{slug}"`; §5.17 明示 6a 退化 + 6c 补全 | ✅ §5.16 / §5.17 已修订 |
+
+### 11.3 切片落地工序 (S1–S6)
+
+> 严格 RED → GREEN → REFACTOR, 不跨步, 不批量。
+
+- **S1 文档收口**: §5.12-§5.17 + §11 已落地; commit 前确认 `git diff` 仅含 plan 14 改动。
+- **S2 RED**: **扩展现有 5 个 `page_methods_*.rs`** (`get_all_slugs` / `list_all_page_refs` / `get_page_timestamps` / `get_effective_dates` / `get_salience_scores`), 在同文件追加 `#[serial_test::serial] #[tokio::test]` PG 镜像测试 (参照 `page_methods_soft_delete_page.rs` `2568268` 形态, **不**新建 `postgres_engine_advanced_reads.rs`); libsql 默认 `Unsupported` 断言保持不动; PG 侧覆盖真实场景 (含 soft-deleted 行可见性区分); 跑 `ZBRAIN_TEST_PG_URL=... cargo test -p zbrain-core --test page_methods_get_all_slugs --test page_methods_list_all_page_refs --test page_methods_get_page_timestamps --test page_methods_get_effective_dates --test page_methods_get_salience_scores` 必红 (PG override 未实现)。无 `ZBRAIN_TEST_PG_URL` 时 PG 段自动跳过, libsql 段仍绿。
+- **S3 GREEN**: 在 `crates/zbrain-core/src/postgres.rs` 末尾追加 5 个 `impl BrainEngine for PostgresEngine` override (按 §11.1 SQL); libsql 不动, 维持 trait 默认 `Unsupported`。
+- **S4 重写锁测**: `tests/page_methods_salience_scores_takes_zero_until_6c.rs` 改为 S6-T2 形态:
+  - libsql 分支: 仍调用 trait 默认 → 断言 `Err(Unsupported)`;
+  - PG 分支 (在 `ZBRAIN_TEST_PG_URL` 下): 插入 `emotional_weight=0.4` 行 → 断言 `(0.4 * 5.0 - score).abs() < 1e-9`;
+  - doc-comment 同步: 6c 切片改为 `0.4*5 + ln(1+N_tags)`。
+- **S5 四连绿门禁**: `cargo fmt --all -- --check` / `cargo build --workspace --all-targets` / `cargo test --workspace --all-targets` / `cargo clippy --workspace --all-targets -- -D warnings`; libsql 并行 SIGABRT flake 命中则按 plan 16 §8 line 231 重跑单 crate, 不掩盖。
+- **S6 提交 + 文档**: 一次性 commit (实现 + 测试 + plan 收口); commit message 模板 `slice 6a-pg(advanced_reads): override PG for 5 read methods, mirror TS pglite-engine`; 在 §10.2 把 5 行勾选为 ✅ 并补 commit hash。
+
+### 11.4 与 libsql 的契约边界
+
+- 本切片 **不** 实现 libsql 的 5 个 advanced-reads, 维持 `engine.rs` trait 默认 `Err(EngineError::Unsupported(...))`;
+- 现有 5 个 `page_methods_*.rs` placeholder-lock 红测除 `salience_scores_takes_zero_until_6c.rs` 外保持不动, 锁住 trait 默认;
+- 决策 D1 锁定: libsql advanced-reads 等 6c+ 切片再处理, 不下放到本切片。
