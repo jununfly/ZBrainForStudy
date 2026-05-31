@@ -107,3 +107,28 @@
   - 刷新 `docs/plans/20260526/14-slice-6a-pg-plan.md` 与 `16-slice-index-and-conventions.md`（PG tag slice 标记完成 + 接续下一个切片定义）。
   - 收口 TaskList `#51`。
 - 本 handoff 文件以独立 `docs:` 提交入库，与代码切片解耦。
+
+## 2026-05-31 收口（追加 #2）— PG-advanced-reads 切片
+
+- **切片**：PG-advanced-reads（5 个只读方法在 PG 端的 trait override；libsql 端按 D1 决策维持 `Unsupported`，留待 6a-libsql 阶段处理）。
+- **commit 链**：
+  - `a747ed5 slice 6a-pg(advanced_reads): override PG for 5 read methods, mirror TS pglite-engine` — 实现 commit（9 files, +1552 / −43）。
+  - `7243b4f docs(plans): backfill plan 14 §10.2 commit hash a747ed5` — doc-only follow-up，回填稳定 hash，避开 amend 自指循环。
+- **覆盖方法**（plan 14 §11.1 SQL 契约）：
+  - `get_all_slugs(Option<&str>)`：`$1::text IS NULL OR source_id = $1` 守卫；返回 `HashSet<String>`，无 `deleted_at` 过滤（对齐 TS 行为）。
+  - `list_all_page_refs()`：`WHERE deleted_at IS NULL ORDER BY source_id ASC, slug ASC`，返回 `Vec<PageRef>`。
+  - `get_page_timestamps(&[String])`：`COALESCE(updated_at, created_at)::text`，`slug = ANY($1::text[])`，HashMap key=`slug`。
+  - `get_effective_dates(&[PageRef])`：`unnest($1::text[], $2::text[]) AS u(slug, source_id)` 二元 join，HashMap key=`format!("{source_id}::{slug}")`。
+  - `get_salience_scores(&[PageRef])`：**6a 阶段退化** `COALESCE(emotional_weight, 0.0) * 5.0`；6c 再补 `+ ln(1 + N_tags)`；takes 项硬编 0 直至 6c 落地。key=`format!("{source_id}::{slug}")`。
+- **find_orphan_pages 已摘出**：作为独立切片 **PG-find-orphan-pages**，本切片不涉及；plan 14 §10.2 中保持 `[ ]`。
+- **S6-T2 形态**（`page_methods_salience_scores_takes_zero_until_6c.rs`）：strong-semantics sibling 锁测；libsql 段断言 `Unsupported`、PG 段断言 `score = emotional_weight * 5.0` 与 `takes = 0` 的代数不变式；TDD 红→绿证据链完整。
+- **四连绿门禁**（S5）全过：fmt ✅、build ✅、test ✅（37 套件 / 0 failed / 0 ignored，含 23 个 PG live 测试）、clippy ✅。验证前已 `set -a; source .env; set +a`。
+- **plan 14 §10.2 状态**：5 行已标 `[x]`（hash `a747ed5`），`find_orphan_pages` 行保持 `[ ]`+独立切片注。
+- **流程踩坑教训（已沉淀到 SOUL/记忆）**：
+  - **commit hash 自指循环**：在实现 commit 里既写代码又写 `<this commit>` 占位、然后 `git commit --amend` 回填 hash → 内容变 → SHA 变 → 文档 hash 永远落后一步（实测连环 `23ff929 → 16a563f → a747ed5`）。
+  - **解药**：实现 commit 先落地、立刻拿到稳定 hash；再开**独立 doc-only follow-up commit** 回填，绝不 amend 实现 commit。
+- **未尽事项 / 下一步候选切片**（按优先级）：
+  - **PG-find-orphan-pages**：单方法独立切片，沿用 PG-advanced-reads 流程；TS 行为权威源 `pglite-engine.ts` 中的 `findOrphanPages`。
+  - **6a-libsql advanced reads**：把 5 个方法在 libsql backend 落地，移除 `Unsupported` stub。
+  - **6c 完整 salience 公式**：补 `+ ln(1 + N_tags)`、激活 takes 维度（解锁 `salience_scores_takes_zero_until_6c.rs` 中的"until 6c"约束）。
+- **TodoList 状态**：本切片相关全部 `completed`（含 #25/26/28/29/30/31~36/38/39/40/41）。
