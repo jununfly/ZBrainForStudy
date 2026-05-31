@@ -122,12 +122,7 @@ async fn put_page_does_not_persist_embedding_or_last_retrieved_at() {
 async fn ingested_at_server_stamped_when_any_ingestion_metadata_present() {
     let (engine, _tmp, _path_str) = init_clean_engine().await;
     let cases = [
-        (
-            "source-kind-only",
-            Some("file".to_string()),
-            None,
-            None,
-        ),
+        ("source-kind-only", Some("file".to_string()), None, None),
         (
             "source-uri-only",
             None,
@@ -237,7 +232,8 @@ async fn frontmatter_column_is_text_not_null_default_empty_object() {
 async fn corpus_generation_column_is_text_and_decodes_as_string() {
     let (engine, _tmp, path_str) = init_clean_engine().await;
 
-    let (column_type, _not_null, _default_value) = page_column_info(&path_str, "corpus_generation").await;
+    let (column_type, _not_null, _default_value) =
+        page_column_info(&path_str, "corpus_generation").await;
     assert_eq!(
         column_type.to_uppercase(),
         "TEXT",
