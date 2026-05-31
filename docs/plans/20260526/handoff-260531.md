@@ -261,3 +261,29 @@
 - **commit hash 自指循环**：实现 commit 先落地拿稳定 hash，再开独立 doc-only follow-up commit 回填，永不 amend 实现 commit。
 - **PG 集成测试**：`ZBRAIN_TEST_PG_URL` env + `set -a; source .env; set +a` + `#[serial_test::serial]`。
 - **types 导入**：`PageRef` 从 `crate::engine` 导入；`FindDuplicatePageOpts` 等从 `crate::types` 导入。
+
+---
+
+## 6a-libsql advanced reads 切片闭环（追加，commit 2370190）
+
+- **范围**：`crates/zbrain-core/src/libsql.rs`（+205，L830-1032 追加 5 个 async fn override）+ 6 个 `tests/page_methods_*.rs` 同 commit 翻转为正向行为测试。
+- **关键决策**：
+  - **单一切片合并 commit**：S2 RED + S3 GREEN 合并为单一 commit，对齐 a747ed5（slice 6a-pg advanced_reads）的 test+impl 合一风格；每个 commit 自洽全绿，bisect/CI 友好。
+  - **TS parity quirks 全部落实**：
+    - `get_all_slugs`：**不过滤** `deleted_at`（mirror TS `pglite-engine.ts:getAllSlugs`）。
+    - `list_all_page_refs`：过滤 `deleted_at IS NULL` 且按 `(source_id, slug)` 排序。
+    - `get_effective_dates`：`effective_at` 缺失时 `COALESCE(updated_at, created_at)` 回退。
+    - `get_salience_scores`：6c 前 `takes` 项恒为 0（公式简化）。
+  - **删除 NULL emotional_weight 测试 + 13 行注释墓碑**：TS pglite-schema 全线强制 `emotional_weight REAL NOT NULL DEFAULT 0.0`，反 schema 测试无意义；实现里 `COALESCE(emotional_weight, 0.0)` 作未来 schema 放开兜底保留；注释墓碑说明删除原因 + 未来重新引入条件。
+  - **动态 IN 展开 helper**：5 方法共用 `(?,?,?)` 占位符按运行时 slug 数量动态生成；空切片守卫提前 return 空 map/vec。
+  - **HashMap key 格式**：`get_page_timestamps` / `get_effective_dates` / `get_salience_scores` 三方法 key 用 `slug` 单键；`list_all_page_refs` 复合键 `(source_id, slug)` 展开为 `PageRef` 元组。
+- **真实契约**：5 个 `async fn` 全部与 trait 默认签名一致；`page_methods_get_salience_scores.rs` 删去 NULL case 后剩 4 个正向 case。
+- **四连绿**：fmt clean / build ok / **cargo test -p zbrain-core --no-fail-fast 0 failed / 0 ignored** / clippy clean。
+- **commit 序**：
+  - `2370190` 实现 + 测试（单一切片合并 commit）。
+  - 本 doc-only follow-up（handoff closure 回填 hash）。
+- **未尽事项 / 下一步候选切片**：
+  - **6c 完整 salience 公式**：补 `+ ln(1 + N_tags)`、激活 takes 维度（解锁 `salience_scores_takes_zero_until_6c.rs` 中的 "until 6c" 约束）。
+  - **PG-advanced-writes**：`refresh_page_body` + `update_page_contextual_retrieval_state`（plan 14 §10.2 仅剩这两行未勾选）。
+  - **plan 14 §11.4 清理**：D1 锁定 "libsql advanced-reads 等 6c+ 切片再处理" 已过期，可在下一个 doc-only commit 中刷新。
+  - **postgres.rs L685-688 注释清理**：libsql override 已落地，"libsql side intentionally keeps the default Unsupported" 注释需删除。
