@@ -42,6 +42,7 @@ use crate::engine::{
 };
 use crate::error::{Error, Result};
 use crate::types::FindDuplicatePageOpts;
+use crate::types::OrphanPage;
 use crate::types::PageRef;
 use crate::types::PurgeResult;
 use crate::types::{CRMode, EffectiveDateSource, PageKind};
@@ -851,6 +852,57 @@ impl BrainEngine for PostgresEngine {
                 .try_get::<f64, _>("score")
                 .map_err(|e| Error::engine(format!("get_salience_scores decode score: {e}")))?;
             out.insert(format!("{source_id}::{slug}"), score);
+        }
+        Ok(out)
+    }
+
+    /// `find_orphan_pages` — return live pages that have no live inbound
+    /// links. Mirrors TS `pglite-engine.ts` `findOrphanPages` (v0.26.5):
+    ///
+    /// * candidate side: `pages.deleted_at IS NULL`
+    /// * inbound source side: `pages.deleted_at IS NULL` (C11 — links
+    ///   originating from soft-deleted pages do NOT count as inbound)
+    /// * title: `COALESCE(title, slug)` — defensive only. TS schema declares
+    ///   `title TEXT NOT NULL` and `putPage` binds `page.title` verbatim, so
+    ///   empty titles remain empty strings rather than falling back to slug.
+    ///   The COALESCE guards against any future NULL drift.
+    /// * domain: `frontmatter->>'domain'` extracted as text, `None` when
+    ///   the JSON key is absent
+    /// * order: `ORDER BY p.slug` for deterministic output
+    async fn find_orphan_pages(&self) -> Result<Vec<OrphanPage>> {
+        let pool = self.pool()?;
+        let rows = sqlx::query(
+            "SELECT p.slug, COALESCE(p.title, p.slug) AS title, \
+                    p.frontmatter->>'domain' AS domain \
+             FROM pages p \
+             WHERE p.deleted_at IS NULL \
+               AND NOT EXISTS ( \
+                 SELECT 1 FROM links l \
+                 JOIN pages src ON src.id = l.from_page_id \
+                 WHERE l.to_page_id = p.id AND src.deleted_at IS NULL \
+               ) \
+             ORDER BY p.slug",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("find_orphan_pages failed: {e}")))?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for r in rows {
+            let slug: String = r
+                .try_get("slug")
+                .map_err(|e| Error::engine(format!("find_orphan_pages decode slug: {e}")))?;
+            let title: String = r
+                .try_get("title")
+                .map_err(|e| Error::engine(format!("find_orphan_pages decode title: {e}")))?;
+            let domain: Option<String> = r
+                .try_get("domain")
+                .map_err(|e| Error::engine(format!("find_orphan_pages decode domain: {e}")))?;
+            out.push(OrphanPage {
+                slug,
+                title,
+                domain,
+            });
         }
         Ok(out)
     }
