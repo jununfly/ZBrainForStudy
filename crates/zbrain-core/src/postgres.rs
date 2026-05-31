@@ -45,6 +45,7 @@ use crate::types::FindDuplicatePageOpts;
 use crate::types::OrphanPage;
 use crate::types::PageRef;
 use crate::types::PurgeResult;
+use crate::types::RefreshPageBodyArgs;
 use crate::types::{CRMode, EffectiveDateSource, PageKind};
 
 /// Embedded SQL migrations, baked into the binary at compile time. Driven by
@@ -679,6 +680,72 @@ impl BrainEngine for PostgresEngine {
                     .map_err(|e| Error::engine(format!("resolve_slugs decode failed: {e}")))
             })
             .collect()
+    }
+
+    // ─── PG-advanced-writes overrides ────────────────────────────────────────
+
+    /// Narrow body refresh for one live `(source_id, slug)` row. Mirrors TS
+    /// `refreshPageBody`: soft-deleted rows are skipped and missing rows no-op.
+    async fn refresh_page_body(&self, args: &RefreshPageBodyArgs) -> Result<()> {
+        let pool = self.pool()?;
+        let timeline = args.timeline.to_string();
+
+        sqlx::query(
+            "UPDATE pages \
+             SET compiled_truth = $1, \
+                 timeline = $2, \
+                 content_hash = $3, \
+                 updated_at = NOW() \
+             WHERE source_id = $4 \
+               AND slug = $5 \
+               AND deleted_at IS NULL",
+        )
+        .bind(&args.compiled_truth)
+        .bind(timeline)
+        .bind(&args.content_hash)
+        .bind(&args.source_id)
+        .bind(&args.slug)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("refresh_page_body failed: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Narrow CR-state refresh for one live `(source_id, slug)` row. Mirrors TS
+    /// `updatePageContextualRetrievalState`: soft-deleted rows are skipped and
+    /// missing rows no-op.
+    async fn update_page_contextual_retrieval_state(
+        &self,
+        slug: &str,
+        source_id: &str,
+        mode: &str,
+        corpus_generation: Option<&str>,
+    ) -> Result<()> {
+        let pool = self.pool()?;
+
+        sqlx::query(
+            "UPDATE pages \
+             SET contextual_retrieval_mode = $1, \
+                 corpus_generation = $2, \
+                 updated_at = NOW() \
+             WHERE source_id = $3 \
+               AND slug = $4 \
+               AND deleted_at IS NULL",
+        )
+        .bind(mode)
+        .bind(corpus_generation)
+        .bind(source_id)
+        .bind(slug)
+        .execute(pool)
+        .await
+        .map_err(|e| {
+            Error::engine(format!(
+                "update_page_contextual_retrieval_state failed: {e}"
+            ))
+        })?;
+
+        Ok(())
     }
 
     // ─── PG-advanced-reads overrides (slice 6a-pg) ───────────────────────────
