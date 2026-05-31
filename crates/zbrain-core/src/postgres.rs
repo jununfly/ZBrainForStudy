@@ -811,13 +811,18 @@ impl BrainEngine for PostgresEngine {
         Ok(out)
     }
 
-    /// Compute salience scores. §11.1 R5.
+    /// Compute salience scores. §11.1 R5 + slice 6c-takes-salience.
     ///
-    /// **6a quirk**: the `takes` table lands in slice 6c. Until then the
-    /// distinct-active-takes term is hard-coded to `0`, so the score
-    /// degenerates to `COALESCE(emotional_weight, 0.0) * 5.0`. The lock
-    /// test `page_methods_salience_scores_takes_zero_until_6c.rs` guards
-    /// this so we cannot accidentally claim 6a is "done with takes".
+    /// Full TS formula (mirroring `pglite-engine.ts` L2596-2617):
+    ///
+    /// ```text
+    /// score = COALESCE(p.emotional_weight, 0) * 5
+    ///       + ln(1 + COUNT(DISTINCT t.id) WHERE t.active = TRUE)
+    /// ```
+    ///
+    /// The `takes` table was added by migration 0007 (minimal 3-col subset:
+    /// `id` / `page_id` / `active`). `LEFT JOIN` preserves pages with zero active
+    /// takes (COUNT = 0 → ln(1+0) = 0).
     async fn get_salience_scores(
         &self,
         refs: &[PageRef],
@@ -828,11 +833,14 @@ impl BrainEngine for PostgresEngine {
 
         let rows = sqlx::query(
             "SELECT p.slug, p.source_id, \
-                    COALESCE(p.emotional_weight, 0.0) * 5.0 AS score \
+                    COALESCE(p.emotional_weight, 0.0) * 5.0 \
+                    + ln(1 + COUNT(DISTINCT t.id)) AS score \
              FROM pages p \
+             LEFT JOIN takes t ON t.page_id = p.id AND t.active = TRUE \
              JOIN unnest($1::text[], $2::text[]) AS u(slug, source_id) \
                ON p.slug = u.slug AND p.source_id = u.source_id \
-             WHERE p.deleted_at IS NULL",
+             WHERE p.deleted_at IS NULL \
+             GROUP BY p.id, p.slug, p.source_id, p.emotional_weight",
         )
         .bind(slugs.as_slice())
         .bind(source_ids.as_slice())

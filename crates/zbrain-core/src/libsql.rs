@@ -48,6 +48,14 @@ const MIGRATION_0003: &str =
 /// `0004_page_tags.sql` for the TS reference and FK semantics.
 const MIGRATION_0004: &str = include_str!("../migrations-sqlite/0004_page_tags.sql");
 
+/// Slice 6c-takes-salience — adds minimal `takes` table (`id` / `page_id` /
+/// `active` only). Required for the second term of the salience formula
+/// `ln(1 + COUNT(DISTINCT t.id) WHERE t.active = 1)`. Full TS schema
+/// (21 cols + vector + synthesis evidence) is deferred to a later
+/// takes-CRUD slice. See file header in `0005_takes_min.sql` for the
+/// subset rationale and FK semantics.
+const MIGRATION_0005: &str = include_str!("../migrations-sqlite/0005_takes_min.sql");
+
 /// Ordered list of migrations. Index `i` is applied when `user_version <= i`,
 /// then `user_version` is set to `i + 1`. Append-only — never reorder.
 const MIGRATIONS: &[&str] = &[
@@ -55,13 +63,14 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_0002,
     MIGRATION_0003,
     MIGRATION_0004,
+    MIGRATION_0005,
 ];
 
 /// Highest schema version we know how to produce. Equals `MIGRATIONS.len()`.
 /// Guarded via `PRAGMA user_version`. Hand-kept in sync with `MIGRATIONS`
 /// because `len() as i64` is not const-evaluable in stable Rust and casting
 /// `usize → i64` trips `clippy::cast_possible_wrap`.
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 /// Embedded `SQLite` engine. Use [`LibsqlEngine::new`] then [`connect`] before
 /// any other method. Calling `connect` twice on the same instance is
@@ -985,8 +994,32 @@ impl BrainEngine for LibsqlEngine {
         &self,
         refs: &[PageRef],
     ) -> Result<std::collections::HashMap<String, f64>> {
-        // 6a quirk: takes table lands in slice 6c → distinct-active-takes
-        // term hard-coded to 0; score = COALESCE(emotional_weight, 0.0) * 5.0.
+        // Slice 6c-takes-salience: full TS formula
+        //   score = COALESCE(emotional_weight, 0) * 5
+        //         + ln(1 + COUNT(DISTINCT t.id) WHERE t.active = 1)
+        // mirroring src/core/pglite-engine.ts §2596-2617.
+        //
+        // libsql 0.9 ships **without** SQLite's math-functions extension and
+        // the async `Connection` API does not expose `create_scalar_function`,
+        // so we cannot call `ln()` inside SQL. We split the calculation:
+        //   1. SQL returns `weighted_emotion` (= COALESCE(ew,0) * 5) and
+        //      `active_take_count` (= COUNT(DISTINCT t.id WHERE t.active = 1)).
+        //   2. Rust performs `score = weighted_emotion + (1.0 + count).ln()`.
+        // This keeps the JOIN/GROUP BY shape close to the PG implementation
+        // (which uses `ln()` natively) while staying portable on libsql.
+        //
+        // Other SQLite-specific notes:
+        // - `t.active = 1` keeps PG/libsql parity: SQLite stores BOOLEAN as
+        //   INTEGER 0/1 and our 0005 migration declares the column with
+        //   default 1. `= TRUE` would also work (SQLite parses TRUE as 1).
+        // - `LEFT JOIN` ensures pages without any active takes still appear
+        //   in the result set with COUNT = 0 → ln(1+0) = 0.
+        // - We keep the manual `IN ((?,?), …)` expansion so the query stays
+        //   close to the 6a shape and survives the IN-list helper refactor
+        //   slated for slice 7. `GROUP BY p.id, p.slug, p.source_id,
+        //   p.emotional_weight` is required because SQLite (unlike PG with
+        //   functional-dependency tracking) needs every non-aggregated
+        //   projected column listed.
         let mut out = std::collections::HashMap::new();
         if refs.is_empty() {
             return Ok(out);
@@ -1002,9 +1035,13 @@ impl BrainEngine for LibsqlEngine {
             params.push(::libsql::Value::from(r.source_id.clone()));
         }
         let sql = format!(
-            "SELECT slug, source_id, COALESCE(emotional_weight, 0.0) * 5.0 AS score \
-             FROM pages \
-             WHERE (slug, source_id) IN ({}) AND deleted_at IS NULL",
+            "SELECT p.slug, p.source_id, \
+                    COALESCE(p.emotional_weight, 0.0) * 5.0 AS weighted_emotion, \
+                    COUNT(DISTINCT t.id) AS active_take_count \
+             FROM pages p \
+             LEFT JOIN takes t ON t.page_id = p.id AND t.active = 1 \
+             WHERE (p.slug, p.source_id) IN ({}) AND p.deleted_at IS NULL \
+             GROUP BY p.id, p.slug, p.source_id, p.emotional_weight",
             pairs.join(", ")
         );
         let mut rows = conn
@@ -1023,9 +1060,20 @@ impl BrainEngine for LibsqlEngine {
             let source_id: String = row
                 .get(1)
                 .map_err(|e| Error::engine(format!("get_salience_scores decode source_id: {e}")))?;
-            let score: f64 = row
-                .get(2)
-                .map_err(|e| Error::engine(format!("get_salience_scores decode score: {e}")))?;
+            let weighted_emotion: f64 = row.get(2).map_err(|e| {
+                Error::engine(format!(
+                    "get_salience_scores decode weighted_emotion: {e}"
+                ))
+            })?;
+            let active_take_count: i64 = row.get(3).map_err(|e| {
+                Error::engine(format!(
+                    "get_salience_scores decode active_take_count: {e}"
+                ))
+            })?;
+            // ln(1 + N) computed in Rust because libsql lacks `ln()`.
+            // `as f64` cast is safe: take counts in practice fit well within f64's 52-bit mantissa.
+            #[allow(clippy::cast_precision_loss)]
+            let score = weighted_emotion + (1.0 + active_take_count as f64).ln();
             out.insert(format!("{source_id}::{slug}"), score);
         }
         Ok(out)
