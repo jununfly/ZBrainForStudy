@@ -57,6 +57,19 @@ async fn init_clean_engine() -> Option<PostgresEngine> {
         .execute(&pool)
         .await
         .expect("truncate pages");
+    // Reseed the `default` sources row. The 0001 migration seeds it on first
+    // apply, but sqlx records that migration as applied; later `init_schema`
+    // calls do NOT re-run it. If another test (or the shared test DB) ever
+    // TRUNCATEs the `sources` table, the row vanishes permanently. Since
+    // `put_page` defaults `source_id` to `"default"` (postgres.rs put_page),
+    // its absence triggers `pages_source_id_fkey` on every shape test below.
+    // ON CONFLICT keeps the operation idempotent.
+    sqlx::query(
+        "INSERT INTO sources (id, name) VALUES ('default', 'default') ON CONFLICT (id) DO NOTHING",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed default source");
     pool.close().await;
 
     Some(engine)

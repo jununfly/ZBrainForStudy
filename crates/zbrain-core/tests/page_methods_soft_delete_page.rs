@@ -239,3 +239,202 @@ async fn in_memory_soft_delete_page_matches_libsql_contract() {
     assert_in_memory_iso8601_timestamp(ts);
     engine.disconnect().await.expect("disconnect");
 }
+
+// ---------------------------------------------------------------------------
+// PostgresEngine mirror tests (slice 6a-pg PG-soft-delete)
+//
+// Mirrors the libsql tests to prove behavior parity. Gated on
+// `ZBRAIN_TEST_PG_URL` (same convention as `postgres_engine_page_crud.rs`).
+// Each test is `#[serial_test::serial]` because they share the `pages` table
+// in the configured test database.
+// ---------------------------------------------------------------------------
+
+use zbrain_core::postgres::PostgresEngine;
+
+fn pg_url() -> Option<String> {
+    std::env::var("ZBRAIN_TEST_PG_URL").ok()
+}
+
+async fn pg_init_clean_engine() -> Option<PostgresEngine> {
+    let url = pg_url()?;
+    let engine = PostgresEngine::new();
+    let cfg = EngineConfig {
+        database_url: Some(url.clone()),
+        database_path: None,
+    };
+    engine.connect(&cfg).await.expect("connect");
+    engine.init_schema().await.expect("init_schema");
+
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .expect("verification pool");
+    sqlx::query("TRUNCATE TABLE pages RESTART IDENTITY CASCADE")
+        .execute(&pool)
+        .await
+        .expect("truncate pages");
+    pool.close().await;
+    Some(engine)
+}
+
+async fn pg_seed_source(id: &str) {
+    let url = pg_url().expect("ZBRAIN_TEST_PG_URL set for source seed");
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .expect("source seed pool");
+    sqlx::query("INSERT INTO sources (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING")
+        .bind(id)
+        .bind(id)
+        .execute(&pool)
+        .await
+        .expect("seed source");
+    pool.close().await;
+}
+
+async fn pg_fetch_deleted_at(
+    slug: &str,
+) -> Option<Option<sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>>> {
+    let url = pg_url().expect("ZBRAIN_TEST_PG_URL set for inspect");
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .expect("inspect pool");
+    let row: Option<(Option<sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>>,)> =
+        sqlx::query_as("SELECT deleted_at FROM pages WHERE slug = $1")
+            .bind(slug)
+            .fetch_optional(&pool)
+            .await
+            .expect("inspect deleted_at");
+    pool.close().await;
+    row.map(|r| r.0)
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn postgres_soft_delete_page_marks_live_row_and_returns_slug() {
+    let Some(engine) = pg_init_clean_engine().await else {
+        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
+        return;
+    };
+    pg_seed_source("src-1").await;
+    engine
+        .put_page(
+            "live-slug",
+            Some("src-1"),
+            &PageInput {
+                page_type: "note".to_string(),
+                title: "Live".to_string(),
+                compiled_truth: "body".to_string(),
+                ..PageInput::default()
+            },
+        )
+        .await
+        .expect("seed live page");
+
+    let deleted = engine
+        .soft_delete_page("live-slug", Some("src-1"))
+        .await
+        .expect("soft_delete_page");
+
+    assert_eq!(deleted.as_deref(), Some("live-slug"));
+    assert!(
+        pg_fetch_deleted_at("live-slug").await.flatten().is_some(),
+        "live row should receive deleted_at timestamp"
+    );
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn postgres_soft_delete_page_returns_none_for_missing_or_already_deleted_rows() {
+    let Some(engine) = pg_init_clean_engine().await else {
+        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
+        return;
+    };
+    pg_seed_source("src-1").await;
+    engine
+        .put_page(
+            "already-deleted",
+            Some("src-1"),
+            &PageInput {
+                page_type: "note".to_string(),
+                title: "Pre".to_string(),
+                compiled_truth: "body".to_string(),
+                ..PageInput::default()
+            },
+        )
+        .await
+        .expect("seed page");
+
+    // First soft delete establishes the deleted_at timestamp.
+    let first = engine
+        .soft_delete_page("already-deleted", Some("src-1"))
+        .await
+        .expect("first soft delete");
+    assert_eq!(first.as_deref(), Some("already-deleted"));
+    let first_ts = pg_fetch_deleted_at("already-deleted")
+        .await
+        .flatten()
+        .expect("deleted_at after first soft delete");
+
+    let missing = engine
+        .soft_delete_page("missing-slug", Some("src-1"))
+        .await
+        .expect("soft delete missing slug");
+    let already_deleted = engine
+        .soft_delete_page("already-deleted", Some("src-1"))
+        .await
+        .expect("soft delete already deleted slug");
+
+    assert_eq!(missing, None);
+    assert_eq!(already_deleted, None);
+    let after_ts = pg_fetch_deleted_at("already-deleted")
+        .await
+        .flatten()
+        .expect("deleted_at still set");
+    assert_eq!(
+        after_ts, first_ts,
+        "already-deleted row must not be updated again"
+    );
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn postgres_soft_delete_page_honors_source_id_filter() {
+    let Some(engine) = pg_init_clean_engine().await else {
+        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
+        return;
+    };
+    pg_seed_source("src-1").await;
+    engine
+        .put_page(
+            "scoped-slug",
+            Some("src-1"),
+            &PageInput {
+                page_type: "note".to_string(),
+                title: "Scoped".to_string(),
+                compiled_truth: "body".to_string(),
+                ..PageInput::default()
+            },
+        )
+        .await
+        .expect("seed page");
+
+    let mismatched = engine
+        .soft_delete_page("scoped-slug", Some("src-2"))
+        .await
+        .expect("soft delete with mismatched source");
+
+    assert_eq!(mismatched, None);
+    assert_eq!(
+        pg_fetch_deleted_at("scoped-slug").await.flatten(),
+        None,
+        "source mismatch must leave the live row untouched"
+    );
+    engine.disconnect().await.expect("disconnect");
+}

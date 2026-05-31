@@ -42,6 +42,7 @@ use crate::engine::{
 };
 use crate::error::{Error, Result};
 use crate::types::FindDuplicatePageOpts;
+use crate::types::PurgeResult;
 use crate::types::{CRMode, EffectiveDateSource, PageKind};
 
 /// Embedded SQL migrations, baked into the binary at compile time. Driven by
@@ -424,6 +425,99 @@ impl BrainEngine for PostgresEngine {
             .map_err(|e| Error::engine(format!("find_duplicate_page query failed: {e}")))?;
 
         row.as_ref().map(row_to_page).transpose()
+    }
+
+    async fn soft_delete_page(
+        &self,
+        slug: &str,
+        source_id: Option<&str>,
+    ) -> Result<Option<String>> {
+        // PG mirror of libsql `soft_delete_page` (slice 6a-pg).
+        // TS source-of-truth: zbrain/src/core/pglite-engine.ts:900 —
+        // `UPDATE pages SET deleted_at = now() WHERE slug = $1 AND
+        //  deleted_at IS NULL AND (source_id = $X)? RETURNING slug`,
+        // returning `Some(slug)` only when a live row was hit. Already-
+        // soft-deleted and missing rows both return `None` (idempotent).
+        //
+        // Reverse-mapped per 14-plan §2:
+        //   - `?N`                 → `$N`
+        //   - `CURRENT_TIMESTAMP`  → `now()`
+        //   - `source_id` filter normalised via the
+        //     `$N::text IS NULL OR source_id = $N` R-guard so the same SQL
+        //     covers both "scoped" and "any source" callers without dynamic
+        //     `WHERE` stitching. Mirrors the TS conditional `where[]` push at
+        //     pglite-engine.ts:903-908.
+        let pool = self.pool()?;
+        let row: Option<(String,)> = sqlx::query_as(
+            "UPDATE pages SET deleted_at = now() \
+             WHERE slug = $1 AND deleted_at IS NULL \
+               AND ($2::text IS NULL OR source_id = $2) \
+             RETURNING slug",
+        )
+        .bind(slug)
+        .bind(source_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::engine(format!("soft_delete_page failed: {e}")))?;
+
+        Ok(row.map(|(s,)| s))
+    }
+
+    async fn restore_page(&self, slug: &str, source_id: Option<&str>) -> Result<bool> {
+        // PG mirror of libsql `restore_page` (slice 6a-pg).
+        // TS source-of-truth: zbrain/src/core/pglite-engine.ts:918 —
+        // `UPDATE pages SET deleted_at = NULL WHERE slug = $1 AND
+        //  deleted_at IS NOT NULL AND (source_id = $X)? RETURNING slug`,
+        // returning `true` iff a soft-deleted row was matched. Live and
+        // missing rows return `false` — no row count diff is exposed.
+        //
+        // Same R-guard pattern as `soft_delete_page`; the optional
+        // `source_id` collapses into a single SQL string.
+        let pool = self.pool()?;
+        let row: Option<(String,)> = sqlx::query_as(
+            "UPDATE pages SET deleted_at = NULL \
+             WHERE slug = $1 AND deleted_at IS NOT NULL \
+               AND ($2::text IS NULL OR source_id = $2) \
+             RETURNING slug",
+        )
+        .bind(slug)
+        .bind(source_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::engine(format!("restore_page failed: {e}")))?;
+
+        Ok(row.is_some())
+    }
+
+    async fn purge_deleted_pages(&self, older_than_hours: u32) -> Result<PurgeResult> {
+        // PG mirror of libsql `purge_deleted_pages` (slice 6a-pg).
+        // TS source-of-truth: zbrain/src/core/pglite-engine.ts:933 —
+        // `DELETE FROM pages WHERE deleted_at IS NOT NULL AND
+        //  deleted_at < now() - ($1 || ' hours')::interval RETURNING slug`,
+        // bundling the returned slugs plus a count into `{ slugs, count }`.
+        // FK cascades (chunks / links) follow the `pages` row drop, matching
+        // TS schema constraints.
+        //
+        // TS clamp `Math.max(0, Math.floor(olderThanHours))` is encoded in
+        // the Rust signature via `u32` (no negatives, integral). The string
+        // concatenation form is preferred over `make_interval(hours => $1)`
+        // because TS uses the same shape — keeps both backends auditable
+        // against one SQL template.
+        let pool = self.pool()?;
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "DELETE FROM pages \
+             WHERE deleted_at IS NOT NULL \
+               AND deleted_at < now() - ($1 || ' hours')::interval \
+             RETURNING slug",
+        )
+        .bind(i64::from(older_than_hours).to_string())
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("purge_deleted_pages failed: {e}")))?;
+
+        let slugs: Vec<String> = rows.into_iter().map(|(s,)| s).collect();
+        let count = slugs.len() as u64;
+        Ok(PurgeResult { slugs, count })
     }
 
     async fn delete_page(&self, slug: &str) -> Result<()> {
