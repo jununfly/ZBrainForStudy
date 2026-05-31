@@ -28,7 +28,7 @@ async fn init_clean_engine() -> (LibsqlEngine, NamedTempFile) {
 
 /// Seed a non-default `sources` row via a raw libsql connection.
 /// `init_schema` only seeds the `'default'` source, but `pages.source_id`
-/// has `REFERENCES sources(id) ON DELETE CASCADE`, so any custom source_id
+/// has `REFERENCES sources(id) ON DELETE CASCADE`, so any custom `source_id`
 /// must exist before `put_page` can succeed.
 async fn libsql_seed_source(tmp: &NamedTempFile, id: &str) {
     let path_str = tmp.path().to_string_lossy().into_owned();
