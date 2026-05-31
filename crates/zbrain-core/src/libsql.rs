@@ -24,7 +24,9 @@ use crate::engine::{
 };
 use crate::error::{Error, Result};
 use crate::time::current_utc_iso8601;
-use crate::types::{CRMode, EffectiveDateSource, FindDuplicatePageOpts, PageKind, PageRef};
+use crate::types::{
+    CRMode, EffectiveDateSource, FindDuplicatePageOpts, PageKind, PageRef, RefreshPageBodyArgs,
+};
 
 /// Embedded `SQLite` schema. Mirrors the PG migration semantics:
 /// `sources` (with seeded 'default' row), `pages` with `UNIQUE (source_id,
@@ -836,6 +838,62 @@ impl BrainEngine for LibsqlEngine {
         }
         Ok(out)
     }
+    async fn refresh_page_body(&self, args: &RefreshPageBodyArgs) -> Result<()> {
+        let conn = self.conn().await?;
+        let timeline = args.timeline.to_string();
+
+        conn.execute(
+            "UPDATE pages \
+             SET compiled_truth = ?1, \
+                 timeline = ?2, \
+                 content_hash = ?3, \
+                 updated_at = CURRENT_TIMESTAMP \
+             WHERE source_id = ?4 \
+               AND slug = ?5 \
+               AND deleted_at IS NULL",
+            ::libsql::params![
+                args.compiled_truth.clone(),
+                timeline,
+                args.content_hash.clone(),
+                args.source_id.clone(),
+                args.slug.clone(),
+            ],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("refresh_page_body failed: {e}")))?;
+
+        Ok(())
+    }
+
+    async fn update_page_contextual_retrieval_state(
+        &self,
+        slug: &str,
+        source_id: &str,
+        mode: &str,
+        corpus_generation: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.conn().await?;
+
+        conn.execute(
+            "UPDATE pages \
+             SET contextual_retrieval_mode = ?1, \
+                 corpus_generation = ?2, \
+                 updated_at = CURRENT_TIMESTAMP \
+             WHERE source_id = ?3 \
+               AND slug = ?4 \
+               AND deleted_at IS NULL",
+            ::libsql::params![mode, corpus_generation, source_id, slug],
+        )
+        .await
+        .map_err(|e| {
+            Error::engine(format!(
+                "update_page_contextual_retrieval_state failed: {e}"
+            ))
+        })?;
+
+        Ok(())
+    }
+
     async fn get_all_slugs(
         &self,
         source_id: Option<&str>,

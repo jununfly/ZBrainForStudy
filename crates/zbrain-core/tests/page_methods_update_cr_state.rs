@@ -18,20 +18,149 @@ async fn init_clean_engine() -> (LibsqlEngine, NamedTempFile) {
     (engine, path)
 }
 
-#[tokio::test]
-async fn slice_6a_page_methods_update_cr_state_returns_unsupported() {
-    let (engine, _tmp) = init_clean_engine().await;
-    let err = engine
-        .update_page_contextual_retrieval_state("slug-1", "src-1", "off", None)
+async fn libsql_seed_source(tmp: &NamedTempFile, id: &str) {
+    let path_str = tmp.path().to_string_lossy().into_owned();
+    let db = ::libsql::Builder::new_local(&path_str)
+        .build()
         .await
-        .expect_err(
-            "6a placeholder-lock: update_page_contextual_retrieval_state must be Unsupported",
-        );
-    let msg = err.to_string();
-    assert!(
-        msg.contains("pending slice 6a"),
-        "expected placeholder marker, got: {msg}"
+        .expect("raw db open");
+    let raw_conn = db.connect().expect("raw conn");
+    raw_conn
+        .execute(
+            "INSERT OR IGNORE INTO sources (id, name) VALUES (?1, ?2)",
+            ::libsql::params![id, id],
+        )
+        .await
+        .expect("seed source");
+}
+
+async fn libsql_force_old_updated_at(tmp: &NamedTempFile, slug: &str, source_id: &str) {
+    let path_str = tmp.path().to_string_lossy().into_owned();
+    let db = ::libsql::Builder::new_local(&path_str)
+        .build()
+        .await
+        .expect("raw db open");
+    let raw_conn = db.connect().expect("raw conn");
+    raw_conn
+        .execute(
+            "UPDATE pages \
+             SET updated_at = '2000-01-01 00:00:00' \
+             WHERE slug = ?1 AND source_id = ?2",
+            ::libsql::params![slug, source_id],
+        )
+        .await
+        .expect("force old updated_at");
+}
+
+#[tokio::test]
+async fn libsql_update_cr_state_updates_exact_live_source_row() {
+    let (engine, tmp) = init_clean_engine().await;
+    libsql_seed_source(&tmp, "src-1").await;
+    libsql_seed_source(&tmp, "src-2").await;
+    for src in ["src-1", "src-2"] {
+        engine
+            .put_page("shared-slug", Some(src), &note_input("Shared"))
+            .await
+            .expect("seed page");
+        libsql_force_old_updated_at(&tmp, "shared-slug", src).await;
+    }
+
+    engine
+        .update_page_contextual_retrieval_state(
+            "shared-slug",
+            "src-1",
+            "per_chunk_synopsis",
+            Some("corpus-v2"),
+        )
+        .await
+        .expect("update_page_contextual_retrieval_state");
+
+    let updated = engine
+        .get_page("shared-slug", &get_opts("src-1", false))
+        .await
+        .expect("get updated page")
+        .expect("updated page exists");
+    assert_eq!(
+        updated.contextual_retrieval_mode,
+        Some(CRMode::PerChunkSynopsis)
     );
+    assert_eq!(updated.corpus_generation.as_deref(), Some("corpus-v2"));
+    assert!(
+        !updated.updated_at.starts_with("2000-01-01"),
+        "CR state update must bump updated_at, got {}",
+        updated.updated_at
+    );
+
+    let untouched = engine
+        .get_page("shared-slug", &get_opts("src-2", false))
+        .await
+        .expect("get untouched page")
+        .expect("untouched page exists");
+    assert_eq!(untouched.contextual_retrieval_mode, None);
+    assert_eq!(untouched.corpus_generation, None);
+    assert!(
+        untouched.updated_at.starts_with("2000-01-01"),
+        "source mismatch must remain untouched, got {}",
+        untouched.updated_at
+    );
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn libsql_update_cr_state_accepts_null_corpus_generation() {
+    let (engine, tmp) = init_clean_engine().await;
+    libsql_seed_source(&tmp, "src-1").await;
+    engine
+        .put_page("cr-null", Some("src-1"), &note_input("CR Null"))
+        .await
+        .expect("seed page");
+
+    engine
+        .update_page_contextual_retrieval_state("cr-null", "src-1", "title", None)
+        .await
+        .expect("update CR state with null corpus generation");
+
+    let page = engine
+        .get_page("cr-null", &get_opts("src-1", false))
+        .await
+        .expect("get page")
+        .expect("page exists");
+    assert_eq!(page.contextual_retrieval_mode, Some(CRMode::Title));
+    assert_eq!(page.corpus_generation, None);
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn libsql_update_cr_state_skips_soft_deleted_rows() {
+    let (engine, tmp) = init_clean_engine().await;
+    libsql_seed_source(&tmp, "src-1").await;
+    engine
+        .put_page("soft-deleted", Some("src-1"), &note_input("Soft Deleted"))
+        .await
+        .expect("seed page");
+    engine
+        .soft_delete_page("soft-deleted", Some("src-1"))
+        .await
+        .expect("soft delete prep");
+
+    engine
+        .update_page_contextual_retrieval_state(
+            "soft-deleted",
+            "src-1",
+            "per_chunk_synopsis",
+            Some("corpus-v2"),
+        )
+        .await
+        .expect("CR state update no-ops on soft-deleted row");
+
+    let page = engine
+        .get_page("soft-deleted", &get_opts("src-1", true))
+        .await
+        .expect("get soft-deleted page")
+        .expect("soft-deleted page exists when include_deleted");
+    assert_eq!(page.contextual_retrieval_mode, None);
+    assert_eq!(page.corpus_generation, None);
+    assert!(page.deleted_at.is_some(), "row remains soft-deleted");
     engine.disconnect().await.expect("disconnect");
 }
 
