@@ -1,10 +1,12 @@
-//! Slice 6a S6-T1 placeholder-lock test: `get_all_slugs` placeholder lock.
+//! Slice 6a-libsql advanced reads (S2 RED): `get_all_slugs` behaviour tests.
 //!
-//! Slice 6a-pg (PG-advanced-reads S2 RED) appends `PostgresEngine` mirror
-//! tests at the bottom of this file. They lock the PG semantics agreed in
-//! plan 14 §11.1: `SELECT slug FROM pages [WHERE source_id = $1]` returning
-//! a `HashSet<String>` of *all* rows including soft-deleted ones (matches
-//! TS `pglite-engine.ts` L1071-1086 which does NOT filter `deleted_at`).
+//! Replaces the original 6a S6-T1 placeholder-lock test (which only asserted
+//! `Error::Unsupported`). libsql now mirrors the PG semantics from plan 14
+//! §11.1: `SELECT slug FROM pages [WHERE source_id = ?1]` returning a
+//! `HashSet<String>` of *all* rows including soft-deleted ones (matches TS
+//! `pglite-engine.ts` L1071-1086 which does NOT filter `deleted_at`).
+//!
+//! PG mirror tests below this libsql block stay unchanged.
 
 use tempfile::NamedTempFile;
 use zbrain_core::engine::{BrainEngine, EngineConfig, PageInput};
@@ -22,18 +24,151 @@ async fn init_clean_engine() -> (LibsqlEngine, NamedTempFile) {
     (engine, path)
 }
 
+// ---------------------------------------------------------------------------
+// LibsqlEngine behaviour tests (slice 6a-libsql advanced reads, S2 RED)
+//
+// Mirrors the PG semantics from plan 14 §11.1 — TS `pglite-engine.ts`
+// L1071-1086 returns every `slug` regardless of `deleted_at` and applies
+// `WHERE source_id = ?1` only when an id is supplied. libsql translates
+// the PG `($1::text IS NULL OR source_id = $1)` guard to a Rust-side
+// branch (build two SQL strings) and accumulates rows into a `HashSet`.
+// `pages.source_id` carries a FK to `sources(id)`; only the `"default"`
+// seed exists after `init_schema`, so non-default sources must be seeded
+// via raw libsql connection (mirrors `libsql_engine_put_page_source_id`).
+// ---------------------------------------------------------------------------
+
+async fn libsql_seed_source(tmp: &NamedTempFile, id: &str) {
+    let path_str = tmp.path().to_string_lossy().into_owned();
+    let db = ::libsql::Builder::new_local(&path_str)
+        .build()
+        .await
+        .expect("raw db open");
+    let raw_conn = db.connect().expect("raw conn");
+    raw_conn
+        .execute(
+            "INSERT OR IGNORE INTO sources (id, name) VALUES (?1, ?2)",
+            ::libsql::params![id, id],
+        )
+        .await
+        .expect("seed source");
+}
+
+fn note_input(title: &str, body: &str) -> PageInput {
+    PageInput {
+        page_type: "note".to_string(),
+        title: title.to_string(),
+        compiled_truth: body.to_string(),
+        ..PageInput::default()
+    }
+}
+
 #[tokio::test]
-async fn slice_6a_page_methods_get_all_slugs_returns_unsupported() {
-    let (engine, _tmp) = init_clean_engine().await;
-    let err = engine
+async fn libsql_get_all_slugs_returns_every_slug_across_sources() {
+    let (engine, tmp) = init_clean_engine().await;
+    libsql_seed_source(&tmp, "src-1").await;
+    libsql_seed_source(&tmp, "src-2").await;
+    for (slug, src) in [("alpha", "src-1"), ("beta", "src-1"), ("gamma", "src-2")] {
+        engine
+            .put_page(slug, Some(src), &note_input(slug, "body"))
+            .await
+            .expect("seed page");
+    }
+
+    let slugs = engine
         .get_all_slugs(None)
         .await
-        .expect_err("6a placeholder-lock: get_all_slugs must be Unsupported");
-    let msg = err.to_string();
+        .expect("get_all_slugs(None)");
+
+    let expected: std::collections::HashSet<String> = ["alpha", "beta", "gamma"]
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect();
+    assert_eq!(slugs, expected);
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn libsql_get_all_slugs_filters_by_source_id_when_provided() {
+    let (engine, tmp) = init_clean_engine().await;
+    libsql_seed_source(&tmp, "src-1").await;
+    libsql_seed_source(&tmp, "src-2").await;
+    for (slug, src) in [("alpha", "src-1"), ("beta", "src-1"), ("gamma", "src-2")] {
+        engine
+            .put_page(slug, Some(src), &note_input(slug, "body"))
+            .await
+            .expect("seed page");
+    }
+
+    let scoped = engine
+        .get_all_slugs(Some("src-1"))
+        .await
+        .expect("get_all_slugs(src-1)");
+
+    let expected: std::collections::HashSet<String> = ["alpha", "beta"]
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect();
+    assert_eq!(scoped, expected);
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn libsql_get_all_slugs_includes_soft_deleted_rows() {
+    // TS parity: `pglite-engine.ts` L1071-1086 does NOT filter
+    // `deleted_at IS NULL`. libsql must keep the same quirk so analytics
+    // queries see every slug ever written (PG-advanced-reads R1/R2).
+    let (engine, tmp) = init_clean_engine().await;
+    libsql_seed_source(&tmp, "src-1").await;
+    engine
+        .put_page("live-slug", Some("src-1"), &note_input("Live", "body"))
+        .await
+        .expect("seed live");
+    engine
+        .put_page(
+            "tombstone-slug",
+            Some("src-1"),
+            &note_input("Tombstone", "body"),
+        )
+        .await
+        .expect("seed tombstone");
+    engine
+        .soft_delete_page("tombstone-slug", Some("src-1"))
+        .await
+        .expect("soft delete tombstone");
+
+    let slugs = engine
+        .get_all_slugs(None)
+        .await
+        .expect("get_all_slugs(None)");
+
+    assert!(slugs.contains("live-slug"));
     assert!(
-        msg.contains("pending slice 6a"),
-        "expected placeholder marker, got: {msg}"
+        slugs.contains("tombstone-slug"),
+        "libsql `get_all_slugs` must include soft-deleted rows (TS parity)"
     );
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn libsql_get_all_slugs_returns_empty_set_when_no_rows_match() {
+    let (engine, tmp) = init_clean_engine().await;
+    let empty = engine
+        .get_all_slugs(None)
+        .await
+        .expect("get_all_slugs on empty");
+    assert!(empty.is_empty());
+
+    libsql_seed_source(&tmp, "src-1").await;
+    engine
+        .put_page("only-slug", Some("src-1"), &note_input("Only", "body"))
+        .await
+        .expect("seed page");
+
+    let missing = engine
+        .get_all_slugs(Some("src-missing"))
+        .await
+        .expect("get_all_slugs(src-missing)");
+    assert!(missing.is_empty());
     engine.disconnect().await.expect("disconnect");
 }
 

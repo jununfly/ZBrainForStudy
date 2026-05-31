@@ -1,11 +1,13 @@
-//! Slice 6a S6-T1 placeholder-lock test: `list_all_page_refs` placeholder lock.
+//! Slice 6a-libsql advanced reads (S2 RED): `list_all_page_refs` behavior tests.
 //!
-//! Slice 6a-pg (PG-advanced-reads S2 RED) appends `PostgresEngine` mirror
-//! tests at the bottom. They lock the PG semantics agreed in plan 14 §11.1:
+//! Mirrors the PG semantics locked in slice 6a-pg (plan 14 §11.1):
 //!   `SELECT slug, source_id FROM pages`
 //!   `WHERE deleted_at IS NULL`
 //!   `ORDER BY source_id, slug;`
 //! (i.e. only live rows, deterministic ordering).
+//!
+//! These tests are RED until S3 GREEN replaces the libsql default
+//! `Err(Error::unsupported("pending slice 6a"))` with a real implementation.
 
 use tempfile::NamedTempFile;
 use zbrain_core::engine::{BrainEngine, EngineConfig, PageInput};
@@ -24,17 +26,150 @@ async fn init_clean_engine() -> (LibsqlEngine, NamedTempFile) {
     (engine, path)
 }
 
+/// Seed a non-default `sources` row via a raw libsql connection.
+/// `init_schema` only seeds the `'default'` source, but `pages.source_id`
+/// has `REFERENCES sources(id) ON DELETE CASCADE`, so any custom source_id
+/// must exist before `put_page` can succeed.
+async fn libsql_seed_source(tmp: &NamedTempFile, id: &str) {
+    let path_str = tmp.path().to_string_lossy().into_owned();
+    let db = ::libsql::Builder::new_local(&path_str)
+        .build()
+        .await
+        .expect("raw db open");
+    let raw_conn = db.connect().expect("raw conn");
+    raw_conn
+        .execute(
+            "INSERT OR IGNORE INTO sources (id, name) VALUES (?1, ?2)",
+            ::libsql::params![id, id],
+        )
+        .await
+        .expect("seed source");
+}
+
+fn note_input(title: &str, body: &str) -> PageInput {
+    PageInput {
+        page_type: "note".to_string(),
+        title: title.to_string(),
+        compiled_truth: body.to_string(),
+        ..PageInput::default()
+    }
+}
+
 #[tokio::test]
-async fn slice_6a_page_methods_list_all_page_refs_returns_unsupported() {
-    let (engine, _tmp) = init_clean_engine().await;
-    let err = engine
+async fn libsql_list_all_page_refs_returns_live_refs_ordered_by_source_then_slug() {
+    let (engine, tmp) = init_clean_engine().await;
+    libsql_seed_source(&tmp, "src-1").await;
+    libsql_seed_source(&tmp, "src-2").await;
+    // Insert out-of-order to force the engine's ORDER BY to do the work.
+    for (slug, src) in [
+        ("gamma", "src-2"),
+        ("beta", "src-1"),
+        ("alpha", "src-1"),
+        ("delta", "src-2"),
+    ] {
+        engine
+            .put_page(slug, Some(src), &note_input(slug, "body"))
+            .await
+            .expect("seed page");
+    }
+
+    let refs = engine
         .list_all_page_refs()
         .await
-        .expect_err("6a placeholder-lock: list_all_page_refs must be Unsupported");
-    let msg = err.to_string();
+        .expect("list_all_page_refs");
+
+    let expected = vec![
+        PageRef {
+            slug: "alpha".to_string(),
+            source_id: "src-1".to_string(),
+        },
+        PageRef {
+            slug: "beta".to_string(),
+            source_id: "src-1".to_string(),
+        },
+        PageRef {
+            slug: "delta".to_string(),
+            source_id: "src-2".to_string(),
+        },
+        PageRef {
+            slug: "gamma".to_string(),
+            source_id: "src-2".to_string(),
+        },
+    ];
+    assert_eq!(
+        refs, expected,
+        "refs must be ordered by (source_id, slug) ascending"
+    );
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn libsql_list_all_page_refs_excludes_soft_deleted_rows() {
+    // Mirrors plan §11.1: list_all_page_refs MUST filter `deleted_at IS NULL`.
+    // Contrasts with `get_all_slugs` which intentionally keeps tombstones
+    // (TS quirk). Both behaviors are pinned by libsql + PG mirror tests.
+    let (engine, tmp) = init_clean_engine().await;
+    libsql_seed_source(&tmp, "src-1").await;
+    for slug in ["live-slug", "tombstone-slug"] {
+        engine
+            .put_page(slug, Some("src-1"), &note_input(slug, "body"))
+            .await
+            .expect("seed page");
+    }
+    engine
+        .soft_delete_page("tombstone-slug", Some("src-1"))
+        .await
+        .expect("soft delete tombstone");
+
+    let refs = engine
+        .list_all_page_refs()
+        .await
+        .expect("list_all_page_refs");
+
+    assert_eq!(
+        refs,
+        vec![PageRef {
+            slug: "live-slug".to_string(),
+            source_id: "src-1".to_string(),
+        }],
+        "tombstoned rows must be excluded"
+    );
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn libsql_list_all_page_refs_returns_empty_vec_when_no_live_rows() {
+    let (engine, tmp) = init_clean_engine().await;
+
+    // Empty table → empty vec.
+    let empty = engine
+        .list_all_page_refs()
+        .await
+        .expect("list_all_page_refs on empty");
+    assert!(empty.is_empty(), "empty table must produce empty vec");
+
+    // Single tombstone row → still empty (no live rows).
+    libsql_seed_source(&tmp, "src-1").await;
+    engine
+        .put_page(
+            "only-tombstone",
+            Some("src-1"),
+            &note_input("Tomb", "body"),
+        )
+        .await
+        .expect("seed page");
+    engine
+        .soft_delete_page("only-tombstone", Some("src-1"))
+        .await
+        .expect("soft delete");
+
+    let after_tombstone = engine
+        .list_all_page_refs()
+        .await
+        .expect("list_all_page_refs after tombstone");
     assert!(
-        msg.contains("pending slice 6a"),
-        "expected placeholder marker, got: {msg}"
+        after_tombstone.is_empty(),
+        "table with only tombstones must produce empty vec"
     );
     engine.disconnect().await.expect("disconnect");
 }

@@ -24,7 +24,7 @@ use crate::engine::{
 };
 use crate::error::{Error, Result};
 use crate::time::current_utc_iso8601;
-use crate::types::{CRMode, EffectiveDateSource, FindDuplicatePageOpts, PageKind};
+use crate::types::{CRMode, EffectiveDateSource, FindDuplicatePageOpts, PageKind, PageRef};
 
 /// Embedded `SQLite` schema. Mirrors the PG migration semantics:
 /// `sources` (with seeded 'default' row), `pages` with `UNIQUE (source_id,
@@ -824,6 +824,209 @@ impl BrainEngine for LibsqlEngine {
                 .get(0)
                 .map_err(|e| Error::engine(format!("get_tags decode failed: {e}")))?;
             out.push(tag);
+        }
+        Ok(out)
+    }
+    async fn get_all_slugs(
+        &self,
+        source_id: Option<&str>,
+    ) -> Result<std::collections::HashSet<String>> {
+        // §11.1 R1 TS parity: does NOT filter `deleted_at`.
+        let conn = self.conn().await?;
+        let mut rows = match source_id {
+            Some(sid) => conn
+                .query(
+                    "SELECT slug FROM pages WHERE source_id = ?1",
+                    ::libsql::params![sid],
+                )
+                .await
+                .map_err(|e| Error::engine(format!("get_all_slugs query failed: {e}")))?,
+            None => conn
+                .query("SELECT slug FROM pages", ())
+                .await
+                .map_err(|e| Error::engine(format!("get_all_slugs query failed: {e}")))?,
+        };
+
+        let mut out = std::collections::HashSet::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("get_all_slugs row fetch failed: {e}")))?
+        {
+            let slug: String = row
+                .get(0)
+                .map_err(|e| Error::engine(format!("get_all_slugs decode failed: {e}")))?;
+            out.insert(slug);
+        }
+        Ok(out)
+    }
+
+    async fn list_all_page_refs(&self) -> Result<Vec<PageRef>> {
+        let conn = self.conn().await?;
+        let mut rows = conn
+            .query(
+                "SELECT slug, source_id FROM pages \
+                 WHERE deleted_at IS NULL \
+                 ORDER BY source_id ASC, slug ASC",
+                (),
+            )
+            .await
+            .map_err(|e| Error::engine(format!("list_all_page_refs query failed: {e}")))?;
+
+        let mut out = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("list_all_page_refs row fetch failed: {e}")))?
+        {
+            let slug: String = row
+                .get(0)
+                .map_err(|e| Error::engine(format!("list_all_page_refs decode slug: {e}")))?;
+            let source_id: String = row
+                .get(1)
+                .map_err(|e| Error::engine(format!("list_all_page_refs decode source_id: {e}")))?;
+            out.push(PageRef { slug, source_id });
+        }
+        Ok(out)
+    }
+
+    async fn get_page_timestamps(
+        &self,
+        slugs: &[String],
+    ) -> Result<std::collections::HashMap<String, String>> {
+        let mut out = std::collections::HashMap::new();
+        if slugs.is_empty() {
+            return Ok(out);
+        }
+        let conn = self.conn().await?;
+        let placeholders = (1..=slugs.len())
+            .map(|i| format!("?{i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT slug, COALESCE(updated_at, created_at) AS ts \
+             FROM pages \
+             WHERE slug IN ({placeholders}) AND deleted_at IS NULL"
+        );
+        let params: Vec<::libsql::Value> =
+            slugs.iter().map(|s| ::libsql::Value::from(s.clone())).collect();
+        let mut rows = conn
+            .query(&sql, ::libsql::params_from_iter(params))
+            .await
+            .map_err(|e| Error::engine(format!("get_page_timestamps query failed: {e}")))?;
+
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("get_page_timestamps row fetch failed: {e}")))?
+        {
+            let slug: String = row
+                .get(0)
+                .map_err(|e| Error::engine(format!("get_page_timestamps decode slug: {e}")))?;
+            let ts: String = row
+                .get(1)
+                .map_err(|e| Error::engine(format!("get_page_timestamps decode ts: {e}")))?;
+            out.insert(slug, ts);
+        }
+        Ok(out)
+    }
+
+    async fn get_effective_dates(
+        &self,
+        refs: &[PageRef],
+    ) -> Result<std::collections::HashMap<String, String>> {
+        // Despite the method name, column `effective_date` is intentionally
+        // NOT consulted — TS parity falls back to row mtime instead.
+        let mut out = std::collections::HashMap::new();
+        if refs.is_empty() {
+            return Ok(out);
+        }
+        let conn = self.conn().await?;
+        let mut pairs = Vec::with_capacity(refs.len());
+        let mut params: Vec<::libsql::Value> = Vec::with_capacity(refs.len() * 2);
+        for (i, r) in refs.iter().enumerate() {
+            let p1 = i * 2 + 1;
+            let p2 = i * 2 + 2;
+            pairs.push(format!("(?{p1}, ?{p2})"));
+            params.push(::libsql::Value::from(r.slug.clone()));
+            params.push(::libsql::Value::from(r.source_id.clone()));
+        }
+        let sql = format!(
+            "SELECT slug, source_id, COALESCE(updated_at, created_at) AS ts \
+             FROM pages \
+             WHERE (slug, source_id) IN ({}) AND deleted_at IS NULL",
+            pairs.join(", ")
+        );
+        let mut rows = conn
+            .query(&sql, ::libsql::params_from_iter(params))
+            .await
+            .map_err(|e| Error::engine(format!("get_effective_dates query failed: {e}")))?;
+
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("get_effective_dates row fetch failed: {e}")))?
+        {
+            let slug: String = row
+                .get(0)
+                .map_err(|e| Error::engine(format!("get_effective_dates decode slug: {e}")))?;
+            let source_id: String = row.get(1).map_err(|e| {
+                Error::engine(format!("get_effective_dates decode source_id: {e}"))
+            })?;
+            let ts: String = row
+                .get(2)
+                .map_err(|e| Error::engine(format!("get_effective_dates decode ts: {e}")))?;
+            out.insert(format!("{source_id}::{slug}"), ts);
+        }
+        Ok(out)
+    }
+
+    async fn get_salience_scores(
+        &self,
+        refs: &[PageRef],
+    ) -> Result<std::collections::HashMap<String, f64>> {
+        // 6a quirk: takes table lands in slice 6c → distinct-active-takes
+        // term hard-coded to 0; score = COALESCE(emotional_weight, 0.0) * 5.0.
+        let mut out = std::collections::HashMap::new();
+        if refs.is_empty() {
+            return Ok(out);
+        }
+        let conn = self.conn().await?;
+        let mut pairs = Vec::with_capacity(refs.len());
+        let mut params: Vec<::libsql::Value> = Vec::with_capacity(refs.len() * 2);
+        for (i, r) in refs.iter().enumerate() {
+            let p1 = i * 2 + 1;
+            let p2 = i * 2 + 2;
+            pairs.push(format!("(?{p1}, ?{p2})"));
+            params.push(::libsql::Value::from(r.slug.clone()));
+            params.push(::libsql::Value::from(r.source_id.clone()));
+        }
+        let sql = format!(
+            "SELECT slug, source_id, COALESCE(emotional_weight, 0.0) * 5.0 AS score \
+             FROM pages \
+             WHERE (slug, source_id) IN ({}) AND deleted_at IS NULL",
+            pairs.join(", ")
+        );
+        let mut rows = conn
+            .query(&sql, ::libsql::params_from_iter(params))
+            .await
+            .map_err(|e| Error::engine(format!("get_salience_scores query failed: {e}")))?;
+
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("get_salience_scores row fetch failed: {e}")))?
+        {
+            let slug: String = row
+                .get(0)
+                .map_err(|e| Error::engine(format!("get_salience_scores decode slug: {e}")))?;
+            let source_id: String = row
+                .get(1)
+                .map_err(|e| Error::engine(format!("get_salience_scores decode source_id: {e}")))?;
+            let score: f64 = row
+                .get(2)
+                .map_err(|e| Error::engine(format!("get_salience_scores decode score: {e}")))?;
+            out.insert(format!("{source_id}::{slug}"), score);
         }
         Ok(out)
     }

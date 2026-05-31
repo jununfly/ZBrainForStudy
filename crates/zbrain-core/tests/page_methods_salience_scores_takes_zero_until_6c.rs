@@ -1,34 +1,30 @@
-//! Slice 6a-pg S6-T2 strong-semantics test: salience score `takes`
+//! Slice 6a S6-T2 strong-semantics test: salience score `takes`
 //! contribution is exactly zero until slice 6c.
 //!
 //! This is the **strong-semantics** sibling of
-//! `page_methods_get_salience_scores.rs`. The generic placeholder test
-//! only locked the `Unsupported` placeholder; this test pins down a
-//! behavioural invariant that must hold across backends:
+//! `page_methods_get_salience_scores.rs`. The placeholder-lock predecessor
+//! only locked the `Unsupported` placeholder; this test pins a
+//! behavioural invariant that must hold across both backends:
 //!
 //! ```text
 //! score = COALESCE(emotional_weight, 0) * 5
 //!       + ln(1 + distinct_active_take_count)
 //! ```
 //!
-//! In 6a / 6a-pg the `takes` table does not exist yet, so the
+//! In 6a / 6a-pg / 6a-libsql the `takes` table does not exist yet, so the
 //! `distinct_active_take_count` term must be hard-coded to `0`. That
 //! collapses `ln(1 + 0) = 0` and the score reduces to
 //! `emotional_weight * 5`. This test proves the takes contribution is
-//! exactly zero.
+//! exactly zero on BOTH libsql and PG.
 //!
 //! Two backend branches:
-//! - **libsql**: per decision D1 in plan 14 §11.4, the libsql 5
-//!   advanced-reads stay on the trait default `Unsupported` until slice
-//!   6c. The libsql branch therefore asserts the `Unsupported` placeholder
-//!   marker — this is the standing contract until 6c lands.
-//! - **`PostgresEngine`** (gated on `ZBRAIN_TEST_PG_URL`): inserts a row
-//!   with `emotional_weight = 0.4` and asserts
+//! - **libsql** (slice 6a-libsql, plan 14 §11.4 D2): inserts a row with
+//!   `emotional_weight = 0.4` and asserts
 //!   `(0.4 * 5.0 - score).abs() < 1e-9`, proving the takes term is 0.
+//! - **`PostgresEngine`** (gated on `ZBRAIN_TEST_PG_URL`): same invariant.
 //!
 //! **Slice 6c**: when the `takes` table lands, rewrite both branches to
-//! insert `N` takes and assert `score = 0.4*5 + ln(1+N_tags)`. The
-//! libsql branch will also flip from `Unsupported` to the real impl.
+//! insert `N` takes and assert `score = 0.4*5 + ln(1+N_tags)`.
 
 use tempfile::NamedTempFile;
 use zbrain_core::engine::{BrainEngine, EngineConfig, PageInput};
@@ -37,7 +33,21 @@ use zbrain_core::postgres::PostgresEngine;
 use zbrain_core::PageRef;
 
 // ---------------------------------------------------------------------------
-// libsql branch: holds the `Unsupported` contract until slice 6c (D1).
+// libsql branch: locks the 6a-libsql takes-zero invariant.
+//
+// SQL contract (plan 14 §11.4 D2, slice 6a-libsql):
+//   SELECT p.slug, p.source_id, COALESCE(p.emotional_weight, 0.0) * 5.0 AS score
+//   FROM pages p
+//   WHERE (p.slug, p.source_id) IN ((?,?), ...)
+//     AND p.deleted_at IS NULL;
+//
+// The takes term is hard-coded to 0 in 6a-libsql (the `takes` table does not
+// exist yet), so the score MUST equal `emotional_weight * 5` exactly
+// (within 1e-9). If a future change ever re-introduces the takes term before
+// 6c, this test will fail loudly.
+//
+// `PageInput` does NOT carry `emotional_weight` — we `put_page` then
+// directly UPDATE the column via a raw libsql connection.
 // ---------------------------------------------------------------------------
 
 async fn libsql_init_clean_engine() -> (LibsqlEngine, NamedTempFile) {
@@ -52,26 +62,82 @@ async fn libsql_init_clean_engine() -> (LibsqlEngine, NamedTempFile) {
     (engine, path)
 }
 
+async fn libsql_seed_source(tmp: &NamedTempFile, id: &str) {
+    let path_str = tmp.path().to_string_lossy().into_owned();
+    let db = ::libsql::Builder::new_local(&path_str)
+        .build()
+        .await
+        .expect("raw db open for source seed");
+    let raw_conn = db.connect().expect("raw conn for source seed");
+    raw_conn
+        .execute(
+            "INSERT OR IGNORE INTO sources (id, name) VALUES (?1, ?2)",
+            ::libsql::params![id, id],
+        )
+        .await
+        .expect("seed source");
+}
+
+async fn libsql_set_emotional_weight(
+    tmp: &NamedTempFile,
+    slug: &str,
+    source_id: &str,
+    weight: Option<f64>,
+) {
+    let path_str = tmp.path().to_string_lossy().into_owned();
+    let db = ::libsql::Builder::new_local(&path_str)
+        .build()
+        .await
+        .expect("raw db open for emotional_weight update");
+    let raw_conn = db.connect().expect("raw conn for emotional_weight update");
+    raw_conn
+        .execute(
+            "UPDATE pages SET emotional_weight = ?1 WHERE slug = ?2 AND source_id = ?3",
+            ::libsql::params![weight, slug, source_id],
+        )
+        .await
+        .expect("update emotional_weight");
+}
+
 #[tokio::test]
-async fn libsql_salience_scores_takes_zero_until_6c_remains_unsupported() {
-    // D1: libsql advanced-reads stay on trait default `Unsupported` in
-    // 6a-pg. Slice 6c rewrites this branch alongside the PG branch.
-    let (engine, _tmp) = libsql_init_clean_engine().await;
+async fn libsql_salience_scores_takes_zero_until_6c() {
+    let (engine, tmp) = libsql_init_clean_engine().await;
+    libsql_seed_source(&tmp, "src-1").await;
+    engine
+        .put_page(
+            "scored",
+            Some("src-1"),
+            &PageInput {
+                page_type: "note".to_string(),
+                title: "Scored".to_string(),
+                compiled_truth: "body".to_string(),
+                ..PageInput::default()
+            },
+        )
+        .await
+        .expect("seed page");
+    libsql_set_emotional_weight(&tmp, "scored", "src-1", Some(0.4)).await;
+
     let refs = vec![PageRef {
-        slug: "a".to_string(),
+        slug: "scored".to_string(),
         source_id: "src-1".to_string(),
     }];
-    let err = engine
+    let scores = engine
         .get_salience_scores(&refs)
         .await
-        .expect_err("libsql 6a/6a-pg: get_salience_scores must remain Unsupported (D1)");
-    let msg = err.to_string();
+        .expect("get_salience_scores");
+
+    let score = *scores
+        .get("src-1::scored")
+        .expect("missing src-1::scored entry");
+    let expected = 0.4 * 5.0;
     assert!(
-        msg.contains("pending slice 6a"),
-        "expected placeholder marker, got: {msg}"
+        (score - expected).abs() < 1e-9,
+        "6a-libsql takes-zero contract: expected ~{expected} (= 0.4 * 5.0 + ln(1+0)), got {score}"
     );
     engine.disconnect().await.expect("disconnect");
 }
+
 
 // ---------------------------------------------------------------------------
 // PostgresEngine branch: locks the 6a-pg takes-zero invariant.

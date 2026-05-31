@@ -1,14 +1,13 @@
-//! Slice 6a S6-T1 placeholder-lock test: `get_effective_dates` placeholder lock.
+//! Slice 6a-libsql advanced reads (S2 RED): `get_effective_dates` behavior tests.
 //!
-//! Slice 6a-pg (PG-advanced-reads S2 RED) appends `PostgresEngine` mirror
-//! tests at the bottom of this file. They lock the PG semantics agreed in
-//! plan 14 §11.1:
-//!   `SELECT p.slug, p.source_id, COALESCE(p.updated_at, p.created_at)::text AS ts
+//! Mirrors the PG semantics locked in slice 6a-pg (plan 14 §11.1):
+//!   `SELECT p.slug, p.source_id, COALESCE(p.updated_at, p.created_at) AS ts
 //!    FROM pages p
-//!    JOIN unnest($1::text[], $2::text[]) AS u(slug, source_id)
-//!      ON p.slug = u.slug AND p.source_id = u.source_id
-//!    WHERE p.deleted_at IS NULL`
+//!    WHERE (p.slug, p.source_id) IN ((?1,?2), …) AND p.deleted_at IS NULL`
 //! returning a `HashMap<String, String>` keyed by `format!("{source_id}::{slug}")`.
+//!
+//! These tests are RED until S3 GREEN replaces the libsql default
+//! `Err(Error::unsupported("pending slice 6a"))` with a real implementation.
 
 use tempfile::NamedTempFile;
 use zbrain_core::engine::{BrainEngine, EngineConfig, PageInput};
@@ -27,22 +26,156 @@ async fn init_clean_engine() -> (LibsqlEngine, NamedTempFile) {
     (engine, path)
 }
 
+async fn libsql_seed_source(tmp: &NamedTempFile, id: &str) {
+    let path_str = tmp.path().to_string_lossy().into_owned();
+    let db = ::libsql::Builder::new_local(&path_str)
+        .build()
+        .await
+        .expect("raw db open");
+    let raw_conn = db.connect().expect("raw conn");
+    raw_conn
+        .execute(
+            "INSERT OR IGNORE INTO sources (id, name) VALUES (?1, ?2)",
+            ::libsql::params![id, id],
+        )
+        .await
+        .expect("seed source");
+}
+
+fn note_input(title: &str, body: &str) -> PageInput {
+    PageInput {
+        page_type: "note".to_string(),
+        title: title.to_string(),
+        compiled_truth: body.to_string(),
+        ..PageInput::default()
+    }
+}
+
 #[tokio::test]
-async fn slice_6a_page_methods_get_effective_dates_returns_unsupported() {
-    let (engine, _tmp) = init_clean_engine().await;
-    let refs = vec![PageRef {
-        slug: "a".to_string(),
-        source_id: "src-1".to_string(),
-    }];
-    let err = engine
+async fn libsql_get_effective_dates_returns_compound_key_for_each_ref() {
+    let (engine, tmp) = init_clean_engine().await;
+    libsql_seed_source(&tmp, "src-1").await;
+    libsql_seed_source(&tmp, "src-2").await;
+    for (slug, src) in [("alpha", "src-1"), ("beta", "src-2")] {
+        engine
+            .put_page(slug, Some(src), &note_input(slug, "body"))
+            .await
+            .expect("seed page");
+    }
+
+    let refs = vec![
+        PageRef {
+            slug: "alpha".to_string(),
+            source_id: "src-1".to_string(),
+        },
+        PageRef {
+            slug: "beta".to_string(),
+            source_id: "src-2".to_string(),
+        },
+    ];
+    let dates = engine
         .get_effective_dates(&refs)
         .await
-        .expect_err("6a placeholder-lock: get_effective_dates must be Unsupported");
-    let msg = err.to_string();
+        .expect("get_effective_dates");
+
+    assert_eq!(dates.len(), 2, "two refs requested → two entries");
+    for (slug, src) in [("alpha", "src-1"), ("beta", "src-2")] {
+        let key = format!("{src}::{slug}");
+        let ts = dates
+            .get(&key)
+            .unwrap_or_else(|| panic!("missing key {key}"));
+        assert!(
+            ts.len() >= 10 && ts.starts_with("20"),
+            "expected ISO-8601 ts for {key}, got {ts}"
+        );
+    }
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn libsql_get_effective_dates_disambiguates_same_slug_across_sources() {
+    // Two sources both have a page with slug `shared`. The implementation MUST
+    // return BOTH and key them by `{source_id}::{slug}` so callers can tell
+    // them apart.
+    let (engine, tmp) = init_clean_engine().await;
+    libsql_seed_source(&tmp, "src-1").await;
+    libsql_seed_source(&tmp, "src-2").await;
+    for src in ["src-1", "src-2"] {
+        engine
+            .put_page("shared", Some(src), &note_input("Shared", "body"))
+            .await
+            .expect("seed page");
+    }
+
+    let refs = vec![
+        PageRef {
+            slug: "shared".to_string(),
+            source_id: "src-1".to_string(),
+        },
+        PageRef {
+            slug: "shared".to_string(),
+            source_id: "src-2".to_string(),
+        },
+    ];
+    let dates = engine
+        .get_effective_dates(&refs)
+        .await
+        .expect("get_effective_dates");
+
+    assert_eq!(dates.len(), 2);
+    assert!(dates.contains_key("src-1::shared"));
+    assert!(dates.contains_key("src-2::shared"));
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn libsql_get_effective_dates_excludes_soft_deleted_rows() {
+    let (engine, tmp) = init_clean_engine().await;
+    libsql_seed_source(&tmp, "src-1").await;
+    for slug in ["live-slug", "tombstone-slug"] {
+        engine
+            .put_page(slug, Some("src-1"), &note_input(slug, "body"))
+            .await
+            .expect("seed page");
+    }
+    engine
+        .soft_delete_page("tombstone-slug", Some("src-1"))
+        .await
+        .expect("soft delete tombstone");
+
+    let refs = vec![
+        PageRef {
+            slug: "live-slug".to_string(),
+            source_id: "src-1".to_string(),
+        },
+        PageRef {
+            slug: "tombstone-slug".to_string(),
+            source_id: "src-1".to_string(),
+        },
+    ];
+    let dates = engine
+        .get_effective_dates(&refs)
+        .await
+        .expect("get_effective_dates");
+
+    assert!(dates.contains_key("src-1::live-slug"));
     assert!(
-        msg.contains("pending slice 6a"),
-        "expected placeholder marker, got: {msg}"
+        !dates.contains_key("src-1::tombstone-slug"),
+        "soft-deleted rows must be excluded by `deleted_at IS NULL` filter"
     );
+    assert_eq!(dates.len(), 1);
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn libsql_get_effective_dates_returns_empty_map_for_empty_input() {
+    let (engine, _tmp) = init_clean_engine().await;
+
+    let dates = engine
+        .get_effective_dates(&[])
+        .await
+        .expect("get_effective_dates on empty input");
+    assert!(dates.is_empty(), "empty refs slice → empty map");
     engine.disconnect().await.expect("disconnect");
 }
 
