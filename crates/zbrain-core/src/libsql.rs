@@ -25,7 +25,8 @@ use crate::engine::{
 use crate::error::{Error, Result};
 use crate::time::current_utc_iso8601;
 use crate::types::{
-    CRMode, EffectiveDateSource, FindDuplicatePageOpts, PageKind, PageRef, RefreshPageBodyArgs,
+    CRMode, EffectiveDateSource, FindDuplicatePageOpts, OrphanPage, PageKind, PageRef,
+    RefreshPageBodyArgs,
 };
 
 /// Embedded `SQLite` schema. Mirrors the PG migration semantics:
@@ -58,6 +59,10 @@ const MIGRATION_0004: &str = include_str!("../migrations-sqlite/0004_page_tags.s
 /// subset rationale and FK semantics.
 const MIGRATION_0005: &str = include_str!("../migrations-sqlite/0005_takes_min.sql");
 
+/// Slice 6a-libsql find-orphan-pages — adds the minimal `links` table mirror
+/// needed for inbound-link existence checks. Full link CRUD remains deferred.
+const MIGRATION_0006: &str = include_str!("../migrations-sqlite/0006_links.sql");
+
 /// Ordered list of migrations. Index `i` is applied when `user_version <= i`,
 /// then `user_version` is set to `i + 1`. Append-only — never reorder.
 const MIGRATIONS: &[&str] = &[
@@ -66,13 +71,14 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_0003,
     MIGRATION_0004,
     MIGRATION_0005,
+    MIGRATION_0006,
 ];
 
 /// Highest schema version we know how to produce. Equals `MIGRATIONS.len()`.
 /// Guarded via `PRAGMA user_version`. Hand-kept in sync with `MIGRATIONS`
 /// because `len() as i64` is not const-evaluable in stable Rust and casting
 /// `usize → i64` trips `clippy::cast_possible_wrap`.
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 /// Embedded `SQLite` engine. Use [`LibsqlEngine::new`] then [`connect`] before
 /// any other method. Calling `connect` twice on the same instance is
@@ -892,6 +898,50 @@ impl BrainEngine for LibsqlEngine {
         })?;
 
         Ok(())
+    }
+
+    async fn find_orphan_pages(&self) -> Result<Vec<OrphanPage>> {
+        let conn = self.conn().await?;
+        let mut rows = conn
+            .query(
+                "SELECT p.slug, COALESCE(p.title, p.slug) AS title, \
+                        json_extract(p.frontmatter, '$.domain') AS domain \
+                 FROM pages p \
+                 WHERE p.deleted_at IS NULL \
+                   AND NOT EXISTS ( \
+                     SELECT 1 FROM links l \
+                     JOIN pages src ON src.id = l.from_page_id \
+                     WHERE l.to_page_id = p.id AND src.deleted_at IS NULL \
+                   ) \
+                 ORDER BY p.slug",
+                (),
+            )
+            .await
+            .map_err(|e| Error::engine(format!("find_orphan_pages query failed: {e}")))?;
+
+        let mut out = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("find_orphan_pages row fetch failed: {e}")))?
+        {
+            let slug: String = row
+                .get(0)
+                .map_err(|e| Error::engine(format!("find_orphan_pages decode slug: {e}")))?;
+            let title: String = row
+                .get(1)
+                .map_err(|e| Error::engine(format!("find_orphan_pages decode title: {e}")))?;
+            let domain: Option<String> = row
+                .get(2)
+                .map_err(|e| Error::engine(format!("find_orphan_pages decode domain: {e}")))?;
+            out.push(OrphanPage {
+                slug,
+                title,
+                domain,
+            });
+        }
+
+        Ok(out)
     }
 
     async fn get_all_slugs(

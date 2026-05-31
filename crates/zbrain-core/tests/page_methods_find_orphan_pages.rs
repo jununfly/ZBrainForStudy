@@ -1,8 +1,6 @@
 //! Slice 6a PG-find-orphan-pages tests.
 //!
-//! Part 1 (libsql): placeholder-lock — `find_orphan_pages` must return
-//! `Unsupported` on the libsql engine until slice 6a delivers the real
-//! implementation.
+//! Part 1 (libsql): mirror behavior tests for `find_orphan_pages`.
 //!
 //! Part 2 (Postgres): mirror integration tests gated on `ZBRAIN_TEST_PG_URL`.
 //! These prove the PG `find_orphan_pages` override matches the TS contract
@@ -14,7 +12,7 @@ use zbrain_core::engine::{BrainEngine, EngineConfig, PageInput};
 use zbrain_core::libsql::LibsqlEngine;
 
 // ---------------------------------------------------------------------------
-// libsql placeholder-lock
+// LibsqlEngine mirror tests (slice 6a-libsql find-orphan-pages)
 // ---------------------------------------------------------------------------
 
 async fn init_clean_engine() -> (LibsqlEngine, NamedTempFile) {
@@ -29,18 +27,113 @@ async fn init_clean_engine() -> (LibsqlEngine, NamedTempFile) {
     (engine, path)
 }
 
-#[tokio::test]
-async fn slice_6a_page_methods_find_orphan_pages_returns_unsupported() {
-    let (engine, _tmp) = init_clean_engine().await;
-    let err = engine
-        .find_orphan_pages()
+async fn libsql_page_id(tmp: &NamedTempFile, slug: &str) -> i64 {
+    let path_str = tmp.path().to_string_lossy().into_owned();
+    let db = ::libsql::Builder::new_local(&path_str)
+        .build()
         .await
-        .expect_err("6a placeholder-lock: find_orphan_pages must be Unsupported");
-    let msg = err.to_string();
-    assert!(
-        msg.contains("pending slice 6a"),
-        "expected placeholder marker, got: {msg}"
+        .expect("raw db");
+    let raw_conn = db.connect().expect("raw conn");
+    let mut rows = raw_conn
+        .query(
+            "SELECT id FROM pages WHERE slug = ?1",
+            ::libsql::params![slug],
+        )
+        .await
+        .expect("page id query");
+    let row = rows
+        .next()
+        .await
+        .expect("page id row fetch")
+        .expect("page must exist");
+    row.get(0).expect("decode page id")
+}
+
+async fn libsql_insert_link(tmp: &NamedTempFile, from_slug: &str, to_slug: &str, link_type: &str) {
+    let from_id = libsql_page_id(tmp, from_slug).await;
+    let to_id = libsql_page_id(tmp, to_slug).await;
+    let path_str = tmp.path().to_string_lossy().into_owned();
+    let db = ::libsql::Builder::new_local(&path_str)
+        .build()
+        .await
+        .expect("raw db");
+    let raw_conn = db.connect().expect("raw conn");
+    raw_conn
+        .execute(
+            "INSERT INTO links (from_page_id, to_page_id, link_type, link_source) \
+             VALUES (?1, ?2, ?3, 'markdown')",
+            ::libsql::params![from_id, to_id, link_type],
+        )
+        .await
+        .expect("insert link");
+}
+
+async fn libsql_soft_delete(tmp: &NamedTempFile, slug: &str) {
+    let path_str = tmp.path().to_string_lossy().into_owned();
+    let db = ::libsql::Builder::new_local(&path_str)
+        .build()
+        .await
+        .expect("raw db");
+    let raw_conn = db.connect().expect("raw conn");
+    raw_conn
+        .execute(
+            "UPDATE pages SET deleted_at = CURRENT_TIMESTAMP WHERE slug = ?1 AND deleted_at IS NULL",
+            ::libsql::params![slug],
+        )
+        .await
+        .expect("soft delete page");
+}
+
+#[tokio::test]
+async fn libsql_find_orphan_pages_mirrors_ts_contract() {
+    let (engine, tmp) = init_clean_engine().await;
+
+    for (slug, title, domain) in [
+        ("alpha", "Alpha", Some("research")),
+        ("bravo", "Bravo", None),
+        ("charlie", "Charlie", None),
+        ("delta", "Delta", None),
+        ("echo", "Echo", None),
+        ("zulu", "Zulu", None),
+    ] {
+        let frontmatter = domain.map_or_else(|| json!({}), |d| json!({"domain": d}));
+        engine
+            .put_page(
+                slug,
+                Some("default"),
+                &PageInput {
+                    page_type: "note".to_string(),
+                    title: title.to_string(),
+                    compiled_truth: "body".to_string(),
+                    frontmatter: Some(frontmatter),
+                    ..PageInput::default()
+                },
+            )
+            .await
+            .expect("seed page");
+    }
+
+    // charlie -> bravo: bravo has live inbound and is not an orphan.
+    libsql_insert_link(&tmp, "charlie", "bravo", "link").await;
+    // echo -> delta, then soft-delete echo: deleted-source inbound is ignored,
+    // and echo itself must not appear as a candidate.
+    libsql_insert_link(&tmp, "echo", "delta", "link").await;
+    libsql_soft_delete(&tmp, "echo").await;
+
+    let orphans = engine.find_orphan_pages().await.expect("find_orphan_pages");
+    let slugs: Vec<&str> = orphans.iter().map(|o| o.slug.as_str()).collect();
+    assert_eq!(
+        slugs,
+        vec!["alpha", "charlie", "delta", "zulu"],
+        "must filter live inbound links, ignore deleted-source inbound links, exclude deleted candidates, and order by slug"
     );
+
+    let by_slug: std::collections::HashMap<&str, &OrphanPage> =
+        orphans.iter().map(|o| (o.slug.as_str(), o)).collect();
+    let alpha = by_slug.get("alpha").expect("alpha must be orphan");
+    assert_eq!(alpha.title, "Alpha");
+    assert_eq!(alpha.domain.as_deref(), Some("research"));
+
     engine.disconnect().await.expect("disconnect");
 }
 
