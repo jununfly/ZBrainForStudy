@@ -109,6 +109,10 @@ cargo clippy  --manifest-path <root>/Cargo.toml --workspace --all-targets -- -D 
 | `d4bf032` | chore | rustfmt drift in `libsql_engine_full_columns` test |
 | `5ca9131` | **PG-tag** | PG `page_tags` migration (`0005_page_tags.sql`) + tag CRUD (`add_tag`/`remove_tag`/`get_tags`) + `list_pages(tag)` JOIN |
 | `0daed6c` | docs | handoff `handoff-260531.md` 入库（PG tag slice 收口快照） |
+| `8b24405` | docs | align plan 14/16 with PG tag slice + post-slice follow-up pool |
+| `39a4f68` | **PG-find-duplicate** | PG `find_duplicate_page` 镜像 libsql 合约 |
+| `a039cdf` | docs | mark PG-find-duplicate slice as completed |
+| `2568268` | **PG-soft-delete** | PG `soft_delete_page` / `restore_page` / `purge_deleted_pages` 三件套 + `postgres_engine_full_columns` reseed default source |
 
 
 ## 4. bump_generation trigger 设计跨 backend 对齐
@@ -219,10 +223,10 @@ async fn find_duplicate_page(&self, content_hash: &str, source_id: Option<&str>)
 | **S6-T6** | libsql `put_page` 19-col TS-aligned UPSERT + trigger 修正 | ✅ 已完成（`6daeb02`） | S6-T5c ✅ |
 | **S6-T7** | libsql tag CRUD (add/remove/get) with source_id parameterisation | ✅ 已完成（`1a8de0e`） | S6-T6 ✅ |
 | **S6-T8** | put_page source_id 参数化跨 3 backend | ✅ 已完成（`8065bbe`） | S6-T7 ✅ |
-| **PG-soft-delete** | PG `soft_delete_page` / `restore_page` / `purge_page` 三件套（libsql 已有 `9ec05a4`，PG 缺口） | 🔜 候选下一切片 | PG-tag ✅ |
+| **PG-soft-delete** | PG `soft_delete_page` / `restore_page` / `purge_deleted_pages` 三件套（libsql 已有 `9ec05a4`，PG 缺口） | ✅ 已完成（`2568268`） | PG-tag ✅ |
 | **PG-find-duplicate** | PG `find_duplicate_page`（libsql 已有 `32f81b6`，PG 缺口） | ✅ 已完成（`39a4f68`） | PG-tag ✅ |
-| **PG-advanced-reads** | PG `get_all_slugs` / `list_all_page_refs` / `get_page_timestamps` / `get_effective_dates` / `get_salience_scores` | 待启动 | PG-soft-delete |
-| **PG-advanced-writes** | PG `refresh_page_body` / `update_page_contextual_retrieval_state` / `update_slug` / `touch_salience` | 待启动 | PG-soft-delete |
+| **PG-advanced-reads** | PG `get_all_slugs` / `list_all_page_refs` / `get_page_timestamps` / `get_effective_dates` / `get_salience_scores` | 🔜 候选下一切片 | PG-soft-delete ✅ |
+| **PG-advanced-writes** | PG `refresh_page_body` / `update_page_contextual_retrieval_state` / `update_slug` / `touch_salience` | 待启动 | PG-soft-delete ✅ |
 | libsql schema 升级 | `updated_at` 毫秒精度（`strftime('%Y-%m-%d %H:%M:%f', 'now')`）—— 解除"跨秒边界排序需 sleep ≥1.1s"约束 | 独立切片 | — |
 
 ## 9. 关键技术备忘

@@ -396,7 +396,10 @@ RETURNING slug
 
 - `CURRENT_TIMESTAMP` → `now()` (R2)
 
-#### 5.8 `restore_page(slug) → Option<Page>`
+#### 5.8 `restore_page(slug, source_id: Option<&str>) → Result<bool>`
+
+> **签名修订 (2026-05-31 PG-soft-delete 切片落地)**：原计划写作 `restore_page(slug) → Option<Page>`，
+> 与 trait 实际签名（`Result<bool>`，并需 source guard）不一致；以本节为准。
 
 **PG SQL**:
 ```sql
@@ -404,22 +407,28 @@ UPDATE pages
 SET deleted_at = NULL
 WHERE slug = $1
   AND deleted_at IS NOT NULL
-RETURNING {全列}
+  AND ($2::text IS NULL OR source_id = $2)
 ```
 
+- 返回受影响行数 > 0 即 `Ok(true)`，否则 `Ok(false)`；不返回完整 Page。
 - 注意: 6a 主切片 InMemory 实现中 `restore_page` 不需要 SQL，PG 需要。
 
-#### 5.9 `purge_page(slug) → Option<String>`
+#### 5.9 `purge_deleted_pages(older_than_hours: u32, source_id: Option<&str>) → Result<PurgeResult>`
+
+> **签名修订 (2026-05-31 PG-soft-delete 切片落地)**：原计划写作 `purge_page(slug) → Option<String>`，
+> 与 trait 实际签名（按时间窗口批量、返回 `PurgeResult { slugs, count }`）不一致；以本节为准。
 
 **PG SQL**:
 ```sql
 DELETE FROM pages
-WHERE slug = $1
-  AND deleted_at IS NOT NULL
+WHERE deleted_at IS NOT NULL
+  AND deleted_at < now() - ($1::text || ' hours')::interval
+  AND ($2::text IS NULL OR source_id = $2)
 RETURNING slug
 ```
 
-- 只删除已 soft-delete 的行
+- 只删除 soft-deleted 且超过 `older_than_hours` 的行；返回 `PurgeResult { slugs, count }`（`count = slugs.len() as u64`）。
+- FK CASCADE 自动清理 `page_chunks` / `page_links` 子行。
 
 #### 5.10 `refresh_page_body(slug, args) → Option<Page>`
 
@@ -547,9 +556,9 @@ Slice 6a 的 placeholder-lock 测试**并不在 `postgres_*` 文件里**,而是�
 | 文件 | 锁定语义 | 当前命中后端 | PG-tag 之后是否改造 |
 |---|---|---|---|
 | `page_methods_find_duplicate_page.rs` | trait 默认 unsupported | InMemory / PG / libsql | ✅ 已完成（`39a4f68`） |
-| `page_methods_soft_delete_page.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-soft-delete |
-| `page_methods_restore_page.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-soft-delete |
-| `page_methods_purge_deleted_pages.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-soft-delete |
+| `page_methods_soft_delete_page.rs` | trait 默认 unsupported | InMemory / PG / libsql | ✅ 已完成（`2568268`） |
+| `page_methods_restore_page.rs` | trait 默认 unsupported | InMemory / PG | ✅ 已完成（`2568268`） |
+| `page_methods_purge_deleted_pages.rs` | trait 默认 unsupported | InMemory / PG | ✅ 已完成（`2568268`） |
 | `page_methods_refresh_page_body.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-advanced-writes |
 | `page_methods_update_cr_state.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-advanced-writes |
 | `page_methods_get_all_slugs.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-advanced-reads |
@@ -682,9 +691,9 @@ CI 上跑真实 PG 集成测试单独留 slice。
 > 每一项落入对应 PG 后续切片时, 在该切片的 plan 中重新建 checklist; 此处仅作"未完成项的导航"。
 
 - [x] `find_duplicate_page` PG 方言 — 切片: **PG-find-duplicate**（`39a4f68`）
-- [ ] `soft_delete_page` PG 方言 (now()) — 切片: **PG-soft-delete**
-- [ ] `restore_page` 实现 — 切片: **PG-soft-delete**
-- [ ] `purge_deleted_pages` 实现 — 切片: **PG-soft-delete**
+- [x] `soft_delete_page` PG 方言 (now()) — 切片: **PG-soft-delete**（`2568268`）
+- [x] `restore_page` 实现 — 切片: **PG-soft-delete**（`2568268`）
+- [x] `purge_deleted_pages` 实现 — 切片: **PG-soft-delete**（`2568268`）
 - [ ] `refresh_page_body` 实现 — 切片: **PG-advanced-writes**
 - [ ] `update_page_contextual_retrieval_state` 实现 — 切片: **PG-advanced-writes**
 - [ ] `get_all_slugs` 实现 — 切片: **PG-advanced-reads**
