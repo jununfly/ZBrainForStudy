@@ -121,7 +121,11 @@ fn build_list_pages_sql(filters: &PageFilters) -> Option<String> {
     // Dynamic SQL with optional filters. Only active filters produce bind
     // parameters, keeping the query plan cache-friendly and avoiding
     // `OR $N IS NULL` noise for every possible column.
-    let mut sql = format!("SELECT {FULL_PAGE_PROJECTION} FROM pages AS p WHERE 1=1");
+    let mut sql = format!("SELECT {FULL_PAGE_PROJECTION} FROM pages AS p");
+    if filters.tag.is_some() {
+        sql.push_str(" JOIN page_tags AS pt ON pt.page_id = p.id");
+    }
+    sql.push_str(" WHERE 1=1");
     let mut param_idx: u32 = 1;
 
     push_filter_clause(
@@ -163,6 +167,7 @@ fn build_list_pages_sql(filters: &PageFilters) -> Option<String> {
     if filters.updated_after.is_some() {
         sql.push_str("::timestamptz");
     }
+    push_filter_clause(&mut sql, &mut param_idx, filters.tag.is_some(), "pt.tag =");
     if !filters.include_deleted {
         sql.push_str(" AND p.deleted_at IS NULL");
     }
@@ -407,8 +412,8 @@ impl BrainEngine for PostgresEngine {
 
         // ORDER CONTRACT: bind order must match `param_idx` advancement in
         // `build_list_pages_sql`: page_type → source_id → source_ids →
-        // slug_prefix → updated_after → limit → offset. Reordering either side
-        // silently misbinds PG `$N`.
+        // slug_prefix → updated_after → tag → limit → offset. Reordering either
+        // side silently misbinds PG `$N`.
         if let Some(pt) = filters.page_type.as_deref() {
             query = query.bind(pt);
         }
@@ -424,6 +429,9 @@ impl BrainEngine for PostgresEngine {
         if let Some(cutoff) = filters.updated_after.as_deref() {
             query = query.bind(cutoff);
         }
+        if let Some(tag) = filters.tag.as_deref() {
+            query = query.bind(tag);
+        }
         if let Some(limit) = filters.limit {
             query = query.bind(i64::try_from(limit).unwrap_or(i64::MAX));
         }
@@ -437,6 +445,88 @@ impl BrainEngine for PostgresEngine {
             .map_err(|e| Error::engine(format!("list_pages failed: {e}")))?;
 
         rows.iter().map(row_to_page).collect()
+    }
+
+    async fn add_tag(&self, slug: &str, tag: &str, source_id: Option<&str>) -> Result<()> {
+        let pool = self.pool()?;
+        let source_id_param = source_id.unwrap_or("default");
+
+        let affected = sqlx::query(
+            "INSERT INTO page_tags (page_id, tag) \
+             SELECT id, $2 FROM pages \
+             WHERE slug = $1 AND source_id = $3 AND deleted_at IS NULL \
+             ON CONFLICT (page_id, tag) DO NOTHING",
+        )
+        .bind(slug)
+        .bind(tag)
+        .bind(source_id_param)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("add_tag insert failed: {e}")))?
+        .rows_affected();
+
+        if affected > 0 {
+            return Ok(());
+        }
+
+        let page_exists = sqlx::query_scalar::<_, i32>(
+            "SELECT 1 FROM pages \
+             WHERE slug = $1 AND source_id = $2 AND deleted_at IS NULL \
+             LIMIT 1",
+        )
+        .bind(slug)
+        .bind(source_id_param)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::engine(format!("add_tag existence probe failed: {e}")))?
+        .is_some();
+
+        if page_exists {
+            Ok(())
+        } else {
+            Err(Error::page_not_found(slug, source_id))
+        }
+    }
+
+    async fn remove_tag(&self, slug: &str, tag: &str, source_id: Option<&str>) -> Result<()> {
+        let pool = self.pool()?;
+        let source_id_param = source_id.unwrap_or("default");
+
+        sqlx::query(
+            "DELETE FROM page_tags \
+             WHERE tag = $2 \
+               AND page_id = ( \
+                   SELECT id FROM pages \
+                   WHERE slug = $1 AND source_id = $3 AND deleted_at IS NULL \
+               )",
+        )
+        .bind(slug)
+        .bind(tag)
+        .bind(source_id_param)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("remove_tag delete failed: {e}")))?;
+
+        Ok(())
+    }
+
+    async fn get_tags(&self, slug: &str, source_id: Option<&str>) -> Result<Vec<String>> {
+        let pool = self.pool()?;
+        let source_id_param = source_id.unwrap_or("default");
+
+        sqlx::query_scalar::<_, String>(
+            "SELECT tag FROM page_tags \
+             WHERE page_id = ( \
+                 SELECT id FROM pages \
+                 WHERE slug = $1 AND source_id = $2 AND deleted_at IS NULL \
+             ) \
+             ORDER BY tag",
+        )
+        .bind(slug)
+        .bind(source_id_param)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_tags query failed: {e}")))
     }
 
     async fn resolve_slugs(&self, partial: &str) -> Result<Vec<String>> {

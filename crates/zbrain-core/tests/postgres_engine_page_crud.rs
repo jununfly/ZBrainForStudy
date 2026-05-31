@@ -878,6 +878,181 @@ async fn list_pages_sorts_by_updated_desc_by_default() {
     engine.disconnect().await.expect("disconnect");
 }
 
+// -- tag CRUD / list_pages(tag) --------------------------------------------
+
+#[tokio::test]
+#[serial_test::serial]
+async fn add_tag_round_trips_via_get_tags() {
+    let Some(engine) = init_clean_engine().await else {
+        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
+        return;
+    };
+
+    engine
+        .put_page("tag-alpha", None, &note_input("Tag Alpha", "body"))
+        .await
+        .expect("put tag-alpha");
+    engine
+        .add_tag("tag-alpha", "rust", None)
+        .await
+        .expect("add_tag must succeed on an existing live page");
+
+    let tags = engine.get_tags("tag-alpha", None).await.expect("get_tags");
+    assert_eq!(tags, vec!["rust"]);
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn add_tag_is_idempotent_for_duplicate_tag() {
+    let Some(engine) = init_clean_engine().await else {
+        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
+        return;
+    };
+
+    engine
+        .put_page("tag-beta", None, &note_input("Tag Beta", "body"))
+        .await
+        .expect("put tag-beta");
+    engine
+        .add_tag("tag-beta", "ai", None)
+        .await
+        .expect("first add_tag");
+    engine
+        .add_tag("tag-beta", "ai", None)
+        .await
+        .expect("second add_tag must be idempotent");
+
+    let tags = engine.get_tags("tag-beta", None).await.expect("get_tags");
+    assert_eq!(tags, vec!["ai"], "duplicate tag must not create rows");
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn add_tag_missing_page_returns_page_not_found() {
+    let Some(engine) = init_clean_engine().await else {
+        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
+        return;
+    };
+
+    let err = engine
+        .add_tag("tag-ghost", "rust", None)
+        .await
+        .expect_err("add_tag on a missing page must fail");
+    assert_eq!(err.class, "PageNotFound");
+    assert_eq!(err.code, "page_not_found");
+    assert!(err.message.contains("tag-ghost"), "msg={}", err.message);
+    assert!(
+        err.message.contains("(source=default)"),
+        "None source_id must be normalised to default; msg={}",
+        err.message
+    );
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn remove_tag_deletes_existing_tag() {
+    let Some(engine) = init_clean_engine().await else {
+        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
+        return;
+    };
+
+    engine
+        .put_page("tag-gamma", None, &note_input("Tag Gamma", "body"))
+        .await
+        .expect("put tag-gamma");
+    engine
+        .add_tag("tag-gamma", "rust", None)
+        .await
+        .expect("add_tag");
+    engine
+        .remove_tag("tag-gamma", "rust", None)
+        .await
+        .expect("remove_tag");
+
+    let tags = engine.get_tags("tag-gamma", None).await.expect("get_tags");
+    assert!(tags.is_empty(), "tag must be gone after remove");
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn get_tags_returns_sorted_tags() {
+    let Some(engine) = init_clean_engine().await else {
+        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
+        return;
+    };
+
+    engine
+        .put_page("tag-delta", None, &note_input("Tag Delta", "body"))
+        .await
+        .expect("put tag-delta");
+    for tag in ["zinc", "alpha", "mid"] {
+        engine
+            .add_tag("tag-delta", tag, None)
+            .await
+            .expect("add_tag");
+    }
+
+    let tags = engine.get_tags("tag-delta", None).await.expect("get_tags");
+    assert_eq!(tags, vec!["alpha", "mid", "zinc"]);
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn list_pages_filters_by_tag() {
+    let Some(engine) = init_clean_engine().await else {
+        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
+        return;
+    };
+
+    engine
+        .put_page("tag-list-rust", None, &note_input("Rust", "body"))
+        .await
+        .expect("put rust page");
+    engine
+        .put_page("tag-list-ai", None, &note_input("AI", "body"))
+        .await
+        .expect("put ai page");
+    engine
+        .put_page("tag-list-both", None, &note_input("Both", "body"))
+        .await
+        .expect("put both page");
+
+    engine
+        .add_tag("tag-list-rust", "rust", None)
+        .await
+        .expect("tag rust page");
+    engine
+        .add_tag("tag-list-ai", "ai", None)
+        .await
+        .expect("tag ai page");
+    engine
+        .add_tag("tag-list-both", "rust", None)
+        .await
+        .expect("tag both page with rust");
+    engine
+        .add_tag("tag-list-both", "ai", None)
+        .await
+        .expect("tag both page with ai");
+
+    let pages = engine
+        .list_pages(&PageFilters {
+            tag: Some("rust".to_string()),
+            sort: Some(PageSort::Slug),
+            ..Default::default()
+        })
+        .await
+        .expect("list_pages tag=rust");
+
+    let slugs: Vec<&str> = pages.iter().map(|p| p.slug.as_str()).collect();
+    assert_eq!(slugs, vec!["tag-list-both", "tag-list-rust"]);
+    engine.disconnect().await.expect("disconnect");
+}
+
 // -- resolve_slugs ---------------------------------------------------------
 
 #[tokio::test]
