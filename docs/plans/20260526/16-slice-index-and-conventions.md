@@ -220,7 +220,7 @@ async fn find_duplicate_page(&self, content_hash: &str, source_id: Option<&str>)
 | **S6-T7** | libsql tag CRUD (add/remove/get) with source_id parameterisation | ✅ 已完成（`1a8de0e`） | S6-T6 ✅ |
 | **S6-T8** | put_page source_id 参数化跨 3 backend | ✅ 已完成（`8065bbe`） | S6-T7 ✅ |
 | **PG-soft-delete** | PG `soft_delete_page` / `restore_page` / `purge_page` 三件套（libsql 已有 `9ec05a4`，PG 缺口） | 🔜 候选下一切片 | PG-tag ✅ |
-| **PG-find-duplicate** | PG `find_duplicate_page`（libsql 已有 `32f81b6`，PG 缺口） | 🔜 候选下一切片 | PG-tag ✅ |
+| **PG-find-duplicate** | PG `find_duplicate_page`（libsql 已有 `32f81b6`，PG 缺口） | ✅ 已完成（`39a4f68`） | PG-tag ✅ |
 | **PG-advanced-reads** | PG `get_all_slugs` / `list_all_page_refs` / `get_page_timestamps` / `get_effective_dates` / `get_salience_scores` | 待启动 | PG-soft-delete |
 | **PG-advanced-writes** | PG `refresh_page_body` / `update_page_contextual_retrieval_state` / `update_slug` / `touch_salience` | 待启动 | PG-soft-delete |
 | libsql schema 升级 | `updated_at` 毫秒精度（`strftime('%Y-%m-%d %H:%M:%f', 'now')`）—— 解除"跨秒边界排序需 sleep ≥1.1s"约束 | 独立切片 | — |

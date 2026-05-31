@@ -546,7 +546,7 @@ Slice 6a 的 placeholder-lock 测试**并不在 `postgres_*` 文件里**,而是�
 
 | 文件 | 锁定语义 | 当前命中后端 | PG-tag 之后是否改造 |
 |---|---|---|---|
-| `page_methods_find_duplicate_page.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-find-duplicate |
+| `page_methods_find_duplicate_page.rs` | trait 默认 unsupported | InMemory / PG / libsql | ✅ 已完成（`39a4f68`） |
 | `page_methods_soft_delete_page.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-soft-delete |
 | `page_methods_restore_page.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-soft-delete |
 | `page_methods_purge_deleted_pages.rs` | trait 默认 unsupported | InMemory / PG | ❌ 留待 PG-soft-delete |
@@ -681,7 +681,7 @@ CI 上跑真实 PG 集成测试单独留 slice。
 
 > 每一项落入对应 PG 后续切片时, 在该切片的 plan 中重新建 checklist; 此处仅作"未完成项的导航"。
 
-- [ ] `find_duplicate_page` PG 方言 — 切片: **PG-find-duplicate**
+- [x] `find_duplicate_page` PG 方言 — 切片: **PG-find-duplicate**（`39a4f68`）
 - [ ] `soft_delete_page` PG 方言 (now()) — 切片: **PG-soft-delete**
 - [ ] `restore_page` 实现 — 切片: **PG-soft-delete**
 - [ ] `purge_deleted_pages` 实现 — 切片: **PG-soft-delete**
