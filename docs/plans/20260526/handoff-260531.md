@@ -132,3 +132,22 @@
   - **6a-libsql advanced reads**：把 5 个方法在 libsql backend 落地，移除 `Unsupported` stub。
   - **6c 完整 salience 公式**：补 `+ ln(1 + N_tags)`、激活 takes 维度（解锁 `salience_scores_takes_zero_until_6c.rs` 中的"until 6c"约束）。
 - **TodoList 状态**：本切片相关全部 `completed`（含 #25/26/28/29/30/31~36/38/39/40/41）。
+
+---
+
+## PG-find-orphan-pages 切片闭环（追加，commit a56c9ae + 99c9c10）
+
+- **范围**：`crates/zbrain-core/migrations/0006_links.sql`（新增）+ `postgres.rs` 追加 `find_orphan_pages` PG override + `tests/page_methods_find_orphan_pages.rs` 重写为 5 PG case + 1 libsql Unsupported placeholder。
+- **关键决策**：
+  - **links migration**：移植 TS `pglite-schema.ts:209-231` 完整 DDL；FK 列 `INTEGER → BIGINT`（匹配 `pages.id BIGSERIAL`）；`page_links` VIEW **YAGNI 暂不移植**。
+  - **C11 双侧 soft-delete 过滤**：候选侧 + 入链源侧均 `deleted_at IS NULL`；测试 case `treats_link_from_deleted_page_as_absent` 锁定。
+  - **`COALESCE(title, slug)` 是防御性死代码**：TS `title TEXT NOT NULL` + `putPage` 直接 bind → 空 title 存为空串。Rust 实现保留 COALESCE 作未来 NULL 漂移兜底；测试断言 empty title **保持空串**（TS parity），doc 注释解释该 nuance。
+- **真实契约**：`async fn find_orphan_pages(&self) -> Result<Vec<OrphanPage>>`；`OrphanPage { slug, title, domain: Option<String> }`。
+- **四连绿**：fmt clean / build ok / **test 239 passed** / clippy clean。
+- **commit 序**：
+  - `a56c9ae` 实现 + 测试（含 migration）。
+  - `99c9c10` doc-only follow-up：plan 14 §10.2 勾选 + §12 落地修订段。
+- **未尽事项 / 下一步候选切片**（更新优先级）：
+  - **6a-libsql advanced reads**：5 个方法 libsql 落地，移除 `Unsupported`。
+  - **PG-advanced-writes**：`refresh_page_body` + `update_page_contextual_retrieval_state`（plan 14 §10.2 仅剩这两行未勾选）。
+  - **6c 完整 salience**：补 `+ ln(1 + N_tags)` + takes 维度。
