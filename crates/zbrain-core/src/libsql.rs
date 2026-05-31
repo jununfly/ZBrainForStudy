@@ -25,7 +25,7 @@ use crate::engine::{
 use crate::error::{Error, Result};
 use crate::time::current_utc_iso8601;
 use crate::types::{
-    CRMode, EffectiveDateSource, FindDuplicatePageOpts, OrphanPage, PageKind, PageRef,
+    CRMode, EffectiveDateSource, FindDuplicatePageOpts, OrphanPage, PageKind, PageRef, PurgeResult,
     RefreshPageBodyArgs,
 };
 
@@ -732,6 +732,58 @@ impl BrainEngine for LibsqlEngine {
             }
             None => Ok(None),
         }
+    }
+
+    async fn restore_page(&self, slug: &str, source_id: Option<&str>) -> Result<bool> {
+        let conn = self.conn().await?;
+        let mut rows = conn
+            .query(
+                "UPDATE pages \
+                 SET deleted_at = NULL \
+                 WHERE slug = ?1 \
+                   AND deleted_at IS NOT NULL \
+                   AND (?2 IS NULL OR source_id = ?2) \
+                 RETURNING slug",
+                ::libsql::params![slug, source_id],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("restore_page update failed: {e}")))?;
+
+        Ok(rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("restore_page row fetch failed: {e}")))?
+            .is_some())
+    }
+
+    async fn purge_deleted_pages(&self, older_than_hours: u32) -> Result<PurgeResult> {
+        let conn = self.conn().await?;
+        let mut rows = conn
+            .query(
+                "DELETE FROM pages \
+                 WHERE deleted_at IS NOT NULL \
+                   AND deleted_at < strftime('%Y-%m-%d %H:%M:%f', 'now', '-' || ?1 || ' hours') \
+                 RETURNING slug",
+                ::libsql::params![older_than_hours.to_string()],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("purge_deleted_pages delete failed: {e}")))?;
+
+        let mut slugs = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("purge_deleted_pages row fetch failed: {e}")))?
+        {
+            slugs.push(
+                row.get(0).map_err(|e| {
+                    Error::engine(format!("purge_deleted_pages decode failed: {e}"))
+                })?,
+            );
+        }
+
+        let count = slugs.len() as u64;
+        Ok(PurgeResult { slugs, count })
     }
 
     async fn add_tag(&self, slug: &str, tag: &str, source_id: Option<&str>) -> Result<()> {

@@ -1,13 +1,9 @@
-//! Slice 6a S6-T1 placeholder-lock test: `purge_deleted_pages` placeholder lock.
-//!
-//! The libsql side keeps the placeholder-lock until that backend gets its
-//! Slice 6a real implementation. The `PostgresEngine` mirror tests below
-//! exercise the real semantics on PG ahead of libsql, in line with the
-//! plan-14 / plan-16 PG-soft-delete slice.
+//! Slice 6a TS-parity tests: `purge_deleted_pages` libsql implementation.
 
 use tempfile::NamedTempFile;
 use zbrain_core::engine::{BrainEngine, EngineConfig, PageInput};
 use zbrain_core::libsql::LibsqlEngine;
+use zbrain_core::types::PurgeResult;
 
 async fn init_clean_engine() -> (LibsqlEngine, NamedTempFile) {
     let path = NamedTempFile::new().expect("alloc temp db file");
@@ -21,18 +17,177 @@ async fn init_clean_engine() -> (LibsqlEngine, NamedTempFile) {
     (engine, path)
 }
 
+async fn libsql_seed_source(tmp: &NamedTempFile, id: &str) {
+    let path_str = tmp.path().to_string_lossy().into_owned();
+    let db = ::libsql::Builder::new_local(&path_str)
+        .build()
+        .await
+        .expect("raw db open");
+    let raw_conn = db.connect().expect("raw conn");
+    raw_conn
+        .execute(
+            "INSERT OR IGNORE INTO sources (id, name) VALUES (?1, ?2)",
+            ::libsql::params![id, id],
+        )
+        .await
+        .expect("seed source");
+}
+
+async fn libsql_set_deleted_at_hours_ago(tmp: &NamedTempFile, slug: &str, hours: i64) {
+    let path_str = tmp.path().to_string_lossy().into_owned();
+    let db = ::libsql::Builder::new_local(&path_str)
+        .build()
+        .await
+        .expect("raw db open");
+    let raw_conn = db.connect().expect("raw conn");
+    raw_conn
+        .execute(
+            "UPDATE pages SET deleted_at = datetime('now', '-' || ?2 || ' hours') WHERE slug = ?1",
+            ::libsql::params![slug, hours.to_string()],
+        )
+        .await
+        .expect("backdate deleted_at");
+}
+
+async fn libsql_slugs_remaining(tmp: &NamedTempFile) -> Vec<String> {
+    let path_str = tmp.path().to_string_lossy().into_owned();
+    let db = ::libsql::Builder::new_local(&path_str)
+        .build()
+        .await
+        .expect("raw db open");
+    let raw_conn = db.connect().expect("raw conn");
+    let mut rows = raw_conn
+        .query("SELECT slug FROM pages ORDER BY slug ASC", ())
+        .await
+        .expect("list slugs");
+    let mut out = Vec::new();
+    while let Some(row) = rows.next().await.expect("slug row fetch") {
+        out.push(row.get(0).expect("slug decode"));
+    }
+    out
+}
+
+async fn libsql_seed_page(engine: &LibsqlEngine, slug: &str, source_id: &str, title: &str) {
+    engine
+        .put_page(
+            slug,
+            Some(source_id),
+            &PageInput {
+                page_type: "note".to_string(),
+                title: title.to_string(),
+                compiled_truth: format!("body of {slug}"),
+                ..PageInput::default()
+            },
+        )
+        .await
+        .unwrap_or_else(|e| panic!("seed page {slug}: {e}"));
+}
+
+fn assert_libsql_purge(actual: &PurgeResult, expected_sorted: &[&str]) {
+    let mut got = actual.slugs.clone();
+    got.sort();
+    let want: Vec<String> = expected_sorted.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        got,
+        want,
+        "purge slug set mismatch (count={} expected={})",
+        actual.count,
+        expected_sorted.len()
+    );
+    assert_eq!(
+        actual.count,
+        expected_sorted.len() as u64,
+        "PurgeResult.count must match slugs length"
+    );
+}
+
 #[tokio::test]
-async fn slice_6a_page_methods_purge_deleted_pages_returns_unsupported() {
-    let (engine, _tmp) = init_clean_engine().await;
-    let err = engine
+async fn libsql_purge_deleted_pages_returns_slugs_for_rows_older_than_window() {
+    let (engine, tmp) = init_clean_engine().await;
+    libsql_seed_source(&tmp, "src-1").await;
+
+    libsql_seed_page(&engine, "old-a", "src-1", "Old A").await;
+    libsql_seed_page(&engine, "old-b", "src-1", "Old B").await;
+    libsql_seed_page(&engine, "fresh", "src-1", "Fresh").await;
+    libsql_seed_page(&engine, "live", "src-1", "Live").await;
+
+    engine
+        .soft_delete_page("old-a", Some("src-1"))
+        .await
+        .expect("soft delete old-a");
+    engine
+        .soft_delete_page("old-b", Some("src-1"))
+        .await
+        .expect("soft delete old-b");
+    engine
+        .soft_delete_page("fresh", Some("src-1"))
+        .await
+        .expect("soft delete fresh");
+
+    libsql_set_deleted_at_hours_ago(&tmp, "old-a", 72).await;
+    libsql_set_deleted_at_hours_ago(&tmp, "old-b", 48).await;
+    libsql_set_deleted_at_hours_ago(&tmp, "fresh", 1).await;
+
+    let result = engine
         .purge_deleted_pages(24)
         .await
-        .expect_err("6a placeholder-lock: purge_deleted_pages must be Unsupported");
-    let msg = err.to_string();
-    assert!(
-        msg.contains("pending slice 6a"),
-        "expected placeholder marker, got: {msg}"
+        .expect("purge older than 24h");
+    assert_libsql_purge(&result, &["old-a", "old-b"]);
+
+    let remaining = libsql_slugs_remaining(&tmp).await;
+    assert_eq!(
+        remaining,
+        vec!["fresh".to_string(), "live".to_string()],
+        "only fresh (soft-deleted within window) and live row must remain"
     );
+
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn libsql_purge_deleted_pages_returns_empty_when_nothing_qualifies() {
+    let (engine, tmp) = init_clean_engine().await;
+    libsql_seed_source(&tmp, "src-1").await;
+    libsql_seed_page(&engine, "live-only", "src-1", "Live Only").await;
+
+    let result = engine
+        .purge_deleted_pages(24)
+        .await
+        .expect("purge on a table with no soft-deleted rows");
+    assert_libsql_purge(&result, &[]);
+
+    let remaining = libsql_slugs_remaining(&tmp).await;
+    assert_eq!(remaining, vec!["live-only".to_string()]);
+
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn libsql_purge_deleted_pages_zero_hours_purges_all_soft_deleted_rows() {
+    let (engine, tmp) = init_clean_engine().await;
+    libsql_seed_source(&tmp, "src-1").await;
+    libsql_seed_page(&engine, "doomed-a", "src-1", "Doomed A").await;
+    libsql_seed_page(&engine, "doomed-b", "src-1", "Doomed B").await;
+    libsql_seed_page(&engine, "survivor", "src-1", "Survivor").await;
+
+    engine
+        .soft_delete_page("doomed-a", Some("src-1"))
+        .await
+        .expect("soft delete doomed-a");
+    engine
+        .soft_delete_page("doomed-b", Some("src-1"))
+        .await
+        .expect("soft delete doomed-b");
+
+    let result = engine
+        .purge_deleted_pages(0)
+        .await
+        .expect("purge with zero-hour window");
+    assert_libsql_purge(&result, &["doomed-a", "doomed-b"]);
+
+    let remaining = libsql_slugs_remaining(&tmp).await;
+    assert_eq!(remaining, vec!["survivor".to_string()]);
+
     engine.disconnect().await.expect("disconnect");
 }
 
@@ -51,7 +206,6 @@ async fn slice_6a_page_methods_purge_deleted_pages_returns_unsupported() {
 // ---------------------------------------------------------------------------
 
 use zbrain_core::postgres::PostgresEngine;
-use zbrain_core::types::PurgeResult;
 
 fn pg_url() -> Option<String> {
     std::env::var("ZBRAIN_TEST_PG_URL").ok()
