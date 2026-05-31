@@ -720,12 +720,12 @@ CI 上跑真实 PG 集成测试单独留 slice。
 - [x] `purge_deleted_pages` 实现 — 切片: **PG-soft-delete**（`2568268`）
 - [ ] `refresh_page_body` 实现 — 切片: **PG-advanced-writes**
 - [ ] `update_page_contextual_retrieval_state` 实现 — 切片: **PG-advanced-writes**
-- [ ] `get_all_slugs` 实现 — 切片: **PG-advanced-reads**
-- [ ] `list_all_page_refs` 实现 — 切片: **PG-advanced-reads**
+- [x] `get_all_slugs` 实现 — 切片: **PG-advanced-reads**（`16a563f`）
+- [x] `list_all_page_refs` 实现 — 切片: **PG-advanced-reads**（`16a563f`）
 - [ ] `find_orphan_pages` 实现 — 切片: **PG-find-orphan-pages**（已从 PG-advanced-reads 摘出，独立小切片）
-- [ ] `get_page_timestamps` 实现 — 切片: **PG-advanced-reads**
-- [ ] `get_effective_dates` 实现 — 切片: **PG-advanced-reads**
-- [ ] `get_salience_scores` 实现 — 切片: **PG-advanced-reads** 或 **6c**
+- [x] `get_page_timestamps` 实现 — 切片: **PG-advanced-reads**（`16a563f`）
+- [x] `get_effective_dates` 实现 — 切片: **PG-advanced-reads**（`16a563f`）
+- [x] `get_salience_scores` 实现 — 切片: **PG-advanced-reads**（`16a563f`；6a 阶段退化为 `emotional_weight * 5`，6c 再补 `+ ln(1 + N_tags)`）
 - [ ] `engine.rs` "pending slice 6a" 注释 — 等最后一个 PG 后续切片完成后清理
 - [ ] 13 个 `page_methods_*.rs` placeholder-lock 红测 — 跟随对应 PG 后续切片改写/保留(见 §6.2)
 - [ ] PG 真实集成测试基础设施 (`postgres_engine_*.rs` 去 `#[ignore]`) — 独立切片 **PG-integration-test-infra**

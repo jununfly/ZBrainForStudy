@@ -59,9 +59,12 @@
 - 本机会话中 `git status` / `git diff` 曾触发 sandbox warning，主要涉及 worktree index lock 或 pager 临时文件；stdout 可读。后续建议使用：
   - `GIT_PAGER=cat GIT_OPTIONAL_LOCKS=0 git -C "/Users/bilibili/Documents/workspace/jununfly/zbrain-rust" --no-pager ...`
 - PG integration tests 依赖 `ZBRAIN_TEST_PG_URL`。
-  - 未设置时 PostgreSQL tests 会输出 `skipping: ZBRAIN_TEST_PG_URL unset`，这不算有效 RED/GREEN。
-  - 本轮曾通过本机临时 PostgreSQL 获得有效 RED，再实现 GREEN。
-- 当前环境没有 Docker：此前 `docker compose` 失败为 `command not found: docker`。如需 PG integration，可继续用本机 PostgreSQL 或手动提供 `ZBRAIN_TEST_PG_URL`。
+  - 未设置时 PostgreSQL tests 会输出 `skipping: ZBRAIN_TEST_PG_URL unset`，这**不算**有效 RED/GREEN，也**不算 pass**——只代表 shell 未加载 env。
+  - **本机已有可用的 Homebrew PostgreSQL 16.14**（监听 `localhost:5434`，库 `zbrain_test` 已存在），URL 持久化在 `<repo-root>/.env`（gitignored）：
+    `ZBRAIN_TEST_PG_URL=postgres://postgres:postgres@localhost:5434/zbrain_test`
+  - 跑 PG 集成测试前**必须**激活：`set -a; source .env; set +a`（或 `direnv allow`）。
+  - 权威源：`docs/plans/20260526/17-session-state-110c.md` L139-150（#110-c, 2026-05-30 首次启用）。
+- 当前环境没有 Docker（`docker compose` 失败为 `command not found: docker`），但**无需 Docker**：直接用上述本机 Homebrew PG 即可。
 - zsh 中 `status` 是只读变量；临时脚本不要写 `status=$?`，改用 `test_status=$?`。
 
 ## 相关产物
@@ -91,7 +94,7 @@
 - 不要把关键技术偏差静默归入“已接受偏差”；如果发现 PG tag 行为与 libsql 不一致，应另开 checklist/切片追踪。
 - 不要把 `tag` filter 当作普通 WHERE 条件孤立处理；它依赖 `page_tags` schema、tag CRUD 和 bind order contract。
 - 不要在 `list_pages` 中调整 bind 顺序而不同步 `build_list_pages_sql` 的 `param_idx` 推进顺序。
-- 不要把 `ZBRAIN_TEST_PG_URL` 未设置时的 skipped tests 当成有效 PG 验证。
+- 不要把 `ZBRAIN_TEST_PG_URL` 未设置时的 skipped tests 当成有效 PG 验证；本机有可用 PG（见“已知问题”段 + `.env`），先 `set -a; source .env; set +a` 再 `cargo test`。
 - 当前 handoff 未保存任何 API key、密码或 PII；只引用路径、commit、状态和可执行待办。
 
 ## 2026-05-31 收口（追加）

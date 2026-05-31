@@ -42,6 +42,7 @@ use crate::engine::{
 };
 use crate::error::{Error, Result};
 use crate::types::FindDuplicatePageOpts;
+use crate::types::PageRef;
 use crate::types::PurgeResult;
 use crate::types::{CRMode, EffectiveDateSource, PageKind};
 
@@ -677,6 +678,181 @@ impl BrainEngine for PostgresEngine {
                     .map_err(|e| Error::engine(format!("resolve_slugs decode failed: {e}")))
             })
             .collect()
+    }
+
+    // ─── PG-advanced-reads overrides (slice 6a-pg) ───────────────────────────
+    // Five read-only methods promoted from trait-default `Unsupported` to
+    // real SQL on PostgresEngine. libsql side intentionally keeps the
+    // default `Unsupported` until slice 6a-libsql. Contracts: see
+    // docs/plans/20260526/14-slice-6a-pg-plan.md §11.1.
+
+    /// Return all live slugs, optionally scoped to `source_id`.
+    /// §11.1 R1: does NOT filter `deleted_at` (mirrors TS `getAllSlugs`).
+    async fn get_all_slugs(
+        &self,
+        source_id: Option<&str>,
+    ) -> Result<std::collections::HashSet<String>> {
+        let pool = self.pool()?;
+        let rows = sqlx::query(
+            "SELECT slug FROM pages \
+             WHERE $1::text IS NULL OR source_id = $1",
+        )
+        .bind(source_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_all_slugs failed: {e}")))?;
+
+        rows.into_iter()
+            .map(|r| {
+                r.try_get::<String, _>("slug")
+                    .map_err(|e| Error::engine(format!("get_all_slugs decode failed: {e}")))
+            })
+            .collect()
+    }
+
+    /// Return every live `(slug, source_id)` pair, ordered by
+    /// `(source_id, slug)` ascending. Mirrors TS `listAllPageRefs`.
+    async fn list_all_page_refs(&self) -> Result<Vec<PageRef>> {
+        let pool = self.pool()?;
+        let rows = sqlx::query(
+            "SELECT slug, source_id FROM pages \
+             WHERE deleted_at IS NULL \
+             ORDER BY source_id ASC, slug ASC",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("list_all_page_refs failed: {e}")))?;
+
+        rows.into_iter()
+            .map(|r| {
+                let slug = r
+                    .try_get::<String, _>("slug")
+                    .map_err(|e| Error::engine(format!("list_all_page_refs decode slug: {e}")))?;
+                let source_id = r.try_get::<String, _>("source_id").map_err(|e| {
+                    Error::engine(format!("list_all_page_refs decode source_id: {e}"))
+                })?;
+                Ok(PageRef { slug, source_id })
+            })
+            .collect()
+    }
+
+    /// Resolve `slug` → `COALESCE(updated_at, created_at)` for many slugs.
+    /// Missing slugs are omitted. §11.1 R3.
+    async fn get_page_timestamps(
+        &self,
+        slugs: &[String],
+    ) -> Result<std::collections::HashMap<String, String>> {
+        let pool = self.pool()?;
+        let rows = sqlx::query(
+            "SELECT slug, COALESCE(updated_at, created_at)::text AS ts \
+             FROM pages \
+             WHERE slug = ANY($1::text[]) AND deleted_at IS NULL",
+        )
+        .bind(slugs)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_page_timestamps failed: {e}")))?;
+
+        let mut out = std::collections::HashMap::with_capacity(rows.len());
+        for r in rows {
+            let slug = r
+                .try_get::<String, _>("slug")
+                .map_err(|e| Error::engine(format!("get_page_timestamps decode slug: {e}")))?;
+            let ts = r
+                .try_get::<String, _>("ts")
+                .map_err(|e| Error::engine(format!("get_page_timestamps decode ts: {e}")))?;
+            out.insert(slug, ts);
+        }
+        Ok(out)
+    }
+
+    /// Resolve `(slug, source_id)` → `COALESCE(updated_at, created_at)`.
+    /// Key format: `"{source_id}::{slug}"`. §11.1 R4.
+    ///
+    /// Note: despite the method name, the column `effective_date` is
+    /// intentionally NOT consulted — the contract mirrors TS, which falls
+    /// back to row mtime, not the metadata-derived `effective_date` field.
+    async fn get_effective_dates(
+        &self,
+        refs: &[PageRef],
+    ) -> Result<std::collections::HashMap<String, String>> {
+        let pool = self.pool()?;
+        let slugs: Vec<String> = refs.iter().map(|r| r.slug.clone()).collect();
+        let source_ids: Vec<String> = refs.iter().map(|r| r.source_id.clone()).collect();
+
+        let rows = sqlx::query(
+            "SELECT p.slug, p.source_id, \
+                    COALESCE(p.updated_at, p.created_at)::text AS ts \
+             FROM pages p \
+             JOIN unnest($1::text[], $2::text[]) AS u(slug, source_id) \
+               ON p.slug = u.slug AND p.source_id = u.source_id \
+             WHERE p.deleted_at IS NULL",
+        )
+        .bind(slugs.as_slice())
+        .bind(source_ids.as_slice())
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_effective_dates failed: {e}")))?;
+
+        let mut out = std::collections::HashMap::with_capacity(rows.len());
+        for r in rows {
+            let slug = r
+                .try_get::<String, _>("slug")
+                .map_err(|e| Error::engine(format!("get_effective_dates decode slug: {e}")))?;
+            let source_id = r
+                .try_get::<String, _>("source_id")
+                .map_err(|e| Error::engine(format!("get_effective_dates decode source_id: {e}")))?;
+            let ts = r
+                .try_get::<String, _>("ts")
+                .map_err(|e| Error::engine(format!("get_effective_dates decode ts: {e}")))?;
+            out.insert(format!("{source_id}::{slug}"), ts);
+        }
+        Ok(out)
+    }
+
+    /// Compute salience scores. §11.1 R5.
+    ///
+    /// **6a quirk**: the `takes` table lands in slice 6c. Until then the
+    /// distinct-active-takes term is hard-coded to `0`, so the score
+    /// degenerates to `COALESCE(emotional_weight, 0.0) * 5.0`. The lock
+    /// test `page_methods_salience_scores_takes_zero_until_6c.rs` guards
+    /// this so we cannot accidentally claim 6a is "done with takes".
+    async fn get_salience_scores(
+        &self,
+        refs: &[PageRef],
+    ) -> Result<std::collections::HashMap<String, f64>> {
+        let pool = self.pool()?;
+        let slugs: Vec<String> = refs.iter().map(|r| r.slug.clone()).collect();
+        let source_ids: Vec<String> = refs.iter().map(|r| r.source_id.clone()).collect();
+
+        let rows = sqlx::query(
+            "SELECT p.slug, p.source_id, \
+                    COALESCE(p.emotional_weight, 0.0) * 5.0 AS score \
+             FROM pages p \
+             JOIN unnest($1::text[], $2::text[]) AS u(slug, source_id) \
+               ON p.slug = u.slug AND p.source_id = u.source_id \
+             WHERE p.deleted_at IS NULL",
+        )
+        .bind(slugs.as_slice())
+        .bind(source_ids.as_slice())
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_salience_scores failed: {e}")))?;
+
+        let mut out = std::collections::HashMap::with_capacity(rows.len());
+        for r in rows {
+            let slug = r
+                .try_get::<String, _>("slug")
+                .map_err(|e| Error::engine(format!("get_salience_scores decode slug: {e}")))?;
+            let source_id = r
+                .try_get::<String, _>("source_id")
+                .map_err(|e| Error::engine(format!("get_salience_scores decode source_id: {e}")))?;
+            let score = r
+                .try_get::<f64, _>("score")
+                .map_err(|e| Error::engine(format!("get_salience_scores decode score: {e}")))?;
+            out.insert(format!("{source_id}::{slug}"), score);
+        }
+        Ok(out)
     }
 }
 
