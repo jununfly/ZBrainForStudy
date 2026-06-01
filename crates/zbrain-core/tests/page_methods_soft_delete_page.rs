@@ -223,8 +223,18 @@ async fn in_memory_soft_delete_page_matches_libsql_contract() {
         .soft_delete_page("memory-slug", Some("default"))
         .await
         .expect("repeat soft delete");
+    // After soft delete the row is invisible by default; pass
+    // `include_deleted: true` to inspect the `deleted_at` stamp, matching
+    // the libsql `get_page` contract (`include_deleted = false` filters
+    // `deleted_at IS NULL`).
     let page = engine
-        .get_page("memory-slug", &GetPageOpts::default())
+        .get_page(
+            "memory-slug",
+            &GetPageOpts {
+                include_deleted: true,
+                ..GetPageOpts::default()
+            },
+        )
         .await
         .expect("get page")
         .expect("page still exists after soft delete");
