@@ -1,13 +1,10 @@
-//! Slice 6a-libsql advanced reads (S2 RED): `get_page_timestamps` behavior tests.
+//! Slice 6a-libsql advanced reads (libsql parity): `get_page_timestamps` behavior tests.
 //!
 //! Mirrors the PG semantics locked in slice 6a-pg (plan 14 §11.1):
 //!   `SELECT slug, COALESCE(updated_at, created_at) AS ts FROM pages
 //!    WHERE slug IN (?...) AND deleted_at IS NULL`
 //! returning a `HashMap<String, String>` keyed by slug. Soft-deleted rows
 //! are excluded; missing slugs are silently dropped from the result.
-//!
-//! These tests are RED until S3 GREEN replaces the libsql default
-//! `Err(Error::unsupported("pending slice 6a"))` with a real implementation.
 
 use tempfile::NamedTempFile;
 use zbrain_core::engine::{BrainEngine, EngineConfig, PageInput};

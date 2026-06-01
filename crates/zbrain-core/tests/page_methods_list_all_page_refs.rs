@@ -1,13 +1,10 @@
-//! Slice 6a-libsql advanced reads (S2 RED): `list_all_page_refs` behavior tests.
+//! Slice 6a-libsql advanced reads (libsql parity): `list_all_page_refs` behavior tests.
 //!
 //! Mirrors the PG semantics locked in slice 6a-pg (plan 14 §11.1):
 //!   `SELECT slug, source_id FROM pages`
 //!   `WHERE deleted_at IS NULL`
 //!   `ORDER BY source_id, slug;`
 //! (i.e. only live rows, deterministic ordering).
-//!
-//! These tests are RED until S3 GREEN replaces the libsql default
-//! `Err(Error::unsupported("pending slice 6a"))` with a real implementation.
 
 use tempfile::NamedTempFile;
 use zbrain_core::engine::{BrainEngine, EngineConfig, PageInput};

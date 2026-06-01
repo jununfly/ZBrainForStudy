@@ -1,13 +1,10 @@
-//! Slice 6a-libsql advanced reads (S2 RED): `get_effective_dates` behavior tests.
+//! Slice 6a-libsql advanced reads (libsql parity): `get_effective_dates` behavior tests.
 //!
 //! Mirrors the PG semantics locked in slice 6a-pg (plan 14 §11.1):
 //!   `SELECT p.slug, p.source_id, COALESCE(p.updated_at, p.created_at) AS ts
 //!    FROM pages p
 //!    WHERE (p.slug, p.source_id) IN ((?1,?2), …) AND p.deleted_at IS NULL`
 //! returning a `HashMap<String, String>` keyed by `format!("{source_id}::{slug}")`.
-//!
-//! These tests are RED until S3 GREEN replaces the libsql default
-//! `Err(Error::unsupported("pending slice 6a"))` with a real implementation.
 
 use tempfile::NamedTempFile;
 use zbrain_core::engine::{BrainEngine, EngineConfig, PageInput};
