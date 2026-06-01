@@ -852,4 +852,155 @@ impl BrainEngine for InMemoryEngine {
         // postgres.rs:718 / libsql.rs:926 WHERE deleted_at IS NULL.
         Ok(())
     }
+
+    // ─── Advanced-read overrides (C1 Task 4) ────────────────────────────────
+    // Six read-only methods promoted from trait-default `Unsupported` to real
+    // InMemory implementations, mirroring postgres.rs:757-983 semantics.
+
+    /// `get_all_slugs` — does NOT filter `deleted_at` (mirrors postgres.rs:759).
+    async fn get_all_slugs(
+        &self,
+        source_id: Option<&str>,
+    ) -> crate::Result<std::collections::HashSet<String>> {
+        let store = self
+            .store
+            .lock()
+            .expect("InMemoryEngine store mutex poisoned");
+        Ok(store
+            .iter()
+            .filter(|p| source_id.is_none_or(|sid| p.source_id == sid))
+            .map(|p| p.slug.clone())
+            .collect())
+    }
+
+    /// `list_all_page_refs` — live pages only, ordered by `(source_id, slug)`.
+    async fn list_all_page_refs(&self) -> crate::Result<Vec<PageRef>> {
+        let store = self
+            .store
+            .lock()
+            .expect("InMemoryEngine store mutex poisoned");
+        let mut refs: Vec<PageRef> = store
+            .iter()
+            .filter(|p| p.deleted_at.is_none())
+            .map(|p| PageRef {
+                slug: p.slug.clone(),
+                source_id: p.source_id.clone(),
+            })
+            .collect();
+        refs.sort_by(|a, b| {
+            a.source_id
+                .cmp(&b.source_id)
+                .then_with(|| a.slug.cmp(&b.slug))
+        });
+        Ok(refs)
+    }
+
+    /// `find_orphan_pages` — no links table in `InMemory`, so ALL live pages are
+    /// orphans. `title` uses `COALESCE(title, slug)` (slug when title empty).
+    /// `domain` is extracted from `frontmatter["domain"]` as a string.
+    /// Ordered by slug ASC.
+    async fn find_orphan_pages(&self) -> crate::Result<Vec<OrphanPage>> {
+        let store = self
+            .store
+            .lock()
+            .expect("InMemoryEngine store mutex poisoned");
+        let mut orphans: Vec<OrphanPage> = store
+            .iter()
+            .filter(|p| p.deleted_at.is_none())
+            .map(|p| {
+                let title = if p.title.is_empty() {
+                    p.slug.clone()
+                } else {
+                    p.title.clone()
+                };
+                let domain = p
+                    .frontmatter
+                    .get("domain")
+                    .and_then(Value::as_str)
+                    .map(std::string::ToString::to_string);
+                OrphanPage {
+                    slug: p.slug.clone(),
+                    title,
+                    domain,
+                }
+            })
+            .collect();
+        orphans.sort_by(|a, b| a.slug.cmp(&b.slug));
+        Ok(orphans)
+    }
+
+    /// `get_page_timestamps` — key = slug, value = `COALESCE(updated_at,
+    /// created_at)`. Live pages only; missing slugs omitted.
+    async fn get_page_timestamps(
+        &self,
+        slugs: &[String],
+    ) -> crate::Result<std::collections::HashMap<String, String>> {
+        let store = self
+            .store
+            .lock()
+            .expect("InMemoryEngine store mutex poisoned");
+        let mut out = std::collections::HashMap::new();
+        for p in store
+            .iter()
+            .filter(|p| p.deleted_at.is_none() && slugs.iter().any(|s| s == &p.slug))
+        {
+            let ts = if p.updated_at.is_empty() {
+                p.created_at.clone()
+            } else {
+                p.updated_at.clone()
+            };
+            out.insert(p.slug.clone(), ts);
+        }
+        Ok(out)
+    }
+
+    /// `get_effective_dates` — key = `"{source_id}::{slug}"`, value =
+    /// `COALESCE(updated_at, created_at)`. Does NOT consult `effective_date`,
+    /// matching the SQL contract at postgres.rs:840-842.
+    async fn get_effective_dates(
+        &self,
+        refs: &[PageRef],
+    ) -> crate::Result<std::collections::HashMap<String, String>> {
+        let store = self
+            .store
+            .lock()
+            .expect("InMemoryEngine store mutex poisoned");
+        let mut out = std::collections::HashMap::new();
+        for r in refs {
+            if let Some(p) = store.iter().find(|p| {
+                p.slug == r.slug && p.source_id == r.source_id && p.deleted_at.is_none()
+            }) {
+                let ts = if p.updated_at.is_empty() {
+                    p.created_at.clone()
+                } else {
+                    p.updated_at.clone()
+                };
+                out.insert(format!("{}::{}", r.source_id, r.slug), ts);
+            }
+        }
+        Ok(out)
+    }
+
+    /// `get_salience_scores` — key = `"{source_id}::{slug}"`, score =
+    /// `emotional_weight.unwrap_or(0.0) * 5.0 + ln(1 + 0)` (no takes table
+    /// in `InMemory`, so the takes term is 0 → score = `emotional_weight * 5`).
+    async fn get_salience_scores(
+        &self,
+        refs: &[PageRef],
+    ) -> crate::Result<std::collections::HashMap<String, f64>> {
+        let store = self
+            .store
+            .lock()
+            .expect("InMemoryEngine store mutex poisoned");
+        let mut out = std::collections::HashMap::new();
+        for r in refs {
+            if let Some(p) = store.iter().find(|p| {
+                p.slug == r.slug && p.source_id == r.source_id && p.deleted_at.is_none()
+            }) {
+                let value = p.emotional_weight.unwrap_or(0.0) * 5.0;
+                out.insert(format!("{}::{}", r.source_id, r.slug), value);
+            }
+        }
+        Ok(out)
+    }
 }

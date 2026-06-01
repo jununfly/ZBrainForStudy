@@ -1,7 +1,9 @@
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
+use serde_json::json;
 use zbrain_core::engine::{BrainEngine, EngineConfig, GetPageOpts, InMemoryEngine, PageInput};
-use zbrain_core::types::{CRMode, RefreshPageBodyArgs};
+use zbrain_core::types::{CRMode, OrphanPage, PageRef, RefreshPageBodyArgs};
 use zbrain_core::PurgeResult;
 
 async fn init_in_memory() -> InMemoryEngine {
@@ -510,6 +512,342 @@ async fn in_memory_update_cr_state_updates_fields_and_noops_for_missing_or_delet
     assert_eq!(
         after_attempt.corpus_generation, before_attempt.corpus_generation,
         "soft-deleted corpus_generation must be unchanged"
+    );
+
+    engine.disconnect().await.expect("disconnect");
+}
+
+// ── Advanced-read contract tests (C1 Task 4) ─────────────────────────────────
+
+#[tokio::test]
+async fn in_memory_get_all_slugs_returns_all_including_soft_deleted() {
+    let engine = init_in_memory().await;
+
+    engine
+        .put_page("alpha", Some("src-1"), &page_input("alpha"))
+        .await
+        .expect("seed alpha");
+    engine
+        .put_page("beta", Some("src-1"), &page_input("beta"))
+        .await
+        .expect("seed beta");
+    engine
+        .put_page("gamma", Some("src-2"), &page_input("gamma"))
+        .await
+        .expect("seed gamma src-2");
+    engine
+        .soft_delete_page("beta", Some("src-1"))
+        .await
+        .expect("soft delete beta");
+
+    // source_id: None → all slugs including soft-deleted
+    let all = engine.get_all_slugs(None).await.expect("get_all_slugs None");
+    let mut all_sorted: Vec<String> = all.into_iter().collect();
+    all_sorted.sort();
+    assert_eq!(
+        all_sorted,
+        vec!["alpha", "beta", "gamma"],
+        "all slugs including soft-deleted"
+    );
+
+    // source_id: Some("src-1") → only src-1 slugs (including soft-deleted beta)
+    let src1 = engine
+        .get_all_slugs(Some("src-1"))
+        .await
+        .expect("get_all_slugs src-1");
+    let mut src1_sorted: Vec<String> = src1.into_iter().collect();
+    src1_sorted.sort();
+    assert_eq!(
+        src1_sorted,
+        vec!["alpha", "beta"],
+        "src-1 slugs include soft-deleted"
+    );
+
+    // source_id: Some("src-2") → only src-2 slugs
+    let src2 = engine
+        .get_all_slugs(Some("src-2"))
+        .await
+        .expect("get_all_slugs src-2");
+    assert_eq!(
+        src2,
+        HashSet::from(["gamma".to_string()]),
+        "src-2 slugs"
+    );
+
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn in_memory_list_all_page_refs_excludes_deleted_and_orders() {
+    let engine = init_in_memory().await;
+
+    engine
+        .put_page("slug-b", Some("src-2"), &page_input("slug-b"))
+        .await
+        .expect("seed slug-b src-2");
+    engine
+        .put_page("slug-a", Some("src-1"), &page_input("slug-a"))
+        .await
+        .expect("seed slug-a src-1");
+    engine
+        .put_page("slug-c", Some("src-1"), &page_input("slug-c"))
+        .await
+        .expect("seed slug-c src-1");
+    engine
+        .put_page("slug-d", Some("src-2"), &page_input("slug-d"))
+        .await
+        .expect("seed slug-d src-2");
+    // soft-delete slug-c — should be excluded
+    engine
+        .soft_delete_page("slug-c", Some("src-1"))
+        .await
+        .expect("soft delete slug-c");
+
+    let refs = engine
+        .list_all_page_refs()
+        .await
+        .expect("list_all_page_refs");
+    assert_eq!(
+        refs,
+        vec![
+            PageRef {
+                slug: "slug-a".into(),
+                source_id: "src-1".into()
+            },
+            PageRef {
+                slug: "slug-b".into(),
+                source_id: "src-2".into()
+            },
+            PageRef {
+                slug: "slug-d".into(),
+                source_id: "src-2".into()
+            },
+        ],
+        "excludes soft-deleted, ordered by (source_id, slug)"
+    );
+
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn in_memory_find_orphan_pages_returns_live_pages_with_domain() {
+    let engine = init_in_memory().await;
+
+    // page with domain in frontmatter
+    let with_domain = PageInput {
+        page_type: "note".into(),
+        title: "Titled Page".into(),
+        compiled_truth: "truth".into(),
+        frontmatter: Some(json!({"domain": "test-domain"})),
+        ..PageInput::default()
+    };
+    engine
+        .put_page("alpha", Some("src-1"), &with_domain)
+        .await
+        .expect("seed alpha with domain");
+
+    // page with empty title → COALESCE falls back to slug
+    let no_title = PageInput {
+        page_type: "note".into(),
+        title: String::new(),
+        compiled_truth: "truth".into(),
+        ..PageInput::default()
+    };
+    engine
+        .put_page("beta", Some("src-1"), &no_title)
+        .await
+        .expect("seed beta no title");
+
+    // page with title but no domain
+    engine
+        .put_page("gamma", Some("src-1"), &page_input("gamma"))
+        .await
+        .expect("seed gamma");
+
+    // soft-deleted page — should be excluded
+    engine
+        .put_page("deleted", Some("src-1"), &page_input("deleted"))
+        .await
+        .expect("seed deleted");
+    engine
+        .soft_delete_page("deleted", Some("src-1"))
+        .await
+        .expect("soft delete");
+
+    let orphans = engine.find_orphan_pages().await.expect("find_orphan_pages");
+    // InMemory has no links table, so all live pages are orphans
+    // Ordered by slug ASC
+    assert_eq!(
+        orphans,
+        vec![
+            OrphanPage {
+                slug: "alpha".into(),
+                title: "Titled Page".into(),
+                domain: Some("test-domain".into()),
+            },
+            OrphanPage {
+                slug: "beta".into(),
+                title: "beta".into(),
+                domain: None,
+            },
+            OrphanPage {
+                slug: "gamma".into(),
+                title: "gamma".into(),
+                domain: None,
+            },
+        ],
+        "live pages with COALESCE(title, slug) and domain extraction, ordered by slug"
+    );
+
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn in_memory_get_page_timestamps_returns_coalesce_and_omits_missing() {
+    let engine = init_in_memory().await;
+
+    engine
+        .put_page("exists", Some("src-1"), &page_input("exists"))
+        .await
+        .expect("seed exists");
+    engine
+        .put_page("deleted", Some("src-1"), &page_input("deleted"))
+        .await
+        .expect("seed deleted");
+    engine
+        .soft_delete_page("deleted", Some("src-1"))
+        .await
+        .expect("soft delete deleted");
+
+    let page = engine
+        .get_page("exists", &get_opts("src-1", false))
+        .await
+        .expect("get page")
+        .expect("page exists");
+    let expected_ts = if page.updated_at.is_empty() {
+        page.created_at.clone()
+    } else {
+        page.updated_at.clone()
+    };
+
+    let result: HashMap<String, String> = engine
+        .get_page_timestamps(&[
+            "exists".to_string(),
+            "missing".to_string(),
+            "deleted".to_string(),
+        ])
+        .await
+        .expect("get_page_timestamps");
+
+    // Key is slug, not source_id::slug
+    assert_eq!(
+        result.get("exists"),
+        Some(&expected_ts),
+        "key is slug, value is COALESCE(updated_at, created_at)"
+    );
+    assert!(!result.contains_key("missing"), "missing slug omitted");
+    assert!(
+        !result.contains_key("deleted"),
+        "soft-deleted slug omitted"
+    );
+
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn in_memory_get_effective_dates_uses_coalesce_updated_created() {
+    let engine = init_in_memory().await;
+
+    engine
+        .put_page("page-a", Some("src-1"), &page_input("page-a"))
+        .await
+        .expect("seed page-a");
+    engine
+        .put_page("page-b", Some("src-2"), &page_input("page-b"))
+        .await
+        .expect("seed page-b");
+
+    let page_a = engine
+        .get_page("page-a", &get_opts("src-1", false))
+        .await
+        .expect("get page-a")
+        .expect("exists");
+    let expected_ts_a = if page_a.updated_at.is_empty() {
+        page_a.created_at.clone()
+    } else {
+        page_a.updated_at.clone()
+    };
+
+    let refs = vec![
+        PageRef {
+            slug: "page-a".into(),
+            source_id: "src-1".into(),
+        },
+        PageRef {
+            slug: "page-b".into(),
+            source_id: "src-2".into(),
+        },
+        PageRef {
+            slug: "no-such".into(),
+            source_id: "src-1".into(),
+        },
+    ];
+
+    let result: HashMap<String, String> = engine
+        .get_effective_dates(&refs)
+        .await
+        .expect("get_effective_dates");
+
+    // Key format: "{source_id}::{slug}"
+    assert_eq!(
+        result.get("src-1::page-a"),
+        Some(&expected_ts_a),
+        "key is source_id::slug, value is COALESCE(updated_at, created_at)"
+    );
+    assert!(result.contains_key("src-2::page-b"), "page-b present");
+    assert!(
+        !result.contains_key("src-1::no-such"),
+        "missing ref omitted"
+    );
+
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn in_memory_get_salience_scores_default_emotional_weight_is_zero() {
+    let engine = init_in_memory().await;
+
+    engine
+        .put_page("page-x", Some("src-1"), &page_input("page-x"))
+        .await
+        .expect("seed page-x");
+
+    let refs = vec![
+        PageRef {
+            slug: "page-x".into(),
+            source_id: "src-1".into(),
+        },
+        PageRef {
+            slug: "no-such".into(),
+            source_id: "src-1".into(),
+        },
+    ];
+
+    let result: HashMap<String, f64> = engine
+        .get_salience_scores(&refs)
+        .await
+        .expect("get_salience_scores");
+
+    // emotional_weight defaults to None → 0.0 * 5.0 = 0.0
+    // Key format: "{source_id}::{slug}"
+    assert_eq!(
+        result.get("src-1::page-x"),
+        Some(&0.0),
+        "default score is 0.0"
+    );
+    assert!(
+        !result.contains_key("src-1::no-such"),
+        "missing ref omitted"
     );
 
     engine.disconnect().await.expect("disconnect");
