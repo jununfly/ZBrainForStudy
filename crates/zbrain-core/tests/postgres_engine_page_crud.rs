@@ -1,58 +1,14 @@
 //! Slice 4b - `PostgresEngine` Page CRUD integration tests.
 //!
-//! Gated on `ZBRAIN_TEST_PG_URL` (same pattern as the lifecycle suite).
-//! Each test connects to a clean schema via `init_clean_engine()`, truncates
-//! the `pages` table from prior test runs, then exercises one CRUD method.
-//!
-//! Slice #110-g: every test is `#[serial_test::serial]` because all of them
-//! share the same `pages` table in the test database. Cargo runs tests
-//! multi-threaded by default, which races TRUNCATE against sibling INSERTs
-//! and causes flaky failures. `#[serial]` enforces a global mutex.
-//!
-//! Test groups:
-//! - `get_page`: not-found / found / source scoping / `include_deleted`
-//!   hides soft-deleted rows by default and returns them when set
-//! - `put_page`: insert / upsert (same slug -> updated row, id may change)
-//! - `delete_page`: row vanishes, no-op on missing
-//! - `list_pages`: empty / `page_type` filter / limit truncation
-//! - `resolve_slugs`: exact match only (fuzzy deferred to slice 6.5c)
+//! Each test launches its own ephemeral `PostgreSQL` instance via `PgFixture`,
+//! so no serial gating is required and no external `PostgreSQL` or Docker
+//! installation is needed.
+
+mod support;
 
 use zbrain_core::engine::{
-    BrainEngine, EngineConfig, GetPageOpts, PageFilters, PageInput, PageSort,
+    BrainEngine, GetPageOpts, PageFilters, PageInput, PageSort,
 };
-use zbrain_core::postgres::PostgresEngine;
-
-fn pg_url() -> Option<String> {
-    std::env::var("ZBRAIN_TEST_PG_URL").ok()
-}
-
-/// Create a connected, schema-initialized engine and wipe any leftover rows
-/// from previous test runs. Returns None when `ZBRAIN_TEST_PG_URL` is unset so
-/// callers can skip cleanly without panicking.
-async fn init_clean_engine() -> Option<PostgresEngine> {
-    let url = pg_url()?;
-    let engine = PostgresEngine::new();
-    let cfg = EngineConfig {
-        database_url: Some(url.clone()),
-        database_path: None,
-    };
-    engine.connect(&cfg).await.expect("connect");
-    engine.init_schema().await.expect("init_schema");
-
-    // Truncate via a side-channel pool so we do not need a trait method for it.
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(1)
-        .connect(&url)
-        .await
-        .expect("verification pool");
-    sqlx::query("TRUNCATE TABLE pages RESTART IDENTITY CASCADE")
-        .execute(&pool)
-        .await
-        .expect("truncate pages");
-    pool.close().await;
-
-    Some(engine)
-}
 
 fn note_input(title: &str, body: &str) -> PageInput {
     PageInput {
@@ -63,11 +19,10 @@ fn note_input(title: &str, body: &str) -> PageInput {
     }
 }
 
-async fn seed_source(id: &str) {
-    let url = pg_url().expect("ZBRAIN_TEST_PG_URL set for source seed");
+async fn seed_source(url: &str, id: &str) {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
-        .connect(&url)
+        .connect(url)
         .await
         .expect("source seed pool");
     sqlx::query("INSERT INTO sources (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING")
@@ -79,11 +34,10 @@ async fn seed_source(id: &str) {
     pool.close().await;
 }
 
-async fn source_ids_for_slug(slug: &str) -> Vec<String> {
-    let url = pg_url().expect("ZBRAIN_TEST_PG_URL set for source verification");
+async fn source_ids_for_slug(url: &str, slug: &str) -> Vec<String> {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
-        .connect(&url)
+        .connect(url)
         .await
         .expect("source verification pool");
     let rows = sqlx::query_scalar::<_, String>(
@@ -100,27 +54,20 @@ async fn source_ids_for_slug(slug: &str) -> Vec<String> {
 // -- get_page --------------------------------------------------------------
 
 #[tokio::test]
-#[serial_test::serial]
 async fn get_page_returns_none_when_slug_missing() {
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
     let got = engine
         .get_page("does-not-exist", &GetPageOpts::default())
         .await
         .expect("get_page");
     assert!(got.is_none(), "missing slug must return None, got {got:?}");
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn get_page_round_trips_after_put() {
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
     let inserted = engine
         .put_page("alpha", None, &note_input("Alpha", "body-1"))
         .await
@@ -135,17 +82,13 @@ async fn get_page_round_trips_after_put() {
     assert_eq!(got.compiled_truth, "body-1");
     assert_eq!(got.page_type, "note");
     assert_eq!(got.id, inserted.id);
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn get_page_respects_source_id_scope() {
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
-    seed_source("pg-alt").await;
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    seed_source(&fix.url, "pg-alt").await;
 
     let default_page = engine
         .put_page(
@@ -181,17 +124,13 @@ async fn get_page_respects_source_id_scope() {
     assert_eq!(got.title, "Alt title");
     assert_eq!(got.compiled_truth, "alt-body");
     assert_eq!(got.source_id, "pg-alt");
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn get_page_without_source_id_does_not_fall_back_to_non_default_source() {
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
-    seed_source("pg-alt").await;
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    seed_source(&fix.url, "pg-alt").await;
 
     engine
         .put_page(
@@ -211,17 +150,15 @@ async fn get_page_without_source_id_does_not_fall_back_to_non_default_source() {
         got.is_none(),
         "GetPageOpts::default() must only search the default source, got {got:?}"
     );
-    engine.disconnect().await.expect("disconnect");
 }
 
 /// Side-channel: soft-delete a page by stamping `deleted_at = now()` directly
 /// via SQL. `BrainEngine::soft_delete_page` is still `unsupported` in PG until
 /// a later slice, so the test sets the column itself to exercise the read path.
-async fn soft_delete_via_sql(slug: &str) {
-    let url = pg_url().expect("ZBRAIN_TEST_PG_URL set for soft-delete side-channel");
+async fn soft_delete_via_sql(url: &str, slug: &str) {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
-        .connect(&url)
+        .connect(url)
         .await
         .expect("soft-delete pool");
     let rows = sqlx::query("UPDATE pages SET deleted_at = now() WHERE slug = $1")
@@ -238,17 +175,14 @@ async fn soft_delete_via_sql(slug: &str) {
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn get_page_hides_soft_deleted_row_by_default() {
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
     engine
         .put_page("soft-del-hidden", None, &note_input("X", "body"))
         .await
         .expect("put_page");
-    soft_delete_via_sql("soft-del-hidden").await;
+    soft_delete_via_sql(&fix.url, "soft-del-hidden").await;
 
     let got = engine
         .get_page("soft-del-hidden", &GetPageOpts::default())
@@ -258,21 +192,17 @@ async fn get_page_hides_soft_deleted_row_by_default() {
         got.is_none(),
         "default GetPageOpts must hide soft-deleted rows, got {got:?}"
     );
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn get_page_returns_soft_deleted_row_when_include_deleted_true() {
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
     let inserted = engine
         .put_page("soft-del-visible", None, &note_input("X", "body"))
         .await
         .expect("put_page");
-    soft_delete_via_sql("soft-del-visible").await;
+    soft_delete_via_sql(&fix.url, "soft-del-visible").await;
 
     let opts = GetPageOpts {
         source_id: None,
@@ -293,19 +223,15 @@ async fn get_page_returns_soft_deleted_row_when_include_deleted_true() {
         "include_deleted=true must surface the deleted_at timestamp, got {:?}",
         got.deleted_at
     );
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn get_page_live_row_has_no_deleted_at() {
     // Slice #72-a guard: a never-deleted row must round-trip
     // `deleted_at == None`. Prevents an accidental projection that always
     // populates the field (e.g. defaulting to `now()` instead of NULL).
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
     engine
         .put_page("live-page", None, &note_input("Live", "body"))
         .await
@@ -321,18 +247,14 @@ async fn get_page_live_row_has_no_deleted_at() {
         "live row must have deleted_at = None, got {:?}",
         got.deleted_at
     );
-    engine.disconnect().await.expect("disconnect");
 }
 
 // -- put_page --------------------------------------------------------------
 
 #[tokio::test]
-#[serial_test::serial]
 async fn put_page_upsert_updates_existing_row() {
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
     let first = engine
         .put_page("beta", None, &note_input("Beta v1", "body-v1"))
         .await
@@ -354,17 +276,13 @@ async fn put_page_upsert_updates_existing_row() {
         .expect("Some(page)");
     assert_eq!(got.title, "Beta v2");
     assert_eq!(got.compiled_truth, "body-v2");
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn put_page_respects_source_id_as_part_of_identity() {
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
-    seed_source("pg-alt").await;
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    seed_source(&fix.url, "pg-alt").await;
 
     let default_page = engine
         .put_page(
@@ -390,21 +308,17 @@ async fn put_page_respects_source_id_as_part_of_identity() {
         "same slug under distinct source_id values must be distinct rows"
     );
     assert_eq!(
-        source_ids_for_slug("same-slug-different-source").await,
+        source_ids_for_slug(&fix.url, "same-slug-different-source").await,
         vec!["default".to_string(), "pg-alt".to_string()]
     );
-    engine.disconnect().await.expect("disconnect");
 }
 
 // -- delete_page -----------------------------------------------------------
 
 #[tokio::test]
-#[serial_test::serial]
 async fn delete_page_removes_row() {
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
     engine
         .put_page("gamma", None, &note_input("Gamma", "body"))
         .await
@@ -415,48 +329,36 @@ async fn delete_page_removes_row() {
         .await
         .expect("get_page");
     assert!(got.is_none(), "deleted row must vanish");
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn delete_page_is_noop_on_missing_slug() {
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
     // Must not error - matches TS behavior and InMemoryEngine.
     engine
         .delete_page("never-existed")
         .await
         .expect("delete_page on missing slug must be a no-op");
-    engine.disconnect().await.expect("disconnect");
 }
 
 // -- list_pages ------------------------------------------------------------
 
 #[tokio::test]
-#[serial_test::serial]
 async fn list_pages_empty_when_no_rows() {
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
     let pages = engine
         .list_pages(&PageFilters::default())
         .await
         .expect("list_pages");
     assert!(pages.is_empty(), "empty table must yield empty Vec");
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn list_pages_filters_by_page_type() {
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
     engine
         .put_page("n1", None, &note_input("N1", "x"))
         .await
@@ -502,16 +404,12 @@ async fn list_pages_filters_by_page_type() {
         .expect("list_pages person");
     assert_eq!(people.len(), 1);
     assert_eq!(people[0].slug, "p1");
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn list_pages_respects_limit() {
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
     for i in 0..5 {
         engine
             .put_page(
@@ -532,18 +430,14 @@ async fn list_pages_respects_limit() {
         .await
         .expect("list_pages");
     assert_eq!(pages.len(), 3, "limit must truncate result set");
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn list_pages_filters_by_source_id() {
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
-    seed_source("pg-alpha").await;
-    seed_source("pg-beta").await;
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    seed_source(&fix.url, "pg-alpha").await;
+    seed_source(&fix.url, "pg-beta").await;
 
     engine
         .put_page(
@@ -581,18 +475,14 @@ async fn list_pages_filters_by_source_id() {
     assert_eq!(pages.len(), 1, "only pg-alpha pages should appear");
     assert_eq!(pages[0].slug, "source-alpha");
     assert_eq!(pages[0].source_id, "pg-alpha");
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn list_pages_filters_by_source_ids() {
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
-    seed_source("pg-alpha").await;
-    seed_source("pg-beta").await;
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    seed_source(&fix.url, "pg-alpha").await;
+    seed_source(&fix.url, "pg-beta").await;
 
     engine
         .put_page(
@@ -640,16 +530,12 @@ async fn list_pages_filters_by_source_ids() {
             .all(|p| p.source_id == "default" || p.source_id == "pg-beta"),
         "all results must belong to selected source ids"
     );
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn list_pages_filters_by_slug_prefix() {
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
 
     engine
         .put_page("docs/alpha", None, &note_input("Docs Alpha", "body"))
@@ -675,16 +561,12 @@ async fn list_pages_filters_by_slug_prefix() {
 
     let slugs: Vec<&str> = pages.iter().map(|p| p.slug.as_str()).collect();
     assert_eq!(slugs, vec!["docs/alpha", "docs/beta"]);
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn list_pages_filters_by_updated_after() {
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
 
     let old = engine
         .put_page("updated-old", None, &note_input("Old", "body"))
@@ -712,16 +594,12 @@ async fn list_pages_filters_by_updated_after() {
         old.updated_at,
         new.updated_at
     );
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn list_pages_excludes_soft_deleted_by_default() {
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
 
     engine
         .put_page("visible-page", None, &note_input("Visible", "body"))
@@ -731,7 +609,7 @@ async fn list_pages_excludes_soft_deleted_by_default() {
         .put_page("soft-deleted-page", None, &note_input("Deleted", "body"))
         .await
         .expect("put deleted");
-    soft_delete_via_sql("soft-deleted-page").await;
+    soft_delete_via_sql(&fix.url, "soft-deleted-page").await;
 
     let pages = engine
         .list_pages(&PageFilters {
@@ -744,16 +622,12 @@ async fn list_pages_excludes_soft_deleted_by_default() {
     let slugs: Vec<&str> = pages.iter().map(|p| p.slug.as_str()).collect();
     assert_eq!(slugs, vec!["visible-page"]);
     assert!(pages.iter().all(|p| p.deleted_at.is_none()));
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn list_pages_includes_soft_deleted_when_flag_set() {
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
 
     engine
         .put_page("visible-page", None, &note_input("Visible", "body"))
@@ -763,7 +637,7 @@ async fn list_pages_includes_soft_deleted_when_flag_set() {
         .put_page("soft-deleted-page", None, &note_input("Deleted", "body"))
         .await
         .expect("put deleted");
-    soft_delete_via_sql("soft-deleted-page").await;
+    soft_delete_via_sql(&fix.url, "soft-deleted-page").await;
 
     let pages = engine
         .list_pages(&PageFilters {
@@ -781,16 +655,12 @@ async fn list_pages_includes_soft_deleted_when_flag_set() {
         .find(|p| p.slug == "soft-deleted-page")
         .expect("soft-deleted page should be present");
     assert!(deleted.deleted_at.is_some());
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn list_pages_respects_offset() {
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
 
     for slug in ["offset-a", "offset-b", "offset-c", "offset-d"] {
         engine
@@ -810,16 +680,12 @@ async fn list_pages_respects_offset() {
 
     let slugs: Vec<&str> = pages.iter().map(|p| p.slug.as_str()).collect();
     assert_eq!(slugs, vec!["offset-c", "offset-d"]);
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn list_pages_sorts_by_slug_asc() {
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
 
     for slug in ["slug-c", "slug-a", "slug-b"] {
         engine
@@ -838,16 +704,12 @@ async fn list_pages_sorts_by_slug_asc() {
 
     let slugs: Vec<&str> = pages.iter().map(|p| p.slug.as_str()).collect();
     assert_eq!(slugs, vec!["slug-a", "slug-b", "slug-c"]);
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn list_pages_sorts_by_updated_desc_by_default() {
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
 
     let first = engine
         .put_page("updated-default-first", None, &note_input("First", "body"))
@@ -875,18 +737,14 @@ async fn list_pages_sorts_by_updated_desc_by_default() {
         first.updated_at,
         second.updated_at
     );
-    engine.disconnect().await.expect("disconnect");
 }
 
 // -- tag CRUD / list_pages(tag) --------------------------------------------
 
 #[tokio::test]
-#[serial_test::serial]
 async fn add_tag_round_trips_via_get_tags() {
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
 
     engine
         .put_page("tag-alpha", None, &note_input("Tag Alpha", "body"))
@@ -899,16 +757,12 @@ async fn add_tag_round_trips_via_get_tags() {
 
     let tags = engine.get_tags("tag-alpha", None).await.expect("get_tags");
     assert_eq!(tags, vec!["rust"]);
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn add_tag_is_idempotent_for_duplicate_tag() {
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
 
     engine
         .put_page("tag-beta", None, &note_input("Tag Beta", "body"))
@@ -925,16 +779,12 @@ async fn add_tag_is_idempotent_for_duplicate_tag() {
 
     let tags = engine.get_tags("tag-beta", None).await.expect("get_tags");
     assert_eq!(tags, vec!["ai"], "duplicate tag must not create rows");
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn add_tag_missing_page_returns_page_not_found() {
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
 
     let err = engine
         .add_tag("tag-ghost", "rust", None)
@@ -948,16 +798,12 @@ async fn add_tag_missing_page_returns_page_not_found() {
         "None source_id must be normalised to default; msg={}",
         err.message
     );
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn remove_tag_deletes_existing_tag() {
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
 
     engine
         .put_page("tag-gamma", None, &note_input("Tag Gamma", "body"))
@@ -974,16 +820,12 @@ async fn remove_tag_deletes_existing_tag() {
 
     let tags = engine.get_tags("tag-gamma", None).await.expect("get_tags");
     assert!(tags.is_empty(), "tag must be gone after remove");
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn get_tags_returns_sorted_tags() {
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
 
     engine
         .put_page("tag-delta", None, &note_input("Tag Delta", "body"))
@@ -998,16 +840,12 @@ async fn get_tags_returns_sorted_tags() {
 
     let tags = engine.get_tags("tag-delta", None).await.expect("get_tags");
     assert_eq!(tags, vec!["alpha", "mid", "zinc"]);
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn list_pages_filters_by_tag() {
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
 
     engine
         .put_page("tag-list-rust", None, &note_input("Rust", "body"))
@@ -1050,18 +888,14 @@ async fn list_pages_filters_by_tag() {
 
     let slugs: Vec<&str> = pages.iter().map(|p| p.slug.as_str()).collect();
     assert_eq!(slugs, vec!["tag-list-both", "tag-list-rust"]);
-    engine.disconnect().await.expect("disconnect");
 }
 
 // -- resolve_slugs ---------------------------------------------------------
 
 #[tokio::test]
-#[serial_test::serial]
 async fn resolve_slugs_exact_match_only_in_slice_4b() {
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
     engine
         .put_page("alpha-beta", None, &note_input("AB", "x"))
         .await
@@ -1087,5 +921,4 @@ async fn resolve_slugs_exact_match_only_in_slice_4b() {
         partial.is_empty(),
         "slice 4b resolve_slugs is exact-only, got {partial:?}"
     );
-    engine.disconnect().await.expect("disconnect");
 }
