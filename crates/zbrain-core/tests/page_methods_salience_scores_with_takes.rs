@@ -19,10 +19,11 @@
 //! 3. **Cross-page isolation** — takes belonging to page B must not inflate
 //!    page A's score. Page A has 0 takes → score = `0.4*5 + ln(1+0) = 2.0`.
 
+mod support;
+
 use tempfile::NamedTempFile;
 use zbrain_core::engine::{BrainEngine, EngineConfig, PageInput};
 use zbrain_core::libsql::LibsqlEngine;
-use zbrain_core::postgres::PostgresEngine;
 use zbrain_core::PageRef;
 
 // ---------------------------------------------------------------------------
@@ -303,38 +304,10 @@ async fn libsql_salience_cross_page_isolation() {
 // PostgresEngine helpers
 // ---------------------------------------------------------------------------
 
-fn pg_url() -> Option<String> {
-    std::env::var("ZBRAIN_TEST_PG_URL").ok()
-}
-
-async fn pg_init_clean_engine() -> Option<PostgresEngine> {
-    let url = pg_url()?;
-    let engine = PostgresEngine::new();
-    let cfg = EngineConfig {
-        database_url: Some(url.clone()),
-        database_path: None,
-    };
-    engine.connect(&cfg).await.expect("connect");
-    engine.init_schema().await.expect("init_schema");
-
+async fn pg_seed_source(url: &str, id: &str) {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
-        .connect(&url)
-        .await
-        .expect("verification pool");
-    sqlx::query("TRUNCATE TABLE pages RESTART IDENTITY CASCADE")
-        .execute(&pool)
-        .await
-        .expect("truncate pages");
-    pool.close().await;
-    Some(engine)
-}
-
-async fn pg_seed_source(id: &str) {
-    let url = pg_url().expect("ZBRAIN_TEST_PG_URL set for source seed");
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(1)
-        .connect(&url)
+        .connect(url)
         .await
         .expect("source seed pool");
     sqlx::query("INSERT INTO sources (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING")
@@ -346,11 +319,10 @@ async fn pg_seed_source(id: &str) {
     pool.close().await;
 }
 
-async fn pg_set_emotional_weight(slug: &str, source_id: &str, weight: Option<f64>) {
-    let url = pg_url().expect("ZBRAIN_TEST_PG_URL set for emotional_weight update");
+async fn pg_set_emotional_weight(url: &str, slug: &str, source_id: &str, weight: Option<f64>) {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
-        .connect(&url)
+        .connect(url)
         .await
         .expect("emotional_weight pool");
     sqlx::query("UPDATE pages SET emotional_weight = $1 WHERE slug = $2 AND source_id = $3")
@@ -363,11 +335,10 @@ async fn pg_set_emotional_weight(slug: &str, source_id: &str, weight: Option<f64
     pool.close().await;
 }
 
-async fn pg_insert_take(page_id: i64, active: bool) {
-    let url = pg_url().expect("ZBRAIN_TEST_PG_URL set for take insert");
+async fn pg_insert_take(url: &str, page_id: i64, active: bool) {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
-        .connect(&url)
+        .connect(url)
         .await
         .expect("take insert pool");
     sqlx::query("INSERT INTO takes (page_id, active) VALUES ($1, $2)")
@@ -379,11 +350,10 @@ async fn pg_insert_take(page_id: i64, active: bool) {
     pool.close().await;
 }
 
-async fn pg_page_id(slug: &str, source_id: &str) -> i64 {
-    let url = pg_url().expect("ZBRAIN_TEST_PG_URL set for page_id lookup");
+async fn pg_page_id(url: &str, slug: &str, source_id: &str) -> i64 {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
-        .connect(&url)
+        .connect(url)
         .await
         .expect("page_id pool");
     let row: (i64,) = sqlx::query_as("SELECT id FROM pages WHERE slug = $1 AND source_id = $2")
@@ -401,13 +371,10 @@ async fn pg_page_id(slug: &str, source_id: &str) -> i64 {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[serial_test::serial]
 async fn postgres_salience_n_active_takes() {
-    let Some(engine) = pg_init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
-    pg_seed_source("src-1").await;
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    pg_seed_source(&fix.url, "src-1").await;
     engine
         .put_page(
             "scored",
@@ -421,11 +388,11 @@ async fn postgres_salience_n_active_takes() {
         )
         .await
         .expect("seed page");
-    pg_set_emotional_weight("scored", "src-1", Some(0.4)).await;
+    pg_set_emotional_weight(&fix.url, "scored", "src-1", Some(0.4)).await;
 
-    let pid = pg_page_id("scored", "src-1").await;
-    pg_insert_take(pid, true).await;
-    pg_insert_take(pid, true).await;
+    let pid = pg_page_id(&fix.url, "scored", "src-1").await;
+    pg_insert_take(&fix.url, pid, true).await;
+    pg_insert_take(&fix.url, pid, true).await;
 
     let refs = vec![PageRef {
         slug: "scored".to_string(),
@@ -444,7 +411,6 @@ async fn postgres_salience_n_active_takes() {
         (score - expected).abs() < 1e-9,
         "pg N-takes: expected ~{expected} (= 0.4*5 + ln(3)), got {score}"
     );
-    engine.disconnect().await.expect("disconnect");
 }
 
 // ---------------------------------------------------------------------------
@@ -452,13 +418,10 @@ async fn postgres_salience_n_active_takes() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[serial_test::serial]
 async fn postgres_salience_inactive_takes_excluded() {
-    let Some(engine) = pg_init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
-    pg_seed_source("src-1").await;
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    pg_seed_source(&fix.url, "src-1").await;
     engine
         .put_page(
             "scored",
@@ -472,11 +435,11 @@ async fn postgres_salience_inactive_takes_excluded() {
         )
         .await
         .expect("seed page");
-    pg_set_emotional_weight("scored", "src-1", Some(0.4)).await;
+    pg_set_emotional_weight(&fix.url, "scored", "src-1", Some(0.4)).await;
 
-    let pid = pg_page_id("scored", "src-1").await;
-    pg_insert_take(pid, true).await;
-    pg_insert_take(pid, false).await;
+    let pid = pg_page_id(&fix.url, "scored", "src-1").await;
+    pg_insert_take(&fix.url, pid, true).await;
+    pg_insert_take(&fix.url, pid, false).await;
 
     let refs = vec![PageRef {
         slug: "scored".to_string(),
@@ -495,7 +458,6 @@ async fn postgres_salience_inactive_takes_excluded() {
         (score - expected).abs() < 1e-9,
         "pg inactive-excluded: expected ~{expected} (= 0.4*5 + ln(2)), got {score}"
     );
-    engine.disconnect().await.expect("disconnect");
 }
 
 // ---------------------------------------------------------------------------
@@ -503,13 +465,10 @@ async fn postgres_salience_inactive_takes_excluded() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[serial_test::serial]
 async fn postgres_salience_cross_page_isolation() {
-    let Some(engine) = pg_init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
-    pg_seed_source("src-1").await;
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    pg_seed_source(&fix.url, "src-1").await;
 
     engine
         .put_page(
@@ -524,7 +483,7 @@ async fn postgres_salience_cross_page_isolation() {
         )
         .await
         .expect("seed page-a");
-    pg_set_emotional_weight("page-a", "src-1", Some(0.4)).await;
+    pg_set_emotional_weight(&fix.url, "page-a", "src-1", Some(0.4)).await;
 
     engine
         .put_page(
@@ -539,12 +498,12 @@ async fn postgres_salience_cross_page_isolation() {
         )
         .await
         .expect("seed page-b");
-    pg_set_emotional_weight("page-b", "src-1", Some(0.4)).await;
+    pg_set_emotional_weight(&fix.url, "page-b", "src-1", Some(0.4)).await;
 
-    let pid_b = pg_page_id("page-b", "src-1").await;
-    pg_insert_take(pid_b, true).await;
-    pg_insert_take(pid_b, true).await;
-    pg_insert_take(pid_b, true).await;
+    let pid_b = pg_page_id(&fix.url, "page-b", "src-1").await;
+    pg_insert_take(&fix.url, pid_b, true).await;
+    pg_insert_take(&fix.url, pid_b, true).await;
+    pg_insert_take(&fix.url, pid_b, true).await;
 
     let refs = vec![
         PageRef {
@@ -578,5 +537,4 @@ async fn postgres_salience_cross_page_isolation() {
         (score_b - expected_b).abs() < 1e-9,
         "pg cross-page isolation: page-b expected ~{expected_b}, got {score_b}"
     );
-    engine.disconnect().await.expect("disconnect");
 }

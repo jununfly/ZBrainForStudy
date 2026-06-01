@@ -6,9 +6,7 @@
 
 mod support;
 
-use zbrain_core::engine::{
-    BrainEngine, GetPageOpts, PageFilters, PageInput, PageSort,
-};
+use zbrain_core::engine::{BrainEngine, GetPageOpts, PageFilters, PageInput, PageSort};
 
 fn note_input(title: &str, body: &str) -> PageInput {
     PageInput {

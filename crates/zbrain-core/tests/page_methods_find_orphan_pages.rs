@@ -2,10 +2,12 @@
 //!
 //! Part 1 (libsql): mirror behavior tests for `find_orphan_pages`.
 //!
-//! Part 2 (Postgres): mirror integration tests gated on `ZBRAIN_TEST_PG_URL`.
+//! Part 2 (Postgres): mirror integration tests using pg-embed via `PgFixture`.
 //! These prove the PG `find_orphan_pages` override matches the TS contract
 //! (codex C11: bilateral soft-delete filter, COALESCE title, domain
 //! extraction, slug ordering).
+
+mod support;
 
 use tempfile::NamedTempFile;
 use zbrain_core::engine::{BrainEngine, EngineConfig, PageInput};
@@ -140,48 +142,17 @@ async fn libsql_find_orphan_pages_mirrors_ts_contract() {
 // ---------------------------------------------------------------------------
 // PostgresEngine mirror tests (slice 6a-pg PG-find-orphan-pages)
 //
-// Gated on `ZBRAIN_TEST_PG_URL` (same convention as other PG integration
-// tests). Each test is `#[serial_test::serial]` because they share the
-// `pages` + `links` tables in the configured test database.
+// Uses pg-embed via PgFixture for ephemeral, isolated databases.
+// No serial gating needed — each test gets its own database.
 // ---------------------------------------------------------------------------
 
 use serde_json::json;
-use zbrain_core::postgres::PostgresEngine;
 use zbrain_core::types::OrphanPage;
 
-fn pg_url() -> Option<String> {
-    std::env::var("ZBRAIN_TEST_PG_URL").ok()
-}
-
-async fn pg_init_clean_engine() -> Option<PostgresEngine> {
-    let url = pg_url()?;
-    let engine = PostgresEngine::new();
-    let cfg = EngineConfig {
-        database_url: Some(url.clone()),
-        database_path: None,
-    };
-    engine.connect(&cfg).await.expect("connect");
-    engine.init_schema().await.expect("init_schema");
-
+async fn pg_seed_source(url: &str, id: &str) {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
-        .connect(&url)
-        .await
-        .expect("verification pool");
-    // TRUNCATE cascades into links via FK ON DELETE CASCADE.
-    sqlx::query("TRUNCATE TABLE pages RESTART IDENTITY CASCADE")
-        .execute(&pool)
-        .await
-        .expect("truncate pages");
-    pool.close().await;
-    Some(engine)
-}
-
-async fn pg_seed_source(id: &str) {
-    let url = pg_url().expect("ZBRAIN_TEST_PG_URL set for source seed");
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(1)
-        .connect(&url)
+        .connect(url)
         .await
         .expect("source seed pool");
     sqlx::query("INSERT INTO sources (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING")
@@ -194,11 +165,10 @@ async fn pg_seed_source(id: &str) {
 }
 
 /// Resolve a slug to its `pages.id` via direct query (test helper).
-async fn pg_page_id(slug: &str) -> i64 {
-    let url = pg_url().expect("ZBRAIN_TEST_PG_URL set for page id lookup");
+async fn pg_page_id(url: &str, slug: &str) -> i64 {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
-        .connect(&url)
+        .connect(url)
         .await
         .expect("page id pool");
     let row: (i64,) = sqlx::query_as("SELECT id FROM pages WHERE slug = $1")
@@ -213,13 +183,12 @@ async fn pg_page_id(slug: &str) -> i64 {
 /// Insert a link row directly into the `links` table (test helper).
 /// The `BrainEngine` trait has no `put_link` yet — that's a later slice — so
 /// tests must write via raw SQL.
-async fn pg_insert_link(from_slug: &str, to_slug: &str, link_type: &str) {
-    let from_id = pg_page_id(from_slug).await;
-    let to_id = pg_page_id(to_slug).await;
-    let url = pg_url().expect("ZBRAIN_TEST_PG_URL set for link insert");
+async fn pg_insert_link(url: &str, from_slug: &str, to_slug: &str, link_type: &str) {
+    let from_id = pg_page_id(url, from_slug).await;
+    let to_id = pg_page_id(url, to_slug).await;
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
-        .connect(&url)
+        .connect(url)
         .await
         .expect("link insert pool");
     sqlx::query(
@@ -236,11 +205,10 @@ async fn pg_insert_link(from_slug: &str, to_slug: &str, link_type: &str) {
 }
 
 /// Soft-delete a page by slug directly (test helper for C11 verification).
-async fn pg_soft_delete(slug: &str) {
-    let url = pg_url().expect("ZBRAIN_TEST_PG_URL set for soft delete");
+async fn pg_soft_delete(url: &str, slug: &str) {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
-        .connect(&url)
+        .connect(url)
         .await
         .expect("soft delete pool");
     sqlx::query("UPDATE pages SET deleted_at = now() WHERE slug = $1 AND deleted_at IS NULL")
@@ -255,13 +223,10 @@ async fn pg_soft_delete(slug: &str) {
 
 /// C11 baseline: a page with zero inbound links is an orphan.
 #[tokio::test]
-#[serial_test::serial]
 async fn postgres_find_orphan_pages_returns_page_with_no_inbound_links() {
-    let Some(engine) = pg_init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
-    pg_seed_source("src-orphan").await;
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    pg_seed_source(&fix.url, "src-orphan").await;
     engine
         .put_page(
             "alpha",
@@ -282,18 +247,14 @@ async fn postgres_find_orphan_pages_returns_page_with_no_inbound_links() {
     assert_eq!(orphans[0].slug, "alpha");
     assert_eq!(orphans[0].title, "Alpha");
     assert_eq!(orphans[0].domain.as_deref(), Some("research"));
-    engine.disconnect().await.expect("disconnect");
 }
 
 /// A page that has an inbound link from a live page is NOT an orphan.
 #[tokio::test]
-#[serial_test::serial]
 async fn postgres_find_orphan_pages_excludes_page_with_live_inbound_link() {
-    let Some(engine) = pg_init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
-    pg_seed_source("src-link").await;
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    pg_seed_source(&fix.url, "src-link").await;
     engine
         .put_page(
             "bravo",
@@ -322,25 +283,21 @@ async fn postgres_find_orphan_pages_excludes_page_with_live_inbound_link() {
         .expect("seed charlie");
 
     // charlie → bravo link: bravo is no longer an orphan.
-    pg_insert_link("charlie", "bravo", "link").await;
+    pg_insert_link(&fix.url, "charlie", "bravo", "link").await;
 
     let orphans = engine.find_orphan_pages().await.expect("find_orphan_pages");
     // charlie has no inbound links → orphan; bravo has inbound from charlie → not orphan.
     assert_eq!(orphans.len(), 1);
     assert_eq!(orphans[0].slug, "charlie");
-    engine.disconnect().await.expect("disconnect");
 }
 
 /// C11 bilateral soft-delete filter: an inbound link from a soft-deleted
 /// page does NOT disqualify a page from being an orphan.
 #[tokio::test]
-#[serial_test::serial]
 async fn postgres_find_orphan_pages_treats_link_from_deleted_page_as_absent() {
-    let Some(engine) = pg_init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
-    pg_seed_source("src-c11").await;
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    pg_seed_source(&fix.url, "src-c11").await;
     engine
         .put_page(
             "delta",
@@ -369,8 +326,8 @@ async fn postgres_find_orphan_pages_treats_link_from_deleted_page_as_absent() {
         .expect("seed echo");
 
     // echo → delta link, then soft-delete echo.
-    pg_insert_link("echo", "delta", "link").await;
-    pg_soft_delete("echo").await;
+    pg_insert_link(&fix.url, "echo", "delta", "link").await;
+    pg_soft_delete(&fix.url, "echo").await;
 
     let orphans = engine.find_orphan_pages().await.expect("find_orphan_pages");
     // delta is orphan (only inbound link is from deleted echo).
@@ -384,7 +341,6 @@ async fn postgres_find_orphan_pages_treats_link_from_deleted_page_as_absent() {
         !orphan_slugs.contains(&"echo"),
         "deleted echo must not appear: {orphan_slugs:?}"
     );
-    engine.disconnect().await.expect("disconnect");
 }
 
 /// Domain extraction: `frontmatter->>'domain'` returns NULL when absent and
@@ -392,13 +348,10 @@ async fn postgres_find_orphan_pages_treats_link_from_deleted_page_as_absent() {
 /// canonical TS schema, so the `COALESCE(title, slug)` clause is defensive —
 /// in practice an empty title stays empty (matches TS `findOrphanPages`).
 #[tokio::test]
-#[serial_test::serial]
 async fn postgres_find_orphan_pages_title_coalesce_and_domain_extraction() {
-    let Some(engine) = pg_init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
-    pg_seed_source("src-title").await;
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    pg_seed_source(&fix.url, "src-title").await;
     engine
         .put_page(
             "no-title",
@@ -442,18 +395,14 @@ async fn postgres_find_orphan_pages_title_coalesce_and_domain_extraction() {
         .expect("with-domain must be orphan");
     assert_eq!(with_domain.title, "Titled");
     assert_eq!(with_domain.domain.as_deref(), Some("engineering"));
-    engine.disconnect().await.expect("disconnect");
 }
 
 /// Results must be ordered by slug ascending.
 #[tokio::test]
-#[serial_test::serial]
 async fn postgres_find_orphan_pages_returns_results_ordered_by_slug() {
-    let Some(engine) = pg_init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
-    pg_seed_source("src-order").await;
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    pg_seed_source(&fix.url, "src-order").await;
     for slug in ["zulu", "mike", "alpha-2"] {
         engine
             .put_page(
@@ -477,5 +426,4 @@ async fn postgres_find_orphan_pages_returns_results_ordered_by_slug() {
         vec!["alpha-2", "mike", "zulu"],
         "must be ORDER BY p.slug"
     );
-    engine.disconnect().await.expect("disconnect");
 }

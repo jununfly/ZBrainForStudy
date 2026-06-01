@@ -1,5 +1,7 @@
 //! Slice 6a TS-parity tests: `restore_page` libsql implementation.
 
+mod support;
+
 use tempfile::NamedTempFile;
 use zbrain_core::engine::{BrainEngine, EngineConfig, PageInput};
 use zbrain_core::libsql::LibsqlEngine;
@@ -176,42 +178,13 @@ async fn libsql_restore_page_honors_source_id_filter() {
 // Mirrors TS `restorePage` from `pglite-engine.ts`: a soft-deleted row gets
 // its `deleted_at` cleared and the call returns `true`. Live rows and rows
 // from another source must remain untouched and return `false`.
+// Uses pg-embed via PgFixture for ephemeral, isolated databases.
 // ---------------------------------------------------------------------------
 
-use zbrain_core::postgres::PostgresEngine;
-
-fn pg_url() -> Option<String> {
-    std::env::var("ZBRAIN_TEST_PG_URL").ok()
-}
-
-async fn pg_init_clean_engine() -> Option<PostgresEngine> {
-    let url = pg_url()?;
-    let engine = PostgresEngine::new();
-    let cfg = EngineConfig {
-        database_url: Some(url.clone()),
-        database_path: None,
-    };
-    engine.connect(&cfg).await.expect("connect");
-    engine.init_schema().await.expect("init_schema");
-
+async fn pg_seed_source(url: &str, id: &str) {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
-        .connect(&url)
-        .await
-        .expect("verification pool");
-    sqlx::query("TRUNCATE TABLE pages RESTART IDENTITY CASCADE")
-        .execute(&pool)
-        .await
-        .expect("truncate pages");
-    pool.close().await;
-    Some(engine)
-}
-
-async fn pg_seed_source(id: &str) {
-    let url = pg_url().expect("ZBRAIN_TEST_PG_URL set for source seed");
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(1)
-        .connect(&url)
+        .connect(url)
         .await
         .expect("source seed pool");
     sqlx::query("INSERT INTO sources (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING")
@@ -224,12 +197,12 @@ async fn pg_seed_source(id: &str) {
 }
 
 async fn pg_fetch_deleted_at(
+    url: &str,
     slug: &str,
 ) -> Option<Option<sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>>> {
-    let url = pg_url().expect("ZBRAIN_TEST_PG_URL set for inspect");
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
-        .connect(&url)
+        .connect(url)
         .await
         .expect("inspect pool");
     let row: Option<(Option<sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>>,)> =
@@ -243,13 +216,10 @@ async fn pg_fetch_deleted_at(
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn postgres_restore_page_clears_deleted_at_for_soft_deleted_row() {
-    let Some(engine) = pg_init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
-    pg_seed_source("src-1").await;
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    pg_seed_source(&fix.url, "src-1").await;
     engine
         .put_page(
             "to-restore",
@@ -269,7 +239,10 @@ async fn postgres_restore_page_clears_deleted_at_for_soft_deleted_row() {
         .await
         .expect("soft delete prep");
     assert!(
-        pg_fetch_deleted_at("to-restore").await.flatten().is_some(),
+        pg_fetch_deleted_at(&fix.url, "to-restore")
+            .await
+            .flatten()
+            .is_some(),
         "precondition: row is soft deleted"
     );
 
@@ -280,21 +253,17 @@ async fn postgres_restore_page_clears_deleted_at_for_soft_deleted_row() {
 
     assert!(restored, "soft-deleted row should be restored");
     assert_eq!(
-        pg_fetch_deleted_at("to-restore").await.flatten(),
+        pg_fetch_deleted_at(&fix.url, "to-restore").await.flatten(),
         None,
         "deleted_at must be cleared"
     );
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn postgres_restore_page_returns_false_for_live_or_missing_rows() {
-    let Some(engine) = pg_init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
-    pg_seed_source("src-1").await;
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    pg_seed_source(&fix.url, "src-1").await;
     engine
         .put_page(
             "live-row",
@@ -321,21 +290,17 @@ async fn postgres_restore_page_returns_false_for_live_or_missing_rows() {
     assert!(!live_restore, "live row must not be restored");
     assert!(!missing_restore, "missing row must not be restored");
     assert_eq!(
-        pg_fetch_deleted_at("live-row").await.flatten(),
+        pg_fetch_deleted_at(&fix.url, "live-row").await.flatten(),
         None,
         "live row stays live (deleted_at remains NULL)"
     );
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn postgres_restore_page_honors_source_id_filter() {
-    let Some(engine) = pg_init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
-    pg_seed_source("src-1").await;
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    pg_seed_source(&fix.url, "src-1").await;
     engine
         .put_page(
             "scoped-restore",
@@ -361,11 +326,10 @@ async fn postgres_restore_page_honors_source_id_filter() {
 
     assert!(!mismatched, "source mismatch must not restore");
     assert!(
-        pg_fetch_deleted_at("scoped-restore")
+        pg_fetch_deleted_at(&fix.url, "scoped-restore")
             .await
             .flatten()
             .is_some(),
         "source mismatch must leave deleted_at set"
     );
-    engine.disconnect().await.expect("disconnect");
 }

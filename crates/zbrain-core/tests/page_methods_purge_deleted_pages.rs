@@ -1,5 +1,7 @@
 //! Slice 6a TS-parity tests: `purge_deleted_pages` libsql implementation.
 
+mod support;
+
 use tempfile::NamedTempFile;
 use zbrain_core::engine::{BrainEngine, EngineConfig, PageInput};
 use zbrain_core::libsql::LibsqlEngine;
@@ -207,38 +209,10 @@ async fn libsql_purge_deleted_pages_zero_hours_purges_all_soft_deleted_rows() {
 
 use zbrain_core::postgres::PostgresEngine;
 
-fn pg_url() -> Option<String> {
-    std::env::var("ZBRAIN_TEST_PG_URL").ok()
-}
-
-async fn pg_init_clean_engine() -> Option<PostgresEngine> {
-    let url = pg_url()?;
-    let engine = PostgresEngine::new();
-    let cfg = EngineConfig {
-        database_url: Some(url.clone()),
-        database_path: None,
-    };
-    engine.connect(&cfg).await.expect("connect");
-    engine.init_schema().await.expect("init_schema");
-
+async fn pg_seed_source(url: &str, id: &str) {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
-        .connect(&url)
-        .await
-        .expect("verification pool");
-    sqlx::query("TRUNCATE TABLE pages RESTART IDENTITY CASCADE")
-        .execute(&pool)
-        .await
-        .expect("truncate pages");
-    pool.close().await;
-    Some(engine)
-}
-
-async fn pg_seed_source(id: &str) {
-    let url = pg_url().expect("ZBRAIN_TEST_PG_URL set for source seed");
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(1)
-        .connect(&url)
+        .connect(url)
         .await
         .expect("source seed pool");
     sqlx::query("INSERT INTO sources (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING")
@@ -253,11 +227,10 @@ async fn pg_seed_source(id: &str) {
 /// Force `deleted_at` to a fixed offset in the past (relative to `now()`),
 /// bypassing the engine API so the test can position rows across the purge
 /// window deterministically.
-async fn pg_set_deleted_at_hours_ago(slug: &str, hours: i64) {
-    let url = pg_url().expect("ZBRAIN_TEST_PG_URL set for backdate");
+async fn pg_set_deleted_at_hours_ago(url: &str, slug: &str, hours: i64) {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
-        .connect(&url)
+        .connect(url)
         .await
         .expect("backdate pool");
     sqlx::query("UPDATE pages SET deleted_at = now() - ($2 || ' hours')::interval WHERE slug = $1")
@@ -269,11 +242,10 @@ async fn pg_set_deleted_at_hours_ago(slug: &str, hours: i64) {
     pool.close().await;
 }
 
-async fn pg_slugs_remaining() -> Vec<String> {
-    let url = pg_url().expect("ZBRAIN_TEST_PG_URL set for inspect");
+async fn pg_slugs_remaining(url: &str) -> Vec<String> {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
-        .connect(&url)
+        .connect(url)
         .await
         .expect("inspect pool");
     let rows: Vec<(String,)> = sqlx::query_as("SELECT slug FROM pages ORDER BY slug ASC")
@@ -319,19 +291,16 @@ fn assert_purge(actual: &PurgeResult, expected_sorted: &[&str]) {
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn postgres_purge_deleted_pages_returns_slugs_for_rows_older_than_window() {
-    let Some(engine) = pg_init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
-    pg_seed_source("src-1").await;
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    pg_seed_source(&fix.url, "src-1").await;
 
     // Three soft-deleted rows backdated 72h / 48h / 1h, plus one live row.
-    pg_seed_page(&engine, "old-a", "src-1", "Old A").await;
-    pg_seed_page(&engine, "old-b", "src-1", "Old B").await;
-    pg_seed_page(&engine, "fresh", "src-1", "Fresh").await;
-    pg_seed_page(&engine, "live", "src-1", "Live").await;
+    pg_seed_page(engine, "old-a", "src-1", "Old A").await;
+    pg_seed_page(engine, "old-b", "src-1", "Old B").await;
+    pg_seed_page(engine, "fresh", "src-1", "Fresh").await;
+    pg_seed_page(engine, "live", "src-1", "Live").await;
 
     engine
         .soft_delete_page("old-a", Some("src-1"))
@@ -346,9 +315,9 @@ async fn postgres_purge_deleted_pages_returns_slugs_for_rows_older_than_window()
         .await
         .expect("soft delete fresh");
 
-    pg_set_deleted_at_hours_ago("old-a", 72).await;
-    pg_set_deleted_at_hours_ago("old-b", 48).await;
-    pg_set_deleted_at_hours_ago("fresh", 1).await;
+    pg_set_deleted_at_hours_ago(&fix.url, "old-a", 72).await;
+    pg_set_deleted_at_hours_ago(&fix.url, "old-b", 48).await;
+    pg_set_deleted_at_hours_ago(&fix.url, "fresh", 1).await;
 
     let result = engine
         .purge_deleted_pages(24)
@@ -356,25 +325,20 @@ async fn postgres_purge_deleted_pages_returns_slugs_for_rows_older_than_window()
         .expect("purge older than 24h");
     assert_purge(&result, &["old-a", "old-b"]);
 
-    let remaining = pg_slugs_remaining().await;
+    let remaining = pg_slugs_remaining(&fix.url).await;
     assert_eq!(
         remaining,
         vec!["fresh".to_string(), "live".to_string()],
         "only fresh (soft-deleted within window) and live row must remain"
     );
-
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn postgres_purge_deleted_pages_returns_empty_when_nothing_qualifies() {
-    let Some(engine) = pg_init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
-    pg_seed_source("src-1").await;
-    pg_seed_page(&engine, "live-only", "src-1", "Live Only").await;
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    pg_seed_source(&fix.url, "src-1").await;
+    pg_seed_page(engine, "live-only", "src-1", "Live Only").await;
 
     let result = engine
         .purge_deleted_pages(24)
@@ -382,23 +346,18 @@ async fn postgres_purge_deleted_pages_returns_empty_when_nothing_qualifies() {
         .expect("purge on a table with no soft-deleted rows");
     assert_purge(&result, &[]);
 
-    let remaining = pg_slugs_remaining().await;
+    let remaining = pg_slugs_remaining(&fix.url).await;
     assert_eq!(remaining, vec!["live-only".to_string()]);
-
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn postgres_purge_deleted_pages_zero_hours_purges_all_soft_deleted_rows() {
-    let Some(engine) = pg_init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
-    pg_seed_source("src-1").await;
-    pg_seed_page(&engine, "doomed-a", "src-1", "Doomed A").await;
-    pg_seed_page(&engine, "doomed-b", "src-1", "Doomed B").await;
-    pg_seed_page(&engine, "survivor", "src-1", "Survivor").await;
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    pg_seed_source(&fix.url, "src-1").await;
+    pg_seed_page(engine, "doomed-a", "src-1", "Doomed A").await;
+    pg_seed_page(engine, "doomed-b", "src-1", "Doomed B").await;
+    pg_seed_page(engine, "survivor", "src-1", "Survivor").await;
 
     engine
         .soft_delete_page("doomed-a", Some("src-1"))
@@ -417,8 +376,6 @@ async fn postgres_purge_deleted_pages_zero_hours_purges_all_soft_deleted_rows() 
         .expect("purge with zero-hour window");
     assert_purge(&result, &["doomed-a", "doomed-b"]);
 
-    let remaining = pg_slugs_remaining().await;
+    let remaining = pg_slugs_remaining(&fix.url).await;
     assert_eq!(remaining, vec!["survivor".to_string()]);
-
-    engine.disconnect().await.expect("disconnect");
 }

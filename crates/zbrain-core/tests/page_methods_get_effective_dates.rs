@@ -5,6 +5,10 @@
 //!    FROM pages p
 //!    WHERE (p.slug, p.source_id) IN ((?1,?2), …) AND p.deleted_at IS NULL`
 //! returning a `HashMap<String, String>` keyed by `format!("{source_id}::{slug}")`.
+//!
+//! PG mirror tests below this libsql block stay unchanged.
+
+mod support;
 
 use tempfile::NamedTempFile;
 use zbrain_core::engine::{BrainEngine, EngineConfig, PageInput};
@@ -187,50 +191,14 @@ async fn libsql_get_effective_dates_returns_empty_map_for_empty_input() {
 //   WHERE p.deleted_at IS NULL;
 // keyed by `format!("{source_id}::{slug}")`. The unnest join enforces
 // per-(slug, source_id) precision so cross-source slug collisions are
-// disambiguated. Gated on `ZBRAIN_TEST_PG_URL`. `#[serial_test::serial]`
-// because they share the `pages` table in the configured test database.
+// disambiguated. Uses pg-embed via PgFixture for ephemeral, isolated
+// databases. No serial gating needed — each test gets its own database.
 // ---------------------------------------------------------------------------
 
-use zbrain_core::postgres::PostgresEngine;
-
-fn pg_url() -> Option<String> {
-    // LOCAL PG NOTE: working Homebrew PostgreSQL 16.14 on `localhost:5434`,
-    // db `zbrain_test`. URL persisted in gitignored `<repo-root>/.env`:
-    //   ZBRAIN_TEST_PG_URL=postgres://postgres:postgres@localhost:5434/zbrain_test
-    // Activate: `set -a; source .env; set +a`. `skipping: ... unset` ≠ valid
-    // PG result — re-source `.env`. Source of truth:
-    // docs/plans/20260526/17-session-state-110c.md L139-150 (#110-c, 2026-05-30).
-    std::env::var("ZBRAIN_TEST_PG_URL").ok()
-}
-
-async fn pg_init_clean_engine() -> Option<PostgresEngine> {
-    let url = pg_url()?;
-    let engine = PostgresEngine::new();
-    let cfg = EngineConfig {
-        database_url: Some(url.clone()),
-        database_path: None,
-    };
-    engine.connect(&cfg).await.expect("connect");
-    engine.init_schema().await.expect("init_schema");
-
+async fn pg_seed_source(url: &str, id: &str) {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
-        .connect(&url)
-        .await
-        .expect("verification pool");
-    sqlx::query("TRUNCATE TABLE pages RESTART IDENTITY CASCADE")
-        .execute(&pool)
-        .await
-        .expect("truncate pages");
-    pool.close().await;
-    Some(engine)
-}
-
-async fn pg_seed_source(id: &str) {
-    let url = pg_url().expect("ZBRAIN_TEST_PG_URL set for source seed");
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(1)
-        .connect(&url)
+        .connect(url)
         .await
         .expect("source seed pool");
     sqlx::query("INSERT INTO sources (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING")
@@ -243,14 +211,11 @@ async fn pg_seed_source(id: &str) {
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn postgres_get_effective_dates_returns_compound_key_for_each_ref() {
-    let Some(engine) = pg_init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
-    pg_seed_source("src-1").await;
-    pg_seed_source("src-2").await;
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    pg_seed_source(&fix.url, "src-1").await;
+    pg_seed_source(&fix.url, "src-2").await;
     for (slug, src) in [("alpha", "src-1"), ("beta", "src-2")] {
         engine
             .put_page(
@@ -293,21 +258,17 @@ async fn postgres_get_effective_dates_returns_compound_key_for_each_ref() {
             "expected ISO-8601 ts for {key}, got {ts}"
         );
     }
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn postgres_get_effective_dates_disambiguates_same_slug_across_sources() {
     // Two sources both have a page with slug `shared`. The unnest join MUST
     // return BOTH and key them by `{source_id}::{slug}` so callers can tell
     // them apart.
-    let Some(engine) = pg_init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
-    pg_seed_source("src-1").await;
-    pg_seed_source("src-2").await;
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    pg_seed_source(&fix.url, "src-1").await;
+    pg_seed_source(&fix.url, "src-2").await;
     for src in ["src-1", "src-2"] {
         engine
             .put_page(
@@ -342,17 +303,13 @@ async fn postgres_get_effective_dates_disambiguates_same_slug_across_sources() {
     assert_eq!(dates.len(), 2);
     assert!(dates.contains_key("src-1::shared"));
     assert!(dates.contains_key("src-2::shared"));
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn postgres_get_effective_dates_excludes_soft_deleted_rows() {
-    let Some(engine) = pg_init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
-    pg_seed_source("src-1").await;
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    pg_seed_source(&fix.url, "src-1").await;
     for slug in ["live-slug", "tombstone-slug"] {
         engine
             .put_page(
@@ -394,21 +351,16 @@ async fn postgres_get_effective_dates_excludes_soft_deleted_rows() {
         "soft-deleted rows must be excluded by `deleted_at IS NULL` filter"
     );
     assert_eq!(dates.len(), 1);
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn postgres_get_effective_dates_returns_empty_map_for_empty_input() {
-    let Some(engine) = pg_init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
 
     let dates = engine
         .get_effective_dates(&[])
         .await
         .expect("get_effective_dates on empty input");
     assert!(dates.is_empty(), "empty refs slice → empty map");
-    engine.disconnect().await.expect("disconnect");
 }

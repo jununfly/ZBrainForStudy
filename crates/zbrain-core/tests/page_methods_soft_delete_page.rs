@@ -1,5 +1,7 @@
 //! Slice 6a S6-T3 semantic tests: `soft_delete_page`.
 
+mod support;
+
 use serde_json::json;
 use tempfile::NamedTempFile;
 use zbrain_core::engine::{BrainEngine, EngineConfig, GetPageOpts, InMemoryEngine, PageInput};
@@ -253,46 +255,14 @@ async fn in_memory_soft_delete_page_matches_libsql_contract() {
 // ---------------------------------------------------------------------------
 // PostgresEngine mirror tests (slice 6a-pg PG-soft-delete)
 //
-// Mirrors the libsql tests to prove behavior parity. Gated on
-// `ZBRAIN_TEST_PG_URL` (same convention as `postgres_engine_page_crud.rs`).
-// Each test is `#[serial_test::serial]` because they share the `pages` table
-// in the configured test database.
+// Mirrors the libsql tests to prove behavior parity.
+// Uses pg-embed via PgFixture for ephemeral, isolated databases.
 // ---------------------------------------------------------------------------
 
-use zbrain_core::postgres::PostgresEngine;
-
-fn pg_url() -> Option<String> {
-    std::env::var("ZBRAIN_TEST_PG_URL").ok()
-}
-
-async fn pg_init_clean_engine() -> Option<PostgresEngine> {
-    let url = pg_url()?;
-    let engine = PostgresEngine::new();
-    let cfg = EngineConfig {
-        database_url: Some(url.clone()),
-        database_path: None,
-    };
-    engine.connect(&cfg).await.expect("connect");
-    engine.init_schema().await.expect("init_schema");
-
+async fn pg_seed_source(url: &str, id: &str) {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
-        .connect(&url)
-        .await
-        .expect("verification pool");
-    sqlx::query("TRUNCATE TABLE pages RESTART IDENTITY CASCADE")
-        .execute(&pool)
-        .await
-        .expect("truncate pages");
-    pool.close().await;
-    Some(engine)
-}
-
-async fn pg_seed_source(id: &str) {
-    let url = pg_url().expect("ZBRAIN_TEST_PG_URL set for source seed");
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(1)
-        .connect(&url)
+        .connect(url)
         .await
         .expect("source seed pool");
     sqlx::query("INSERT INTO sources (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING")
@@ -305,12 +275,12 @@ async fn pg_seed_source(id: &str) {
 }
 
 async fn pg_fetch_deleted_at(
+    url: &str,
     slug: &str,
 ) -> Option<Option<sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>>> {
-    let url = pg_url().expect("ZBRAIN_TEST_PG_URL set for inspect");
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
-        .connect(&url)
+        .connect(url)
         .await
         .expect("inspect pool");
     let row: Option<(Option<sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>>,)> =
@@ -324,13 +294,10 @@ async fn pg_fetch_deleted_at(
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn postgres_soft_delete_page_marks_live_row_and_returns_slug() {
-    let Some(engine) = pg_init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
-    pg_seed_source("src-1").await;
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    pg_seed_source(&fix.url, "src-1").await;
     engine
         .put_page(
             "live-slug",
@@ -352,20 +319,19 @@ async fn postgres_soft_delete_page_marks_live_row_and_returns_slug() {
 
     assert_eq!(deleted.as_deref(), Some("live-slug"));
     assert!(
-        pg_fetch_deleted_at("live-slug").await.flatten().is_some(),
+        pg_fetch_deleted_at(&fix.url, "live-slug")
+            .await
+            .flatten()
+            .is_some(),
         "live row should receive deleted_at timestamp"
     );
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn postgres_soft_delete_page_returns_none_for_missing_or_already_deleted_rows() {
-    let Some(engine) = pg_init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
-    pg_seed_source("src-1").await;
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    pg_seed_source(&fix.url, "src-1").await;
     engine
         .put_page(
             "already-deleted",
@@ -386,7 +352,7 @@ async fn postgres_soft_delete_page_returns_none_for_missing_or_already_deleted_r
         .await
         .expect("first soft delete");
     assert_eq!(first.as_deref(), Some("already-deleted"));
-    let first_ts = pg_fetch_deleted_at("already-deleted")
+    let first_ts = pg_fetch_deleted_at(&fix.url, "already-deleted")
         .await
         .flatten()
         .expect("deleted_at after first soft delete");
@@ -402,7 +368,7 @@ async fn postgres_soft_delete_page_returns_none_for_missing_or_already_deleted_r
 
     assert_eq!(missing, None);
     assert_eq!(already_deleted, None);
-    let after_ts = pg_fetch_deleted_at("already-deleted")
+    let after_ts = pg_fetch_deleted_at(&fix.url, "already-deleted")
         .await
         .flatten()
         .expect("deleted_at still set");
@@ -410,17 +376,13 @@ async fn postgres_soft_delete_page_returns_none_for_missing_or_already_deleted_r
         after_ts, first_ts,
         "already-deleted row must not be updated again"
     );
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn postgres_soft_delete_page_honors_source_id_filter() {
-    let Some(engine) = pg_init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
-    pg_seed_source("src-1").await;
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    pg_seed_source(&fix.url, "src-1").await;
     engine
         .put_page(
             "scoped-slug",
@@ -442,9 +404,8 @@ async fn postgres_soft_delete_page_honors_source_id_filter() {
 
     assert_eq!(mismatched, None);
     assert_eq!(
-        pg_fetch_deleted_at("scoped-slug").await.flatten(),
+        pg_fetch_deleted_at(&fix.url, "scoped-slug").await.flatten(),
         None,
         "source mismatch must leave the live row untouched"
     );
-    engine.disconnect().await.expect("disconnect");
 }

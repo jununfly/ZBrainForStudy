@@ -5,6 +5,10 @@
 //!    WHERE slug IN (?...) AND deleted_at IS NULL`
 //! returning a `HashMap<String, String>` keyed by slug. Soft-deleted rows
 //! are excluded; missing slugs are silently dropped from the result.
+//!
+//! PG mirror tests below this libsql block stay unchanged.
+
+mod support;
 
 use tempfile::NamedTempFile;
 use zbrain_core::engine::{BrainEngine, EngineConfig, PageInput};
@@ -147,50 +151,14 @@ async fn libsql_get_page_timestamps_returns_empty_map_for_empty_input() {
 //   FROM pages
 //   WHERE slug = ANY($1::text[]) AND deleted_at IS NULL
 // (i.e. keyed by slug; soft-deleted rows excluded; missing slugs silently
-// dropped.) Gated on `ZBRAIN_TEST_PG_URL`. `#[serial_test::serial]` because
-// they share the `pages` table in the configured test database.
+// dropped.) Uses pg-embed via PgFixture for ephemeral, isolated databases.
+// No serial gating needed — each test gets its own database.
 // ---------------------------------------------------------------------------
 
-use zbrain_core::postgres::PostgresEngine;
-
-fn pg_url() -> Option<String> {
-    // LOCAL PG NOTE: working Homebrew PostgreSQL 16.14 on `localhost:5434`,
-    // db `zbrain_test`. URL persisted in gitignored `<repo-root>/.env`:
-    //   ZBRAIN_TEST_PG_URL=postgres://postgres:postgres@localhost:5434/zbrain_test
-    // Activate: `set -a; source .env; set +a`. `skipping: ... unset` ≠ valid
-    // PG result — re-source `.env`. Source of truth:
-    // docs/plans/20260526/17-session-state-110c.md L139-150 (#110-c, 2026-05-30).
-    std::env::var("ZBRAIN_TEST_PG_URL").ok()
-}
-
-async fn pg_init_clean_engine() -> Option<PostgresEngine> {
-    let url = pg_url()?;
-    let engine = PostgresEngine::new();
-    let cfg = EngineConfig {
-        database_url: Some(url.clone()),
-        database_path: None,
-    };
-    engine.connect(&cfg).await.expect("connect");
-    engine.init_schema().await.expect("init_schema");
-
+async fn pg_seed_source(url: &str, id: &str) {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
-        .connect(&url)
-        .await
-        .expect("verification pool");
-    sqlx::query("TRUNCATE TABLE pages RESTART IDENTITY CASCADE")
-        .execute(&pool)
-        .await
-        .expect("truncate pages");
-    pool.close().await;
-    Some(engine)
-}
-
-async fn pg_seed_source(id: &str) {
-    let url = pg_url().expect("ZBRAIN_TEST_PG_URL set for source seed");
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(1)
-        .connect(&url)
+        .connect(url)
         .await
         .expect("source seed pool");
     sqlx::query("INSERT INTO sources (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING")
@@ -203,13 +171,10 @@ async fn pg_seed_source(id: &str) {
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn postgres_get_page_timestamps_returns_iso_ts_for_each_existing_slug() {
-    let Some(engine) = pg_init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
-    pg_seed_source("src-1").await;
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    pg_seed_source(&fix.url, "src-1").await;
     for slug in ["alpha", "beta"] {
         engine
             .put_page(
@@ -240,17 +205,13 @@ async fn postgres_get_page_timestamps_returns_iso_ts_for_each_existing_slug() {
             "expected ISO-8601 ts for {slug}, got {ts}"
         );
     }
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn postgres_get_page_timestamps_excludes_soft_deleted_rows() {
-    let Some(engine) = pg_init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
-    pg_seed_source("src-1").await;
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    pg_seed_source(&fix.url, "src-1").await;
     for slug in ["live-slug", "tombstone-slug"] {
         engine
             .put_page(
@@ -282,17 +243,13 @@ async fn postgres_get_page_timestamps_excludes_soft_deleted_rows() {
         "soft-deleted rows must be excluded by `deleted_at IS NULL` filter"
     );
     assert_eq!(stamps.len(), 1);
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn postgres_get_page_timestamps_silently_drops_missing_slugs() {
-    let Some(engine) = pg_init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
-    pg_seed_source("src-1").await;
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    pg_seed_source(&fix.url, "src-1").await;
     engine
         .put_page(
             "only-slug",
@@ -318,21 +275,16 @@ async fn postgres_get_page_timestamps_silently_drops_missing_slugs() {
 
     assert_eq!(stamps.len(), 1, "missing slugs are silently dropped");
     assert!(stamps.contains_key("only-slug"));
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn postgres_get_page_timestamps_returns_empty_map_for_empty_input() {
-    let Some(engine) = pg_init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
 
     let stamps = engine
         .get_page_timestamps(&[])
         .await
         .expect("get_page_timestamps on empty input");
     assert!(stamps.is_empty(), "empty slugs slice → empty map");
-    engine.disconnect().await.expect("disconnect");
 }

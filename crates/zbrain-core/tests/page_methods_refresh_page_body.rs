@@ -1,9 +1,10 @@
 //! Slice PG-advanced-writes RED: `refresh_page_body` behavior tests.
 
+mod support;
+
 use tempfile::NamedTempFile;
 use zbrain_core::engine::{BrainEngine, EngineConfig, GetPageOpts, PageInput};
 use zbrain_core::libsql::LibsqlEngine;
-use zbrain_core::postgres::PostgresEngine;
 use zbrain_core::RefreshPageBodyArgs;
 
 async fn init_clean_engine() -> (LibsqlEngine, NamedTempFile) {
@@ -159,38 +160,10 @@ async fn libsql_refresh_page_body_skips_soft_deleted_rows() {
 // Soft-deleted rows are skipped by `deleted_at IS NULL`.
 // ---------------------------------------------------------------------------
 
-fn pg_url() -> Option<String> {
-    std::env::var("ZBRAIN_TEST_PG_URL").ok()
-}
-
-async fn pg_init_clean_engine() -> Option<PostgresEngine> {
-    let url = pg_url()?;
-    let engine = PostgresEngine::new();
-    let cfg = EngineConfig {
-        database_url: Some(url.clone()),
-        database_path: None,
-    };
-    engine.connect(&cfg).await.expect("connect");
-    engine.init_schema().await.expect("init_schema");
-
+async fn pg_seed_source(url: &str, id: &str) {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
-        .connect(&url)
-        .await
-        .expect("verification pool");
-    sqlx::query("TRUNCATE TABLE pages RESTART IDENTITY CASCADE")
-        .execute(&pool)
-        .await
-        .expect("truncate pages");
-    pool.close().await;
-    Some(engine)
-}
-
-async fn pg_seed_source(id: &str) {
-    let url = pg_url().expect("ZBRAIN_TEST_PG_URL set for source seed");
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(1)
-        .connect(&url)
+        .connect(url)
         .await
         .expect("source seed pool");
     sqlx::query("INSERT INTO sources (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING")
@@ -202,11 +175,10 @@ async fn pg_seed_source(id: &str) {
     pool.close().await;
 }
 
-async fn pg_force_old_updated_at(slug: &str, source_id: &str) {
-    let url = pg_url().expect("ZBRAIN_TEST_PG_URL set for timestamp prep");
+async fn pg_force_old_updated_at(url: &str, slug: &str, source_id: &str) {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
-        .connect(&url)
+        .connect(url)
         .await
         .expect("timestamp prep pool");
     sqlx::query(
@@ -241,14 +213,11 @@ fn get_opts(source_id: &str, include_deleted: bool) -> GetPageOpts {
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn postgres_refresh_page_body_updates_exact_live_source_row() {
-    let Some(engine) = pg_init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
-    pg_seed_source("src-1").await;
-    pg_seed_source("src-2").await;
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    pg_seed_source(&fix.url, "src-1").await;
+    pg_seed_source(&fix.url, "src-2").await;
     for src in ["src-1", "src-2"] {
         engine
             .put_page(
@@ -258,7 +227,7 @@ async fn postgres_refresh_page_body_updates_exact_live_source_row() {
             )
             .await
             .expect("seed page");
-        pg_force_old_updated_at("shared-slug", src).await;
+        pg_force_old_updated_at(&fix.url, "shared-slug", src).await;
     }
 
     let timeline = serde_json::json!([{ "kind": "refresh", "at": "now" }]);
@@ -300,17 +269,13 @@ async fn postgres_refresh_page_body_updates_exact_live_source_row() {
         "source mismatch must remain untouched, got {}",
         untouched.updated_at
     );
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn postgres_refresh_page_body_skips_soft_deleted_rows() {
-    let Some(engine) = pg_init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
-    pg_seed_source("src-1").await;
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    pg_seed_source(&fix.url, "src-1").await;
     engine
         .put_page(
             "soft-deleted",
@@ -344,5 +309,4 @@ async fn postgres_refresh_page_body_skips_soft_deleted_rows() {
     assert_eq!(page.timeline, "[]");
     assert_eq!(page.content_hash.as_deref(), Some("old-hash"));
     assert!(page.deleted_at.is_some(), "row remains soft-deleted");
-    engine.disconnect().await.expect("disconnect");
 }

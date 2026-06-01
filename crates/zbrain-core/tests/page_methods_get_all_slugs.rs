@@ -8,6 +8,8 @@
 //!
 //! PG mirror tests below this libsql block stay unchanged.
 
+mod support;
+
 use tempfile::NamedTempFile;
 use zbrain_core::engine::{BrainEngine, EngineConfig, PageInput};
 use zbrain_core::libsql::LibsqlEngine;
@@ -180,55 +182,14 @@ async fn libsql_get_all_slugs_returns_empty_set_when_no_rows_match() {
 //   ($1::text IS NULL OR source_id = $1) guard, returns HashSet<String>.
 //   Per TS `pglite-engine.ts` L1071-1086, results include soft-deleted
 //   rows (NO `deleted_at IS NULL` filter).
-// Gated on `ZBRAIN_TEST_PG_URL`. `#[serial_test::serial]` because they
-// share the `pages` table in the configured test database.
+// Uses pg-embed via PgFixture for ephemeral, isolated databases.
+// No serial gating needed — each test gets its own database.
 // ---------------------------------------------------------------------------
 
-use zbrain_core::postgres::PostgresEngine;
-
-// LOCAL PG NOTE (do not forget): a working PG instance IS available on this
-// workstation — Homebrew PostgreSQL 16.14 listens on `localhost:5434`, the
-// database `zbrain_test` already exists, and the URL is persisted in the
-// gitignored `<repo-root>/.env`:
-//   ZBRAIN_TEST_PG_URL=postgres://postgres:postgres@localhost:5434/zbrain_test
-// Activate before `cargo test`:
-//   set -a; source .env; set +a
-// Do NOT treat `skipping: ZBRAIN_TEST_PG_URL unset` as a valid PG result —
-// it only means the shell forgot to source `.env`. See
-// docs/plans/20260526/17-session-state-110c.md L139-150 for the original
-// provisioning record (#110-c, 2026-05-30).
-fn pg_url() -> Option<String> {
-    std::env::var("ZBRAIN_TEST_PG_URL").ok()
-}
-
-async fn pg_init_clean_engine() -> Option<PostgresEngine> {
-    let url = pg_url()?;
-    let engine = PostgresEngine::new();
-    let cfg = EngineConfig {
-        database_url: Some(url.clone()),
-        database_path: None,
-    };
-    engine.connect(&cfg).await.expect("connect");
-    engine.init_schema().await.expect("init_schema");
-
+async fn pg_seed_source(url: &str, id: &str) {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
-        .connect(&url)
-        .await
-        .expect("verification pool");
-    sqlx::query("TRUNCATE TABLE pages RESTART IDENTITY CASCADE")
-        .execute(&pool)
-        .await
-        .expect("truncate pages");
-    pool.close().await;
-    Some(engine)
-}
-
-async fn pg_seed_source(id: &str) {
-    let url = pg_url().expect("ZBRAIN_TEST_PG_URL set for source seed");
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(1)
-        .connect(&url)
+        .connect(url)
         .await
         .expect("source seed pool");
     sqlx::query("INSERT INTO sources (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING")
@@ -241,14 +202,11 @@ async fn pg_seed_source(id: &str) {
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn postgres_get_all_slugs_returns_every_slug_across_sources() {
-    let Some(engine) = pg_init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
-    pg_seed_source("src-1").await;
-    pg_seed_source("src-2").await;
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    pg_seed_source(&fix.url, "src-1").await;
+    pg_seed_source(&fix.url, "src-2").await;
     for (slug, src) in [("alpha", "src-1"), ("beta", "src-1"), ("gamma", "src-2")] {
         engine
             .put_page(
@@ -275,18 +233,14 @@ async fn postgres_get_all_slugs_returns_every_slug_across_sources() {
         .map(std::string::ToString::to_string)
         .collect();
     assert_eq!(slugs, expected);
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn postgres_get_all_slugs_filters_by_source_id_when_provided() {
-    let Some(engine) = pg_init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
-    pg_seed_source("src-1").await;
-    pg_seed_source("src-2").await;
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    pg_seed_source(&fix.url, "src-1").await;
+    pg_seed_source(&fix.url, "src-2").await;
     for (slug, src) in [("alpha", "src-1"), ("beta", "src-1"), ("gamma", "src-2")] {
         engine
             .put_page(
@@ -313,20 +267,16 @@ async fn postgres_get_all_slugs_filters_by_source_id_when_provided() {
         .map(std::string::ToString::to_string)
         .collect();
     assert_eq!(scoped, expected);
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn postgres_get_all_slugs_includes_soft_deleted_rows() {
     // TS `pglite-engine.ts` L1071-1086 does NOT filter `deleted_at IS NULL`;
     // PG mirror must keep that quirk so analytics queries see every slug
     // ever written (logged as PG-advanced-reads R1/R2 in plan §11.1).
-    let Some(engine) = pg_init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
-    pg_seed_source("src-1").await;
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    pg_seed_source(&fix.url, "src-1").await;
     engine
         .put_page(
             "live-slug",
@@ -368,23 +318,19 @@ async fn postgres_get_all_slugs_includes_soft_deleted_rows() {
         slugs.contains("tombstone-slug"),
         "PG `get_all_slugs` must include soft-deleted rows (TS parity)"
     );
-    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn postgres_get_all_slugs_returns_empty_set_when_no_rows_match() {
-    let Some(engine) = pg_init_clean_engine().await else {
-        eprintln!("skipping: ZBRAIN_TEST_PG_URL unset");
-        return;
-    };
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
     let empty = engine
         .get_all_slugs(None)
         .await
         .expect("get_all_slugs on empty");
     assert!(empty.is_empty());
 
-    pg_seed_source("src-1").await;
+    pg_seed_source(&fix.url, "src-1").await;
     engine
         .put_page(
             "only-slug",
@@ -404,5 +350,4 @@ async fn postgres_get_all_slugs_returns_empty_set_when_no_rows_match() {
         .await
         .expect("get_all_slugs(src-missing)");
     assert!(missing.is_empty());
-    engine.disconnect().await.expect("disconnect");
 }

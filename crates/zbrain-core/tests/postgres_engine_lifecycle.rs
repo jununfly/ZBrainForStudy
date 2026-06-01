@@ -20,7 +20,10 @@ async fn connect_succeeds_against_live_postgres() {
     // PgFixture already connected and init_schema'd.
     // Verify disconnect works.
     let engine = std::mem::replace(&mut fix.engine, PostgresEngine::new());
-    engine.disconnect().await.expect("disconnect should succeed");
+    engine
+        .disconnect()
+        .await
+        .expect("disconnect should succeed");
 }
 
 #[tokio::test]

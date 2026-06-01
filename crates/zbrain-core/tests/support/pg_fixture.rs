@@ -55,8 +55,7 @@ impl PgFixture {
         );
 
         // Allocate a free port via the OS.
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .expect("bind to find free port");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind to find free port");
         let port = listener.local_addr().unwrap().port();
         drop(listener); // release before pg-embed binds
 
