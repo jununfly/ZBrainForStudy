@@ -278,23 +278,23 @@ pub trait BrainEngine: Send + Sync {
     /// substring. Mirrors `resolveSlugs` in `engine.ts:708`.
     async fn resolve_slugs(&self, partial: &str) -> crate::Result<Vec<String>>;
 
-    // ── Slice 6a S6 method group (13 new methods) ─────────────────────────
+    // ── Slice 6a S6 method group (15 required methods) ────────────────────
     //
-    // Default implementations return `Error::Unsupported("pending slice 6a")`
-    // so existing backends (postgres / libsql / in-memory) compile unchanged.
-    // The S6-T2 green phase overrides them per backend; postgres holds on
-    // `pending slice 6a-pg` until slice 6a-pg lands.
+    // Backends must implement the full Slice 6a S6 method group explicitly.
+    // The previous `Err(Error::unsupported("pending slice 6a"))` defaults
+    // were removed once InMemoryEngine reached 15/15 contract parity (C1
+    // BrainEngine contract hardening, plan 2026-06-01); leaving a method
+    // unimplemented is now a compile error, which is exactly the safety net
+    // the hardening plan demands.
     //
     // Method ordering: §13.2 of `13-slice-6a-gap-checklist.md`.
 
     // — Duplicate detection (1) —
     async fn find_duplicate_page(
         &self,
-        _source_id: &str,
-        _opts: &FindDuplicatePageOpts,
-    ) -> crate::Result<Option<Page>> {
-        Err(Error::unsupported("pending slice 6a"))
-    }
+        source_id: &str,
+        opts: &FindDuplicatePageOpts,
+    ) -> crate::Result<Option<Page>>;
 
     // — Soft-delete lifecycle (3) —
     /// Soft-delete a page (set `deleted_at = CURRENT_TIMESTAMP`).
@@ -303,24 +303,18 @@ pub trait BrainEngine: Send + Sync {
     /// returns `{ slug } | null`.
     async fn soft_delete_page(
         &self,
-        _slug: &str,
-        _source_id: Option<&str>,
-    ) -> crate::Result<Option<String>> {
-        Err(Error::unsupported("pending slice 6a"))
-    }
+        slug: &str,
+        source_id: Option<&str>,
+    ) -> crate::Result<Option<String>>;
 
     /// Restore a previously soft-deleted page. Returns `true` if a row was
     /// affected, `false` otherwise. Mirrors TS `restorePage`.
-    async fn restore_page(&self, _slug: &str, _source_id: Option<&str>) -> crate::Result<bool> {
-        Err(Error::unsupported("pending slice 6a"))
-    }
+    async fn restore_page(&self, slug: &str, source_id: Option<&str>) -> crate::Result<bool>;
 
     /// Hard-delete pages whose `deleted_at` is older than `older_than_hours`
     /// ago. Returns the cleared slugs plus the count. Mirrors TS
     /// `purgeDeletedPages`.
-    async fn purge_deleted_pages(&self, _older_than_hours: u32) -> crate::Result<PurgeResult> {
-        Err(Error::unsupported("pending slice 6a"))
-    }
+    async fn purge_deleted_pages(&self, older_than_hours: u32) -> crate::Result<PurgeResult>;
 
     // — Tag CRUD (3) —
     /// Attach `tag` to the page identified by (`slug`, `source_id`). Mirrors
@@ -329,39 +323,31 @@ pub trait BrainEngine: Send + Sync {
     /// (tag, page) pairs.
     async fn add_tag(
         &self,
-        _slug: &str,
-        _tag: &str,
-        _source_id: Option<&str>,
-    ) -> crate::Result<()> {
-        Err(Error::unsupported("pending slice 6a"))
-    }
+        slug: &str,
+        tag: &str,
+        source_id: Option<&str>,
+    ) -> crate::Result<()>;
 
     /// Detach `tag` from the page identified by (`slug`, `source_id`). Mirrors
     /// TS `removeTag` whose sub-select silently no-ops when the page is
     /// missing — Rust preserves that asymmetry and returns `Ok(())`.
     async fn remove_tag(
         &self,
-        _slug: &str,
-        _tag: &str,
-        _source_id: Option<&str>,
-    ) -> crate::Result<()> {
-        Err(Error::unsupported("pending slice 6a"))
-    }
+        slug: &str,
+        tag: &str,
+        source_id: Option<&str>,
+    ) -> crate::Result<()>;
 
     /// List the tags currently attached to (`slug`, `source_id`), ordered by
     /// tag ascending. Mirrors TS `getTags` which returns `[]` for missing
     /// pages.
-    async fn get_tags(&self, _slug: &str, _source_id: Option<&str>) -> crate::Result<Vec<String>> {
-        Err(Error::unsupported("pending slice 6a"))
-    }
+    async fn get_tags(&self, slug: &str, source_id: Option<&str>) -> crate::Result<Vec<String>>;
 
     // — Content refresh (2) —
     /// Update `compiled_truth`, `timeline`, `content_hash` for an existing
     /// page (typically after a re-importer pass). Mirrors TS
     /// `refreshPageBody`.
-    async fn refresh_page_body(&self, _args: &RefreshPageBodyArgs) -> crate::Result<()> {
-        Err(Error::unsupported("pending slice 6a"))
-    }
+    async fn refresh_page_body(&self, args: &RefreshPageBodyArgs) -> crate::Result<()>;
 
     /// Update the `contextual_retrieval_mode` + `corpus_generation` columns.
     /// `mode` is `&str` (not `CRMode`) in 6a so we can ship without
@@ -369,37 +355,29 @@ pub trait BrainEngine: Send + Sync {
     /// the param to `CRMode` if the enum is found to be stable.
     async fn update_page_contextual_retrieval_state(
         &self,
-        _slug: &str,
-        _source_id: &str,
-        _mode: &str,
-        _corpus_generation: Option<&str>,
-    ) -> crate::Result<()> {
-        Err(Error::unsupported("pending slice 6a"))
-    }
+        slug: &str,
+        source_id: &str,
+        mode: &str,
+        corpus_generation: Option<&str>,
+    ) -> crate::Result<()>;
 
     // — Bulk slug / ref enumeration (3) —
     /// Return the set of all live (non-soft-deleted) slugs, optionally
     /// scoped to `source_id`. Mirrors TS `getAllSlugs`.
     async fn get_all_slugs(
         &self,
-        _source_id: Option<&str>,
-    ) -> crate::Result<std::collections::HashSet<String>> {
-        Err(Error::unsupported("pending slice 6a"))
-    }
+        source_id: Option<&str>,
+    ) -> crate::Result<std::collections::HashSet<String>>;
 
     /// Return every live `(slug, source_id)` pair, ordered by
     /// `(source_id, slug)` ascending. Mirrors TS `listAllPageRefs`.
-    async fn list_all_page_refs(&self) -> crate::Result<Vec<PageRef>> {
-        Err(Error::unsupported("pending slice 6a"))
-    }
+    async fn list_all_page_refs(&self) -> crate::Result<Vec<PageRef>>;
 
     /// Return pages with zero inbound links from live pages. Mirrors TS
     /// `findOrphanPages` — discovered late in S6-T0 (was missing from the
     /// initial 12-method tally). Both sides of the join must filter out
     /// soft-deleted rows.
-    async fn find_orphan_pages(&self) -> crate::Result<Vec<OrphanPage>> {
-        Err(Error::unsupported("pending slice 6a"))
-    }
+    async fn find_orphan_pages(&self) -> crate::Result<Vec<OrphanPage>>;
 
     // — Batch timestamps / scores (3) —
     /// Resolve `slug` → `COALESCE(updated_at, created_at)` for many slugs at
@@ -413,10 +391,8 @@ pub trait BrainEngine: Send + Sync {
     /// Deviation logged in §13.6.
     async fn get_page_timestamps(
         &self,
-        _slugs: &[String],
-    ) -> crate::Result<std::collections::HashMap<String, String>> {
-        Err(Error::unsupported("pending slice 6a"))
-    }
+        slugs: &[String],
+    ) -> crate::Result<std::collections::HashMap<String, String>>;
 
     /// Resolve `(slug, source_id)` → `COALESCE(effective_date, updated_at,
     /// created_at)`. Key format: `"{source_id}::{slug}"` so the caller can
@@ -426,10 +402,8 @@ pub trait BrainEngine: Send + Sync {
     /// Values are ISO-8601 strings; see `get_page_timestamps` for rationale.
     async fn get_effective_dates(
         &self,
-        _refs: &[PageRef],
-    ) -> crate::Result<std::collections::HashMap<String, String>> {
-        Err(Error::unsupported("pending slice 6a"))
-    }
+        refs: &[PageRef],
+    ) -> crate::Result<std::collections::HashMap<String, String>>;
 
     /// Compute the salience score for each ref. Formula (mirrors TS
     /// `getSalienceScores`):
@@ -446,10 +420,8 @@ pub trait BrainEngine: Send + Sync {
     /// behaviour so we cannot accidentally claim 6a is "done with takes".
     async fn get_salience_scores(
         &self,
-        _refs: &[PageRef],
-    ) -> crate::Result<std::collections::HashMap<String, f64>> {
-        Err(Error::unsupported("pending slice 6a"))
-    }
+        refs: &[PageRef],
+    ) -> crate::Result<std::collections::HashMap<String, f64>>;
 }
 
 // ─── InMemoryEngine ──────────────────────────────────────────────────────────
