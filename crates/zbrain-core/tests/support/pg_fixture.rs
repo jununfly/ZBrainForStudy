@@ -1,9 +1,9 @@
-//! Ephemeral PostgreSQL fixture for integration tests.
+//! Ephemeral `PostgreSQL` fixture for integration tests.
 //!
-//! Each call to [`PgFixture::start`] launches a fresh `pg-embed` PostgreSQL
+//! Each call to [`PgFixture::start`] launches a fresh `pg-embed` `PostgreSQL`
 //! instance with an isolated data directory. On drop the process is killed
 //! and the data directory is cleaned up (persistent=false). No external
-//! PostgreSQL or Docker installation is required — pg-embed downloads a
+//! `PostgreSQL` or Docker installation is required — `pg-embed` downloads a
 //! pre-compiled binary on first use (cached thereafter).
 //!
 //! # Port allocation
@@ -26,7 +26,7 @@ use zbrain_core::postgres::PostgresEngine;
 /// the same nanosecond by parallel `cargo test` threads.
 static FIXTURE_SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// RAII fixture that owns a running `pg-embed` PostgreSQL instance.
+/// RAII fixture that owns a running `pg-embed` `PostgreSQL` instance.
 ///
 /// Provides a [`PostgresEngine`] that has already been `connect()`-ed and
 /// `init_schema()`-ed, ready for test assertions.
@@ -40,7 +40,7 @@ pub struct PgFixture {
 }
 
 impl PgFixture {
-    /// Start a fresh PostgreSQL instance, create an isolated database,
+    /// Start a fresh `PostgreSQL` instance, create an isolated database,
     /// connect a `PostgresEngine` to it, and run `init_schema()`.
     pub async fn start() -> Self {
         let seq = FIXTURE_SEQ.fetch_add(1, Ordering::Relaxed);
