@@ -28,60 +28,20 @@
 //! new `frontmatter_defaults_to_empty_object_when_omitted` and a new
 //! `corpus_generation_column_is_text` (`pg_typeof` probe).
 //!
-//! Gated on `ZBRAIN_TEST_PG_URL` (same pattern as the lifecycle suite).
-//! Local runs without the env var skip silently; CI exercises the DB path.
+//! Each test launches its own ephemeral `PostgreSQL` instance via `PgFixture`,
+//! so no external database or environment variable is required.
 
-use zbrain_core::engine::{BrainEngine, EngineConfig, GetPageOpts, PageInput};
-use zbrain_core::postgres::PostgresEngine;
+mod support;
 
-fn pg_url() -> Option<String> {
-    std::env::var("ZBRAIN_TEST_PG_URL").ok()
-}
-
-async fn init_clean_engine() -> Option<PostgresEngine> {
-    let url = pg_url()?;
-    let engine = PostgresEngine::new();
-    let cfg = EngineConfig {
-        database_url: Some(url.clone()),
-        database_path: None,
-    };
-    engine.connect(&cfg).await.expect("connect");
-    engine.init_schema().await.expect("init_schema");
-
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(1)
-        .connect(&url)
-        .await
-        .expect("verification pool");
-    sqlx::query("TRUNCATE TABLE pages RESTART IDENTITY CASCADE")
-        .execute(&pool)
-        .await
-        .expect("truncate pages");
-    // Reseed the `default` sources row. The 0001 migration seeds it on first
-    // apply, but sqlx records that migration as applied; later `init_schema`
-    // calls do NOT re-run it. If another test (or the shared test DB) ever
-    // TRUNCATEs the `sources` table, the row vanishes permanently. Since
-    // `put_page` defaults `source_id` to `"default"` (postgres.rs put_page),
-    // its absence triggers `pages_source_id_fkey` on every shape test below.
-    // ON CONFLICT keeps the operation idempotent.
-    sqlx::query(
-        "INSERT INTO sources (id, name) VALUES ('default', 'default') ON CONFLICT (id) DO NOTHING",
-    )
-    .execute(&pool)
-    .await
-    .expect("seed default source");
-    pool.close().await;
-
-    Some(engine)
-}
+use zbrain_core::engine::{BrainEngine, GetPageOpts, PageInput};
 
 /// Side-channel pool for SQL-level inspection / manipulation that bypasses
 /// the engine projection (we want to observe trigger behaviour even when
 /// the decoder cannot read the new columns yet).
-async fn side_pool() -> sqlx::PgPool {
+async fn side_pool(url: &str) -> sqlx::PgPool {
     sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
-        .connect(&pg_url().expect("ZBRAIN_TEST_PG_URL"))
+        .connect(url)
         .await
         .expect("side pool")
 }
@@ -114,10 +74,8 @@ fn unique_slug() -> String {
 ///     must return None. (TS engines write these via separate code paths.)
 #[tokio::test]
 async fn roundtrip_all_full_columns() {
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skip: ZBRAIN_TEST_PG_URL not set");
-        return;
-    };
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
 
     let slug = unique_slug();
     let input = PageInput {
@@ -213,10 +171,8 @@ async fn roundtrip_all_full_columns() {
 ///   `(sourceKind || sourceUri || ingestedVia) ? new Date().toISOString() : null`
 #[tokio::test]
 async fn ingested_at_server_stamped_when_any_ingestion_metadata_present() {
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skip: ZBRAIN_TEST_PG_URL not set");
-        return;
-    };
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
 
     let slug = unique_slug();
     let input = PageInput {
@@ -250,10 +206,8 @@ async fn ingested_at_server_stamped_when_any_ingestion_metadata_present() {
 /// metadata is present and the caller does not supply a value.
 #[tokio::test]
 async fn ingested_at_remains_none_without_ingestion_metadata() {
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skip: ZBRAIN_TEST_PG_URL not set");
-        return;
-    };
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
 
     let slug = unique_slug();
     let input = PageInput {
@@ -286,10 +240,8 @@ async fn ingested_at_remains_none_without_ingestion_metadata() {
 /// TS source of truth: schema.sql:93 — `frontmatter JSONB NOT NULL DEFAULT '{}'`.
 #[tokio::test]
 async fn frontmatter_defaults_to_empty_object_when_omitted() {
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skip: ZBRAIN_TEST_PG_URL not set");
-        return;
-    };
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
 
     let slug = unique_slug();
     let input = PageInput {
@@ -317,7 +269,7 @@ async fn frontmatter_defaults_to_empty_object_when_omitted() {
         "frontmatter must default to empty object when omitted"
     );
 
-    let pool = side_pool().await;
+    let pool = side_pool(&fix.url).await;
     let is_nullable: String = sqlx::query_scalar(
         "SELECT is_nullable FROM information_schema.columns \
          WHERE table_name = 'pages' AND column_name = 'frontmatter'",
@@ -339,12 +291,12 @@ async fn frontmatter_defaults_to_empty_object_when_omitted() {
 /// #110-a 0003 wrote INTEGER by mistake; 0004 fixes it.
 #[tokio::test]
 async fn corpus_generation_column_is_text() {
-    let Some(_engine) = init_clean_engine().await else {
-        eprintln!("skip: ZBRAIN_TEST_PG_URL not set");
-        return;
-    };
+    // No engine handle needed: PgFixture::start() already ran connect +
+    // init_schema, so the `pages` table (and its corpus_generation column)
+    // exist by the time we reach the side-channel pool query below.
+    let fix = support::pg_fixture::PgFixture::start().await;
 
-    let pool = side_pool().await;
+    let pool = side_pool(&fix.url).await;
     let data_type: String = sqlx::query_scalar(
         "SELECT data_type FROM information_schema.columns \
          WHERE table_name = 'pages' AND column_name = 'corpus_generation'",
@@ -363,10 +315,8 @@ async fn corpus_generation_column_is_text() {
 /// allow-listed column (`compiled_truth`) changes via direct SQL UPDATE.
 #[tokio::test]
 async fn generation_bumps_on_watched_column_change() {
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skip: ZBRAIN_TEST_PG_URL not set");
-        return;
-    };
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
 
     let slug = unique_slug();
     let input = PageInput {
@@ -380,7 +330,7 @@ async fn generation_bumps_on_watched_column_change() {
         .await
         .expect("put_page v1");
 
-    let pool = side_pool().await;
+    let pool = side_pool(&fix.url).await;
     let gen_v1: i64 = sqlx::query_scalar("SELECT generation FROM pages WHERE slug = $1")
         .bind(&slug)
         .fetch_one(&pool)
@@ -416,10 +366,8 @@ async fn generation_bumps_on_watched_column_change() {
 /// salience recompute).
 #[tokio::test]
 async fn generation_does_not_bump_on_unwatched_column_change() {
-    let Some(engine) = init_clean_engine().await else {
-        eprintln!("skip: ZBRAIN_TEST_PG_URL not set");
-        return;
-    };
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
 
     let slug = unique_slug();
     let input = PageInput {
@@ -433,7 +381,7 @@ async fn generation_does_not_bump_on_unwatched_column_change() {
         .await
         .expect("put_page");
 
-    let pool = side_pool().await;
+    let pool = side_pool(&fix.url).await;
     let gen_before: i64 = sqlx::query_scalar("SELECT generation FROM pages WHERE slug = $1")
         .bind(&slug)
         .fetch_one(&pool)
