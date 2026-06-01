@@ -68,7 +68,7 @@ impl PgFixture {
             port,
             user: "postgres".to_string(),
             password: "postgres".to_string(),
-            auth_method: pg_embed::postgres::PgAuthMethod::Plain,
+            auth_method: pg_embed::pg_enums::PgAuthMethod::Plain,
             persistent: false,
             timeout: Some(std::time::Duration::from_secs(30)),
             migration_dir: None,
