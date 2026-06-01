@@ -11,7 +11,7 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
 use crate::{
     time::current_utc_iso8601, CRMode, EffectiveDateSource, Error, FindDuplicatePageOpts,
@@ -463,6 +463,33 @@ pub struct InMemoryEngine {
     next_id: Mutex<u64>,
 }
 
+// ─── Tag helpers ─────────────────────────────────────────────────────────────
+
+/// Extract the sorted, deduped tag list from `Page::frontmatter["tags"]`.
+fn page_tags(page: &Page) -> Vec<String> {
+    page.frontmatter
+        .get("tags")
+        .and_then(Value::as_array)
+        .map(|tags| {
+            tags.iter()
+                .filter_map(Value::as_str)
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Set the tag list on `Page::frontmatter["tags"]`, sorting and deduping.
+fn set_page_tags(page: &mut Page, mut tags: Vec<String>) {
+    tags.sort();
+    tags.dedup();
+    if let Some(metadata) = page.frontmatter.as_object_mut() {
+        metadata.insert("tags".to_string(), json!(tags));
+    } else {
+        page.frontmatter = json!({"tags": tags});
+    }
+}
+
 impl InMemoryEngine {
     /// Wrap in an `Arc` for use as `Arc<dyn BrainEngine>`.
     #[must_use]
@@ -497,7 +524,11 @@ impl BrainEngine for InMemoryEngine {
             .expect("InMemoryEngine store mutex poisoned");
         Ok(store
             .iter()
-            .find(|p| p.slug == slug && p.source_id == source_id)
+            .find(|p| {
+                p.slug == slug
+                    && p.source_id == source_id
+                    && (opts.include_deleted || p.deleted_at.is_none())
+            })
             .cloned())
     }
 
@@ -666,5 +697,107 @@ impl BrainEngine for InMemoryEngine {
 
         page.deleted_at = Some(current_utc_iso8601());
         Ok(Some(page.slug.clone()))
+    }
+
+    async fn restore_page(&self, slug: &str, source_id: Option<&str>) -> crate::Result<bool> {
+        let mut store = self
+            .store
+            .lock()
+            .expect("InMemoryEngine store mutex poisoned");
+        let Some(page) = store.iter_mut().find(|p| {
+            p.slug == slug
+                && p.deleted_at.is_some()
+                && source_id.is_none_or(|source_id| p.source_id == source_id)
+        }) else {
+            return Ok(false);
+        };
+
+        page.deleted_at = None;
+        page.updated_at = current_utc_iso8601();
+        Ok(true)
+    }
+
+    async fn purge_deleted_pages(&self, _older_than_hours: u32) -> crate::Result<PurgeResult> {
+        let mut store = self
+            .store
+            .lock()
+            .expect("InMemoryEngine store mutex poisoned");
+        let mut slugs = Vec::new();
+        store.retain(|page| {
+            if page.deleted_at.is_some() {
+                slugs.push(page.slug.clone());
+                false
+            } else {
+                true
+            }
+        });
+
+        Ok(PurgeResult {
+            count: slugs.len() as u64,
+            slugs,
+        })
+    }
+
+    async fn add_tag(&self, slug: &str, tag: &str, source_id: Option<&str>) -> crate::Result<()> {
+        let mut store = self
+            .store
+            .lock()
+            .expect("InMemoryEngine store mutex poisoned");
+        let Some(page) = store.iter_mut().find(|p| {
+            p.slug == slug
+                && p.deleted_at.is_none()
+                && source_id.is_none_or(|sid| p.source_id == sid)
+        }) else {
+            return Err(Error::page_not_found(slug, source_id));
+        };
+        let mut tags = page_tags(page);
+        tags.push(tag.to_string());
+        set_page_tags(page, tags);
+        Ok(())
+    }
+
+    async fn remove_tag(
+        &self,
+        slug: &str,
+        tag: &str,
+        source_id: Option<&str>,
+    ) -> crate::Result<()> {
+        let mut store = self
+            .store
+            .lock()
+            .expect("InMemoryEngine store mutex poisoned");
+        // `deleted_at IS NULL` mirrors the inner SELECT guard used in
+        // postgres.rs:634 / libsql.rs:859. TS `removeTag` is silently
+        // no-op on soft-deleted rows; we preserve the same shape here.
+        if let Some(page) = store.iter_mut().find(|p| {
+            p.slug == slug
+                && p.deleted_at.is_none()
+                && source_id.is_none_or(|sid| p.source_id == sid)
+        }) {
+            let mut tags = page_tags(page);
+            tags.retain(|t| t != tag);
+            set_page_tags(page, tags);
+        }
+        // Silent OK for missing page or absent tag — mirrors TS `removeTag`.
+        Ok(())
+    }
+
+    async fn get_tags(&self, slug: &str, source_id: Option<&str>) -> crate::Result<Vec<String>> {
+        let store = self
+            .store
+            .lock()
+            .expect("InMemoryEngine store mutex poisoned");
+        // `deleted_at IS NULL` mirrors the inner SELECT guard used in
+        // postgres.rs:655 / libsql.rs:878 so soft-deleted pages report
+        // no tags regardless of stored state.
+        Ok(store
+            .iter()
+            .find(|p| {
+                p.slug == slug
+                    && p.deleted_at.is_none()
+                    && source_id.is_none_or(|sid| p.source_id == sid)
+            })
+            .map(page_tags)
+            .unwrap_or_default())
     }
 }
