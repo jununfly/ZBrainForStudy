@@ -14,7 +14,7 @@
 //! file; every reference to the crate uses the leading-`::libsql::…` form
 //! to bypass the shadow.
 
-use std::sync::OnceLock;
+use std::sync::{LazyLock, OnceLock};
 
 use async_trait::async_trait;
 
@@ -80,6 +80,32 @@ const MIGRATIONS: &[&str] = &[
 /// `usize → i64` trips `clippy::cast_possible_wrap`.
 const SCHEMA_VERSION: i64 = 6;
 
+/// Process-wide gate that serializes the *entire* `init_schema` flow
+/// — including the very first `connect()` + `PRAGMA foreign_keys = ON`
+/// on a freshly opened file — across **all** `LibsqlEngine` instances.
+///
+/// Why a process-wide lock and not a per-engine one: each test owns its
+/// own `NamedTempFile` + `LibsqlEngine`, so per-engine state cannot
+/// serialize anything across tests. Yet running 32 fresh engines in
+/// parallel (see `libsql_init_schema_flake_reproduce.rs`) still trips
+/// rare cold-start races inside the shared `libsql` / `SQLite` FFI
+/// initialization paths — observed signature is `enable foreign_keys
+/// failed: SQLite failure: bad parameter or other API misuse` emitted
+/// from inside [`LibsqlEngine::conn`] before any migration write
+/// executes. A single static `tokio::sync::Mutex` covering the whole
+/// `init_schema` body makes that cold-start FFI sequence strictly
+/// serial process-wide.
+///
+/// Why no fast-path / DCL: an earlier revision tried a lock-free
+/// fast-path that read `PRAGMA user_version` outside the lock. That
+/// shape forced the unguarded `self.conn().await?` to run concurrently
+/// — which is exactly the FFI path that races. The fast-path was an
+/// optimization that masked the real bug. We pay one extra
+/// `PRAGMA user_version` round-trip per `init_schema` call, which only
+/// matters once per engine / process anyway.
+static SCHEMA_INIT_LOCK: LazyLock<tokio::sync::Mutex<()>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(()));
+
 /// Embedded `SQLite` engine. Use [`LibsqlEngine::new`] then [`connect`] before
 /// any other method. Calling `connect` twice on the same instance is
 /// rejected to keep ownership of the underlying `Database` handle clean.
@@ -121,6 +147,23 @@ impl LibsqlEngine {
             .await
             .map_err(|e| Error::engine(format!("enable foreign_keys failed: {e}")))?;
         Ok(conn)
+    }
+
+    /// Read `PRAGMA user_version` on the given connection. Extracted so
+    /// `init_schema` can call it both lock-free (fast-path) and under the
+    /// migration gate (double-checked) without duplicating the decode
+    /// error mapping.
+    async fn read_user_version(conn: &::libsql::Connection) -> Result<i64> {
+        let mut rows = conn
+            .query("PRAGMA user_version", ())
+            .await
+            .map_err(|e| Error::engine(format!("read user_version failed: {e}")))?;
+        rows.next()
+            .await
+            .map_err(|e| Error::engine(format!("user_version row fetch failed: {e}")))?
+            .ok_or_else(|| Error::engine("PRAGMA user_version returned no row"))?
+            .get(0)
+            .map_err(|e| Error::engine(format!("user_version decode failed: {e}")))
     }
 }
 
@@ -173,22 +216,24 @@ impl BrainEngine for LibsqlEngine {
     }
 
     async fn init_schema(&self) -> Result<()> {
+        // Take the process-wide migration gate before touching the
+        // connection at all. Empirically (see
+        // `libsql_init_schema_flake_reproduce.rs`) the cold-start race
+        // is **not** in the migration write step — it surfaces inside
+        // libsql's first `connect()` + first `PRAGMA foreign_keys = ON`
+        // on a freshly opened file ("bad parameter or other API misuse").
+        // Guarding only the migration loop leaves that earlier FFI
+        // sequence unprotected, so the lock must wrap the very first
+        // `self.conn().await?` as well.
+        //
+        // The added cost is the `PRAGMA user_version` round-trip per
+        // `init_schema` call, which only matters once per engine /
+        // process anyway — the steady-state fast-path was an
+        // optimization that masked the real bug.
+        let _guard = SCHEMA_INIT_LOCK.lock().await;
+
         let conn = self.conn().await?;
-
-        // PRAGMA user_version is SQLite's standard "schema version" slot.
-        // 0 = fresh database, N = migration N has been applied.
-        let mut rows = conn
-            .query("PRAGMA user_version", ())
-            .await
-            .map_err(|e| Error::engine(format!("read user_version failed: {e}")))?;
-        let current: i64 = rows
-            .next()
-            .await
-            .map_err(|e| Error::engine(format!("user_version row fetch failed: {e}")))?
-            .ok_or_else(|| Error::engine("PRAGMA user_version returned no row"))?
-            .get(0)
-            .map_err(|e| Error::engine(format!("user_version decode failed: {e}")))?;
-
+        let current = Self::read_user_version(&conn).await?;
         if current >= SCHEMA_VERSION {
             return Ok(());
         }

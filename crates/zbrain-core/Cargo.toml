@@ -18,11 +18,21 @@ serde_json = { workspace = true }
 async-trait = { workspace = true }
 sqlx = { workspace = true }
 libsql = { workspace = true }
+# Slice #110-h H1: only `tokio::sync::Mutex` (runtime-agnostic) is used in
+# the lib — to serialize the *write* portion of `LibsqlEngine::init_schema`
+# process-wide. Workspace tokio already enables `sync`. No `rt-*` features
+# are pulled into the library, so callers stay free to pick any runtime.
+tokio = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
 sqlx = { workspace = true }
 tempfile = { workspace = true }
-serial_test = { workspace = true }
+# Slice #110-h T6 (resolved): `serial_test` is no longer needed.
+# `LibsqlEngine::init_schema` now serializes itself via the process-wide
+# `SCHEMA_INIT_LOCK` (see `src/libsql.rs`), so libsql integration tests run
+# fully in parallel. The cold-start `PRAGMA foreign_keys` FFI race was
+# eliminated by holding the lock across `self.conn().await` as well — see
+# `tests/libsql_init_schema_flake_reproduce.rs` for the 100x guard.
 pg-embed = { workspace = true }

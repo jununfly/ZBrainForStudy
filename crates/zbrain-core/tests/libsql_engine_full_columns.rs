@@ -80,7 +80,6 @@ async fn page_column_info(path_str: &str, column: &str) -> (String, i64, Option<
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn put_page_does_not_persist_embedding_or_last_retrieved_at() {
     let (engine, _tmp, _path_str) = init_clean_engine().await;
     let mut input = base_input();
@@ -118,7 +117,6 @@ async fn put_page_does_not_persist_embedding_or_last_retrieved_at() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn ingested_at_server_stamped_when_any_ingestion_metadata_present() {
     let (engine, _tmp, _path_str) = init_clean_engine().await;
     let cases = [
@@ -158,7 +156,6 @@ async fn ingested_at_server_stamped_when_any_ingestion_metadata_present() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn ingested_at_remains_none_without_ingestion_metadata() {
     let (engine, _tmp, _path_str) = init_clean_engine().await;
     let mut input = base_input();
@@ -180,7 +177,6 @@ async fn ingested_at_remains_none_without_ingestion_metadata() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn frontmatter_defaults_to_empty_object_when_omitted() {
     let (engine, _tmp, _path_str) = init_clean_engine().await;
     let mut input = base_input();
@@ -211,7 +207,6 @@ async fn frontmatter_defaults_to_empty_object_when_omitted() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn frontmatter_column_is_text_not_null_default_empty_object() {
     let (engine, _tmp, path_str) = init_clean_engine().await;
 
@@ -228,7 +223,6 @@ async fn frontmatter_column_is_text_not_null_default_empty_object() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
 async fn corpus_generation_column_is_text_and_decodes_as_string() {
     let (engine, _tmp, path_str) = init_clean_engine().await;
 
