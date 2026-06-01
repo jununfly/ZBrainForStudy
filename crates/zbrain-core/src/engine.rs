@@ -321,22 +321,13 @@ pub trait BrainEngine: Send + Sync {
     /// TS `addTag` which throws when the page is missing — Rust returns
     /// `Err(Error::page_not_found(..))` in that case. Idempotent on duplicate
     /// (tag, page) pairs.
-    async fn add_tag(
-        &self,
-        slug: &str,
-        tag: &str,
-        source_id: Option<&str>,
-    ) -> crate::Result<()>;
+    async fn add_tag(&self, slug: &str, tag: &str, source_id: Option<&str>) -> crate::Result<()>;
 
     /// Detach `tag` from the page identified by (`slug`, `source_id`). Mirrors
     /// TS `removeTag` whose sub-select silently no-ops when the page is
     /// missing — Rust preserves that asymmetry and returns `Ok(())`.
-    async fn remove_tag(
-        &self,
-        slug: &str,
-        tag: &str,
-        source_id: Option<&str>,
-    ) -> crate::Result<()>;
+    async fn remove_tag(&self, slug: &str, tag: &str, source_id: Option<&str>)
+        -> crate::Result<()>;
 
     /// List the tags currently attached to (`slug`, `source_id`), ordered by
     /// tag ascending. Mirrors TS `getTags` which returns `[]` for missing
@@ -939,9 +930,10 @@ impl BrainEngine for InMemoryEngine {
             .expect("InMemoryEngine store mutex poisoned");
         let mut out = std::collections::HashMap::new();
         for r in refs {
-            if let Some(p) = store.iter().find(|p| {
-                p.slug == r.slug && p.source_id == r.source_id && p.deleted_at.is_none()
-            }) {
+            if let Some(p) = store
+                .iter()
+                .find(|p| p.slug == r.slug && p.source_id == r.source_id && p.deleted_at.is_none())
+            {
                 let ts = if p.updated_at.is_empty() {
                     p.created_at.clone()
                 } else {
@@ -966,9 +958,10 @@ impl BrainEngine for InMemoryEngine {
             .expect("InMemoryEngine store mutex poisoned");
         let mut out = std::collections::HashMap::new();
         for r in refs {
-            if let Some(p) = store.iter().find(|p| {
-                p.slug == r.slug && p.source_id == r.source_id && p.deleted_at.is_none()
-            }) {
+            if let Some(p) = store
+                .iter()
+                .find(|p| p.slug == r.slug && p.source_id == r.source_id && p.deleted_at.is_none())
+            {
                 let value = p.emotional_weight.unwrap_or(0.0) * 5.0;
                 out.insert(format!("{}::{}", r.source_id, r.slug), value);
             }

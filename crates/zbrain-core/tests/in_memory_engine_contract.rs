@@ -541,7 +541,10 @@ async fn in_memory_get_all_slugs_returns_all_including_soft_deleted() {
         .expect("soft delete beta");
 
     // source_id: None → all slugs including soft-deleted
-    let all = engine.get_all_slugs(None).await.expect("get_all_slugs None");
+    let all = engine
+        .get_all_slugs(None)
+        .await
+        .expect("get_all_slugs None");
     let mut all_sorted: Vec<String> = all.into_iter().collect();
     all_sorted.sort();
     assert_eq!(
@@ -568,11 +571,7 @@ async fn in_memory_get_all_slugs_returns_all_including_soft_deleted() {
         .get_all_slugs(Some("src-2"))
         .await
         .expect("get_all_slugs src-2");
-    assert_eq!(
-        src2,
-        HashSet::from(["gamma".to_string()]),
-        "src-2 slugs"
-    );
+    assert_eq!(src2, HashSet::from(["gamma".to_string()]), "src-2 slugs");
 
     engine.disconnect().await.expect("disconnect");
 }
@@ -746,10 +745,7 @@ async fn in_memory_get_page_timestamps_returns_coalesce_and_omits_missing() {
         "key is slug, value is COALESCE(updated_at, created_at)"
     );
     assert!(!result.contains_key("missing"), "missing slug omitted");
-    assert!(
-        !result.contains_key("deleted"),
-        "soft-deleted slug omitted"
-    );
+    assert!(!result.contains_key("deleted"), "soft-deleted slug omitted");
 
     engine.disconnect().await.expect("disconnect");
 }
