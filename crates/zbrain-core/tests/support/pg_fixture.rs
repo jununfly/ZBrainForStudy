@@ -15,12 +15,16 @@
 
 use std::net::TcpListener;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use pg_embed::postgres::{PgEmbed, PgSettings};
 use pg_embed::pg_fetch::{PgFetchSettings, PG_V17};
-use sqlx::Executor;
+use pg_embed::postgres::{PgEmbed, PgSettings};
 use zbrain_core::engine::{BrainEngine, EngineConfig};
 use zbrain_core::postgres::PostgresEngine;
+
+/// Monotonic per-process counter to disambiguate fixtures created within
+/// the same nanosecond by parallel `cargo test` threads.
+static FIXTURE_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// RAII fixture that owns a running `pg-embed` PostgreSQL instance.
 ///
@@ -39,13 +43,15 @@ impl PgFixture {
     /// Start a fresh PostgreSQL instance, create an isolated database,
     /// connect a `PostgresEngine` to it, and run `init_schema()`.
     pub async fn start() -> Self {
+        let seq = FIXTURE_SEQ.fetch_add(1, Ordering::Relaxed);
         let db_name = format!(
-            "zbrain_test_{}_{}",
+            "zbrain_test_{}_{}_{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_millis()
+                .as_nanos(),
+            seq
         );
 
         // Allocate a free port via the OS.
