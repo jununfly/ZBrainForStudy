@@ -800,4 +800,56 @@ impl BrainEngine for InMemoryEngine {
             .map(page_tags)
             .unwrap_or_default())
     }
+
+    async fn refresh_page_body(&self, args: &RefreshPageBodyArgs) -> crate::Result<()> {
+        let mut store = self
+            .store
+            .lock()
+            .expect("InMemoryEngine store mutex poisoned");
+        if let Some(page) = store.iter_mut().find(|p| {
+            p.slug == args.slug && p.source_id == args.source_id && p.deleted_at.is_none()
+        }) {
+            page.compiled_truth.clone_from(&args.compiled_truth);
+            page.timeline = args.timeline.to_string();
+            page.content_hash = Some(args.content_hash.clone());
+            page.updated_at = current_utc_iso8601();
+        }
+        // Silent Ok for missing or soft-deleted rows — mirrors
+        // postgres.rs:689 / libsql.rs:899 WHERE deleted_at IS NULL.
+        Ok(())
+    }
+
+    async fn update_page_contextual_retrieval_state(
+        &self,
+        slug: &str,
+        source_id: &str,
+        mode: &str,
+        corpus_generation: Option<&str>,
+    ) -> crate::Result<()> {
+        let cr_mode = match mode {
+            "none" => CRMode::None,
+            "title" => CRMode::Title,
+            "per_chunk_synopsis" => CRMode::PerChunkSynopsis,
+            other => {
+                return Err(Error::engine(format!(
+                    "invalid contextual_retrieval_mode: {other}"
+                )))
+            }
+        };
+        let mut store = self
+            .store
+            .lock()
+            .expect("InMemoryEngine store mutex poisoned");
+        if let Some(page) = store
+            .iter_mut()
+            .find(|p| p.slug == slug && p.source_id == source_id && p.deleted_at.is_none())
+        {
+            page.contextual_retrieval_mode = Some(cr_mode);
+            page.corpus_generation = corpus_generation.map(std::string::ToString::to_string);
+            page.updated_at = current_utc_iso8601();
+        }
+        // Silent Ok for missing or soft-deleted rows — mirrors
+        // postgres.rs:718 / libsql.rs:926 WHERE deleted_at IS NULL.
+        Ok(())
+    }
 }

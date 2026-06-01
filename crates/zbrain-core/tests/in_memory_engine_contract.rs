@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use zbrain_core::engine::{BrainEngine, EngineConfig, GetPageOpts, InMemoryEngine, PageInput};
+use zbrain_core::types::{CRMode, RefreshPageBodyArgs};
 use zbrain_core::PurgeResult;
 
 async fn init_in_memory() -> InMemoryEngine {
@@ -322,6 +323,194 @@ async fn in_memory_add_tag_ignores_soft_deleted_pages() {
         .await
         .expect("get tags on deleted page");
     assert_eq!(tags, Vec::<String>::new(), "deleted page has no tags");
+
+    engine.disconnect().await.expect("disconnect");
+}
+
+// ── Content refresh contract tests (C1 Task 3) ──────────────────────────────
+
+#[tokio::test]
+async fn in_memory_refresh_page_body_updates_fields_and_noops_for_missing_or_deleted() {
+    let engine = init_in_memory().await;
+    let slug = "refresh-me";
+    let source_id = "src-1";
+
+    engine
+        .put_page(slug, Some(source_id), &page_input(slug))
+        .await
+        .expect("seed refresh-me page");
+
+    let args = RefreshPageBodyArgs {
+        slug: slug.to_string(),
+        source_id: source_id.to_string(),
+        compiled_truth: "updated truth".to_string(),
+        timeline: serde_json::json!([{"event": "reimported"}]),
+        content_hash: "sha256:abc123".to_string(),
+    };
+
+    engine
+        .refresh_page_body(&args)
+        .await
+        .expect("refresh page body");
+
+    let page = engine
+        .get_page(slug, &get_opts(source_id, false))
+        .await
+        .expect("get refreshed page")
+        .expect("refreshed page exists");
+    assert_eq!(
+        page.compiled_truth, "updated truth",
+        "refresh must update compiled_truth"
+    );
+    assert_eq!(
+        page.timeline,
+        serde_json::json!([{"event":"reimported"}]).to_string(),
+        "refresh must store timeline as JSON string"
+    );
+    assert_eq!(
+        page.content_hash,
+        Some("sha256:abc123".to_string()),
+        "refresh must wrap content_hash into Some"
+    );
+
+    // Missing slug → silent Ok(())
+    let missing_args = RefreshPageBodyArgs {
+        slug: "no-such".to_string(),
+        source_id: source_id.to_string(),
+        compiled_truth: "ignored".to_string(),
+        timeline: serde_json::json!([]),
+        content_hash: "sha256:ignored".to_string(),
+    };
+    engine
+        .refresh_page_body(&missing_args)
+        .await
+        .expect("refresh on missing slug is silent no-op");
+
+    // Soft-delete the page, then attempt refresh → silent Ok(()) and fields unchanged
+    engine
+        .soft_delete_page(slug, Some(source_id))
+        .await
+        .expect("soft delete refresh-me");
+    let before_attempt = engine
+        .get_page(slug, &get_opts(source_id, true))
+        .await
+        .expect("get soft-deleted refresh-me")
+        .expect("deleted page still in store");
+
+    let post_delete_args = RefreshPageBodyArgs {
+        slug: slug.to_string(),
+        source_id: source_id.to_string(),
+        compiled_truth: "should not apply".to_string(),
+        timeline: serde_json::json!([{"event": "ignored"}]),
+        content_hash: "sha256:should-not-apply".to_string(),
+    };
+    engine
+        .refresh_page_body(&post_delete_args)
+        .await
+        .expect("refresh on soft-deleted page is silent no-op");
+
+    let after_attempt = engine
+        .get_page(slug, &get_opts(source_id, true))
+        .await
+        .expect("get soft-deleted refresh-me after refresh attempt")
+        .expect("deleted page still in store");
+    assert_eq!(
+        after_attempt.compiled_truth, before_attempt.compiled_truth,
+        "soft-deleted compiled_truth must be unchanged"
+    );
+    assert_eq!(
+        after_attempt.timeline, before_attempt.timeline,
+        "soft-deleted timeline must be unchanged"
+    );
+    assert_eq!(
+        after_attempt.content_hash, before_attempt.content_hash,
+        "soft-deleted content_hash must be unchanged"
+    );
+
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn in_memory_update_cr_state_updates_fields_and_noops_for_missing_or_deleted() {
+    let engine = init_in_memory().await;
+    let slug = "cr-page";
+    let source_id = "src-1";
+
+    engine
+        .put_page(slug, Some(source_id), &page_input(slug))
+        .await
+        .expect("seed cr-page");
+
+    engine
+        .update_page_contextual_retrieval_state(slug, source_id, "title", Some("gen-v2"))
+        .await
+        .expect("update cr state");
+
+    let page = engine
+        .get_page(slug, &get_opts(source_id, false))
+        .await
+        .expect("get cr-page")
+        .expect("cr-page exists");
+    assert_eq!(
+        page.contextual_retrieval_mode,
+        Some(CRMode::Title),
+        "update must decode mode into CRMode::Title"
+    );
+    assert_eq!(
+        page.corpus_generation,
+        Some("gen-v2".to_string()),
+        "update must store corpus_generation"
+    );
+
+    // Missing slug → silent Ok(())
+    engine
+        .update_page_contextual_retrieval_state("no-such", source_id, "none", None)
+        .await
+        .expect("update on missing slug is silent no-op");
+
+    // Invalid mode → Err
+    let bad_result = engine
+        .update_page_contextual_retrieval_state(slug, source_id, "bad-mode", None)
+        .await;
+    assert!(
+        bad_result.is_err(),
+        "invalid contextual_retrieval_mode must return Err"
+    );
+
+    // Soft-delete the page, then attempt update → silent Ok(()) and fields unchanged
+    engine
+        .soft_delete_page(slug, Some(source_id))
+        .await
+        .expect("soft delete cr-page");
+    let before_attempt = engine
+        .get_page(slug, &get_opts(source_id, true))
+        .await
+        .expect("get soft-deleted cr-page")
+        .expect("deleted cr-page still in store");
+
+    engine
+        .update_page_contextual_retrieval_state(
+            slug,
+            source_id,
+            "per_chunk_synopsis",
+            Some("gen-v3"),
+        )
+        .await
+        .expect("update on soft-deleted page is silent no-op");
+
+    let after_attempt = engine
+        .get_page(slug, &get_opts(source_id, true))
+        .await
+        .expect("get soft-deleted cr-page after update attempt")
+        .expect("deleted cr-page still in store");
+    assert_eq!(
+        after_attempt.contextual_retrieval_mode, before_attempt.contextual_retrieval_mode,
+        "soft-deleted contextual_retrieval_mode must be unchanged"
+    );
+    assert_eq!(
+        after_attempt.corpus_generation, before_attempt.corpus_generation,
+        "soft-deleted corpus_generation must be unchanged"
+    );
 
     engine.disconnect().await.expect("disconnect");
 }
