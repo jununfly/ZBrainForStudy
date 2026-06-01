@@ -280,12 +280,10 @@ pub trait BrainEngine: Send + Sync {
 
     // ── Slice 6a S6 method group (15 required methods) ────────────────────
     //
-    // Backends must implement the full Slice 6a S6 method group explicitly.
-    // The previous `Err(Error::unsupported("pending slice 6a"))` defaults
-    // were removed once InMemoryEngine reached 15/15 contract parity (C1
-    // BrainEngine contract hardening, plan 2026-06-01); leaving a method
-    // unimplemented is now a compile error, which is exactly the safety net
-    // the hardening plan demands.
+    // Backends must implement the full Slice 6a S6 method group explicitly;
+    // these methods have no default body, so leaving one unimplemented is a
+    // compile error — exactly the safety net the C1 contract hardening plan
+    // (2026-06-01) demands.
     //
     // Method ordering: §13.2 of `13-slice-6a-gap-checklist.md`.
 

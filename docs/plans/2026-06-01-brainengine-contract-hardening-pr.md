@@ -50,5 +50,4 @@ PG 套件实跑非 skip（`ZBRAIN_TEST_PG_URL` 已设）。
 
 ## Reviewer 关注点
 
-1. `engine.rs:284` 仍出现 `"pending slice 6a"` 字面字符串 —— 是回顾性历史注释，刻意保留以解释 trait 演化路径，不是漏改的 fallback。
-2. `f48f6bd` 是否 squash 进 `f7a647e`：plan 明文禁止 amend，默认保留独立 style commit。
+1. `f48f6bd` 是否 squash 进 `f7a647e`：plan 明文禁止 amend，默认保留独立 style commit。
