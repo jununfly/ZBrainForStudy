@@ -25,3 +25,4 @@ tokio = { workspace = true }
 sqlx = { workspace = true }
 tempfile = { workspace = true }
 serial_test = { workspace = true }
+pg-embed = { workspace = true }

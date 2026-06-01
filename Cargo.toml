@@ -13,7 +13,7 @@ edition = "2021"
 authors = ["zbrain contributors"]
 license = "MIT"
 repository = "https://github.com/jununfly/zbrain"
-rust-version = "1.82"  # MSRV — built/tested on stable (currently 1.95.x).
+rust-version = "1.88"  # MSRV — bumped from 1.82 for pg-embed v1.0 (built/tested on stable, currently 1.95.x).
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -58,6 +58,11 @@ tempfile = "3"
 # mutex so only one PG test runs at a time. libsql tests are not annotated —
 # each test owns its own in-memory database, so no cross-test contention.
 serial_test = "3"
+# Slice #110-pg-embed (A-1): ephemeral PostgreSQL fixture for integration
+# tests. `rt_tokio_migrate` enables `create_database`/`drop_database`/`migrate`
+# helpers on top of `rt_tokio`. Inherited by member crates as a dev-dep via
+# `pg-embed = { workspace = true }` under their `[dev-dependencies]`.
+pg-embed = { version = "1.0", features = ["rt_tokio_migrate"] }
 
 [profile.release]
 lto = "thin"
