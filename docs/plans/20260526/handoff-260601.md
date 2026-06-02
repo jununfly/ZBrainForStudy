@@ -173,3 +173,75 @@
 ## 注意事项
 - 本次新增 PM-2 段已记录 T5 完整收尾过程，下一会话直接推进 T6。
 - T6 启动前先重新 fresh `git status --short` + `git log --oneline -5` 对账。
+
+---
+
+# Handoff (T6) - 2026-06-02 10:59
+
+## 会话目标
+> 收口 T6：移除 libsql 测试层 `#[serial_test::serial]` workaround，把并发安全边界下沉到 `LibsqlEngine::init_schema()`，并通过三连绿 + flake guard 验证。
+
+## 已完成（本会话段）
+
+### T6 实现 commit
+- 落地：`9c4a774 fix(libsql): serialize entire init_schema to kill cold-start FFI race (T6)`。
+- 修改面：
+  - `crates/zbrain-core/src/libsql.rs`
+  - `crates/zbrain-core/Cargo.toml`
+  - `Cargo.lock`
+  - `crates/zbrain-core/tests/libsql_engine_list_pages.rs`
+  - `crates/zbrain-core/tests/libsql_engine_full_columns.rs`
+- 核心变化：
+  - 在 `LibsqlEngine::init_schema()` 内用 process-wide `SCHEMA_INIT_LOCK: LazyLock<tokio::sync::Mutex<()>>` 包住整个函数，包括 `self.conn().await?`。
+  - 移除 write-only lock / fast-path / DCL 思路；根因确认后采用 C2：整段串行化 cold-start FFI path。
+  - 删除 `libsql_engine_list_pages.rs` 中 24 个 `#[serial]`。
+  - 删除 `libsql_engine_full_columns.rs` 中 6 个 `#[serial]`。
+  - 从 `zbrain-core` dev-dependencies 删除 `serial_test`；workspace root 里的 `serial_test = "3"` 暂保留，避免误伤未来复用。
+
+### 根因结论
+- 原 flake 表现：`enable foreign_keys failed: SQLite failure: bad parameter or other API misuse`。
+- 关键修正：race 不在 schema migration 写路径，而在 libsql local engine 首次 `connect() + PRAGMA foreign_keys = ON` 的 cold-start FFI 路径。
+- 因此只锁写入段不够；任何 fast-path / DCL 只要在锁外触发 `self.conn()`，仍会暴露 race。
+
+### Fresh verification（commit 前）
+- `cargo fmt --check`：OK。
+- `cargo build --tests -p zbrain-core`：OK。
+- `cargo clippy --tests -p zbrain-core -- -D warnings`：OK。
+- `cargo test -p zbrain-core --no-fail-fast`：27/27 test binaries 全部 OK，0 failed。
+  - `libsql_engine_full_columns`：6 passed, 0 failed, finished in 0.07s。
+  - `libsql_engine_list_pages`：23 passed, 0 failed, finished in 2.37s。
+  - `libsql_init_schema_flake_reproduce`：1 passed, 0 failed, finished in 0.32s。
+- 额外 flake guard：`libsql_init_schema_flake_reproduce` 100x loop：`PASS=100 FAIL=0`。
+
+## 关键决策
+- **接受业务层 process-wide init lock**：不是测试层 workaround。原因是 race 发生在库自身 `init_schema()` 的 cold-start FFI path；把安全边界放在业务方法内更符合不变量。
+- **不做 fast-path / DCL**：性能收益不值得，因为它会重新把 `self.conn()` 放到锁外，复活 race。
+- **保留 workspace root `serial_test = "3"`**：本切片只证明 `zbrain-core` 不再需要 dev-dep；workspace 级依赖是否删除另开 cleanup，避免越界。
+- **实现 commit 与 doc-only follow-up 分离**：实现 commit `9c4a774` 已稳定，不 amend；本段 handoff 用独立 doc-only commit 回填。
+
+## 待办 / 下一步
+- [x] T6：libsql 测试层 `serial_test` 迁移与 `zbrain-core` dev-dep 清理已完成（实现 commit `9c4a774`）。
+- [ ] 提交本 handoff 段的独立 doc-only commit。
+- [ ] 后续独立 cleanup：评估 workspace root `serial_test = "3"` 是否仍有引用；若无引用，再删 workspace 依赖与 Cargo.lock 相关项。
+- [ ] 后续独立切片：`engine.rs pending slice cleanup`、S6-signature、S6-time-types、PG integration test infra。
+
+## 已知问题
+- `get_salience_scores.rs:224` 仍有 `#[serial_test::serial]` 字面量，但仅在注释中，保留作历史说明，不影响编译或运行。
+- 旧 handoff 段中关于“不要删 Cargo.toml 里的 `serial_test`”已被 T6 实现 supersede；准确状态以本 T6 段为准：`zbrain-core` dev-dep 已删，workspace root 仍保留。
+- `engine.rs pending slice 6a` 默认 fallback 仍未清理，不能宣称 trait 默认 fallback 已闭合。
+
+## 相关产物
+- 计划目录：`/Users/bilibili/Documents/workspace/jununfly/zbrain-rust/docs/plans/20260526/`
+- 主 handoff：`/Users/bilibili/Documents/workspace/jununfly/zbrain-rust/docs/plans/20260526/handoff-260601.md`
+- T6 实现 commit：`9c4a774 fix(libsql): serialize entire init_schema to kill cold-start FFI race (T6)`
+- 上一个 doc-only follow-up：`db80102 docs(handoff): record T5 completion (commit 5ae94f4) and three-green evidence`
+
+## 建议下一个会话使用的技能
+- `test-driven-development`：后续 cleanup / infra 仍应先写或确认验证点，再动实现。
+- `verification-before-completion`：任何提交前必须 fresh verification，不能把历史绿当当前绿。
+- `session-handoff`：若继续跨会话推进，追加 handoff 并保持 commit 可追溯。
+
+## 注意事项
+- 不要 amend 实现 commit `9c4a774`；文档回填必须走独立 doc-only commit。
+- 不要把 `ZBRAIN_TEST_PG_URL unset` 的 skip 当成 PG pass。
+- 不要把 workspace root `serial_test` 删除混入 T6 文档 follow-up；那是后续 cleanup。
