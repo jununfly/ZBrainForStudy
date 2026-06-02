@@ -23,18 +23,18 @@
 - SQLite 侧用 `json_extract(p.frontmatter, '$.domain')` 对齐 PG / TS 的 `frontmatter->>'domain'` 文本提取语义。
 - orphan 查询同时过滤两侧 soft delete：候选页 `p.deleted_at IS NULL`；入链来源页 `src.deleted_at IS NULL`。
 - 保持实现 commit 与 doc-only follow-up commit 分离：实现 commit `dc75168` 已稳定，不 amend；后续文档回填必须走独立 doc-only commit，避免 commit hash 自指循环。
-- `engine.rs` 中 trait 默认 `Unsupported("pending slice 6a")` 暂未在实现 commit 中清理，应作为后续独立 cleanup 小切片处理。
+- `engine.rs pending slice cleanup` 已由 BrainEngine contract hardening 独立切片完成：`f7a647e` 删除 `BrainEngine` trait 15 个 S6 `Unsupported("pending slice 6a")` 默认 fallback，升级为 required trait contract。
 
 ## 待办 / 下一步
 - [x] 完成 `libsql find_orphan_pages` 的 doc-only follow-up：更新 `docs/plans/20260526/14-slice-6a-pg-plan.md` 与 `docs/plans/20260526/handoff-260531.md`，引用稳定实现 commit `dc75168`。
 - [x] 提交独立 doc-only commit：`429291f docs(core): close libsql find orphan pages follow-up`。
-- [ ] 后续进入 `engine.rs pending slice cleanup`：在 libsql `find_orphan_pages` 闭合后，统一处理 trait 默认 `Unsupported("pending slice 6a")`，不要混入已完成实现 commit。
+- [x] `engine.rs pending slice cleanup`：已由 BrainEngine contract hardening 独立切片完成（`f7a647e`），不混入已完成实现 commit `dc75168`。
 - [ ] 后续独立切片：PG integration test infra（去 `#[ignore]`、加载 `.env`、禁止把 `ZBRAIN_TEST_PG_URL unset` skip 误判为 pass）。
 - [ ] 后续独立切片：S6-signature，评估 `list_pages` 签名 `&PageFilters` vs `Option<&PageFilters>`。
 - [ ] 后续独立切片：S6-time-types，引入 `chrono` 处理时间字段。
 
 ## 已知问题
-- `engine.rs` 的 `pending slice 6a` 默认 unsupported fallback 仍在，不能宣称 trait 默认 fallback 已清理。
+- 历史状态更新：`engine.rs` 的 `pending slice 6a` 默认 unsupported fallback 已由 `f7a647e` 清理；当前 `BrainEngine` S6 方法组为 required methods。
 - 当前 TaskList 仍有历史泛化 pending：`#28 Execute selected next slice`、`#29 Verify and commit next slice`；具体可映射到后续 cleanup / infra 切片。
 - 使用 `TaskOutput` 时要通过 `DeferExecuteTool` 的 `params` 嵌套传参，例如 `{"toolName":"TaskOutput","params":{"task_id":"...","block":true,"timeout":600000}}`；不要把 `task_id` 放在顶层。
 
@@ -98,15 +98,16 @@
 
 ## 关键决策
 - T5 迁移 idiom 统一为 7 步：(1) 加 `mod support;` (2) 删 `pg_url()` (3) 删 `pg_init_clean_engine()` (4) PG helper 加 `url: &str` 首参 (5) test 入口改 fixture pattern (6) 删 `#[serial_test::serial]` (7) 删 `engine.disconnect()`。
-- `serial_test` Cargo.toml 依赖**不能删**——libsql 测试（`libsql_engine_full_columns.rs`、`libsql_engine_list_pages.rs` 等）仍大量使用 `#[serial_test::serial]`，属于未来独立切片处理。
+- 历史状态（T5 当时）：`serial_test` Cargo.toml 依赖**不能删**——libsql 测试当时仍大量使用 `#[serial_test::serial]`。该状态已被 T6 `9c4a774` 与 workspace cleanup `ff91c48` supersede。
 - `pending slice 6a` 注释残留已无（commit `4b63098` 已清）。
 
 ## 待办 / 下一步
 - [x] **T5 收尾 commit**：已提交 → commit `5ae94f4 refactor(test): migrate all page_methods PG tests to pg-embed fixture (A-3)`。16 files changed, 302 insertions(+), 879 deletions(-)（含 fmt auto-fix 触碰的 pg_fixture.rs / postgres_engine_lifecycle.rs / postgres_engine_page_crud.rs 3 文件）。
 - [x] **T5 收尾验证**：三连绿全部 GREEN。`cargo fmt --all -- --check` clean；`cargo build --tests -p zbrain-core` ok（6.37s）；`cargo clippy -p zbrain-core --all-targets -- -D warnings` clean（2.03s）；`cargo test -p zbrain-core --no-fail-fast` —— 13 个 page_methods PG suite **86 个测试全 GREEN，0 ignored 0 failed**（find_duplicate 7 + find_orphan 6 + get_all_slugs 8 + get_effective_dates 8 + get_page_timestamps 8 + get_salience_scores 7 + list_all_page_refs 6 + purge_deleted 6 + refresh 4 + restore 6 + salience_with_takes 6 + soft_delete 8 + update_cr_state 6 = 86），每文件耗时 0.86–1.14s，确认 pg-embed 真正启动而非 unset skip 误判 pass。其他 suite（lifecycle 5 / page_crud 30 / full_columns 7 / time_utils 2）同步 GREEN。
-- [ ] **T6**：libsql 测试的 serial_test 迁移（独立切片，需评估 libsql 是否也能用某种 fixture 替代 serial）。
-- [ ] **T7**：Cargo.toml 清理——当 libsql serial_test 也迁移完成后，删除 `serial_test` workspace dep。
-- [ ] 后续独立切片：`engine.rs pending slice cleanup`、S6-signature、S6-time-types、PG integration test infra（去 `#[ignore]`、加载 `.env`、禁止 unset skip 误判为 pass）。
+- [x] **T6**：libsql 测试的 serial_test 迁移已由 `9c4a774` 完成。
+- [x] **T7**：Cargo.toml 清理已完成：`zbrain-core` dev-dep 在 T6 删除，workspace root stale `serial_test = "3"` 由 `ff91c48` 删除。
+- [x] 历史后续项 `engine.rs pending slice cleanup` 已由 BrainEngine contract hardening `f7a647e` 完成。
+- [ ] 后续独立切片：S6-signature、S6-time-types、PG integration test infra（去 `#[ignore]`、加载 `.env`、禁止 unset skip 误判为 pass）。
 
 ## 已知问题
 - `get_salience_scores.rs:224` 注释残留 `#[serial_test::serial]` 字面量，**决定保留为文档价值**（说明该位置历史上挂过 serial，方便未来回溯，不影响编译/运行）。
@@ -166,9 +167,10 @@
 - **遵循 commit hash 自指循环解药**：实现 commit 先落地拿稳定 hash → 独立 doc-only commit 回填，永不 amend 实现 commit。
 
 ## 待办 / 下一步
-- [ ] **T6**：libsql 测试的 `serial_test` 迁移评估（独立切片）。
-- [ ] **T7**：Cargo.toml 清理 `serial_test` workspace dep（T6 之后）。
-- [ ] 后续独立切片：`engine.rs pending slice cleanup`、S6-signature、S6-time-types、PG integration test infra（去 `#[ignore]`、加载 `.env`、禁止 unset skip 误判为 pass）。
+- [x] **T6**：libsql 测试的 `serial_test` 迁移评估与实现已完成（`9c4a774`）。
+- [x] **T7**：Cargo.toml 清理 `serial_test` workspace dep 已完成（workspace root cleanup `ff91c48`）。
+- [x] 历史后续项 `engine.rs pending slice cleanup` 已由 BrainEngine contract hardening `f7a647e` 完成。
+- [ ] 后续独立切片：S6-signature、S6-time-types、PG integration test infra（去 `#[ignore]`、加载 `.env`、禁止 unset skip 误判为 pass）。
 
 ## 注意事项
 - 本次新增 PM-2 段已记录 T5 完整收尾过程，下一会话直接推进 T6。
@@ -196,7 +198,7 @@
   - 移除 write-only lock / fast-path / DCL 思路；根因确认后采用 C2：整段串行化 cold-start FFI path。
   - 删除 `libsql_engine_list_pages.rs` 中 24 个 `#[serial]`。
   - 删除 `libsql_engine_full_columns.rs` 中 6 个 `#[serial]`。
-  - 从 `zbrain-core` dev-dependencies 删除 `serial_test`；workspace root 里的 `serial_test = "3"` 暂保留，避免误伤未来复用。
+  - 从 `zbrain-core` dev-dependencies 删除 `serial_test`；后续 workspace root stale `serial_test = "3"` 也已由 `ff91c48 chore(workspace): remove stale serial_test dependency` 删除。
 
 ### 根因结论
 - 原 flake 表现：`enable foreign_keys failed: SQLite failure: bad parameter or other API misuse`。
@@ -216,19 +218,20 @@
 ## 关键决策
 - **接受业务层 process-wide init lock**：不是测试层 workaround。原因是 race 发生在库自身 `init_schema()` 的 cold-start FFI path；把安全边界放在业务方法内更符合不变量。
 - **不做 fast-path / DCL**：性能收益不值得，因为它会重新把 `self.conn()` 放到锁外，复活 race。
-- **保留 workspace root `serial_test = "3"`**：本切片只证明 `zbrain-core` 不再需要 dev-dep；workspace 级依赖是否删除另开 cleanup，避免越界。
+- **workspace root `serial_test = "3"` 已完成独立 cleanup**：T6 本切片保留该依赖是当时的边界控制；后续评估确认无引用后，已由 `ff91c48` 删除。
 - **实现 commit 与 doc-only follow-up 分离**：实现 commit `9c4a774` 已稳定，不 amend；本段 handoff 用独立 doc-only commit 回填。
 
 ## 待办 / 下一步
 - [x] T6：libsql 测试层 `serial_test` 迁移与 `zbrain-core` dev-dep 清理已完成（实现 commit `9c4a774`）。
 - [ ] 提交本 handoff 段的独立 doc-only commit。
-- [ ] 后续独立 cleanup：评估 workspace root `serial_test = "3"` 是否仍有引用；若无引用，再删 workspace 依赖与 Cargo.lock 相关项。
-- [ ] 后续独立切片：`engine.rs pending slice cleanup`、S6-signature、S6-time-types、PG integration test infra。
+- [x] 后续独立 cleanup：workspace root `serial_test = "3"` 已评估无引用并删除（`ff91c48`）。
+- [x] 历史后续项 `engine.rs pending slice cleanup` 已由 BrainEngine contract hardening `f7a647e` 完成。
+- [ ] 后续独立切片：S6-signature、S6-time-types、PG integration test infra。
 
 ## 已知问题
 - `get_salience_scores.rs:224` 仍有 `#[serial_test::serial]` 字面量，但仅在注释中，保留作历史说明，不影响编译或运行。
-- 旧 handoff 段中关于“不要删 Cargo.toml 里的 `serial_test`”已被 T6 实现 supersede；准确状态以本 T6 段为准：`zbrain-core` dev-dep 已删，workspace root 仍保留。
-- `engine.rs pending slice 6a` 默认 fallback 仍未清理，不能宣称 trait 默认 fallback 已闭合。
+- 旧 handoff 段中关于“不要删 Cargo.toml 里的 `serial_test`”已被 T6 实现 supersede；准确状态以本 T6 段为准：`zbrain-core` dev-dep 已删，workspace root stale `serial_test = "3"` 已由 `ff91c48` 删除。
+- 历史状态更新：`engine.rs pending slice 6a` 默认 fallback 已由 BrainEngine contract hardening（`f7a647e`）闭合。
 
 ## 相关产物
 - 计划目录：`/Users/bilibili/Documents/workspace/jununfly/zbrain-rust/docs/plans/20260526/`

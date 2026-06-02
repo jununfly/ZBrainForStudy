@@ -567,12 +567,13 @@ RETURNING slug
 
 ### 6.1 实际形态(修订)
 
-Slice 6a 的 placeholder-lock 测试**并不在 `postgres_*` 文件里**,而是落在 `crates/zbrain-core/tests/page_methods_*.rs` 共 14 个文件,断言 **`BrainEngine` trait 的默认实现** 返回 `Err(Error::unsupported("pending slice 6a"))`。
+Slice 6a 的 placeholder-lock 测试**并不在 `postgres_*` 文件里**,而是落在 `crates/zbrain-core/tests/page_methods_*.rs` 共 14 个文件；早期形态曾断言 **`BrainEngine` trait 的默认实现** 返回 `Err(Error::unsupported("pending slice 6a"))`。
 
-这意味着:
-- 红测锁的是 **trait 默认实现**,与具体引擎(PG / libsql / InMemory)无关。
-- 任何一个引擎一旦 override 某个方法,该引擎在对应红测上就会"绿",但只要还有引擎未 override,该红测就**应继续存在**。
-- libsql 已 override 大部分高级 Page 方法（含 advanced reads `2370190`、advanced writes `a62e4d4`、6c takes salience `494da1d`、find_orphan_pages `dc75168`）；当前 `find_orphan_pages` 的 libsql placeholder-lock 已闭合，trait 默认 `Unsupported("pending slice 6a")` 仅作为未 override backend（如 InMemory）的兜底。PG 侧高级方法已按多个独立后续切片逐步闭合。
+当前状态:
+- 早期红测锁的是 **trait 默认实现**,与具体引擎(PG / libsql / InMemory)无关；这是历史迁移阶段的安全网。
+- 随着各后端逐步 override 高级 Page 方法，相关红测已按切片改写为正向行为断言，或在仍需约束未实现后端时保留为负向锁。
+- libsql 已 override 大部分高级 Page 方法（含 advanced reads `2370190`、advanced writes `a62e4d4`、6c takes salience `494da1d`、find_orphan_pages `dc75168`）；PG 侧高级方法已按多个独立后续切片逐步闭合。
+- `BrainEngine` trait 默认 `Unsupported("pending slice 6a")` fallback 已由 BrainEngine contract hardening 独立切片闭合：`f7a647e` 删除 15 个 S6 fallback，并将这些方法升级为 required trait contract。
 
 ### 6.2 当前 14 个 `page_methods_*.rs` 实际状态
 
@@ -661,7 +662,7 @@ CI 上跑真实 PG 集成测试单独留 slice。
 14. ✅ `git tag slice-6a-pg` 已打 (主切片闭合)
 15. ✅ tag CRUD 独立 commit `5ca9131`
 16. ✅ 本计划文档收口编辑 (`14-slice-6a-pg-plan.md` §3 / §5.4 / §6 / §7 / §10 全部对齐现实)
-17. ❌ `engine.rs` 行 266-269 "pending slice 6a-pg" 注释删除 — **不删除**, 因 10 个 trait 默认方法仍返回 `Err(Error::unsupported("pending slice 6a"))`, 等对应 PG 后续切片落地后随该切片一并清理
+17. ✅ `engine.rs` "pending slice 6a" 默认 fallback cleanup — 已由 BrainEngine contract hardening 独立切片完成（`f7a647e` 删除 15 个 S6 fallback，并将 S6 方法组升级为 required trait contract）
 
 ---
 
@@ -729,7 +730,7 @@ CI 上跑真实 PG 集成测试单独留 slice。
 - [x] `get_page_timestamps` 实现 — 切片: **PG-advanced-reads**（`a747ed5`）
 - [x] `get_effective_dates` 实现 — 切片: **PG-advanced-reads**（`a747ed5`）
 - [x] `get_salience_scores` 实现 — 切片: **PG-advanced-reads**（`a747ed5`；6a 阶段退化为 `emotional_weight * 5`，6c 再补 `+ ln(1 + N_tags)`）
-- [ ] `engine.rs` "pending slice 6a" 默认体/注释 cleanup — `find_orphan_pages` 双后端闭合后可独立清理；默认 `Unsupported` 是否保留为新 backend 兜底需单独决策，不在 `dc75168` 实现 commit 中扩大边界
+- [x] `engine.rs` "pending slice 6a" 默认体/注释 cleanup — 已由 BrainEngine contract hardening 独立切片完成（`f7a647e`）；该清理未混入 `dc75168` 实现 commit。
 - [ ] 13 个 `page_methods_*.rs` placeholder-lock 红测 — 跟随对应后续切片改写/保留(见 §6.2)
 - [ ] PG 真实集成测试基础设施 (`postgres_engine_*.rs` 去 `#[ignore]`) — 独立切片 **PG-integration-test-infra**
 
@@ -772,10 +773,10 @@ CI 上跑真实 PG 集成测试单独留 slice。
 > 严格 RED → GREEN → REFACTOR, 不跨步, 不批量。
 
 - **S1 文档收口**: §5.12-§5.17 + §11 已落地; commit 前确认 `git diff` 仅含 plan 14 改动。
-- **S2 RED**: **扩展现有 5 个 `page_methods_*.rs`** (`get_all_slugs` / `list_all_page_refs` / `get_page_timestamps` / `get_effective_dates` / `get_salience_scores`), 在同文件追加 `#[serial_test::serial] #[tokio::test]` PG 镜像测试 (参照 `page_methods_soft_delete_page.rs` `2568268` 形态, **不**新建 `postgres_engine_advanced_reads.rs`); libsql 默认 `Unsupported` 断言保持不动; PG 侧覆盖真实场景 (含 soft-deleted 行可见性区分); 跑 `ZBRAIN_TEST_PG_URL=... cargo test -p zbrain-core --test page_methods_get_all_slugs --test page_methods_list_all_page_refs --test page_methods_get_page_timestamps --test page_methods_get_effective_dates --test page_methods_get_salience_scores` 必红 (PG override 未实现)。无 `ZBRAIN_TEST_PG_URL` 时 PG 段自动跳过, libsql 段仍绿。
-- **S3 GREEN**: 在 `crates/zbrain-core/src/postgres.rs` 末尾追加 5 个 `impl BrainEngine for PostgresEngine` override (按 §11.1 SQL); libsql 不动, 维持 trait 默认 `Unsupported`。
-- **S4 重写锁测**: `tests/page_methods_salience_scores_takes_zero_until_6c.rs` 改为 S6-T2 形态:
-  - libsql 分支: 仍调用 trait 默认 → 断言 `Err(Unsupported)`;
+- **S2 RED（历史落地步骤）**: **扩展现有 5 个 `page_methods_*.rs`** (`get_all_slugs` / `list_all_page_refs` / `get_page_timestamps` / `get_effective_dates` / `get_salience_scores`), 在同文件追加 `#[serial_test::serial] #[tokio::test]` PG 镜像测试 (参照 `page_methods_soft_delete_page.rs` `2568268` 形态, **不**新建 `postgres_engine_advanced_reads.rs`); PG 侧覆盖真实场景 (含 soft-deleted 行可见性区分); 跑 `ZBRAIN_TEST_PG_URL=... cargo test -p zbrain-core --test page_methods_get_all_slugs --test page_methods_list_all_page_refs --test page_methods_get_page_timestamps --test page_methods_get_effective_dates --test page_methods_get_salience_scores` 必红 (PG override 未实现)。无 `ZBRAIN_TEST_PG_URL` 时 PG 段自动跳过, libsql 段仍绿。当时保留的 libsql 默认 `Unsupported` 断言已被后续 6a-libsql advanced reads `2370190` 与 BrainEngine contract hardening `f7a647e` supersede。
+- **S3 GREEN（历史落地步骤）**: 在 `crates/zbrain-core/src/postgres.rs` 末尾追加 5 个 `impl BrainEngine for PostgresEngine` override (按 §11.1 SQL)。当时“libsql 不动、维持 trait 默认 `Unsupported`”只是 PG-advanced-reads 切片边界，已被 `2370190` 与 `f7a647e` supersede。
+- **S4 重写锁测（历史落地步骤）**: `tests/page_methods_salience_scores_takes_zero_until_6c.rs` 改为 S6-T2 形态:
+  - libsql 分支当时仍调用 trait 默认并断言 `Err(Unsupported)`；该负向锁后续已随 libsql advanced reads / 6c takes salience / contract hardening 切片解除；
   - PG 分支 (在 `ZBRAIN_TEST_PG_URL` 下): 插入 `emotional_weight=0.4` 行 → 断言 `(0.4 * 5.0 - score).abs() < 1e-9`;
   - doc-comment 同步: 6c 切片改为 `0.4*5 + ln(1+N_tags)`。
 - **S5 四连绿门禁**: `cargo fmt --all -- --check` / `cargo build --workspace --all-targets` / `cargo test --workspace --all-targets` / `cargo clippy --workspace --all-targets -- -D warnings`; libsql 并行 SIGABRT flake 命中则按 plan 16 §8 line 231 重跑单 crate, 不掩盖。
@@ -784,7 +785,8 @@ CI 上跑真实 PG 集成测试单独留 slice。
 ### 11.4 与 libsql 的契约边界（后续切片已刷新）
 
 - PG-advanced-reads 落地时，本节曾锁定 libsql 5 个 advanced reads 维持 trait 默认 `Unsupported`；该边界已被后续 **6a-libsql advanced reads** 切片解除（`2370190`）。
-- `page_methods_get_all_slugs.rs` / `_list_all_page_refs.rs` / `_get_page_timestamps.rs` / `_get_effective_dates.rs` / `_get_salience_scores.rs` 已同时覆盖 PG 与 libsql 正向语义；trait 默认保留为未来 backend 兜底。
+- `page_methods_get_all_slugs.rs` / `_list_all_page_refs.rs` / `_get_page_timestamps.rs` / `_get_effective_dates.rs` / `_get_salience_scores.rs` 已同时覆盖 PG 与 libsql 正向语义。
+- `BrainEngine` trait 默认 fallback 不再作为未来 backend 兜底：BrainEngine contract hardening `f7a647e` 已删除 15 个 S6 `Unsupported("pending slice 6a")` 默认体，并升级为 required trait contract；未来 backend 漏实现会成为编译错误。
 - `salience_scores_takes_zero_until_6c.rs` 的 "takes=0 until 6c" 偏差已由 **6c takes salience** 切片闭合（`494da1d`）。
 
 ---
