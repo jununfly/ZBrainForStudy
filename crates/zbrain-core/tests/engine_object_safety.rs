@@ -110,7 +110,10 @@ async fn delete_page_removes_row() {
         .put_page("to-delete", None, &page_input("X", "y"))
         .await
         .unwrap();
-    engine.delete_page("to-delete").await.expect("delete ok");
+    engine
+        .delete_page("to-delete", None)
+        .await
+        .expect("delete ok");
     let after = engine
         .get_page("to-delete", &GetPageOpts::default())
         .await

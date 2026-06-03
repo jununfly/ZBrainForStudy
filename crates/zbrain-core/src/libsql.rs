@@ -438,28 +438,22 @@ impl BrainEngine for LibsqlEngine {
         full_row_to_page(&row)
     }
 
-    async fn delete_page(&self, slug: &str) -> Result<()> {
+    async fn delete_page(&self, slug: &str, source_id: Option<&str>) -> Result<()> {
         let conn = self.conn().await?;
-        // No-op on missing slug (matches PG + InMemory contracts).
-        conn.execute("DELETE FROM pages WHERE slug = ?1", ::libsql::params![slug])
-            .await
-            .map_err(|e| Error::engine(format!("delete_page failed: {e}")))?;
+        let source_id = source_id.unwrap_or("default");
+        // No-op on missing (`source_id`, `slug`) pair (matches PG + InMemory contracts).
+        conn.execute(
+            "DELETE FROM pages WHERE slug = ?1 AND source_id = ?2",
+            ::libsql::params![slug, source_id],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("delete_page failed: {e}")))?;
         Ok(())
     }
 
     #[allow(clippy::too_many_lines)] // Dynamic SQL builder for 10 filters — extracting helpers is deferred to a later refactor slice.
     async fn list_pages(&self, filters: &PageFilters) -> Result<Vec<Page>> {
         let conn = self.conn().await?;
-
-        // ── Empty source_ids short-circuit ───────────────────────────────
-        // `source_ids: Some(vec![])` semantically means "match no source",
-        // which would produce an invalid `IN ()` SQL clause.  Return empty
-        // immediately so we never round-trip a degenerate query.
-        if let Some(ids) = filters.source_ids.as_ref() {
-            if ids.is_empty() {
-                return Ok(Vec::new());
-            }
-        }
 
         // ── Build dynamic SQL ────────────────────────────────────────────
         // Full 30-column projection, same column order as `full_row_to_page`.
@@ -516,8 +510,10 @@ impl BrainEngine for LibsqlEngine {
             sql.push_str(frag);
         }
 
-        // Filter: source_id (single)
-        let source_id_param = if filters.source_id.is_some() {
+        // Filter: source scope. TS precedence is:
+        // non-empty sourceIds > sourceId > no source filter.
+        let source_ids_filter = filters.source_ids.as_ref().filter(|ids| !ids.is_empty());
+        let source_id_param = if source_ids_filter.is_none() && filters.source_id.is_some() {
             let frag = format!(" AND p.source_id = ?{param_idx}");
             param_idx += 1;
             Some(frag)
@@ -528,9 +524,7 @@ impl BrainEngine for LibsqlEngine {
             sql.push_str(frag);
         }
 
-        // Filter: source_ids (IN clause, dynamic length)
-        // Empty vec was already short-circuited above; here len >= 1.
-        let source_id_in_param = if let Some(ids) = filters.source_ids.as_ref() {
+        let source_id_in_param = if let Some(ids) = source_ids_filter {
             let mut placeholders: Vec<String> = Vec::with_capacity(ids.len());
             for _ in ids {
                 placeholders.push(format!("?{param_idx}"));
@@ -624,9 +618,9 @@ impl BrainEngine for LibsqlEngine {
         // `Value` for positional binding.
         //
         // ORDER CONTRACT: the push order below MUST match the `param_idx`
-        // bumps above — page_type → slug_prefix → source_id → source_ids
-        // → updated_after → tag → limit → offset.  Reordering either side
-        // without the other will silently misbind.
+        // bumps above — page_type → slug_prefix → source scope (sourceIds
+        // non-empty wins, else sourceId) → updated_after → tag → limit →
+        // offset. Reordering either side without the other will silently misbind.
         let mut param_vals: Vec<::libsql::Value> = Vec::new();
 
         if let Some(ref pt) = filters.page_type {
@@ -635,13 +629,12 @@ impl BrainEngine for LibsqlEngine {
         if let Some(ref prefix) = filters.slug_prefix {
             param_vals.push(::libsql::Value::from(prefix.clone()));
         }
-        if let Some(ref sid) = filters.source_id {
-            param_vals.push(::libsql::Value::from(sid.clone()));
-        }
-        if let Some(ref ids) = filters.source_ids {
+        if let Some(ids) = filters.source_ids.as_ref().filter(|ids| !ids.is_empty()) {
             for id in ids {
                 param_vals.push(::libsql::Value::from(id.clone()));
             }
+        } else if let Some(ref sid) = filters.source_id {
+            param_vals.push(::libsql::Value::from(sid.clone()));
         }
         if let Some(ref ts) = filters.updated_after {
             param_vals.push(::libsql::Value::from(ts.clone()));

@@ -116,13 +116,7 @@ fn push_filter_clause(sql: &mut String, param_idx: &mut u32, active: bool, claus
     }
 }
 
-fn build_list_pages_sql(filters: &PageFilters) -> Option<String> {
-    // Empty source_ids short-circuit: `source_ids: Some(vec![])` means
-    // "match no source" → return empty immediately (mirrors libsql).
-    if filters.source_ids.as_ref().is_some_and(Vec::is_empty) {
-        return None;
-    }
-
+fn build_list_pages_sql(filters: &PageFilters) -> String {
     // Dynamic SQL with optional filters. Only active filters produce bind
     // parameters, keeping the query plan cache-friendly and avoiding
     // `OR $N IS NULL` noise for every possible column.
@@ -139,19 +133,20 @@ fn build_list_pages_sql(filters: &PageFilters) -> Option<String> {
         filters.page_type.is_some(),
         "p.type =",
     );
+    let source_ids_filter = filters.source_ids.as_ref().filter(|ids| !ids.is_empty());
     push_filter_clause(
         &mut sql,
         &mut param_idx,
-        filters.source_id.is_some(),
+        source_ids_filter.is_none() && filters.source_id.is_some(),
         "p.source_id =",
     );
     push_filter_clause(
         &mut sql,
         &mut param_idx,
-        filters.source_ids.is_some(),
+        source_ids_filter.is_some(),
         "p.source_id = ANY(",
     );
-    if filters.source_ids.is_some() {
+    if source_ids_filter.is_some() {
         sql.push_str("::text[])");
     }
     push_filter_clause(
@@ -179,7 +174,7 @@ fn build_list_pages_sql(filters: &PageFilters) -> Option<String> {
 
     push_list_pages_sort(&mut sql, filters.sort.unwrap_or_default());
     push_list_pages_pagination(&mut sql, &mut param_idx, filters);
-    Some(sql)
+    sql
 }
 
 fn push_list_pages_sort(sql: &mut String, sort_mode: PageSort) {
@@ -523,14 +518,16 @@ impl BrainEngine for PostgresEngine {
         Ok(PurgeResult { slugs, count })
     }
 
-    async fn delete_page(&self, slug: &str) -> Result<()> {
+    async fn delete_page(&self, slug: &str, source_id: Option<&str>) -> Result<()> {
         let pool = self.pool()?;
-        // No-op on missing slug, matching the TS engine + InMemoryEngine
-        // contract. `DELETE` returns affected-row count which we ignore on
-        // purpose — callers that want a "did it exist" probe should
-        // `get_page` first.
-        sqlx::query("DELETE FROM pages WHERE slug = $1")
+        let source_id = source_id.unwrap_or("default");
+        // No-op on missing slug/source pair, matching the TS engine +
+        // InMemoryEngine contract. `DELETE` returns affected-row count which
+        // we ignore on purpose — callers that want a "did it exist" probe
+        // should `get_page` first.
+        sqlx::query("DELETE FROM pages WHERE slug = $1 AND source_id = $2")
             .bind(slug)
+            .bind(source_id)
             .execute(pool)
             .await
             .map_err(|e| Error::engine(format!("delete_page failed: {e}")))?;
@@ -539,23 +536,21 @@ impl BrainEngine for PostgresEngine {
 
     async fn list_pages(&self, filters: &PageFilters) -> Result<Vec<Page>> {
         let pool = self.pool()?;
-        let Some(sql) = build_list_pages_sql(filters) else {
-            return Ok(Vec::new());
-        };
+        let sql = build_list_pages_sql(filters);
         let mut query = sqlx::query(&sql);
+        let source_ids_filter = filters.source_ids.as_ref().filter(|ids| !ids.is_empty());
 
         // ORDER CONTRACT: bind order must match `param_idx` advancement in
-        // `build_list_pages_sql`: page_type → source_id → source_ids →
+        // `build_list_pages_sql`: page_type → source_ids/source_id precedence →
         // slug_prefix → updated_after → tag → limit → offset. Reordering either
         // side silently misbinds PG `$N`.
         if let Some(pt) = filters.page_type.as_deref() {
             query = query.bind(pt);
         }
-        if let Some(sid) = filters.source_id.as_deref() {
-            query = query.bind(sid);
-        }
-        if let Some(ref ids) = filters.source_ids {
+        if let Some(ids) = source_ids_filter {
             query = query.bind(ids.as_slice());
+        } else if let Some(sid) = filters.source_id.as_deref() {
+            query = query.bind(sid);
         }
         if let Some(prefix) = filters.slug_prefix.as_deref() {
             query = query.bind(prefix);

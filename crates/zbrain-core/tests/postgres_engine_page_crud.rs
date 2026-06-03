@@ -321,7 +321,10 @@ async fn delete_page_removes_row() {
         .put_page("gamma", None, &note_input("Gamma", "body"))
         .await
         .expect("put_page");
-    engine.delete_page("gamma").await.expect("delete_page");
+    engine
+        .delete_page("gamma", None)
+        .await
+        .expect("delete_page");
     let got = engine
         .get_page("gamma", &GetPageOpts::default())
         .await
@@ -335,9 +338,111 @@ async fn delete_page_is_noop_on_missing_slug() {
     let engine = &fix.engine;
     // Must not error - matches TS behavior and InMemoryEngine.
     engine
-        .delete_page("never-existed")
+        .delete_page("never-existed", None)
         .await
         .expect("delete_page on missing slug must be a no-op");
+}
+
+#[tokio::test]
+async fn delete_page_respects_source_id_scope_for_same_slug() {
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    seed_source(&fix.url, "pg-alt").await;
+
+    engine
+        .put_page(
+            "same-slug-delete-source",
+            None,
+            &note_input("Default title", "default-body"),
+        )
+        .await
+        .expect("put default source");
+    engine
+        .put_page(
+            "same-slug-delete-source",
+            Some("pg-alt"),
+            &note_input("Alt title", "alt-body"),
+        )
+        .await
+        .expect("put alt source");
+
+    engine
+        .delete_page("same-slug-delete-source", Some("pg-alt"))
+        .await
+        .expect("delete pg-alt source");
+
+    assert_eq!(
+        source_ids_for_slug(&fix.url, "same-slug-delete-source").await,
+        vec!["default".to_string()],
+        "delete_page must remove only the requested source row"
+    );
+
+    let default_lookup = engine
+        .get_page("same-slug-delete-source", &GetPageOpts::default())
+        .await
+        .expect("get default source")
+        .expect("default row should remain");
+    assert_eq!(default_lookup.source_id, "default");
+
+    let alt_lookup = engine
+        .get_page(
+            "same-slug-delete-source",
+            &GetPageOpts {
+                source_id: Some("pg-alt".to_string()),
+                include_deleted: false,
+            },
+        )
+        .await
+        .expect("get deleted alt source");
+    assert!(alt_lookup.is_none(), "pg-alt row should be deleted");
+}
+
+#[tokio::test]
+async fn delete_page_without_source_id_only_deletes_default_source() {
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    seed_source(&fix.url, "pg-alt").await;
+
+    engine
+        .put_page(
+            "default-delete-only",
+            None,
+            &note_input("Default title", "default-body"),
+        )
+        .await
+        .expect("put default source");
+    engine
+        .put_page(
+            "default-delete-only",
+            Some("pg-alt"),
+            &note_input("Alt title", "alt-body"),
+        )
+        .await
+        .expect("put alt source");
+
+    engine
+        .delete_page("default-delete-only", None)
+        .await
+        .expect("delete default source");
+
+    assert_eq!(
+        source_ids_for_slug(&fix.url, "default-delete-only").await,
+        vec!["pg-alt".to_string()],
+        "source_id=None must normalize to default and leave non-default rows intact"
+    );
+
+    let alt_lookup = engine
+        .get_page(
+            "default-delete-only",
+            &GetPageOpts {
+                source_id: Some("pg-alt".to_string()),
+                include_deleted: false,
+            },
+        )
+        .await
+        .expect("get alt source")
+        .expect("alt row should remain");
+    assert_eq!(alt_lookup.source_id, "pg-alt");
 }
 
 // -- list_pages ------------------------------------------------------------
@@ -528,6 +633,141 @@ async fn list_pages_filters_by_source_ids() {
             .all(|p| p.source_id == "default" || p.source_id == "pg-beta"),
         "all results must belong to selected source ids"
     );
+}
+
+#[tokio::test]
+async fn list_pages_source_ids_take_precedence_over_source_id() {
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    seed_source(&fix.url, "pg-alpha").await;
+    seed_source(&fix.url, "pg-beta").await;
+
+    engine
+        .put_page(
+            "source-default",
+            None,
+            &note_input("Default", "default-body"),
+        )
+        .await
+        .expect("put default source");
+    engine
+        .put_page(
+            "source-alpha",
+            Some("pg-alpha"),
+            &note_input("Alpha", "alpha-body"),
+        )
+        .await
+        .expect("put alpha source");
+    engine
+        .put_page(
+            "source-beta",
+            Some("pg-beta"),
+            &note_input("Beta", "beta-body"),
+        )
+        .await
+        .expect("put beta source");
+
+    let pages = engine
+        .list_pages(&PageFilters {
+            source_id: Some("pg-alpha".to_string()),
+            source_ids: Some(vec!["default".to_string(), "pg-beta".to_string()]),
+            sort: Some(PageSort::Slug),
+            ..Default::default()
+        })
+        .await
+        .expect("list_pages source_ids precedence");
+
+    let slugs: Vec<&str> = pages.iter().map(|p| p.slug.as_str()).collect();
+    assert_eq!(slugs, vec!["source-beta", "source-default"]);
+    assert!(
+        pages
+            .iter()
+            .all(|p| p.source_id == "default" || p.source_id == "pg-beta"),
+        "source_ids must take precedence over source_id"
+    );
+}
+
+#[tokio::test]
+async fn list_pages_empty_source_ids_falls_back_to_source_id() {
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    seed_source(&fix.url, "pg-alpha").await;
+    seed_source(&fix.url, "pg-beta").await;
+
+    engine
+        .put_page(
+            "source-default",
+            None,
+            &note_input("Default", "default-body"),
+        )
+        .await
+        .expect("put default source");
+    engine
+        .put_page(
+            "source-alpha",
+            Some("pg-alpha"),
+            &note_input("Alpha", "alpha-body"),
+        )
+        .await
+        .expect("put alpha source");
+    engine
+        .put_page(
+            "source-beta",
+            Some("pg-beta"),
+            &note_input("Beta", "beta-body"),
+        )
+        .await
+        .expect("put beta source");
+
+    let pages = engine
+        .list_pages(&PageFilters {
+            source_id: Some("pg-alpha".to_string()),
+            source_ids: Some(vec![]),
+            sort: Some(PageSort::Slug),
+            ..Default::default()
+        })
+        .await
+        .expect("list_pages empty source_ids fallback");
+
+    let slugs: Vec<&str> = pages.iter().map(|p| p.slug.as_str()).collect();
+    assert_eq!(slugs, vec!["source-alpha"]);
+    assert!(pages.iter().all(|p| p.source_id == "pg-alpha"));
+}
+
+#[tokio::test]
+async fn list_pages_empty_source_ids_without_source_id_is_unscoped() {
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    seed_source(&fix.url, "pg-alpha").await;
+
+    engine
+        .put_page(
+            "source-default",
+            None,
+            &note_input("Default", "default-body"),
+        )
+        .await
+        .expect("put default source");
+    engine
+        .put_page(
+            "source-alpha",
+            Some("pg-alpha"),
+            &note_input("Alpha", "alpha-body"),
+        )
+        .await
+        .expect("put alpha source");
+
+    let pages = engine
+        .list_pages(&PageFilters {
+            source_ids: Some(vec![]),
+            sort: Some(PageSort::Slug),
+            ..Default::default()
+        })
+        .await
+        .expect("list_pages empty source_ids unscoped");
+
+    let slugs: Vec<&str> = pages.iter().map(|p| p.slug.as_str()).collect();
+    assert_eq!(slugs, vec!["source-alpha", "source-default"]);
 }
 
 #[tokio::test]

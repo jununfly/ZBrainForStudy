@@ -673,9 +673,11 @@ async fn list_pages_filters_by_source_ids() {
         "default-page must be excluded"
     );
 
-    // source_ids = [] should return nothing (empty IN set)
+    // TS parity: sourceIds = [] is not an empty IN set. It is ignored,
+    // so with no sourceId fallback this means no source filter.
     let empty_filters = PageFilters {
         source_ids: Some(vec![]),
+        sort: Some(PageSort::Slug),
         ..Default::default()
     };
 
@@ -684,7 +686,131 @@ async fn list_pages_filters_by_source_ids() {
         .await
         .expect("list_pages source_ids=[]");
 
-    assert_eq!(empty.len(), 0, "empty source_ids must return 0 rows");
+    assert_eq!(
+        empty.len(),
+        3,
+        "empty source_ids must fall back to no source filter"
+    );
+    let empty_slugs: Vec<&str> = empty.iter().map(|p| p.slug.as_str()).collect();
+    assert_eq!(
+        empty_slugs,
+        vec!["default-page", "notion-page", "wiki-page"]
+    );
+
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn list_pages_non_empty_source_ids_take_precedence_over_source_id() {
+    let (engine, tmp) = init_clean_engine().await;
+
+    engine
+        .put_page("default-page", None, &note_input("Default", "b"))
+        .await
+        .expect("put_page default");
+
+    let path_str = tmp.path().to_string_lossy().into_owned();
+    let db = ::libsql::Builder::new_local(&path_str)
+        .build()
+        .await
+        .expect("raw db open");
+    let raw_conn = db.connect().expect("raw conn");
+    raw_conn
+        .execute("INSERT INTO sources (id, name) VALUES ('wiki', 'wiki')", ())
+        .await
+        .expect("inject wiki source");
+    raw_conn
+        .execute(
+            "INSERT INTO sources (id, name) VALUES ('notion', 'notion')",
+            (),
+        )
+        .await
+        .expect("inject notion source");
+    raw_conn
+        .execute(
+            "INSERT INTO pages (slug, type, title, compiled_truth, source_id) \
+             VALUES ('wiki-page', 'note', 'Wiki', 'w', 'wiki')",
+            (),
+        )
+        .await
+        .expect("inject wiki row");
+    raw_conn
+        .execute(
+            "INSERT INTO pages (slug, type, title, compiled_truth, source_id) \
+             VALUES ('notion-page', 'note', 'Notion', 'n', 'notion')",
+            (),
+        )
+        .await
+        .expect("inject notion row");
+
+    let filters = PageFilters {
+        source_id: Some("default".to_string()),
+        source_ids: Some(vec!["wiki".to_string(), "notion".to_string()]),
+        sort: Some(PageSort::Slug),
+        ..Default::default()
+    };
+
+    let pages = engine
+        .list_pages(&filters)
+        .await
+        .expect("list_pages source_ids wins source_id");
+
+    let slugs: Vec<&str> = pages.iter().map(|p| p.slug.as_str()).collect();
+    assert_eq!(
+        slugs,
+        vec!["notion-page", "wiki-page"],
+        "non-empty source_ids must take precedence over source_id, not AND with it"
+    );
+
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn list_pages_empty_source_ids_falls_back_to_source_id() {
+    let (engine, tmp) = init_clean_engine().await;
+
+    engine
+        .put_page("default-page", None, &note_input("Default", "b"))
+        .await
+        .expect("put_page default");
+
+    let path_str = tmp.path().to_string_lossy().into_owned();
+    let db = ::libsql::Builder::new_local(&path_str)
+        .build()
+        .await
+        .expect("raw db open");
+    let raw_conn = db.connect().expect("raw conn");
+    raw_conn
+        .execute("INSERT INTO sources (id, name) VALUES ('wiki', 'wiki')", ())
+        .await
+        .expect("inject wiki source");
+    raw_conn
+        .execute(
+            "INSERT INTO pages (slug, type, title, compiled_truth, source_id) \
+             VALUES ('wiki-page', 'note', 'Wiki', 'w', 'wiki')",
+            (),
+        )
+        .await
+        .expect("inject wiki row");
+
+    let filters = PageFilters {
+        source_id: Some("wiki".to_string()),
+        source_ids: Some(vec![]),
+        ..Default::default()
+    };
+
+    let pages = engine
+        .list_pages(&filters)
+        .await
+        .expect("list_pages empty source_ids falls back to source_id");
+
+    assert_eq!(
+        pages.len(),
+        1,
+        "empty source_ids must fall back to source_id"
+    );
+    assert_eq!(pages[0].slug, "wiki-page");
+    assert_eq!(pages[0].source_id, "wiki");
 
     engine.disconnect().await.expect("disconnect");
 }

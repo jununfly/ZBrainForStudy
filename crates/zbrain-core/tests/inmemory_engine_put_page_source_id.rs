@@ -10,13 +10,13 @@
 //!   * T6 — Same slug under two `source_ids` -> two independent rows
 //!     (proves the compound-key match, not slug-only).
 //!
-//! NOTE: `get_page` / `delete_page` on `InMemory` still match slug-only (not yet
-//! source-scoped); that gap is explicitly slated for S6-T9 — see the doc
-//! comment at `engine.rs:517-519`. These tests deliberately avoid `get_page`
-//! readback and instead use the `Page` returned by `put_page` itself, which
-//! is the row authority in the `InMemory` impl.
+//! NOTE: `get_page` / `delete_page` on `InMemory` are now source-scoped. These
+//! tests still use the `Page` returned by `put_page` itself as the row authority
+//! for the put-path assertions.
 
-use zbrain_core::engine::{BrainEngine, EngineConfig, GetPageOpts, InMemoryEngine, PageInput};
+use zbrain_core::engine::{
+    BrainEngine, EngineConfig, GetPageOpts, InMemoryEngine, PageFilters, PageInput, PageSort,
+};
 
 async fn init_inmemory() -> InMemoryEngine {
     let engine = InMemoryEngine::default();
@@ -159,6 +159,207 @@ async fn inmemory_get_page_respects_source_id_filter_for_same_slug() {
         missing_source_lookup.is_none(),
         "get_page must not fall back across sources when source_id is explicit"
     );
+
+    engine.disconnect().await.expect("disconnect");
+}
+
+// -- S6a follow-up — delete_page source scope -----------------------------
+
+#[tokio::test]
+async fn inmemory_delete_page_with_source_id_only_removes_matching_source_row() {
+    let engine = init_inmemory().await;
+
+    let default_page = engine
+        .put_page(
+            "shared-delete",
+            None,
+            &note_input("Default title", "default-body"),
+        )
+        .await
+        .expect("put default source");
+    let alt_page = engine
+        .put_page(
+            "shared-delete",
+            Some("alt-source"),
+            &note_input("Alt title", "alt-body"),
+        )
+        .await
+        .expect("put alt source");
+
+    engine
+        .delete_page("shared-delete", Some("alt-source"))
+        .await
+        .expect("delete alt source");
+
+    let default_lookup = engine
+        .get_page("shared-delete", &GetPageOpts::default())
+        .await
+        .expect("get default source after delete")
+        .expect("default page must remain");
+    assert_eq!(
+        default_lookup.id, default_page.id,
+        "source-scoped delete must leave same-slug default row intact"
+    );
+
+    let alt_lookup = engine
+        .get_page(
+            "shared-delete",
+            &GetPageOpts {
+                source_id: Some("alt-source".to_string()),
+                include_deleted: false,
+            },
+        )
+        .await
+        .expect("get alt source after delete");
+    assert!(
+        alt_lookup.is_none(),
+        "delete_page with explicit source_id must remove the matching source row"
+    );
+    assert_ne!(default_page.id, alt_page.id);
+
+    engine.disconnect().await.expect("disconnect");
+}
+
+// -- S6a follow-up — list_pages source scope -------------------------------
+
+#[tokio::test]
+async fn inmemory_list_pages_filters_by_source_id() {
+    let engine = init_inmemory().await;
+
+    engine
+        .put_page(
+            "source-default",
+            None,
+            &note_input("Default", "default-body"),
+        )
+        .await
+        .expect("put default source");
+    engine
+        .put_page(
+            "source-alpha",
+            Some("alpha"),
+            &note_input("Alpha", "alpha-body"),
+        )
+        .await
+        .expect("put alpha source");
+    engine
+        .put_page(
+            "source-beta",
+            Some("beta"),
+            &note_input("Beta", "beta-body"),
+        )
+        .await
+        .expect("put beta source");
+
+    let pages = engine
+        .list_pages(&PageFilters {
+            source_id: Some("alpha".to_string()),
+            sort: Some(PageSort::Slug),
+            ..Default::default()
+        })
+        .await
+        .expect("list_pages source_id=alpha");
+
+    let slugs: Vec<&str> = pages.iter().map(|p| p.slug.as_str()).collect();
+    assert_eq!(slugs, vec!["source-alpha"]);
+    assert!(pages.iter().all(|p| p.source_id == "alpha"));
+
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn inmemory_list_pages_source_ids_take_precedence_over_source_id() {
+    let engine = init_inmemory().await;
+
+    engine
+        .put_page(
+            "source-default",
+            None,
+            &note_input("Default", "default-body"),
+        )
+        .await
+        .expect("put default source");
+    engine
+        .put_page(
+            "source-alpha",
+            Some("alpha"),
+            &note_input("Alpha", "alpha-body"),
+        )
+        .await
+        .expect("put alpha source");
+    engine
+        .put_page(
+            "source-beta",
+            Some("beta"),
+            &note_input("Beta", "beta-body"),
+        )
+        .await
+        .expect("put beta source");
+
+    let pages = engine
+        .list_pages(&PageFilters {
+            source_id: Some("alpha".to_string()),
+            source_ids: Some(vec!["default".to_string(), "beta".to_string()]),
+            sort: Some(PageSort::Slug),
+            ..Default::default()
+        })
+        .await
+        .expect("list_pages source_ids precedence");
+
+    let slugs: Vec<&str> = pages.iter().map(|p| p.slug.as_str()).collect();
+    assert_eq!(slugs, vec!["source-beta", "source-default"]);
+    assert!(
+        pages
+            .iter()
+            .all(|p| p.source_id == "default" || p.source_id == "beta"),
+        "source_ids must take precedence over source_id"
+    );
+
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn inmemory_list_pages_empty_source_ids_falls_back_to_source_id() {
+    let engine = init_inmemory().await;
+
+    engine
+        .put_page(
+            "source-default",
+            None,
+            &note_input("Default", "default-body"),
+        )
+        .await
+        .expect("put default source");
+    engine
+        .put_page(
+            "source-alpha",
+            Some("alpha"),
+            &note_input("Alpha", "alpha-body"),
+        )
+        .await
+        .expect("put alpha source");
+    engine
+        .put_page(
+            "source-beta",
+            Some("beta"),
+            &note_input("Beta", "beta-body"),
+        )
+        .await
+        .expect("put beta source");
+
+    let pages = engine
+        .list_pages(&PageFilters {
+            source_id: Some("alpha".to_string()),
+            source_ids: Some(vec![]),
+            sort: Some(PageSort::Slug),
+            ..Default::default()
+        })
+        .await
+        .expect("list_pages empty source_ids fallback");
+
+    let slugs: Vec<&str> = pages.iter().map(|p| p.slug.as_str()).collect();
+    assert_eq!(slugs, vec!["source-alpha"]);
+    assert!(pages.iter().all(|p| p.source_id == "alpha"));
 
     engine.disconnect().await.expect("disconnect");
 }

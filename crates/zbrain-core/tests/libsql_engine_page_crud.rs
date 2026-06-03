@@ -67,6 +67,28 @@ async fn seed_source(tmp: &NamedTempFile, id: &str) {
         .expect("seed source");
 }
 
+async fn source_ids_for_slug(tmp: &NamedTempFile, slug: &str) -> Vec<String> {
+    let path_str = tmp.path().to_string_lossy().into_owned();
+    let db = ::libsql::Builder::new_local(&path_str)
+        .build()
+        .await
+        .expect("raw db open");
+    let raw_conn = db.connect().expect("raw conn");
+    let mut rows = raw_conn
+        .query(
+            "SELECT source_id FROM pages WHERE slug = ?1 ORDER BY source_id ASC",
+            ::libsql::params![slug],
+        )
+        .await
+        .expect("select page source ids");
+
+    let mut source_ids = Vec::new();
+    while let Some(row) = rows.next().await.expect("fetch source id row") {
+        source_ids.push(row.get::<String>(0).expect("source_id"));
+    }
+    source_ids
+}
+
 // -- get_page --------------------------------------------------------------
 
 #[tokio::test]
@@ -759,7 +781,10 @@ async fn delete_page_removes_row() {
         .put_page("gamma", None, &note_input("Gamma", "body"))
         .await
         .expect("put_page");
-    engine.delete_page("gamma").await.expect("delete_page");
+    engine
+        .delete_page("gamma", None)
+        .await
+        .expect("delete_page");
     let got = engine
         .get_page("gamma", &GetPageOpts::default())
         .await
@@ -772,9 +797,93 @@ async fn delete_page_removes_row() {
 async fn delete_page_is_noop_on_missing_slug() {
     let (engine, _tmp) = init_clean_engine().await;
     engine
-        .delete_page("never-existed")
+        .delete_page("never-existed", None)
         .await
         .expect("delete_page on missing slug must be a no-op");
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn delete_page_with_source_id_only_removes_matching_source_row() {
+    let (engine, tmp) = init_clean_engine().await;
+    seed_source(&tmp, "libsql-alt").await;
+
+    engine
+        .put_page("shared-slug", None, &note_input("Default", "default-body"))
+        .await
+        .expect("put default source");
+    engine
+        .put_page(
+            "shared-slug",
+            Some("libsql-alt"),
+            &note_input("Alt", "alt-body"),
+        )
+        .await
+        .expect("put alt source");
+
+    engine
+        .delete_page("shared-slug", Some("libsql-alt"))
+        .await
+        .expect("delete alt source");
+
+    assert_eq!(
+        source_ids_for_slug(&tmp, "shared-slug").await,
+        vec!["default".to_string()],
+        "source-scoped delete must leave same-slug rows in other sources intact"
+    );
+    let default_page = engine
+        .get_page("shared-slug", &GetPageOpts::default())
+        .await
+        .expect("get default source")
+        .expect("default source row should remain");
+    assert_eq!(default_page.source_id, "default");
+
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn delete_page_without_source_id_only_removes_default_source_row() {
+    let (engine, tmp) = init_clean_engine().await;
+    seed_source(&tmp, "libsql-alt").await;
+
+    engine
+        .put_page(
+            "default-scoped-delete",
+            None,
+            &note_input("Default", "default-body"),
+        )
+        .await
+        .expect("put default source");
+    engine
+        .put_page(
+            "default-scoped-delete",
+            Some("libsql-alt"),
+            &note_input("Alt", "alt-body"),
+        )
+        .await
+        .expect("put alt source");
+
+    engine
+        .delete_page("default-scoped-delete", None)
+        .await
+        .expect("delete default source");
+
+    assert_eq!(
+        source_ids_for_slug(&tmp, "default-scoped-delete").await,
+        vec!["libsql-alt".to_string()],
+        "delete_page without source_id must mirror TS default source, not slug-only delete"
+    );
+    let alt_opts = GetPageOpts {
+        source_id: Some("libsql-alt".to_string()),
+        include_deleted: false,
+    };
+    let alt_page = engine
+        .get_page("default-scoped-delete", &alt_opts)
+        .await
+        .expect("get alt source")
+        .expect("alt source row should remain");
+    assert_eq!(alt_page.source_id, "libsql-alt");
+
     engine.disconnect().await.expect("disconnect");
 }
 

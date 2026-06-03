@@ -268,10 +268,19 @@ pub trait BrainEngine: Send + Sync {
         input: &PageInput,
     ) -> crate::Result<Page>;
 
-    /// Hard-delete a page row by slug.
-    async fn delete_page(&self, slug: &str) -> crate::Result<()>;
+    /// Hard-delete a page row by (`source_id`, `slug`).
+    ///
+    /// `source_id = None` is normalised to `"default"`, mirroring TS
+    /// `deletePage(slug, opts)` where `opts?.sourceId ?? "default"`.
+    async fn delete_page(&self, slug: &str, source_id: Option<&str>) -> crate::Result<()>;
 
-    /// Return all pages matching `filters`, in insertion order.
+    /// Return all pages matching `filters`, ordered by `filters.sort` or the
+    /// default [`PageSort::UpdatedDesc`] when no explicit sort is supplied.
+    ///
+    /// Source filter precedence mirrors TS/PGLite: non-empty
+    /// `filters.source_ids` wins over `filters.source_id`; an empty
+    /// `filters.source_ids` falls back to `filters.source_id`, or remains
+    /// unscoped when no single source is provided.
     async fn list_pages(&self, filters: &PageFilters) -> crate::Result<Vec<Page>>;
 
     /// Fuzzy slug resolver — returns all slugs containing `partial` as a
@@ -513,8 +522,7 @@ impl BrainEngine for InMemoryEngine {
             .expect("InMemoryEngine next_id mutex poisoned");
 
         // S6-T8 — match on compound key `(slug, source_id)` so two sources
-        // can hold independent rows under the same slug. NOTE: get_page /
-        // delete_page still match slug-only (slated for S6-T9).
+        // can hold independent rows under the same slug.
         if let Some(existing) = store
             .iter_mut()
             .find(|p| p.slug == slug && p.source_id == source_id_norm)
@@ -575,12 +583,13 @@ impl BrainEngine for InMemoryEngine {
         Ok(page)
     }
 
-    async fn delete_page(&self, slug: &str) -> crate::Result<()> {
+    async fn delete_page(&self, slug: &str, source_id: Option<&str>) -> crate::Result<()> {
+        let source_id = source_id.unwrap_or("default");
         let mut store = self
             .store
             .lock()
             .expect("InMemoryEngine store mutex poisoned");
-        store.retain(|p| p.slug != slug);
+        store.retain(|p| !(p.slug == slug && p.source_id == source_id));
         Ok(())
     }
 
@@ -589,6 +598,7 @@ impl BrainEngine for InMemoryEngine {
             .store
             .lock()
             .expect("InMemoryEngine store mutex poisoned");
+        let source_ids_filter = filters.source_ids.as_ref().filter(|ids| !ids.is_empty());
         let mut pages: Vec<Page> = store
             .iter()
             .filter(|p| {
@@ -597,8 +607,24 @@ impl BrainEngine for InMemoryEngine {
                     .as_deref()
                     .is_none_or(|t| p.page_type == t)
             })
+            .filter(|p| {
+                if let Some(ids) = source_ids_filter {
+                    ids.iter().any(|id| id == &p.source_id)
+                } else {
+                    filters
+                        .source_id
+                        .as_deref()
+                        .is_none_or(|source_id| p.source_id == source_id)
+                }
+            })
             .cloned()
             .collect();
+        match filters.sort.unwrap_or_default() {
+            PageSort::UpdatedDesc => pages.sort_by(|a, b| b.updated_at.cmp(&a.updated_at)),
+            PageSort::UpdatedAsc => pages.sort_by(|a, b| a.updated_at.cmp(&b.updated_at)),
+            PageSort::CreatedDesc => pages.sort_by(|a, b| b.created_at.cmp(&a.created_at)),
+            PageSort::Slug => pages.sort_by(|a, b| a.slug.cmp(&b.slug)),
+        }
         if let Some(limit) = filters.limit {
             pages.truncate(limit);
         }
