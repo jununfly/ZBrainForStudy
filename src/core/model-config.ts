@@ -9,7 +9,7 @@
  *   3. Old-key config (deprecated dream.synthesize.model, dream.patterns.model)
  *      — read with stderr deprecation warning, one-per-process
  *   4. Global default (models.default)
- *   5. Env var (process.env[envVar] or GBRAIN_MODEL)
+ *   5. Env var (process.env[envVar] or ZBRAIN_MODEL)
  *   6. Hardcoded fallback (caller-supplied)
  *
  * Aliases (`opus`, `sonnet`, `haiku`, `gemini`, `gpt`) resolve at the end so any
@@ -31,7 +31,7 @@ export interface ResolveModelOpts {
   configKey?: string;
   /** Deprecated old-key config name (e.g. 'dream.synthesize.model'). */
   deprecatedConfigKey?: string;
-  /** Env var to consult after global default. Defaults to `GBRAIN_MODEL`. */
+  /** Env var to consult after global default. Defaults to `ZBRAIN_MODEL`. */
   envVar?: string;
   /**
    * Tier classification (v0.31.12). Looked up after `models.default` and
@@ -68,7 +68,7 @@ export const DEFAULT_ALIASES: Record<string, string> = {
  * Sonnet (default workhorse); deep gets Opus 4.7 (expensive reasoning);
  * utility gets Haiku (fast classification).
  *
- * Users override via `gbrain config set models.tier.<tier> <model>`.
+ * Users override via `zbrain config set models.tier.<tier> <model>`.
  */
 export const TIER_DEFAULTS: Record<ModelTier, string> = {
   utility:   'anthropic:claude-haiku-4-5-20251001',
@@ -131,7 +131,7 @@ export async function resolveModel(
   engine: BrainEngine | null,
   opts: ResolveModelOpts,
 ): Promise<string> {
-  const envVar = opts.envVar ?? 'GBRAIN_MODEL';
+  const envVar = opts.envVar ?? 'ZBRAIN_MODEL';
 
   // 1. CLI flag wins
   if (opts.cliFlag && opts.cliFlag.trim()) {
@@ -257,7 +257,7 @@ function enforceSubagentCapable(resolved: string, tier: ModelTier | undefined, s
       process.stderr.write(
         `[models] tier.subagent resolved to "${resolved}" via "${source}", which ${reason}. ` +
         `The subagent tool loop cannot run on this model — falling back to ${TIER_DEFAULTS.subagent}. ` +
-        `Fix: gbrain config set models.tier.subagent <provider>:<model-with-tools>\n`,
+        `Fix: zbrain config set models.tier.subagent <provider>:<model-with-tools>\n`,
       );
     }
     return TIER_DEFAULTS.subagent;

@@ -13,8 +13,8 @@
 #
 # Env overrides:
 #   SHARDS=N                     same as --shards
-#   GBRAIN_TEST_SHARD_TIMEOUT    per-shard wallclock cap, seconds (default 600)
-#   GBRAIN_TEST_MAX_CONCURRENCY  passed through to bun test (default 4)
+#   ZBRAIN_TEST_SHARD_TIMEOUT    per-shard wallclock cap, seconds (default 600)
+#   ZBRAIN_TEST_MAX_CONCURRENCY  passed through to bun test (default 4)
 #
 # Output files (workspace-local; falls back to /tmp if .context/ unwritable):
 #   .context/test-failures.log   failure blocks (cleared at start)
@@ -70,15 +70,15 @@ if [ -z "${SHARDS_OVERRIDE:-}" ] && [ -z "${SHARDS:-}" ] && [ "$N" -gt 4 ]; then
   N=4
 fi
 
-INTRA_CONC="${MAX_CONCURRENCY_OVERRIDE:-${GBRAIN_TEST_MAX_CONCURRENCY:-4}}"
+INTRA_CONC="${MAX_CONCURRENCY_OVERRIDE:-${ZBRAIN_TEST_MAX_CONCURRENCY:-4}}"
 # v0.40.10 flake-hardening: bump per-shard cap 600 → 1500 (was 900). At
 # 4-shard default each shard runs 159 files / ~2420 tests with internal
 # wallclock 960-1020s. The 900s value (sized for 8-shard's ~80 files /
 # 1100 tests at 620-770s) false-killed shard 1 at 900s even though it
 # had completed in 968s. 1500s cap gives ~55% headroom over observed
 # 4-shard wallclock; real hangs still hit it. Override via
-# GBRAIN_TEST_SHARD_TIMEOUT=N.
-SHARD_TIMEOUT="${GBRAIN_TEST_SHARD_TIMEOUT:-1500}"
+# ZBRAIN_TEST_SHARD_TIMEOUT=N.
+SHARD_TIMEOUT="${ZBRAIN_TEST_SHARD_TIMEOUT:-1500}"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Output directories. Prefer workspace-local .context/, fall back to /tmp.
@@ -89,9 +89,9 @@ if mkdir -p .context/test-shards 2>/dev/null; then
   FAILURES_LOG=".context/test-failures.log"
   SUMMARY_FILE=".context/test-summary.txt"
 else
-  LOG_DIR="/tmp/gbrain-test-shards-$$"
-  FAILURES_LOG="/tmp/gbrain-test-failures.log"
-  SUMMARY_FILE="/tmp/gbrain-test-summary.txt"
+  LOG_DIR="/tmp/zbrain-test-shards-$$"
+  FAILURES_LOG="/tmp/zbrain-test-failures.log"
+  SUMMARY_FILE="/tmp/zbrain-test-summary.txt"
   mkdir -p "$LOG_DIR" || { echo "ERROR: cannot create log dir" >&2; exit 2; }
 fi
 # Clear from prior run.
@@ -220,7 +220,7 @@ HB_PID=$!
 # each invocation of this script leaks ONE orphan sleep; CI's "orphan
 # process cleanup" at end-of-job reports them as (unnamed) test failures.
 # Seen on the garrytan/port-pr-1406 PR, 2 CI runs in a row, 6 orphans
-# matching the 6 invocations in test/scripts/run-unit-parallel.test.ts.
+# matching the 6 invocations in tests/unit/scripts/run-unit-parallel.test.ts.
 trap 'pkill -P "$HB_PID" 2>/dev/null; kill "$HB_PID" 2>/dev/null; wait "$HB_PID" 2>/dev/null' EXIT
 
 # Wait for every shard. Don't care about wait's exit code.
@@ -311,7 +311,7 @@ echo ""
 # ──────────────────────────────────────────────────────────────────────────
 SERIAL_RC=0
 SERIAL_FILES_COUNT=0
-SERIAL_FILES_COUNT=$(find test -name '*.serial.test.ts' -not -path 'test/e2e/*' 2>/dev/null | wc -l | tr -d ' ')
+SERIAL_FILES_COUNT=$(find tests/unit -name '*.serial.test.ts' -not -path 'tests/unit/e2e/*' 2>/dev/null | wc -l | tr -d ' ')
 if [ "$SERIAL_FILES_COUNT" -gt 0 ]; then
   echo "════════════ serial pass ($SERIAL_FILES_COUNT files) ════════════"
   bash scripts/run-serial-tests.sh > "$LOG_DIR/serial.log" 2>&1

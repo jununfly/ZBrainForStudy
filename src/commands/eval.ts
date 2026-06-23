@@ -1,13 +1,13 @@
 /**
- * gbrain eval — Retrieval Evaluation Command
+ * zbrain eval — Retrieval Evaluation Command
  *
  * Runs search quality benchmarks against user-defined ground truth (qrels).
  * Supports single-config runs and A/B comparison mode for tuning parameters.
  *
  * Usage:
- *   gbrain eval --qrels <path|json>
- *   gbrain eval --qrels <path> --config-a <path|json> --config-b <path|json>
- *   gbrain eval --qrels <path> --strategy hybrid --rrf-k 30 --k 5
+ *   zbrain eval --qrels <path|json>
+ *   zbrain eval --qrels <path> --config-a <path|json> --config-b <path|json>
+ *   zbrain eval --qrels <path> --strategy hybrid --rrf-k 30 --k 5
  */
 
 import { readFileSync, existsSync } from 'fs';
@@ -21,7 +21,7 @@ import {
 } from '../core/search/eval.ts';
 
 export async function runEvalCommand(engine: BrainEngine, args: string[]): Promise<void> {
-  // v0.25.0 — sub-subcommand dispatch. Bare `gbrain eval --qrels ...`
+  // v0.25.0 — sub-subcommand dispatch. Bare `zbrain eval --qrels ...`
   // falls through to the legacy IR-metrics flow so existing callers
   // don't break.
   const sub = args[0];
@@ -376,11 +376,11 @@ function truncate(s: string, max: number): string {
 
 function printHelp(): void {
   console.log(`
-gbrain eval — measure and compare retrieval quality
+zbrain eval — measure and compare retrieval quality
 
 USAGE
-  gbrain eval --qrels <path>
-  gbrain eval --qrels <path> --config-a <path> --config-b <path>
+  zbrain eval --qrels <path>
+  zbrain eval --qrels <path> --config-a <path> --config-b <path>
 
 OPTIONS
   --qrels <path|json>         Path to qrels JSON file (required)
@@ -413,9 +413,9 @@ CONFIG FORMAT
   { "name": "rrf-k-30", "strategy": "hybrid", "rrf_k": 30, "expand": false }
 
 EXAMPLES
-  gbrain eval --qrels ./my-queries.json
-  gbrain eval --qrels ./qrels.json --strategy keyword
-  gbrain eval --qrels ./qrels.json --rrf-k 30
-  gbrain eval --qrels ./qrels.json --config-a baseline.json --config-b experiment.json
+  zbrain eval --qrels ./my-queries.json
+  zbrain eval --qrels ./qrels.json --strategy keyword
+  zbrain eval --qrels ./qrels.json --rrf-k 30
+  zbrain eval --qrels ./qrels.json --config-a baseline.json --config-b experiment.json
 `.trim());
 }

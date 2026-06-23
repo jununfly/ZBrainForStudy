@@ -8,7 +8,7 @@
 //
 // Hermetic by default: when no fixture is provided, returns an
 // inconclusive verdict + a hint pointing at the fixture directory.
-// The test surface (test/eval-schema-authoring.test.ts) drives this
+// The test surface (tests/unit/eval-schema-authoring.test.ts) drives this
 // via a stubbed gateway through the runSuggest test seam.
 
 import { existsSync } from 'node:fs';
@@ -101,7 +101,7 @@ export async function runEvalSchemaAuthoring(argv: string[]): Promise<EvalVerdic
       filing_accuracy_baseline: 0,
       filing_accuracy_post_suggest: 0,
       delta: 0,
-      reasoning: 'No fixture brain provided. Pass --fixture <path> pointing at a fixture brain directory (e.g. test/fixtures/schema-authoring/notion-refugee).',
+      reasoning: 'No fixture brain provided. Pass --fixture <path> pointing at a fixture brain directory (e.g. tests/unit/fixtures/schema-authoring/notion-refugee).',
       suggestion_count: 0,
       low_confidence_count: 0,
     };

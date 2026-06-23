@@ -1,5 +1,5 @@
 /**
- * v0.28: GATHER phase for `gbrain think`.
+ * v0.28: GATHER phase for `zbrain think`.
  *
  * Runs four retrievers in parallel:
  *   1. hybrid    — page-grain hybrid search (vector + keyword + RRF)

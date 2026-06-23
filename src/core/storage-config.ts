@@ -2,7 +2,7 @@ import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 
 /**
- * Storage tier configuration loaded from gbrain.yml.
+ * Storage tier configuration loaded from zbrain.yml.
  *
  * The canonical key names are `db_tracked` and `db_only` (engine-agnostic).
  * The deprecated keys `git_tracked` and `supabase_only` are still read for
@@ -23,12 +23,12 @@ const STORAGE_KEYS = new Set([
 ]);
 
 /**
- * Parse the gbrain.yml shape: a top-level `storage:` section with up to four
+ * Parse the zbrain.yml shape: a top-level `storage:` section with up to four
  * array-valued nested keys (canonical `db_tracked` / `db_only` plus the
  * deprecated aliases `git_tracked` / `supabase_only`).
  *
  * Intentionally narrow. Does NOT handle the full YAML spec — only the file
- * shape gbrain controls. Trades expressiveness for zero-dep parsing and
+ * shape zbrain controls. Trades expressiveness for zero-dep parsing and
  * predictable behavior. Returns null if the file has no `storage:` section
  * (so callers can distinguish "no config" from "empty config").
  *
@@ -116,7 +116,7 @@ function parseStorageYaml(content: string): RawStorage | null {
  * Resolution order (per plan eng-review pass 2 finding #2):
  *   1. If canonical keys present, use them.
  *   2. Else if deprecated keys present, map to canonical AND emit a
- *      once-per-process deprecation warning suggesting `gbrain doctor --fix`.
+ *      once-per-process deprecation warning suggesting `zbrain doctor --fix`.
  *   3. If both are present, canonical wins. Deprecated keys are ignored
  *      with a stronger warning (the user is mid-migration).
  *
@@ -138,15 +138,15 @@ function normalizeStorageConfig(raw: RawStorage): StorageConfig {
     ].filter(Boolean).join(' and ');
     if (hasCanonical) {
       console.warn(
-        `Warning: ${which} in gbrain.yml is deprecated and ignored ` +
+        `Warning: ${which} in zbrain.yml is deprecated and ignored ` +
           `(canonical keys db_tracked/db_only are present). ` +
-          `Remove the deprecated keys, or run \`gbrain doctor --fix\`.`,
+          `Remove the deprecated keys, or run \`zbrain doctor --fix\`.`,
       );
     } else {
       console.warn(
-        `Warning: ${which} in gbrain.yml is deprecated. ` +
+        `Warning: ${which} in zbrain.yml is deprecated. ` +
           `Rename to db_tracked / db_only — see docs/storage-tiering.md. ` +
-          `Run \`gbrain doctor --fix\` for an automated rename.`,
+          `Run \`zbrain doctor --fix\` for an automated rename.`,
       );
     }
   }
@@ -165,15 +165,15 @@ function normalizeStorageConfig(raw: RawStorage): StorageConfig {
 }
 
 /**
- * Load gbrain.yml configuration from the brain repository root.
+ * Load zbrain.yml configuration from the brain repository root.
  *
  * Returns null when:
  *   - repoPath is null/undefined
- *   - gbrain.yml doesn't exist at the repo root
- *   - gbrain.yml exists but has no `storage:` section (with sanity warning)
+ *   - zbrain.yml doesn't exist at the repo root
+ *   - zbrain.yml exists but has no `storage:` section (with sanity warning)
  *
  * Throws when:
- *   - gbrain.yml exists but is unreadable (permission denied, etc.) — D36 lock:
+ *   - zbrain.yml exists but is unreadable (permission denied, etc.) — D36 lock:
  *     fail loud rather than silently disable the feature.
  *
  * Logs a console.warn (once per process) when:
@@ -185,7 +185,7 @@ let _missingStorageWarned = false;
 export function loadStorageConfig(repoPath?: string | null): StorageConfig | null {
   if (!repoPath) return null;
 
-  const yamlPath = join(repoPath, 'gbrain.yml');
+  const yamlPath = join(repoPath, 'zbrain.yml');
   if (!existsSync(yamlPath)) return null;
 
   // Read failure is a real error (not a "feature not configured" signal).
@@ -197,7 +197,7 @@ export function loadStorageConfig(repoPath?: string | null): StorageConfig | nul
     raw = parseStorageYaml(content);
   } catch (error) {
     console.warn(
-      `Warning: Failed to parse gbrain.yml: ${error instanceof Error ? error.message : String(error)}`,
+      `Warning: Failed to parse zbrain.yml: ${error instanceof Error ? error.message : String(error)}`,
     );
     return null;
   }
@@ -209,7 +209,7 @@ export function loadStorageConfig(repoPath?: string | null): StorageConfig | nul
       console.warn(
         `Warning: ${yamlPath} exists but has no storage configuration. ` +
           `Add a "storage:" section with db_tracked / db_only arrays, ` +
-          `or remove gbrain.yml to suppress this warning.`,
+          `or remove zbrain.yml to suppress this warning.`,
       );
     }
     return null;
@@ -224,7 +224,7 @@ export function loadStorageConfig(repoPath?: string | null): StorageConfig | nul
       console.warn(
         `Warning: ${yamlPath} exists but has no storage configuration. ` +
           `Add a "storage:" section with db_tracked / db_only arrays, ` +
-          `or remove gbrain.yml to suppress this warning.`,
+          `or remove zbrain.yml to suppress this warning.`,
       );
     }
     return merged;
@@ -248,7 +248,7 @@ export class StorageConfigError extends Error {
  *
  * Always runs against the canonical (db_tracked / db_only) shape — error
  * messages reference canonical names regardless of which keys the user
- * wrote in gbrain.yml.
+ * wrote in zbrain.yml.
  *
  * Pure: does not mutate. For the auto-normalize behavior (D7), see
  * `normalizeAndValidateStorageConfig` below.
@@ -310,7 +310,7 @@ export function normalizeAndValidateStorageConfig(input: StorageConfig): Storage
   if (allChanged.length > 0 && !_normalizationInfoEmitted) {
     _normalizationInfoEmitted = true;
     console.warn(
-      `Note: normalized ${allChanged.length} storage path(s) in gbrain.yml — ` +
+      `Note: normalized ${allChanged.length} storage path(s) in zbrain.yml — ` +
         `${allChanged.join(', ')}. Add trailing "/" to suppress this note.`,
     );
   }
@@ -320,8 +320,8 @@ export function normalizeAndValidateStorageConfig(input: StorageConfig): Storage
   for (const path of dbonly.normalized) {
     if (trackedSet.has(path)) {
       throw new StorageConfigError(
-        `gbrain.yml: directory "${path}" appears in both db_tracked and db_only — ` +
-          `pick one tier. Edit gbrain.yml to remove the overlap.`,
+        `zbrain.yml: directory "${path}" appears in both db_tracked and db_only — ` +
+          `pick one tier. Edit zbrain.yml to remove the overlap.`,
       );
     }
   }

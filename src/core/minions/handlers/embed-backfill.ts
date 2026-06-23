@@ -2,7 +2,7 @@
  * `embed-backfill` minion handler (v0.40 Federated Sync v2).
  *
  * Decouples embedding from the sync pipeline so:
- *   - `gbrain sync --all` finishes fast (pages searchable via keyword
+ *   - `zbrain sync --all` finishes fast (pages searchable via keyword
  *     immediately), embed-backfill catches up async (D18).
  *   - Webhook-driven syncs don't block on Voyage rate limits (D5 + D18).
  *   - Fresh-source onboarding (federate a 50K-page repo) doesn't make
@@ -13,7 +13,7 @@
  * cross-call rate-limiting (10min cooldown + 24h $25 rolling cap); this
  * handler handles within-run safety:
  *
- *   - D2: per-source DB lock (`gbrain-embed-backfill:<source>`) prevents
+ *   - D2: per-source DB lock (`zbrain-embed-backfill:<source>`) prevents
  *     two embed-backfill jobs for the same source from running concurrently.
  *     If a second job claims while the first is mid-loop, it returns
  *     `already_in_progress` cleanly and the lock is the source of truth.
@@ -62,7 +62,7 @@ export interface EmbedBackfillResult {
 
 /** Compose the lock id for embed-backfill, namespaced like sync's. */
 function embedBackfillLockId(sourceId: string): string {
-  return `gbrain-embed-backfill:${sourceId}`;
+  return `zbrain-embed-backfill:${sourceId}`;
 }
 
 /** Read embed.backfill_max_usd config or default. */

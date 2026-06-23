@@ -7,12 +7,12 @@
  * Phases (all idempotent, additive):
  *   A. Schema     — verify migrations v37 + v38 already applied (the schema
  *                   runner in src/core/migrate.ts does the actual DDL during
- *                   `gbrain upgrade`/initSchema). This phase asserts post-condition.
- *   B. Backfill   — submit `gbrain extract takes` as a Minion job so any
+ *                   `zbrain upgrade`/initSchema). This phase asserts post-condition.
+ *   B. Backfill   — submit `zbrain extract takes` as a Minion job so any
  *                   pre-existing fenced takes tables in markdown populate the
  *                   takes table without blocking the foreground upgrade.
  *                   Falls back to inline run on PGLite (no Minion worker).
- *   C. Re-chunk   — emit a pending-host-work TODO for `gbrain re-chunk
+ *   C. Re-chunk   — emit a pending-host-work TODO for `zbrain re-chunk
  *                   --where pages-with-takes` (Codex P0 #3 fix: pages with
  *                   pre-v0.28 chunks still contain the fenced takes content;
  *                   the chunker strip only applies to NEW imports). Re-chunk
@@ -20,7 +20,7 @@
  *                   of running it inline.
  *   D. Record     — runner-owned ledger write (handled by apply-migrations.ts).
  *
- * No content mutation. No data loss. Operator runs `gbrain doctor` after
+ * No content mutation. No data loss. Operator runs `zbrain doctor` after
  * upgrade to verify takes_backfill_complete + takes_fence_chunk_leak checks.
  */
 
@@ -30,7 +30,7 @@ import type {
   Migration, OrchestratorOpts, OrchestratorResult, OrchestratorPhaseResult,
 } from './types.ts';
 import type { BrainEngine } from '../../core/engine.ts';
-import { loadConfig, toEngineConfig, gbrainPath } from '../../core/config.ts';
+import { loadConfig, toEngineConfig, zbrainPath } from '../../core/config.ts';
 import { createEngine } from '../../core/engine-factory.ts';
 
 let testEngineOverride: BrainEngine | null = null;
@@ -38,7 +38,7 @@ export function __setTestEngineOverride(engine: BrainEngine | null): void {
   testEngineOverride = engine;
 }
 
-function migrationsDir(): string { return gbrainPath('migrations'); }
+function migrationsDir(): string { return zbrainPath('migrations'); }
 function pendingHostWorkPath(): string { return join(migrationsDir(), 'pending-host-work.jsonl'); }
 
 interface PendingHostWorkEntry {
@@ -66,7 +66,7 @@ async function phaseASchema(
       return {
         name: 'schema',
         status: 'failed',
-        detail: `expected schema version >= 38 (takes + access_tokens.permissions); got ${v}. Run \`gbrain apply-migrations --yes\` to apply.`,
+        detail: `expected schema version >= 38 (takes + access_tokens.permissions); got ${v}. Run \`zbrain apply-migrations --yes\` to apply.`,
       };
     }
     // Quick post-condition: takes + synthesis_evidence tables exist
@@ -97,7 +97,7 @@ async function phaseBBackfill(
 
   try {
     // Inline run on both engines for v0.28.0 simplicity. Larger brains can run
-    // `gbrain extract takes --rebuild` later; the migration's job is to get
+    // `zbrain extract takes --rebuild` later; the migration's job is to get
     // the table populated for upgrade-time doctor checks.
     const { extractTakes } = await import('../../core/cycle/extract-takes.ts');
     const result = await extractTakes(engine, { source: 'db' });
@@ -162,7 +162,7 @@ function phaseCRechunkTodo(opts: OrchestratorOpts): OrchestratorPhaseResult {
       ts: new Date().toISOString(),
       skill: 'skills/migrations/v0.28.0.md',
       reason: 'Pages with pre-v0.28 chunks still contain fenced takes content. Re-chunk so the new chunker strip rule is applied (Codex P0 #3 fix).',
-      command: "gbrain extract takes --rebuild  # forces re-chunk via reimport pipeline; see migration doc for the precise sweep command in your env",
+      command: "zbrain extract takes --rebuild  # forces re-chunk via reimport pipeline; see migration doc for the precise sweep command in your env",
       _key: key,
     };
     appendFileSync(pendingHostWorkPath(), JSON.stringify(entry) + '\n');
@@ -228,10 +228,10 @@ export const v0_28_0: Migration = {
     description:
       'v0.28 adds the takes layer: typed/weighted/attributed claims (fact/take/bet/hunch) ' +
       'stored as fenced markdown tables on every page, indexed in Postgres for fast queries. ' +
-      'Plus `gbrain takes` CLI (list/search/add/update/supersede/resolve), unified model config ' +
+      'Plus `zbrain takes` CLI (list/search/add/update/supersede/resolve), unified model config ' +
       '(`models.default` replaces every per-phase config key), per-token MCP allow-list for ' +
       'visibility (private hunches stay private), and three new MCP ops (takes_list, takes_search, ' +
-      'think). `gbrain think` op surface lands now; the synthesis pipeline lands incrementally in ' +
+      'think). `zbrain think` op surface lands now; the synthesis pipeline lands incrementally in ' +
       'v0.28.x. Migration backfills takes from any pre-existing fenced markdown tables; queues a ' +
       're-chunk TODO so the chunker-strip rule (Codex P0 fix — keeps takes content out of page ' +
       'chunks where the per-token allow-list cannot reach) catches up on legacy pages.',

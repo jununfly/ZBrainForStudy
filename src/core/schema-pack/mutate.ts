@@ -50,7 +50,7 @@ import {
   writeSync,
 } from 'node:fs';
 import { extname, join } from 'node:path';
-import { gbrainPath } from '../config.ts';
+import { zbrainPath } from '../config.ts';
 import { computeManifestSha8, parseSchemaPackManifest } from './manifest-v1.ts';
 import type {
   PackLinkType,
@@ -93,7 +93,7 @@ export class SchemaPackMutationError extends Error {
   }
 }
 
-export const BUNDLED_PACK_NAMES = new Set(['gbrain-base', 'gbrain-recommended']);
+export const BUNDLED_PACK_NAMES = new Set(['zbrain-base', 'zbrain-recommended']);
 
 export interface MutateResult {
   /** Pack name that was mutated. */
@@ -124,19 +124,19 @@ export interface MutateOpts extends PackLockOpts {
 // ────────────────────────────────────────────────────────────────────────
 
 /**
- * Locate a user-mutable pack file. Bundled packs (gbrain-base,
- * gbrain-recommended) are explicitly refused per D6 — they live inside
+ * Locate a user-mutable pack file. Bundled packs (zbrain-base,
+ * zbrain-recommended) are explicitly refused per D6 — they live inside
  * the installed module and edits would be lost on upgrade.
  */
 export function locateMutablePackFile(name: string): { path: string; format: PackFileFormat } {
   if (BUNDLED_PACK_NAMES.has(name)) {
     throw new SchemaPackMutationError(
       'PACK_READONLY',
-      `pack '${name}' is bundled and read-only. Use 'gbrain schema fork ${name} <new-name>' to create a writable copy.`,
+      `pack '${name}' is bundled and read-only. Use 'zbrain schema fork ${name} <new-name>' to create a writable copy.`,
       { pack: name },
     );
   }
-  const baseDir = gbrainPath('schema-packs', name);
+  const baseDir = zbrainPath('schema-packs', name);
   const candidates: Array<{ file: string; format: PackFileFormat }> = [
     { file: 'pack.json', format: 'json' },
     { file: 'pack.yaml', format: 'yaml' },
@@ -148,7 +148,7 @@ export function locateMutablePackFile(name: string): { path: string; format: Pac
   }
   throw new SchemaPackMutationError(
     'PACK_NOT_FOUND',
-    `no pack file at ${baseDir}. Run 'gbrain schema init ${name}' or 'gbrain schema fork <source> ${name}' first.`,
+    `no pack file at ${baseDir}. Run 'zbrain schema init ${name}' or 'zbrain schema fork <source> ${name}' first.`,
     { pack: name, baseDir },
   );
 }

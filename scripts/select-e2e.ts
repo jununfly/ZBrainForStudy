@@ -7,7 +7,7 @@
 //
 // CONTRACT (fail-closed):
 //   - When in doubt, run all E2E. The map narrows from "all"; it never widens
-//     from "none". An unmapped src/ change emits ALL test/e2e/*.test.ts.
+//     from "none". An unmapped src/ change emits ALL tests/unit/e2e/*.test.ts.
 //   - Doc-only diffs emit nothing (the only case where stdout is empty).
 //   - Empty diff emits ALL (clean branch shouldn't run nothing).
 //
@@ -16,11 +16,11 @@
 //        - git diff --name-only origin/master...HEAD   (committed)
 //        - git diff --name-only HEAD                   (unstaged + staged)
 //        - git ls-files --others --exclude-standard    (untracked, NOT .gitignore'd)
-//   2. EMPTY  -> emit ALL test/e2e/*.test.ts
+//   2. EMPTY  -> emit ALL tests/unit/e2e/*.test.ts
 //      DOC_ONLY (every path matches doc allowlist) -> emit nothing
 //      SRC (at least one path is outside doc allowlist):
 //        a. Any escape-hatch path matched -> emit ALL
-//        b. Else union map matches; include directly-modified test/e2e/*.test.ts
+//        b. Else union map matches; include directly-modified tests/unit/e2e/*.test.ts
 //        c. If still empty -> FAIL-CLOSED -> emit ALL
 //
 // On git command failure: print error to stderr and exit 2 so callers see the
@@ -73,12 +73,12 @@ const ESCAPE_HATCH_FILES = new Set([
   "scripts/run-e2e.sh",
   "scripts/select-e2e.ts",
   "scripts/e2e-test-map.ts",
-  "test/e2e/helpers.ts",
+  "tests/unit/e2e/helpers.ts",
 ]);
 
 const ESCAPE_HATCH_PREFIXES = [
   "src/commands/migrations/",
-  "test/e2e/fixtures/",
+  "tests/unit/e2e/fixtures/",
   "skills/",
   ".github/workflows/",
 ];
@@ -122,11 +122,11 @@ export function matchGlob(glob: string, path: string): boolean {
 }
 
 function listAllE2ETests(repoRoot: string): string[] {
-  const dir = join(repoRoot, "test/e2e");
+  const dir = join(repoRoot, "tests/unit/e2e");
   if (!existsSync(dir)) return [];
   return readdirSync(dir)
     .filter((f) => f.endsWith(".test.ts"))
-    .map((f) => `test/e2e/${f}`)
+    .map((f) => `tests/unit/e2e/${f}`)
     .sort();
 }
 
@@ -134,7 +134,7 @@ function listAllE2ETests(repoRoot: string): string[] {
 // inputs, without touching git or filesystem (callers pass arrays in).
 export interface SelectInputs {
   changedFiles: string[]; // union of three git sources
-  allE2ETests: string[]; // glob result of test/e2e/*.test.ts
+  allE2ETests: string[]; // glob result of tests/unit/e2e/*.test.ts
   map: Record<string, string[]>; // E2E_TEST_MAP
 }
 
@@ -167,7 +167,7 @@ export function selectTests(inputs: SelectInputs): string[] {
   for (const f of changedFiles) {
     if (isDocPath(f)) continue;
     // Direct test file modification: include it.
-    if (f.startsWith("test/e2e/") && f.endsWith(".test.ts")) {
+    if (f.startsWith("tests/unit/e2e/") && f.endsWith(".test.ts")) {
       result.add(f);
       continue;
     }

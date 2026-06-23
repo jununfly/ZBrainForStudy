@@ -87,7 +87,7 @@ export async function getBudgetOwner(
 
 /**
  * Set the budget on the OWNER job (the parent). Called when an operator
- * submits `gbrain agent run ... --budget-usd N`. Sets budget_remaining_cents
+ * submits `zbrain agent run ... --budget-usd N`. Sets budget_remaining_cents
  * on the owner row AND populates budget_root_owner_id to its own id (self-
  * reference) so subsequent children inherit it.
  */

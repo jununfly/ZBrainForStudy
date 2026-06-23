@@ -1,10 +1,10 @@
 /**
- * GBRAIN_PLUGIN_PATH loader for host-repo subagent definitions (v0.15).
+ * ZBRAIN_PLUGIN_PATH loader for host-repo subagent definitions (v0.15).
  *
  * Your OpenClaw (and future downstream agents) ship custom subagent defs
- * from their own repos. gbrain discovers them at worker startup via
- * GBRAIN_PLUGIN_PATH = colon-separated absolute paths (like $PATH). Each
- * path must contain a gbrain.plugin.json manifest describing the plugin
+ * from their own repos. zbrain discovers them at worker startup via
+ * ZBRAIN_PLUGIN_PATH = colon-separated absolute paths (like $PATH). Each
+ * path must contain a zbrain.plugin.json manifest describing the plugin
  * and a subagents/ subdirectory holding `*.md` definition files.
  *
  * Path policy is strict on purpose:
@@ -27,14 +27,14 @@
  *
  * Manifest version (`plugin_version`) locks the contract shape. Unknown
  * versions are rejected so the authoritative definition is whatever this
- * version of gbrain understands.
+ * version of zbrain understands.
  */
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import matter from 'gray-matter';
 
-export const SUPPORTED_PLUGIN_VERSION = 'gbrain-plugin-v1';
+export const SUPPORTED_PLUGIN_VERSION = 'zbrain-plugin-v1';
 
 export interface PluginManifest {
   name: string;
@@ -77,9 +77,9 @@ export interface LoadOpts {
   envPath?: string;
 }
 
-/** Public entry point: load every plugin directory from GBRAIN_PLUGIN_PATH. */
+/** Public entry point: load every plugin directory from ZBRAIN_PLUGIN_PATH. */
 export function loadPluginsFromEnv(opts: LoadOpts = {}): PluginLoadResult {
-  const raw = opts.envPath ?? process.env.GBRAIN_PLUGIN_PATH ?? '';
+  const raw = opts.envPath ?? process.env.ZBRAIN_PLUGIN_PATH ?? '';
   const paths = raw.split(':').map(s => s.trim()).filter(Boolean);
   const result: PluginLoadResult = { plugins: [], warnings: [] };
 
@@ -156,9 +156,9 @@ export function loadSinglePlugin(
   rootDir: string,
   opts: LoadOpts = {},
 ): LoadedPlugin | { error: string } {
-  const manifestPath = path.join(rootDir, 'gbrain.plugin.json');
+  const manifestPath = path.join(rootDir, 'zbrain.plugin.json');
   if (!fs.existsSync(manifestPath)) {
-    return { error: 'missing gbrain.plugin.json' };
+    return { error: 'missing zbrain.plugin.json' };
   }
 
   let manifest: PluginManifest;
@@ -174,7 +174,7 @@ export function loadSinglePlugin(
   }
   if (manifest.plugin_version !== SUPPORTED_PLUGIN_VERSION) {
     return {
-      error: `unsupported plugin_version "${manifest.plugin_version}" (gbrain supports "${SUPPORTED_PLUGIN_VERSION}")`,
+      error: `unsupported plugin_version "${manifest.plugin_version}" (zbrain supports "${SUPPORTED_PLUGIN_VERSION}")`,
     };
   }
 

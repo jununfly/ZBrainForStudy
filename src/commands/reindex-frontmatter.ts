@@ -1,9 +1,9 @@
 /**
- * v0.29.1 — `gbrain reindex-frontmatter`.
+ * v0.29.1 — `zbrain reindex-frontmatter`.
  *
  * Recovery / explicit-rebuild path for `pages.effective_date`. Useful when:
  *   - The user edited frontmatter dates after import and wants the effective_date
- *     column refreshed without a full `gbrain sync`.
+ *     column refreshed without a full `zbrain sync`.
  *   - The post-upgrade backfill orchestrator finished but the user wants to
  *     re-walk a subset (e.g. just `meetings/`) after fixing some frontmatter.
  *   - The precedence rules change between releases and the user wants to
@@ -161,7 +161,7 @@ export async function reindexFrontmatterCli(args: string[]): Promise<void> {
   const { loadConfig, toEngineConfig } = await import('../core/config.ts');
   const cfg = loadConfig();
   if (!cfg) {
-    console.error('No gbrain config; run `gbrain init` first.');
+    console.error('No zbrain config; run `zbrain init` first.');
     process.exit(1);
   }
   const engineConfig = toEngineConfig(cfg);

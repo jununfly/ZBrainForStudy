@@ -22,7 +22,7 @@
  *     ceiling (`maxOutputTokens` worth of output), not the optimistic
  *     pre-call estimate. Better to overcount on failure than undercount.
  *
- * Audit JSONL lives at `~/.gbrain/audit/budget-YYYY-Www.jsonl` (ISO-week
+ * Audit JSONL lives at `~/.zbrain/audit/budget-YYYY-Www.jsonl` (ISO-week
  * rotation, same shape as shell-audit / phantom-audit). Every line carries
  * `schema_version: 1` so consumers can detect future renames. Writes are
  * best-effort: a disk-full audit never gates the run.
@@ -30,7 +30,7 @@
 
 import { mkdirSync, appendFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { gbrainPath } from '../config.ts';
+import { zbrainPath } from '../config.ts';
 import { ANTHROPIC_PRICING, type ModelPricing } from '../anthropic-pricing.ts';
 import { EMBEDDING_PRICING, lookupEmbeddingPrice } from '../embedding-pricing.ts';
 import { isoWeekFilename, resolveAuditDir } from '../audit-week-file.ts';

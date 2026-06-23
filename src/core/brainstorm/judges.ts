@@ -339,7 +339,7 @@ export function ideaPasses(idea: JudgeIdeaResult, config: JudgeConfig): boolean 
 export type ChatFn = (opts: ChatOpts) => Promise<ChatResult>;
 
 export interface RunJudgeOptions {
-  /** Override the gateway's default chat model (e.g. for `gbrain models doctor` probes). */
+  /** Override the gateway's default chat model (e.g. for `zbrain models doctor` probes). */
   modelOverride?: string;
   /** Hermetic test seam. Production callers MUST NOT pass this. */
   chatFn?: ChatFn;

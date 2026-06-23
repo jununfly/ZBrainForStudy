@@ -23,7 +23,7 @@
  */
 
 import type { BrainEngine } from '../../engine.ts';
-import type { GBrainConfig } from '../../config.ts';
+import type { ZBrainConfig } from '../../config.ts';
 import { operations } from '../../operations.ts';
 import type { Operation, OperationContext } from '../../operations.ts';
 import { paramDefToSchema } from '../../../mcp/tool-defs.ts';
@@ -74,7 +74,7 @@ export const BRAIN_TOOL_ALLOWLIST: ReadonlySet<string> = new Set([
  *
  * Field-report driver: the renderer in `src/core/minions/system-prompt.ts`
  * surfaces these so a model with `shell` + brain tools in its registry
- * knows brain tools write to the gbrain DB (NOT local files) and to reach
+ * knows brain tools write to the zbrain DB (NOT local files) and to reach
  * for shell when the task asks for filesystem work.
  *
  * Keyed by OP name (pre-`brain_` prefix). Optional — tools without an entry
@@ -91,7 +91,7 @@ export const BRAIN_TOOL_USAGE_HINTS: Readonly<Record<string, string>> = {
   traverse_graph: 'Walk the typed-edge graph starting from a slug (e.g. `works_at`, `founded`, `invested_in`). Use for relationship queries.',
   resolve_slugs: 'Resolve free-form entity names to canonical slugs (e.g. "Alice" → `people/alice-example`). Use before any tool that takes a slug if the user gave a name not a slug.',
   get_ingest_log: 'Read the brain ingestion log for diagnostic / verification queries.',
-  put_page: 'Write a markdown page to the gbrain DATABASE (NOT the local filesystem). Page becomes searchable + linkable. Slug must match the agent\'s allowed namespace.',
+  put_page: 'Write a markdown page to the zbrain DATABASE (NOT the local filesystem). Page becomes searchable + linkable. Slug must match the agent\'s allowed namespace.',
   get_recent_salience: 'Read pages ranked by emotional + activity salience over a recency window. Use for "what\'s been on my mind lately".',
   find_anomalies: 'Read cohort-level activity outliers (e.g. tag-cohort or type-cohort with unusual recent volume). Use for "what\'s unusual lately".',
 };
@@ -163,7 +163,7 @@ function namespacedPutPageSchema(
 export interface BuildBrainToolsOpts {
   subagentId: number;
   engine: BrainEngine;
-  config: GBrainConfig;
+  config: ZBrainConfig;
   /** Optional filter: only include names in this set. */
   allowedNames?: ReadonlySet<string>;
   /**
@@ -193,7 +193,7 @@ export interface BuildBrainToolsOpts {
 
 interface OpContextDeps {
   engine: BrainEngine;
-  config: GBrainConfig;
+  config: ZBrainConfig;
   subagentId: number;
   jobId: number;
   signal?: AbortSignal;

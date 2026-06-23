@@ -21,7 +21,7 @@
  * belong in static document vectors — embedding the calibration profile
  * would silently stale embeddings on every calibration cycle update).
  * Calibration-driven personalization belongs at query time, not at embed
- * time; see `~/.gstack/projects/garrytan-gbrain/ceo-plans/
+ * time; see `~/.gstack/projects/garrytan-zbrain/ceo-plans/
  * 2026-05-22-v0403-contextual-retrieval.md` "Deferred to TODOS.md" for
  * the v0.41+ query-side personalization wave.
  *

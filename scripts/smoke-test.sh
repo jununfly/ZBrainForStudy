@@ -1,11 +1,11 @@
 #!/bin/bash
-# smoke-test.sh — GBrain post-restart smoke tests + auto-fix
+# smoke-test.sh — ZBrain post-restart smoke tests + auto-fix
 #
-# Ships with gbrain. Tests gbrain core services + OpenClaw plugin health.
-# Users extend via ~/.gbrain/smoke-tests.d/*.sh (user-defined tests).
+# Ships with zbrain. Tests zbrain core services + OpenClaw plugin health.
+# Users extend via ~/.zbrain/smoke-tests.d/*.sh (user-defined tests).
 #
 # Usage:
-#   gbrain smoke-test          # run all tests
+#   zbrain smoke-test          # run all tests
 #   bash scripts/smoke-test.sh # direct invocation
 #
 # Each test: check → if broken, attempt fix → re-check → report.
@@ -15,7 +15,7 @@ set -a
 [ -f /data/.env ] && . /data/.env 2>/dev/null || true
 set +a
 
-LOG="${GBRAIN_SMOKE_LOG:-/tmp/gbrain-smoke-test.log}"
+LOG="${ZBRAIN_SMOKE_LOG:-/tmp/zbrain-smoke-test.log}"
 FAILURES=0
 FIXES=0
 TOTAL=0
@@ -27,20 +27,20 @@ fail()    { TOTAL=$((TOTAL + 1)); FAILURES=$((FAILURES + 1)); echo "❌ $1"; ech
 fixed()   { FIXES=$((FIXES + 1)); echo "🔧 Fixed: $1"; echo "$(timestamp) FIXED: $1" >> "$LOG"; }
 skip()    { SKIPPED=$((SKIPPED + 1)); echo "⏭️  $1"; echo "$(timestamp) SKIP: $1" >> "$LOG"; }
 
-echo "$(timestamp) === GBrain Smoke Tests ===" >> "$LOG"
-echo "🧪 Running gbrain smoke tests..."
+echo "$(timestamp) === ZBrain Smoke Tests ===" >> "$LOG"
+echo "🧪 Running zbrain smoke tests..."
 echo ""
 
 # ── Resolve paths ───────────────────────────────────────────
-# Find gbrain — could be global install, workspace dep, or /data/gbrain
-GBRAIN_DIR=""
+# Find zbrain — could be global install, workspace dep, or /data/zbrain
+ZBRAIN_DIR=""
 for candidate in \
-  "${GBRAIN_DIR_OVERRIDE:-}" \
-  "/data/gbrain" \
+  "${ZBRAIN_DIR_OVERRIDE:-}" \
+  "/data/zbrain" \
   "$(dirname "$0")/.." \
-  "${OPENCLAW_WORKSPACE:-/data/.openclaw/workspace}/node_modules/gbrain" \
-  "./node_modules/gbrain"; do
-  [ -n "$candidate" ] && [ -f "$candidate/src/cli.ts" ] && GBRAIN_DIR="$candidate" && break
+  "${OPENCLAW_WORKSPACE:-/data/.openclaw/workspace}/node_modules/zbrain" \
+  "./node_modules/zbrain"; do
+  [ -n "$candidate" ] && [ -f "$candidate/src/cli.ts" ] && ZBRAIN_DIR="$candidate" && break
 done
 
 # Find bun
@@ -50,9 +50,9 @@ for bp in "/root/.bun/bin/bun" "/data/.bun/bin/bun" "$(which bun 2>/dev/null)"; 
 done
 
 # Resolve database URL
-DB_URL="${GBRAIN_DATABASE_URL:-${DATABASE_URL:-}}"
+DB_URL="${ZBRAIN_DATABASE_URL:-${DATABASE_URL:-}}"
 # Fallback: grep from .env (handles files with parse-breaking lines)
-[ -z "$DB_URL" ] && DB_URL=$(grep '^GBRAIN_DATABASE_URL=' /data/.env 2>/dev/null | head -1 | cut -d= -f2-)
+[ -z "$DB_URL" ] && DB_URL=$(grep '^ZBRAIN_DATABASE_URL=' /data/.env 2>/dev/null | head -1 | cut -d= -f2-)
 [ -z "$DB_URL" ] && DB_URL=$(grep '^DATABASE_URL=' /data/.env 2>/dev/null | head -1 | cut -d= -f2-)
 
 # ── 1. Bun runtime ─────────────────────────────────────────
@@ -72,58 +72,58 @@ else
   fi
 fi
 
-# ── 2. GBrain CLI loads ────────────────────────────────────
-if [ -n "$GBRAIN_DIR" ] && [ -n "$BUN_PATH" ]; then
-  if timeout 15 "$BUN_PATH" run "$GBRAIN_DIR/src/cli.ts" --help >/dev/null 2>&1; then
-    pass "GBrain CLI ($GBRAIN_DIR)"
+# ── 2. ZBrain CLI loads ────────────────────────────────────
+if [ -n "$ZBRAIN_DIR" ] && [ -n "$BUN_PATH" ]; then
+  if timeout 15 "$BUN_PATH" run "$ZBRAIN_DIR/src/cli.ts" --help >/dev/null 2>&1; then
+    pass "ZBrain CLI ($ZBRAIN_DIR)"
   else
     # Auto-fix: reinstall deps
-    cd "$GBRAIN_DIR" && "$BUN_PATH" install --frozen-lockfile 2>/dev/null
-    if timeout 15 "$BUN_PATH" run "$GBRAIN_DIR/src/cli.ts" --help >/dev/null 2>&1; then
-      fixed "GBrain deps reinstalled"
-      pass "GBrain CLI (after dep fix)"
+    cd "$ZBRAIN_DIR" && "$BUN_PATH" install --frozen-lockfile 2>/dev/null
+    if timeout 15 "$BUN_PATH" run "$ZBRAIN_DIR/src/cli.ts" --help >/dev/null 2>&1; then
+      fixed "ZBrain deps reinstalled"
+      pass "ZBrain CLI (after dep fix)"
     else
-      fail "GBrain CLI — won't start"
+      fail "ZBrain CLI — won't start"
     fi
   fi
 else
-  [ -z "$GBRAIN_DIR" ] && fail "GBrain CLI — not found"
-  [ -z "$BUN_PATH" ] && skip "GBrain CLI — bun not available"
+  [ -z "$ZBRAIN_DIR" ] && fail "ZBrain CLI — not found"
+  [ -z "$BUN_PATH" ] && skip "ZBrain CLI — bun not available"
 fi
 
-# ── 3. GBrain database ────────────────────────────────────
-if [ -n "$DB_URL" ] && [ -n "$GBRAIN_DIR" ] && [ -n "$BUN_PATH" ]; then
-  DOCTOR_OUT=$(DATABASE_URL="$DB_URL" GBRAIN_DATABASE_URL="$DB_URL" timeout 20 "$BUN_PATH" run "$GBRAIN_DIR/src/cli.ts" doctor 2>&1)
+# ── 3. ZBrain database ────────────────────────────────────
+if [ -n "$DB_URL" ] && [ -n "$ZBRAIN_DIR" ] && [ -n "$BUN_PATH" ]; then
+  DOCTOR_OUT=$(DATABASE_URL="$DB_URL" ZBRAIN_DATABASE_URL="$DB_URL" timeout 20 "$BUN_PATH" run "$ZBRAIN_DIR/src/cli.ts" doctor 2>&1)
   if echo "$DOCTOR_OUT" | grep -q "Health score\|brain_score\|Health Check"; then
     SCORE=$(echo "$DOCTOR_OUT" | grep -oP 'Health score: \K[0-9]+' || echo '?')
-    pass "GBrain database (health score: $SCORE/100)"
+    pass "ZBrain database (health score: $SCORE/100)"
   else
-    fail "GBrain database — doctor returned no health data"
+    fail "ZBrain database — doctor returned no health data"
   fi
 else
-  [ -z "$DB_URL" ] && fail "GBrain database — no DATABASE_URL or GBRAIN_DATABASE_URL"
-  [ -z "$GBRAIN_DIR" ] && skip "GBrain database — gbrain not found"
+  [ -z "$DB_URL" ] && fail "ZBrain database — no DATABASE_URL or ZBRAIN_DATABASE_URL"
+  [ -z "$ZBRAIN_DIR" ] && skip "ZBrain database — zbrain not found"
 fi
 
-# ── 4. GBrain worker process ──────────────────────────────
-if [ -n "$GBRAIN_DIR" ] && [ -n "$BUN_PATH" ] && [ -n "$DB_URL" ]; then
-  if [ -f /tmp/gbrain-worker.pid ] && kill -0 "$(cat /tmp/gbrain-worker.pid)" 2>/dev/null; then
-    pass "GBrain worker (PID: $(cat /tmp/gbrain-worker.pid))"
+# ── 4. ZBrain worker process ──────────────────────────────
+if [ -n "$ZBRAIN_DIR" ] && [ -n "$BUN_PATH" ] && [ -n "$DB_URL" ]; then
+  if [ -f /tmp/zbrain-worker.pid ] && kill -0 "$(cat /tmp/zbrain-worker.pid)" 2>/dev/null; then
+    pass "ZBrain worker (PID: $(cat /tmp/zbrain-worker.pid))"
   else
     # Auto-fix: start worker
-    DATABASE_URL="$DB_URL" GBRAIN_DATABASE_URL="$DB_URL" GBRAIN_ALLOW_SHELL_JOBS=1 \
-      nohup "$BUN_PATH" run "$GBRAIN_DIR/src/cli.ts" jobs work --concurrency 2 > /tmp/gbrain-worker.log 2>&1 &
-    echo $! > /tmp/gbrain-worker.pid
+    DATABASE_URL="$DB_URL" ZBRAIN_DATABASE_URL="$DB_URL" ZBRAIN_ALLOW_SHELL_JOBS=1 \
+      nohup "$BUN_PATH" run "$ZBRAIN_DIR/src/cli.ts" jobs work --concurrency 2 > /tmp/zbrain-worker.log 2>&1 &
+    echo $! > /tmp/zbrain-worker.pid
     sleep 2
-    if kill -0 "$(cat /tmp/gbrain-worker.pid)" 2>/dev/null; then
-      fixed "GBrain worker started"
-      pass "GBrain worker (PID: $(cat /tmp/gbrain-worker.pid))"
+    if kill -0 "$(cat /tmp/zbrain-worker.pid)" 2>/dev/null; then
+      fixed "ZBrain worker started"
+      pass "ZBrain worker (PID: $(cat /tmp/zbrain-worker.pid))"
     else
-      fail "GBrain worker — failed to start (check /tmp/gbrain-worker.log)"
+      fail "ZBrain worker — failed to start (check /tmp/zbrain-worker.log)"
     fi
   fi
 else
-  skip "GBrain worker — prerequisites missing"
+  skip "ZBrain worker — prerequisites missing"
 fi
 
 # ── 5. OpenClaw plugin health (if OpenClaw is installed) ──
@@ -163,7 +163,7 @@ else
 fi
 
 # ── 8. Brain repo (if configured) ────────────────────────
-BRAIN_PATH="${GBRAIN_BRAIN_PATH:-/data/brain}"
+BRAIN_PATH="${ZBRAIN_BRAIN_PATH:-/data/brain}"
 if [ -d "$BRAIN_PATH/.git" ]; then
   PAGE_COUNT=$(find "$BRAIN_PATH" -name "*.md" -not -path "*/.git/*" 2>/dev/null | wc -l)
   pass "Brain repo ($PAGE_COUNT pages at $BRAIN_PATH)"
@@ -173,8 +173,8 @@ else
   skip "Brain repo — $BRAIN_PATH not found"
 fi
 
-# ── User-defined tests (~/.gbrain/smoke-tests.d/*.sh) ────
-USER_TESTS_DIR="${HOME}/.gbrain/smoke-tests.d"
+# ── User-defined tests (~/.zbrain/smoke-tests.d/*.sh) ────
+USER_TESTS_DIR="${HOME}/.zbrain/smoke-tests.d"
 if [ -d "$USER_TESTS_DIR" ]; then
   for test_script in "$USER_TESTS_DIR"/*.sh; do
     [ -f "$test_script" ] || continue

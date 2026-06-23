@@ -231,7 +231,7 @@ to debug MCP connection issues (see request/response headers, latency, errors).
 
 1. Start tunnel. Visit `https://your-brain.ngrok.app` in a browser.
    You should see a response (health check or default page).
-2. From Claude Desktop, run `gbrain search "test"`. Results should come back.
+2. From Claude Desktop, run `gbrain search "tests/unit"`. Results should come back.
 3. Kill ngrok. Wait 2 minutes. Check the watchdog restarted it.
 4. From a different device (phone), access the same URL. Verify it works.
 

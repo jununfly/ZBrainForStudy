@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CI guard: every text file under src/, test/, and the repo root .yml/.md
+# CI guard: every text file under src/, tests/unit/, and the repo root .yml/.md
 # files must end with a newline. POSIX-noncompliant trailing data shows up
 # as a phantom diff on every future edit and trips most linters.
 #
@@ -9,14 +9,14 @@
 
 set -euo pipefail
 
-# Files to check: anything tracked under src/ + test/ that's a code/text file.
+# Files to check: anything tracked under src/ + tests/unit/ that's a code/text file.
 # Also the top-level *.yml + *.md the repo controls. Portable to bash 3.2
 # (macOS default) — no mapfile, no associative arrays.
 files=$(
   git ls-files \
     'src/**/*.ts' 'src/**/*.js' 'src/**/*.json' 'src/**/*.sql' 'src/**/*.md' \
-    'test/**/*.ts' 'test/**/*.js' 'test/**/*.json' 'test/**/*.md' \
-    'gbrain.yml' '*.md' \
+    'tests/unit/**/*.ts' 'tests/unit/**/*.js' 'tests/unit/**/*.json' 'tests/unit/**/*.md' \
+    'zbrain.yml' '*.md' \
   2>/dev/null | sort -u
 )
 

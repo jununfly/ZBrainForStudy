@@ -3,7 +3,7 @@
  *
  * Three call sites:
  * 1. `bun test` — unit tests import and assert on checkResolvable()
- * 2. `gbrain doctor` — runtime health check with actionable agent guidance
+ * 2. `zbrain doctor` — runtime health check with actionable agent guidance
  * 3. skill-creator skill — mandatory post-creation validation gate
  *
  * @param skillsDir — the `skills/` directory (NOT repo root). Parser joins
@@ -123,7 +123,7 @@ export interface ResolverEntry {
  * Parse RESOLVER.md / AGENTS.md into structured entries. Supports two formats
  * that can mix in one file:
  *
- *   Format 1 (table) — original gbrain shape:
+ *   Format 1 (table) — original zbrain shape:
  *     | trigger phrase | `skills/<name>/SKILL.md` |
  *
  *   Format 2 (compact list, v0.41.7.0) — OpenClaw-native shape:
@@ -586,7 +586,7 @@ export function checkResolvable(skillsDir: string): ResolvableReport {
 
   // D-CX-9 SKILLIFY_STUB sentinel check: scan every SKILL.md + script
   // file under skillsDir for the sentinel marker emitted by
-  // `gbrain skillify scaffold`. Presence means a scaffolded skill
+  // `zbrain skillify scaffold`. Presence means a scaffolded skill
   // shipped without a real implementation — warning-severity in
   // default mode, error-promoted under --strict via D-CX-3.
   for (const skill of manifest) {

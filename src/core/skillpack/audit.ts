@@ -2,20 +2,20 @@
  * skillpack/audit.ts — JSONL audit log for skillpack lifecycle events.
  *
  * Pattern mirrors src/core/audit-slug-fallback.ts + src/core/rerank-audit.ts:
- * ISO-week-rotated JSONL at `~/.gbrain/audit/skillpack-YYYY-Www.jsonl`.
+ * ISO-week-rotated JSONL at `~/.zbrain/audit/skillpack-YYYY-Www.jsonl`.
  *
  * One line per scaffold / scaffold-third-party / reference-applied /
  * doctor-run / search event. Best-effort writes — never throws; failures
  * log a stderr warning.
  *
- * `gbrain doctor`'s skillpack_activity check reads the last 7 days to
+ * `zbrain doctor`'s skillpack_activity check reads the last 7 days to
  * surface "installed N packs in the last week" as info.
  */
 
 import { appendFileSync, mkdirSync, readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { dirname, join } from 'path';
 
-import { gbrainPath } from '../config.ts';
+import { zbrainPath } from '../config.ts';
 
 /** Audit event kind. */
 export type SkillpackAuditEventKind =
@@ -65,11 +65,11 @@ function computeIsoWeekFilename(now: Date = new Date()): string {
   return `skillpack-${yyyy}-W${ww}.jsonl`;
 }
 
-/** Resolve the audit directory; honors GBRAIN_AUDIT_DIR. */
+/** Resolve the audit directory; honors ZBRAIN_AUDIT_DIR. */
 function resolveAuditDir(): string {
-  const override = process.env.GBRAIN_AUDIT_DIR;
+  const override = process.env.ZBRAIN_AUDIT_DIR;
   if (override && override.trim()) return override.trim();
-  return gbrainPath('audit');
+  return zbrainPath('audit');
 }
 
 /** Append an event. Best-effort: stderr warn on failure, never throws. */
@@ -87,7 +87,7 @@ export function logSkillpackEvent(event: Omit<SkillpackAuditEvent, 'ts'>): void 
   }
 }
 
-/** Read recent events. Used by `gbrain doctor` for the activity surface. */
+/** Read recent events. Used by `zbrain doctor` for the activity surface. */
 export function readRecentSkillpackEvents(days: number): SkillpackAuditEvent[] {
   const auditDir = resolveAuditDir();
   if (!existsSync(auditDir)) return [];

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scripts/check-fuzz-purity.sh
-# CI guard: verify that every fuzz target in `test/fuzz/pure-validators.test.ts`
+# CI guard: verify that every fuzz target in `tests/unit/fuzz/pure-validators.test.ts`
 # is genuinely PURE — no transitive imports of `node:fs`, `node:child_process`,
 # the engine layer, or `node:net` / `node:http` / `node:https`.
 #
@@ -35,13 +35,13 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$ROOT"
 
-# Targets — keep in sync with `test/fuzz/pure-validators.test.ts` imports.
+# Targets — keep in sync with `tests/unit/fuzz/pure-validators.test.ts` imports.
 # Only files whose bundle is bundle-pure live here. The original T2 plan listed
 # more files; the bundle disproved their purity (validator-shaped functions
 # living in modules that transitively import fs). Those validators still get
-# property-tested in `test/fuzz/mixed-validators.test.ts` — same fuzz coverage,
+# property-tested in `tests/unit/fuzz/mixed-validators.test.ts` — same fuzz coverage,
 # no purity guarantee. Filesystem-touching validators live in
-# `test/fuzz/filesystem-validators.test.ts`.
+# `tests/unit/fuzz/filesystem-validators.test.ts`.
 TARGET_FILES=(
   "src/core/cjk.ts"                    # escapeLikePattern
   "src/core/facts-fence.ts"            # parseFactsFence
@@ -94,7 +94,7 @@ BANNED_PATH_PATTERNS=(
   'src/core/engine-factory.ts'
 )
 
-TMP_BUNDLE_DIR=$(mktemp -d -t gbrain-fuzz-purity-XXXXXX)
+TMP_BUNDLE_DIR=$(mktemp -d -t zbrain-fuzz-purity-XXXXXX)
 trap 'rm -rf "$TMP_BUNDLE_DIR"' EXIT
 
 violations=0
@@ -157,7 +157,7 @@ done
 if [ "$violations" -gt 0 ]; then
   echo "" >&2
   echo "[check-fuzz-purity] $violations violation(s). Move impure validators to" >&2
-  echo "  test/fuzz/filesystem-validators.test.ts (no purity guard there)." >&2
+  echo "  tests/unit/fuzz/filesystem-validators.test.ts (no purity guard there)." >&2
   exit 1
 fi
 

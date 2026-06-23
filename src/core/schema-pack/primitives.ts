@@ -10,7 +10,7 @@
 //
 // Primitives drive INHERITANCE DEFAULTS only — NOT query closure. The E8
 // refinement of D12 separates these two axes: primitive = defaults graph,
-// `aliases:` field = closure graph. Run `gbrain whoknows expert` and you'd
+// `aliases:` field = closure graph. Run `zbrain whoknows expert` and you'd
 // expect to find person + researcher + cofounder, NOT adversary-profile
 // (also entity primitive). Per-type `aliases: [person]` is the opt-in;
 // primitive sharing is not.

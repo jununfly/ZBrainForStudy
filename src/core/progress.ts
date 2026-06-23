@@ -479,7 +479,7 @@ export function startHeartbeat(p: ProgressReporter, note: string, intervalMs = 1
 }
 
 // Test-only hook so we can assert one signal handler across many reporters.
-// Not part of the public API; used by test/progress.test.ts.
+// Not part of the public API; used by tests/unit/progress.test.ts.
 export function __liveReporterCountForTest(): number {
   return liveReporters.size;
 }

@@ -85,6 +85,6 @@ This skill guarantees:
 
 ## Output Format
 
-The voice persona produces SPOKEN audio over WebRTC, not text output. The Output Format header exists for `test/skills-conformance.test.ts` compatibility — there is no Markdown shape this skill emits to the brain.
+The voice persona produces SPOKEN audio over WebRTC, not text output. The Output Format header exists for `tests/unit/skills-conformance.test.ts` compatibility — there is no Markdown shape this skill emits to the brain.
 
 The post-call transcript (if any) is created by the [voice-post-call](../voice-post-call/SKILL.md) skill, not by this one.

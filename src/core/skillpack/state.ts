@@ -1,6 +1,6 @@
 /**
  * skillpack/state.ts — machine-owned install-state file at
- * `~/.gbrain/skillpack-state.json`.
+ * `~/.zbrain/skillpack-state.json`.
  *
  * Codex outside-voice G1 fix: the original spec put TOFU SHA, pinned
  * commits, source URLs, rename maps, and per-source receipts inside
@@ -19,10 +19,10 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 
-import { gbrainPath } from '../config.ts';
+import { zbrainPath } from '../config.ts';
 
 /** Schema version stamped on every state file. */
-export const SKILLPACK_STATE_SCHEMA_VERSION = 'gbrain-skillpack-state-v1' as const;
+export const SKILLPACK_STATE_SCHEMA_VERSION = 'zbrain-skillpack-state-v1' as const;
 
 /** Per-pack scaffold record. */
 export interface SkillpackStateEntry {
@@ -77,7 +77,7 @@ const EMPTY_STATE: SkillpackState = {
 
 /** Default state file path. Override via `opts.statePath` in calling code. */
 export function defaultStatePath(): string {
-  return gbrainPath('skillpack-state.json');
+  return zbrainPath('skillpack-state.json');
 }
 
 /**
@@ -126,8 +126,8 @@ export function loadState(opts: { statePath?: string } = {}): SkillpackState {
 
 /**
  * Persist state via atomic .tmp + rename. Caller is responsible for ensuring
- * the directory exists (gbrainPath returns paths under ~/.gbrain which
- * setup-gbrain ensures, but we mkdir defensively).
+ * the directory exists (zbrainPath returns paths under ~/.zbrain which
+ * setup-zbrain ensures, but we mkdir defensively).
  */
 export function saveState(state: SkillpackState, opts: { statePath?: string } = {}): void {
   const path = opts.statePath ?? defaultStatePath();

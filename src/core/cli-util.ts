@@ -21,7 +21,7 @@ export function promptLine(prompt: string): Promise<string> {
  * instead of hanging forever. Used when the surrounding command must keep
  * stdout clean for machine-readable output (JSON, piped data); the thin-client
  * upgrade prompt fires before any routed command runs and would otherwise
- * pollute `gbrain query > out.json`.
+ * pollute `zbrain query > out.json`.
  *
  * Return contract:
  *   - resolves to a `string` (trimmed) on the first stdin data event

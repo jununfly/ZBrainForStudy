@@ -2,7 +2,7 @@
  * Pre-enqueue validator for `shell` job params (v0.36.5.0).
  *
  * Called from BOTH submit surfaces BEFORE `MinionQueue.add()`:
- *   - `src/commands/jobs.ts` — `gbrain jobs submit shell` CLI handler
+ *   - `src/commands/jobs.ts` — `zbrain jobs submit shell` CLI handler
  *   - `src/core/operations.ts` — `submit_job` op handler for name='shell'
  *
  * Correctness property: a rejected payload NEVER lands in `minion_jobs.data`.
@@ -33,7 +33,7 @@ import {
   INHERIT_NAME_RE,
   resolveInheritValue,
 } from './shell-inherit.ts';
-import { loadConfig, type GBrainConfig } from '../../config.ts';
+import { loadConfig, type ZBrainConfig } from '../../config.ts';
 
 /** Validated, narrowed shell-job params. */
 export interface ValidatedShellJobParams {
@@ -47,14 +47,14 @@ export interface ValidatedShellJobParams {
 
 export interface ValidateShellJobOpts {
   /**
-   * Loaded gbrain config used to verify every `inherit` name resolves to a
+   * Loaded zbrain config used to verify every `inherit` name resolves to a
    * value. Pass `null` to fail-fast on any inherit request. Defaults to
    * calling `loadConfig()` when undefined — the typical CLI / op-handler path.
    *
    * Test seam: pass `{ config }` explicitly to drive the validator with a
    * stubbed config in hermetic unit tests instead of mocking the module.
    */
-  config?: GBrainConfig | null;
+  config?: ZBrainConfig | null;
 }
 
 /**
@@ -155,7 +155,7 @@ export function validateShellJobParams(
       if (value === undefined) {
         throw new UnrecoverableError(
           `shell: inherit requested "${name}" but worker has no ${name} configured. ` +
-          `Fix: \`gbrain config set ${name} <value>\` or set the value in the worker's config file. ` +
+          `Fix: \`zbrain config set ${name} <value>\` or set the value in the worker's config file. ` +
           '(see: docs/guides/minions-shell-jobs.md#secrets)',
         );
       }

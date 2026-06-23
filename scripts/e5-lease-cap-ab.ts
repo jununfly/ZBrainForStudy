@@ -4,7 +4,7 @@
  *
  * Manually-runnable script that proves the auto-adaptive lease-cap
  * controller beats fixed-cap on a real upstream. Writes a structured
- * receipt to test/fixtures/e5-lease-cap-ab/{timestamp}.json — that file
+ * receipt to tests/unit/fixtures/e5-lease-cap-ab/{timestamp}.json — that file
  * is committed as the baseline. Future controller changes ship with
  * their own receipt + diff against prior.
  *
@@ -224,7 +224,7 @@ async function main() {
       verdict,
     };
 
-    const fixtureDir = join(process.cwd(), 'test/fixtures/e5-lease-cap-ab');
+    const fixtureDir = join(process.cwd(), 'tests/unit/fixtures/e5-lease-cap-ab');
     if (!existsSync(fixtureDir)) mkdirSync(fixtureDir, { recursive: true });
     const receiptPath = join(
       fixtureDir,

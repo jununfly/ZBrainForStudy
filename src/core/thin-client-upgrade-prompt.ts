@@ -1,7 +1,7 @@
 /**
  * v0.31.11 (Issue: thin-client auto-upgrade): when a thin-client install detects
- * that the remote `gbrain serve --http` host is running a newer version (minor
- * or major drift), prompt the user interactively to run `gbrain upgrade`.
+ * that the remote `zbrain serve --http` host is running a newer version (minor
+ * or major drift), prompt the user interactively to run `zbrain upgrade`.
  *
  * Hook seam: called from `printIdentityBannerBestEffort` in `src/cli.ts` after
  * the banner prints. The function short-circuits in every non-applicable case
@@ -11,8 +11,8 @@
  * - D1 — On successful upgrade, exit 0 with a re-run message. Do NOT continue
  *   the original command on the stale in-memory binary.
  * - D2 — Exclusive non-blocking advisory lock around the prompt; loser no-ops.
- * - D5 — Re-read `gbrain --version` post-upgrade to verify the binary actually
- *   advanced. `gbrain upgrade` returns 0 even on bun/clawhub catch-and-print
+ * - D5 — Re-read `zbrain --version` post-upgrade to verify the binary actually
+ *   advanced. `zbrain upgrade` returns 0 even on bun/clawhub catch-and-print
  *   paths and on the `binary` install ("not yet implemented").
  * - D6 — Gate on both stdin AND stdout TTY; prompt writes to stderr.
  * - D7 — When `bannerSuppressed()` is true, emit nothing about upgrades.
@@ -23,8 +23,8 @@ import { existsSync, readFileSync, writeFileSync, renameSync, openSync, closeSyn
 import { dirname } from 'path';
 import { execSync, execFileSync } from 'child_process';
 import { compareVersions } from '../commands/migrations/index.ts';
-import { gbrainPath } from './config.ts';
-import type { GBrainConfig } from './config.ts';
+import { zbrainPath } from './config.ts';
+import type { ZBrainConfig } from './config.ts';
 import { promptLineStderr } from './cli-util.ts';
 import type { CliOptions } from './cli-options.ts';
 
@@ -100,7 +100,7 @@ export interface PromptState {
 }
 
 function statePath(): string {
-  return gbrainPath('upgrade-prompt-state.json');
+  return zbrainPath('upgrade-prompt-state.json');
 }
 
 /**
@@ -179,7 +179,7 @@ export interface PromptLock {
 }
 
 function lockPath(): string {
-  return gbrainPath(LOCK_FILENAME);
+  return zbrainPath(LOCK_FILENAME);
 }
 
 /**
@@ -274,10 +274,10 @@ export function _setVerifierForTest(fn: Verifier | null): void {
 
 function defaultVerifyUpgradeAdvanced(remoteVersion: string): { advanced: boolean; newVersion: string | null } {
   try {
-    // Spawn `gbrain --version` as a fresh subprocess so we read the NEW binary
+    // Spawn `zbrain --version` as a fresh subprocess so we read the NEW binary
     // the upgrade just installed (not the old VERSION constant baked into the
-    // currently-running process). Output shape: "gbrain X.Y.Z" or just "X.Y.Z".
-    const out = execFileSync('gbrain', ['--version'], { encoding: 'utf-8', timeout: 10_000 });
+    // currently-running process). Output shape: "zbrain X.Y.Z" or just "X.Y.Z".
+    const out = execFileSync('zbrain', ['--version'], { encoding: 'utf-8', timeout: 10_000 });
     const match = out.trim().match(/(\d+\.\d+\.\d+(?:\.\d+)?)/);
     if (!match) return { advanced: false, newVersion: null };
     const newVersion = match[1];
@@ -313,7 +313,7 @@ export function _setPromptReaderForTest(fn: PromptReader | null): void {
 export type UpgradeRunner = () => void;
 
 function defaultRunUpgrade(): void {
-  execSync('gbrain upgrade', { stdio: 'inherit' });
+  execSync('zbrain upgrade', { stdio: 'inherit' });
 }
 
 let _upgradeRunner: UpgradeRunner = defaultRunUpgrade;
@@ -329,7 +329,7 @@ export function _setUpgradeRunnerForTest(fn: UpgradeRunner | null): void {
 
 export function _clearPromptStateForTest(): void {
   // No in-process state to clear today; the file lives on disk and tests use
-  // GBRAIN_HOME tempdirs for isolation. This stub exists for symmetry with
+  // ZBRAIN_HOME tempdirs for isolation. This stub exists for symmetry with
   // _clearIdentityCacheForTest in src/cli.ts so future caching can hook here.
 }
 
@@ -361,7 +361,7 @@ export interface PromptDeps {
  * posture.
  */
 export async function maybePromptForUpgrade(
-  cfg: GBrainConfig,
+  cfg: ZBrainConfig,
   identity: BrainIdentityShape,
   cliOpts: CliOptions,
   bannerIsSuppressed: boolean,
@@ -454,7 +454,7 @@ export async function maybePromptForUpgrade(
     if (!result.advanced) {
       writeStateBestEffort(state, mcpUrl, identity.version, 'failed', nowIso);
       log(
-        `gbrain upgrade did not actually advance the binary` +
+        `zbrain upgrade did not actually advance the binary` +
         (result.newVersion ? ` (still on v${result.newVersion})` : '') +
         `. See the output above for manual steps.`,
       );

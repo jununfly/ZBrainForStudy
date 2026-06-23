@@ -14,7 +14,7 @@
  * NOT refuse the migration on low session settings — codex pass-2 #16).
  *
  * Pure library function — same code path used by the v0_29_1 orchestrator
- * AND the `gbrain reindex-frontmatter` CLI command (added in commit 4).
+ * AND the `zbrain reindex-frontmatter` CLI command (added in commit 4).
  *
  * Note: the `import_filename` column stays NULL on backfilled rows. We
  * don't have the original filename for pre-v0.29.1 imports (codex pass-1

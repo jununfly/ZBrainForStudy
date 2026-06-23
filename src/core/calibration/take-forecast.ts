@@ -3,7 +3,7 @@
  *
  * Pure math over existing `TakesScorecard` data. Zero new LLM cost,
  * zero new schema. Surface: an inline blurb the user sees at write time
- * (gbrain takes show / propose --review) reminding them of their
+ * (zbrain takes show / propose --review) reminding them of their
  * historical track record at this conviction + domain.
  *
  * v0.36.1.0 ship state:

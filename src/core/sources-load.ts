@@ -2,8 +2,8 @@
  * Shared source-table loader (v0.40 Federated Sync v2 — D7).
  *
  * Before v0.40, the only caller that enumerated `sources` was `runList` in
- * src/commands/sources.ts. v0.40 adds four more enumerators: `gbrain sync --all`
- * fan-out, autopilot per-source dispatch, `gbrain sources status`, and the
+ * src/commands/sources.ts. v0.40 adds four more enumerators: `zbrain sync --all`
+ * fan-out, autopilot per-source dispatch, `zbrain sources status`, and the
  * `federation_health` doctor check. Going from 1→5 inline SELECTs invites
  * silent drift the next time someone adds a column to `sources`.
  *

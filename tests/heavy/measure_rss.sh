@@ -7,7 +7,7 @@
 # peak RSS exceeds the baseline by more than RSS_THRESHOLD_PCT (default 25%).
 #
 # Baseline refresh is GATED to Linux. macOS measurement runs use a VmRSS
-# fallback path that gbrain explicitly avoids in production; committing a
+# fallback path that zbrain explicitly avoids in production; committing a
 # macOS-derived baseline would lock in a wrong metric. See _measure_rss_workload.ts.
 #
 # Usage:
@@ -34,7 +34,7 @@ BASELINE="tests/heavy/rss-baseline.json"
 THRESHOLD_PCT="${RSS_THRESHOLD_PCT:-25}"
 STRICT="${STRICT_RSS:-0}"
 REFRESH=0
-LOG_DIR="${GBRAIN_HOME:-$HOME/.gbrain}/audit"
+LOG_DIR="${ZBRAIN_HOME:-$HOME/.zbrain}/audit"
 TS=$(date -u +%Y%m%d-%H%M%SZ)
 mkdir -p "$LOG_DIR"
 
@@ -59,7 +59,7 @@ echo "[measure_rss] platform=$PLATFORM pages=${BRAIN_PAGES:-200} threshold=${THR
 if [ "$REFRESH" = "1" ] && [ "$PLATFORM" != "Linux" ]; then
   echo "[measure_rss] REFUSAL: --refresh-baseline only safe on Linux." >&2
   echo "  macOS falls back to process.memoryUsage().rss (VmRSS) — the metric" >&2
-  echo "  gbrain explicitly avoids in production. Committing a macOS-derived" >&2
+  echo "  zbrain explicitly avoids in production. Committing a macOS-derived" >&2
   echo "  baseline would lock in the wrong metric and produce false CI delta_pct." >&2
   echo "  Run inside Linux docker:" >&2
   echo "    docker run --rm -v \"\$(pwd):/app\" -w /app oven/bun:1 tests/heavy/measure_rss.sh --refresh-baseline" >&2

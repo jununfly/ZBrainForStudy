@@ -8,9 +8,9 @@
  * resolves at runtime to a path that works inside the binary archive).
  *
  * Pre-v0.36.x, `serve-http.ts:780` resolved `admin/dist/` via
- * `process.cwd()` — fine in dev (`cd ~/gbrain && bun start serve --http`),
+ * `process.cwd()` — fine in dev (`cd ~/zbrain && bun start serve --http`),
  * broken in every globally-installed binary (no admin/dist next to the
- * binary). Result: every fresh `bun install -g github:garrytan/gbrain`
+ * binary). Result: every fresh `bun install -g github:garrytan/zbrain`
  * user got 404 on /admin (issue #1090).
  *
  * This generator emits one `import` line per file under admin/dist/,

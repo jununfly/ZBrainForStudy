@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/run-unit-shard.sh
 #
-# Runs the unit suite for a single shard. Excludes test/e2e/* (those are run
+# Runs the unit suite for a single shard. Excludes tests/unit/e2e/* (those are run
 # by scripts/run-e2e.sh in the E2E phase). When SHARD=N/M is set, keeps every
 # M-th file starting at index N (1-indexed); otherwise runs the full unit set.
 #
@@ -38,7 +38,7 @@ done
 all_files=()
 while IFS= read -r f; do
   all_files+=("$f")
-done < <(find test -name '*.test.ts' -not -path 'test/e2e/*' -not -name '*.slow.test.ts' -not -name '*.serial.test.ts' | sort)
+done < <(find tests/unit -name '*.test.ts' -not -path 'tests/unit/e2e/*' -not -name '*.slow.test.ts' -not -name '*.serial.test.ts' | sort)
 
 files=()
 if [ -n "${SHARD:-}" ]; then

@@ -1,11 +1,11 @@
 /**
  * scenario.json loader for the claw-test harness.
  *
- *  test/fixtures/claw-test-scenarios/<name>/scenario.json:
+ *  tests/unit/fixtures/claw-test-scenarios/<name>/scenario.json:
  *    { kind: "fresh-install", expected_phases: ["import.files", ...], ... }
  *
  * The harness reads scenario.json to know which phases to assert from
- * gbrain's --progress-json events. Pure local fs; no DB, no network.
+ * zbrain's --progress-json events. Pure local fs; no DB, no network.
  */
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
@@ -35,14 +35,14 @@ export interface ScenarioConfig {
   seedRelative?: string;
 }
 
-/** Default fixtures root, override via $GBRAIN_CLAW_SCENARIOS_DIR for tests. */
+/** Default fixtures root, override via $ZBRAIN_CLAW_SCENARIOS_DIR for tests. */
 function defaultFixturesRoot(): string {
-  if (process.env.GBRAIN_CLAW_SCENARIOS_DIR) {
-    return resolve(process.env.GBRAIN_CLAW_SCENARIOS_DIR);
+  if (process.env.ZBRAIN_CLAW_SCENARIOS_DIR) {
+    return resolve(process.env.ZBRAIN_CLAW_SCENARIOS_DIR);
   }
-  // src/core/claw-test/scenarios.ts → ../../../test/fixtures/claw-test-scenarios
+  // src/core/claw-tests/unit/scenarios.ts → ../../../tests/unit/fixtures/claw-test-scenarios
   const here = dirname(fileURLToPath(import.meta.url));
-  return resolve(here, '..', '..', '..', 'test', 'fixtures', 'claw-test-scenarios');
+  return resolve(here, '..', '..', '..', 'tests/unit', 'fixtures', 'claw-test-scenarios');
 }
 
 /** List all available scenario names. */

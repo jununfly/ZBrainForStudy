@@ -2,12 +2,12 @@
 //
 // When a `put_page` lands with a type not in the active pack (lenient
 // mode), this audit log records the encounter so users can later run
-// `gbrain schema review-candidates` and decide promote/rename/ignore.
+// `zbrain schema review-candidates` and decide promote/rename/ignore.
 //
 // Privacy contract (T12 codex finding + pass-3 hardening):
 //   - `type` field: SHA-8 redacted by default. Therapy-session,
 //     adversary-profile, and hater-dossier leak diagnostic categories.
-//     Opt in to full type names with `GBRAIN_SCHEMA_AUDIT_VERBOSE=1`.
+//     Opt in to full type names with `ZBRAIN_SCHEMA_AUDIT_VERBOSE=1`.
 //   - `slug_prefix`: first path segment only (e.g. `personal/`, NOT
 //     `personal/therapy/2025-03-15-session-12.md`).
 //   - `frontmatter_keys`: list of key NAMES only; never values.
@@ -15,8 +15,8 @@
 //
 // Rotation: ISO-week aware JSONL, same pattern as
 // `src/core/audit-slug-fallback.ts` (v0.32.7). Path:
-// `~/.gbrain/audit/schema-candidates-YYYY-Www.jsonl`. Honors
-// `GBRAIN_AUDIT_DIR` env override.
+// `~/.zbrain/audit/schema-candidates-YYYY-Www.jsonl`. Honors
+// `ZBRAIN_AUDIT_DIR` env override.
 //
 // Best-effort writes: stderr warn on disk failure, NEVER throws. The
 // brain stays usable even when audit is unwritable.
@@ -41,7 +41,7 @@ export interface CandidateAuditRecord {
   slug_prefix: string;
   /** Names of frontmatter keys present on the page. Values NEVER logged. */
   frontmatter_keys: string[];
-  /** Rolling counter — useful for `gbrain schema review-candidates` ordering. */
+  /** Rolling counter — useful for `zbrain schema review-candidates` ordering. */
   count: number;
   /** Pack the page was written against (for cross-pack drift detection). */
   pack_identity: string;
@@ -57,7 +57,7 @@ export interface LogCandidateOpts {
 }
 
 export function isAuditVerbose(): boolean {
-  return process.env.GBRAIN_SCHEMA_AUDIT_VERBOSE === '1';
+  return process.env.ZBRAIN_SCHEMA_AUDIT_VERBOSE === '1';
 }
 
 export function computeIsoWeekName(date: Date = new Date()): string {
@@ -112,7 +112,7 @@ export async function logCandidate(opts: LogCandidateOpts): Promise<void> {
 
 /**
  * Read recent candidate audit entries across the last N weeks. Consumed by
- * `gbrain schema review-candidates`. Returns rows in disk order (chronological
+ * `zbrain schema review-candidates`. Returns rows in disk order (chronological
  * per file). Future implementation will aggregate by type_or_hash.
  */
 export function readRecentCandidates(daysBack = 30): CandidateAuditRecord[] {

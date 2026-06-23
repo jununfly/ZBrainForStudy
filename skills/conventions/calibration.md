@@ -13,7 +13,7 @@ which one applies to their current task.
 | Adding a new cycle phase | Extend `BaseCyclePhase` in `src/core/cycle/base-phase.ts`. Inherits source-scope threading + budget metering + error envelope + progress reporter. Declare `budgetUsdKey` + `budgetUsdDefault`. |
 | Adding a new MCP op that reads source-scoped data | Route through `sourceScopeOpts(ctx)` from `src/core/operations.ts`. Type-enforced at the BaseCyclePhase level; manual MCP handlers should do this explicitly. |
 | Writing schema for any new calibration-related table | Stamp every row with `wave_version TEXT NOT NULL DEFAULT 'v0.36.1.0'` (or the current wave's version). The `--undo-wave` command reverses precisely by wave_version. |
-| Adding a new test fixture page under `test/fixtures/calibration/` | Synthetic only. Use the canonical placeholder names: `alice-example`, `acme-example`, `widget-co`, `fund-a/b/c`, `meetings/2026-04-03`. The CI guard `scripts/check-synthetic-corpus-privacy.sh` catches violations. |
+| Adding a new test fixture page under `tests/unit/fixtures/calibration/` | Synthetic only. Use the canonical placeholder names: `alice-example`, `acme-example`, `widget-co`, `fund-a/b/c`, `meetings/2026-04-03`. The CI guard `scripts/check-synthetic-corpus-privacy.sh` catches violations. |
 
 ## When to surface a calibration warning
 
@@ -85,7 +85,7 @@ the calibration wave has structural defense against:
 - BaseCyclePhase enforces `sourceScopeOpts(ctx)` threading at the type level.
 - Every new schema table has `source_id NOT NULL REFERENCES sources(id)`.
 - Cross-brain reads route through `canReadMountsForCtx()` classifier.
-- Tests pin all 4 D18 rules in `test/cross-brain-calibration.test.ts`.
+- Tests pin all 4 D18 rules in `tests/unit/cross-brain-calibration.test.ts`.
 
 If you find yourself writing a `ctx.engine.executeRaw(...)` inside a
 calibration module that doesn't pass `sourceScopeOpts`, you've found

@@ -27,7 +27,7 @@ export const DEFAULT_PARALLEL_WORKERS = 4;
 
 /**
  * v0.40.3.0 — default number of sources synced concurrently under
- * `gbrain sync --all`. Sibling of `DEFAULT_PARALLEL_WORKERS`; the two
+ * `zbrain sync --all`. Sibling of `DEFAULT_PARALLEL_WORKERS`; the two
  * are deliberately separate constants because they cover different axes:
  *
  *   total live Postgres connections per fan-out wave

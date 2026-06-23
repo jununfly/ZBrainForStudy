@@ -84,7 +84,7 @@ const migrations = [
 
 Plus the forward-reference probe entries in both engine bootstraps. Plus
 the `REQUIRED_BOOTSTRAP_COVERAGE` extension in
-`test/schema-bootstrap-coverage.test.ts`.
+`tests/unit/schema-bootstrap-coverage.test.ts`.
 
 ## Writers
 

@@ -76,8 +76,8 @@ export interface Check {
  * Shared recommendation generator for brain-health remediation.
  *
  * Consumed by both:
- *   - `gbrain doctor --remediation-plan` / `--remediate` (queue-based execution)
- *   - `gbrain features --auto-fix` (inline execution preserved per D15)
+ *   - `zbrain doctor --remediation-plan` / `--remediate` (queue-based execution)
+ *   - `zbrain features --auto-fix` (inline execution preserved per D15)
  *
  * Pure module — no engine I/O. Input is `BrainHealth` (already produced by
  * engine.getHealth()) + a `RecommendationContext` that names which prereqs

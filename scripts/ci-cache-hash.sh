@@ -27,7 +27,7 @@
 #   - AGENTS.md     same — referenced by resolver tests; counterpart to
 #                   CLAUDE.md for OpenClaw hosts
 #   - skills/**     SKILL.md files are read by skill conformance tests
-#   - everything else under src/, test/, scripts/, .github/, package.json,
+#   - everything else under src/, tests/unit/, scripts/, .github/, package.json,
 #     bun.lock, tsconfig*.json, the schema files — obviously test-affecting
 #
 # Locale-stable: LC_ALL=C on the sort step so byte-order is identical

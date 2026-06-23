@@ -17,7 +17,7 @@ cd "$(dirname "$0")/.."
 files=()
 while IFS= read -r f; do
   files+=("$f")
-done < <(find test -name '*.serial.test.ts' -not -path 'test/e2e/*' | sort)
+done < <(find tests/unit -name '*.serial.test.ts' -not -path 'tests/unit/e2e/*' | sort)
 
 if [ "${#files[@]}" -eq 0 ]; then
   echo "[serial-tests] no *.serial.test.ts files found"

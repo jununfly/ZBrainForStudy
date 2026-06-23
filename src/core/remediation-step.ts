@@ -116,7 +116,7 @@ export function idempotencyKey(
  * when you want a human-readable identifier (e.g. 'sync.repo').
  *
  * Codex D12 Bug 2 invariance: makeRemediationStep with {a:1, b:2} and
- * {b:2, a:1} produces IDENTICAL ids (pinned in test/remediation-step.test.ts).
+ * {b:2, a:1} produces IDENTICAL ids (pinned in tests/unit/remediation-step.test.ts).
  */
 export function makeRemediationStep(opts: {
   job: string;

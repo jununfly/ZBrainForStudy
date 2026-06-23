@@ -1,7 +1,7 @@
 /**
  * Destructive operation guard — v0.26.5
  *
- * Protects against accidental data loss in gbrain by requiring explicit
+ * Protects against accidental data loss in zbrain by requiring explicit
  * confirmation for operations that cascade-delete pages, chunks, or embeddings.
  *
  * Three layers:
@@ -158,7 +158,7 @@ export function checkDestructiveConfirmation(
 
   return (
     `\n${impact.summary}\n\n` +
-    `To proceed, pass --confirm-destructive (or use soft-delete: gbrain sources archive ${impact.sourceId}).\n` +
+    `To proceed, pass --confirm-destructive (or use soft-delete: zbrain sources archive ${impact.sourceId}).\n` +
     `To preview without side effects: --dry-run`
   );
 }
@@ -169,7 +169,7 @@ export function checkDestructiveConfirmation(
  * Soft-delete a source: mark `archived = true` with a 72h TTL. Pages remain
  * in DB; the source is hidden from search via `buildVisibilityClause` and
  * federation is disabled via the existing `config.federated` JSONB key. After
- * TTL expires, the autopilot purge phase or manual `gbrain sources purge`
+ * TTL expires, the autopilot purge phase or manual `zbrain sources purge`
  * permanently removes the row (cascade delete to pages + chunks).
  *
  * v0.26.5: archive state moved from `config` JSONB keys to real columns
@@ -330,8 +330,8 @@ export function formatSoftDelete(sd: SoftDeletedSource): string {
     `  Expires: ${sd.expiresAt.toISOString()} (~${hours}h from now)`,
     `  Removed from search. Data intact.`,
     ``,
-    `  Restore:  gbrain sources restore ${sd.id}`,
-    `  Purge now: gbrain sources purge ${sd.id} --confirm-destructive`,
+    `  Restore:  zbrain sources restore ${sd.id}`,
+    `  Purge now: zbrain sources purge ${sd.id} --confirm-destructive`,
     ``,
   ].join('\n');
 }

@@ -21,7 +21,7 @@
  * enforcer is a no-op. The pre-v0.32 contract for search results is
  * unchanged.
  *
- * Pure module. No DB, no LLM, no async. Tested in test/token-budget.test.ts.
+ * Pure module. No DB, no LLM, no async. Tested in tests/unit/token-budget.test.ts.
  */
 
 import type { SearchResult } from '../types.ts';

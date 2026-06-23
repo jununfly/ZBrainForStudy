@@ -19,7 +19,7 @@ import { AIConfigError } from './errors.ts';
 // would tell the SDK to send `dimensions: N`, which voyageCompatFetch then
 // rewrites to `output_dimension: N` — and Voyage's hosted nano endpoint
 // rejects the parameter. The negative regression assertion in
-// test/ai/gateway.test.ts pins this contract.
+// tests/unit/ai/gateway.test.ts pins this contract.
 const VOYAGE_OUTPUT_DIMENSION_MODELS = new Set([
   'voyage-4-large',
   'voyage-4',
@@ -70,7 +70,7 @@ export function isValidZeroEntropyDim(dims: number): boolean {
 // brain is configured with `embedding_dimensions` OUTSIDE that range, OpenAI
 // returns HTTP 400 at first embed. We catch it locally with a paste-ready
 // fix so users don't see opaque "vector dimension mismatch" errors after
-// `gbrain ze-switch --undo` lands them on OpenAI at the wrong dim.
+// `zbrain ze-switch --undo` lands them on OpenAI at the wrong dim.
 const OPENAI_TEXT3_MAX_DIMS: Record<string, number> = {
   'text-embedding-3-small': 1536,
   'text-embedding-3-large': 3072,
@@ -128,7 +128,7 @@ export function dimsProviderOptions(
           throw new AIConfigError(
             `OpenAI model "${modelId}" supports embedding_dimensions in 1..${max}, got ${dims}.`,
             `Set \`embedding_dimensions\` to a value between 1 and ${max} ` +
-            `(\`gbrain config set embedding_dimensions ${Math.min(1024, max)}\` is a common default).`,
+            `(\`zbrain config set embedding_dimensions ${Math.min(1024, max)}\` is a common default).`,
           );
         }
         return { openai: { dimensions: dims } };
@@ -155,7 +155,7 @@ export function dimsProviderOptions(
             `ZeroEntropy model "${modelId}" supports dimensions only in ` +
             `{${ZEROENTROPY_VALID_DIMS.join(', ')}}, got ${dims}.`,
             `Set \`embedding_dimensions\` to one of ` +
-            `${ZEROENTROPY_VALID_DIMS.join('/')} in your gbrain config.`,
+            `${ZEROENTROPY_VALID_DIMS.join('/')} in your zbrain config.`,
           );
         }
         return {
@@ -183,7 +183,7 @@ export function dimsProviderOptions(
             `Voyage model "${modelId}" supports output_dimension only in ` +
             `{${VOYAGE_VALID_OUTPUT_DIMS.join(', ')}}, got ${dims}.`,
             `Set \`embedding_dimensions\` to one of ` +
-            `${VOYAGE_VALID_OUTPUT_DIMS.join('/')} in your gbrain config, or ` +
+            `${VOYAGE_VALID_OUTPUT_DIMS.join('/')} in your zbrain config, or ` +
             `switch to a fixed-dim Voyage model (e.g. voyage-3, voyage-3-lite).`,
           );
         }
@@ -207,7 +207,7 @@ export function dimsProviderOptions(
           throw new AIConfigError(
             `OpenAI model "${modelId}" supports embedding_dimensions in 1..${max}, got ${dims}.`,
             `Set \`embedding_dimensions\` to a value between 1 and ${max} ` +
-            `(\`gbrain config set embedding_dimensions ${Math.min(1024, max)}\` is a common default).`,
+            `(\`zbrain config set embedding_dimensions ${Math.min(1024, max)}\` is a common default).`,
           );
         }
         return { openaiCompatible: { dimensions: dims } };

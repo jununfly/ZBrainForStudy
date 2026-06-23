@@ -10,9 +10,9 @@
  * to `--output` (or its own default path). The adapter MUST pass
  * `--output summaryPath` so the file lands where the caller expects.
  *
- * Per codex round-2 #12: in-process invocation avoids the gbrain-version-
+ * Per codex round-2 #12: in-process invocation avoids the zbrain-version-
  * drift bug class. The adapter calls the CLI functions directly (not via
- * subprocess), so the workspace gbrain runs — not whatever's installed.
+ * subprocess), so the workspace zbrain runs — not whatever's installed.
  */
 
 import { readFileSync, existsSync } from 'node:fs';

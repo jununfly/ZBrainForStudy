@@ -9,13 +9,13 @@
  * Filename shape:
  *   takes-quality-<corpus_sha8>-<prompt_sha8>-<models_sha8>-<rubric_sha8>.json
  *
- * Stored in ~/.gbrain/eval-receipts/ (best-effort disk artifact). Real
+ * Stored in ~/.zbrain/eval-receipts/ (best-effort disk artifact). Real
  * source of truth is the eval_takes_quality_runs DB table; the file mirrors
  * the same content for grep workflows + replay-without-DB (codex review
  * #10 brain-routing).
  */
 import { createHash } from 'node:crypto';
-import { gbrainPath } from '../config.ts';
+import { zbrainPath } from '../config.ts';
 import { join } from 'node:path';
 
 export interface ReceiptIdentity {
@@ -45,9 +45,9 @@ export function buildReceiptFilename(id: ReceiptIdentity): string {
   return `takes-quality-${id.corpus_sha8}-${id.prompt_sha8}-${id.models_sha8}-${id.rubric_sha8}.json`;
 }
 
-/** Full disk path under ~/.gbrain/eval-receipts/<filename>. */
+/** Full disk path under ~/.zbrain/eval-receipts/<filename>. */
 export function buildReceiptPath(id: ReceiptIdentity): string {
-  return join(gbrainPath('eval-receipts'), buildReceiptFilename(id));
+  return join(zbrainPath('eval-receipts'), buildReceiptFilename(id));
 }
 
 /** Strip the receipt directory + extension to recover identity components. */

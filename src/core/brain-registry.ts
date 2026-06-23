@@ -2,8 +2,8 @@
  * BrainRegistry — connected gbrains (v0.19, PR 0).
  *
  * A registry of BrainEngine handles keyed by brainId. Supports:
- *   - 'host': the brain defined by ~/.gbrain/config.json (single-brain default).
- *   - <mount-id>: brains declared in ~/.gbrain/mounts.json.
+ *   - 'host': the brain defined by ~/.zbrain/config.json (single-brain default).
+ *   - <mount-id>: brains declared in ~/.zbrain/mounts.json.
  *
  * This is the dispatch-time lookup that makes `ctx.brainId` → `ctx.engine`
  * resolution routable per operation. Only direct-transport mounts are
@@ -27,8 +27,8 @@ import { join, resolve } from 'path';
 import { homedir } from 'os';
 import type { BrainEngine } from './engine.ts';
 import type { EngineConfig } from './types.ts';
-import { GBrainError } from './types.ts';
-import { loadConfig, type GBrainConfig } from './config.ts';
+import { ZBrainError } from './types.ts';
+import { loadConfig, type ZBrainConfig } from './config.ts';
 
 /** Host brain id. Reserved — users cannot create a mount with this id. */
 export const HOST_BRAIN_ID = 'host';
@@ -39,18 +39,18 @@ const BRAIN_ID_RE = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
 /**
  * Path to mounts.json. Lazy to avoid homedir() at module scope.
  *
- * v0.40.3.0: GBRAIN_MOUNTS_PATH override exists for tests (homedir() is
+ * v0.40.3.0: ZBRAIN_MOUNTS_PATH override exists for tests (homedir() is
  * cached at startup by libuv on some platforms, so withFakeHome's HOME
  * mutation isn't always picked up). Production callers don't set this.
  */
 function getMountsPath(): string {
-  const override = process.env.GBRAIN_MOUNTS_PATH;
+  const override = process.env.ZBRAIN_MOUNTS_PATH;
   if (override) return override;
-  return join(homedir(), '.gbrain', 'mounts.json');
+  return join(homedir(), '.zbrain', 'mounts.json');
 }
 
 /**
- * A single entry in ~/.gbrain/mounts.json.
+ * A single entry in ~/.zbrain/mounts.json.
  *
  * PR 0: only direct-transport mounts are supported. PR 2 will add
  * `transport: "mcp"` with `mcp_url` + OAuth credential references.
@@ -70,22 +70,22 @@ export interface MountEntry {
   database_path?: string;
   /** Default true. Disabled mounts are not loaded. */
   enabled?: boolean;
-  /** Managed by `gbrain mounts sync` (PR 1). */
+  /** Managed by `zbrain mounts sync` (PR 1). */
   expected_sha?: string;
-  /** Managed by `gbrain mounts sync` (PR 1). */
+  /** Managed by `zbrain mounts sync` (PR 1). */
   last_synced_at?: string;
   /**
    * v0.40.3.0: per-mount frontmatter-override trust gate (D15). Default
    * FALSE — mounts must explicitly opt into honoring frontmatter
    * `contextual_retrieval_mode` overrides via
-   * `gbrain mounts trust-frontmatter <id>`. The host source (id='default')
+   * `zbrain mounts trust-frontmatter <id>`. The host source (id='default')
    * is always trusted regardless of this field. Set/cleared via the
    * dedicated `trust-frontmatter` / `untrust-frontmatter` verbs (D4).
    */
   trust_frontmatter_overrides?: boolean;
 }
 
-/** Top-level shape of ~/.gbrain/mounts.json. */
+/** Top-level shape of ~/.zbrain/mounts.json. */
 export interface MountsFile {
   version: 1;
   mounts: MountEntry[];
@@ -97,32 +97,32 @@ export interface BrainHandle {
   id: string;
   /** Connected BrainEngine. Only valid for the lifetime of this registry. */
   engine: BrainEngine;
-  /** GBrainConfig used to create the engine. */
-  config: GBrainConfig;
+  /** ZBrainConfig used to create the engine. */
+  config: ZBrainConfig;
   /** Absolute local path to the mount's clone. `null` for the host brain. */
   path: string | null;
 }
 
 /** Error thrown when two mounts resolve to the same local path. */
-export class DuplicateMountPathError extends GBrainError {
+export class DuplicateMountPathError extends ZBrainError {
   constructor(path: string, existingId: string, attemptedId: string) {
     super(
       `Duplicate mount path: "${path}"`,
       `Mount "${existingId}" already uses this path. Cannot register "${attemptedId}" at the same location.`,
       'Use a different local clone path, or remove the existing mount first: ' +
-        `gbrain mounts remove ${existingId}`,
+        `zbrain mounts remove ${existingId}`,
     );
   }
 }
 
 /** Error thrown when a caller requests an unknown or disabled brain id. */
-export class UnknownBrainError extends GBrainError {
+export class UnknownBrainError extends ZBrainError {
   constructor(id: string, available: string[]) {
     const list = available.length > 0 ? available.join(', ') : '(none registered)';
     super(
       `Unknown brain: "${id}"`,
       `No enabled mount with id "${id}" found. Available brain ids: ${list}`,
-      `Run 'gbrain mounts list' to see registered mounts. Add a new mount with 'gbrain mounts add ${id} --path <path> --db-url <url>'.`,
+      `Run 'zbrain mounts list' to see registered mounts. Add a new mount with 'zbrain mounts add ${id} --path <path> --db-url <url>'.`,
     );
   }
 }
@@ -130,21 +130,21 @@ export class UnknownBrainError extends GBrainError {
 /** Validate a mount id (and optionally the alias). Throws with actionable msg. */
 export function validateMountId(id: unknown, fieldLabel = 'mount id'): string {
   if (typeof id !== 'string' || id.length === 0) {
-    throw new GBrainError(
+    throw new ZBrainError(
       `Invalid ${fieldLabel}`,
       `${fieldLabel} must be a non-empty string`,
       'Use a kebab-case id like "yc-media" or "garrys-list"',
     );
   }
   if (id === HOST_BRAIN_ID) {
-    throw new GBrainError(
+    throw new ZBrainError(
       `Reserved ${fieldLabel}: "${HOST_BRAIN_ID}"`,
       `"${HOST_BRAIN_ID}" is the host brain id and cannot be used for a mount`,
       'Choose a different id',
     );
   }
   if (!BRAIN_ID_RE.test(id)) {
-    throw new GBrainError(
+    throw new ZBrainError(
       `Invalid ${fieldLabel}: "${id}"`,
       `${fieldLabel} must match [a-z0-9-]{1,32}, start+end alphanumeric, interior dashes allowed`,
       'Use a kebab-case id like "yc-media"',
@@ -164,7 +164,7 @@ export function loadMounts(mountsPath: string = getMountsPath()): MountEntry[] {
   try {
     raw = readFileSync(mountsPath, 'utf-8');
   } catch (e) {
-    throw new GBrainError(
+    throw new ZBrainError(
       `Cannot read ${mountsPath}`,
       e instanceof Error ? e.message : String(e),
       `Check file permissions (expected 0600) and re-run`,
@@ -175,15 +175,15 @@ export function loadMounts(mountsPath: string = getMountsPath()): MountEntry[] {
   try {
     parsed = JSON.parse(raw);
   } catch (e) {
-    throw new GBrainError(
+    throw new ZBrainError(
       `Malformed mounts.json`,
       e instanceof Error ? e.message : String(e),
-      `Fix the JSON syntax at ${mountsPath} or remove it and re-add mounts via 'gbrain mounts add'`,
+      `Fix the JSON syntax at ${mountsPath} or remove it and re-add mounts via 'zbrain mounts add'`,
     );
   }
 
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new GBrainError(
+    throw new ZBrainError(
       `mounts.json must be a JSON object`,
       `Got: ${Array.isArray(parsed) ? 'array' : typeof parsed}`,
       `Expected { version: 1, mounts: [...] }`,
@@ -192,15 +192,15 @@ export function loadMounts(mountsPath: string = getMountsPath()): MountEntry[] {
 
   const file = parsed as Partial<MountsFile>;
   if (file.version !== 1) {
-    throw new GBrainError(
+    throw new ZBrainError(
       `Unsupported mounts.json version: ${file.version}`,
-      `This gbrain binary supports version 1`,
-      `Upgrade gbrain or regenerate mounts.json`,
+      `This zbrain binary supports version 1`,
+      `Upgrade zbrain or regenerate mounts.json`,
     );
   }
 
   if (!Array.isArray(file.mounts)) {
-    throw new GBrainError(
+    throw new ZBrainError(
       `mounts.json: "mounts" must be an array`,
       `Got: ${typeof file.mounts}`,
       `Expected { version: 1, mounts: [...] }`,
@@ -214,7 +214,7 @@ export function loadMounts(mountsPath: string = getMountsPath()): MountEntry[] {
   for (let i = 0; i < file.mounts.length; i++) {
     const entry = file.mounts[i] as Partial<MountEntry> | undefined;
     if (!entry || typeof entry !== 'object') {
-      throw new GBrainError(
+      throw new ZBrainError(
         `mounts.json: entry ${i} must be an object`,
         `Got: ${typeof entry}`,
         `Each entry shape: { id, path, engine, db_url|database_path, enabled? }`,
@@ -222,7 +222,7 @@ export function loadMounts(mountsPath: string = getMountsPath()): MountEntry[] {
     }
     const id = validateMountId(entry.id, `mounts[${i}].id`);
     if (seenIds.has(id)) {
-      throw new GBrainError(
+      throw new ZBrainError(
         `mounts.json: duplicate id "${id}"`,
         `Two mounts share the id "${id}" (only one entry permitted per id)`,
         `Remove one of the entries or rename it`,
@@ -231,7 +231,7 @@ export function loadMounts(mountsPath: string = getMountsPath()): MountEntry[] {
     seenIds.add(id);
 
     if (typeof entry.path !== 'string' || entry.path.length === 0) {
-      throw new GBrainError(
+      throw new ZBrainError(
         `mounts[${i}] "${id}": path is required`,
         `path must be a non-empty absolute filesystem path`,
         `Add "path": "/absolute/path/to/${id}" to this mount entry`,
@@ -245,7 +245,7 @@ export function loadMounts(mountsPath: string = getMountsPath()): MountEntry[] {
     seenPaths.set(resolvedPath, id);
 
     if (entry.engine !== 'postgres' && entry.engine !== 'pglite') {
-      throw new GBrainError(
+      throw new ZBrainError(
         `mounts[${i}] "${id}": engine must be "postgres" or "pglite"`,
         `Got: ${JSON.stringify(entry.engine)}`,
         `Set "engine": "pglite" for a local embedded DB or "postgres" for Supabase/self-hosted`,
@@ -253,14 +253,14 @@ export function loadMounts(mountsPath: string = getMountsPath()): MountEntry[] {
     }
 
     if (entry.engine === 'postgres' && !entry.database_url) {
-      throw new GBrainError(
+      throw new ZBrainError(
         `mounts[${i}] "${id}": postgres mount requires database_url`,
         `database_url is missing`,
         `Add "database_url": "postgresql://..." or use engine: "pglite"`,
       );
     }
     if (entry.engine === 'pglite' && !entry.database_path && !entry.database_url) {
-      throw new GBrainError(
+      throw new ZBrainError(
         `mounts[${i}] "${id}": pglite mount requires database_path (or database_url)`,
         `Both database_path and database_url are missing`,
         `Add "database_path": "/path/to/${id}/.pglite"`,
@@ -299,8 +299,8 @@ function mountToEngineConfig(mount: MountEntry): EngineConfig {
   };
 }
 
-/** Convert a MountEntry to a GBrainConfig (for OperationContext). */
-function mountToGBrainConfig(mount: MountEntry): GBrainConfig {
+/** Convert a MountEntry to a ZBrainConfig (for OperationContext). */
+function mountToZBrainConfig(mount: MountEntry): ZBrainConfig {
   return {
     engine: mount.engine,
     database_url: mount.database_url,
@@ -357,7 +357,7 @@ export class BrainRegistry {
   }
 
   /**
-   * Return the host brain handle (from ~/.gbrain/config.json). Lazy-
+   * Return the host brain handle (from ~/.zbrain/config.json). Lazy-
    * initialized so callers that only touch mounts don't require host config.
    */
   async getDefaultBrain(): Promise<BrainHandle> {
@@ -396,10 +396,10 @@ export class BrainRegistry {
   private async initHostBrain(): Promise<BrainHandle> {
     const config = loadConfig();
     if (!config) {
-      throw new GBrainError(
+      throw new ZBrainError(
         'No host brain configured',
-        '~/.gbrain/config.json is missing and GBRAIN_DATABASE_URL is unset',
-        "Run 'gbrain init' to configure the host brain",
+        '~/.zbrain/config.json is missing and ZBRAIN_DATABASE_URL is unset',
+        "Run 'zbrain init' to configure the host brain",
       );
     }
     const { createEngine } = await import('./engine-factory.ts');
@@ -428,7 +428,7 @@ export class BrainRegistry {
     return {
       id: mount.id,
       engine,
-      config: mountToGBrainConfig(mount),
+      config: mountToZBrainConfig(mount),
       path: mount.path,
     };
   }
@@ -444,5 +444,5 @@ export const __testing = {
   BRAIN_ID_RE,
   getMountsPath,
   mountToEngineConfig,
-  mountToGBrainConfig,
+  mountToZBrainConfig,
 };

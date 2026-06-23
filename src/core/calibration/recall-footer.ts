@@ -1,5 +1,5 @@
 /**
- * v0.36.1.0 (T16) — calibration footer for `gbrain recall` morning pulse.
+ * v0.36.1.0 (T16) — calibration footer for `zbrain recall` morning pulse.
  *
  * Pure formatter. Given an active calibration profile, returns the
  * conversational block to prepend or append to the recall output:
@@ -17,7 +17,7 @@
  * insufficient resolved takes. The caller decides whether to prepend
  * the block; cold-brain absence is the cleanest non-event.
  *
- * v0.36.1.0 ship state: opt-in via `gbrain recall --show-calibration`
+ * v0.36.1.0 ship state: opt-in via `zbrain recall --show-calibration`
  * to keep R3 regression posture (existing recall text shape unchanged
  * for users who don't pass the flag). v0.37 defaults to on.
  *

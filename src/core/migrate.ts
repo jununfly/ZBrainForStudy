@@ -52,7 +52,7 @@ interface Migration {
    *
    * Verify-hook coverage is OPT-IN per migration. Per X3 / codex C6 the
    * v0.30.1 surface ships verify hooks only on a small set of migrations;
-   * older migrations rely on `gbrain upgrade --force-schema` for recovery.
+   * older migrations rely on `zbrain upgrade --force-schema` for recovery.
    */
   verify?: (engine: BrainEngine) => Promise<boolean>;
 }
@@ -60,7 +60,7 @@ interface Migration {
 /**
  * Resolve idempotent classification with the v0.30.1 default. Used by the
  * migration runner's verify path and by the twice-run safety test
- * (test/migrate-idempotent-classify.test.ts).
+ * (tests/unit/migrate-idempotent-classify.test.ts).
  */
 export function isMigrationIdempotent(m: Migration): boolean {
   // Default true: existing migrations were authored as idempotent (every
@@ -100,7 +100,7 @@ export class MigrationRetryExhausted extends Error {
     const lastB = lastBlockers[0];
     const hint = lastB
       ? `PID ${lastB.pid} idle since ${lastB.query_start} likely holds the lock; run: psql ... -c "SELECT pg_terminate_backend(${lastB.pid})"`
-      : 'No idle-in-transaction blockers detected; check pg_locks for active waiters and ~/.gbrain/audit/connection-events-*.jsonl';
+      : 'No idle-in-transaction blockers detected; check pg_locks for active waiters and ~/.zbrain/audit/connection-events-*.jsonl';
     super(
       `Migration v${version} (${migrationName}) failed after ${attempts} attempts. ${hint}. Original: ${lastError.message}`
     );
@@ -485,7 +485,7 @@ export const MIGRATIONS: Migration[] = [
     version: 14,
     name: 'pages_updated_at_index',
     // v0.14.1 (fix wave): fixes the 14.6s "list pages newest-first" seqscan on 31k+ row brains.
-    // Original report: https://github.com/garrytan/gbrain/issues/170 (PR #215).
+    // Original report: https://github.com/garrytan/zbrain/issues/170 (PR #215).
     //
     // Engine-aware via handler (not SQL): Postgres uses CREATE INDEX CONCURRENTLY
     // to avoid the write-blocking SHARE lock on `pages`. CONCURRENTLY refuses to
@@ -675,7 +675,7 @@ export const MIGRATIONS: Migration[] = [
     // each edge records whether its target source was pinned at
     // extraction time via `[[source:slug]]` (qualified) or resolved
     // via local-first fallback (unqualified). Unqualified edges are
-    // candidates for re-resolution via `gbrain extract
+    // candidates for re-resolution via `zbrain extract
     // --refresh-unqualified` when the source topology changes.
     //
     // Nullable because legacy edges (pre-v0.17) have no resolution
@@ -703,7 +703,7 @@ export const MIGRATIONS: Migration[] = [
     //   UNIQUE(slug) → UNIQUE(source_id, slug) in one go. Between v21
     //   committing and v23 (which adds the replacement files.page_id
     //   path), a process-death left files WITHOUT any FK to pages
-    //   while file_upload / `gbrain files` kept accepting writes.
+    //   while file_upload / `zbrain files` kept accepting writes.
     //
     // On Postgres: additive-only here. The FK drop + UNIQUE swap move
     // into v23's handler (wrapped in engine.transaction) so they commit
@@ -797,7 +797,7 @@ export const MIGRATIONS: Migration[] = [
   {
     version: 15,
     name: 'minion_jobs_max_stalled_default_5',
-    // v0.14.1 (fix wave): fixes https://github.com/garrytan/gbrain/issues/219
+    // v0.14.1 (fix wave): fixes https://github.com/garrytan/zbrain/issues/219
     // Shipped default was 1 — first stall = dead-letter, contradicting the
     // "SIGKILL rescued" claim. New default 5. UPDATE backfills existing non-
     // terminal rows so upgrading brains don't keep dead-lettering queued work.
@@ -824,8 +824,8 @@ export const MIGRATIONS: Migration[] = [
     // Acquire: INSERT ... ON CONFLICT (id) DO UPDATE ... WHERE ttl_expires_at < NOW()
     //          returning ... — empty RETURNING = lock held by live holder.
     // Refresh: UPDATE ... SET ttl_expires_at = NOW() + interval '30 min'
-    //          WHERE id = 'gbrain-cycle' AND holder_pid = <my pid> — between phases.
-    // Release: DELETE WHERE id = 'gbrain-cycle' AND holder_pid = <my pid>.
+    //          WHERE id = 'zbrain-cycle' AND holder_pid = <my pid> — between phases.
+    // Release: DELETE WHERE id = 'zbrain-cycle' AND holder_pid = <my pid>.
     sql: `
       CREATE TABLE IF NOT EXISTS gbrain_cycle_locks (
         id TEXT PRIMARY KEY,
@@ -840,7 +840,7 @@ export const MIGRATIONS: Migration[] = [
   {
     version: 24,
     name: 'rls_backfill_missing_tables',
-    // v0.18.1 RLS hardening: 10 gbrain-managed public tables shipped
+    // v0.18.1 RLS hardening: 10 zbrain-managed public tables shipped
     // without RLS enabled (access_tokens, mcp_request_log, minion_inbox,
     // minion_attachments, subagent_messages, subagent_tool_executions,
     // subagent_rate_leases, gbrain_cycle_locks, budget_ledger,
@@ -889,7 +889,7 @@ export const MIGRATIONS: Migration[] = [
         -- in schema.sql, not re-created on every initSchema. In normal flow
         -- v12 runs before v24 so they exist, but if an operator manually
         -- dropped them (unusual — budget data is regenerable from resolver
-        -- logs) or was pinned to a pre-v12 gbrain version when the table
+        -- logs) or was pinned to a pre-v12 zbrain version when the table
         -- went away, the bare ALTER would fail with 42P01 and abort v24.
         -- information_schema.tables lookup makes the statement self-healing.
         IF EXISTS (SELECT 1 FROM information_schema.tables
@@ -1307,7 +1307,7 @@ export const MIGRATIONS: Migration[] = [
     // so query results don't bypass the allow-list) lives in src/core/chunkers/takes-strip.ts.
     // Default permissions = {takes_holders: ['world']} keeps non-world takes (hunches,
     // private opinions) hidden from MCP-bound tokens until the operator explicitly
-    // grants access via `gbrain auth permissions <id> set-takes-holders`.
+    // grants access via `zbrain auth permissions <id> set-takes-holders`.
     sql: `
       ALTER TABLE access_tokens
         ADD COLUMN IF NOT EXISTS permissions JSONB
@@ -1358,10 +1358,10 @@ export const MIGRATIONS: Migration[] = [
     //     traffic via src/core/operations.ts. query column is CHECK-capped
     //     at 50KB; PII is scrubbed before insert by src/core/eval-capture-scrub.ts.
     //     remote distinguishes MCP callers (untrusted) from local CLI; job_id +
-    //     subagent_id let gbrain-evals partition replay by run.
+    //     subagent_id let zbrain-evals partition replay by run.
     //   eval_capture_failures: insert-side audit trail. When logEvalCandidate
     //     fails (DB down, RLS reject, CHECK violation, scrubber exception),
-    //     the capture path records the reason here so `gbrain doctor` can
+    //     the capture path records the reason here so `zbrain doctor` can
     //     surface silent drops cross-process. In-process counters don't work
     //     because doctor runs in a separate process from the MCP server.
     //
@@ -1451,7 +1451,7 @@ export const MIGRATIONS: Migration[] = [
   {
     version: 32,
     name: 'oauth_infrastructure',
-    // v0.26 OAuth 2.1 tables for `gbrain serve --http`. Supports client credentials,
+    // v0.26 OAuth 2.1 tables for `zbrain serve --http`. Supports client credentials,
     // authorization code + PKCE, and refresh token rotation. Renumbered from v30
     // → v32 on merge with master's v0.23 (dream_verdicts at v30) + v0.25
     // (eval_capture_tables at v31). OAuth is independent of those chains so
@@ -1648,7 +1648,7 @@ export const MIGRATIONS: Migration[] = [
     // v0.26.7 — Postgres event trigger that auto-enables RLS on every new public.*
     // table, plus one-time backfill on every existing public.* table without it.
     //
-    // Problem: tables created outside gbrain migrations (Baku's face_detections,
+    // Problem: tables created outside zbrain migrations (Baku's face_detections,
     // manual SQL, other apps sharing the Supabase project) shipped without RLS.
     // doctor caught them after the fact; the gap window between create and next
     // doctor run was the silent vector.
@@ -1659,14 +1659,14 @@ export const MIGRATIONS: Migration[] = [
     //      LEVEL SECURITY for any new public.* table. Supabase-recommended
     //      approach (no dashboard toggle exists).
     //   2. One-time backfill — every existing public.* table whose RLS is off
-    //      and whose comment does NOT match the GBRAIN:RLS_EXEMPT contract
+    //      and whose comment does NOT match the ZBRAIN:RLS_EXEMPT contract
     //      (same regex doctor.ts uses) gets RLS enabled.
     //
     // Posture choices (vs PR-as-shipped):
     //   - ENABLE only, no FORCE — matches v24/v29/schema.sql. FORCE would lock
     //     out non-BYPASSRLS apps from their own newly-created tables (the
     //     trigger function inherits the caller's role, and the new table is
-    //     owned by that role). gbrain has BYPASSRLS so gbrain itself is unaffected.
+    //     owned by that role). zbrain has BYPASSRLS so zbrain itself is unaffected.
     //   - public-only schema scope — Supabase manages auth/storage/realtime/etc.
     //     and runs its own RLS posture there; we must not disturb those schemas.
     //   - No EXCEPTION wrap inside the trigger — ddl_command_end fires inside
@@ -1678,7 +1678,7 @@ export const MIGRATIONS: Migration[] = [
     //     an actionable Postgres error.
     //
     // BREAKING CHANGE: the backfill is a one-time override of intentionally
-    // RLS-off public tables that don't carry the GBRAIN:RLS_EXEMPT comment.
+    // RLS-off public tables that don't carry the ZBRAIN:RLS_EXEMPT comment.
     // Operators with such tables MUST add the exempt comment BEFORE upgrading.
     //
     // PGLite: no-op — no RLS engine, no event triggers, single-tenant by design.
@@ -1712,8 +1712,8 @@ export const MIGRATIONS: Migration[] = [
           EXECUTE FUNCTION auto_enable_rls();
 
         -- One-time backfill of every existing public.* base table without RLS.
-        -- Honors the same GBRAIN:RLS_EXEMPT regex doctor.ts uses
-        -- (^GBRAIN:RLS_EXEMPT\\s+reason=\\S.{3,}) so the two surfaces stay aligned.
+        -- Honors the same ZBRAIN:RLS_EXEMPT regex doctor.ts uses
+        -- (^ZBRAIN:RLS_EXEMPT\\s+reason=\\S.{3,}) so the two surfaces stay aligned.
         -- %I.%I quotes the schema and table names safely, including mixed-case.
         DO $$
         DECLARE
@@ -1735,7 +1735,7 @@ export const MIGRATIONS: Migration[] = [
             WHERE n.nspname = 'public'
               AND c.relkind = 'r'
               AND c.relrowsecurity = false
-              AND (d.description IS NULL OR d.description !~ '^GBRAIN:RLS_EXEMPT\\s+reason=\\S.{3,}')
+              AND (d.description IS NULL OR d.description !~ '^ZBRAIN:RLS_EXEMPT\\s+reason=\\S.{3,}')
           LOOP
             EXECUTE format('ALTER TABLE %I.%I ENABLE ROW LEVEL SECURITY', r.schema_name, r.table_name);
             RAISE NOTICE 'v35: backfilled RLS on %.%', r.schema_name, r.table_name;
@@ -1825,7 +1825,7 @@ export const MIGRATIONS: Migration[] = [
           throw new Error(
             `Migration v39 requires the pgvector extension. Install it via\n` +
             `  CREATE EXTENSION vector;\n` +
-            `then re-run \`gbrain apply-migrations --yes\`.`
+            `then re-run \`zbrain apply-migrations --yes\`.`
           );
         }
         const version = rows[0].extversion;
@@ -1836,7 +1836,7 @@ export const MIGRATIONS: Migration[] = [
           throw new Error(
             `Migration v39 requires pgvector >= 0.5.0 (HNSW partial indexes).\n` +
             `Found pgvector ${version}.\n\n` +
-            `Fix: ALTER EXTENSION vector UPDATE; then re-run \`gbrain apply-migrations --yes\`.\n` +
+            `Fix: ALTER EXTENSION vector UPDATE; then re-run \`zbrain apply-migrations --yes\`.\n` +
             `If your Postgres provider doesn't ship pgvector >= 0.5, request\n` +
             `an upgrade or migrate to PGLite for v0.27.1 multimodal support.`
           );
@@ -1899,7 +1899,7 @@ export const MIGRATIONS: Migration[] = [
     // Adds the `emotional_weight` column to pages. Populated by the new
     // `recompute_emotional_weight` cycle phase from tags + takes (deterministic;
     // no LLM). Default 0.0 so freshly imported pages don't pollute salience
-    // ranking before the cycle has run; users run `gbrain dream --phase
+    // ranking before the cycle has run; users run `zbrain dream --phase
     // recompute_emotional_weight` once after upgrading to backfill.
     //
     // No index: the salience query orders by a computed score (emotional_weight,
@@ -1994,7 +1994,7 @@ export const MIGRATIONS: Migration[] = [
     // v0.29.1 — capture agent-explicit recency + salience choices for replay
     // reproducibility (D11 codex resolution).
     //
-    // Without these fields, `gbrain eval replay` cannot reproduce a captured
+    // Without these fields, `zbrain eval replay` cannot reproduce a captured
     // run: the live behavior depends on the resolved {salience, recency}
     // values, which are absent from v0.29.0's eval_candidates schema. Replays
     // of agent-explicit choices drift the same way as_of_ts replays drifted
@@ -2002,7 +2002,7 @@ export const MIGRATIONS: Migration[] = [
     //
     // All columns are nullable + additive. Pre-v0.29.1 rows stay valid. The
     // NDJSON `schema_version` STAYS at 1 — the new fields are optional, and
-    // gbrain-evals consumers that don't know about them ignore them
+    // zbrain-evals consumers that don't know about them ignore them
     // (standard permissive deserialization). No cross-repo coordination
     // required (codex pass-1 #C2 dissolved).
     //
@@ -2173,7 +2173,7 @@ export const MIGRATIONS: Migration[] = [
     // of any size.
     //
     // The recompute-emotional-weight cycle phase + the new
-    // `gbrain backfill emotional_weight` command both stamp this column
+    // `zbrain backfill emotional_weight` command both stamp this column
     // with NOW() alongside the weight write, so existing rows progress
     // out of the backlog naturally as the cycle runs.
     //
@@ -2243,7 +2243,7 @@ export const MIGRATIONS: Migration[] = [
             throw new Error(
               `Migration v40 (facts hot memory) requires the pgvector extension. ` +
               `Install it via\n  CREATE EXTENSION vector;\n` +
-              `then re-run \`gbrain apply-migrations --yes\`.`,
+              `then re-run \`zbrain apply-migrations --yes\`.`,
             );
           }
           const v = vrows[0].extversion;
@@ -2461,7 +2461,7 @@ export const MIGRATIONS: Migration[] = [
     //
     // What `transaction: false` actually buys (codex review #2 correction):
     // it frees the migration runner from holding a long transaction across
-    // the UPDATE so other gbrain processes (workers, MCP queries) can
+    // the UPDATE so other zbrain processes (workers, MCP queries) can
     // interleave. It does NOT enable mid-statement resume — a single SQL
     // statement either completes or rolls back.
     //
@@ -2637,9 +2637,9 @@ export const MIGRATIONS: Migration[] = [
     name: 'eval_contradictions_runs',
     // v0.32.6 — M5 time-series tracking for the contradiction probe.
     //
-    // One row per `gbrain eval suspected-contradictions` run. The headline
+    // One row per `zbrain eval suspected-contradictions` run. The headline
     // numbers (queries_evaluated, with_contradiction, total_flagged) plus
-    // Wilson 95% CI bounds enable `gbrain eval suspected-contradictions
+    // Wilson 95% CI bounds enable `zbrain eval suspected-contradictions
     // trend [--days N]` to plot brain consistency over time.
     //
     // report_json carries the full ProbeReport for replay/inspection.
@@ -2681,7 +2681,7 @@ export const MIGRATIONS: Migration[] = [
     // path (CJK files where path → slug is non-derivable).
     //
     //   chunker_version: bumped to 2 in this release. New imports populate
-    //     it; existing rows inherit DEFAULT 1. `gbrain reindex --markdown`
+    //     it; existing rows inherit DEFAULT 1. `zbrain reindex --markdown`
     //     walks `WHERE chunker_version < 2 AND page_kind = 'markdown'`
     //     and re-imports each, bumping the column.
     //
@@ -2815,7 +2815,7 @@ export const MIGRATIONS: Migration[] = [
     //                   vector_enabled, etc.) so cached responses can
     //                   surface the same debug info as fresh ones.
     //   ttl_seconds   — per-row TTL. Default 3600. Stale rows are skipped
-    //                   at read time and pruned by `gbrain cache prune`.
+    //                   at read time and pruned by `zbrain cache prune`.
     //   created_at    — TTL anchor.
     //   hit_count     — instrumentation; bumped on each lookup-hit.
     //   last_hit_at   — instrumentation.
@@ -2931,13 +2931,13 @@ export const MIGRATIONS: Migration[] = [
     name: 'search_telemetry_rollup',
     // v0.32.3 search-lite: per-day rollup of search-call shape.
     //
-    // Powers `gbrain search stats [--days N]` and `gbrain search tune` so an
+    // Powers `zbrain search stats [--days N]` and `zbrain search tune` so an
     // operator (or an agent calling tune) can reason about hit rate, intent
     // mix, budget pressure, and result-volume averages WITHOUT pulling
     // per-call rows.
     //
     // Schema math per [CDX-17]: sums + counts only, NOT averages. Read-time
-    // derives averages so concurrent ON CONFLICT writes from multiple gbrain
+    // derives averages so concurrent ON CONFLICT writes from multiple zbrain
     // processes accumulate correctly.
     //
     // Date-bucketed cache hit/miss per [CDX-18] — query_cache.hit_count is
@@ -2983,7 +2983,7 @@ export const MIGRATIONS: Migration[] = [
     // rows exist instead of silently widening to NULL. Pre-fix this column
     // didn't exist; the only way a row has source_id IS a manual SQL poke,
     // so the stale-row branch fires only on operator-modified brains. The
-    // GBRAIN_ACCEPT_SILENT_WIDEN=1 env var is the explicit opt-in for
+    // ZBRAIN_ACCEPT_SILENT_WIDEN=1 env var is the explicit opt-in for
     // operators who'd rather upgrade than psql-fix. Doctor surfaces orphan
     // rows post-clean via the v0.34.x follow-up TODO.
     //
@@ -3011,7 +3011,7 @@ export const MIGRATIONS: Migration[] = [
       -- post-backfill values are 'default' (which we just verified exists
       -- via the FK contract) plus any NULL the backfill left untouched
       -- because of WHERE-clause filtering — none possible. The
-      -- GBRAIN_ACCEPT_SILENT_WIDEN env-flag stays in the runner for future
+      -- ZBRAIN_ACCEPT_SILENT_WIDEN env-flag stays in the runner for future
       -- migrations that need it; this one doesn't.
 
       -- 1. Add the column. NULL for every existing row.
@@ -3107,7 +3107,7 @@ export const MIGRATIONS: Migration[] = [
           WHERE source_id IS NOT NULL
             AND NOT (source_id = ANY(federated_read));
         IF bad_count > 0 THEN
-          RAISE EXCEPTION 'oauth_clients has % rows where source_id is not in federated_read after v62 backfill. This is a bug in v62 — re-run gbrain apply-migrations --force-retry 62.', bad_count;
+          RAISE EXCEPTION 'oauth_clients has % rows where source_id is not in federated_read after v62 backfill. This is a bug in v62 — re-run zbrain apply-migrations --force-retry 62.', bad_count;
         END IF;
       END $$;
     `,
@@ -3156,7 +3156,7 @@ export const MIGRATIONS: Migration[] = [
     // D20 Phase 3: add the unified-multimodal vector column to content_chunks.
     //
     // Column-only migration — the HNSW partial index is built AFTER the first
-    // bulk reindex completes (via `gbrain reindex --multimodal --build-index`
+    // bulk reindex completes (via `zbrain reindex --multimodal --build-index`
     // or auto-built at completion). pgvector docs explicitly note that HNSW
     // build is faster after data load, and per-row index maintenance during
     // bulk reindex would slow the operation 2-3x.
@@ -3299,7 +3299,7 @@ export const MIGRATIONS: Migration[] = [
     // Adds four optional columns to `facts` so metric assertions like
     // "$50K MRR" can be stored as (claim_metric=mrr, claim_value=50000,
     // claim_unit=USD, claim_period=monthly) and queried chronologically
-    // by `gbrain eval trajectory` + the `find_trajectory` MCP op.
+    // by `zbrain eval trajectory` + the `find_trajectory` MCP op.
     //
     // All columns nullable: existing fence rows persist identically.
     // The partial index covers only metric-bearing rows and stays
@@ -3333,7 +3333,7 @@ export const MIGRATIONS: Migration[] = [
     //     so we can never leak a profile across the v0.34.1 source-isolation
     //     boundary. FK to sources(id) with CASCADE so source deletion cleans
     //     up the per-source profile.
-    //   - wave_version stamps every row so `gbrain calibration --undo-wave
+    //   - wave_version stamps every row so `zbrain calibration --undo-wave
     //     v0.36.1.0` can reverse just this wave's writes.
     //   - published BOOL gates E8 team-brain mount sharing (D15 asymmetric
     //     opt-in). Default false: nothing leaks until owner explicitly publishes.
@@ -3397,7 +3397,7 @@ export const MIGRATIONS: Migration[] = [
     //     at proposal time so we can audit "did the LLM see the existing
     //     fence rows when it proposed?" Prevents duplicate proposals.
     //   - proposal_run_id (CDX-4 fix): groups proposals from a single
-    //     `gbrain dream --phase propose_takes` run so --rollback <run_id>
+    //     `zbrain dream --phase propose_takes` run so --rollback <run_id>
     //     can bulk-reject a bad-prompt run.
     //   - predicted_brier + predicted_brier_bucket_n (E5): forecast computed
     //     at proposal time so the queue UX shows "your historical Brier in
@@ -3567,10 +3567,10 @@ export const MIGRATIONS: Migration[] = [
   {
     version: 73,
     name: 'think_ab_results_v0_36',
-    // v0.36.1.0 (T18 / D19) — A/B harness data for `gbrain think --ab`.
+    // v0.36.1.0 (T18 / D19) — A/B harness data for `zbrain think --ab`.
     //
     // Each row records one side-by-side comparison of think with vs.
-    // without --with-calibration. After 30 days of data, `gbrain
+    // without --with-calibration. After 30 days of data, `zbrain
     // calibration ab-report` aggregates win/loss across the table and
     // surfaces a calibration_net_negative doctor warning if the
     // with-calibration variant loses >55% of trials (n >= 20).
@@ -3638,7 +3638,7 @@ export const MIGRATIONS: Migration[] = [
     // hosts and silently fingerprint-collided across param variations
     // (extract links vs extract timeline shared one file). DB-backed primary;
     // PGLite engine falls back to file-backed at
-    // ~/.gbrain/checkpoints/<op>-<fingerprint>.json because it's single-host
+    // ~/.zbrain/checkpoints/<op>-<fingerprint>.json because it's single-host
     // by construction.
     //
     // Fingerprint = sha8 of canonical-JSON of relevant params per op
@@ -3665,7 +3665,7 @@ export const MIGRATIONS: Migration[] = [
     name: 'minion_jobs_doctor_run_id_index',
     // v0.36+ autonomous-remediation wave (renumbered v68→v76 during master
     // merge). Partial GIN on minion_jobs.data for `data ? 'doctor_run_id'`.
-    // Lets `gbrain doctor --remediate` runs be queried by run id for audit
+    // Lets `zbrain doctor --remediate` runs be queried by run id for audit
     // trail without sequential-scanning months of cron history. Partial so
     // only doctor-submitted jobs are indexed; ordinary cron submissions
     // don't bloat the index.
@@ -3692,7 +3692,7 @@ export const MIGRATIONS: Migration[] = [
     // skillpack-registry + cross-modal waves landing on master first.
     //
     // Adds `pages.last_retrieved_at TIMESTAMPTZ NULL` — the real stale-page
-    // signal for `gbrain lsd`'s "your brain at 3am noticing what it forgot"
+    // signal for `zbrain lsd`'s "your brain at 3am noticing what it forgot"
     // mode. Bumped by op-layer write-back inside the `search` / `query` /
     // `get_page` op handlers AFTER results return (NOT inside the engine
     // methods — internal callers like sync / migrations / tests must not
@@ -3975,7 +3975,7 @@ export const MIGRATIONS: Migration[] = [
     // Renumbered v81→v82→v83→v88 across successive master merges. Final
     // renumber landed it after master's v0.38.1.0 agent-loop bundle.
     //
-    // Adds `eval_candidates.schema_pack_per_source JSONB` so `gbrain
+    // Adds `eval_candidates.schema_pack_per_source JSONB` so `zbrain
     // eval replay` reproduces the EXACT per-source closure that the
     // captured query ran against. Without this, a year-old replay
     // against an evolved pack returns different rows than the original
@@ -3994,7 +3994,7 @@ export const MIGRATIONS: Migration[] = [
     //
     // Inline snapshot (E11): captures the FULL resolved alias graph at
     // query time so replay is self-contained — no dependency on the
-    // pack file still existing in ~/.gbrain/schema-packs/. ~1KB per row
+    // pack file still existing in ~/.zbrain/schema-packs/. ~1KB per row
     // for a typical 50-type pack; ~10MB/year for a heavy user (10K
     // captured queries). Acceptable storage cost for permanent replay
     // reliability.
@@ -4029,7 +4029,7 @@ export const MIGRATIONS: Migration[] = [
     // alongside metric rows in one chronological stream.
     //
     // Column-only, no index. Existing callers (founder-scorecard,
-    // eval-trajectory, gbrain think) already defensively skip NULL-metric
+    // eval-trajectory, zbrain think) already defensively skip NULL-metric
     // rows in their per-metric math, so event-only rows ride through
     // invisibly. Structured event fields (object/actor/location) are
     // deferred to v0.40.3+ once usage shows what fields are needed.
@@ -4037,7 +4037,7 @@ export const MIGRATIONS: Migration[] = [
     // ADD COLUMN with no DEFAULT (NULL) is metadata-only on Postgres 11+
     // and PGLite; instant on tables of any size. No bootstrap probe
     // needed (no index, no FK references this column) — exemption pinned
-    // in test/schema-bootstrap-coverage.test.ts COLUMN_EXEMPTIONS.
+    // in tests/unit/schema-bootstrap-coverage.test.ts COLUMN_EXEMPTIONS.
     //
     // Renumbered v81→v82→v86→v87→v89 across four master merges:
     //   v81 claimed by v0.38.0.0 (pages_provenance_columns).
@@ -4079,7 +4079,7 @@ export const MIGRATIONS: Migration[] = [
     //   fall through to global mode. CLI-write-only per D15 security.
     // sources.trust_frontmatter_overrides — per-source mount-frontmatter
     //   trust gate (D15). FALSE for mounted sources by default; flipped
-    //   explicitly via `gbrain mounts trust-frontmatter <source>`. Host
+    //   explicitly via `zbrain mounts trust-frontmatter <source>`. Host
     //   source (id='default') is always trusted regardless of this column.
     // query_cache.page_generations — JSONB map {page_id: corpus_generation}
     //   tagged at write time per D27 P1-5. Lookup query LEFT JOINs against
@@ -4165,7 +4165,7 @@ export const MIGRATIONS: Migration[] = [
     // Forward-reference bootstrap: the column + trigger + index land in
     // PGLITE_SCHEMA_SQL CREATE TABLE body so fresh PGLite installs get
     // them without migration replay. REQUIRED_BOOTSTRAP_COVERAGE in
-    // test/schema-bootstrap-coverage.test.ts pins the contract.
+    // tests/unit/schema-bootstrap-coverage.test.ts pins the contract.
     idempotent: true,
     sql: '',
     handler: async (engine) => {
@@ -4274,7 +4274,7 @@ export const MIGRATIONS: Migration[] = [
     //     disambiguate "never had a budget" from "owner deleted, halt cleanly").
     //
     // Audit table FKs are ON DELETE SET NULL (codex pass-2 #5) so audit rows
-    // survive `gbrain jobs prune`. Each audit table denormalizes context
+    // survive `zbrain jobs prune`. Each audit table denormalizes context
     // (queue_name, model, owner_id, event_type, etc.) at write time so
     // post-NULL rows still carry forensic value — without denormalization
     // they'd be timestamp-only residue (codex pass-3 #7).
@@ -4417,7 +4417,7 @@ export const MIGRATIONS: Migration[] = [
     name: 'links_link_source_check_includes_mentions',
     // v0.42.0.0 Part B (migration #1 of #1409): widen the link_source
     // CHECK constraint to admit 'mentions' for auto-linked body-text
-    // mentions from `gbrain extract links --by-mention`. Backlink-count
+    // mentions from `zbrain extract links --by-mention`. Backlink-count
     // SQL in postgres-engine.ts + pglite-engine.ts excludes link_source =
     // 'mentions' so mention-derived edges don't pollute search ranking
     // (D12 from /plan-eng-review). Mentions still count toward
@@ -4567,7 +4567,7 @@ export const LATEST_VERSION = MIGRATIONS.length > 0
 
 /**
  * Row returned by `getIdleBlockers`. The shape is the public contract
- * for both `gbrain doctor --locks` output and the internal DDL pre-flight.
+ * for both `zbrain doctor --locks` output and the internal DDL pre-flight.
  */
 export interface IdleBlocker {
   pid: number;
@@ -4585,7 +4585,7 @@ export interface IdleBlocker {
  *
  * Single source of truth shared by:
  *   - `checkForBlockingConnections` (DDL pre-flight warning)
- *   - `gbrain doctor --locks` (CLI diagnostic)
+ *   - `zbrain doctor --locks` (CLI diagnostic)
  *   - any future `--exclusive` drain-wait logic
  */
 export async function getIdleBlockers(engine: BrainEngine): Promise<IdleBlocker[]> {
@@ -4637,9 +4637,9 @@ async function runMigrationSQLWithRetry(
   sql: string,
 ): Promise<void> {
   const { isStatementTimeoutError, isRetryableConnError } = await import('./retry-matcher.ts');
-  // GBRAIN_MIGRATE_BACKOFF_MS lets tests skip the 5s/15s/45s backoff. In
+  // ZBRAIN_MIGRATE_BACKOFF_MS lets tests skip the 5s/15s/45s backoff. In
   // production the env var is unset and the default cadence applies.
-  const fastBackoff = process.env.GBRAIN_MIGRATE_BACKOFF_MS;
+  const fastBackoff = process.env.ZBRAIN_MIGRATE_BACKOFF_MS;
   const backoffs = fastBackoff !== undefined
     ? [parseInt(fastBackoff, 10) || 0, parseInt(fastBackoff, 10) || 0, parseInt(fastBackoff, 10) || 0]
     : [5000, 15000, 45000];
@@ -4742,7 +4742,7 @@ async function runMigrationSQL(
  * no migration apply). Used by `connectEngine` to gate `initSchema()` so
  * short-lived CLI invocations on already-migrated brains don't pay the
  * full bootstrap-probe + SCHEMA_SQL replay + ledger-check cost on every
- * `gbrain stats` / `gbrain query` / `gbrain doctor`.
+ * `zbrain stats` / `zbrain query` / `zbrain doctor`.
  *
  * Defensive: treats a getConfig failure (config table missing, query error)
  * as "yes pending" so the caller falls through to the full initSchema path.
@@ -4902,7 +4902,7 @@ export async function runMigrations(engine: BrainEngine): Promise<{ applied: num
   }
 
   // Progress messages route to stderr so callers parsing stdout (e.g.
-  // `gbrain jobs submit --json | jq`) aren't polluted by migration noise.
+  // `zbrain jobs submit --json | jq`) aren't polluted by migration noise.
   process.stderr.write(`  Schema version ${current} → ${LATEST_VERSION} (${pending.length} migration(s) pending)\n`);
 
   // Pre-flight: warn about connections that might block DDL
@@ -4940,13 +4940,13 @@ export async function runMigrations(engine: BrainEngine): Promise<{ applied: num
             console.error('   server statement_timeout (~2 min on Supabase) is too short for this DDL.');
             console.error('');
             console.error('   Fix:');
-            console.error('     1. gbrain doctor --locks    # find idle-in-transaction blockers');
+            console.error('     1. zbrain doctor --locks    # find idle-in-transaction blockers');
             console.error('     2. Terminate blocker(s) shown by step 1 via pg_terminate_backend(<pid>)');
-            console.error('     3. gbrain apply-migrations --yes  # re-run from the version that failed');
+            console.error('     3. zbrain apply-migrations --yes  # re-run from the version that failed');
             console.error('');
           }
           console.error('   Verify:');
-          console.error('     gbrain doctor              # schema_version should match latest');
+          console.error('     zbrain doctor              # schema_version should match latest');
           console.error('');
         }
         throw err;

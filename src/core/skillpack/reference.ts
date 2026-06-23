@@ -1,11 +1,11 @@
 /**
- * skillpack/reference.ts — `gbrain skillpack reference <name>`.
+ * skillpack/reference.ts — `zbrain skillpack reference <name>`.
  *
- * Read-only update lens. Compares every file in gbrain's bundle (skill
+ * Read-only update lens. Compares every file in zbrain's bundle (skill
  * dir + paired sources + shared deps) against the host's local copy
  * and emits per-file status + unified diffs.
  *
- * The agent reads this output and decides what to integrate. gbrain
+ * The agent reads this output and decides what to integrate. zbrain
  * does NOT auto-apply (that's `reference --apply-clean-hunks` in T15,
  * which composes a separate apply step on top).
  *
@@ -26,8 +26,8 @@ import { unifiedDiff } from './diff-text.ts';
 import { applyHunks, parseUnifiedDiff } from './apply-hunks.ts';
 
 export interface ReferenceOptions {
-  /** Absolute path to gbrain repo root (source-of-truth bundle). */
-  gbrainRoot: string;
+  /** Absolute path to zbrain repo root (source-of-truth bundle). */
+  zbrainRoot: string;
   /** Absolute path to the target workspace. */
   targetWorkspace: string;
   /** Single skill slug, or `null` for --all (one-line-per-skill summary). */
@@ -79,15 +79,15 @@ export function runReference(opts: ReferenceOptions): ReferenceResult {
   if (opts.skillSlug === null) {
     throw new Error('runReference requires a slug; use runReferenceAll() for --all');
   }
-  const manifest = loadBundleManifest(opts.gbrainRoot);
+  const manifest = loadBundleManifest(opts.zbrainRoot);
   const entries = enumerateScaffoldEntries({
-    gbrainRoot: opts.gbrainRoot,
+    zbrainRoot: opts.zbrainRoot,
     skillSlug: opts.skillSlug,
     manifest,
   });
 
   const files = entries.map(e => diffOne(opts.targetWorkspace, e));
-  const framing = FRAMING_TEMPLATE(`${opts.gbrainRoot}/skills/${opts.skillSlug}/`);
+  const framing = FRAMING_TEMPLATE(`${opts.zbrainRoot}/skills/${opts.skillSlug}/`);
   return {
     framing,
     files,
@@ -101,15 +101,15 @@ export function runReference(opts: ReferenceOptions): ReferenceResult {
 
 /**
  * Run reference across every bundled skill — one-line-per-skill summary.
- * Used by `gbrain skillpack reference --all` for the upgrade sweep
+ * Used by `zbrain skillpack reference --all` for the upgrade sweep
  * workflow.
  */
 export function runReferenceAll(opts: Omit<ReferenceOptions, 'skillSlug'>): ReferenceAllResult {
-  const manifest = loadBundleManifest(opts.gbrainRoot);
+  const manifest = loadBundleManifest(opts.zbrainRoot);
   const slugs = bundledSkillSlugs(manifest);
   const skills = slugs.map(slug => {
     const entries = enumerateScaffoldEntries({
-      gbrainRoot: opts.gbrainRoot,
+      zbrainRoot: opts.zbrainRoot,
       skillSlug: slug,
       manifest,
     });
@@ -124,7 +124,7 @@ export function runReferenceAll(opts: Omit<ReferenceOptions, 'skillSlug'>): Refe
     };
   });
   return {
-    framing: FRAMING_TEMPLATE(`${opts.gbrainRoot}/skills/`),
+    framing: FRAMING_TEMPLATE(`${opts.zbrainRoot}/skills/`),
     skills,
   };
 }
@@ -169,18 +169,18 @@ export interface ReferenceApplyResult {
 
 /**
  * Run `reference --apply-clean-hunks`. For each `differs` file, parses
- * the diff between the user's local copy (target) and gbrain's bundle
+ * the diff between the user's local copy (target) and zbrain's bundle
  * (source), then applies every hunk whose pre-change context appears
  * uniquely in the user's file. Writes the result back. Conflicting
  * hunks are left alone and reported.
  *
  * **Two-way merge limitation (D15 contract).** Without scaffold-time
- * base tracking, this command cannot distinguish "gbrain changed line
+ * base tracking, this command cannot distinguish "zbrain changed line
  * X" from "the user changed line X." Both look like differences from
- * gbrain's current bundle. Applied hunks therefore replace the user's
- * local content with gbrain's wherever they differ, including spots
+ * zbrain's current bundle. Applied hunks therefore replace the user's
+ * local content with zbrain's wherever they differ, including spots
  * the user intentionally edited. Use `--dry-run` first, or run
- * `gbrain skillpack reference <name>` to inspect the diff before
+ * `zbrain skillpack reference <name>` to inspect the diff before
  * applying. True three-way merge with scaffold-time base is in the
  * NOT-in-scope section of the v0.33 plan.
  *
@@ -193,9 +193,9 @@ export function runReferenceApply(opts: ReferenceApplyOptions): ReferenceApplyRe
       'runReferenceApply requires a slug; --all+--apply-clean-hunks is intentionally not supported (apply one skill at a time)',
     );
   }
-  const manifest = loadBundleManifest(opts.gbrainRoot);
+  const manifest = loadBundleManifest(opts.zbrainRoot);
   const entries = enumerateScaffoldEntries({
-    gbrainRoot: opts.gbrainRoot,
+    zbrainRoot: opts.zbrainRoot,
     skillSlug: opts.skillSlug,
     manifest,
   });
@@ -206,7 +206,7 @@ export function runReferenceApply(opts: ReferenceApplyOptions): ReferenceApplyRe
   }
 
   return {
-    framing: FRAMING_TEMPLATE(`${opts.gbrainRoot}/skills/${opts.skillSlug}/`),
+    framing: FRAMING_TEMPLATE(`${opts.zbrainRoot}/skills/${opts.skillSlug}/`),
     dryRun: opts.dryRun ?? false,
     files,
     summary: {
@@ -251,7 +251,7 @@ function applyOne(
 
   const diff = unifiedDiff(aBuf.toString('utf-8'), bBuf.toString('utf-8'));
   // The diff above is target→source (b→a). We need source→target for
-  // apply: gbrain (a) is what we want to bring into the target. So
+  // apply: zbrain (a) is what we want to bring into the target. So
   // recompute with the operands swapped.
   const diffApply = unifiedDiff(bBuf.toString('utf-8'), aBuf.toString('utf-8'));
   const parsed = parseUnifiedDiff(diffApply);

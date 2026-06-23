@@ -19,11 +19,11 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-OUT_BIN="$(mktemp /tmp/gbrain-wasm-check.XXXXXX)"
+OUT_BIN="$(mktemp /tmp/zbrain-wasm-check.XXXXXX)"
 trap 'rm -f "$OUT_BIN"' EXIT
 
 # Build a minimal smoketest binary that imports the chunker. We compile this
-# instead of the full gbrain CLI so the failure mode is laser-focused on
+# instead of the full zbrain CLI so the failure mode is laser-focused on
 # chunker + WASM path resolution, not unrelated CLI wiring.
 bun build --compile --outfile "$OUT_BIN" scripts/chunker-smoketest.ts >/dev/null 2>&1
 

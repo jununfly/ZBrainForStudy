@@ -7,9 +7,9 @@
  * mirrors `runPostUpgradeReembedPrompt` in post-upgrade-reembed.ts:
  *
  *   - TTY-only Ctrl-C window (default 10s; override via
- *     GBRAIN_PROBE_PROMPT_GRACE_SECONDS).
+ *     ZBRAIN_PROBE_PROMPT_GRACE_SECONDS).
  *   - Non-TTY auto-proceeds with a stderr note (autopilot path).
- *   - GBRAIN_NO_PROBE_PROMPT=1 skips entirely.
+ *   - ZBRAIN_NO_PROBE_PROMPT=1 skips entirely.
  *
  * Independent of the runner's `--budget-usd` hard cap: this prompt informs;
  * the cap enforces. Both layers compose — operator sees the estimate, then
@@ -76,7 +76,7 @@ function defaultWaitFn(graceSeconds: number): Promise<'proceed' | 'abort'> {
 
 /**
  * Public entry. Returns whether the runner should proceed. Honors the
- * --yes override, GBRAIN_NO_PROBE_PROMPT, TTY detection, and the persisted
+ * --yes override, ZBRAIN_NO_PROBE_PROMPT, TTY detection, and the persisted
  * last-run prompt_version comparison.
  */
 export async function maybePromptForCostBeforeProbe(
@@ -85,7 +85,7 @@ export async function maybePromptForCostBeforeProbe(
   if (opts.yesOverride) {
     return { kind: 'proceed', reason: 'yes_override' };
   }
-  if (process.env.GBRAIN_NO_PROBE_PROMPT === '1') {
+  if (process.env.ZBRAIN_NO_PROBE_PROMPT === '1') {
     return { kind: 'proceed', reason: 'env_skip' };
   }
 
@@ -114,11 +114,11 @@ export async function maybePromptForCostBeforeProbe(
 
   if (!isTty) {
     // Autopilot / scripted invocation: emit the estimate and proceed.
-    stderr(`${banner}\nNon-TTY: proceeding automatically. Set GBRAIN_NO_PROBE_PROMPT=1 to suppress.\n`);
+    stderr(`${banner}\nNon-TTY: proceeding automatically. Set ZBRAIN_NO_PROBE_PROMPT=1 to suppress.\n`);
     return { kind: 'proceed', reason: 'non_tty_auto' };
   }
 
-  const graceRaw = process.env.GBRAIN_PROBE_PROMPT_GRACE_SECONDS;
+  const graceRaw = process.env.ZBRAIN_PROBE_PROMPT_GRACE_SECONDS;
   const graceSeconds = graceRaw && Number.isFinite(Number(graceRaw)) && Number(graceRaw) >= 0
     ? Number(graceRaw)
     : 10;

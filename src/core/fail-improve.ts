@@ -5,14 +5,14 @@
  * to LLM. Logs every fallback as a JSONL entry for future improvement.
  * Over time, failure patterns reveal which regex rules are missing.
  *
- * Each operation writes to its own JSONL file (~/.gbrain/fail-improve/{operation}.jsonl).
+ * Each operation writes to its own JSONL file (~/.zbrain/fail-improve/{operation}.jsonl).
  * Atomic append assumption: individual log entries are <1KB, well under OS page size.
  * No cross-operation file conflicts since each operation has its own file.
  */
 
 import { appendFileSync, readFileSync, existsSync, mkdirSync, writeFileSync, renameSync } from 'fs';
 import { join, dirname } from 'path';
-import { gbrainPath } from './config.ts';
+import { zbrainPath } from './config.ts';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -45,8 +45,8 @@ export interface TestCase {
   source: 'fail-improve-loop';
 }
 
-// Lazy: GBRAIN_HOME may be set after module load, so resolve at call time.
-const getLogDir = () => gbrainPath('fail-improve');
+// Lazy: ZBRAIN_HOME may be set after module load, so resolve at call time.
+const getLogDir = () => zbrainPath('fail-improve');
 const MAX_ENTRIES = 1000;
 
 // ---------------------------------------------------------------------------

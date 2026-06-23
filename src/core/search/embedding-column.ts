@@ -57,7 +57,7 @@
  *   3. Field validation at load (type/dims/provider) — bad config refuses
  *      to load instead of silently ignoring entries.
  *
- * Future write-path PR (`gbrain embed --column X --model Y`, deferred per
+ * Future write-path PR (`zbrain embed --column X --model Y`, deferred per
  * D1 out-of-scope list) MUST also consume this resolver — never compute a
  * column→provider mapping by hand. This is the canonical seam.
  */
@@ -67,7 +67,7 @@ import type {
   ResolvedColumn,
   SearchOpts,
 } from '../types.ts';
-import type { GBrainConfig } from '../config.ts';
+import type { ZBrainConfig } from '../config.ts';
 import { DEFAULT_EMBEDDING_MODEL, DEFAULT_EMBEDDING_DIMENSIONS } from '../ai/defaults.ts';
 
 // ---- Constants ---------------------------------------------------------
@@ -117,7 +117,7 @@ export class EmbeddingColumnNotRegisteredError extends Error {
     super(
       `Embedding column "${columnName}" is not registered. ` +
         `Declared columns: ${valid}. ` +
-        `Add it via: gbrain config set embedding_columns '<JSON>'`,
+        `Add it via: zbrain config set embedding_columns '<JSON>'`,
     );
     this.name = 'EmbeddingColumnNotRegisteredError';
     this.columnName = columnName;
@@ -285,7 +285,7 @@ export function buildVectorCastFragment(resolved: ResolvedColumn): {
  * DB column shape.
  */
 export function getEmbeddingColumnRegistry(
-  cfg: GBrainConfig,
+  cfg: ZBrainConfig,
 ): Record<string, EmbeddingColumnConfig> {
   // Prototype-pollution safe (codex /ship #1). Plain `{}` inherits from
   // Object.prototype so `registry["constructor"]` returns
@@ -300,7 +300,7 @@ export function getEmbeddingColumnRegistry(
   // The middle tier matters because callers that configure the gateway
   // (init paths, tests, programmatic SDK consumers) expect the registry
   // to reflect the gateway state — they didn't write the field into
-  // `~/.gbrain/config.json`. Falling straight from `cfg.embedding_model`
+  // `~/.zbrain/config.json`. Falling straight from `cfg.embedding_model`
   // to the static DEFAULT loses that information.
   //
   // try/catch covers the gateway-unconfigured case (rare but exists in
@@ -371,11 +371,11 @@ export function getEmbeddingColumnRegistry(
  */
 export function resolveEmbeddingColumn(
   opts: Pick<SearchOpts, 'embeddingColumn'> | undefined,
-  cfg: GBrainConfig,
+  cfg: ZBrainConfig,
 ): ResolvedColumn {
   // Fast path: already resolved (engine-internal). Re-validate the
   // descriptor shape before returning (codex /ship #2). SDK callers
-  // could pass a hand-rolled object via the public `gbrain/types`
+  // could pass a hand-rolled object via the public `zbrain/types`
   // surface; runtime check ensures the engine still sees a known-safe
   // shape. The validation is the same shape the resolver applies on
   // the string path.
@@ -477,7 +477,7 @@ export function isDefaultColumn(resolved: ResolvedColumn): boolean {
  * When any of these mismatch, return false so hybridSearchCached
  * skips both the lookup and the writeback paths.
  */
-export function isCacheSafe(resolved: ResolvedColumn, cfg: GBrainConfig): boolean {
+export function isCacheSafe(resolved: ResolvedColumn, cfg: ZBrainConfig): boolean {
   if (resolved.name !== DEFAULT_COLUMN_NAME) return false;
   // v0.37 fix wave: same resolution chain as the registry — cfg > gateway > default.
   let gwModel: string | undefined;
@@ -561,7 +561,7 @@ export function normalizeEngineColumn(
   }
 
   // v0.36 Phase 3 unified multimodal column — populated by
-  // `gbrain reindex --multimodal`. Voyage multimodal-3, vector(1024).
+  // `zbrain reindex --multimodal`. Voyage multimodal-3, vector(1024).
   if (embeddingColumn === 'embedding_multimodal') {
     return {
       name: 'embedding_multimodal',

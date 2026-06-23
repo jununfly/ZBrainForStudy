@@ -1,10 +1,10 @@
 /**
  * skillpack/bundle.ts — read the bundled-skills manifest.
  *
- * gbrain ships a curated set of skills (plus shared rule/convention
+ * zbrain ships a curated set of skills (plus shared rule/convention
  * files they depend on) that agents install into their OpenClaw
- * workspace via `gbrain skillpack install`. The source of truth is
- * `openclaw.plugin.json` at the gbrain repo root.
+ * workspace via `zbrain skillpack install`. The source of truth is
+ * `openclaw.plugin.json` at the zbrain repo root.
  */
 
 import { existsSync, readFileSync, statSync, readdirSync } from 'fs';
@@ -16,7 +16,7 @@ export interface BundleManifest {
   name: string;
   version: string;
   description?: string;
-  skills: string[]; // e.g. "skills/brain-ops" (relative to gbrain root)
+  skills: string[]; // e.g. "skills/brain-ops" (relative to zbrain root)
   shared_deps: string[]; // files + dirs every skill depends on
   excluded_from_install?: string[];
 }
@@ -28,7 +28,7 @@ export class BundleError extends Error {
       | 'manifest_not_found'
       | 'manifest_malformed'
       | 'skill_not_found'
-      | 'gbrain_root_not_found',
+      | 'zbrain_root_not_found',
   ) {
     super(message);
     this.name = 'BundleError';
@@ -37,9 +37,9 @@ export class BundleError extends Error {
 
 /**
  * Walk up from `start` (default cwd) looking for an `openclaw.plugin.json`
- * sibling to `src/cli.ts`. That pair identifies a gbrain repo root.
+ * sibling to `src/cli.ts`. That pair identifies a zbrain repo root.
  */
-export function findGbrainRoot(start: string = process.cwd()): string | null {
+export function findZbrainRoot(start: string = process.cwd()): string | null {
   let dir = resolve(start);
   for (let i = 0; i < 10; i++) {
     if (
@@ -56,11 +56,11 @@ export function findGbrainRoot(start: string = process.cwd()): string | null {
 }
 
 /**
- * Parse `openclaw.plugin.json` from the supplied gbrain root (absolute).
+ * Parse `openclaw.plugin.json` from the supplied zbrain root (absolute).
  * Throws BundleError on missing file or malformed JSON.
  */
-export function loadBundleManifest(gbrainRoot: string): BundleManifest {
-  const manifestPath = join(gbrainRoot, 'openclaw.plugin.json');
+export function loadBundleManifest(zbrainRoot: string): BundleManifest {
+  const manifestPath = join(zbrainRoot, 'openclaw.plugin.json');
   if (!existsSync(manifestPath)) {
     throw new BundleError(
       `openclaw.plugin.json not found at ${manifestPath}`,
@@ -118,7 +118,7 @@ export function loadBundleManifest(gbrainRoot: string): BundleManifest {
  *     if it's a directory.
  */
 export interface BundleEntry {
-  /** Absolute source path under gbrainRoot. */
+  /** Absolute source path under zbrainRoot. */
   source: string;
   /** Path under the skill bundle, joined with target skills dir. */
   relTarget: string;
@@ -150,8 +150,8 @@ function walkFiles(absDir: string, prefix: string, out: BundleEntry[], sharedDep
 }
 
 export interface EnumerateOptions {
-  /** Absolute path to gbrain repo root (source). */
-  gbrainRoot: string;
+  /** Absolute path to zbrain repo root (source). */
+  zbrainRoot: string;
   /** If set, scope enumeration to just this skill by its slug (last
    *  segment of `skills/<slug>`). Undefined enumerates everything. */
   skillSlug?: string;
@@ -164,7 +164,7 @@ export interface EnumerateOptions {
  * target-relative path.
  */
 export function enumerateBundle(opts: EnumerateOptions): BundleEntry[] {
-  const { gbrainRoot, skillSlug, manifest } = opts;
+  const { zbrainRoot, skillSlug, manifest } = opts;
   const entries: BundleEntry[] = [];
 
   const skillsToIncludePaths = skillSlug
@@ -179,10 +179,10 @@ export function enumerateBundle(opts: EnumerateOptions): BundleEntry[] {
   }
 
   for (const rel of skillsToIncludePaths) {
-    const abs = join(gbrainRoot, rel);
+    const abs = join(zbrainRoot, rel);
     if (!existsSync(abs)) {
       throw new BundleError(
-        `Bundle lists '${rel}' but the path does not exist in ${gbrainRoot}`,
+        `Bundle lists '${rel}' but the path does not exist in ${zbrainRoot}`,
         'skill_not_found',
       );
     }
@@ -194,7 +194,7 @@ export function enumerateBundle(opts: EnumerateOptions): BundleEntry[] {
   // convention/rules bundle so the skill's references don't break
   // (D-CX-10 dependency closure).
   for (const dep of manifest.shared_deps) {
-    const abs = join(gbrainRoot, dep);
+    const abs = join(zbrainRoot, dep);
     if (!existsSync(abs)) continue; // missing shared dep is a warning, not fatal
     const prefix = dep.replace(/^skills\//, '');
     let stat;
@@ -219,12 +219,12 @@ export function enumerateBundle(opts: EnumerateOptions): BundleEntry[] {
 
 /**
  * Return the set of skill slugs whose files under `skills/<slug>/` changed
- * between `version` and HEAD in the gbrain source tree. Used by
- * `gbrain skillpack reference --since <version>` so an agent can sweep
+ * between `version` and HEAD in the zbrain source tree. Used by
+ * `zbrain skillpack reference --since <version>` so an agent can sweep
  * only the skills that actually moved since the last time it looked.
  *
  * Returns `null` (not an empty array) when:
- *   - the gbrain root is not a git checkout (tarball install)
+ *   - the zbrain root is not a git checkout (tarball install)
  *   - the version tag doesn't resolve in this repo
  *   - any other git error
  *
@@ -236,7 +236,7 @@ export function enumerateBundle(opts: EnumerateOptions): BundleEntry[] {
  * a commit SHA, or a branch name.
  */
 export function changedSlugsSinceVersion(
-  gbrainRoot: string,
+  zbrainRoot: string,
   version: string,
 ): string[] | null {
   // Synchronously execute git via Bun.spawnSync to avoid the async overhead
@@ -245,7 +245,7 @@ export function changedSlugsSinceVersion(
 
   // Probe git availability + repo state. `.git` may be a directory OR a file
   // (worktrees). Either is fine for `git log`.
-  if (!existsSync(join(gbrainRoot, '.git'))) return null;
+  if (!existsSync(join(zbrainRoot, '.git'))) return null;
 
   // Try the literal version first, then with a `v` prefix.
   const candidates: string[] = [version];
@@ -254,7 +254,7 @@ export function changedSlugsSinceVersion(
   for (const ref of candidates) {
     const probe = spawnSync(
       'git',
-      ['-C', gbrainRoot, 'rev-parse', '--verify', '--quiet', `${ref}^{commit}`],
+      ['-C', zbrainRoot, 'rev-parse', '--verify', '--quiet', `${ref}^{commit}`],
       { encoding: 'utf-8' },
     );
     if (probe.status !== 0) continue;
@@ -263,7 +263,7 @@ export function changedSlugsSinceVersion(
       'git',
       [
         '-C',
-        gbrainRoot,
+        zbrainRoot,
         'log',
         '--name-only',
         '--format=',
@@ -327,20 +327,20 @@ export interface SkillSources {
 }
 
 /**
- * Read `<gbrainRoot>/<skillRel>/SKILL.md` and return its `sources:`
+ * Read `<zbrainRoot>/<skillRel>/SKILL.md` and return its `sources:`
  * frontmatter array. Empty array when absent or empty.
  *
  * Fail-loud validation (throws `BundleError` with `manifest_malformed`):
  *   - every entry must be a string
  *   - relative path only (no leading `/`, no `../` traversal)
- *   - every referenced file must exist under `<gbrainRoot>`
+ *   - every referenced file must exist under `<zbrainRoot>`
  *
  * Skills without `sources:` declared, or with `sources: []`, return an
  * empty array (no validation work performed).
  */
-export function loadSkillSources(gbrainRoot: string, skillRel: string): SkillSources {
+export function loadSkillSources(zbrainRoot: string, skillRel: string): SkillSources {
   const slug = pathSlug(skillRel);
-  const skillMd = join(gbrainRoot, skillRel, 'SKILL.md');
+  const skillMd = join(zbrainRoot, skillRel, 'SKILL.md');
   if (!existsSync(skillMd)) {
     // Some bundled "skills" are markdown-only without a SKILL.md (rare,
     // e.g. shared-conventions directories). Treat as no sources.
@@ -400,10 +400,10 @@ export function loadSkillSources(gbrainRoot: string, skillRel: string): SkillSou
         'manifest_malformed',
       );
     }
-    const abs = join(gbrainRoot, entry);
+    const abs = join(zbrainRoot, entry);
     if (!existsSync(abs)) {
       throw new BundleError(
-        `${skillMd}: frontmatter \`sources:\` declares "${entry}" but the file is missing from ${gbrainRoot}`,
+        `${skillMd}: frontmatter \`sources:\` declares "${entry}" but the file is missing from ${zbrainRoot}`,
         'manifest_malformed',
       );
     }
@@ -440,7 +440,7 @@ export interface ScaffoldEntry {
  * Fail-loud on missing declared paired sources via `loadSkillSources`.
  */
 export function enumerateScaffoldEntries(opts: EnumerateOptions): ScaffoldEntry[] {
-  const { gbrainRoot, skillSlug, manifest } = opts;
+  const { zbrainRoot, skillSlug, manifest } = opts;
   const entries: ScaffoldEntry[] = [];
 
   const skillsToIncludePaths = skillSlug
@@ -454,13 +454,13 @@ export function enumerateScaffoldEntries(opts: EnumerateOptions): ScaffoldEntry[
     );
   }
 
-  // 1. Skill files — every file under `<gbrainRoot>/skills/<slug>/`.
+  // 1. Skill files — every file under `<zbrainRoot>/skills/<slug>/`.
   //    relWorkspaceTarget = `skills/<slug>/<rest>` (workspace-rooted).
   for (const rel of skillsToIncludePaths) {
-    const abs = join(gbrainRoot, rel);
+    const abs = join(zbrainRoot, rel);
     if (!existsSync(abs)) {
       throw new BundleError(
-        `Bundle lists '${rel}' but the path does not exist in ${gbrainRoot}`,
+        `Bundle lists '${rel}' but the path does not exist in ${zbrainRoot}`,
         'skill_not_found',
       );
     }
@@ -470,10 +470,10 @@ export function enumerateScaffoldEntries(opts: EnumerateOptions): ScaffoldEntry[
   // 2. Paired sources — declared via each skill's frontmatter `sources:`.
   //    relWorkspaceTarget = `<source>` (already workspace-relative).
   for (const rel of skillsToIncludePaths) {
-    const { sources } = loadSkillSources(gbrainRoot, rel);
+    const { sources } = loadSkillSources(zbrainRoot, rel);
     for (const src of sources) {
       entries.push({
-        source: join(gbrainRoot, src),
+        source: join(zbrainRoot, src),
         relWorkspaceTarget: src,
         sharedDep: false,
         pairedSource: true,
@@ -483,7 +483,7 @@ export function enumerateScaffoldEntries(opts: EnumerateOptions): ScaffoldEntry[
 
   // 3. Shared deps — convention files etc. relWorkspaceTarget = `skills/<rest>`.
   for (const dep of manifest.shared_deps) {
-    const abs = join(gbrainRoot, dep);
+    const abs = join(zbrainRoot, dep);
     if (!existsSync(abs)) continue; // missing shared dep is a warning, not fatal
     let stat;
     try {

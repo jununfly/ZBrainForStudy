@@ -1,4 +1,4 @@
--- GBrain Postgres + pgvector schema
+-- ZBrain Postgres + pgvector schema
 
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
@@ -13,7 +13,7 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 --
 -- id:         immutable citation key. [a-z0-9-]{1,32} enforced at app layer.
 --             Used in [source:slug] citations, --source flag, wikilink syntax.
--- name:       mutable display label. Rename via `gbrain sources rename`.
+-- name:       mutable display label. Rename via `zbrain sources rename`.
 -- local_path: optional git checkout root for filesystem-backed sources.
 -- config:     forward-compat JSONB. Currently used for federation + ACL slot.
 --             { "federated": bool, "access_policy": {...} }
@@ -114,7 +114,7 @@ CREATE TABLE IF NOT EXISTS pages (
   effective_date_source TEXT,
   import_filename       TEXT,
   salience_touched_at   TIMESTAMPTZ,
-  -- v0.37.0 (migration v79): real stale-page signal for `gbrain lsd`. Bumped
+  -- v0.37.0 (migration v79): real stale-page signal for `zbrain lsd`. Bumped
   -- by op-layer write-back inside `search`/`query`/`get_page` op handlers
   -- (NOT inside engine methods — internal callers must not pollute the
   -- signal). NULL = never retrieved (LSD prioritizes these first).
@@ -354,7 +354,7 @@ CREATE TABLE IF NOT EXISTS links (
   link_type      TEXT    NOT NULL DEFAULT '',
   context        TEXT    NOT NULL DEFAULT '',
   -- v0.42.0.0: 'mentions' added for auto-linked body-text mentions
-  -- (gbrain extract links --by-mention). Filtered OUT of backlink-count
+  -- (zbrain extract links --by-mention). Filtered OUT of backlink-count
   -- for search ranking; only counts toward orphan-ratio + graph traversal.
   link_source    TEXT    CHECK (link_source IS NULL OR link_source IN ('markdown', 'frontmatter', 'manual', 'mentions')),
   origin_page_id INTEGER REFERENCES pages(id) ON DELETE SET NULL,
@@ -818,7 +818,7 @@ CREATE TABLE IF NOT EXISTS subagent_tool_executions (
   error               TEXT,
   schema_version      INTEGER     NOT NULL DEFAULT 1,
   provider_id         TEXT,
-  -- v0.38 D11: gbrain-owned stable IDs (ordinal assigned at first
+  -- v0.38 D11: zbrain-owned stable IDs (ordinal assigned at first
   -- observation of a tool call; gbrain_tool_use_id is uuid v7). Reconciliation
   -- on crash-replay uses (job_id, message_idx, ordinal) as the unique key.
   -- Legacy rows (pre-v82) have ordinal=NULL + gbrain_tool_use_id=NULL and
@@ -867,7 +867,7 @@ CREATE TABLE IF NOT EXISTS dream_verdicts (
 -- Cycle coordination lock — v0.17 runCycle primitive
 -- ============================================================
 -- One row per active cycle. Any caller (autopilot daemon, Minions
--- autopilot-cycle handler, gbrain dream CLI) tries to acquire this
+-- autopilot-cycle handler, zbrain dream CLI) tries to acquire this
 -- row before running a DB-write phase. Holders refresh ttl_expires_at
 -- between phases; crashed holders auto-release once TTL expires.
 -- Works through PgBouncer transaction pooling, unlike session-scoped
@@ -888,7 +888,7 @@ CREATE INDEX IF NOT EXISTS idx_cycle_locks_ttl ON gbrain_cycle_locks(ttl_expires
 -- in src/core/operations.ts. PII is scrubbed before insert by
 -- src/core/eval-capture-scrub.ts. query is CHECK-capped at 50KB.
 -- eval_capture_failures: cross-process audit of insert failures, surfaced
--- by `gbrain doctor` (in-process counters can't bridge MCP server + doctor
+-- by `zbrain doctor` (in-process counters can't bridge MCP server + doctor
 -- CLI process boundaries).
 CREATE TABLE IF NOT EXISTS eval_candidates (
   id                    SERIAL PRIMARY KEY,
@@ -917,7 +917,7 @@ CREATE TABLE IF NOT EXISTS eval_candidates (
   salience_source       TEXT,
   recency_source        TEXT,
   -- v0.36.3.0 (D16 / CDX-10) — embedding column resolved at capture time so
-  -- `gbrain eval replay` reproduces the same column the capture ran against.
+  -- `zbrain eval replay` reproduces the same column the capture ran against.
   -- Nullable; pre-v0.36 rows have NULL and replay falls back to current
   -- default. Migration v68 (src/core/migrate.ts) adds the same column on
   -- upgrade brains.
@@ -1119,7 +1119,7 @@ CREATE INDEX IF NOT EXISTS take_nudge_log_wave_idx
   ON take_nudge_log (wave_version, fired_at DESC);
 
 -- think_ab_results (v0.36.1.0 T18 / D19): A/B harness data for
--- `gbrain think --ab`. One row per side-by-side comparison.
+-- `zbrain think --ab`. One row per side-by-side comparison.
 CREATE TABLE IF NOT EXISTS think_ab_results (
   id              BIGSERIAL PRIMARY KEY,
   source_id       TEXT         NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
@@ -1153,7 +1153,7 @@ CREATE TRIGGER minion_job_notify AFTER INSERT OR UPDATE OF status ON minion_jobs
 -- ============================================================
 -- Row Level Security: block anon access, postgres role bypasses
 -- ============================================================
--- The postgres role (used by gbrain via pooler) has BYPASSRLS.
+-- The postgres role (used by zbrain via pooler) has BYPASSRLS.
 -- Enabling RLS with no policies means the anon key can't read anything.
 -- Only enable if the current role actually has BYPASSRLS privilege,
 -- otherwise we'd lock ourselves out.

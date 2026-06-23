@@ -23,7 +23,7 @@
  *
  * D5 source-id: every engine call receives sourceOpts threaded from
  * `ctx.sourceId` / `ctx.auth.allowedSources`. Tested by
- * test/e2e/source-isolation-image.test.ts (4 cases).
+ * tests/unit/e2e/source-isolation-image.test.ts (4 cases).
  */
 
 import type { BrainEngine } from '../engine.ts';

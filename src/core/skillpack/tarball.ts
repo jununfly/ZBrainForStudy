@@ -171,7 +171,7 @@ export function packTarball(opts: TarballPackOptions): TarballPackResult {
   const sourceLeaf = relative(sourceParent, opts.sourceDir);
 
   // Stage to a tempfile so a failed pack doesn't leave a partial tarball at outPath.
-  const stage = join(tmpdir(), `gbrain-skillpack-pack-${process.pid}-${Date.now()}.tgz`);
+  const stage = join(tmpdir(), `zbrain-skillpack-pack-${process.pid}-${Date.now()}.tgz`);
 
   const result = spawnSync(
     tar,

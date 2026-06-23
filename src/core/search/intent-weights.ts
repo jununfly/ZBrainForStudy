@@ -26,7 +26,7 @@
  * for the common case (simple queries, no API key, fast loop).
  *
  * Pure module. No DB, no LLM, no async. Tested in
- * test/intent-weights.test.ts.
+ * tests/unit/intent-weights.test.ts.
  */
 
 import type { QueryIntent } from './query-intent.ts';

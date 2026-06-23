@@ -83,7 +83,7 @@ export async function runFiles(engine: BrainEngine, args: string[]) {
       await filesStatus(args.slice(1));
       break;
     default:
-      console.error(`Usage: gbrain files <command> [args]`);
+      console.error(`Usage: zbrain files <command> [args]`);
       console.error(`  list [slug]               List files for a page (or all)`);
       console.error(`  upload <file> --page <slug>  Upload file linked to page`);
       console.error(`  upload-raw <file> --page <slug> [--type <type>]  Smart upload with .redirect.yaml pointer`);
@@ -127,7 +127,7 @@ async function uploadFile(engine: BrainEngine, args: string[]) {
   const pageSlug = args.find((a, i) => args[i - 1] === '--page') || null;
 
   if (!filePath || !existsSync(filePath)) {
-    console.error('Usage: gbrain files upload <file> --page <slug>');
+    console.error('Usage: zbrain files upload <file> --page <slug>');
     process.exit(1);
   }
 
@@ -186,7 +186,7 @@ async function uploadRaw(engine: BrainEngine, args: string[]) {
   const noPointer = args.includes('--no-pointer');
 
   if (!filePath || !existsSync(filePath)) {
-    console.error('Usage: gbrain files upload-raw <file> --page <slug> [--type <type>] [--no-pointer]');
+    console.error('Usage: zbrain files upload-raw <file> --page <slug> [--type <type>] [--no-pointer]');
     process.exit(1);
   }
 
@@ -212,8 +212,8 @@ async function uploadRaw(engine: BrainEngine, args: string[]) {
   const { loadConfig } = await import('../core/config.ts');
   const config = loadConfig();
   if (!config?.storage) {
-    console.error('No storage backend configured. Run gbrain init with storage settings.');
-    console.error('Or use gbrain files upload for manual uploads.');
+    console.error('No storage backend configured. Run zbrain init with storage settings.');
+    console.error('Or use zbrain files upload for manual uploads.');
     process.exit(1);
   }
 
@@ -283,7 +283,7 @@ async function uploadRaw(engine: BrainEngine, args: string[]) {
 async function signedUrl(args: string[]) {
   const storagePath = args.find(a => !a.startsWith('--'));
   if (!storagePath) {
-    console.error('Usage: gbrain files signed-url <storage-path>');
+    console.error('Usage: zbrain files signed-url <storage-path>');
     process.exit(1);
   }
 
@@ -302,7 +302,7 @@ async function signedUrl(args: string[]) {
 
 async function syncFiles(engine: BrainEngine, dir?: string) {
   if (!dir || !existsSync(dir)) {
-    console.error('Usage: gbrain files sync <directory>');
+    console.error('Usage: zbrain files sync <directory>');
     process.exit(1);
   }
 
@@ -383,7 +383,7 @@ async function verifyFiles(engine: BrainEngine) {
     console.log(`${verified} files verified, 0 mismatches, 0 missing`);
   } else {
     console.error(`VERIFY FAILED: ${mismatches} mismatches, ${missing} missing.`);
-    console.error(`Run: gbrain files sync --retry-failed`);
+    console.error(`Run: zbrain files sync --retry-failed`);
     process.exit(1);
   }
 }
@@ -395,13 +395,13 @@ async function verifyFiles(engine: BrainEngine) {
 async function mirrorFiles(args: string[]) {
   const dir = args.find(a => !a.startsWith('--'));
   const dryRun = args.includes('--dry-run');
-  if (!dir || !existsSync(dir)) { console.error('Usage: gbrain files mirror <dir> [--dry-run]'); process.exit(1); }
+  if (!dir || !existsSync(dir)) { console.error('Usage: zbrain files mirror <dir> [--dry-run]'); process.exit(1); }
 
   const { createStorage } = await import('../core/storage.ts');
   const { loadConfig } = await import('../core/config.ts');
   const { stringify } = await import('../core/yaml-lite.ts');
   const config = loadConfig();
-  if (!config?.storage) { console.error('No storage backend configured. Run gbrain init with storage settings.'); process.exit(1); }
+  if (!config?.storage) { console.error('No storage backend configured. Run zbrain init with storage settings.'); process.exit(1); }
 
   const storage = await createStorage(config.storage as any);
   const files = collectFiles(dir);
@@ -436,7 +436,7 @@ async function mirrorFiles(args: string[]) {
 
 async function unmirrorFiles(args: string[]) {
   const dir = args.find(a => !a.startsWith('--'));
-  if (!dir) { console.error('Usage: gbrain files unmirror <dir>'); process.exit(1); }
+  if (!dir) { console.error('Usage: zbrain files unmirror <dir>'); process.exit(1); }
 
   const markerPath = join(dir, '.supabase');
   if (existsSync(markerPath)) {
@@ -450,11 +450,11 @@ async function unmirrorFiles(args: string[]) {
 async function redirectFiles(args: string[]) {
   const dir = args.find(a => !a.startsWith('--'));
   const dryRun = args.includes('--dry-run');
-  if (!dir || !existsSync(dir)) { console.error('Usage: gbrain files redirect <dir> [--dry-run]'); process.exit(1); }
+  if (!dir || !existsSync(dir)) { console.error('Usage: zbrain files redirect <dir> [--dry-run]'); process.exit(1); }
 
   const markerPath = join(dir, '.supabase');
   if (!existsSync(markerPath)) {
-    console.error('Directory must be mirrored first. Run: gbrain files mirror <dir>');
+    console.error('Directory must be mirrored first. Run: zbrain files mirror <dir>');
     process.exit(1);
   }
 
@@ -513,14 +513,14 @@ async function redirectFiles(args: string[]) {
 
   console.log(`Redirected ${redirected} files. Originals removed, breadcrumbs created.`);
   if (skippedMissing > 0) {
-    console.log(`Skipped ${skippedMissing} files (not found in remote storage — run 'gbrain files mirror' first).`);
+    console.log(`Skipped ${skippedMissing} files (not found in remote storage — run 'zbrain files mirror' first).`);
   }
-  console.log('To undo: gbrain files restore <dir>');
+  console.log('To undo: zbrain files restore <dir>');
 }
 
 async function restoreFiles(args: string[]) {
   const dir = args.find(a => !a.startsWith('--'));
-  if (!dir || !existsSync(dir)) { console.error('Usage: gbrain files restore <dir>'); process.exit(1); }
+  if (!dir || !existsSync(dir)) { console.error('Usage: zbrain files restore <dir>'); process.exit(1); }
 
   const { createStorage } = await import('../core/storage.ts');
   const { loadConfig } = await import('../core/config.ts');
@@ -572,7 +572,7 @@ async function restoreFiles(args: string[]) {
 async function cleanFiles(args: string[]) {
   const dir = args.find(a => !a.startsWith('--'));
   const confirmed = args.includes('--yes');
-  if (!dir || !existsSync(dir)) { console.error('Usage: gbrain files clean <dir> [--yes]'); process.exit(1); }
+  if (!dir || !existsSync(dir)) { console.error('Usage: zbrain files clean <dir> [--yes]'); process.exit(1); }
 
   if (!confirmed) {
     console.error('WARNING: This permanently removes redirect pointers.');
@@ -633,9 +633,9 @@ async function filesStatus(args: string[]) {
   console.log(`  Local binary files: ${local}`);
 
   if (mirrored === 0 && redirected === 0 && local > 0) {
-    console.log(`\n${local} local files. Run: gbrain files mirror <dir> to start migration.`);
+    console.log(`\n${local} local files. Run: zbrain files mirror <dir> to start migration.`);
   } else if (redirected > 0) {
-    console.log(`\n${redirected} files redirected to storage. Run: gbrain files clean <dir> --yes to remove breadcrumbs.`);
+    console.log(`\n${redirected} files redirected to storage. Run: zbrain files clean <dir> --yes to remove breadcrumbs.`);
   }
 }
 

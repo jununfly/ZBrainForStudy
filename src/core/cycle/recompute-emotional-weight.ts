@@ -12,7 +12,7 @@
  * In incremental mode (`affectedSlugs` non-empty), only those pages are
  * touched. In full mode (`affectedSlugs` undefined or null) every page in
  * the brain is recomputed — this is the path users hit on first upgrade
- * via `gbrain dream --phase recompute_emotional_weight`.
+ * via `zbrain dream --phase recompute_emotional_weight`.
  *
  * Target wall-clock budget: <5s on a 1000-page fixture; <60s on a 50K-page
  * real brain. Catastrophic-exception path returns a 'fail' PhaseResult so
@@ -22,7 +22,7 @@
 import type { BrainEngine } from '../engine.ts';
 import type { PhaseResult, PhaseError } from '../cycle.ts';
 import { computeEmotionalWeight } from './emotional-weight.ts';
-import type { GBrainConfig } from '../config.ts';
+import type { ZBrainConfig } from '../config.ts';
 
 export interface RecomputeEmotionalWeightOpts {
   /** When false, the phase reads + computes but skips the UPDATE. */
@@ -33,8 +33,8 @@ export interface RecomputeEmotionalWeightOpts {
    * the incremental path.
    */
   affectedSlugs?: string[];
-  /** GBrain config for high_emotion_tags + user_holder overrides. */
-  config?: GBrainConfig;
+  /** ZBrain config for high_emotion_tags + user_holder overrides. */
+  config?: ZBrainConfig;
 }
 
 export interface RecomputeEmotionalWeightResult extends PhaseResult {

@@ -2,7 +2,7 @@
  * v0.35.4 — trajectory derived metrics.
  *
  * Pure functions over `TrajectoryPoint[]` (engine output). Both the
- * `find_trajectory` MCP op and the `gbrain eval trajectory` CLI consume
+ * `find_trajectory` MCP op and the `zbrain eval trajectory` CLI consume
  * this module so the regression + drift_score definitions stay in one
  * place.
  *
@@ -11,7 +11,7 @@
  *   - Regression detection (D-ENG-2): a regression fires for every
  *     consecutive (metric, value) pair where the newer value is at least
  *     10% lower than the prior value. Threshold is configurable via the
- *     env var `GBRAIN_TRAJECTORY_REGRESSION_THRESHOLD` (default 0.10).
+ *     env var `ZBRAIN_TRAJECTORY_REGRESSION_THRESHOLD` (default 0.10).
  *     Only points with `claim_value !== null` participate.
  *
  *   - Drift score (D-ENG-3): `1 - mean(cosine(emb[i], emb[i-1]))` over
@@ -43,12 +43,12 @@ export interface TrajectoryStats {
 }
 
 /**
- * Read the regression threshold from `GBRAIN_TRAJECTORY_REGRESSION_THRESHOLD`
+ * Read the regression threshold from `ZBRAIN_TRAJECTORY_REGRESSION_THRESHOLD`
  * with fallback to the locked default. Invalid input falls back silently —
  * the threshold is a soft tuning knob, not a correctness gate.
  */
 export function resolveRegressionThreshold(): number {
-  const raw = process.env.GBRAIN_TRAJECTORY_REGRESSION_THRESHOLD;
+  const raw = process.env.ZBRAIN_TRAJECTORY_REGRESSION_THRESHOLD;
   if (!raw) return DEFAULT_REGRESSION_THRESHOLD;
   const n = parseFloat(raw);
   if (!Number.isFinite(n) || n <= 0 || n >= 1) return DEFAULT_REGRESSION_THRESHOLD;

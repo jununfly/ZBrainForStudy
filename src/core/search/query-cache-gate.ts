@@ -18,7 +18,7 @@
  *   Bookmark check: `MAX <= 0` is false on any populated brain, so we fall
  *   through to Layer 2; Layer 2 sees `'{}'::jsonb` and is vacuously valid.
  *   Legacy rows continue to serve naturally (IRON-RULE regression pinned
- *   in test/e2e/cache-gate-pglite.test.ts).
+ *   in tests/unit/e2e/cache-gate-pglite.test.ts).
  *
  * See plan ~/.claude/plans/system-instruction-you-are-working-enchanted-mountain.md
  * Phase 2A for full design.
@@ -134,7 +134,7 @@ export const CACHE_GATE_WHERE_CLAUSE = `
     -- Layer 2 (per-page snapshot): bookmark fired, but maybe this row's
     -- specific result set isn't affected. Pre-v0.40.3.0 rows have
     -- page_generations = '{}'::jsonb and serve vacuously (legacy compat —
-    -- IRON-RULE regression in test/e2e/cache-gate-pglite.test.ts).
+    -- IRON-RULE regression in tests/unit/e2e/cache-gate-pglite.test.ts).
     (
       qc.page_generations = '{}'::jsonb
       OR NOT EXISTS (

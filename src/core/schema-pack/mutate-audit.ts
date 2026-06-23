@@ -1,8 +1,8 @@
 // v0.40.6.0 Schema Cathedral v3 — pack mutation audit JSONL.
 //
 // Every `withMutation` call (and every refused mutation) emits one line
-// to `~/.gbrain/audit/schema-mutations-YYYY-Www.jsonl`. The audit lets:
-//   - `gbrain doctor` detect anomalous mutation patterns (Phase 9)
+// to `~/.zbrain/audit/schema-mutations-YYYY-Www.jsonl`. The audit lets:
+//   - `zbrain doctor` detect anomalous mutation patterns (Phase 9)
 //   - `schema_pack_writability` doctor check surface failure events
 //   - operators forensically trace who mutated what and when
 //
@@ -10,11 +10,11 @@
 //   Type names are SHA-8 redacted by default. Path prefixes are
 //   truncated to the first path segment only. Matches
 //   `candidate-audit.ts:7-22` privacy contract — both files write under
-//   `~/.gbrain/audit/` and a single leaked screenshot of either could
+//   `~/.zbrain/audit/` and a single leaked screenshot of either could
 //   otherwise reveal sensitive taxonomy (mental_health_diagnosis,
 //   patients/oncology/, contracts/litigation/, etc.).
 //
-//   Opt out of redaction with `GBRAIN_SCHEMA_AUDIT_VERBOSE=1` (same env
+//   Opt out of redaction with `ZBRAIN_SCHEMA_AUDIT_VERBOSE=1` (same env
 //   gate as candidate-audit so operators flip both surfaces together).
 //
 // Failure logging: we log both success and failure events so the Phase 9
@@ -42,7 +42,7 @@ export type MutationOp =
   | 'set_extractable'
   | 'set_expert_routing';
 
-export type MutationActor = 'cli' | `mcp:${string}` | 'autopilot' | 'test';
+export type MutationActor = 'cli' | `mcp:${string}` | 'autopilot' | 'tests/unit';
 
 export type MutationOutcome = 'success' | 'failure';
 
@@ -59,7 +59,7 @@ export interface MutationAuditRecord {
   type_redacted: boolean;
   /** First path segment only, e.g. 'people'. Null when op didn't touch a prefix. */
   prefix_first_seg: string | null;
-  /** 'cli' | 'mcp:<clientId8>' | 'autopilot' | 'test'. */
+  /** 'cli' | 'mcp:<clientId8>' | 'autopilot' | 'tests/unit'. */
   actor: MutationActor;
   /** Outcome of the mutation attempt. */
   outcome: MutationOutcome;
@@ -197,8 +197,8 @@ export interface MutationSummary {
 }
 
 /**
- * Aggregate mutation records for cross-surface parity. Both `gbrain
- * doctor` (Phase 9) and `gbrain schema audit` (future surface) MUST
+ * Aggregate mutation records for cross-surface parity. Both `zbrain
+ * doctor` (Phase 9) and `zbrain schema audit` (future surface) MUST
  * consume from this helper so the two display sites never drift.
  */
 export function summarizeMutations(records: MutationAuditRecord[]): MutationSummary {

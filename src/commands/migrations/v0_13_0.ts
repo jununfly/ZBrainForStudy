@@ -5,16 +5,16 @@
  * frontmatter (company, investors, attendees, key_people, etc.), not just
  * `[Name](path)` markdown refs. This migration:
  *
- *   A. Schema — `gbrain init --migrate-only` triggers migrate.ts v11 which
+ *   A. Schema — `zbrain init --migrate-only` triggers migrate.ts v11 which
  *               adds link_source + origin_page_id + origin_field columns,
  *               swaps the unique constraint to include them, and creates
  *               new indexes.
- *   B. Backfill — `gbrain extract links --source db --include-frontmatter`
+ *   B. Backfill — `zbrain extract links --source db --include-frontmatter`
  *               walks every page and emits the frontmatter-derived edges.
  *               Uses the batch-mode resolver (pg_trgm only, no LLM).
  *   C. Verify — Query the links table and confirm link_source='frontmatter'
  *               rows exist (> 0 on any brain with frontmatter content).
- *   D. Record — append to ~/.gbrain/completed.jsonl.
+ *   D. Record — append to ~/.zbrain/completed.jsonl.
  *
  * Idempotent. Resumable from `partial` via ON CONFLICT DO NOTHING on the
  * new unique constraint. Wall-clock budget on 46K-page brains: 2-5 min
@@ -37,17 +37,17 @@ import type { Migration, OrchestratorOpts, OrchestratorResult, OrchestratorPhase
 // ~10s (ALTER + index builds). Bumped timeout accounts for slow Supabase
 // links (v0.12.1 pattern — migrations can time out on the 60s default).
 //
-// Shell out to the canonical `gbrain` shim on PATH (`/usr/local/bin/gbrain`
+// Shell out to the canonical `zbrain` shim on PATH (`/usr/local/bin/zbrain`
 // by default). An earlier revision resolved via the active Node/Bun runtime
 // binary, but on bun-installed trees that binary is `bun` — the spawned
 // `bun extract ...` gets reinterpreted as `bun run extract` and crashes the
 // upgrade mid-migration. The shim is already the canonical wrapper; trust
-// it. Regression guarded by test/migrations-v0_13_0.test.ts.
+// it. Regression guarded by tests/unit/migrations-v0_13_0.test.ts.
 
 function phaseASchema(opts: OrchestratorOpts): OrchestratorPhaseResult {
   if (opts.dryRun) return { name: 'schema', status: 'skipped', detail: 'dry-run' };
   try {
-    execSync('gbrain init --migrate-only', { stdio: 'inherit', timeout: 600_000, env: process.env });
+    execSync('zbrain init --migrate-only', { stdio: 'inherit', timeout: 600_000, env: process.env });
     return { name: 'schema', status: 'complete' };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -64,7 +64,7 @@ function phaseBBackfill(opts: OrchestratorOpts): OrchestratorPhaseResult {
     // `--include-frontmatter` is the v0.13 flag that enables the canonical
     // frontmatter link extractor. Default-OFF in the CLI for back-compat;
     // the migration explicitly opts in because this is the canonical backfill.
-    execSync('gbrain extract links --source db --include-frontmatter', {
+    execSync('zbrain extract links --source db --include-frontmatter', {
       stdio: 'inherit',
       timeout: 1_800_000,  // 30 min hard cap; typical 2-5 min on 46K pages
       env: process.env,
@@ -82,14 +82,14 @@ function phaseCVerify(opts: OrchestratorOpts): OrchestratorPhaseResult {
   if (opts.dryRun) return { name: 'verify', status: 'skipped', detail: 'dry-run' };
   try {
     // Query frontmatter edge count via get_stats + a secondary --json call
-    // to `gbrain graph-query` as a smoke test: extract one random page and
+    // to `zbrain graph-query` as a smoke test: extract one random page and
     // confirm it has at least one edge. Non-blocking.
     //
     // We intentionally do NOT fail on 0 frontmatter edges: fresh installs,
     // docs-only brains, and brains with no entity pages legitimately
     // produce 0. Phase B's own stdout shows `Links: created N` which is
     // the authoritative signal — user sees it during upgrade.
-    const out = execSync('gbrain call get_stats', {
+    const out = execSync('zbrain call get_stats', {
       encoding: 'utf-8', timeout: 60_000, env: process.env,
     });
     const parsed = JSON.parse(out) as { link_count?: number; page_count?: number };
@@ -153,7 +153,7 @@ export const v0_13_0: Migration = {
       'v0.13 extends the knowledge graph to project typed edges from YAML frontmatter. ' +
       'Every `company: X`, `investors: [A, B]`, `attendees: [Pedro, Garry]`, `key_people`, ' +
       '`partner`, `lead`, and `related` field you already wrote now surfaces in ' +
-      '`gbrain graph`. Direction semantics respect subject-of-verb (Pedro → meeting, ' +
+      '`zbrain graph`. Direction semantics respect subject-of-verb (Pedro → meeting, ' +
       'not meeting → Pedro). The migration backfills every existing page in ~2-5 min ' +
       'on a 46K-page brain. Uses pg_trgm fuzzy-match for name resolution (zero LLM ' +
       'cost, zero API calls). Unresolvable names surface in the extract summary so you ' +

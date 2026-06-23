@@ -13,8 +13,8 @@
  *
  * Override priority (later wins):
  *   1. DEFAULT_RECENCY_DECAY (this file)
- *   2. gbrain.yml `recency:` section
- *   3. GBRAIN_RECENCY_DECAY env var (prefix:halflifeDays:coefficient,...)
+ *   2. zbrain.yml `recency:` section
+ *   3. ZBRAIN_RECENCY_DECAY env var (prefix:halflifeDays:coefficient,...)
  *   4. Per-call SearchOpts.recency_decay (tests + library consumers; not
  *      exposed on MCP)
  *
@@ -24,7 +24,7 @@
  *   - At days_old=0:        recency component = coefficient (max boost)
  *   - At days_old=halflife: recency component = coefficient / 2
  *
- * Pure module. No side effects. Tested in test/recency-decay.test.ts.
+ * Pure module. No side effects. Tested in tests/unit/recency-decay.test.ts.
  */
 
 export interface RecencyDecayConfig {
@@ -51,7 +51,7 @@ export const DEFAULT_RECENCY_DECAY: RecencyDecayMap = {
   'meetings/':       { halflifeDays:  60, coefficient: 1.0 },
 
   // Bulk feeds — generic prefixes only. Real fork names go in user
-  // gbrain.yml, never in shipped defaults.
+  // zbrain.yml, never in shipped defaults.
   'chat/':           { halflifeDays:   7, coefficient: 1.0 },
   'media/x/':        { halflifeDays:   7, coefficient: 1.5 },
   'media/articles/': { halflifeDays:  90, coefficient: 0.5 },
@@ -78,7 +78,7 @@ export class RecencyDecayParseError extends Error {
 }
 
 /**
- * Parse the GBRAIN_RECENCY_DECAY env var.
+ * Parse the ZBRAIN_RECENCY_DECAY env var.
  * Format: comma-separated `prefix:halflifeDays:coefficient` triples.
  * Example: "daily/:7:2.0,concepts/:0:0,custom/:30:1.0"
  *
@@ -98,7 +98,7 @@ export function parseRecencyDecayEnv(env: string | undefined): RecencyDecayMap {
     const lastIdx = triple.lastIndexOf(':');
     if (lastIdx <= 0) {
       throw new RecencyDecayParseError(
-        `Invalid GBRAIN_RECENCY_DECAY entry "${triple}": expected prefix:halflife:coefficient`,
+        `Invalid ZBRAIN_RECENCY_DECAY entry "${triple}": expected prefix:halflife:coefficient`,
         'env',
       );
     }
@@ -106,7 +106,7 @@ export function parseRecencyDecayEnv(env: string | undefined): RecencyDecayMap {
     const middleIdx = beforeLast.lastIndexOf(':');
     if (middleIdx <= 0) {
       throw new RecencyDecayParseError(
-        `Invalid GBRAIN_RECENCY_DECAY entry "${triple}": expected prefix:halflife:coefficient`,
+        `Invalid ZBRAIN_RECENCY_DECAY entry "${triple}": expected prefix:halflife:coefficient`,
         'env',
       );
     }
@@ -116,17 +116,17 @@ export function parseRecencyDecayEnv(env: string | undefined): RecencyDecayMap {
     const halflife = Number.parseFloat(halflifeRaw);
     const coefficient = Number.parseFloat(coefficientRaw);
     if (!prefix) {
-      throw new RecencyDecayParseError(`Empty prefix in GBRAIN_RECENCY_DECAY entry "${triple}"`, 'env');
+      throw new RecencyDecayParseError(`Empty prefix in ZBRAIN_RECENCY_DECAY entry "${triple}"`, 'env');
     }
     if (!Number.isFinite(halflife) || halflife < 0) {
       throw new RecencyDecayParseError(
-        `Invalid halflifeDays "${halflifeRaw}" in GBRAIN_RECENCY_DECAY (must be number >= 0; 0 = evergreen)`,
+        `Invalid halflifeDays "${halflifeRaw}" in ZBRAIN_RECENCY_DECAY (must be number >= 0; 0 = evergreen)`,
         'env',
       );
     }
     if (!Number.isFinite(coefficient) || coefficient < 0) {
       throw new RecencyDecayParseError(
-        `Invalid coefficient "${coefficientRaw}" in GBRAIN_RECENCY_DECAY (must be number >= 0)`,
+        `Invalid coefficient "${coefficientRaw}" in ZBRAIN_RECENCY_DECAY (must be number >= 0)`,
         'env',
       );
     }
@@ -136,7 +136,7 @@ export function parseRecencyDecayEnv(env: string | undefined): RecencyDecayMap {
 }
 
 /**
- * Parse a `recency:` section from a parsed gbrain.yml. The shape is:
+ * Parse a `recency:` section from a parsed zbrain.yml. The shape is:
  *   recency:
  *     daily/: { halflifeDays: 14, coefficient: 1.5 }
  *     concepts/: { halflifeDays: 0, coefficient: 0 }
@@ -151,13 +151,13 @@ export function parseRecencyDecayYaml(parsed: unknown): RecencyDecayMap {
   const recency = obj.recency;
   if (recency == null) return {};
   if (typeof recency !== 'object' || Array.isArray(recency)) {
-    throw new RecencyDecayParseError(`gbrain.yml recency: must be a map, got ${typeof recency}`, 'yaml');
+    throw new RecencyDecayParseError(`zbrain.yml recency: must be a map, got ${typeof recency}`, 'yaml');
   }
   const out: RecencyDecayMap = {};
   for (const [prefix, raw] of Object.entries(recency as Record<string, unknown>)) {
     if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
       throw new RecencyDecayParseError(
-        `gbrain.yml recency."${prefix}" must be an object with halflifeDays + coefficient`,
+        `zbrain.yml recency."${prefix}" must be an object with halflifeDays + coefficient`,
         'yaml',
       );
     }
@@ -166,13 +166,13 @@ export function parseRecencyDecayYaml(parsed: unknown): RecencyDecayMap {
     const coefficient = Number(cfg.coefficient);
     if (!Number.isFinite(halflife) || halflife < 0) {
       throw new RecencyDecayParseError(
-        `gbrain.yml recency."${prefix}".halflifeDays invalid (must be number >= 0)`,
+        `zbrain.yml recency."${prefix}".halflifeDays invalid (must be number >= 0)`,
         'yaml',
       );
     }
     if (!Number.isFinite(coefficient) || coefficient < 0) {
       throw new RecencyDecayParseError(
-        `gbrain.yml recency."${prefix}".coefficient invalid (must be number >= 0)`,
+        `zbrain.yml recency."${prefix}".coefficient invalid (must be number >= 0)`,
         'yaml',
       );
     }
@@ -191,7 +191,7 @@ export function resolveRecencyDecayMap(opts: {
   caller?: RecencyDecayMap;
 } = {}): RecencyDecayMap {
   const fromYaml = opts.yaml !== undefined ? parseRecencyDecayYaml(opts.yaml) : {};
-  const fromEnv = parseRecencyDecayEnv(opts.envValue ?? process.env.GBRAIN_RECENCY_DECAY);
+  const fromEnv = parseRecencyDecayEnv(opts.envValue ?? process.env.ZBRAIN_RECENCY_DECAY);
   return {
     ...DEFAULT_RECENCY_DECAY,
     ...fromYaml,

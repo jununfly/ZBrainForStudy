@@ -9,7 +9,7 @@
  * have been invisible. Moving the hook to the op layer covers every caller.
  *
  * Best-effort, not await'd by the caller. Every failure is routed through
- * `engine.logEvalCaptureFailure(reason)` so `gbrain doctor` can see drops
+ * `engine.logEvalCaptureFailure(reason)` so `zbrain doctor` can see drops
  * cross-process (in-process counters would be invisible from doctor's
  * separate process).
  *
@@ -41,11 +41,11 @@ import type {
   HybridSearchMeta,
   SearchResult,
 } from './types.ts';
-import type { GBrainConfig } from './config.ts';
+import type { ZBrainConfig } from './config.ts';
 import { scrubPii } from './eval-capture-scrub.ts';
 
 // HybridSearchMeta is canonical in src/core/types.ts and exported via the
-// public `gbrain/types` subpath. Surfaced from hybridSearch via the
+// public `zbrain/types` subpath. Surfaced from hybridSearch via the
 // optional onMeta callback in HybridSearchOpts (Lane 1C).
 export type { HybridSearchMeta };
 
@@ -180,7 +180,7 @@ export async function captureEvalCandidate(
  * Resolution order:
  *   1. `config.eval.capture === true`  → on (explicit user opt-in wins)
  *   2. `config.eval.capture === false` → off (explicit user opt-out wins)
- *   3. `process.env.GBRAIN_CONTRIBUTOR_MODE === '1'` → on (contributor opt-in)
+ *   3. `process.env.ZBRAIN_CONTRIBUTOR_MODE === '1'` → on (contributor opt-in)
  *   4. otherwise → off (default-off, privacy-positive for end users)
  *
  * The default flipped in v0.25.0 from "on for everyone" to "off unless you
@@ -193,10 +193,10 @@ export async function captureEvalCandidate(
  * Takes the already-loaded config so callers control the loadConfig()
  * lifecycle (MCP server loads once at boot, CLI commands load per-invocation).
  */
-export function isEvalCaptureEnabled(config: GBrainConfig | null | undefined): boolean {
+export function isEvalCaptureEnabled(config: ZBrainConfig | null | undefined): boolean {
   if (config?.eval?.capture === true) return true;
   if (config?.eval?.capture === false) return false;
-  return process.env.GBRAIN_CONTRIBUTOR_MODE === '1';
+  return process.env.ZBRAIN_CONTRIBUTOR_MODE === '1';
 }
 
 /**
@@ -207,6 +207,6 @@ export function isEvalCaptureEnabled(config: GBrainConfig | null | undefined): b
  * doesn't accidentally turn off scrubbing on a brain that happens to also
  * have explicit `capture: true`.
  */
-export function isEvalScrubEnabled(config: GBrainConfig | null | undefined): boolean {
+export function isEvalScrubEnabled(config: ZBrainConfig | null | undefined): boolean {
   return config?.eval?.scrub_pii !== false;
 }

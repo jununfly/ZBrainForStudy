@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # CI guard for the v0.36.x skill_brain_first doctor check.
 #
-# Runs `gbrain doctor --json` against this repo's own skills/ and parses
+# Runs `zbrain doctor --json` against this repo's own skills/ and parses
 # the JSON to assert `checks[name=skill_brain_first].status !== "warn"`.
 # Doctor's exit code only flags `fail`, not `warn`, so explicit JSON-
 # parsing is required to gate `bun run verify` on this warning-class check
@@ -25,7 +25,7 @@ cd "$ROOT"
 # Run doctor with this repo's own skills as the explicit target.
 #
 # --fast is REQUIRED here. Without it, doctor calls connectEngine() which
-# exits 1 when no ~/.gbrain/config.json exists (the CI runner's case — no
+# exits 1 when no ~/.zbrain/config.json exists (the CI runner's case — no
 # brain init), producing zero stdout and tripping the parser's
 # `parse_error` fallback. --fast routes through runDoctor(null, ...) which
 # runs filesystem-only checks (resolver_health, skill_conformance,
@@ -35,11 +35,11 @@ cd "$ROOT"
 #
 # Capturing JSON output; redirect stderr to keep progress noise out of the
 # parse.
-TMPOUT="$(mktemp -t gbrain-doctor-XXXXXXXX)"
+TMPOUT="$(mktemp -t zbrain-doctor-XXXXXXXX)"
 # shellcheck disable=SC2064
 trap "rm -f \"$TMPOUT\"" EXIT
 
-GBRAIN_SKILLS_DIR="$ROOT/skills" bun run src/cli.ts doctor --fast --json >"$TMPOUT" 2>/dev/null || true
+ZBRAIN_SKILLS_DIR="$ROOT/skills" bun run src/cli.ts doctor --fast --json >"$TMPOUT" 2>/dev/null || true
 
 # Extract the skill_brain_first check status. Use python3 (already a
 # repo-wide dependency via image-decoders + admin tooling) so we don't
@@ -74,12 +74,12 @@ case "$STATUS" in
     echo "ERROR: skill_brain_first check found violations in this repo's skills/."
     echo
     echo "Re-run for details:"
-    echo "  GBRAIN_SKILLS_DIR=\"\$(pwd)/skills\" bun run src/cli.ts doctor"
+    echo "  ZBRAIN_SKILLS_DIR=\"\$(pwd)/skills\" bun run src/cli.ts doctor"
     echo
     echo "Fix options per skill:"
     echo "  1. Add 'brain_first: exempt' to frontmatter (declarative opt-out)"
     echo "  2. Add a > **Convention:** see [conventions/brain-first.md] callout"
-    echo "  3. Run 'gbrain doctor --fix' to auto-add the canonical callout"
+    echo "  3. Run 'zbrain doctor --fix' to auto-add the canonical callout"
     exit 1
     ;;
   fail)

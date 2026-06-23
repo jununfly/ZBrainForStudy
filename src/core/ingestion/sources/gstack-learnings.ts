@@ -1,16 +1,16 @@
 /**
- * GStackLearningsSource — bridge gstack's JSONL learnings into gbrain.
+ * GStackLearningsSource — bridge gstack's JSONL learnings into zbrain.
  *
  * v0.41 T8 — engineer-pack-active bridge. gstack ships an
  * append-only JSONL learnings system at
  * `~/.gstack/projects/{repo}/learnings.jsonl` with 7 typed entries
  * (pattern, pitfall, preference, architecture, tool, operational,
- * investigation). The data never makes it into gbrain today — engineers
+ * investigation). The data never makes it into zbrain today — engineers
  * accumulate insights in a separate file the brain can't query.
  *
  * This source closes the gap. For each JSONL line, emits an
  * IngestionEvent typed as a `learning` page (the type declared by
- * gbrain-engineer pack manifest). The daemon routes to put_page,
+ * zbrain-engineer pack manifest). The daemon routes to put_page,
  * frontmatter carries the original JSONL fields verbatim
  * (learning_type, confidence, source, files, skill), and the brain
  * can query learnings the same way as any other page.
@@ -26,10 +26,10 @@
  *     (so reformatting whitespace doesn't trigger re-emit), emit
  *     IngestionEvent.
  *   - stop(): closes watchers. JSONL state preserved (gstack owns the
- *     files; gbrain only reads).
+ *     files; zbrain only reads).
  *
  * Pack-active gating: this source is only registered with the daemon
- * when the active pack is gbrain-engineer (or gbrain-everything which
+ * when the active pack is zbrain-engineer (or zbrain-everything which
  * borrows learning from engineer). The daemon's startup probes
  * `loadActivePack().manifest.page_types` for the `learning` type and
  * only constructs the source when it's present. When the user switches

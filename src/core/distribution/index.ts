@@ -29,7 +29,7 @@
 
 // Tarball processing: extract caps, symlink rejection, magic-byte
 // sniff. v0.37 used this for `.tgz` skillpacks; v0.38 extends to
-// `.gbrain-schema` and `.gbrain-skillpack`. The tarball implementation
+// `.zbrain-schema` and `.zbrain-skillpack`. The tarball implementation
 // is artifact-shape-agnostic — the manifest validator runs separately
 // after extraction.
 export {

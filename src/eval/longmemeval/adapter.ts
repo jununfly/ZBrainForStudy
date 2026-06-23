@@ -1,5 +1,5 @@
 /**
- * v0.28.1: LongMemEval haystack -> gbrain page conversion.
+ * v0.28.1: LongMemEval haystack -> zbrain page conversion.
  *
  * Pure data-shape converter. No I/O, no engine, no LLM. Fed by the harness in
  * src/commands/eval-longmemeval.ts which then calls importFromContent on each
@@ -9,7 +9,7 @@
  * sessions. PageType is 'note' (an existing PageType in src/core/types.ts);
  * adding a first-class 'chat' type would touch the source-boost map and is
  * out of scope for v0.28.1. The chat/ slug prefix is verified by
- * test/eval-longmemeval.test.ts to NOT prefix-match any DEFAULT_SOURCE_BOOSTS
+ * tests/unit/eval-longmemeval.test.ts to NOT prefix-match any DEFAULT_SOURCE_BOOSTS
  * entry, so retrieval factor stays at 1.0.
  */
 
@@ -81,7 +81,7 @@ function renderSession(session: LongMemEvalSession, date?: string): string {
  * for the IDs. The pre-v0.35.1.1 adapter assumed only the oracle shape
  * and crashed with `session.turns` undefined on the _s split. This
  * normalizer accepts both. Mirrors the proven `normalizeSessions` helper
- * in gbrain-evals/eval/runner/longmemeval.ts.
+ * in zbrain-evals/eval/runner/longmemeval.ts.
  */
 function normalizeSessions(question: LongMemEvalQuestion): LongMemEvalSession[] {
   const sessions: LongMemEvalSession[] = [];

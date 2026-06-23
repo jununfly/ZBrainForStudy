@@ -1,12 +1,12 @@
 /**
  * v0.37.x — doctor --remediate checkpoint (A4 amended).
  *
- * When `gbrain doctor --remediate --max-cost N` blows past the cap mid-run
+ * When `zbrain doctor --remediate --max-cost N` blows past the cap mid-run
  * (BudgetTracker throws BudgetExhausted via the gateway-layer
  * AsyncLocalStorage), the runRemediate orchestrator persists what's been
- * completed so the user can continue with `gbrain doctor --remediate --resume`.
+ * completed so the user can continue with `zbrain doctor --remediate --resume`.
  *
- * Checkpoint file: `~/.gbrain/remediation/<plan_hash>.json`
+ * Checkpoint file: `~/.zbrain/remediation/<plan_hash>.json`
  *   - plan_hash = sha256(JSON.stringify(sorted recommendation ids)).slice(0,16)
  *   - schema_version: 1
  *
@@ -18,7 +18,7 @@
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, existsSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { gbrainPath } from './config.ts';
+import { zbrainPath } from './config.ts';
 
 export interface RemediationCheckpoint {
   schema_version: 1;
@@ -44,7 +44,7 @@ export interface RemediationCheckpoint {
 }
 
 function checkpointDir(): string {
-  return gbrainPath('remediation');
+  return zbrainPath('remediation');
 }
 
 export function computePlanHash(recommendationIds: string[]): string {

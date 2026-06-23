@@ -25,7 +25,7 @@
  *   - `isValidSourceId(s)`: boolean — for tiers that silently fall back
  *     to the next resolution step on invalid input (dotfile, brain_default).
  *   - `assertValidSourceId(s)`: void, throws — for tiers that must reject
- *     invalid input loudly (explicit `--source` flag, `GBRAIN_SOURCE` env,
+ *     invalid input loudly (explicit `--source` flag, `ZBRAIN_SOURCE` env,
  *     `cycleLockIdFor` primitive defense-in-depth).
  *
  * Codex P1-F flagged the need for both shapes.

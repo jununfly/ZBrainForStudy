@@ -15,7 +15,7 @@
   },
   "changelog": "CHANGELOG.md",
   "unit_tests": [
-    "test/**/*.test.ts"
+    "tests/unit/**/*.test.ts"
   ],
   "e2e_tests": [
     "e2e/**/*.test.ts"

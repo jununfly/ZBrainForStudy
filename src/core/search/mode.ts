@@ -172,7 +172,7 @@ export interface ModeBundle {
   /**
    * D8 Phase 3 flag: route ALL queries through the multimodal query embed
    * + `embedding_multimodal` column. Default false. Operator opt-in after
-   * `gbrain reindex --multimodal` populates the unified column.
+   * `zbrain reindex --multimodal` populates the unified column.
    */
   unified_multimodal: boolean;
   /**
@@ -291,7 +291,7 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     // p50 added latency. Missing ZEROENTROPY_API_KEY is handled via
     // src/core/search/rerank.ts fail-open contract: log to audit JSONL,
     // return input order unchanged. Opt out with
-    // `gbrain config set search.reranker.enabled false`.
+    // `zbrain config set search.reranker.enabled false`.
     reranker_enabled: true,
     reranker_model: 'zeroentropyai:zerank-2',
     reranker_top_n_in: 30,
@@ -313,7 +313,7 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     // diversification stops same-session weak chunks from competing
     // with strong hits for token budget. Conservative magnitudes
     // (1.05/1.10/0.95) with floor-gate inheritance keep regression risk
-    // bounded. Opt out with `gbrain config set search.graph_signals false`.
+    // bounded. Opt out with `zbrain config set search.graph_signals false`.
     graph_signals: true,
     // v0.40.3.0 contextual retrieval — title-only for balanced (free at
     // runtime; pure string concat, no Haiku). Default mode for most users
@@ -537,9 +537,9 @@ export function resolveSearchMode(input: ResolveSearchModeInput): ResolvedSearch
 }
 
 /**
- * Per-knob source attribution for `gbrain search modes` dashboard.
+ * Per-knob source attribution for `zbrain search modes` dashboard.
  * Tells the user where each resolved value came from so override drift
- * is legible. Mirrors `gbrain models` (v0.31.12) attribution shape.
+ * is legible. Mirrors `zbrain models` (v0.31.12) attribution shape.
  */
 export type KnobSource = 'per-call' | 'override' | 'mode' | 'fallback';
 
@@ -855,7 +855,7 @@ export function loadOverridesFromConfig(
   return out;
 }
 
-/** The full list of config keys this module reads. Used by `gbrain search modes --reset`. */
+/** The full list of config keys this module reads. Used by `zbrain search modes --reset`. */
 export const SEARCH_MODE_CONFIG_KEYS: ReadonlyArray<string> = Object.freeze([
   'search.cache.enabled',
   'search.cache.similarity_threshold',

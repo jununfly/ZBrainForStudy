@@ -34,7 +34,7 @@ import { normalizeMetricLabel } from './extract-from-fence.ts';
  * Read the `facts.extraction_enabled` config row. Defaults to TRUE (on by
  * default — the headline feature should ship enabled). Operators flip it
  * to 'false' / '0' / 'no' / 'off' (case-insensitive) via
- * `gbrain config set facts.extraction_enabled false` to disable extraction
+ * `zbrain config set facts.extraction_enabled false` to disable extraction
  * across the brain without requiring a binary downgrade.
  *
  * Same truthiness conventions as isAutoLinkEnabled / isAutoTimelineEnabled.
@@ -49,7 +49,7 @@ export async function isFactsExtractionEnabled(engine: BrainEngine): Promise<boo
 /**
  * Get the configured model for facts extraction. Defaults to Sonnet since
  * notability/salience judgment requires a sophisticated model, not Haiku.
- * Configurable via `gbrain config set facts.extraction_model <model>`.
+ * Configurable via `zbrain config set facts.extraction_model <model>`.
  */
 export async function getFactsExtractionModel(engine?: BrainEngine): Promise<string> {
   // v0.31.12: route through resolveModel so models.default + models.tier.reasoning
@@ -156,7 +156,7 @@ export async function extractFactsFromTurn(input: ExtractInput): Promise<Extract
 
   if (!isAvailable('chat')) {
     // No chat gateway → no extraction. Caller still inserts facts via direct
-    // `gbrain take add` paths.
+    // `zbrain take add` paths.
     return [];
   }
 

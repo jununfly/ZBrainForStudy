@@ -47,7 +47,7 @@ A harvest is "properly done" when:
 3. `gbrain skillpack harvest --dry-run` previewed the file set.
 4. The real `gbrain skillpack harvest <slug> --from <host>` succeeded
    with `status: harvested` (no privacy-lint hits).
-5. `bun test test/skills-conformance.test.ts` passes on the new
+5. `bun test tests/unit/skills-conformance.test.ts` passes on the new
    `skills/<slug>/SKILL.md`.
 6. The user has reviewed the diff in gbrain and explicitly approved
    the commit.
@@ -213,7 +213,7 @@ Outcomes:
 
 After a successful harvest:
 
-1. `bun test test/skills-conformance.test.ts` — confirms the new
+1. `bun test tests/unit/skills-conformance.test.ts` — confirms the new
    SKILL.md meets the frontmatter contract.
 2. `gbrain skillpack check --strict` — confirms no drift between
    bundle and gbrain's own checkout.

@@ -76,7 +76,7 @@ async function phaseASchema(
       return {
         name: 'schema',
         status: 'failed',
-        detail: `expected schema version >= 51 (facts_fence_columns); got ${v}. Run \`gbrain apply-migrations --yes\` to apply.`,
+        detail: `expected schema version >= 51 (facts_fence_columns); got ${v}. Run \`zbrain apply-migrations --yes\` to apply.`,
       };
     }
     // Quick post-condition: row_num + source_markdown_slug exist on facts.
@@ -462,7 +462,7 @@ export const v0_32_2: Migration = {
       'v0.31 added hot-memory facts but they lived only in the database. v0.32.2 makes the ' +
       'fenced `## Facts` table on each entity page canonical: every new fact writes to markdown ' +
       'first, then stamps the DB index. Existing v0.31 facts are backfilled to fences on this ' +
-      'migration. `gbrain rebuild` (v0.32.3) becomes a one-line disaster-recovery flow because ' +
+      'migration. `zbrain rebuild` (v0.32.3) becomes a one-line disaster-recovery flow because ' +
       'the DB is now fully derivable from the repo. Migration is dry-run by default; pass ' +
       '`--write` to apply.',
   },

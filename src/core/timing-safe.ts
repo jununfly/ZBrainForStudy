@@ -8,7 +8,7 @@
  *
  * Why extract instead of duplicate: codex outside-voice flagged the closure
  * scope as "hand-waving over actual module boundaries." Two consumers + one
- * function = extract. Source-text grep guard in `test/timing-safe.test.ts`
+ * function = extract. Source-text grep guard in `tests/unit/timing-safe.test.ts`
  * pins that callers import from here rather than re-implementing.
  *
  * Both inputs are expected to be hex strings of equal length (caller asserts

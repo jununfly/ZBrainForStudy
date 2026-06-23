@@ -26,7 +26,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-LOG_DIR="${GBRAIN_HOME:-$HOME/.gbrain}/audit"
+LOG_DIR="${ZBRAIN_HOME:-$HOME/.zbrain}/audit"
 mkdir -p "$LOG_DIR"
 TS=$(date -u +%Y%m%d-%H%M%SZ)
 WORKLOAD_OUT="$LOG_DIR/heavy-read_latency-$TS.json"

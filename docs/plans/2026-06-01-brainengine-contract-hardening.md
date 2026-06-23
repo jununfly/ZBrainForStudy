@@ -1107,18 +1107,47 @@ git commit -m "feat(core): harden BrainEngine page contract"
 
 ## Acceptance checklist
 
-- [ ] `in_memory_engine_contract.rs` exists and tests every missing S6 method on `InMemoryEngine`.
-- [ ] Each new behavior test was observed RED before implementation.
-- [ ] `InMemoryEngine` explicitly implements all 15 S6 methods.
-- [ ] `LibsqlEngine` and `PostgresEngine` still compile with their existing S6 implementations.
-- [ ] `BrainEngine` trait no longer provides default `Error::unsupported("pending slice 6a")` fallback bodies for S6 methods.
-- [ ] Stale fallback comments are removed or updated.
-- [ ] `cargo fmt --all --check` passes.
-- [ ] `cargo build --manifest-path .../Cargo.toml` passes.
-- [ ] `cargo test --manifest-path .../Cargo.toml --workspace` passes for runnable tests.
-- [ ] `cargo clippy --manifest-path .../Cargo.toml --workspace --all-targets -- -D warnings` passes.
-- [ ] Any PG skips due to missing `ZBRAIN_TEST_PG_URL` are reported as skips.
-- [ ] Final commit is a new commit, not an amend.
+- [x] `in_memory_engine_contract.rs` exists and tests every missing S6 method on `InMemoryEngine`.
+- [x] Each new behavior test was observed RED before implementation.
+- [x] `InMemoryEngine` explicitly implements all 15 S6 methods.
+- [x] `LibsqlEngine` and `PostgresEngine` still compile with their existing S6 implementations.
+- [x] `BrainEngine` trait no longer provides default `Error::unsupported("pending slice 6a")` fallback bodies for S6 methods.
+- [x] Stale fallback comments are removed or updated.
+- [x] `cargo fmt --all --check` passes.
+- [x] `cargo build --manifest-path .../Cargo.toml` passes.
+- [x] `cargo test --manifest-path .../Cargo.toml --workspace` passes for runnable tests.
+- [x] `cargo clippy --manifest-path .../Cargo.toml --workspace --all-targets -- -D warnings` passes.
+- [x] Any PG skips due to missing `ZBRAIN_TEST_PG_URL` are reported as skips.
+- [x] Final commit is a new commit, not an amend.
+
+## Outcome
+
+BrainEngine contract hardening completed as C1. The implementation removed all 15 Slice 6a S6 page-method default fallbacks from the `BrainEngine` trait and upgraded them to required backend contract methods. `InMemoryEngine` was brought to 15/15 parity; future backend drift now fails at compile time instead of falling through to `Error::unsupported("pending slice 6a")`.
+
+Commit sequence:
+
+| # | Commit | Plan task | Content |
+|---|---|---|---|
+| 1 | `67ebcce` | Task 1 + 2 | `InMemoryEngine` lifecycle + tag contract |
+| 2 | `415d856` | Task 3 | `InMemoryEngine` advanced-write contract |
+| 3 | `2654584` | Task 4 | `InMemoryEngine` advanced-read contract |
+| 4 | `b456e6b` | hotfix | `in_memory_soft_delete_page_matches_libsql_contract` uses `include_deleted=true` for verification |
+| 5 | `f7a647e` | Task 5 | Remove 15 S6 fallback bodies from `BrainEngine` trait |
+| 6 | `6d434c4` | Task 6 | Clean stale RED comments in three `page_methods_*.rs` files |
+| 7 | `f48f6bd` | Task 7 style follow-up | `cargo fmt --all` style-only layout changes required by final verification |
+
+Final verification:
+
+```text
+cargo fmt --all --check                                  PASS
+cargo build --workspace                                  PASS
+cargo test --workspace                                   PASS
+cargo clippy --workspace --all-targets -- -D warnings    PASS
+```
+
+PG suites ran as real tests rather than unset-url skips; `ZBRAIN_TEST_PG_URL` was configured during verification.
+
+Note on `f48f6bd`: the plan required a new commit and prohibited amending previous commits. `cargo fmt --all` changed only formatting/layout in existing long signatures, closures, and macro arguments, so the style-only diff was kept as an independent commit instead of being amended into `f7a647e`.
 
 ## Execution handoff
 

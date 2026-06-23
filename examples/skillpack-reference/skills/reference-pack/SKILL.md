@@ -80,7 +80,7 @@ registry data.
 
 ## Test + eval coverage
 
-- `test/example.test.ts` — unit test that imports the skill helper
+- `tests/unit/example.test.ts` — unit test that imports the skill helper
   (stub; replace with real assertions).
 - `e2e/example.e2e.test.ts` — integration test gated on DATABASE_URL.
 - `evals/reference-pack.judge.json` — LLM-judge eval scoring this

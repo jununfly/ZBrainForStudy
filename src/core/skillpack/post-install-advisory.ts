@@ -1,9 +1,9 @@
 /**
  * post-install-advisory.ts (v0.25.1) — agent-readable "what to do next"
- * after `gbrain init` or `gbrain upgrade`.
+ * after `zbrain init` or `zbrain upgrade`.
  *
- * gbrain users typically interact through their host agent (openclaw,
- * claude-code) rather than the gbrain CLI directly. So an interactive
+ * zbrain users typically interact through their host agent (openclaw,
+ * claude-code) rather than the zbrain CLI directly. So an interactive
  * TTY prompt at install time misses most of the audience.
  *
  * Instead: every `init` and `post-upgrade` ends by printing an advisory
@@ -71,7 +71,7 @@ const V0_25_1_RECOMMENDED: RecommendedSkill[] = [
   {
     slug: 'archive-crawler',
     description:
-      'Universal archivist for personal file archives (Dropbox / B2 / Gmail-takeout). REFUSES to run without a gbrain.yml allow-list — safe-by-default.',
+      'Universal archivist for personal file archives (Dropbox / B2 / Gmail-takeout). REFUSES to run without a zbrain.yml allow-list — safe-by-default.',
   },
   {
     slug: 'academic-verify',
@@ -141,8 +141,8 @@ export function buildAdvisory(opts: {
     missing,
     installCommand:
       missing.length === V0_25_1_RECOMMENDED.length
-        ? 'gbrain skillpack install --all'
-        : `gbrain skillpack install ${missing.map((s) => s.slug).join(' ')}`,
+        ? 'zbrain skillpack install --all'
+        : `zbrain skillpack install ${missing.map((s) => s.slug).join(' ')}`,
   });
 }
 
@@ -154,7 +154,7 @@ function buildAdvisoryWithoutWorkspace(
     version,
     context,
     missing: V0_25_1_RECOMMENDED,
-    installCommand: 'gbrain skillpack install --all',
+    installCommand: 'zbrain skillpack install --all',
     workspaceNotDetected: true,
   });
 }
@@ -172,11 +172,11 @@ function renderAdvisory(opts: {
 
   lines.push('');
   lines.push(bar);
-  lines.push(`gbrain ${opts.version} — RECOMMENDED SKILLS FOR THE AGENT TO INSTALL`);
+  lines.push(`zbrain ${opts.version} — RECOMMENDED SKILLS FOR THE AGENT TO INSTALL`);
   lines.push(bar);
   lines.push('');
   lines.push(
-    `The user just ${verb} gbrain ${opts.version}. This release ships ${opts.missing.length} ` +
+    `The user just ${verb} zbrain ${opts.version}. This release ships ${opts.missing.length} ` +
       `${opts.missing.length === 1 ? 'skill' : 'skills'} that the user should ` +
       `consider installing into their workspace.`,
   );
@@ -184,7 +184,7 @@ function renderAdvisory(opts: {
   if (opts.workspaceNotDetected) {
     lines.push(
       '(NOTE: No OpenClaw workspace was detected at the default location. ' +
-        'Set $OPENCLAW_WORKSPACE or pass --skills-dir to gbrain skillpack install.)',
+        'Set $OPENCLAW_WORKSPACE or pass --skills-dir to zbrain skillpack install.)',
     );
     lines.push('');
   }
@@ -206,9 +206,9 @@ function renderAdvisory(opts: {
   lines.push('');
   lines.push('  4. If NO, tell them they can install any time with:');
   lines.push('');
-  lines.push('         gbrain skillpack install <name>      # one skill');
-  lines.push('         gbrain skillpack install --all       # all bundled');
-  lines.push('         gbrain skillpack list                # see all options');
+  lines.push('         zbrain skillpack install <name>      # one skill');
+  lines.push('         zbrain skillpack install --all       # all bundled');
+  lines.push('         zbrain skillpack list                # see all options');
   lines.push('');
   lines.push('  Do NOT install without asking. The user owns this decision.');
   lines.push(bar);

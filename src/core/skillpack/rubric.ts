@@ -87,7 +87,7 @@ const DIMENSIONS: Array<
           passed: false,
           detail: msg,
           fix_hint:
-            'Run `gbrain skillpack init <name>` to regenerate a valid stub manifest, or fix the field listed above.',
+            'Run `zbrain skillpack init <name>` to regenerate a valid stub manifest, or fix the field listed above.',
         };
       }
     },
@@ -134,7 +134,7 @@ const DIMENSIONS: Array<
             passed: false,
             detail: failures.join('; '),
             fix_hint:
-              'For each missing SKILL.md, run `gbrain skillpack init` (regenerates the stub) or hand-write the frontmatter with name + description + triggers (array of >=1 strings).',
+              'For each missing SKILL.md, run `zbrain skillpack init` (regenerates the stub) or hand-write the frontmatter with name + description + triggers (array of >=1 strings).',
           };
     },
   },
@@ -163,7 +163,7 @@ const DIMENSIONS: Array<
             passed: false,
             detail: failures.join('; '),
             fix_hint:
-              'Add intents to skills/<slug>/routing-eval.jsonl — one JSON object per line with {intent, expected_skill, ambiguous_with?}. `gbrain skillpack doctor --fix` will scaffold stubs.',
+              'Add intents to skills/<slug>/routing-eval.jsonl — one JSON object per line with {intent, expected_skill, ambiguous_with?}. `zbrain skillpack doctor --fix` will scaffold stubs.',
           };
     },
   },
@@ -216,7 +216,7 @@ const DIMENSIONS: Array<
           passed: false,
           detail: `CHANGELOG.md missing at ${relative(input.packRoot, path)}`,
           fix_hint:
-            'Create CHANGELOG.md with at least a `## [<version>] - <YYYY-MM-DD>` entry for the current version. `gbrain skillpack doctor --fix` will scaffold a stub.',
+            'Create CHANGELOG.md with at least a `## [<version>] - <YYYY-MM-DD>` entry for the current version. `zbrain skillpack doctor --fix` will scaffold a stub.',
         };
       }
       const content = readFileSync(path, 'utf-8');
@@ -246,7 +246,7 @@ const DIMENSIONS: Array<
         return {
           passed: false,
           detail: 'manifest.unit_tests not declared',
-          fix_hint: 'Add `"unit_tests": ["test/**/*.test.ts"]` to skillpack.json and a passing test in test/.',
+          fix_hint: 'Add `"unit_tests": ["tests/unit/**/*.test.ts"]` to skillpack.json and a passing test in tests/unit/.',
         };
       }
       const found = countGlobMatches(input.packRoot, input.manifest.unit_tests);
@@ -255,7 +255,7 @@ const DIMENSIONS: Array<
         : {
             passed: false,
             detail: 'unit_tests globs match zero files on disk',
-            fix_hint: 'Create a test/<name>.test.ts (or matching glob) with at least one bun:test case.',
+            fix_hint: 'Create a tests/unit/<name>.test.ts (or matching glob) with at least one bun:test case.',
           };
     },
   },
@@ -348,7 +348,7 @@ const DIMENSIONS: Array<
         return {
           passed: false,
           detail: `${path} declared but file does not exist`,
-          fix_hint: `Create ${path} with at least one bootstrap step. \`gbrain skillpack doctor --fix\` will scaffold a stub.`,
+          fix_hint: `Create ${path} with at least one bootstrap step. \`zbrain skillpack doctor --fix\` will scaffold a stub.`,
         };
       }
       const content = readFileSync(abs, 'utf-8').trim();

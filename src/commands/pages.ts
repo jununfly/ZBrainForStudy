@@ -1,5 +1,5 @@
 /**
- * gbrain pages — page-level operator commands. v0.26.5+.
+ * zbrain pages — page-level operator commands. v0.26.5+.
  *
  * The first subcommand: `pages purge-deleted [--older-than HOURS] [--dry-run]`.
  * Manual escape hatch alongside the autopilot purge phase. Hard-deletes pages
@@ -60,7 +60,7 @@ async function runPurgeDeleted(engine: BrainEngine, args: string[]): Promise<voi
 }
 
 function printHelp(): void {
-  console.log(`gbrain pages — page-level operator commands (v0.26.5)
+  console.log(`zbrain pages — page-level operator commands (v0.26.5)
 
 Subcommands:
   purge-deleted [--older-than HOURS|Nd] [--dry-run] [--json]

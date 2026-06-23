@@ -166,7 +166,7 @@
     },
     {
       "name": "smoke-test",
-      "path": "smoke-test/SKILL.md",
+      "path": "smoke-tests/unit/SKILL.md",
       "description": "Post-restart smoke tests + auto-fix for gbrain and OpenClaw environments"
     },
     {

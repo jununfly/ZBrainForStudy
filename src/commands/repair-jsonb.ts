@@ -1,5 +1,5 @@
 /**
- * `gbrain repair-jsonb` — repair JSONB columns that were stored as string
+ * `zbrain repair-jsonb` — repair JSONB columns that were stored as string
  * literals due to the v0.12.0-and-earlier double-encode bug.
  *
  * Background: postgres-engine.ts wrote frontmatter and other JSONB columns
@@ -77,7 +77,7 @@ export async function repairJsonb(opts: RepairOpts = { dryRun: false }): Promise
   if (!engineCfg) {
     const config = loadConfig();
     if (!config) {
-      throw new Error('No brain configured. Run: gbrain init');
+      throw new Error('No brain configured. Run: zbrain init');
     }
     engineCfg = toEngineConfig(config);
   }

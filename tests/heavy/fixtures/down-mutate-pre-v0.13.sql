@@ -4,7 +4,7 @@
 -- brains had `links` without `link_source` / `origin_page_id`, and the
 -- schema blob's `CREATE INDEX idx_links_source` would crash before v11 ran.
 --
--- After this runs, `gbrain doctor` MUST walk forward via the bootstrap
+-- After this runs, `zbrain doctor` MUST walk forward via the bootstrap
 -- (postgres-engine.ts:applyForwardReferenceBootstrap) and reach LATEST
 -- without wedging.
 --

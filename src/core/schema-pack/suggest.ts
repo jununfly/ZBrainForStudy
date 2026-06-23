@@ -1,4 +1,4 @@
-// v0.39 T3 — gbrain schema suggest: LLM-powered runSuggest library.
+// v0.39 T3 — zbrain schema suggest: LLM-powered runSuggest library.
 //
 // Layers refinement on top of T2's `runDetect` heuristic clustering.
 // Single library function called by T3 CLI, T12 dream-cycle phase,
@@ -95,7 +95,7 @@ export async function runSuggest(
       } else {
         // Real gateway call deferred to a future wave; v0.39.0.0 ships the
         // hermetic heuristic-by-default path and the test seam. The full
-        // LLM prompt-tuning loop is in test/eval-schema-authoring (T16)
+        // LLM prompt-tuning loop is in tests/unit/eval-schema-authoring (T16)
         // which uses the same `suggestFn` seam.
         notes.push('LLM refinement deferred to v0.39.1+; using heuristic fallback.');
         raw = heuristicSuggestions(detected);
@@ -124,7 +124,7 @@ export async function runSuggest(
   suggestions.sort((a, b) => b.confidence - a.confidence);
 
   if (detected.untyped_pages > 0 && suggestions.length === 0) {
-    notes.push(`${detected.untyped_pages} untyped pages detected but no suggestions produced — run \`gbrain schema review-candidates --json\` to see the disk-derived candidate set.`);
+    notes.push(`${detected.untyped_pages} untyped pages detected but no suggestions produced — run \`zbrain schema review-candidates --json\` to see the disk-derived candidate set.`);
   }
 
   return { suggestions, notes, source_id: sourceId };

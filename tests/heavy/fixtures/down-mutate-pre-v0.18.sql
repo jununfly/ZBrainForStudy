@@ -3,7 +3,7 @@
 -- simulate a pre-v0.18 brain shape. Covers issues #366, #375, #378 —
 -- pre-v0.18 brains crashed on `column "source_id" does not exist`.
 --
--- After this runs, `gbrain doctor` MUST walk forward via the bootstrap
+-- After this runs, `zbrain doctor` MUST walk forward via the bootstrap
 -- (postgres-engine.ts:applyForwardReferenceBootstrap) and reach LATEST
 -- without wedging. Bootstrap re-creates `sources` table + seeds 'default',
 -- re-adds `pages.source_id`, then SCHEMA_SQL replay + migrations run clean.

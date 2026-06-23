@@ -28,7 +28,7 @@
   ],
   "notes": [
     "The host-side mars-prompt-shape.test.mjs and venus-prompt-shape.test.mjs read this same file and honor the same env var.",
-    "Exception files are deliberate test fixtures containing a synthetic placeholder token (NOT a real name) used to verify the guard mechanism. The token is defined in test/check-no-pii.test.ts and is intentionally NOT named here to avoid the JSON triggering its own guard.",
+    "Exception files are deliberate test fixtures containing a synthetic placeholder token (NOT a real name) used to verify the guard mechanism. The token is defined in tests/unit/check-no-pii.test.ts and is intentionally NOT named here to avoid the JSON triggering its own guard.",
     "If $AGENT_VOICE_PII_BLOCKLIST is unset, the guard runs in shape-only mode and emits a one-line stderr warning so the operator knows full enforcement requires the env var."
   ]
 }

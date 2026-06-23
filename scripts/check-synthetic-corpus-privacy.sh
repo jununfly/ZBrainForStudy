@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # v0.36.1.0 (T20 / CDX-14) — privacy CI guard for the synthetic calibration corpus.
 #
-# Scans test/fixtures/calibration/ for patterns that look like real-world
+# Scans tests/unit/fixtures/calibration/ for patterns that look like real-world
 # specificity. Fails the build if any are found. Closes the synthetic-corpus
 # privacy hole flagged by codex review CDX-14: "CC reads real brain pages
 # locally, writes nothing still risks privacy if any generated synthetic
@@ -20,7 +20,7 @@
 
 set -e
 
-CORPUS_DIR="test/fixtures/calibration"
+CORPUS_DIR="tests/unit/fixtures/calibration"
 PLACEHOLDERS=(
   "alice-example"
   "charlie-example"
@@ -94,7 +94,7 @@ if [ "$VIOLATIONS" -gt 0 ]; then
   echo "❌ $VIOLATIONS privacy violation(s) found in $CORPUS_DIR."
   echo ""
   echo "The synthetic calibration corpus must use anonymized placeholder names"
-  echo "(see test/fixtures/calibration/README.md). Real names of YC partners,"
+  echo "(see tests/unit/fixtures/calibration/README.md). Real names of YC partners,"
   echo "portfolio companies, funds, etc. cannot enter this directory."
   echo ""
   echo "Either:"

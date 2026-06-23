@@ -9,7 +9,7 @@
  *
  * Schema math per [CDX-17]: rows are sums + counts only, NEVER averages.
  * Read-time derives averages. ON CONFLICT DO UPDATE adds raw values so two
- * gbrain processes flushing the same (date, mode, intent) tuple accumulate
+ * zbrain processes flushing the same (date, mode, intent) tuple accumulate
  * correctly.
  *
  * The bucket map is keyed by `${date}::${mode}::${intent}`. Date is the
@@ -18,7 +18,7 @@
  *
  * Per-process bucketing means stdio MCP, HTTP MCP, and CLI processes each
  * maintain their own buffers. Stats are directional, not exact — acceptable
- * because the consumer is the operator (or an agent running `gbrain search
+ * because the consumer is the operator (or an agent running `zbrain search
  * tune`), not a financial ledger. The "lose last bucket on hard crash"
  * downside is documented in the methodology doc.
  */
@@ -42,7 +42,7 @@ const FLUSH_INTERVAL_MS = 60_000;
 const FLUSH_THRESHOLD_CALLS = 100;
 
 /**
- * Per-process telemetry singleton. Each gbrain process (CLI, stdio MCP,
+ * Per-process telemetry singleton. Each zbrain process (CLI, stdio MCP,
  * HTTP MCP) gets one instance. The flush timer and exit hooks are
  * installed lazily on the first `record()` call so importing this module
  * has no side effects.
@@ -191,11 +191,11 @@ class TelemetryWriter {
     // The earlier implementation installed `process.on('beforeExit', drainOnExit)`
     // with an inner `Promise.race([flush(), setTimeout(2000)])`. That enqueued
     // new async work AFTER the event loop had emptied, which kept the process
-    // alive past beforeExit — short-lived CLI invocations (`gbrain query "the"`
+    // alive past beforeExit — short-lived CLI invocations (`zbrain query "the"`
     // exiting after 100ms of work) ended up waiting on the DB write to settle.
     // On a slow or busy PGLite, the write never settled and the CLI hung
-    // forever. That deadlock surfaced as the `test/e2e/claw-test.test.ts`
-    // hang (the harness spawns short-lived gbrain queries that should exit
+    // forever. That deadlock surfaced as the `tests/unit/e2e/claw-test.test.ts`
+    // hang (the harness spawns short-lived zbrain queries that should exit
     // in <1s but never did).
     //
     // Resolution per [CDX-19]: the periodic flush timer (unref'd) handles

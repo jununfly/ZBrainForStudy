@@ -2,7 +2,7 @@
  * Shared link/timeline extraction utilities.
  *
  * Used by:
- *   - src/commands/extract.ts             (batch DB + FS extraction — `gbrain extract links|timeline|all`)
+ *   - src/commands/extract.ts             (batch DB + FS extraction — `zbrain extract links|timeline|all`)
  *   - src/commands/backlinks.ts           (filesystem walk, legacy)
  *   - src/core/operations.ts put_page     (auto-link post-hook)
  *
@@ -141,7 +141,7 @@ export interface CodeRef {
 
 // v0.19.0 E1 — markdown guides that cite 'src/core/sync.ts:42' create an
 // edge to the code page that imported that file. Regex is anchored against
-// the common gbrain repo layout directories so arbitrary prose like
+// the common zbrain repo layout directories so arbitrary prose like
 // "in foo/bar.js" doesn't generate false positives.
 //
 // The extension list is aligned with detectCodeLanguage in chunkers/code.ts.
@@ -645,7 +645,7 @@ export interface SlugResolver {
 /**
  * Create a resolver scoped to a single extract run or single put_page call.
  *
- * mode: 'batch' (migration / gbrain extract) — pg_trgm only, NO search
+ * mode: 'batch' (migration / zbrain extract) — pg_trgm only, NO search
  * fallback. On a 46K-page brain this avoids N-thousand OpenAI embedding
  * calls + Anthropic Haiku expansion calls (see operations-query-hidden-haiku
  * learning) and keeps the backfill deterministic + under a wall-clock budget.

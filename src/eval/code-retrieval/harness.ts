@@ -5,7 +5,7 @@
  * top-1 stability +15pp on >=15/30 questions, above the 3-run noise floor).
  *
  * Two modes:
- *   --baseline       Uses only `query` + `search` (today's gbrain). The number
+ *   --baseline       Uses only `query` + `search` (today's zbrain). The number
  *                    captured here is the v0.34 ship gate.
  *   --with-code-intel Uses the v0.34 code-intel MCP ops (code_blast / code_flow
  *                    / code_def / code_refs / code_callers / code_callees /
@@ -15,14 +15,14 @@
  * stubbed for unit testing without touching the brain.
  *
  * Hermetic by design: cli.ts skips connectEngine() when the user is in
- * --help mode. Real runs connect to ~/.gbrain (the dogfood brain) by default
+ * --help mode. Real runs connect to ~/.zbrain (the dogfood brain) by default
  * unless --corpus points elsewhere.
  */
 
 import { readFileSync, existsSync } from 'fs';
 
 // ─────────────────────────────────────────────────────────────────
-// Types — stable contract for downstream consumers (gbrain-evals, CI)
+// Types — stable contract for downstream consumers (zbrain-evals, CI)
 // ─────────────────────────────────────────────────────────────────
 
 export type CodeQuestionKind =
@@ -46,7 +46,7 @@ export interface CodeQuestion {
   /**
    * Minimum recall@k against `expected_files` for this question to count as
    * "answered." For some post-v0.34-only questions, baseline expectations
-   * are intentionally low (0.3) since today's gbrain can't answer them.
+   * are intentionally low (0.3) since today's zbrain can't answer them.
    */
   expected_min_recall: number;
   note?: string;

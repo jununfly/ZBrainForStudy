@@ -120,7 +120,7 @@
   in `src/core/ai/types.ts` (sibling to the rerank field), thread through
   `probeEmbeddingReachability` using the same `recipe.touchpoints.embedding.default_timeout_ms ?? 5000`
   pattern that the reranker probe uses. Add a regression test in
-  `test/models-doctor-embed.test.ts` pinning the precedence chain.
+  `tests/unit/models-doctor-embed.test.ts` pinning the precedence chain.
 
   Surfaced by the community-PR-wave pre-landing review (informational, no
   blocker on the wave itself — workaround is "re-run the probe").
@@ -260,7 +260,7 @@ fixtures + scaling-skills tutorial. Two findings deferred:
   current docs don't bridge the two cleanly. Doc-only follow-up.
 
 - [ ] **P1 flake — audit-writer.test.ts week-boundary failure.** Caught
-  during ship of v0.41.7.0. Test at `test/audit/audit-writer.test.ts:229`
+  during ship of v0.41.7.0. Test at `tests/unit/audit/audit-writer.test.ts:229`
   ("returns events from current week, filtered by ts cutoff") fails when
   real UTC date is in a different ISO week than the test's hardcoded
   `now=2026-05-22`. `writer.log()` uses real `new Date()` to pick the
@@ -350,7 +350,7 @@ follow-ups, captured here so v0.42 starts informed.
   pattern leaks through that ONLY density would catch.
 
 - [ ] **v0.41+ — Bytes parity assertion across lint + doctor.** D2
-  acceptance test included in `test/content-sanity.test.ts` as a
+  acceptance test included in `tests/unit/content-sanity.test.ts` as a
   unit-level parity check. Promote to an E2E that seeds a real
   fixture page with frontmatter + body, runs `gbrain lint` AND
   `gbrain doctor --content-audit`, asserts both surfaces report
@@ -363,7 +363,7 @@ follow-ups, captured here so v0.42 starts informed.
   the integration test (walk a fixture source dir, run the CLI
   end-to-end, assert JSON envelope shape) is deferred. Trivial to
   add (~30 LOC) once a stable test fixture set lands under
-  `test/fixtures/content-sanity/`.
+  `tests/unit/fixtures/content-sanity/`.
 
 - [ ] **v0.41+ — Doctor checks integration tests.** The 3 new doctor
   checks (`oversized_pages`, `scraper_junk_pages`,
@@ -371,7 +371,7 @@ follow-ups, captured here so v0.42 starts informed.
   runtime-shape via the unit suite. Integration tests (seed fixture
   pages into PGLite, run doctor, assert check status + message
   format) are deferred. Same pattern as existing
-  `test/doctor.test.ts` extensions.
+  `tests/unit/doctor.test.ts` extensions.
 
 - [ ] **v0.41+ — 5-path narrow-waist E2E pin tests (cherry-pick 5).**
   Sync + import + put_page MCP + capture + /ingest webhook all
@@ -819,7 +819,7 @@ contributor traps.
 ## v0.40.1.0 Track D follow-ups (v0.41+)
 
 - [ ] **v0.41+: contributor-mode CI capture for BrainBench-Real replay gate.**
-  v0.40.1.0 Track D shipped the hermetic qrels gate (`test/eval-replay-gate.test.ts`)
+  v0.40.1.0 Track D shipped the hermetic qrels gate (`tests/unit/eval-replay-gate.test.ts`)
   as the structurally-correct replacement for the original "replay against captured
   `eval_candidates` baseline" design. Codex outside-voice audit caught three fatal
   flaws with the replay-against-captured-baseline approach: (a) `scripts/select-e2e.ts`
@@ -836,7 +836,7 @@ contributor traps.
   cheapest); (2) build a nightly capture pipeline that runs
   `GBRAIN_CONTRIBUTOR_MODE=1 gbrain eval export --tool query` against a seeded
   brain corpus; (3) commit-automate the resulting NDJSON into
-  `test/fixtures/eval-baselines/` with a "Why:" justification line; (4) write
+  `tests/unit/fixtures/eval-baselines/` with a "Why:" justification line; (4) write
   a new gate test that calls `gbrain eval replay --against <fixture>` and asserts
   on `mean_jaccard`, `top1_stability_rate`, drops the latency assert (CI runners
   vary too much). Estimate: ~2 weeks. Filed during v0.40.1.0 Track D
@@ -860,14 +860,14 @@ contributor traps.
 
 ## v0.41+ e2e-test-wave follow-ups (filed during v0.40.8.0 ship)
 
-- [ ] **NEW-1 (P2) — Per-check leaf unit tests for the 20+ exported doctor check functions.** `src/commands/doctor.ts:169-1492` exports whoknowsHealthCheck, takesWeightGridCheck, childTableOrphansCheck, checkRerankerHealth, checkBrainstormHealth, checkSearchMode, checkEvalDrift, checkSyncFreshness, checkAbandonedThreads, checkCalibrationFreshness, checkGradeConfidenceDrift, checkVoiceGateHealth, checkZeEmbeddingHealth, checkEmbeddingWidthConsistency, checkSourceRoutingHealth, checkOauthConfidentialHealth, checkAutopilotLockScope, skillBrainFirstCheck. v0.40.8.0 covers them via the orchestrator only. Parameterize a single `test/doctor-leaves.test.ts` over the exported functions; each case seeds the minimum DB state and asserts the returned `Check.status`. Catches per-check render bugs the orchestrator snapshot can't see (codex CMT-2 deep fix). Estimated ~4h CC.
-- [ ] **NEW-2 (P2) — Cycle-phase wrappers beyond lint + backlinks.** 7 more phases need result-mapping coverage: sync, extract, embed, orphans, extract_facts, resolve_symbol_edges, recompute_emotional_weight. Each adds a describe block to `test/cycle-legacy-phases.test.ts` following the established pattern. ~30min/phase with CC. Mechanical follow-through.
-- [ ] **NEW-3 (P2) — HTTP-level trust-boundary test that proves serve-http.ts honors the filter at runtime.** v0.40.8.0 ships the source-grep guard at `scripts/check-operations-filter-bypass.sh` plus structural assertions in `test/operations-trust-boundary.test.ts`. The codex CMT-3 strongest defense — runtime proof that a register-OAuth-client → attempt-call-every-localOnly-op flow rejects every one — would extend `test/e2e/serve-http-oauth.test.ts`. Real Postgres dep, ~30s wallclock per case. Closes the bypass class with runtime proof in addition to the existing structural defense.
-- [ ] **NEW-4 (P3) — Render function extraction from runDoctor.** v0.40.8.0 uses a subprocess smoke at `test/doctor-cli-smoke.serial.test.ts` to cover the wrapper's render + exit paths. Pulling the human + JSON render code out into pure formatters would let that smoke move back into the parallel fast loop with no subprocess overhead. ~2h CC. Lower priority — the subprocess smoke does its job; this is a wallclock win, not a coverage win.
+- [ ] **NEW-1 (P2) — Per-check leaf unit tests for the 20+ exported doctor check functions.** `src/commands/doctor.ts:169-1492` exports whoknowsHealthCheck, takesWeightGridCheck, childTableOrphansCheck, checkRerankerHealth, checkBrainstormHealth, checkSearchMode, checkEvalDrift, checkSyncFreshness, checkAbandonedThreads, checkCalibrationFreshness, checkGradeConfidenceDrift, checkVoiceGateHealth, checkZeEmbeddingHealth, checkEmbeddingWidthConsistency, checkSourceRoutingHealth, checkOauthConfidentialHealth, checkAutopilotLockScope, skillBrainFirstCheck. v0.40.8.0 covers them via the orchestrator only. Parameterize a single `tests/unit/doctor-leaves.test.ts` over the exported functions; each case seeds the minimum DB state and asserts the returned `Check.status`. Catches per-check render bugs the orchestrator snapshot can't see (codex CMT-2 deep fix). Estimated ~4h CC.
+- [ ] **NEW-2 (P2) — Cycle-phase wrappers beyond lint + backlinks.** 7 more phases need result-mapping coverage: sync, extract, embed, orphans, extract_facts, resolve_symbol_edges, recompute_emotional_weight. Each adds a describe block to `tests/unit/cycle-legacy-phases.test.ts` following the established pattern. ~30min/phase with CC. Mechanical follow-through.
+- [ ] **NEW-3 (P2) — HTTP-level trust-boundary test that proves serve-http.ts honors the filter at runtime.** v0.40.8.0 ships the source-grep guard at `scripts/check-operations-filter-bypass.sh` plus structural assertions in `tests/unit/operations-trust-boundary.test.ts`. The codex CMT-3 strongest defense — runtime proof that a register-OAuth-client → attempt-call-every-localOnly-op flow rejects every one — would extend `tests/unit/e2e/serve-http-oauth.test.ts`. Real Postgres dep, ~30s wallclock per case. Closes the bypass class with runtime proof in addition to the existing structural defense.
+- [ ] **NEW-4 (P3) — Render function extraction from runDoctor.** v0.40.8.0 uses a subprocess smoke at `tests/unit/doctor-cli-smoke.serial.test.ts` to cover the wrapper's render + exit paths. Pulling the human + JSON render code out into pure formatters would let that smoke move back into the parallel fast loop with no subprocess overhead. ~2h CC. Lower priority — the subprocess smoke does its job; this is a wallclock win, not a coverage win.
 
 ## v0.41+ master flake follow-ups (filed during v0.40.8.0 ship)
 
-- [ ] **(P3) — Audit other gateway-mutating tests for missing afterAll cleanup.** v0.40.8.0 added `afterAll(() => resetGateway())` to `test/ai/gateway.test.ts` and quarantined `test/ai/header-transport.test.ts` as `.serial.test.ts`. Two other files mutate gateway state without an explicit cleanup hook: `test/ai/rerank.test.ts`, `test/gateway-embed-model-override.test.ts`. They haven't surfaced flakes yet (different test sequences), but they're the same risk class. Add `afterAll(() => resetGateway())` to both for defense-in-depth, or quarantine if they prove racy under future parallelism changes.
+- [ ] **(P3) — Audit other gateway-mutating tests for missing afterAll cleanup.** v0.40.8.0 added `afterAll(() => resetGateway())` to `tests/unit/ai/gateway.test.ts` and quarantined `tests/unit/ai/header-transport.test.ts` as `.serial.test.ts`. Two other files mutate gateway state without an explicit cleanup hook: `tests/unit/ai/rerank.test.ts`, `tests/unit/gateway-embed-model-override.test.ts`. They haven't surfaced flakes yet (different test sequences), but they're the same risk class. Add `afterAll(() => resetGateway())` to both for defense-in-depth, or quarantine if they prove racy under future parallelism changes.
 ## v0.40.4 adversarial review LOW findings — captured for v0.41+
 
 - [ ] **Codex L1**: `gbrain search stats --days N` underreports for N > 7. audit-writer.ts reads only current + previous ISO week (~14 days). `--days 30` silently shows ~2 weeks of failure events. Fix shape: extend readRecent to walk N/7 weeks dynamically OR cap user input with a clear message.
@@ -884,7 +884,7 @@ contributor traps.
 
 ## Pre-existing flake on master (noticed during v0.40.4 ship)
 
-- [ ] **`test/search/embedding-column.test.ts:466,489,522` — `isCacheSafe` returns false when run after gateway-state-mutating siblings in shard 2.** Confirmed pre-existing on master (`git stash` + `SHARD=2/8 bash scripts/run-unit-shard.sh` reproduces 3 fails on a clean working tree). Symptom: `isCacheSafe(default-named-column, empty-cfg)` expects `gwDims=1536` but reads `1280` (the post-v0.37.11.0 ZeroEntropy default). Some test in the shard before embedding-column.test.ts initializes the gateway with the PGLite-default ZeroEntropy/1280 config and leaves it that way. Either: (a) embedding-column.test.ts grows a `beforeEach` that calls `__setEmbedTransportForTests`-style reset, (b) the offending sibling adds an `afterAll(reset)`, or (c) embedding-column.test.ts becomes `*.serial.test.ts` to quarantine. Three test files in shard 2 touch gateway state via PGLite engine connects: `restart-sweep.test.ts`, `init-mode-picker.test.ts`, `doctor.test.ts`. Tests pass in isolation (50/50); only fail under shard-2 ordering. v0.40.4 ships through this flake — not introduced by the wave.
+- [ ] **`tests/unit/search/embedding-column.test.ts:466,489,522` — `isCacheSafe` returns false when run after gateway-state-mutating siblings in shard 2.** Confirmed pre-existing on master (`git stash` + `SHARD=2/8 bash scripts/run-unit-shard.sh` reproduces 3 fails on a clean working tree). Symptom: `isCacheSafe(default-named-column, empty-cfg)` expects `gwDims=1536` but reads `1280` (the post-v0.37.11.0 ZeroEntropy default). Some test in the shard before embedding-column.test.ts initializes the gateway with the PGLite-default ZeroEntropy/1280 config and leaves it that way. Either: (a) embedding-column.test.ts grows a `beforeEach` that calls `__setEmbedTransportForTests`-style reset, (b) the offending sibling adds an `afterAll(reset)`, or (c) embedding-column.test.ts becomes `*.serial.test.ts` to quarantine. Three test files in shard 2 touch gateway state via PGLite engine connects: `restart-sweep.test.ts`, `init-mode-picker.test.ts`, `doctor.test.ts`. Tests pass in isolation (50/50); only fail under shard-2 ordering. v0.40.4 ships through this flake — not introduced by the wave.
 
 ## v0.40.4 graph signals — deferred follow-ups (v0.41+)
 
@@ -901,7 +901,7 @@ contributor traps.
 
 - [ ] **v0.40: SQL-shape rewrite of `listPrefixSampledPages` for PgBouncer transaction-mode compatibility.** WARN-10 root cause from the v0.38.0.0 smoke test: brainstorm + lsd consistently exceed Postgres `statement_timeout` (often PgBouncer-imposed) on the prefix-stratified domain bank query when the brain has >10K pages spread across many prefixes. v0.39.3.0 ships diagnostic surfacing only (the orchestrator wrap classifies SQLSTATE 57014 into a `StructuredAgentError` with a friendly hint). Real fix: per-prefix limit pushdown, embeddings prefetch, or breaking the single big query into a series of small ones across an explicit cursor. Plan: `~/.claude/plans/system-instruction-you-are-working-async-popcorn.md` (Phase 5, WARN-10 row). Owner: open.
 
-- [ ] **v0.40: magic-byte allowlist for `gbrain capture` binary file detection.** v0.39.3.0 (Phase 3c, CV10) ships a first-8KB NUL-byte scan that catches typical binaries (executables, archives, most image formats). Known gap per CV10-B: a PNG with no NUL byte in its first 8KB slips through. Production-grade detection needs a magic-byte allowlist (PNG/JPEG/GIF/PDF/ZIP signatures). Implement in `src/commands/capture.ts:detectBinaryNullByte` (rename to `detectBinaryInput`) with a small `BINARY_MAGIC_BYTES` table. Reuse the same `assertSourceExists`-style friendly error pattern; reject before UTF-8 decode mangles the bytes. Tests in `test/capture-binary-guard.test.ts` should add cases for the PNG-without-NUL boundary.
+- [ ] **v0.40: magic-byte allowlist for `gbrain capture` binary file detection.** v0.39.3.0 (Phase 3c, CV10) ships a first-8KB NUL-byte scan that catches typical binaries (executables, archives, most image formats). Known gap per CV10-B: a PNG with no NUL byte in its first 8KB slips through. Production-grade detection needs a magic-byte allowlist (PNG/JPEG/GIF/PDF/ZIP signatures). Implement in `src/commands/capture.ts:detectBinaryNullByte` (rename to `detectBinaryInput`) with a small `BINARY_MAGIC_BYTES` table. Reuse the same `assertSourceExists`-style friendly error pattern; reject before UTF-8 decode mangles the bytes. Tests in `tests/unit/capture-binary-guard.test.ts` should add cases for the PNG-without-NUL boundary.
 
 - [ ] **v0.40: facts:absorb root-cause investigation.** v0.39.3.0 (Phase 4c, CV13) suppresses the per-capture `[facts:absorb] failed to log gateway_error for inbox/...: No database connection` noise AND prints a first-occurrence stack trace so the v0.40 fix knows where to look. The actual fix is one of: (a) thread the connected engine through the facts pipeline so it doesn't open its own handle; (b) no-op the absorb-log when called from a CLI context where the doctor health check isn't the consumer; (c) make the facts subsystem connection-aware and queue retries. The stack trace from `src/core/facts/absorb-log.ts:writeFactsAbsorbLog`'s first-occurrence info-log is the input.
 
@@ -959,7 +959,7 @@ contributor traps.
 
 ## v0.37.8.0 pre-existing master test regression (noticed during ship)
 
-- [x] **P0: `test/doctor-report-remote.test.ts:65` — `full report on healthy brain` fails with `health_score: 50` (expects `>=70`).** **Completed:** v0.37.10.0 (2026-05-21). Resolved structurally by the empty-brain-100/100 fix in `src/core/pglite-engine.ts` + `src/core/postgres-engine.ts` (commit 9aa571f3): pages-empty brains now get vacuous-truth full marks on every breakdown component (35/25/15/15/10), so the freshly-initialized test brain's composite stays >=70 even when `skill_brain_first` returns non-ok. Test file renamed to `test/doctor-report-remote.serial.test.ts` and made hermetic (isolates `GBRAIN_HOME` to a tempdir via beforeAll/afterAll per `scripts/check-test-isolation.sh` R1 — env mutation requires serial quarantine).
+- [x] **P0: `tests/unit/doctor-report-remote.test.ts:65` — `full report on healthy brain` fails with `health_score: 50` (expects `>=70`).** **Completed:** v0.37.10.0 (2026-05-21). Resolved structurally by the empty-brain-100/100 fix in `src/core/pglite-engine.ts` + `src/core/postgres-engine.ts` (commit 9aa571f3): pages-empty brains now get vacuous-truth full marks on every breakdown component (35/25/15/15/10), so the freshly-initialized test brain's composite stays >=70 even when `skill_brain_first` returns non-ok. Test file renamed to `tests/unit/doctor-report-remote.serial.test.ts` and made hermetic (isolates `GBRAIN_HOME` to a tempdir via beforeAll/afterAll per `scripts/check-test-isolation.sh` R1 — env mutation requires serial quarantine).
 
 ## v0.37.7.0 federated-brains + autopilot safety follow-ups (v0.37.x+)
 
@@ -973,7 +973,7 @@ contributor traps.
 
 - [ ] **v0.37.x: Verify `tool_use_id` stability through OpenRouter with a live test, then decide whether to relax `isAnthropicProvider()`'s subagent-only gate.** v0.37.6.0 ships `supports_subagent_loop: false` on the OR recipe as informational only — the real gate is `isAnthropicProvider()` in `src/core/model-config.ts`, which hard-rejects every non-Anthropic provider at subagent submit time. OR proxies Anthropic-direct models that DO support stable `tool_use_id` by contract, but OR's response normalization may strip or re-encode them. A short live test: spin up a real OR account, run a subagent loop via `openrouter:anthropic/claude-haiku-4.5`, deliberately abort mid-loop, retry. Assert tool_use_id blocks are byte-identical across attempts. If they are, the `isAnthropicProvider()` check could relax to allow Anthropic models proxied through OR, giving users OR's price/availability story for subagent work. This is a deeper structural change than a recipe-flag flip; needs its own /plan-eng-review pass. Filed during v0.37.6.0 codex review.
 
-- [ ] **v0.37.x: Quarterly OR catalog refresh.** v0.37.6.0 ships 8 curated chat slugs (gpt-5.2, gpt-5.2-chat, gpt-5.5, claude-haiku-4.5, claude-sonnet-4.6, claude-opus-4.7, gemini-3-flash-preview, deepseek-chat) with `price_last_verified: '2026-05-20'`. OR's catalog churns weekly; specific slugs get deprecated, renamed, or merged. Refresh cadence: every 90 days, walk https://openrouter.ai/models, prune deprecated slugs, add new frontier IDs that match the recipe's curation logic (frontier-tier + cheap-routing entry points). Bump `price_last_verified`. The shape-test regression in `test/ai/recipe-openrouter.test.ts` (`MODEL_SHAPE` regex) means typos surface immediately; the catalog refresh is about discovery, not validation.
+- [ ] **v0.37.x: Quarterly OR catalog refresh.** v0.37.6.0 ships 8 curated chat slugs (gpt-5.2, gpt-5.2-chat, gpt-5.5, claude-haiku-4.5, claude-sonnet-4.6, claude-opus-4.7, gemini-3-flash-preview, deepseek-chat) with `price_last_verified: '2026-05-20'`. OR's catalog churns weekly; specific slugs get deprecated, renamed, or merged. Refresh cadence: every 90 days, walk https://openrouter.ai/models, prune deprecated slugs, add new frontier IDs that match the recipe's curation logic (frontier-tier + cheap-routing entry points). Bump `price_last_verified`. The shape-test regression in `tests/unit/ai/recipe-openrouter.test.ts` (`MODEL_SHAPE` regex) means typos surface immediately; the catalog refresh is about discovery, not validation.
 
 - [ ] **v0.37.x: Adopt `resolveDefaultHeaders` for Together / Groq / other attribution-bearing recipes.** v0.37.6.0's `default_headers` / `resolveDefaultHeaders` seam is generic — any recipe whose provider benefits from app-attribution headers can opt in. Together and Groq both have rankings/analytics tied to per-app headers. Add their respective attribution headers to each recipe, similar to OR's `HTTP-Referer` + `X-OpenRouter-Title`. No type-system or gateway changes needed; just `default_headers` blocks on the existing recipes plus `<PROVIDER>_REFERER` / `<PROVIDER>_TITLE` env vars in their `auth_env.optional`. Filed during v0.37.6.0 eng review as a D4 generalization opportunity.
 
@@ -982,11 +982,11 @@ contributor traps.
 
 ## v0.37.4.0 pgGraph CI scaffolding follow-ups (v0.37.x+)
 
-- [ ] **T8 truncation signal — defer until dedupe-then-cap SQL + Postgres parity E2E.** v0.37.4.0 ships `frontierCap` as the actually-useful protection but strips the `onTruncation` callback after /review adversarial pass (Claude + Codex both flagged). Two bugs in the v1 algorithm: (a) FALSE POSITIVE — `count == cap` at a depth fires the callback even when the graph organically has exactly cap unique nodes at that depth with no truncation; (b) FALSE NEGATIVE — recursive `LIMIT N` runs BEFORE outer `SELECT DISTINCT`, so diamond graphs (one parent fans out to N+5 candidates with duplicates) can have the LIMIT eat its slots on dupes, then DISTINCT collapses to <cap unique nodes, missing real truncation. Fix shape: rewrite both engine impls to dedupe candidates (by `(slug, id)` or page id, source-scoped) BEFORE applying the LIMIT — i.e., `(SELECT DISTINCT ON ... ORDER BY slug, id LIMIT N)` inside the recursive term instead of post-CTE DISTINCT. Then write the missing `test/e2e/engine-parity-frontier-cap.test.ts` (Postgres against PGLite, identical chosen slugs when cap fires + stable ordering). Restore `TruncationInfo` + `opts.onTruncation` to `TraverseGraphOpts` with the cap-after-dedupe shape. Callers that need truncation visibility in the interim can compare `result.length` against expected fanout bounds. /review found it; not a blocker for v0.37.4.0 because the cap itself works correctly and is back-compat (default unset = no behavior change).
+- [ ] **T8 truncation signal — defer until dedupe-then-cap SQL + Postgres parity E2E.** v0.37.4.0 ships `frontierCap` as the actually-useful protection but strips the `onTruncation` callback after /review adversarial pass (Claude + Codex both flagged). Two bugs in the v1 algorithm: (a) FALSE POSITIVE — `count == cap` at a depth fires the callback even when the graph organically has exactly cap unique nodes at that depth with no truncation; (b) FALSE NEGATIVE — recursive `LIMIT N` runs BEFORE outer `SELECT DISTINCT`, so diamond graphs (one parent fans out to N+5 candidates with duplicates) can have the LIMIT eat its slots on dupes, then DISTINCT collapses to <cap unique nodes, missing real truncation. Fix shape: rewrite both engine impls to dedupe candidates (by `(slug, id)` or page id, source-scoped) BEFORE applying the LIMIT — i.e., `(SELECT DISTINCT ON ... ORDER BY slug, id LIMIT N)` inside the recursive term instead of post-CTE DISTINCT. Then write the missing `tests/unit/e2e/engine-parity-frontier-cap.test.ts` (Postgres against PGLite, identical chosen slugs when cap fires + stable ordering). Restore `TruncationInfo` + `opts.onTruncation` to `TraverseGraphOpts` with the cap-after-dedupe shape. Callers that need truncation visibility in the interim can compare `result.length` against expected fanout bounds. /review found it; not a blocker for v0.37.4.0 because the cap itself works correctly and is back-compat (default unset = no behavior change).
 
-- [ ] **pg_upgrade_matrix.sh: add layer-isolation mode.** The current script tests whole-system walk-forward (the bug class CHANGELOG advertises). Adversarial /review caught that multi-layer healing (bootstrap → SCHEMA_SQL → migrations → verifySchema) means stubbing out `applyForwardReferenceBootstrap` entirely still produces clean walk-forwards on both fixtures. So the matrix doesn't actually gate on bootstrap correctness — only on whole-system wedges. Add an `ISOLATE_BOOTSTRAP=1` mode that monkey-patches the downstream layers (or runs a smaller engine surface that only invokes bootstrap) so single-probe regressions can be isolated. Complements the existing `test/schema-bootstrap-coverage.test.ts` static guard.
+- [ ] **pg_upgrade_matrix.sh: add layer-isolation mode.** The current script tests whole-system walk-forward (the bug class CHANGELOG advertises). Adversarial /review caught that multi-layer healing (bootstrap → SCHEMA_SQL → migrations → verifySchema) means stubbing out `applyForwardReferenceBootstrap` entirely still produces clean walk-forwards on both fixtures. So the matrix doesn't actually gate on bootstrap correctness — only on whole-system wedges. Add an `ISOLATE_BOOTSTRAP=1` mode that monkey-patches the downstream layers (or runs a smaller engine surface that only invokes bootstrap) so single-probe regressions can be isolated. Complements the existing `tests/unit/schema-bootstrap-coverage.test.ts` static guard.
 
-- [ ] **scripts/check-fuzz-purity.sh: derive TARGET_FILES from `test/fuzz/pure-validators.test.ts` imports.** Today the targets are hand-maintained in two places (`TARGET_FILES` array + the test file's imports). Adding a new pure fuzz target requires updating both; forgetting the script means the new target ships ungated. Parse the test file's imports at script start (regex over `import { ... } from '../../src/.../*.ts'`) instead.
+- [ ] **scripts/check-fuzz-purity.sh: derive TARGET_FILES from `tests/unit/fuzz/pure-validators.test.ts` imports.** Today the targets are hand-maintained in two places (`TARGET_FILES` array + the test file's imports). Adding a new pure fuzz target requires updating both; forgetting the script means the new target ships ungated. Parse the test file's imports at script start (regex over `import { ... } from '../../src/.../*.ts'`) instead.
 ## skill_brain_first wave follow-ups (v0.36.4+)
 
 - [ ] **v0.37+: Runtime brain-first gate at MCP dispatch.** The v0.36.x
@@ -1041,7 +1041,7 @@ contributor traps.
 
 - [ ] **v0.36.x: Run gbrain-side floor-ratio ablation before flipping any mode-bundle default.** v0.35.6.0 ships the gate default-off (`MODE_BUNDLES[*].floor_ratio = undefined`) because the SkyTwin labeled-retrieval ablation that surfaced the regression isn't reproducible on gbrain's own eval surfaces from outside. Before any mode-bundle default flip, run the gate at `floor_ratio: undefined`, 0.85, 0.90, 0.95 across `gbrain eval longmemeval`, `gbrain eval whoknows`, `gbrain eval suspected-contradictions`, and the BrainBench-Real replay (sibling gbrain-evals repo). Quantify per-mode P@k / R@k / nDCG@k / top-1 stability deltas. Look for: regression on queries that genuinely need the long-tail boost (specific entity lookups, low-frequency topics) vs improvement on queries where weak-overlap pages were leapfrogging. The corpus-level finding determines whether tokenmax (most exposure to the failure mode) should flip first, or whether the gate stays a per-call opt-in indefinitely. Filed during v0.35.6.0 codex outside-voice review.
 
-- [ ] **v0.36.x: `MODE_BUNDLES.floor_ratio` integration shape — populate after ablation evidence.** v0.35.6.0 leaves `floor_ratio: undefined` in all three bundles deliberately. After the ablation TODO above, set per-mode defaults: probably `tokenmax: 0.85` first (high-context tier, broad searchLimit=50, expansion=on — most exposure to leapfrog), `balanced` second if signal holds, `conservative` only if the ablation shows the gate doesn't hurt on small candidate pools. Update the canonical-bundle tests in `test/search-mode.test.ts` (3 fixtures) when flipping. The KNOBS_HASH_VERSION does NOT need to bump for a default change — the per-bundle default is part of the hash input already.
+- [ ] **v0.36.x: `MODE_BUNDLES.floor_ratio` integration shape — populate after ablation evidence.** v0.35.6.0 leaves `floor_ratio: undefined` in all three bundles deliberately. After the ablation TODO above, set per-mode defaults: probably `tokenmax: 0.85` first (high-context tier, broad searchLimit=50, expansion=on — most exposure to leapfrog), `balanced` second if signal holds, `conservative` only if the ablation shows the gate doesn't hurt on small candidate pools. Update the canonical-bundle tests in `tests/unit/search-mode.test.ts` (3 fixtures) when flipping. The KNOBS_HASH_VERSION does NOT need to bump for a default change — the per-bundle default is part of the hash input already.
 
 - [ ] **v0.36.x: Per-source floor-ratio (federated read).** v0.35.6.0 uses a single global threshold across all sources. Federated-read users (v0.34.1.0+) sharing a query across multiple sources get one floor across the merged result set, which means a high-scoring source can suppress metadata boosts for pages in another source. Codex outside-voice flagged this during v0.35.6.0 review; user explicitly chose the simpler primitive (D9=A). If a federated-read user later reports legitimate per-source winners being suppressed, the fix is a per-source threshold map computed at `runPostFusionStages` entry (one threshold per unique `source_id` in the result set). Plan reference: D9 in `~/.claude/plans/swift-sniffing-nygaard.md`.
 
@@ -1050,7 +1050,7 @@ contributor traps.
 
 ## dreamy-thompson wave follow-ups (v0.36.x)
 
-- [ ] **v0.36.x: runThink full rewrite — drop ThinkLLMClient indirection.** v0.36's fix(think) wave landed a gateway-backed adapter at `src/core/think/index.ts:225-251` so `gbrain config set anthropic_api_key` works over MCP stdio (closed #952). The adapter routes through `gateway.chat()` but `runThink` still carries the `ThinkLLMClient` interface as the test seam — it's the last LLM-using path that doesn't use the canonical `__setChatTransportForTests` seam v0.31.12 established for chat/embed. Cleanup: drop `ThinkLLMClient`, drop the `opts.client` injection point, migrate the 12+ existing tests (`test/think-pipeline.serial.test.ts:144,181,222`, `test/think-gateway-adapter.test.ts`, plus 9+ others that stub the interface) to `__setChatTransportForTests`. Pros: codebase consistency, one fewer test-stub pattern, easier to add provider switching for think once it routes through gateway natively. Cons: 12+ test files need migration. Blocked by: v0.36 wave landing on master (so the adapter exists to lean on while migrating tests). Plan reference: D5 + D7 in `~/.claude/plans/ok-i-spun-up-dreamy-thompson.md`.
+- [ ] **v0.36.x: runThink full rewrite — drop ThinkLLMClient indirection.** v0.36's fix(think) wave landed a gateway-backed adapter at `src/core/think/index.ts:225-251` so `gbrain config set anthropic_api_key` works over MCP stdio (closed #952). The adapter routes through `gateway.chat()` but `runThink` still carries the `ThinkLLMClient` interface as the test seam — it's the last LLM-using path that doesn't use the canonical `__setChatTransportForTests` seam v0.31.12 established for chat/embed. Cleanup: drop `ThinkLLMClient`, drop the `opts.client` injection point, migrate the 12+ existing tests (`tests/unit/think-pipeline.serial.test.ts:144,181,222`, `tests/unit/think-gateway-adapter.test.ts`, plus 9+ others that stub the interface) to `__setChatTransportForTests`. Pros: codebase consistency, one fewer test-stub pattern, easier to add provider switching for think once it routes through gateway natively. Cons: 12+ test files need migration. Blocked by: v0.36 wave landing on master (so the adapter exists to lean on while migrating tests). Plan reference: D5 + D7 in `~/.claude/plans/ok-i-spun-up-dreamy-thompson.md`.
 
 - [ ] **v0.36.x: Supabase parity test fixture for `applyForwardReferenceBootstrap`.** v0.36 fixed the underlying bug (bootstrap now uses the DDL connection from `initSchema` so probes run inside the advisory-lock scope) per codex P1 from /ship adversarial review. What remains is the TEST FIXTURE that proves it: the new pre-v18/pre-v34/pre-v60 E2E tests run against local Docker Postgres but not against Supabase-shape pooler topology (transaction pooler + statement_timeout). Real Supabase upgrades have failed multiple times on this exact connection-topology divergence (#699, #820 lineage). Fix: a test fixture that exercises the probe path against deriveDirectUrl + transaction pooler + statement_timeout. Cons: requires Supabase fixture infra OR careful mocking of the connection-selection logic in `db.ts`'s `getDDLConnection` path.
 
@@ -1302,10 +1302,10 @@ sync fix is verified working in production.
 **Filed:** 2026-05-08 from v0.31.2 plan (deferred).
 
 **What:** Plan called for two regression tests pinning the user's exact
-repro topology: `test/sync-walker-amarillo-shape.test.ts` (PGLite,
-fast-loop) and `test/e2e/sync-amarillo-shape.test.ts` (real-Postgres,
+repro topology: `tests/unit/sync-walker-amarillo-shape.test.ts` (PGLite,
+fast-loop) and `tests/unit/e2e/sync-amarillo-shape.test.ts` (real-Postgres,
 skip-on-no-DB). Unit-level walker + chunker tests landed in v0.31.2
-(`test/sync-walker-symlink.test.ts` + `test/chunker-timeout.test.ts`),
+(`tests/unit/sync-walker-symlink.test.ts` + `tests/unit/chunker-timeout.test.ts`),
 but the engine-integrated regression for the user's exact 1500-file
 self-symlink topology is still pending. Add when the next sync-related
 PR is in flight.
@@ -1350,7 +1350,7 @@ PR is in flight.
   shell-loop usage on thin-client installs. Today the in-memory cache is
   per-process; every `gbrain` invocation pays a fresh token mint.
 
-- [ ] **v0.31.x: parity test (`test/thin-client-parity.test.ts`).** Plan
+- [ ] **v0.31.x: parity test (`tests/unit/thin-client-parity.test.ts`).** Plan
   called for ~400 LOC byte-equal stdout assertions for 12+ ops via an
   in-process MCP server pointed at the same PGLite as the local-engine
   path. Harder than expected because it needs MCP server setup that the
@@ -1736,15 +1736,15 @@ verify Voyage adapter integration in `src/core/ai/recipes/voyage.ts`).
 
 The constraint: when multiple test files load into the same bun process (which is what `bun test foo.test.ts bar.test.ts ...` does inside a shard), they share module-level state. Three contention surfaces today:
 
-- **~58 PGLiteEngine instantiations** across `test/` (per codex's grep). Many use module-level `let engine: PGLiteEngine` patterns. Race when multiple test files load and each invokes `new PGLiteEngine().connect({})`. **(carrying to v0.26.9)**
+- **~58 PGLiteEngine instantiations** across `tests/unit/` (per codex's grep). Many use module-level `let engine: PGLiteEngine` patterns. Race when multiple test files load and each invokes `new PGLiteEngine().connect({})`. **(carrying to v0.26.9)**
 - **~40 process.env mutations** without restore. `process.env.X = '...'` not paired with `afterEach` cleanup leaks across files in the same process. **(carrying to v0.26.8 — `withEnv` helper shipped in v0.26.7)**
-- ~~**2 top-level `mock.module(...)` calls** in `test/core/cycle.test.ts:26` and `test/embed.test.ts`. Top-level mocks affect every other test file in the same process.~~ **(quarantined as `*.serial.test.ts` in v0.26.7)**
+- ~~**2 top-level `mock.module(...)` calls** in `tests/unit/core/cycle.test.ts:26` and `tests/unit/embed.test.ts`. Top-level mocks affect every other test file in the same process.~~ **(quarantined as `*.serial.test.ts` in v0.26.7)**
 
-The repo already has the right helper: `test/helpers/reset-pglite.ts` exports `resetPgliteState(engine)` which is "two orders of magnitude faster" than fresh-engine-per-test (per the helper's own comment). Sweep all PGLite sites to use one shared engine + this reset in `beforeEach`. Do NOT introduce a `freshPglite()` allocator — codex correctly flagged that the repo already rejected that direction.
+The repo already has the right helper: `tests/unit/helpers/reset-pglite.ts` exports `resetPgliteState(engine)` which is "two orders of magnitude faster" than fresh-engine-per-test (per the helper's own comment). Sweep all PGLite sites to use one shared engine + this reset in `beforeEach`. Do NOT introduce a `freshPglite()` allocator — codex correctly flagged that the repo already rejected that direction.
 
 Two flakes already known and quarantined as `*.serial.test.ts` (run after parallel pass at `--max-concurrency=1`):
-- `test/brain-registry.serial.test.ts` (was `brain-registry.test.ts`)
-- `test/reconcile-links.serial.test.ts` (was `reconcile-links.test.ts`)
+- `tests/unit/brain-registry.serial.test.ts` (was `brain-registry.test.ts`)
+- `tests/unit/reconcile-links.serial.test.ts` (was `reconcile-links.test.ts`)
 
 After the sweep, both should be fixable and renameable back to plain `*.test.ts`.
 
@@ -1755,7 +1755,7 @@ After the sweep, both should be fixable and renameable back to plain `*.test.ts`
 
 **Pros:**
 - Real architectural win, not just speed: tests become composable.
-- Existing helper (`test/helpers/reset-pglite.ts`) already validates the pattern.
+- Existing helper (`tests/unit/helpers/reset-pglite.ts`) already validates the pattern.
 - Quarantined flakes auto-resolve: rename back to `*.test.ts` after the sweep.
 
 **Cons:**
@@ -1800,26 +1800,26 @@ After the sweep, both should be fixable and renameable back to plain `*.test.ts`
 
 **What:** A `bun test` run on top of master at v0.26.2 surfaces 22 pre-existing failures across these suites — none touch v0.26.2's diff (oauth-provider.ts, auth.ts, oauth tests). They reproduce on a clean checkout against master:
 
-- 12 cases in `test/e2e/sync.test.ts` (Git-to-DB Sync Pipeline) — `result.status === 'first_sync'` vs actual `'synced'` state-machine drift; same root cause across all 12.
-- 3 cases in `test/e2e/multi-source.test.ts` (cascade delete + 2 sync routing) — performSync sourceId/local_path resolution.
-- `test/e2e/sync-parallel.test.ts` (60-file Postgres concurrency=4) — connection-leak probe regression.
-- `test/e2e/sync.test.ts` `--skip-failed` structured summary loop (v0.22.12 #500).
-- `test/e2e/dream.test.ts` (no --dry-run syncs pages) — runCycle DB write path.
-- `test/e2e/cycle.test.ts` (live cycle + chunks + lock cleanup).
-- `test/e2e/doctor.test.ts` (gbrain doctor exits 0 on healthy DB) — possibly related to v0.26.2 schema changes since CHANGELOG mentions extension of doctor checks.
-- `test/brain-registry.test.ts` (empty/null/undefined id routes to host) — unrelated to OAuth surface.
-- `test/e2e/claw-test.test.ts` (fresh-install scripted scenario) — needs investigation; took 3.9s and reported "produces zero error/blocker friction" failure.
+- 12 cases in `tests/unit/e2e/sync.test.ts` (Git-to-DB Sync Pipeline) — `result.status === 'first_sync'` vs actual `'synced'` state-machine drift; same root cause across all 12.
+- 3 cases in `tests/unit/e2e/multi-source.test.ts` (cascade delete + 2 sync routing) — performSync sourceId/local_path resolution.
+- `tests/unit/e2e/sync-parallel.test.ts` (60-file Postgres concurrency=4) — connection-leak probe regression.
+- `tests/unit/e2e/sync.test.ts` `--skip-failed` structured summary loop (v0.22.12 #500).
+- `tests/unit/e2e/dream.test.ts` (no --dry-run syncs pages) — runCycle DB write path.
+- `tests/unit/e2e/cycle.test.ts` (live cycle + chunks + lock cleanup).
+- `tests/unit/e2e/doctor.test.ts` (gbrain doctor exits 0 on healthy DB) — possibly related to v0.26.2 schema changes since CHANGELOG mentions extension of doctor checks.
+- `tests/unit/brain-registry.test.ts` (empty/null/undefined id routes to host) — unrelated to OAuth surface.
+- `tests/unit/e2e/claw-test.test.ts` (fresh-install scripted scenario) — needs investigation; took 3.9s and reported "produces zero error/blocker friction" failure.
 
 **Why:** These failures pre-date v0.26.2 (CHANGELOG already documents "18 pre-existing master timeouts" from v0.26.0 merge). v0.26.2 brings the count to 22, suggesting a 4-test drift on master between v0.26.0 ship and now. Fixing inside v0.26.2 would balloon scope from a 6-file OAuth fix-wave to a 30+ file test-infra repair. The fix-wave deserves its own PR with focused triage.
 
 **Likely root causes worth investigating:**
-- **bun execSync env inheritance** (already discovered + fixed in test/e2e/serve-http-oauth.test.ts during v0.26.2): bun's `execSync` does NOT inherit env mutations done via `process.env.X = ...`, only OS-level env from before bun started. helpers.ts loads `.env.testing` and sets `DATABASE_URL` via `process.env` mutation, which is invisible to subprocesses unless `env: { ...process.env }` is passed explicitly. Several of the failing E2E tests (sync, cycle, dream, claw-test) spawn subprocesses via execSync — likely the same bug.
+- **bun execSync env inheritance** (already discovered + fixed in tests/unit/e2e/serve-http-oauth.test.ts during v0.26.2): bun's `execSync` does NOT inherit env mutations done via `process.env.X = ...`, only OS-level env from before bun started. helpers.ts loads `.env.testing` and sets `DATABASE_URL` via `process.env` mutation, which is invisible to subprocesses unless `env: { ...process.env }` is passed explicitly. Several of the failing E2E tests (sync, cycle, dream, claw-test) spawn subprocesses via execSync — likely the same bug.
 - **Test ordering / DB state pollution**: full-suite runs in bun test happen in a deterministic order; isolated runs of these test files may pass while suite runs fail. Could indicate beforeAll/afterAll cleanup gaps.
 - **Schema drift**: doctor/multi-source tests may rely on specific schema state that v0.26 OAuth tables changed.
 
 **Pros:**
 - Separating from v0.26.2 keeps the OAuth ship focused and auditable; the 22 failures aren't blocking real-world OAuth functionality.
-- The execSync env-inheritance pattern is now documented in test/e2e/serve-http-oauth.test.ts as a reference fix for the next maintainer.
+- The execSync env-inheritance pattern is now documented in tests/unit/e2e/serve-http-oauth.test.ts as a reference fix for the next maintainer.
 - Unblocks v0.26.2 ship while preserving the failure inventory for the follow-up.
 
 **Cons:**
@@ -1861,10 +1861,10 @@ After the sweep, both should be fixable and renameable back to plain `*.test.ts`
 
 **Depends on / blocked by:** Stages 1+2 (this PR) landing first.
 
-### test/e2e/multi-source.test.ts cascade test isn't isolated
+### tests/unit/e2e/multi-source.test.ts cascade test isn't isolated
 **Priority:** P1
 
-**What:** The "sources remove cascades to pages + chunks + timeline + links + files" test in `test/e2e/multi-source.test.ts:281` fails when the file runs after other E2E files in the sequential `bash scripts/run-e2e.sh` order, but passes 20/20 on a fresh Postgres volume. The failing assertion is `SELECT COUNT(*) FROM links WHERE from_page_id = aliceId` expecting 0, getting 1 — so a prior file's setup left a `links` row that references a page id the cascade test happens to reuse. The test's own `setupDB()` truncates but doesn't sweep all referencing rows back when ids collide.
+**What:** The "sources remove cascades to pages + chunks + timeline + links + files" test in `tests/unit/e2e/multi-source.test.ts:281` fails when the file runs after other E2E files in the sequential `bash scripts/run-e2e.sh` order, but passes 20/20 on a fresh Postgres volume. The failing assertion is `SELECT COUNT(*) FROM links WHERE from_page_id = aliceId` expecting 0, getting 1 — so a prior file's setup left a `links` row that references a page id the cascade test happens to reuse. The test's own `setupDB()` truncates but doesn't sweep all referencing rows back when ids collide.
 
 **Why:** Surfaced when `bun run ci:local` (this PR's local CI gate) ran the full sequential E2E. CI never catches it because `.github/workflows/e2e.yml:40` only runs `mechanical.test.ts + mcp.test.ts` on PRs and nightly Tier 1. So 27 of 29 E2E files including this one aren't actually exercised by CI today. The local gate is stronger and surfaces real cross-file isolation gaps.
 
@@ -1877,7 +1877,7 @@ After the sweep, both should be fixable and renameable back to plain `*.test.ts`
 - Could require a per-file "namespace your test ids" pattern, ~30 min per affected file across the suite.
 
 **Context:**
-- Repro: `bash scripts/run-e2e.sh test/e2e/multi-source.test.ts` against a stale DB after other E2E files have run → fails. Same against a fresh `docker compose down -v && up -d postgres` → passes 20/20.
+- Repro: `bash scripts/run-e2e.sh tests/unit/e2e/multi-source.test.ts` against a stale DB after other E2E files have run → fails. Same against a fresh `docker compose down -v && up -d postgres` → passes 20/20.
 - The test inserts a hardcoded `cascadetest` source id and `aliceId` page id; collisions across runs are predictable.
 - Likely fix: use `mkdtemp`-style randomized source/page ids per test, OR have the test do a deeper reset (DELETE FROM all five tables in beforeEach) instead of relying on `setupDB`'s TRUNCATE behavior.
 
@@ -1910,7 +1910,7 @@ After the sweep, both should be fixable and renameable back to plain `*.test.ts`
 
 ## claw-test E2E (v0.22.16 follow-ups)
 
-### Hermes runner — `src/core/claw-test/runners/hermes.ts`
+### Hermes runner — `src/core/claw-tests/unit/runners/hermes.ts`
 **Priority:** P2
 
 **What:** Add a Hermes implementation of the `AgentRunner` interface. v1 ships only OpenClaw; v1.1 lands hermes once we have real friction reports from openclaw to validate the contract against.
@@ -1938,7 +1938,7 @@ After the sweep, both should be fixable and renameable back to plain `*.test.ts`
 ### Scenario expansion — `supabase-migration` and `supervisor-restart`
 **Priority:** P2
 
-**What:** Two more scenarios under `test/fixtures/claw-test-scenarios/`:
+**What:** Two more scenarios under `tests/unit/fixtures/claw-test-scenarios/`:
 - `supabase-migration` — `gbrain init --pglite` then `gbrain migrate --to supabase`; verifies the cross-engine migration path
 - `supervisor-restart` — kill worker mid-job; verify supervisor recovers without data loss
 
@@ -1951,7 +1951,7 @@ After the sweep, both should be fixable and renameable back to plain `*.test.ts`
 ### Real v0.18 SQL dump for upgrade scenario
 **Priority:** P2
 
-**What:** The `upgrade-from-v0.18` scenario ships scaffolded — `seed/dump.sql` is missing. The harness gracefully no-ops the seed phase when absent, so the scenario currently behaves like fresh-install. v1.1: generate a real v0.18-shape PGLite dump per the procedure documented in `test/fixtures/claw-test-scenarios/upgrade-from-v0.18/seed/README.md`.
+**What:** The `upgrade-from-v0.18` scenario ships scaffolded — `seed/dump.sql` is missing. The harness gracefully no-ops the seed phase when absent, so the scenario currently behaves like fresh-install. v1.1: generate a real v0.18-shape PGLite dump per the procedure documented in `tests/unit/fixtures/claw-test-scenarios/upgrade-from-v0.18/seed/README.md`.
 
 **Why:** Without a real seed, the scenario doesn't actually exercise the migration chain forward-walk. That's the whole point of the upgrade scenario — proves issue #239/#243/#266/#357 class regressions stay fixed.
 
@@ -2251,7 +2251,7 @@ acknowledged-set to the DB.
 
 **What:** 22 tests added in v0.21.0 (Code Cathedral II) consistently fail in the full `bun test` run with timeout-pattern elapsed times of 7-10s, but pass in isolation. Every failing test calls `engine.initSchema()` in `beforeAll` without a timeout extension. Under parallel load (168 test files now run concurrently after v0.21 added ~24 new files), `initSchema` exceeds bun's default 5s `beforeAll` timeout.
 
-Affected files include (non-exhaustive): `test/sync-strategy.test.ts`, `test/cathedral-ii-brainbench.test.ts`, `test/code-edges.test.ts`, `test/reindex-code.test.ts`, `test/reconcile-links.test.ts`, `test/two-pass.test.ts`, `test/parent-symbol-path.test.ts`, `test/pglite-v0_19.test.ts`.
+Affected files include (non-exhaustive): `tests/unit/sync-strategy.test.ts`, `tests/unit/cathedral-ii-brainbench.test.ts`, `tests/unit/code-edges.test.ts`, `tests/unit/reindex-code.test.ts`, `tests/unit/reconcile-links.test.ts`, `tests/unit/two-pass.test.ts`, `tests/unit/parent-symbol-path.test.ts`, `tests/unit/pglite-v0_19.test.ts`.
 
 **Why:** Currently triaged as "skip pre-existing, ship anyway" but that's not a real fix. Blocks /ship for anyone whose CHANGELOG-time test run sees them.
 
@@ -2259,7 +2259,7 @@ Affected files include (non-exhaustive): `test/sync-strategy.test.ts`, `test/cat
 
 **Cons:** ~22 file edits adding `beforeAll(async () => {...}, 30000)` is mechanical but dull.
 
-**Context:** Same pattern fixed in v0.20.5 wave for `test/e2e/minions-shell-pglite.test.ts`. Single-file repro: each fails in `bun test`, passes in `bun test <file>`. Reproduces with my changes stashed, so it's on master.
+**Context:** Same pattern fixed in v0.20.5 wave for `tests/unit/e2e/minions-shell-pglite.test.ts`. Single-file repro: each fails in `bun test`, passes in `bun test <file>`. Reproduces with my changes stashed, so it's on master.
 
 **Effort:** S (human: ~30 min / CC: ~5 min). Mechanical: grep for `beforeAll(async () => {` in affected files, add `, 30000)` argument.
 
@@ -2348,7 +2348,7 @@ keeping both skills' triggers intact for chaining.
 - `src/core/chunkers/code.ts` emits chunks in `chunkCodeTextFull`. Walk each declaration's preceding sibling(s) for comment nodes.
 - ChunkInput already has `doc_comment?: string`. Populate at chunk time and it flows through `upsertChunks` (Layer 6 wired those columns).
 - Per-language config: leading-comment type names per language (`comment`, `line_comment`, `block_comment`, `documentation_comment`).
-- Test hook: `test/cathedral-ii-brainbench.test.ts` has a `doc_comment_matching` placeholder — flesh it out end-to-end.
+- Test hook: `tests/unit/cathedral-ii-brainbench.test.ts` has a `doc_comment_matching` placeholder — flesh it out end-to-end.
 
 **Effort:** M (human: ~2 days / CC: ~90 min for the 8 Layer-5 langs).
 
@@ -2378,9 +2378,9 @@ keeping both skills' triggers intact for chaining.
 
 ## P3 — Dev experience: test suite parallelism on fast multi-core machines
 
-**Context:** `bun test` on M-series Macs spawns ~1 worker per core. `test/dream.test.ts` (5 describe blocks, 11 tests) and `test/orphans.test.ts` create a fresh PGLite engine in `beforeEach` that runs ~20 schema migrations per test. Under parallel load, WASM-instance contention causes ~18 `beforeEach` timeouts at 5–9s.
+**Context:** `bun test` on M-series Macs spawns ~1 worker per core. `tests/unit/dream.test.ts` (5 describe blocks, 11 tests) and `tests/unit/orphans.test.ts` create a fresh PGLite engine in `beforeEach` that runs ~20 schema migrations per test. Under parallel load, WASM-instance contention causes ~18 `beforeEach` timeouts at 5–9s.
 
-**Evidence:** CI (ubuntu-latest, fewer cores) is green on every PR. Running the suspect files in isolation (`bun test test/dream.test.ts test/orphans.test.ts`) is also green. Reproduces only on fast multi-core local machines running the full 136-file parallel suite.
+**Evidence:** CI (ubuntu-latest, fewer cores) is green on every PR. Running the suspect files in isolation (`bun test tests/unit/dream.test.ts tests/unit/orphans.test.ts`) is also green. Reproduces only on fast multi-core local machines running the full 136-file parallel suite.
 
 **Fix:** move engine creation from `beforeEach` to `beforeAll` per describe block; add a data-reset helper (delete-all-rows-in-relevant-tables) between tests. ~80 LOC change across two test files.
 
@@ -2431,7 +2431,7 @@ possessive time ("his/her/their time at"), role-noun forms ("tenure as",
 and qualifier-specific advisors. New EMPLOYEE_ROLE_RE prior fires for
 self-identified employees at the page level, biasing outbound company refs
 toward works_at when per-edge verbs are absent. Precedence: investor > advisor
-> employee. Existing tests in `test/link-extraction.test.ts` cover the new
+> employee. Existing tests in `tests/unit/link-extraction.test.ts` cover the new
 patterns.
 
 ## P1 (BrainBench v1.1 — remaining categories)
@@ -2523,9 +2523,9 @@ iteration's residuals.
 ### PGLite test-runner concurrency flake (~27 false failures in full `bun test`)
 **What:** Fix the concurrent-PGLite-init flake that surfaces ~27 `error: PGLite not connected. Call connect() first.` failures when `bun test` runs all 174 unit-test files together. Each failing file passes in isolation; failures only appear under full-suite parallelism.
 
-**Why:** The failures are masking real signal. /ship and any solo dev running `bun test` has to manually triage 27 results every time. Today they're all in `test/cathedral-ii-pglite.test.ts`, `test/cathedral-ii-brainbench.test.ts` (Layer 5/6/7/8 + parent_scope_coverage + call_graph_recall), `test/sync.test.ts` (4 dry-run cases), `test/reindex-code.test.ts` (Layer 13 E2). All exist on master and date back to v0.12.3-v0.21.0 — pre-existing, not caused by any one branch.
+**Why:** The failures are masking real signal. /ship and any solo dev running `bun test` has to manually triage 27 results every time. Today they're all in `tests/unit/cathedral-ii-pglite.test.ts`, `tests/unit/cathedral-ii-brainbench.test.ts` (Layer 5/6/7/8 + parent_scope_coverage + call_graph_recall), `tests/unit/sync.test.ts` (4 dry-run cases), `tests/unit/reindex-code.test.ts` (Layer 13 E2). All exist on master and date back to v0.12.3-v0.21.0 — pre-existing, not caused by any one branch.
 
-**Context:** Confirmed pre-existing on master via `git diff origin/master...HEAD --stat -- <failing files>` returning empty. Tests pass cleanly in 1-3-file batches. Wall clock for the full suite is 596s. Likely root causes: (a) PGLite has a singleton or shared OPFS-like state that races under parallel `PGlite.create()` calls, (b) `test/cathedral-ii-pglite.test.ts` "fresh-install schema" tests assume exclusive PGLite access, (c) bun test concurrency exceeds what PGLite's WASM init can handle.
+**Context:** Confirmed pre-existing on master via `git diff origin/master...HEAD --stat -- <failing files>` returning empty. Tests pass cleanly in 1-3-file batches. Wall clock for the full suite is 596s. Likely root causes: (a) PGLite has a singleton or shared OPFS-like state that races under parallel `PGlite.create()` calls, (b) `tests/unit/cathedral-ii-pglite.test.ts` "fresh-install schema" tests assume exclusive PGLite access, (c) bun test concurrency exceeds what PGLite's WASM init can handle.
 
 **Pros:** Green suite signal. Faster shipping. Stops eroding trust in `bun test`.
 
@@ -2573,7 +2573,7 @@ iteration's residuals.
 3. `eval_capture_failures.reason` enum: `'scrubber_exception'` is dead telemetry — no realistic path emits it (the scrubber is regex-only and never throws). Either remove the value from the schema CHECK + enum, OR wrap `scrubPii` in a try-catch inside `buildEvalCandidateInput` so the value is actually reachable.
 4. `id DESC` tiebreaker docs: CLAUDE.md says "stable id-desc tiebreaker so `--since` windows never dupe/miss rows". This is true within a single call but doesn't prevent dupe/miss across overlapping windows when LIMIT < total. Either add a real `id`-cursor (`WHERE id < $cursor`) for export, or scope the doc claim to "within a single export call".
 5. Public-exports canaries: 6 of 17 subpaths (`gbrain` root, `/minions`, `/engine-factory`, `/transcription`, `/backoff`, `/extract`) have `canary: []` — the test only checks the import resolves, so a barrel module accidentally losing its named exports would still pass. Pin one stable canary symbol per subpath.
-6. `EXPECTED_COUNT` duplication: `scripts/check-exports-count.sh` and `test/public-exports.test.ts` both hardcode `17`. Drift risk. Make one read the other (or both compute from `package.json`).
+6. `EXPECTED_COUNT` duplication: `scripts/check-exports-count.sh` and `tests/unit/public-exports.test.ts` both hardcode `17`. Drift risk. Make one read the other (or both compute from `package.json`).
 
 **Why:** All 6 are real (some informational, some footgun-class) but each is small and surgical. Bundling into one v0.25.1 follow-up PR keeps the v0.25.0 ship clean and lets the fixes land with their own dedicated tests + CHANGELOG entry.
 
@@ -2595,7 +2595,7 @@ iteration's residuals.
 
 **Fix options:**
 1. Bump per-test hook timeout to 30s in `bunfig.toml` (quick fix, low risk)
-2. Move PGLite-init-heavy tests to `test/e2e/` so they run serially via `scripts/run-e2e.sh` (follows existing pattern)
+2. Move PGLite-init-heavy tests to `tests/unit/e2e/` so they run serially via `scripts/run-e2e.sh` (follows existing pattern)
 3. Share a module-scoped PGLite instance across describe blocks within a file (biggest win — most fixture setup is identical)
 
 **Effort:** 30 min for option 1, ~2 hours for option 3.
@@ -3117,7 +3117,7 @@ project convention for new architectural files.
 
 ### Repo-wide privacy scrub
 
-**Status:** Out of scope for PR #880 (which scrubbed `test/context-engine.test.ts`
+**Status:** Out of scope for PR #880 (which scrubbed `tests/unit/context-engine.test.ts`
 and added the new CI guard). The guard surfaced 4 additional pre-existing
 references in other test files plus ~24 references in non-test files
 (CHANGELOG entries, docs, skill READMEs). Each entry needs case-by-case

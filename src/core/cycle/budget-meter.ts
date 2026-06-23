@@ -6,7 +6,7 @@
  * preserved so every existing dream-cycle call site keeps working. The
  * audit JSONL grew a `schema_version: 1` field on every line (A2 amended:
  * schema-stable, not byte-stable — reorderings are tolerated, field
- * renames are breaking). `test/fixtures/dream-budget-schema-v1.jsonl`
+ * renames are breaking). `tests/unit/fixtures/dream-budget-schema-v1.jsonl`
  * pins the documented field set.
  *
  * Per Codex P1 #10: each subagent submit estimates max-cost from
@@ -14,7 +14,7 @@
  * if cumulative > budget. Non-Anthropic models bypass the gate with a
  * `BUDGET_METER_NO_PRICING` warn (once per process).
  *
- * Ledger lives at `~/.gbrain/audit/dream-budget-YYYY-Www.jsonl` (ISO-week
+ * Ledger lives at `~/.zbrain/audit/dream-budget-YYYY-Www.jsonl` (ISO-week
  * rotation, same pattern as shell-audit; filename math now goes through
  * `src/core/audit-week-file.ts` per T4). Each line is one submit's cost
  * estimate + actual usage when reported back.

@@ -394,7 +394,7 @@ python evaluate_qa.py /tmp/hypothesis.jsonl
 ### Numbers
 
 p50 25.9ms / p99 30.3ms warm reset+import+search on Apple Silicon (per the
-`test/eval-longmemeval.test.ts` perf gate). Per-question cost well under the
+`tests/unit/eval-longmemeval.test.ts` perf gate). Per-question cost well under the
 500ms speed gate. 500 questions = ~13s of overhead plus your retrieval and
 LLM latency.
 
@@ -473,12 +473,12 @@ gbrain eval longmemeval ~/datasets/longmemeval_s.jsonl \
 tail -1 /tmp/run.jsonl | jq .   # summary line
 
 # Strict gate in a CI script.
-gbrain eval longmemeval test/fixtures/longmemeval-mini.jsonl \
+gbrain eval longmemeval tests/unit/fixtures/longmemeval-mini.jsonl \
   --by-type --by-type-floor 0.80 --output /tmp/run.jsonl
 echo "exit=$?"  # 1 if any type fell below 0.80
 ```
 
-### Hermetic retrieval gate — `test/eval-replay-gate.test.ts`
+### Hermetic retrieval gate — `tests/unit/eval-replay-gate.test.ts`
 
 The v0.40.1.0 Track D structural fix for "PRs touching `src/core/search/`
 silently regress retrieval." Replaces the original "replay against captured
@@ -487,12 +487,12 @@ the `v0.41+: contributor-mode CI capture` TODO in `TODOS.md` for the deferred
 real-query version).
 
 How it works:
-- Hand-curated qrels fixture at `test/fixtures/eval-baselines/qrels-search.json`
+- Hand-curated qrels fixture at `tests/unit/fixtures/eval-baselines/qrels-search.json`
   with PLACEHOLDER names only (no real people / companies per CLAUDE.md privacy
   rule).
 - The test seeds a PGLite engine with synthetic pages whose embeddings are
   basis vectors (the same `basisEmbedding(idx)` pattern as
-  `test/e2e/search-quality.test.ts`). No API keys, no DATABASE_URL.
+  `tests/unit/e2e/search-quality.test.ts`). No API keys, no DATABASE_URL.
 - For each qrels query, calls `engine.searchVector(basisEmbedding(dim))` and
   computes `top1_match_rate` and `recall@10`. Asserts both meet floors
   (`>= 0.80` and `>= 0.85` by default).
@@ -523,7 +523,7 @@ clearly better-aligned with the query intent.
 ```bash
 GBRAIN_REPLAY_GATE_TOP1_FLOOR=0.85 \
 GBRAIN_REPLAY_GATE_RECALL_FLOOR=0.90 \
-  bun test test/eval-replay-gate.test.ts
+  bun test tests/unit/eval-replay-gate.test.ts
 ```
 
 Use to tighten or loosen the gate as the qrels fixture matures.
@@ -577,7 +577,7 @@ in isolation; the test harness exercises it via DI stubs.
 
 ```bash
 # Manual smoke (exercises the path via DI stubs, no real API spend).
-bun test test/nightly-quality-probe.test.ts
+bun test tests/unit/nightly-quality-probe.test.ts
 ```
 
 Observability:

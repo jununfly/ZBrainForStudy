@@ -12,7 +12,7 @@
  * amortized away. Per-file isolated profiles are wrong-by-methodology.
  *
  * This script scrapes per-file wallclock from a real CI shard's log via
- * GitHub's `gh run view --log` output. bun emits an `##[group]test/foo.
+ * GitHub's `gh run view --log` output. bun emits an `##[group]tests/unit/foo.
  * test.ts:` header before each file with an ISO timestamp; the
  * difference between consecutive headers = how long the previous file
  * took. This is the actual CI shard runtime per file, in the right
@@ -115,13 +115,13 @@ interface TimingEvent {
 }
 
 /**
- * Parse a CI log into a list of `##[group]test/X.test.ts:` events keyed
+ * Parse a CI log into a list of `##[group]tests/unit/X.test.ts:` events keyed
  * by job (so timing deltas don't cross shard boundaries).
  *
  * GH log line shape:
- *   <job-name>\tUNKNOWN STEP\t<ISO-timestamp> ##[group]test/foo.test.ts:
+ *   <job-name>\tUNKNOWN STEP\t<ISO-timestamp> ##[group]tests/unit/foo.test.ts:
  * or:
- *   <job-name>\t<step-name>\t<ISO-timestamp> ##[group]test/foo.test.ts:
+ *   <job-name>\t<step-name>\t<ISO-timestamp> ##[group]tests/unit/foo.test.ts:
  *
  * Exported for unit testing.
  */
@@ -216,7 +216,7 @@ async function main(): Promise<number> {
   console.error(`[mine-shard-weights] parsed ${events.length} file-start events`);
   if (events.length === 0) {
     console.error(
-      "error: no ##[group]test/*.test.ts: events found in input. Was this a CI test run log?",
+      "error: no ##[group]tests/unit/*.test.ts: events found in input. Was this a CI test run log?",
     );
     return 3;
   }

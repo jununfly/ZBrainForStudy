@@ -1,15 +1,15 @@
 /**
- * v0.31.12 — `gbrain models` CLI.
+ * v0.31.12 — `zbrain models` CLI.
  *
  * Two modes:
  *
- *   `gbrain models`           — read-only routing table. Prints the four
+ *   `zbrain models`           — read-only routing table. Prints the four
  *                               tier defaults, the resolved value for each
  *                               (after consulting models.default + models.tier.*),
  *                               per-task overrides, alias map, and source-of-truth
  *                               column (default / config / env).
  *
- *   `gbrain models doctor`    — opt-in probe. Fires a 1-token `gateway.chat()`
+ *   `zbrain models doctor`    — opt-in probe. Fires a 1-token `gateway.chat()`
  *                               call against each configured chat / expansion
  *                               model and reports reachability with the
  *                               provider's error string. Catches the bug class
@@ -43,8 +43,8 @@ const PER_TASK_KEYS: Array<{ key: string; tier: ModelTier; description: string }
   { key: 'models.dream.patterns',           tier: 'reasoning', description: 'Pattern discovery (cross-take themes)' },
   { key: 'models.drift',                    tier: 'reasoning', description: 'Drift LLM judge (v0.29 scaffold)' },
   { key: 'models.auto_think',               tier: 'deep',      description: 'Auto-think question answering' },
-  { key: 'models.think',                    tier: 'deep',      description: '`gbrain think` synthesis op' },
-  { key: 'models.subagent',                 tier: 'subagent',  description: '`gbrain agent run` subagent loop' },
+  { key: 'models.think',                    tier: 'deep',      description: '`zbrain think` synthesis op' },
+  { key: 'models.subagent',                 tier: 'subagent',  description: '`zbrain agent run` subagent loop' },
   { key: 'facts.extraction_model',          tier: 'reasoning', description: 'Real-time facts extraction during sync' },
   { key: 'models.eval.longmemeval',         tier: 'reasoning', description: 'LongMemEval benchmark answer-gen' },
   { key: 'models.eval.contradictions_judge', tier: 'utility',  description: 'Contradiction probe judge (v0.34 temporal-aware)' },
@@ -98,7 +98,7 @@ async function buildReport(engine: BrainEngine): Promise<ModelsReport> {
   const per_task: ModelsReport['per_task'] = [];
   for (const { key, tier, description } of PER_TASK_KEYS) {
     const resolved = await resolveModel(engine, { configKey: key, tier, fallback: TIER_DEFAULTS[tier] });
-    const explicit = await probeSource(engine, key, 'GBRAIN_MODEL');
+    const explicit = await probeSource(engine, key, 'ZBRAIN_MODEL');
     const source = explicit ?? `tier.${tier}`;
     per_task.push({ key, tier, resolved, source, description });
   }
@@ -151,7 +151,7 @@ function formatText(report: ModelsReport): string {
     }
   }
   lines.push('');
-  lines.push('Tip: probe reachability with `gbrain models doctor` (opt-in; spends a minimal request per configured chat/embed/rerank surface).');
+  lines.push('Tip: probe reachability with `zbrain models doctor` (opt-in; spends a minimal request per configured chat/embed/rerank surface).');
   return lines.join('\n');
 }
 
@@ -219,7 +219,7 @@ async function probeEmbeddingConfig(): Promise<ProbeResult> {
             `embedding_dimensions=${dims} is not a valid Voyage output_dimension ` +
             `for "${modelId}" (allowed: ${VOYAGE_VALID_OUTPUT_DIMS.join('/')}).`,
           fix:
-            `gbrain config set embedding_dimensions <${VOYAGE_VALID_OUTPUT_DIMS.join('|')}>, ` +
+            `zbrain config set embedding_dimensions <${VOYAGE_VALID_OUTPUT_DIMS.join('|')}>, ` +
             `or switch to a fixed-dim Voyage model (e.g. voyage-3, voyage-3-lite).`,
           elapsed_ms: Date.now() - start,
         };
@@ -240,7 +240,7 @@ async function probeEmbeddingConfig(): Promise<ProbeResult> {
             `embedding_dimensions=${dims} is not a valid ZeroEntropy dimensions ` +
             `for "${modelId}" (allowed: ${ZEROENTROPY_VALID_DIMS.join('/')}).`,
           fix:
-            `gbrain config set embedding_dimensions <${ZEROENTROPY_VALID_DIMS.join('|')}>.`,
+            `zbrain config set embedding_dimensions <${ZEROENTROPY_VALID_DIMS.join('|')}>.`,
           elapsed_ms: Date.now() - start,
         };
       }
@@ -273,11 +273,11 @@ async function probeEmbeddingConfig(): Promise<ProbeResult> {
  * v0.40.6.1: resolve the reranker model the same way live search does, so
  * doctor doesn't drift from the live path. Pre-v0.40.6.1 the probe read
  * `getRerankerModel()` from the gateway, which is fed from
- * `GBrainConfig.reranker_model` — a file-plane field nothing currently
+ * `ZBrainConfig.reranker_model` — a file-plane field nothing currently
  * writes. Meanwhile live search resolves `search.reranker.model` via
  * `resolveSearchMode()` (per-call > config-key > recipe > bundle default).
  * The two paths could disagree silently: doctor says "not configured"
- * while every `gbrain search` call is using a mode default. This helper
+ * while every `zbrain search` call is using a mode default. This helper
  * walks the same chain live search does so doctor's verdict matches.
  *
  * Falls back to `getRerankerModel()` (gateway value) when the engine path
@@ -349,7 +349,7 @@ async function probeRerankerConfig(engine: BrainEngine): Promise<ProbeResult> {
       model: '(none)',
       touchpoint: 'reranker_config',
       status: 'ok',
-      message: 'reranker not configured (set `gbrain config set search.reranker.model <provider:model>` and `search.reranker.enabled true`)',
+      message: 'reranker not configured (set `zbrain config set search.reranker.model <provider:model>` and `search.reranker.enabled true`)',
       elapsed_ms: Date.now() - start,
     };
   }
@@ -373,7 +373,7 @@ async function probeRerankerConfig(engine: BrainEngine): Promise<ProbeResult> {
         touchpoint: 'reranker_config',
         status: 'config',
         message: `Model "${parsed.modelId}" is not in ${recipe.name}'s reranker allowlist.`,
-        fix: `gbrain config set search.reranker.model ${recipe.id}:<one of ${tp.models.join('|')}>`,
+        fix: `zbrain config set search.reranker.model ${recipe.id}:<one of ${tp.models.join('|')}>`,
         elapsed_ms: Date.now() - start,
       };
     }
@@ -541,9 +541,9 @@ export async function runModels(engine: BrainEngine, args: string[]): Promise<vo
   if (sub === 'help') {
     process.stdout.write(
 `Usage:
-  gbrain models                   Show routing table (read-only)
-  gbrain models doctor [flags]    Probe each configured model (~1 token each)
-  gbrain models --json            Machine-readable output
+  zbrain models                   Show routing table (read-only)
+  zbrain models doctor [flags]    Probe each configured model (~1 token each)
+  zbrain models --json            Machine-readable output
 
 Flags (doctor only):
   --skip=<provider>               Skip a provider (e.g. --skip=openai)
@@ -551,9 +551,9 @@ Flags (doctor only):
   --json                          JSON output
 
 Configure routing:
-  gbrain config set models.default <model>           # global hammer
-  gbrain config set models.tier.<tier> <model>       # per-tier (utility/reasoning/deep/subagent)
-  gbrain config set models.aliases.<name> <model>    # custom alias
+  zbrain config set models.default <model>           # global hammer
+  zbrain config set models.tier.<tier> <model>       # per-tier (utility/reasoning/deep/subagent)
+  zbrain config set models.aliases.<name> <model>    # custom alias
 
 Tiers: utility (haiku-class) | reasoning (sonnet) | deep (opus) | subagent (Anthropic-only)
 `);

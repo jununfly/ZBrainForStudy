@@ -1,11 +1,11 @@
-title = "GBrain gitleaks config"
+title = "ZBrain gitleaks config"
 
 [allowlist]
   paths = [
     '''.env\.testing\.example''',
     '''.env\.example''',
-    '''test/''',
+    '''tests/unit/''',
     '''skills/''',
     '''.claude/skills/''',
-    '''GBRAIN_SKILLPACK\.md''',
+    '''ZBRAIN_SKILLPACK\.md''',
   ]

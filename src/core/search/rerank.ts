@@ -50,7 +50,7 @@ function hashQuery(query: string): string {
  * position — appended after the reordered head in the same order it had
  * coming in.
  *
- * On reranker failure, logs to ~/.gbrain/audit/rerank-failures-* and
+ * On reranker failure, logs to ~/.zbrain/audit/rerank-failures-* and
  * returns the input array unmodified. Never throws.
  *
  * Empty input passes through immediately (no upstream call).

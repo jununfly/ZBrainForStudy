@@ -4,7 +4,7 @@
  * outside-voice catch).
  *
  * Single source of truth for the cursor-paginated, source-grouped, rate-limit-
- * aware embedding pipeline. Both `gbrain embed --stale` (CLI) and the
+ * aware embedding pipeline. Both `zbrain embed --stale` (CLI) and the
  * `embed-backfill` job (Minion) call this helper so the working machinery
  * — keyset pagination, batch grouping by `source_id::slug`, merge-with-existing
  * via `getChunks` + `upsertChunks`, AbortSignal threading into in-flight HTTPs,

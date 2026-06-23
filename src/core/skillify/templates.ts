@@ -1,12 +1,12 @@
 /**
- * skillify/templates.ts — template strings for `gbrain skillify scaffold`.
+ * skillify/templates.ts — template strings for `zbrain skillify scaffold`.
  *
  * Pure-string generators. No I/O here; the caller writes files.
  */
 
 /**
  * SKILLIFY_STUB sentinel (D-CX-9). Every scaffolded script body
- * carries this marker until an implementer replaces it. `gbrain
+ * carries this marker until an implementer replaces it. `zbrain
  * check-resolvable --strict` fails if the sentinel is present in any
  * committed skill script — it means a scaffold shipped without a
  * real implementation.
@@ -96,7 +96,7 @@ export function skillMdTemplate(v: ScaffoldVars): string {
   );
   lines.push('');
   lines.push('```bash');
-  lines.push('gbrain eval cross-modal \\');
+  lines.push('zbrain eval cross-modal \\');
   lines.push(`  --task "What this skill is supposed to accomplish" \\`);
   lines.push(`  --output skills/${v.name}/SKILL.md`);
   lines.push('```');
@@ -108,10 +108,10 @@ export function skillMdTemplate(v: ScaffoldVars): string {
     'Pass criteria: every dim mean >=7 AND no model scored any dim <5. Receipts',
   );
   lines.push(
-    'land at `~/.gbrain/.gbrain/eval-receipts/<slug>-<sha8>.json` (sha-8 of SKILL.md',
+    'land at `~/.zbrain/.zbrain/eval-receipts/<slug>-<sha8>.json` (sha-8 of SKILL.md',
   );
   lines.push(
-    'content). `gbrain skillify check` surfaces the receipt status as informational.',
+    'content). `zbrain skillify check` surfaces the receipt status as informational.',
   );
   lines.push(
     'See `skills/skillify/SKILL.md` Phase 3 for the full 11-item checklist.',
@@ -124,14 +124,14 @@ export function scriptTemplate(v: ScaffoldVars): string {
   // --strict looks for. Remove the marker (not the whole file) when
   // the script is implemented.
   return `#!/usr/bin/env bun
-// ${v.name} — scaffolded by gbrain skillify scaffold
+// ${v.name} — scaffolded by zbrain skillify scaffold
 // ${SKILLIFY_STUB_MARKER}
 //
 // Replace this stub with the deterministic logic the skill needs.
 // Keep exports pure so tests can import them without side effects.
 
 export function run(input: unknown): unknown {
-  // TODO: implement. This stub is detected by \`gbrain check-resolvable
+  // TODO: implement. This stub is detected by \`zbrain check-resolvable
   // --strict\` and will fail CI until replaced.
   throw new Error('${v.name} scaffold not yet implemented');
 }
@@ -147,7 +147,7 @@ export function testTemplate(v: ScaffoldVars): string {
   return `/**
  * Tests for skills/${v.name}/scripts/${v.name}.mjs
  *
- * Scaffolded by gbrain skillify scaffold. Replace these stubs with
+ * Scaffolded by zbrain skillify scaffold. Replace these stubs with
  * real cases — start with the regression case for the failure that
  * triggered this skill (essay Step 3).
  */

@@ -5,8 +5,8 @@
  * `ResolvedSource` with the local pack path plus identity metadata the
  * scaffold orchestrator needs (TOFU pin, source URL, kind). Cache layout:
  *
- *   ~/.gbrain/skillpack-cache/git/<host>/<owner>/<repo>/<sha>/   (git sources)
- *   ~/.gbrain/skillpack-cache/tarball/<sha256-hex>/              (tarball sources)
+ *   ~/.zbrain/skillpack-cache/git/<host>/<owner>/<repo>/<sha>/   (git sources)
+ *   ~/.zbrain/skillpack-cache/tarball/<sha256-hex>/              (tarball sources)
  *
  * Cache hits short-circuit the clone/extract step. Cache misses do the work
  * and then atomically rename the staging dir into place so partial clones
@@ -25,7 +25,7 @@ import { execFileSync } from 'child_process';
 import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'fs';
 import { isAbsolute, join, resolve } from 'path';
 
-import { gbrainPath } from '../config.ts';
+import { zbrainPath } from '../config.ts';
 import { GIT_SSRF_FLAGS, RemoteUrlError, cloneRepo, parseRemoteUrl } from '../git-remote.ts';
 import { extractTarball, fileSha256 } from './tarball.ts';
 
@@ -69,7 +69,7 @@ export class RemoteSourceError extends Error {
 }
 
 export interface ResolveSourceOptions {
-  /** Override the cache root (test-only; defaults to ~/.gbrain/skillpack-cache). */
+  /** Override the cache root (test-only; defaults to ~/.zbrain/skillpack-cache). */
   cacheRoot?: string;
   /** Force a fresh clone/extract even when the cache has a hit. */
   noCache?: boolean;
@@ -133,7 +133,7 @@ export function classifySpec(spec: string): { kind: SpecKind; normalized: string
 
 /** Compute the cache root, honoring opts override. */
 function cacheRoot(opts: ResolveSourceOptions): string {
-  return opts.cacheRoot ?? gbrainPath('skillpack-cache');
+  return opts.cacheRoot ?? zbrainPath('skillpack-cache');
 }
 
 /** Resolve HEAD SHA of a remote git URL via `git ls-remote`. */

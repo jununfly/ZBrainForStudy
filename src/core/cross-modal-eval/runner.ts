@@ -10,7 +10,7 @@
  * Pass / FAIL / INCONCLUSIVE verdict per `aggregate()`. The receipt schema
  * (schema_version: 1) is stable: timestamps, model strings, raw scores, and
  * dim rolls. Receipt filename binds skill slug + content sha-8 (T10=A) so
- * `gbrain skillify check` can tell whether a receipt is current or stale.
+ * `zbrain skillify check` can tell whether a receipt is current or stale.
  */
 
 import { join } from 'path';
@@ -66,7 +66,7 @@ export interface RunEvalOpts {
   slots?: SlotConfig[];
   /** 1-3. CLI defaults to 3 in TTY, 1 in non-TTY (T11=B). */
   cycles?: number;
-  /** Where receipts are written. CLI defaults to gbrainPath('eval-receipts'). */
+  /** Where receipts are written. CLI defaults to zbrainPath('eval-receipts'). */
   receiptDir: string;
   /** Per-call max output tokens (default 4000). */
   maxTokens?: number;

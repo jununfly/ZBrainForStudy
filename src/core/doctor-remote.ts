@@ -12,7 +12,7 @@
  * version, no jsonb integrity. Those don't apply when there's no local DB.
  */
 
-import type { GBrainConfig } from './config.ts';
+import type { ZBrainConfig } from './config.ts';
 import { discoverOAuth, mintClientCredentialsToken, smokeTestMcp } from './remote-mcp-probe.ts';
 import { callRemoteTool, RemoteMcpError, unpackToolResult } from './mcp-client.ts';
 import { safeCompare, driftLevel, loadPromptState } from './thin-client-upgrade-prompt.ts';
@@ -41,7 +41,7 @@ export interface RemoteDoctorReport {
  * or return the structured report. The `args` argument is the same array
  * passed to local `runDoctor`, so flags like `--json` are honored.
  */
-export async function runRemoteDoctor(config: GBrainConfig, args: string[]): Promise<void> {
+export async function runRemoteDoctor(config: ZBrainConfig, args: string[]): Promise<void> {
   const jsonOutput = args.includes('--json');
   const report = await collectRemoteDoctorReport(config);
 
@@ -62,7 +62,7 @@ export async function runRemoteDoctor(config: GBrainConfig, args: string[]): Pro
  * by the scope probe hangs on shape mismatch and doesn't always honor
  * AbortSignal. Production callers always run the probe.
  *
- * Also honors GBRAIN_DOCTOR_SKIP_SCOPE_PROBE=1 for ops bypass; explicit
+ * Also honors ZBRAIN_DOCTOR_SKIP_SCOPE_PROBE=1 for ops bypass; explicit
  * opts.skipScopeProbe wins.
  */
 export interface CollectRemoteDoctorOpts {
@@ -74,7 +74,7 @@ export interface CollectRemoteDoctorOpts {
  * assert the report shape without intercepting stdout.
  */
 export async function collectRemoteDoctorReport(
-  config: GBrainConfig,
+  config: ZBrainConfig,
   opts: CollectRemoteDoctorOpts = {},
 ): Promise<RemoteDoctorReport> {
   const remote = config.remote_mcp;
@@ -119,8 +119,8 @@ export async function collectRemoteDoctorReport(
   }
 
   // Resolve the secret: env var wins, then config file value.
-  const clientSecret = process.env.GBRAIN_REMOTE_CLIENT_SECRET ?? remote.oauth_client_secret;
-  const clientSecretSource: 'env' | 'config' | 'none' = process.env.GBRAIN_REMOTE_CLIENT_SECRET
+  const clientSecret = process.env.ZBRAIN_REMOTE_CLIENT_SECRET ?? remote.oauth_client_secret;
+  const clientSecretSource: 'env' | 'config' | 'none' = process.env.ZBRAIN_REMOTE_CLIENT_SECRET
     ? 'env'
     : remote.oauth_client_secret
       ? 'config'
@@ -130,7 +130,7 @@ export async function collectRemoteDoctorReport(
     checks.push({
       name: 'oauth_credentials',
       status: 'fail',
-      message: 'No client_secret available. Set GBRAIN_REMOTE_CLIENT_SECRET or rerun `gbrain init --mcp-only` with --oauth-client-secret.',
+      message: 'No client_secret available. Set ZBRAIN_REMOTE_CLIENT_SECRET or rerun `zbrain init --mcp-only` with --oauth-client-secret.',
     });
     return {
       schema_version: 2,
@@ -206,15 +206,15 @@ export async function collectRemoteDoctorReport(
   // safe), then a representative admin op (also read-only, no side effects).
   // Reports per-tier status with a pinpoint remediation hint when admin is
   // missing — the v0.29.2/v0.30.0 thin-clients without admin scope hit
-  // `gbrain stats` / `gbrain history` and fail today; this check surfaces
-  // the gap during `gbrain remote doctor` instead of mid-command.
+  // `zbrain stats` / `zbrain history` and fail today; this check surfaces
+  // the gap during `zbrain remote doctor` instead of mid-command.
   //
   // Skippable via opts.skipScopeProbe (preferred for tests) OR
-  // GBRAIN_DOCTOR_SKIP_SCOPE_PROBE=1 (env-flag for ops bypass) — the MCP
+  // ZBRAIN_DOCTOR_SKIP_SCOPE_PROBE=1 (env-flag for ops bypass) — the MCP
   // SDK Client hangs on JSON-RPC shape mismatch in fixtures that don't
   // implement full tools/call.
   const grantedScope = tokenRes.token.scope ?? '';
-  const skipProbe = opts.skipScopeProbe || process.env.GBRAIN_DOCTOR_SKIP_SCOPE_PROBE === '1';
+  const skipProbe = opts.skipScopeProbe || process.env.ZBRAIN_DOCTOR_SKIP_SCOPE_PROBE === '1';
   if (!skipProbe) {
     const scopeResult = await probeScopes(config);
     checks.push(buildScopeCheck(grantedScope, scopeResult));
@@ -225,7 +225,7 @@ export async function collectRemoteDoctorReport(
   // Mirrors the local runDoctor `orphan_ratio` check but routes through
   // the find_orphans MCP op (same canonical findOrphans() data fn under
   // the hood) and emits an OPERATOR-POINTING hint instead of the
-  // self-fix hint — thin-client users can't run `gbrain extract links
+  // self-fix hint — thin-client users can't run `zbrain extract links
   // --by-mention` against a brain they don't host. Hint asks them to
   // ping the brain operator at the configured public URL.
   //
@@ -241,7 +241,7 @@ export async function collectRemoteDoctorReport(
   //   - 'ok' when local >= remote OR drift is 'patch' (D8 policy: only
   //     minor/major drift is meaningful enough to flag in doctor)
   //   - 'warn' when minor/major drift detected; fix hint points at
-  //     `gbrain upgrade` (or, if state shows a prior 'failed' attempt,
+  //     `zbrain upgrade` (or, if state shows a prior 'failed' attempt,
   //     points at the manual install path)
   //   - 'ok' (informational) when network unreachable / fetch throws —
   //     doctor MUST NOT fail loud on transient network issues; this check
@@ -258,15 +258,15 @@ export async function collectRemoteDoctorReport(
  * v0.42.0.0 D11: thin-client orphan_ratio check.
  *
  * Calls `find_orphans` MCP op (read scope) to get the same data the
- * local `gbrain doctor` `orphan_ratio` check uses. Computes the ratio,
+ * local `zbrain doctor` `orphan_ratio` check uses. Computes the ratio,
  * applies the same thresholds (vacuous <100 entity, warn >0.5, fail
  * >0.8), but emits an OPERATOR-POINTING hint: thin-client users can't
- * run `gbrain extract links --by-mention` themselves — they need to
+ * run `zbrain extract links --by-mention` themselves — they need to
  * ping whoever runs the brain server.
  *
  * Errors non-fatal — informational check.
  */
-export async function runOrphanRatioCheck(config: GBrainConfig): Promise<RemoteCheck> {
+export async function runOrphanRatioCheck(config: ZBrainConfig): Promise<RemoteCheck> {
   type OrphanData = {
     orphans: unknown[];
     total_orphans: number;
@@ -308,7 +308,7 @@ export async function runOrphanRatioCheck(config: GBrainConfig): Promise<RemoteC
   // locally; point them at the brain server's operator.
   const url = config.remote_mcp?.mcp_url ?? '<your brain server>';
   const hint =
-    `Ask the brain operator at ${url} to run: gbrain extract links --by-mention ` +
+    `Ask the brain operator at ${url} to run: zbrain extract links --by-mention ` +
     `(auto-links entity mentions in body text).`;
   if (ratio > 0.8) {
     return {
@@ -333,14 +333,14 @@ export async function runOrphanRatioCheck(config: GBrainConfig): Promise<RemoteC
 
 /**
  * v0.31.11: thin-client version-drift check. Surfaces remote-brain drift in
- * `gbrain doctor` so quiet/non-TTY users (who don't see the interactive
+ * `zbrain doctor` so quiet/non-TTY users (who don't see the interactive
  * prompt) still learn about minor/major bumps. Pure data fetch + compare.
  *
  * Errors are non-fatal: any failure returns an 'ok' status with a
  * `network_error` detail. The earlier `mcp_smoke` check covers the
  * "remote is genuinely unreachable" case with a 'fail' status.
  */
-export async function runUpgradeDriftCheck(config: GBrainConfig): Promise<RemoteCheck> {
+export async function runUpgradeDriftCheck(config: ZBrainConfig): Promise<RemoteCheck> {
   let remoteVersion: string;
   try {
     const raw = await callRemoteTool(config, 'get_brain_identity', {}, { timeoutMs: 2000 });
@@ -395,8 +395,8 @@ export async function runUpgradeDriftCheck(config: GBrainConfig): Promise<Remote
   } catch { /* state read is best-effort */ }
 
   const fixHint = priorFailed
-    ? `Prior \`gbrain upgrade\` did not advance the binary. See https://github.com/garrytan/gbrain/releases for manual install.`
-    : `Run \`gbrain upgrade\` to install v${remoteVersion}.`;
+    ? `Prior \`zbrain upgrade\` did not advance the binary. See https://github.com/garrytan/zbrain/releases for manual install.`
+    : `Run \`zbrain upgrade\` to install v${remoteVersion}.`;
 
   return {
     name: 'thin_client_upgrade_drift',
@@ -412,7 +412,7 @@ export async function runUpgradeDriftCheck(config: GBrainConfig): Promise<Remote
  * — every write would mutate state). Trust the granted-scope string for
  * write status.
  */
-/** v0.31.1: exported for test access (test/oauth-scope-probe.test.ts). */
+/** v0.31.1: exported for test access (tests/unit/oauth-scope-probe.test.ts). */
 export interface ScopeProbeResult {
   read_ok: boolean;
   admin_ok: boolean;
@@ -420,7 +420,7 @@ export interface ScopeProbeResult {
   admin_error?: string;
 }
 
-async function probeScopes(config: GBrainConfig): Promise<ScopeProbeResult> {
+async function probeScopes(config: ZBrainConfig): Promise<ScopeProbeResult> {
   const result: ScopeProbeResult = { read_ok: false, admin_ok: false };
 
   // Read tier: get_brain_identity is the cheapest read op (just returns
@@ -486,7 +486,7 @@ export function buildScopeCheck(grantedScope: string, probe: ScopeProbeResult): 
       status: 'warn',
       message:
         'admin scope MISSING (read works). On the host, re-register: ' +
-        '`gbrain auth register-client <name> --grant-types client_credentials --scopes read,write,admin`',
+        '`zbrain auth register-client <name> --grant-types client_credentials --scopes read,write,admin`',
       detail: {
         granted: grantedScope || null,
         read_ok: true,
@@ -526,7 +526,7 @@ export function buildScopeCheck(grantedScope: string, probe: ScopeProbeResult): 
 }
 
 function finalize(
-  remote: NonNullable<GBrainConfig['remote_mcp']>,
+  remote: NonNullable<ZBrainConfig['remote_mcp']>,
   checks: RemoteCheck[],
   scope?: string,
 ): RemoteDoctorReport {
@@ -548,7 +548,7 @@ function finalize(
 }
 
 function printHumanReport(report: RemoteDoctorReport): void {
-  console.log('\nGBrain Health Check (thin-client)');
+  console.log('\nZBrain Health Check (thin-client)');
   console.log('=================================');
   console.log(`Mode:        ${report.mode}`);
   console.log(`Issuer URL:  ${report.issuer_url}`);
@@ -570,8 +570,8 @@ function printHumanReport(report: RemoteDoctorReport): void {
   } else {
     console.log('Connectivity check FAILED — see error above.');
     console.log('Common fixes:');
-    console.log('  - Confirm the host is reachable + `gbrain serve --http` is running.');
-    console.log('  - Confirm OAuth credentials are valid (have the host operator re-mint via `gbrain auth register-client`).');
+    console.log('  - Confirm the host is reachable + `zbrain serve --http` is running.');
+    console.log('  - Confirm OAuth credentials are valid (have the host operator re-mint via `zbrain auth register-client`).');
     console.log('  - Confirm `mcp_url` matches the path the host serves /mcp on (default: <issuer_url>/mcp).');
   }
 }

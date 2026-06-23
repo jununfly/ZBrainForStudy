@@ -9,12 +9,12 @@
 # Policy (from CLAUDE.md):
 #   "Removing any of these is a breaking change going forward."
 #
-# If you're legitimately removing a public export: bump gbrain's minor
+# If you're legitimately removing a public export: bump zbrain's minor
 # version, note the removal in CHANGELOG.md under a "Breaking changes"
 # bullet, then bump EXPECTED_COUNT below. Anything else is a regression.
 #
 # Adding a new export: update EXPECTED_COUNT to match AND extend the
-# EXPECTED_EXPORTS list in test/public-exports.test.ts so the runtime
+# EXPECTED_EXPORTS list in tests/unit/public-exports.test.ts so the runtime
 # contract test pins the canary symbol.
 
 set -euo pipefail
@@ -31,16 +31,16 @@ ACTUAL=$(node -e "
 if [ "$ACTUAL" -lt "$EXPECTED_COUNT" ]; then
   echo "❌ public-exports guard: package.json exports shrank from $EXPECTED_COUNT to $ACTUAL"
   echo "   Removing a public export is a breaking change (see CLAUDE.md)."
-  echo "   If intentional: bump gbrain minor version + update EXPECTED_COUNT in"
+  echo "   If intentional: bump zbrain minor version + update EXPECTED_COUNT in"
   echo "   scripts/check-exports-count.sh and EXPECTED_EXPORTS in"
-  echo "   test/public-exports.test.ts, AND add a CHANGELOG 'Breaking changes' bullet."
+  echo "   tests/unit/public-exports.test.ts, AND add a CHANGELOG 'Breaking changes' bullet."
   exit 1
 fi
 
 if [ "$ACTUAL" -gt "$EXPECTED_COUNT" ]; then
   echo "⚠️  public-exports guard: package.json exports grew from $EXPECTED_COUNT to $ACTUAL"
   echo "   Additive public API change. Update EXPECTED_COUNT in this script + the"
-  echo "   EXPECTED_EXPORTS list in test/public-exports.test.ts to lock the new"
+  echo "   EXPECTED_EXPORTS list in tests/unit/public-exports.test.ts to lock the new"
   echo "   canary symbols."
   exit 1
 fi

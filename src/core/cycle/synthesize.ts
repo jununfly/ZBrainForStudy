@@ -137,7 +137,7 @@ function warnUnknownModelOnce(model: string): void {
  * If no boundary fits, hard-split at maxChars (also deterministic in the
  * inputs).
  *
- * Pure function. Tested by `test/cycle/synthesize-chunker.test.ts`.
+ * Pure function. Tested by `tests/unit/cycle/synthesize-chunker.test.ts`.
  */
 export function splitTranscriptByBudget(
   content: string,
@@ -229,7 +229,7 @@ export interface SynthesizePhaseOpts {
   yieldDuringPhase?: () => Promise<void>;
   /**
    * Override the corpus directory and other tunables. Primarily for the
-   * `gbrain dream --input <file>` ad-hoc path; bypasses config reads.
+   * `zbrain dream --input <file>` ad-hoc path; bypasses config reads.
    */
   inputFile?: string;
   date?: string;
@@ -356,7 +356,7 @@ export async function runPhaseSynthesize(
         // AIConfigError at chat time = provider auth/config went bad mid-run
         // (revoked key, recipe misconfig surfacing at first real call). Skip
         // this transcript with the gateway error message so the user sees the
-        // shape of the problem in `gbrain dream --phase synthesize --dry-run`.
+        // shape of the problem in `zbrain dream --phase synthesize --dry-run`.
         if (e instanceof AIConfigError) {
           verdicts.push({
             filePath: t.filePath,
@@ -705,7 +705,7 @@ async function loadAllowedSlugPrefixes(): Promise<string[]> {
 // identically. Only the construction path moved from `new Anthropic()` to
 // `gateway.chat()` so any provider with a registered recipe (Anthropic,
 // DeepSeek, OpenRouter, Voyage, Ollama, llama-server, etc.) is reachable
-// via `gbrain config set models.dream.synthesize_verdict <provider>:<model>`.
+// via `zbrain config set models.dream.synthesize_verdict <provider>:<model>`.
 //
 // This mirrors v0.35.5.0's `tryBuildGatewayClient` in src/core/think/index.ts
 // (which closed #952 for runThink). Same pattern, same trade-offs:
@@ -804,8 +804,8 @@ export function makeJudgeClient(verdictModel: string): JudgeClient | null {
 
 /**
  * Anthropic key availability probe. Reads BOTH env (`ANTHROPIC_API_KEY`)
- * AND the gbrain config file (`anthropic_api_key` set via
- * `gbrain config set`) so stdio MCP launches that don't inherit shell env
+ * AND the zbrain config file (`anthropic_api_key` set via
+ * `zbrain config set`) so stdio MCP launches that don't inherit shell env
  * keep working (mirrors `hasAnthropicKey()` in src/core/think/index.ts).
  */
 function hasAnthropicKey(): boolean {

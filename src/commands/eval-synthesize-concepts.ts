@@ -1,4 +1,4 @@
-// v0.41 T11 — `gbrain eval synthesize-concepts` command (minimal scaffold).
+// v0.41 T11 — `zbrain eval synthesize-concepts` command (minimal scaffold).
 //
 // v0.41 ships the command surface. Parity baseline against your OpenClaw's
 // ~11K concepts (tier agreement + cluster stability) lands in v0.41.1.

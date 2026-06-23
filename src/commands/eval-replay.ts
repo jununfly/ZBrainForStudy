@@ -1,12 +1,12 @@
 /**
- * gbrain eval replay — replay captured eval_candidates against current brain (v0.25.0).
+ * zbrain eval replay — replay captured eval_candidates against current brain (v0.25.0).
  *
  * The contributor-facing half of BrainBench-Real:
  *
  *   1. capture some real traffic    (default-on, lands in eval_candidates)
- *   2. snapshot it                  (gbrain eval export --since 7d > baseline.ndjson)
+ *   2. snapshot it                  (zbrain eval export --since 7d > baseline.ndjson)
  *   3. make a code change           (tune RRF_K, edit hybrid.ts, swap an embed model)
- *   4. replay against the snapshot  (gbrain eval replay --against baseline.ndjson)
+ *   4. replay against the snapshot  (zbrain eval replay --against baseline.ndjson)
  *
  * Outputs three numbers a contributor can read at a glance:
  *
@@ -22,7 +22,7 @@
  * query/search op handlers.
  *
  * Usage:
- *   gbrain eval replay --against captured.ndjson [--limit N] [--json]
+ *   zbrain eval replay --against captured.ndjson [--limit N] [--json]
  *                      [--top-regressions K] [--verbose]
  */
 
@@ -121,13 +121,13 @@ function parseArgs(args: string[]): ReplayOpts {
 }
 
 function printHelp(): void {
-  console.error(`gbrain eval replay — replay captured queries against current brain
+  console.error(`zbrain eval replay — replay captured queries against current brain
 
 USAGE:
-  gbrain eval replay --against FILE.ndjson [flags]
+  zbrain eval replay --against FILE.ndjson [flags]
 
 FLAGS:
-  --against FILE        NDJSON file from \`gbrain eval export\` (required).
+  --against FILE        NDJSON file from \`zbrain eval export\` (required).
   --limit N             Replay at most N rows (default: replay all).
                         Each row hits OpenAI once for query embedding —
                         cap aggressively when iterating locally.
@@ -190,7 +190,7 @@ interface CapturedRow {
  * a corrupt export and silently dropping rows would mask real bugs.
  *
  * v0.41 (codex round-1 #3): SKIPS the `_kind: 'baseline_metadata'` header line
- * that `gbrain bench publish` writes. The header carries metadata (label,
+ * that `zbrain bench publish` writes. The header carries metadata (label,
  * thresholds, source_hash, etc) that must NOT be counted as a captured row.
  */
 function parseNdjson(content: string): CapturedRow[] {
@@ -208,12 +208,12 @@ function parseNdjson(content: string): CapturedRow[] {
     // v0.41: drop baseline metadata header before it can pollute counts.
     if (row._kind === 'baseline_metadata') continue;
     if (typeof row.schema_version !== 'number') {
-      throw new Error(`Line ${i + 1} missing schema_version — not from \`gbrain eval export\`?`);
+      throw new Error(`Line ${i + 1} missing schema_version — not from \`zbrain eval export\`?`);
     }
     if (row.schema_version !== 1) {
       throw new Error(
         `Line ${i + 1} has schema_version=${row.schema_version}; this replay only supports v1. ` +
-        `Upgrade gbrain or re-export.`,
+        `Upgrade zbrain or re-export.`,
       );
     }
     rows.push(row);
@@ -388,9 +388,9 @@ function printHumanSummary(summary: ReplaySummary, results: RowResult[], topRegr
  * Programmatic entrypoint. Throws on error (no process.exit), returns the
  * computed summary + per-row results.
  *
- * v0.41 (codex round-2 #7): exposed so `gbrain eval gate --baseline` can
+ * v0.41 (codex round-2 #7): exposed so `zbrain eval gate --baseline` can
  * call replay in-process rather than spawning a subprocess. Subprocess
- * spawning would run the INSTALLED gbrain (drift risk for source-tree runs).
+ * spawning would run the INSTALLED zbrain (drift risk for source-tree runs).
  */
 export async function replayCore(
   engine: BrainEngine,

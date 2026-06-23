@@ -2,7 +2,7 @@
  * Stub-guard audit log. JSONL, ISO-week-rotated, best-effort.
  *
  * Writes one line per stub-guard fire to
- *   `${GBRAIN_AUDIT_DIR:-~/.gbrain/audit}/stub-guard-YYYY-Www.jsonl`
+ *   `${ZBRAIN_AUDIT_DIR:-~/.zbrain/audit}/stub-guard-YYYY-Www.jsonl`
  * when `writeFactsToFence` refuses to spawn an unprefixed entity page. The
  * audit log is the operator visibility surface for the v0.34.5+ stub guard
  * sunset criterion: when this reads <5 hits/week for 3 consecutive weeks

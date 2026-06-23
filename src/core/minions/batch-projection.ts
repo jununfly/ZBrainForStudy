@@ -2,7 +2,7 @@
  * v0.41 D4 — submit-time cost + duration projection for batch jobs.
  *
  * Closes the "wake up to a $300 Anthropic bill" failure mode at the source.
- * Before `gbrain jobs submit` queues a batch, this projection prints
+ * Before `zbrain jobs submit` queues a batch, this projection prints
  * "this batch will take ~30 min and cost ~$2.40 at current cap of 32".
  * TTY users get a confirmation prompt above the configurable threshold;
  * cron / non-TTY callers see the projection on stderr and proceed.
@@ -139,7 +139,7 @@ export function projectBatch(input: ProjectBatchInput): BatchProjection {
     const projectedFasterMs = Math.ceil((job_count / Math.min(suggestedCap, stats.effective_concurrency)) * meanLatencyMs);
     if (projectedFasterMs < totalDurationMs * 0.75) {
       raise_cap_hint =
-        `raise GBRAIN_ANTHROPIC_MAX_INFLIGHT to ${suggestedCap} to finish in ~${Math.ceil(projectedFasterMs / 60_000)}min`;
+        `raise ZBRAIN_ANTHROPIC_MAX_INFLIGHT to ${suggestedCap} to finish in ~${Math.ceil(projectedFasterMs / 60_000)}min`;
     }
   }
 
@@ -179,8 +179,8 @@ export function formatProjection(p: BatchProjection): string {
  * matching the plan's spec.
  */
 export function shouldPromptAtThreshold(p: BatchProjection): boolean {
-  const usdThreshold = Number(process.env.GBRAIN_BATCH_PROMPT_THRESHOLD_USD ?? '5');
-  const minThreshold = Number(process.env.GBRAIN_BATCH_PROMPT_THRESHOLD_MIN ?? '30');
+  const usdThreshold = Number(process.env.ZBRAIN_BATCH_PROMPT_THRESHOLD_USD ?? '5');
+  const minThreshold = Number(process.env.ZBRAIN_BATCH_PROMPT_THRESHOLD_MIN ?? '30');
   const usdOverThreshold = (p.total_cost_usd ?? 0) >= usdThreshold;
   const minutesOverThreshold = p.total_duration_ms >= minThreshold * 60_000;
   return usdOverThreshold || minutesOverThreshold;

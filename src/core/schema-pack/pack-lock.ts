@@ -1,7 +1,7 @@
 // v0.40.6.0 Schema Cathedral v3 — per-pack file lock primitive.
 //
 // `withPackLock(packName, opts, fn)` serializes concurrent mutations of
-// the same pack file across processes. Two `gbrain schema add-type foo`
+// the same pack file across processes. Two `zbrain schema add-type foo`
 // invocations on the same pack are made safe: the second blocks until the
 // first releases (or refuses with `LOCK_BUSY` if a timeout is set).
 //
@@ -24,13 +24,13 @@
 //   - Cleanup: `try/finally` unconditionally releases. Refresh interval
 //     is cleared. Lockfile is unlinked.
 //
-// Lock path: `~/.gbrain/schema-packs/.locks/<packName>.lock`. Per-pack
-// so two different packs never block each other. Honors `GBRAIN_HOME`
-// via the shared `gbrainPath()` helper.
+// Lock path: `~/.zbrain/schema-packs/.locks/<packName>.lock`. Per-pack
+// so two different packs never block each other. Honors `ZBRAIN_HOME`
+// via the shared `zbrainPath()` helper.
 
 import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { gbrainPath } from '../config.ts';
+import { zbrainPath } from '../config.ts';
 
 export const DEFAULT_LOCK_TTL_MS = 60_000;
 export const REFRESH_INTERVAL_MS = 10_000;
@@ -95,7 +95,7 @@ function defaultIsPidAlive(pid: number): boolean {
 }
 
 function resolveLockPath(packName: string, lockDir?: string): string {
-  const dir = lockDir ?? gbrainPath('schema-packs', '.locks');
+  const dir = lockDir ?? zbrainPath('schema-packs', '.locks');
   return join(dir, `${packName}.lock`);
 }
 

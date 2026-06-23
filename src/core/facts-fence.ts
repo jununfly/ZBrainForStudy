@@ -12,14 +12,14 @@
  *
  *   ## Facts
  *
- *   <!--- gbrain:facts:begin -->
+ *   <!--- zbrain:facts:begin -->
  *   | # | claim | kind | confidence | visibility | notability | valid_from | valid_until | source | context |
  *   |---|-------|------|------------|------------|------------|------------|-------------|--------|---------|
  *   | 1 | Founded Acme in 2017             | fact       | 1.0  | world   | high   | 2017-01-01 |            | linkedin       |                                    |
  *   | 2 | Prefers async over meetings      | preference | 0.85 | private | medium | 2026-04-29 |            | OH 2026-04-29  |                                    |
  *   | 3 | ~~Will hit $10M ARR by Q4~~      | commitment | 0.55 | world   | medium | 2026-06-01 | 2026-12-31 | bo call        | superseded by #4                   |
  *   | 4 | ~~Used to live in Tokyo~~        | fact       | 0.9  | private | low    | 2018-01-01 | 2026-05-10 | inferred       | forgotten: user asked to remove    |
- *   <!--- gbrain:facts:end -->
+ *   <!--- zbrain:facts:end -->
  *
  * 10 data columns + the leading `#` row-number column = 11 cells per row
  * including the leading and trailing pipes.
@@ -50,8 +50,8 @@ import {
 
 // HTML-comment fence markers — verbatim per spec. Same shape as the takes
 // fence markers so anyone who's seen one immediately recognizes the other.
-export const FACTS_FENCE_BEGIN = '<!--- gbrain:facts:begin -->';
-export const FACTS_FENCE_END   = '<!--- gbrain:facts:end -->';
+export const FACTS_FENCE_BEGIN = '<!--- zbrain:facts:begin -->';
+export const FACTS_FENCE_END   = '<!--- zbrain:facts:end -->';
 
 // Mirror src/core/engine.ts FactKind. Re-declared (not imported) because
 // the fence parser has zero engine dependencies — it must run in pure-
@@ -89,7 +89,7 @@ export interface ParsedFact {
    * v0.32.2 strikethrough semantics. Both are mutually exclusive with `active=true`.
    *   - `supersededBy` set: the row was superseded by another fence row;
    *     `context` matches `/superseded by #(\d+)/i`.
-   *   - `forgotten` true: the user invoked `gbrain forget` on this row;
+   *   - `forgotten` true: the user invoked `zbrain forget` on this row;
    *     `context` matches `/^forgotten:/i`.
    * When neither is set but `active=false`, the row is "inactive for
    * unrecognized reason" — the parser preserves it (markdown source-of-
@@ -100,7 +100,7 @@ export interface ParsedFact {
   forgotten?: boolean;
   /**
    * v0.35.4 typed-claim fields (D-CDX-5). Optional. When present, drives
-   * `gbrain eval trajectory` + the `find_trajectory` MCP op chronological
+   * `zbrain eval trajectory` + the `find_trajectory` MCP op chronological
    * regression detection. The fence layout widens from 10 to 14 columns
    * when any row in the table has a non-undefined typed field; otherwise
    * stays 10-cell for backward compat with existing fences.

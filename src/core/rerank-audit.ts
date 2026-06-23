@@ -1,12 +1,12 @@
 /**
  * v0.35.0.0+ — rerank-failure audit trail.
  *
- * Writes warn-severity rows to `~/.gbrain/audit/rerank-failures-YYYY-Www.jsonl`
+ * Writes warn-severity rows to `~/.zbrain/audit/rerank-failures-YYYY-Www.jsonl`
  * (ISO-week rotation, mirrors slug-fallback-audit.ts). Fired when
  * `applyReranker` in src/core/search/rerank.ts catches a RerankError from
  * the gateway. Failure is fail-open at the search layer (results pass
  * through in RRF order); the audit row is the cross-process signal that
- * `gbrain doctor reranker_health` reads.
+ * `zbrain doctor reranker_health` reads.
  *
  * Success events are intentionally NOT logged here. Per the plan (CDX2-F22):
  *   1) writing once per tokenmax search is hot-path I/O churn — the
@@ -22,7 +22,7 @@
  * v0.40.4.0: internals delegate to the shared `src/core/audit/audit-writer.ts`
  * primitive. Public API (logRerankFailure, readRecentRerankFailures,
  * computeRerankAuditFilename) preserved bit-for-bit for the existing test
- * suite at `test/rerank-audit.test.ts`.
+ * suite at `tests/unit/rerank-audit.test.ts`.
  */
 
 import { createAuditWriter, computeIsoWeekFilename } from './audit/audit-writer.ts';
@@ -73,7 +73,7 @@ function truncateErrorSummary(msg: string, max = 200): string {
 
 const writer = createAuditWriter<RerankFailureEvent>({
   featureName: 'rerank-failures',
-  errorLabel: 'gbrain',
+  errorLabel: 'zbrain',
   errorMessagePrefix: 'rerank-failure audit ',
   errorTrailer: '; search continues',
 });
@@ -92,17 +92,17 @@ export function logRerankFailure(event: Omit<RerankFailureEvent, 'ts' | 'severit
 
 /**
  * Read recent (`days` window, default 7) rerank-failure events. Used by
- * `gbrain doctor`'s `reranker_health` check. Missing file / corrupt rows
+ * `zbrain doctor`'s `reranker_health` check. Missing file / corrupt rows
  * are skipped silently — the audit trail is informational.
  */
 export function readRecentRerankFailures(days = 7, now: Date = new Date()): RerankFailureEvent[] {
   return writer.readRecent(days, now);
 }
 
-// stderr label "gbrain" + qualifier "rerank-failure audit " preserve the
+// stderr label "zbrain" + qualifier "rerank-failure audit " preserve the
 // pre-v0.40.4 message byte-for-byte:
 //
-//   `[gbrain] rerank-failure audit write failed (${msg}); search continues`
+//   `[zbrain] rerank-failure audit write failed (${msg}); search continues`
 //
 // The `errorMessagePrefix` option on createAuditWriter restores the
 // qualifier that would otherwise be dropped by the refactor. Operators

@@ -3,11 +3,11 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, rea
 import { basename, join, dirname, resolve } from 'path';
 import { VERSION } from '../version.ts';
 
-const GBRAIN_GITHUB_REPO = 'garrytan/gbrain';
+const ZBRAIN_GITHUB_REPO = 'garrytan/zbrain';
 
 export async function runUpgrade(args: string[]) {
   if (args.includes('--help') || args.includes('-h')) {
-    console.log('Usage: gbrain upgrade\n\nSelf-update the CLI.\n\nDetects install method (bun, binary, clawhub) and runs the appropriate update.\nAfter upgrading, shows what\'s new and offers to set up new features.');
+    console.log('Usage: zbrain upgrade\n\nSelf-update the CLI.\n\nDetects install method (bun, binary, clawhub) and runs the appropriate update.\nAfter upgrading, shows what\'s new and offers to set up new features.');
     return;
   }
 
@@ -41,11 +41,11 @@ export async function runUpgrade(args: string[]) {
       console.log('Upgrading via bun...');
       const bunGlobalRoot = resolveBunGlobalRoot();
       try {
-        execFileSync('bun', ['update', 'gbrain'], { cwd: bunGlobalRoot, stdio: 'inherit', timeout: 120_000 });
+        execFileSync('bun', ['update', 'zbrain'], { cwd: bunGlobalRoot, stdio: 'inherit', timeout: 120_000 });
         upgraded = true;
       } catch {
         console.error('Upgrade failed. Try running manually:');
-        console.error(`  cd ${bunGlobalRoot} && bun update gbrain`);
+        console.error(`  cd ${bunGlobalRoot} && bun update zbrain`);
       }
       break;
     }
@@ -53,25 +53,25 @@ export async function runUpgrade(args: string[]) {
     case 'binary':
       console.log('Binary self-update not yet implemented.');
       console.log('Download the latest binary from GitHub Releases:');
-      console.log('  https://github.com/garrytan/gbrain/releases');
+      console.log('  https://github.com/garrytan/zbrain/releases');
       break;
 
     case 'clawhub':
       console.log('Upgrading via ClawHub...');
       try {
-        execSync('clawhub update gbrain', { stdio: 'inherit', timeout: 120_000 });
+        execSync('clawhub update zbrain', { stdio: 'inherit', timeout: 120_000 });
         upgraded = true;
       } catch {
-        console.error('ClawHub upgrade failed. Try: clawhub update gbrain');
+        console.error('ClawHub upgrade failed. Try: clawhub update zbrain');
       }
       break;
 
     default:
       console.error('Could not detect installation method.');
       console.log('Try one of:');
-      console.log('  bun update gbrain');
-      console.log('  clawhub update gbrain');
-      console.log('  Download from https://github.com/garrytan/gbrain/releases');
+      console.log('  bun update zbrain');
+      console.log('  clawhub update zbrain');
+      console.log('  Download from https://github.com/garrytan/zbrain/releases');
   }
 
   if (upgraded) {
@@ -83,15 +83,15 @@ export async function runUpgrade(args: string[]) {
     // backfill on 50K+ brains regularly exceeded the old ceiling. The heartbeat
     // wiring added in v0.15.2 makes the long wait observable; a hard 300s
     // cap would still kill legit migrations mid-run. Override via
-    // GBRAIN_POST_UPGRADE_TIMEOUT_MS env var.
+    // ZBRAIN_POST_UPGRADE_TIMEOUT_MS env var.
     const postUpgradeTimeoutMs = Number(
-      process.env.GBRAIN_POST_UPGRADE_TIMEOUT_MS || 1_800_000,
+      process.env.ZBRAIN_POST_UPGRADE_TIMEOUT_MS || 1_800_000,
     );
     try {
-      execSync('gbrain post-upgrade', { stdio: 'inherit', timeout: postUpgradeTimeoutMs });
+      execSync('zbrain post-upgrade', { stdio: 'inherit', timeout: postUpgradeTimeoutMs });
     } catch (e) {
       // post-upgrade is best-effort, don't fail the upgrade. BUT leave a
-      // trail so `gbrain doctor` can surface it and give the user a clear
+      // trail so `zbrain doctor` can surface it and give the user a clear
       // paste-ready recovery command. Silent failure here is how users end
       // up with half-upgraded brains and no signal.
       recordUpgradeError({
@@ -99,12 +99,12 @@ export async function runUpgrade(args: string[]) {
         fromVersion: oldVersion,
         toVersion: newVersion,
         error: e instanceof Error ? e.message : String(e),
-        hint: 'Run: gbrain apply-migrations --yes',
+        hint: 'Run: zbrain apply-migrations --yes',
       });
     }
     // Run features scan to show what's new and what to fix
     try {
-      execSync('gbrain features', { stdio: 'inherit', timeout: 30_000 });
+      execSync('zbrain features', { stdio: 'inherit', timeout: 30_000 });
     } catch {
       // features scan is best-effort
     }
@@ -137,7 +137,7 @@ function findBunInstallRootFromArgv(): string | null {
 
     let dir = dirname(realpathSync(argv1));
     for (let i = 0; i < 10; i++) {
-      if (basename(dir) === 'gbrain' && basename(dirname(dir)) === 'node_modules') {
+      if (basename(dir) === 'zbrain' && basename(dirname(dir)) === 'node_modules') {
         const root = dirname(dirname(dir));
         if (isBunGlobalRoot(root)) return root;
       }
@@ -153,9 +153,9 @@ function findBunInstallRootFromArgv(): string | null {
 
 function verifyUpgrade(): string {
   try {
-    const output = execSync('gbrain --version', { encoding: 'utf-8', timeout: 10_000 }).trim();
+    const output = execSync('zbrain --version', { encoding: 'utf-8', timeout: 10_000 }).trim();
     console.log(`Upgrade complete. Now running: ${output}`);
-    return output.replace(/^gbrain\s*/i, '').trim();
+    return output.replace(/^zbrain\s*/i, '').trim();
   } catch {
     console.log('Upgrade complete. Could not verify new version.');
     return '';
@@ -163,10 +163,10 @@ function verifyUpgrade(): string {
 }
 
 /**
- * Append a structured record to ~/.gbrain/upgrade-errors.jsonl when a
- * best-effort phase of the upgrade fails (e.g., `gbrain post-upgrade`
+ * Append a structured record to ~/.zbrain/upgrade-errors.jsonl when a
+ * best-effort phase of the upgrade fails (e.g., `zbrain post-upgrade`
  * silently bombing). Without this trail, users end up with half-upgraded
- * brains and no signal. `gbrain doctor` reads this file and surfaces the
+ * brains and no signal. `zbrain doctor` reads this file and surfaces the
  * paste-ready recovery hint. Failures here are themselves best-effort.
  */
 export function recordUpgradeError(record: {
@@ -177,7 +177,7 @@ export function recordUpgradeError(record: {
   hint: string;
 }): void {
   try {
-    const dir = join(process.env.HOME || '', '.gbrain');
+    const dir = join(process.env.HOME || '', '.zbrain');
     mkdirSync(dir, { recursive: true });
     const path = join(dir, 'upgrade-errors.jsonl');
     const line = JSON.stringify({
@@ -197,7 +197,7 @@ export function recordUpgradeError(record: {
 
 function saveUpgradeState(oldVersion: string, newVersion: string) {
   try {
-    const dir = join(process.env.HOME || '', '.gbrain');
+    const dir = join(process.env.HOME || '', '.zbrain');
     mkdirSync(dir, { recursive: true });
     const statePath = join(dir, 'upgrade-state.json');
     const state: Record<string, unknown> = existsSync(statePath)
@@ -221,7 +221,7 @@ function saveUpgradeState(oldVersion: string, newVersion: string) {
  *   1. Print feature_pitch headlines for migrations newer than the prior
  *      binary (cosmetic; runs only when upgrade-state.json is readable and
  *      has a from/to pair).
- *   2. Invoke `gbrain apply-migrations --yes` so the mechanical side of
+ *   2. Invoke `zbrain apply-migrations --yes` so the mechanical side of
  *      every outstanding migration actually executes (schema, smoke, prefs,
  *      host rewrites, autopilot install). This is the Codex H8 fix:
  *      previously runPostUpgrade early-returned when upgrade-state.json
@@ -236,14 +236,14 @@ function saveUpgradeState(oldVersion: string, newVersion: string) {
  */
 export async function runPostUpgrade(args: string[] = []): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) {
-    console.log('Usage: gbrain post-upgrade');
+    console.log('Usage: zbrain post-upgrade');
     console.log('Prints feature pitches for new migrations and runs apply-migrations.');
     console.log('Idempotent — safe to re-run any time.');
     return;
   }
 
-  // v0.35.8.0: lay down ~/.gbrain/.gitignore retroactively. Existing users
-  // never re-run `gbrain init`, so init-only coverage misses them entirely
+  // v0.35.8.0: lay down ~/.zbrain/.gitignore retroactively. Existing users
+  // never re-run `zbrain init`, so init-only coverage misses them entirely
   // (codex F-CDX-8). Idempotent + non-clobbering — safe to run every upgrade.
   try {
     const { ensureGitignore } = await import('../core/config.ts');
@@ -253,7 +253,7 @@ export async function runPostUpgrade(args: string[] = []): Promise<void> {
   }
   // Cosmetic: print feature pitches for migrations newer than the prior binary.
   try {
-    const statePath = join(process.env.HOME || '', '.gbrain', 'upgrade-state.json');
+    const statePath = join(process.env.HOME || '', '.zbrain', 'upgrade-state.json');
     if (existsSync(statePath)) {
       const state = JSON.parse(readFileSync(statePath, 'utf-8'));
       const from = state?.last_upgrade?.from;
@@ -265,7 +265,7 @@ export async function runPostUpgrade(args: string[] = []): Promise<void> {
             console.log(`NEW: ${m.featurePitch.headline}`);
             if (m.featurePitch.description) console.log(m.featurePitch.description);
             if (m.featurePitch.recipe) {
-              console.log(`Run \`gbrain integrations show ${m.featurePitch.recipe}\` to set it up.`);
+              console.log(`Run \`zbrain integrations show ${m.featurePitch.recipe}\` to set it up.`);
             }
             console.log('');
           }
@@ -284,18 +284,18 @@ export async function runPostUpgrade(args: string[] = []): Promise<void> {
     await runApplyMigrations(['--yes', '--non-interactive']);
   } catch (e) {
     // Surface the error but don't throw — post-upgrade is best-effort.
-    // Users can re-run `gbrain apply-migrations` manually if they want
+    // Users can re-run `zbrain apply-migrations` manually if they want
     // to retry.
     const msg = e instanceof Error ? e.message : String(e);
     console.error(`\napply-migrations failed: ${msg}`);
-    console.error('Run `gbrain apply-migrations --yes` manually to retry.');
+    console.error('Run `zbrain apply-migrations --yes` manually to retry.');
   }
 
   // v0.28.5 (X1): explicitly apply pending schema migrations.
   // apply-migrations runs orchestrator migrations and only WARNs about
   // schema-version drift (apply-migrations.ts:296-302). Without this hook,
-  // `gbrain upgrade` leaves wedged brains wedged — the user has to read
-  // the WARN and run `gbrain init --migrate-only` themselves. We've shipped
+  // `zbrain upgrade` leaves wedged brains wedged — the user has to read
+  // the WARN and run `zbrain init --migrate-only` themselves. We've shipped
   // 11 wedge incidents asking users to read warnings; close the loop here.
   // A1's hasPendingMigrations probe in connectEngine is belt-and-suspenders
   // for any path that bypasses upgrade (autopilot, direct CLI on stale brain).
@@ -321,14 +321,14 @@ export async function runPostUpgrade(args: string[] = []): Promise<void> {
           if (shown !== 'true' && !existingMode) {
             console.log('');
             console.log('═══════════════════════════════════════════════════════════════');
-            console.log('[gbrain] v0.32.3 added named search modes (conservative/balanced/tokenmax).');
-            console.log('[gbrain] Your current behavior is unchanged — the `query` op still defaults');
-            console.log('[gbrain] expand=true and limit=20, same as v0.31.x.');
+            console.log('[zbrain] v0.32.3 added named search modes (conservative/balanced/tokenmax).');
+            console.log('[zbrain] Your current behavior is unchanged — the `query` op still defaults');
+            console.log('[zbrain] expand=true and limit=20, same as v0.31.x.');
             console.log('═══════════════════════════════════════════════════════════════');
             console.log('');
             console.log('[AGENT] Relay this matrix to your operator and ask which mode they want.');
             console.log('[AGENT] Recommended default: tokenmax (preserves current retrieval shape).');
-            console.log('[AGENT] Run `gbrain config set search.mode <mode>` after they decide.');
+            console.log('[AGENT] Run `zbrain config set search.mode <mode>` after they decide.');
             console.log('');
             console.log('Per-query cost @ 10K queries/mo (typical single-user volume):');
             console.log('');
@@ -342,14 +342,14 @@ export async function runPostUpgrade(args: string[] = []): Promise<void> {
             console.log('  25x corner-to-corner spread. Natural diagonal pairings span ~4x.');
             console.log('');
             console.log('To pick:');
-            console.log('  gbrain search modes              # see what is running');
-            console.log('  gbrain config set search.mode <conservative|balanced|tokenmax>');
-            console.log('  gbrain search tune               # data-driven recommendations');
+            console.log('  zbrain search modes              # see what is running');
+            console.log('  zbrain config set search.mode <conservative|balanced|tokenmax>');
+            console.log('  zbrain search tune               # data-driven recommendations');
             console.log('');
             console.log('tokenmax bumps limit to 50 (current default is 20). To preserve');
             console.log('your EXACT current shape:');
-            console.log('  gbrain config set search.mode tokenmax');
-            console.log('  gbrain config set search.searchLimit 20');
+            console.log('  zbrain config set search.mode tokenmax');
+            console.log('  zbrain config set search.searchLimit 20');
             console.log('');
             await engine.setConfig('search.mode_upgrade_notice_shown', 'true');
           }
@@ -372,7 +372,7 @@ export async function runPostUpgrade(args: string[] = []): Promise<void> {
         } catch (re) {
           const msg = re instanceof Error ? re.message : String(re);
           console.warn(`\nChunker-bump reindex skipped: ${msg}`);
-          console.warn('Run `gbrain reindex --markdown` manually when ready.');
+          console.warn('Run `zbrain reindex --markdown` manually when ready.');
         }
       } finally {
         try { await engine.disconnect(); } catch { /* best-effort */ }
@@ -381,10 +381,10 @@ export async function runPostUpgrade(args: string[] = []): Promise<void> {
   } catch (e) {
     // Non-fatal: connection or DDL failure here falls back to the existing
     // user-facing WARN. apply-migrations.ts:296-302 already surfaces the
-    // hint to run `gbrain init --migrate-only`.
+    // hint to run `zbrain init --migrate-only`.
     const msg = e instanceof Error ? e.message : String(e);
     console.warn(`\nSchema auto-apply skipped: ${msg}`);
-    console.warn('Run `gbrain init --migrate-only` manually if your brain is wedged.');
+    console.warn('Run `zbrain init --migrate-only` manually if your brain is wedged.');
   }
 
   // v0.25.1: agent-readable advisory listing recommended skills the
@@ -397,16 +397,16 @@ export async function runPostUpgrade(args: string[] = []): Promise<void> {
     // Best-effort cosmetic surface; never block post-upgrade.
   }
 
-  // v0.36 DX: skillpack reference sweep. After an upgrade, the gbrain bundle
+  // v0.36 DX: skillpack reference sweep. After an upgrade, the zbrain bundle
   // may have shipped changes to scaffolded skills the host already has on
   // disk. Run `reference --all` automatically and print a one-line-per-skill
   // summary so the agent + operator see what drifted without manually
   // running the sweep. Skipped silently when:
-  //   - GBRAIN_SKIP_REFERENCE_SWEEP=1 in env
-  //   - no target workspace can be auto-detected (gbrain installed but
+  //   - ZBRAIN_SKIP_REFERENCE_SWEEP=1 in env
+  //   - no target workspace can be auto-detected (zbrain installed but
   //     never scaffolded anywhere)
-  //   - the detected workspace IS the gbrain repo (dev-mode, would just
-  //     compare gbrain against itself)
+  //   - the detected workspace IS the zbrain repo (dev-mode, would just
+  //     compare zbrain against itself)
   //   - every scaffolded skill is identical (nothing to say)
   await postUpgradeReferenceSweep();
 }
@@ -421,12 +421,12 @@ export async function runPostUpgrade(args: string[] = []): Promise<void> {
  * auto-detected.
  */
 export async function postUpgradeReferenceSweep(
-  opts: { gbrainRoot?: string; targetWorkspace?: string } = {},
+  opts: { zbrainRoot?: string; targetWorkspace?: string } = {},
 ): Promise<void> {
-  if (process.env.GBRAIN_SKIP_REFERENCE_SWEEP) return;
+  if (process.env.ZBRAIN_SKIP_REFERENCE_SWEEP) return;
   try {
     const { autoDetectSkillsDirReadOnly } = await import('../core/repo-root.ts');
-    const { findGbrainRoot } = await import('../core/skillpack/bundle.ts');
+    const { findZbrainRoot } = await import('../core/skillpack/bundle.ts');
     const { runReferenceAll } = await import('../core/skillpack/reference.ts');
     const path = await import('path');
 
@@ -438,14 +438,14 @@ export async function postUpgradeReferenceSweep(
       targetWorkspace = path.resolve(detected.dir, '..');
     }
 
-    const gbrainRoot = opts.gbrainRoot ?? findGbrainRoot();
-    if (!gbrainRoot) return;
+    const zbrainRoot = opts.zbrainRoot ?? findZbrainRoot();
+    if (!zbrainRoot) return;
 
-    // Dev-mode guard: the detected workspace IS the gbrain repo. Sweeping
-    // gbrain against itself is always identical — print nothing.
-    if (path.resolve(targetWorkspace) === path.resolve(gbrainRoot)) return;
+    // Dev-mode guard: the detected workspace IS the zbrain repo. Sweeping
+    // zbrain against itself is always identical — print nothing.
+    if (path.resolve(targetWorkspace) === path.resolve(zbrainRoot)) return;
 
-    const result = runReferenceAll({ gbrainRoot, targetWorkspace });
+    const result = runReferenceAll({ zbrainRoot, targetWorkspace });
     // Print only skills that (a) the host has actually scaffolded, AND
     // (b) have at least one differs or missing entry. Pure-`missing`
     // skills the host never scaffolded are noise; skip them.
@@ -465,7 +465,7 @@ export async function postUpgradeReferenceSweep(
     }
     console.log('');
     console.log(
-      'Run `gbrain skillpack reference <slug>` to inspect per-skill diffs.\nSee `skills/_AGENT_README.md` for what your agent should do on update.\nSkip this sweep: `GBRAIN_SKIP_REFERENCE_SWEEP=1`.',
+      'Run `zbrain skillpack reference <slug>` to inspect per-skill diffs.\nSee `skills/_AGENT_README.md` for what your agent should do on update.\nSkip this sweep: `ZBRAIN_SKIP_REFERENCE_SWEEP=1`.',
     );
   } catch {
     // Best-effort. Never block post-upgrade.
@@ -491,7 +491,7 @@ export function detectInstallMethod(): 'bun' | 'bun-link' | 'binary' | 'clawhub'
   const execPath = process.execPath || '';
 
   // v0.28.5 cluster D: bun-link signal first.
-  // bun link puts a symlink at ~/.bun/bin/gbrain → either the source's bin
+  // bun link puts a symlink at ~/.bun/bin/zbrain → either the source's bin
   // entry (compiled CLI) OR src/cli.ts directly. Either way, realpath
   // resolves into a directory we can walk up from to find a .git/config
   // pointing at our repo.
@@ -499,7 +499,7 @@ export function detectInstallMethod(): 'bun' | 'bun-link' | 'binary' | 'clawhub'
   if (bunLinkResult) return 'bun-link';
 
   // Check if running from node_modules (bun/npm install). Could be canonical
-  // (we publish under garrytan/gbrain) OR the squatter (npm `gbrain@1.3.x`).
+  // (we publish under garrytan/zbrain) OR the squatter (npm `zbrain@1.3.x`).
   // Sub-classify and warn loudly on suspect installs (#658).
   if (execPath.includes('node_modules') || process.argv[1]?.includes('node_modules')) {
     const verdict = classifyBunInstall();
@@ -510,7 +510,7 @@ export function detectInstallMethod(): 'bun' | 'bun-link' | 'binary' | 'clawhub'
   }
 
   // Check if running as compiled binary
-  if (execPath.endsWith('/gbrain') || execPath.endsWith('\\gbrain.exe')) {
+  if (execPath.endsWith('/zbrain') || execPath.endsWith('\\zbrain.exe')) {
     return 'binary';
   }
 
@@ -529,7 +529,7 @@ export function detectInstallMethod(): 'bun' | 'bun-link' | 'binary' | 'clawhub'
  * Detect bun-link source-clone installs (closes #656, fixes #368).
  *
  * Walk up from argv[1] looking for a `.git/config` whose remote url
- * contains `garrytan/gbrain` (case-insensitive substring).
+ * contains `garrytan/zbrain` (case-insensitive substring).
  *
  * v0.28.5 gated on lstatSync(argv1).isSymbolicLink(), but bun resolves
  * the entire symlink chain before setting process.argv[1], so the check
@@ -551,7 +551,7 @@ function detectBunLink(): { repoRoot: string } | null {
       if (existsSync(gitConfigPath)) {
         try {
           const cfg = readFileSync(gitConfigPath, 'utf-8');
-          if (cfg.toLowerCase().includes(GBRAIN_GITHUB_REPO.toLowerCase())) {
+          if (cfg.toLowerCase().includes(ZBRAIN_GITHUB_REPO.toLowerCase())) {
             return { repoRoot: dir };
           }
         } catch { /* unreadable config — not our case */ }
@@ -570,11 +570,11 @@ function detectBunLink(): { repoRoot: string } | null {
 /**
  * v0.28.5 cluster D, signal 2 — bun install authenticity check (closes #658).
  *
- * When `bun add -g gbrain` (or `npm install -g gbrain`) installs from
- * npm, the package is the squatter — an unrelated `gbrain@1.3.x` that
+ * When `bun add -g zbrain` (or `npm install -g zbrain`) installs from
+ * npm, the package is the squatter — an unrelated `zbrain@1.3.x` that
  * silently overwrites our binary. This function reads the install
  * directory's package.json and checks two non-spoofable signals:
- *   - `repository.url` contains `garrytan/gbrain` (case-insensitive)
+ *   - `repository.url` contains `garrytan/zbrain` (case-insensitive)
  *   - the install dir contains a `src/cli.ts` file (squatter ships
  *     compiled binary, not source)
  *
@@ -582,7 +582,7 @@ function detectBunLink(): { repoRoot: string } | null {
  * recovery message. Codex's plan-review noted these signals are spoofable
  * by a determined squatter — accepted; this is best-effort warning, not
  * an assertion. The right structural fix is publishing under a scoped
- * name like `@garrytan/gbrain` (tracked v0.29 follow-up).
+ * name like `@garrytan/zbrain` (tracked v0.29 follow-up).
  */
 function classifyBunInstall(): 'canonical' | 'suspect' {
   try {
@@ -599,7 +599,7 @@ function classifyBunInstall(): 'canonical' | 'suspect' {
           const repoUrl = (typeof pkg.repository === 'string'
             ? pkg.repository
             : pkg.repository?.url) ?? '';
-          if (repoUrl.toLowerCase().includes(GBRAIN_GITHUB_REPO.toLowerCase())) {
+          if (repoUrl.toLowerCase().includes(ZBRAIN_GITHUB_REPO.toLowerCase())) {
             return 'canonical';
           }
           // Source-marker fallback: our published-as-source install always
@@ -624,18 +624,18 @@ function classifyBunInstall(): 'canonical' | 'suspect' {
 
 function printSquatterRecovery(): void {
   console.warn('');
-  console.warn('  WARNING: gbrain install does not appear to be from garrytan/gbrain.');
+  console.warn('  WARNING: zbrain install does not appear to be from garrytan/zbrain.');
   console.warn('  This is likely the npm-name collision tracked in issue #658:');
-  console.warn('    https://www.npmjs.com/package/gbrain (an unrelated package).');
+  console.warn('    https://www.npmjs.com/package/zbrain (an unrelated package).');
   console.warn('');
   console.warn('  Recovery options:');
   console.warn('    1. Install from source:');
-  console.warn('         bun remove -g gbrain');
-  console.warn('         git clone https://github.com/garrytan/gbrain.git');
-  console.warn('         cd gbrain && bun install && bun link');
+  console.warn('         bun remove -g zbrain');
+  console.warn('         git clone https://github.com/garrytan/zbrain.git');
+  console.warn('         cd zbrain && bun install && bun link');
   console.warn('');
   console.warn('    2. Download a release binary:');
-  console.warn('         https://github.com/garrytan/gbrain/releases');
+  console.warn('         https://github.com/garrytan/zbrain/releases');
   console.warn('');
   console.warn('  See docs/INSTALL_FOR_AGENTS.md for the canonical install paths.');
   console.warn('');

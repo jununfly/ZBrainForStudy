@@ -25,14 +25,14 @@ import type { Recipe } from '../types.ts';
  *
  * Attribution: OpenRouter recommends `HTTP-Referer` (required for app
  * attribution) + `X-OpenRouter-Title` (preferred; `X-Title` kept as
- * back-compat alias per OR docs). Defaults to `https://gbrain.ai` / `gbrain`;
+ * back-compat alias per OR docs). Defaults to `https://zbrain.ai` / `zbrain`;
  * forks override via `OPENROUTER_REFERER` / `OPENROUTER_TITLE` env vars so
  * downstream agent stacks (OpenClaw deployments, etc.) get their own
- * attribution on OR's leaderboard instead of polluting gbrain's.
+ * attribution on OR's leaderboard instead of polluting zbrain's.
  *
  * Subagent loops: `supports_subagent_loop: false` is INFORMATIONAL. The real
  * gate is `isAnthropicProvider()` in `src/core/model-config.ts` which
- * hard-pins gbrain's subagent infra to Anthropic-direct (stable tool_use_id
+ * hard-pins zbrain's subagent infra to Anthropic-direct (stable tool_use_id
  * across crashes/replays). OR-proxied Anthropic is rejected at submit time
  * regardless of this flag — relaxing the gate is a deeper architectural
  * change tracked in TODOS.md.
@@ -49,8 +49,8 @@ export const openrouter: Recipe = {
     setup_url: 'https://openrouter.ai/settings/keys',
   },
   resolveDefaultHeaders(env) {
-    const referer = env.OPENROUTER_REFERER ?? 'https://gbrain.ai';
-    const title = env.OPENROUTER_TITLE ?? 'gbrain';
+    const referer = env.OPENROUTER_REFERER ?? 'https://zbrain.ai';
+    const title = env.OPENROUTER_TITLE ?? 'zbrain';
     return {
       // Required by OR for app-attribution. Without HTTP-Referer no leaderboard
       // entry is ever created (per https://openrouter.ai/docs/app-attribution).
@@ -67,7 +67,7 @@ export const openrouter: Recipe = {
       default_dims: 1536,
       // text-embedding-3-small was trained at MRL breakpoints 512/1024/1536
       // (Weaviate analysis); 768 is a practical intermediate. Users opt into
-      // a smaller dim via `gbrain config set embedding_dimensions <N>`.
+      // a smaller dim via `zbrain config set embedding_dimensions <N>`.
       dims_options: [512, 768, 1024, 1536],
       cost_per_1m_tokens_usd: 0.02,
       price_last_verified: '2026-05-20',

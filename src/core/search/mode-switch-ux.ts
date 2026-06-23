@@ -1,7 +1,7 @@
 /**
  * Mode-switch UX (v0.40.3.0 — D3)
  *
- * When the user runs `gbrain config set search.mode <X>`, this module
+ * When the user runs `zbrain config set search.mode <X>`, this module
  * surfaces a banner explaining the consequences and offers follow-up
  * actions.
  *
@@ -12,7 +12,7 @@
  *      and returns banner lines, reindex requirement, and cost estimate.
  *
  *   2. probeWorkerAvailable(engine) — checks Minion worker heartbeat
- *      (mirrors `gbrain doctor`'s queue_health check). Returns active /
+ *      (mirrors `zbrain doctor`'s queue_health check). Returns active /
  *      stale / never_seen with a paste-ready start command.
  *
  *   3. runModeSwitchUx(opts) — the orchestrator. Calls summarizeTransition,
@@ -21,7 +21,7 @@
  *      reindex job or prints the loud-fail "start a worker first" hint
  *      per D3.
  *
- * Suppression: GBRAIN_NO_MODE_SWITCH_UX=1 skips the entire UX for
+ * Suppression: ZBRAIN_NO_MODE_SWITCH_UX=1 skips the entire UX for
  * scripted operators (CI fixtures, automation). Non-TTY also skips
  * interactive prompts; prints paste-ready hints to stderr.
  *
@@ -72,7 +72,7 @@ export interface ModeSwitchOpts {
 }
 
 /**
- * Worker stale threshold: 2 minutes (matches gbrain doctor's
+ * Worker stale threshold: 2 minutes (matches zbrain doctor's
  * queue_health check semantics for "alive Minion worker").
  */
 export const WORKER_STALE_THRESHOLD_MS = 120_000;
@@ -120,13 +120,13 @@ export function summarizeTransition(
     return {
       kind: 'tokenmax_opt_in',
       reindex_required: true,
-      reindex_command: 'gbrain reindex --markdown',
+      reindex_command: 'zbrain reindex --markdown',
       cost_estimate_per_query_cents: 0.03, // ~$0.0003 per typical search
       callout_lines: [
         `Switched to tokenmax. Per-chunk Haiku synopsis enabled.`,
         `Backfill cost (one-time): ~$1-5 per 10K pages via Anthropic Haiku.`,
         `Per-query overhead: ~$0.0003 (reranker + slightly larger payload).`,
-        `Run \`gbrain reindex --markdown\` to backfill existing pages.`,
+        `Run \`zbrain reindex --markdown\` to backfill existing pages.`,
       ],
     };
   }
@@ -178,14 +178,14 @@ function narrowness(mode: SearchMode): number {
  * what to do. The paste-ready start command is always populated so the
  * banner can offer a recovery path.
  *
- * The PGLite inline path (`gbrain agent run` with `--follow`) doesn't
+ * The PGLite inline path (`zbrain agent run` with `--follow`) doesn't
  * require a worker; this probe is for the production "spawn a real
  * Minion worker" path.
  */
 export async function probeWorkerAvailable(engine: BrainEngine): Promise<WorkerProbeResult> {
-  const startCmd = 'gbrain jobs work';
+  const startCmd = 'zbrain jobs work';
   try {
-    // gbrain doesn't have a minion_workers heartbeat table yet (B7 follow-up
+    // zbrain doesn't have a minion_workers heartbeat table yet (B7 follow-up
     // from v0.19.1 — see CLAUDE.md). Use a proxy: any minion_jobs row
     // started or finished within WORKER_STALE_THRESHOLD_MS means a worker
     // is doing real work. If only OLDER activity exists, treat as stale
@@ -235,8 +235,8 @@ export function buildReindexIdempotencyKey(
 }
 
 /**
- * Orchestrator. Called by `gbrain config set search.mode <X>` after the
- * config write lands. Honors GBRAIN_NO_MODE_SWITCH_UX=1 (full skip),
+ * Orchestrator. Called by `zbrain config set search.mode <X>` after the
+ * config write lands. Honors ZBRAIN_NO_MODE_SWITCH_UX=1 (full skip),
  * non-TTY (skip prompt, print paste-ready hints), --yes (auto-submit
  * reindex on tokenmax_opt_in transitions).
  *
@@ -244,7 +244,7 @@ export function buildReindexIdempotencyKey(
  * Minion idempotency_key ensures the reindex doesn't submit twice.
  */
 export async function runModeSwitchUx(opts: ModeSwitchOpts): Promise<void> {
-  if (process.env.GBRAIN_NO_MODE_SWITCH_UX === '1') return;
+  if (process.env.ZBRAIN_NO_MODE_SWITCH_UX === '1') return;
   if (!isSearchMode(opts.newMode)) {
     // The runConfig caller should have validated. Defense-in-depth:
     // print the invalid banner anyway.
@@ -288,7 +288,7 @@ export async function runModeSwitchUx(opts: ModeSwitchOpts): Promise<void> {
 
   if (worker.status !== 'active') {
     // Loud-fail per D3 to avoid the silent-stall footgun. Caller can
-    // still invoke reindex inline (`gbrain reindex --markdown` runs
+    // still invoke reindex inline (`zbrain reindex --markdown` runs
     // synchronously without a worker on the PGLite inline path).
     console.error(`[mode-switch] No active worker (${worker.status}).`);
     console.error(`[mode-switch] Either run inline: ${summary.reindex_command}`);
@@ -308,7 +308,7 @@ export async function runModeSwitchUx(opts: ModeSwitchOpts): Promise<void> {
       { markdown: true, source_id: sourceId },
       idempotencyKey,
     );
-    console.error(`[mode-switch] Submitted as job ${jobId}. Watch with: gbrain jobs follow ${jobId}`);
+    console.error(`[mode-switch] Submitted as job ${jobId}. Watch with: zbrain jobs follow ${jobId}`);
   } catch (err) {
     console.error(`[mode-switch] Submit failed: ${(err as Error).message}`);
     console.error(`[mode-switch] Run inline: ${summary.reindex_command}`);

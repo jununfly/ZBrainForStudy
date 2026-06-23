@@ -40,7 +40,7 @@ examples/skillpack-reference/
 │       └── routing-eval.jsonl      # 5 intents pinning trigger -> skill
 ├── runbooks/
 │   └── bootstrap.md                # post-scaffold display (no executor)
-├── test/
+├── tests/unit/
 │   └── example.test.ts             # unit test stub (bun:test)
 ├── e2e/
 │   └── example.e2e.test.ts         # E2E stub, gated on DATABASE_URL
@@ -62,6 +62,6 @@ always print:
 ```
 
 A regression test
-(`test/skillpack-init-pack.test.ts:e2e-init-doctor-pack`) pins this
+(`tests/unit/skillpack-init-pack.test.ts:e2e-init-doctor-pack`) pins this
 contract: any change that drops the reference pack below 10/10 fails
 the build. That's the invariant — gbrain ships its own bar.

@@ -6,7 +6,7 @@
 #   total-shards: positive integer
 #
 # Excluded from sharding:
-#   - test/e2e/*           — need DATABASE_URL; run via bun run test:e2e
+#   - tests/unit/e2e/*           — need DATABASE_URL; run via bun run test:e2e
 #   - *.serial.test.ts     — concurrency-unsafe (file-wide mock.module / env
 #                            leaks); run via bun run test:serial on its
 #                            own runner in CI. Including these here lets
@@ -72,14 +72,14 @@ cd "$(dirname "$0")/.."
 # total bounded. With 10 matrix shards the per-shard total drops to ~272s.
 # Dedicated jobs run in parallel so total CI wallclock = max(matrix ~4.5min,
 # slow-eval ~3.3min, slow-entity-resolve-perf ~2.6min) ≈ 4.5min.
-ALL_FILES=$(find test -name '*.test.ts' \
+ALL_FILES=$(find tests/unit -name '*.test.ts' \
   -not -name '*.serial.test.ts' \
   -not -name 'eval-longmemeval-e2e.slow.test.ts' \
   -not -name 'entity-resolve-perf.slow.test.ts' \
-  -not -path 'test/e2e/*' | sort)
+  -not -path 'tests/unit/e2e/*' | sort)
 
 if [ -z "$ALL_FILES" ]; then
-  echo "no test files found under test/" >&2
+  echo "no test files found under tests/unit/" >&2
   exit 1
 fi
 

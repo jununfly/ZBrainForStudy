@@ -29,7 +29,7 @@ FOUND=0
 #   - src/commands/sources.ts runFederate/runWebhook* (mutators write raw)
 #   - src/core/migrate.ts (DDL data references not serialization)
 #   - src/core/sources-ops.ts (CLI feedback prints structured fields, not raw config)
-#   - test/ (tests are allowed to introspect raw config)
+#   - tests/unit/ (tests are allowed to introspect raw config)
 
 # Grep for `r.config\|src.config\|source.config` near JSON.stringify/console.log/res.json
 # where redactSourceConfig is NOT used in the same hunk.
@@ -38,10 +38,10 @@ RAW_PATTERN='\b(\.config\b|config:[[:space:]]*src\.config)\b'
 # Tightened patterns: match serializers that pass a source-row's .config
 # field (source.config, src.config, row.config, s.config, or a property
 # access like `.config` on an object likely sourced from a `sources` row),
-# NOT every variable named "config" (which would catch global gbrain config).
+# NOT every variable named "config" (which would catch global zbrain config).
 #
 # The risk pattern is `JSON.stringify(<srcVar>.config)` where srcVar holds
-# a row from the sources table. Variables that hold the GLOBAL gbrain
+# a row from the sources table. Variables that hold the GLOBAL zbrain
 # config.json are also commonly named `config` — that's a different shape
 # and a different threat model (already protected at the file-mode 0o600
 # write site in src/core/config.ts).
@@ -67,7 +67,7 @@ else
 fi
 
 # Filter out files we trust (handle sources.config redaction themselves OR
-# handle the gbrain global config, which is a different object).
+# handle the zbrain global config, which is a different object).
 FILTERED=$(echo "$CANDIDATES" | \
   grep -v 'src/core/source-config-redact.ts' | \
   grep -v 'src/core/sources-load.ts' | \

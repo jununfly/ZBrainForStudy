@@ -3,10 +3,10 @@
  *
  * Resolution priority (highest first):
  *   1. Explicit --source <id> flag (caller passes this as `explicit`)
- *   2. GBRAIN_SOURCE env var
- *   3. .gbrain-source dotfile in CWD or any ancestor directory
+ *   2. ZBRAIN_SOURCE env var
+ *   3. .zbrain-source dotfile in CWD or any ancestor directory
  *   4. Registered source whose local_path contains CWD
- *   5. Brain-level default via `gbrain sources default <id>`
+ *   5. Brain-level default via `zbrain sources default <id>`
  *   6. Literal 'default' (backward compat for pre-v0.17 brains)
  *
  * This helper is shared by the sources CLI, future sync/extract/query
@@ -18,14 +18,14 @@ import { join, dirname, resolve } from 'path';
 import type { BrainEngine } from './engine.ts';
 import { SOURCE_ID_RE, isValidSourceId } from './source-id.ts';
 
-const DOTFILE = '.gbrain-source';
+const DOTFILE = '.zbrain-source';
 // Canonical SOURCE_ID_RE imported from `source-id.ts` (single source of truth).
 // Re-exported below as `__testing.SOURCE_ID_RE` for legacy test imports.
 // Two validator shapes per codex r2 P1-F:
 //   - `isValidSourceId(s)`: boolean — used by tiers that silently fall through
 //     on invalid input (dotfile tier 3, brain_default tier 5)
 //   - explicit throw — used by tiers that must reject loudly with a tailored
-//     message (explicit `--source` flag tier 1, GBRAIN_SOURCE env tier 2).
+//     message (explicit `--source` flag tier 1, ZBRAIN_SOURCE env tier 2).
 //     Tier-specific messages are clearer than the generic assertValidSourceId
 //     error, so the throws stay inline.
 
@@ -59,7 +59,7 @@ function readDotfileWalk(startDir: string): string | null {
  *
  * @param engine  Connected brain engine (for sources table lookups).
  * @param explicit  The --source <id> flag value, if the caller parsed one.
- * @param cwd  The working directory to walk for .gbrain-source. Defaults
+ * @param cwd  The working directory to walk for .zbrain-source. Defaults
  *             to process.cwd(). Exposed for testability.
  * @returns  The resolved source id. Falls back to 'default' if no other
  *           signal is present. Never returns null — every command must
@@ -83,16 +83,16 @@ export async function resolveSourceId(
   }
 
   // 2. Env var.
-  const env = process.env.GBRAIN_SOURCE;
+  const env = process.env.ZBRAIN_SOURCE;
   if (env && env.length > 0) {
     if (!SOURCE_ID_RE.test(env)) {
-      throw new Error(`Invalid GBRAIN_SOURCE value "${env}". Must match [a-z0-9-]{1,32}.`);
+      throw new Error(`Invalid ZBRAIN_SOURCE value "${env}". Must match [a-z0-9-]{1,32}.`);
     }
     await assertSourceExists(engine, env);
     return env;
   }
 
-  // 3. .gbrain-source dotfile walk-up.
+  // 3. .zbrain-source dotfile walk-up.
   const dotfile = readDotfileWalk(cwd);
   if (dotfile) {
     await assertSourceExists(engine, dotfile);
@@ -131,7 +131,7 @@ export async function resolveSourceId(
   //      When NO brain_default is set AND exactly one registered source has
   //      local_path set AND it isn't 'default', route there. This closes
   //      the "532 silent edit failures" bug class where users with a single
-  //      Vault-mounted source ran `gbrain sync` without --source and routed
+  //      Vault-mounted source ran `zbrain sync` without --source and routed
   //      to source_id='default' (which held 0 pages). Conservative: fires
   //      only when there's literally one option — multi-source brains still
   //      require explicit --source or sources.default.
@@ -178,15 +178,15 @@ async function pickSoleNonDefaultSource(engine: BrainEngine): Promise<string | n
 /**
  * Format the one-line stderr nudge that fires when source resolution falls
  * through to the `sole_non_default` tier. Returns null when suppressed via
- * `GBRAIN_NO_SOLE_NON_DEFAULT_NUDGE=1` (CI / scripted-pipeline ergonomics).
+ * `ZBRAIN_NO_SOLE_NON_DEFAULT_NUDGE=1` (CI / scripted-pipeline ergonomics).
  *
  * Single source of truth so the wording stays consistent across every CLI
  * dispatch site that fires the nudge (sync, import, extract, etc.). Callers
  * print to stderr; this helper just builds the line.
  */
 export function formatSoleNonDefaultNudge(sourceId: string): string | null {
-  if (process.env.GBRAIN_NO_SOLE_NON_DEFAULT_NUDGE === '1') return null;
-  return `[gbrain] routing to source '${sourceId}' (sole non-default source registered; pass --source to override).`;
+  if (process.env.ZBRAIN_NO_SOLE_NON_DEFAULT_NUDGE === '1') return null;
+  return `[zbrain] routing to source '${sourceId}' (sole non-default source registered; pass --source to override).`;
 }
 
 async function assertSourceExists(engine: BrainEngine, id: string): Promise<void> {
@@ -197,8 +197,8 @@ async function assertSourceExists(engine: BrainEngine, id: string): Promise<void
   if (rows.length === 0) {
     throw new Error(
       `Source "${id}" not found. Available sources: ` +
-      `run \`gbrain sources list\` to see registered sources, ` +
-      `or \`gbrain sources add ${id}\` to create it.`,
+      `run \`zbrain sources list\` to see registered sources, ` +
+      `or \`zbrain sources add ${id}\` to create it.`,
     );
   }
 }
@@ -207,7 +207,7 @@ async function assertSourceExists(engine: BrainEngine, id: string): Promise<void
  * Get the local_path of the resolved source (per the resolveSourceId chain).
  *
  * Returns the on-disk brain repo path for the source the user is currently
- * operating against. Used by `gbrain storage status` and `gbrain export
+ * operating against. Used by `zbrain storage status` and `zbrain export
  * --restore-only` to find the brain repo without raw SQL or bare try/catch.
  *
  * Resolution order:
@@ -234,14 +234,14 @@ export async function getDefaultSourcePath(
   // Legacy fallback: pre-v0.18 brains stored the repo path in the global
   // config table under sync.repo_path. The sources table exists but its
   // local_path is NULL for the seeded 'default' row. Fall back so storage
-  // tiering works without forcing a `gbrain sources add . --path .` migration.
+  // tiering works without forcing a `zbrain sources add . --path .` migration.
   const legacyPath = await engine.getConfig('sync.repo_path');
   return legacyPath ?? null;
 }
 
 /**
  * v0.37.7.0 — tier labels for `resolveSourceWithTier()`. Exported so
- * `gbrain sources current --json` and downstream consumers share a
+ * `zbrain sources current --json` and downstream consumers share a
  * canonical vocabulary instead of redefining strings inline.
  *
  * Order matches the 1-6 priority of `resolveSourceId()`.
@@ -260,7 +260,7 @@ export type SourceTier = typeof SOURCE_TIER_NAMES[number];
 /**
  * Same resolution chain as `resolveSourceId()`, but also returns
  * WHICH tier won. Additive — does not duplicate the logic; runs the
- * same six steps in the same order. Used by `gbrain sources current`
+ * same six steps in the same order. Used by `zbrain sources current`
  * so users can verify the resolved source AND the reason it resolved
  * before destructive ops.
  *
@@ -283,20 +283,20 @@ export async function resolveSourceWithTier(
   }
 
   // 2. Env var.
-  const env = process.env.GBRAIN_SOURCE;
+  const env = process.env.ZBRAIN_SOURCE;
   if (env && env.length > 0) {
     if (!SOURCE_ID_RE.test(env)) {
-      throw new Error(`Invalid GBRAIN_SOURCE value "${env}". Must match [a-z0-9-]{1,32}.`);
+      throw new Error(`Invalid ZBRAIN_SOURCE value "${env}". Must match [a-z0-9-]{1,32}.`);
     }
     await assertSourceExists(engine, env);
-    return { source_id: env, tier: 'env', detail: `GBRAIN_SOURCE=${env}` };
+    return { source_id: env, tier: 'env', detail: `ZBRAIN_SOURCE=${env}` };
   }
 
-  // 3. .gbrain-source dotfile walk-up.
+  // 3. .zbrain-source dotfile walk-up.
   const dotfile = readDotfileWalk(cwd);
   if (dotfile) {
     await assertSourceExists(engine, dotfile);
-    return { source_id: dotfile, tier: 'dotfile', detail: `.gbrain-source` };
+    return { source_id: dotfile, tier: 'dotfile', detail: `.zbrain-source` };
   }
 
   // 4. Registered source whose local_path contains CWD.

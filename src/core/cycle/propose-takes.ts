@@ -3,7 +3,7 @@
  *
  * Scans markdown pages updated since last run, sends each page's prose to
  * a tuned LLM extractor, writes the extracted gradeable claims to the
- * `take_proposals` queue. User accepts/rejects via `gbrain takes propose`.
+ * `take_proposals` queue. User accepts/rejects via `zbrain takes propose`.
  *
  * Idempotency contract (D17 schema spec):
  *   The unique index on (source_id, page_slug, content_hash, prompt_version)
@@ -12,20 +12,20 @@
  *   prompt re-runs proposals on every page.
  *
  * F2 fence dedup:
- *   The phase reads the page's existing `<!-- gbrain:takes:begin -->` fence
+ *   The phase reads the page's existing `<!-- zbrain:takes:begin -->` fence
  *   (when present) and passes the canonical take rows to the extractor as
  *   "things you have already captured." This prevents duplicate proposals
  *   when a user adds prose to a page that already has takes.
  *
  * Auto-resolve posture:
  *   propose_takes only WRITES proposals to the queue. Nothing here mutates
- *   the canonical takes table. Operator opt-in via `gbrain takes propose
+ *   the canonical takes table. Operator opt-in via `zbrain takes propose
  *   --accept N` is the only path from queue to canonical fence (D17).
  *
  * Prompt tuning status (v0.36.1.0 ship state):
  *   The default extractor prompt was tuned against the synthetic corpus at
- *   test/fixtures/calibration/ and validated via the cat15 propose_takes
- *   eval in the gbrain-evals repo. First live run scored 0.952 F1 on
+ *   tests/unit/fixtures/calibration/ and validated via the cat15 propose_takes
+ *   eval in the zbrain-evals repo. First live run scored 0.952 F1 on
  *   training (target 0.85) and 0.922 F1 on holdout (target 0.80), with a
  *   0.03 train-holdout gap (no overfitting). PROPOSE_TAKES_PROMPT_VERSION
  *   is "v0.36.1.0-tuned-cat15". Re-tuning requires re-running cat15;
@@ -40,7 +40,7 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { BaseCyclePhase, type ScopedReadOpts, type BasePhaseOpts } from './base-phase.ts';
 import { chat as gatewayChat } from '../ai/gateway.ts';
-import { GBrainError } from '../types.ts';
+import { ZBrainError } from '../types.ts';
 import type { Page, PageFilters } from '../types.ts';
 import type { OperationContext } from '../operations.ts';
 import type { BrainEngine } from '../engine.ts';
@@ -55,8 +55,8 @@ export const PROPOSE_TAKES_PROMPT_VERSION = 'v0.36.1.0-tuned-cat15';
 
 /**
  * Tuned extractor prompt, validated against the hand-labeled synthetic
- * corpus at test/fixtures/calibration/. Measured F1 on first live run
- * via gbrain-evals cat15 (claude-sonnet-4-6 extractor, claude-haiku-4-5
+ * corpus at tests/unit/fixtures/calibration/. Measured F1 on first live run
+ * via zbrain-evals cat15 (claude-sonnet-4-6 extractor, claude-haiku-4-5
  * matcher judge):
  *
  *   training avg F1: 0.952 (target 0.85, exceeded by 10 points)
@@ -164,13 +164,13 @@ export function contentHash(pageBody: string): string {
 }
 
 /**
- * Detect whether a page already has a complete `<!-- gbrain:takes:begin -->`
+ * Detect whether a page already has a complete `<!-- zbrain:takes:begin -->`
  * fence. We DO propose against pages with fences (F2 dedup) but the operator
  * may opt to skip-with-fence pages via skipPagesWithFence:true for a faster
  * pass. The fence shape mirrors src/core/takes-fence.ts.
  */
 export function hasCompleteFence(pageBody: string): boolean {
-  return /<!---?\s*gbrain:takes:begin[\s\S]*?gbrain:takes:end\s*-->/.test(pageBody);
+  return /<!---?\s*zbrain:takes:begin[\s\S]*?zbrain:takes:end\s*-->/.test(pageBody);
 }
 
 /**
@@ -184,7 +184,7 @@ export function extractExistingTakesForDedup(pageBody: string): Array<{
   holder: string;
   weight: number;
 }> {
-  const fenceMatch = pageBody.match(/<!---?\s*gbrain:takes:begin\s*-->([\s\S]*?)<!---?\s*gbrain:takes:end\s*-->/);
+  const fenceMatch = pageBody.match(/<!---?\s*zbrain:takes:begin\s*-->([\s\S]*?)<!---?\s*zbrain:takes:end\s*-->/);
   if (!fenceMatch) return [];
   const body = fenceMatch[1] ?? '';
   const rows: Array<{ claim: string; kind: string; holder: string; weight: number }> = [];
@@ -287,7 +287,7 @@ class ProposeTakesPhase extends BaseCyclePhase {
   protected readonly budgetUsdDefault = 5.0;
 
   protected override mapErrorCode(err: unknown): string {
-    if (err instanceof GBrainError) return err.problem;
+    if (err instanceof ZBrainError) return err.problem;
     if (err instanceof Error) {
       if (err.message.includes('content_hash')) return 'CALIBRATION_PROPOSAL_DEDUP_FAIL';
       if (err.message.includes('budget') || err.message.includes('Budget')) return 'CALIBRATION_GRADE_BUDGET_EXHAUSTED';

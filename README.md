@@ -1,19 +1,19 @@
-# GBrain
+# ZBrain
 
-**Search gives you raw pages. GBrain gives you the answer.** It's the brain layer your AI agent has been missing — the only one that does synthesis, graph traversal, and gap analysis in one box.
+**Search gives you raw pages. ZBrain gives you the answer.** It's the brain layer your AI agent has been missing — the only one that does synthesis, graph traversal, and gap analysis in one box.
 
-I'm Garry Tan, President and CEO of Y Combinator. I built GBrain to run my own AI agents. It's the production brain behind my OpenClaw and Hermes deployments: **146,646 pages, 24,585 people, 5,339 companies**, 66 cron jobs running autonomously. My agent ingests meetings, emails, tweets, voice calls, and original ideas while I sleep. It enriches every person and company it encounters. It fixes its own citations and consolidates memory overnight. I wake up smarter than when I went to bed — and so will you.
+I'm Garry Tan, President and CEO of Y Combinator. I built ZBrain to run my own AI agents. It's the production brain behind my OpenClaw and Hermes deployments: **146,646 pages, 24,585 people, 5,339 companies**, 66 cron jobs running autonomously. My agent ingests meetings, emails, tweets, voice calls, and original ideas while I sleep. It enriches every person and company it encounters. It fixes its own citations and consolidates memory overnight. I wake up smarter than when I went to bed — and so will you.
 
-**And now it works as a company brain too.** Each person on the team gets their own slice of the brain, scoped by login. When you query, you only see what you're allowed to see — never another person's notes, never another team's data. We fuzz-tested this across every way you can read the brain (search, list, lookup, multi-source reads) and got zero leaks. Drop GBrain in as your team's shared institutional memory — the [company-brain](https://www.ycombinator.com/rfs#company-brain) shape YC just put on its Request for Startups. If you're building in that space, you might as well build on this. **[Tutorial: set up GBrain as your company brain →](docs/tutorials/company-brain.md)**
+**And now it works as a company brain too.** Each person on the team gets their own slice of the brain, scoped by login. When you query, you only see what you're allowed to see — never another person's notes, never another team's data. We fuzz-tested this across every way you can read the brain (search, list, lookup, multi-source reads) and got zero leaks. Drop ZBrain in as your team's shared institutional memory — the [company-brain](https://www.ycombinator.com/rfs#company-brain) shape YC just put on its Request for Startups. If you're building in that space, you might as well build on this. **[Tutorial: set up ZBrain as your company brain →](docs/tutorials/company-brain.md)**
 
-Lots of personal-knowledge systems give you keyword matching and grep in a box. GBrain does that, and adds two things nobody else ships together:
+Lots of personal-knowledge systems give you keyword matching and grep in a box. ZBrain does that, and adds two things nobody else ships together:
 
 - **A synthesis layer that gives you the actual answer.** Synthesized, well-cited prose across people, companies, deals, and ideas. Not "here are 10 chunks that mention your query"; an actual answer with citations and an explicit note on what the brain doesn't know yet. The gap analysis is the part that changes how you use the brain.
-- **A self-wiring knowledge graph.** Every page write extracts entity refs and creates typed edges (`attended`, `works_at`, `invested_in`, `founded`, `advises`) with zero LLM calls. Ask "who works at Acme AI?" or "what did Bob invest in this quarter?" and get answers vector search alone can't reach. Benchmarked: **P@5 49.1%, R@5 97.9%** on a 240-page Opus-generated rich-prose corpus, **+31.4 points P@5** over its graph-disabled variant and over ripgrep-BM25 + vector-only RAG by a similar margin. Full BrainBench scorecards live in the sibling [gbrain-evals](https://github.com/garrytan/gbrain-evals) repo.
+- **A self-wiring knowledge graph.** Every page write extracts entity refs and creates typed edges (`attended`, `works_at`, `invested_in`, `founded`, `advises`) with zero LLM calls. Ask "who works at Acme AI?" or "what did Bob invest in this quarter?" and get answers vector search alone can't reach. Benchmarked: **P@5 49.1%, R@5 97.9%** on a 240-page Opus-generated rich-prose corpus, **+31.4 points P@5** over its graph-disabled variant and over ripgrep-BM25 + vector-only RAG by a similar margin. Full BrainBench scorecards live in the sibling [zbrain-evals](https://github.com/jununfly/zbrain-evals) repo.
 
 The point of building a 100K-page brain is to use it as a strategic moat. To never lose context. To query what's in your own head without re-reading it. The brain layer is what makes the moat usable. The 24/7 dream cycle is what keeps it sharp. Both run on your hardware, your DB, your keys.
 
-It's easier to ship a daemon that runs 24/7 to ingest, enrich, and consolidate than it is to keep an agent in chat working hard. GBrain is that daemon, generalized. Install in 30 minutes. Your agent does the work. As my personal agent gets smarter, so does yours.
+It's easier to ship a daemon that runs 24/7 to ingest, enrich, and consolidate than it is to keep an agent in chat working hard. ZBrain is that daemon, generalized. Install in 30 minutes. Your agent does the work. As my personal agent gets smarter, so does yours.
 
 > **~30 minutes to a fully working brain.** Database ready in 2 seconds (PGLite, no server). You just answer questions about API keys.
 
@@ -39,7 +39,7 @@ Say you have a meeting with Alice tomorrow. You want to walk in remembering what
 
 Five pages you now have to open and read yourself to actually prepare. The tool found the right material, but it didn't do the work.
 
-**GBrain gives you back the answer, with sources:**
+**ZBrain gives you back the answer, with sources:**
 
 ```
 Alice runs engineering at Acme (a series-B fintech). You last spoke
@@ -65,11 +65,11 @@ This is the difference between a search engine and a brain. Search finds the pag
 
 ## Install
 
-GBrain is designed to be installed and operated by an AI agent. The fastest path is to have your agent do it for you. The CLI and MCP paths below are for people who want to wire it up themselves.
+ZBrain is designed to be installed and operated by an AI agent. The fastest path is to have your agent do it for you. The CLI and MCP paths below are for people who want to wire it up themselves.
 
 ### Have your agent install it (recommended)
 
-If you don't already have an AI agent platform running, start with one of these. Both are designed to read GBrain's install protocol and execute it:
+If you don't already have an AI agent platform running, start with one of these. Both are designed to read ZBrain's install protocol and execute it:
 
 - **[OpenClaw](https://github.com/openclawagents/openclaw)** — deploy [AlphaClaw on Render](https://render.com/deploy?repo=https://github.com/chrysb/alphaclaw) (one click, 8GB+ RAM)
 - **[Hermes](https://github.com/openclawagents/hermes)** — deploy on [Railway](https://github.com/praveen-ks-2001/hermes-agent-template) (one click)
@@ -78,10 +78,10 @@ Then paste this into your agent:
 
 ```
 Retrieve and follow the instructions at:
-https://raw.githubusercontent.com/garrytan/gbrain/master/INSTALL_FOR_AGENTS.md
+https://raw.githubusercontent.com/jununfly/zbrain/master/INSTALL_FOR_AGENTS.md
 ```
 
-The agent installs GBrain, creates the brain, asks for your API keys, loads 43 skills, configures the dream cycle, and verifies the install end-to-end. ~30 minutes. You answer questions, it does the work.
+The agent installs ZBrain, creates the brain, asks for your API keys, loads 43 skills, configures the dream cycle, and verifies the install end-to-end. ~30 minutes. You answer questions, it does the work.
 
 > **Never set up an AI agent platform before?** The [personal-brain tutorial](docs/tutorials/personal-brain.md) walks the whole path end-to-end — picking OpenClaw vs Hermes, deploying it, pointing it at INSTALL_FOR_AGENTS.md, getting the API keys, and verifying the first query. Start there if any of the above is new.
 
@@ -91,7 +91,7 @@ Already running Codex, Claude Code, Cursor, or another coding agent? Paste the s
 
 ```
 Retrieve and follow the instructions at:
-https://raw.githubusercontent.com/garrytan/gbrain/master/INSTALL_FOR_AGENTS.md
+https://raw.githubusercontent.com/jununfly/zbrain/master/INSTALL_FOR_AGENTS.md
 ```
 
 This works in any agent that can read files over HTTPS and execute shell commands. Tested with Codex, Claude Code, Claude Cowork, Cursor, and AlphaClaw.
@@ -99,21 +99,21 @@ This works in any agent that can read files over HTTPS and execute shell command
 ### CLI standalone (no agent)
 
 ```bash
-bun install -g github:garrytan/gbrain
-gbrain init --pglite     # 2 seconds; no server, no Docker
-gbrain doctor            # verify health
-gbrain import ~/notes/   # index your markdown
-gbrain query "what themes show up across my notes?"
+bun install -g github:jununfly/zbrain
+zbrain init --pglite     # 2 seconds; no server, no Docker
+zbrain doctor            # verify health
+zbrain import ~/notes/   # index your markdown
+zbrain query "what themes show up across my notes?"
 ```
 
 Postgres-at-scale, Supabase, and thin-client setup paths live in [`docs/INSTALL.md`](docs/INSTALL.md).
 
-### Connect GBrain to your AI client (MCP)
+### Connect ZBrain to your AI client (MCP)
 
-GBrain exposes 30+ tools over MCP (stdio and HTTP). The specific snippet depends on which client you use:
+ZBrain exposes 30+ tools over MCP (stdio and HTTP). The specific snippet depends on which client you use:
 
-- **[Claude Code](docs/mcp/CLAUDE_CODE.md)** — one command: `claude mcp add gbrain -- gbrain serve`. Zero server, zero tunnel.
-- **[Cursor / Windsurf / any stdio MCP client](docs/mcp/CLAUDE_CODE.md)** — same shape, add `{"command": "gbrain", "args": ["serve"]}` to your MCP config.
+- **[Claude Code](docs/mcp/CLAUDE_CODE.md)** — one command: `claude mcp add zbrain -- zbrain serve`. Zero server, zero tunnel.
+- **[Cursor / Windsurf / any stdio MCP client](docs/mcp/CLAUDE_CODE.md)** — same shape, add `{"command": "zbrain", "args": ["serve"]}` to your MCP config.
 - **[Claude Desktop (Cowork)](docs/mcp/CLAUDE_DESKTOP.md)** — Settings → Integrations → add the URL of your HTTP server. Remote only; the local `claude_desktop_config.json` does not work for remote servers.
 - **[Claude Cowork (team plan)](docs/mcp/CLAUDE_COWORK.md)** — org Owner adds the connector under Organization Settings → Connectors.
 - **[Perplexity Computer](docs/mcp/PERPLEXITY.md)** — Settings → Connectors → add the URL + bearer token. Pro subscription required.
@@ -122,8 +122,8 @@ GBrain exposes 30+ tools over MCP (stdio and HTTP). The specific snippet depends
 For the HTTP server itself:
 
 ```bash
-gbrain serve              # stdio MCP (local subprocess; for Claude Code, Cursor, Windsurf)
-gbrain serve --http       # HTTP MCP with OAuth 2.1 + admin dashboard at /admin
+zbrain serve              # stdio MCP (local subprocess; for Claude Code, Cursor, Windsurf)
+zbrain serve --http       # HTTP MCP with OAuth 2.1 + admin dashboard at /admin
                           # (required for Claude Desktop, Cowork, Perplexity, ChatGPT)
 ```
 
@@ -135,29 +135,29 @@ Raw retrieval (what most personal-knowledge tools ship) and a synthesis layer th
 
 ```bash
 # raw retrieval: top pages by hybrid score, fast, no LLM cost
-gbrain search "who's working on AI agents at portfolio companies?"
+zbrain search "who's working on AI agents at portfolio companies?"
 
 # brain layer: synthesized answer with citations and gap analysis
-gbrain think "who's working on AI agents at portfolio companies?"
+zbrain think "who's working on AI agents at portfolio companies?"
 ```
 
-**`gbrain search`** returns the top retrieved pages, ranked by hybrid scoring (vector + keyword + RRF + source-tier boost + reranker). Use it when you want raw material to skim: agent context windows, citation lookups, finding a specific quote.
+**`zbrain search`** returns the top retrieved pages, ranked by hybrid scoring (vector + keyword + RRF + source-tier boost + reranker). Use it when you want raw material to skim: agent context windows, citation lookups, finding a specific quote.
 
-**`gbrain think`** runs the same retrieval, then composes a synthesized answer across the results with explicit citations to the source pages AND an honest note on what the brain doesn't know yet. The gap analysis is the differentiator: the answer tells you when a page is stale, when a claim is uncited, when two pages contradict each other, when there's a hole you should fill.
+**`zbrain think`** runs the same retrieval, then composes a synthesized answer across the results with explicit citations to the source pages AND an honest note on what the brain doesn't know yet. The gap analysis is the differentiator: the answer tells you when a page is stale, when a claim is uncited, when two pages contradict each other, when there's a hole you should fill.
 
 **Why it compounds.** Pair the brain layer with `find_trajectory` and you get answers like *"how have the company's metrics changed AND what does the team look like right now AND what did they promise / share AND when did we last meet AND what's the value-add I can offer here"*: well-scored, well-cited, in one shot. That's the strategic moat. That's why building a 100K-page brain is worth the effort.
 
-`gbrain agent run "..."` exposes the same surface to a sub-agent through the Minions queue, with crash-safe two-phase persistence. Same answers, durable.
+`zbrain agent run "..."` exposes the same surface to a sub-agent through the Minions queue, with crash-safe two-phase persistence. Same answers, durable.
 
 ## How to get data in
 
 One command, local or hosted, synchronous receipt:
 
 ```bash
-gbrain capture "the thought I want to remember"
-gbrain capture --file ./notes/today.md
-echo "from a pipe" | gbrain capture --stdin
-SLUG=$(gbrain capture "..." --quiet)
+zbrain capture "the thought I want to remember"
+zbrain capture --file ./notes/today.md
+echo "from a pipe" | zbrain capture --stdin
+SLUG=$(zbrain capture "..." --quiet)
 ```
 
 The page lands in the database and on disk in one move. Default slug `inbox/YYYY-MM-DD-<hash8>` so captures cluster in a predictable triage location. On thin-client installs the verb routes through MCP to the server: same command, same UX.
@@ -172,45 +172,45 @@ curl -X POST https://your-brain/ingest \
 ```
 
 For mobile capture, the inbox folder source picks up anything dropped into
-`~/.gbrain/inbox/` from iOS Shortcuts / AirDrop / Drafts / Finder.
+`~/.zbrain/inbox/` from iOS Shortcuts / AirDrop / Drafts / Finder.
 
 Third-party skillpacks can ship custom ingestion sources (Granola, Linear,
 voice, OCR) against the versioned `IngestionSource` contract at
-`gbrain/ingestion`. See [`docs/skillpack-anatomy.md`](docs/skillpack-anatomy.md).
+`zbrain/ingestion`. See [`docs/skillpack-anatomy.md`](docs/skillpack-anatomy.md).
 
 ## Your brain's shape (schema packs)
 
 Most personal-knowledge tools force one fixed layout: their idea of "notes" + "people" + "tags." Drop a Notion export or your own years-old Obsidian vault on top, and the agent doesn't know what a `Projects/` folder means or whether `Reading/` is people or sources.
 
-**gbrain doesn't have a fixed layout.** It ships with two bundled schema packs and lets you author your own when neither fits:
+**zbrain doesn't have a fixed layout.** It ships with two bundled schema packs and lets you author your own when neither fits:
 
-- **`gbrain-base`** (default) — the layout my production brain uses: `people/`, `companies/`, `concepts/`, `meetings/`, `deal/`, `daily/`, `originals/`, `writing/`, etc. Zero config. Drop a brain that fits this shape and everything works.
-- **`gbrain-recommended`** — extends `gbrain-base` with the 13 additional directories from `docs/GBRAIN_RECOMMENDED_SCHEMA.md` (source, place, trip, conversation, personal, civic, project, etc.). Activate with `gbrain schema use gbrain-recommended`.
-- **Your own pack** — `gbrain schema detect` clusters your actual filesystem into proposed types, `gbrain schema suggest` runs an LLM pass over them, and `gbrain schema review-candidates --apply` promotes the ones you like. Three commands and the brain knows your shape.
+- **`zbrain-base`** (default) — the layout my production brain uses: `people/`, `companies/`, `concepts/`, `meetings/`, `deal/`, `daily/`, `originals/`, `writing/`, etc. Zero config. Drop a brain that fits this shape and everything works.
+- **`zbrain-recommended`** — extends `zbrain-base` with the 13 additional directories from `docs/ZBRAIN_RECOMMENDED_SCHEMA.md` (source, place, trip, conversation, personal, civic, project, etc.). Activate with `zbrain schema use zbrain-recommended`.
+- **Your own pack** — `zbrain schema detect` clusters your actual filesystem into proposed types, `zbrain schema suggest` runs an LLM pass over them, and `zbrain schema review-candidates --apply` promotes the ones you like. Three commands and the brain knows your shape.
 
 ```bash
-gbrain schema active                # which pack is running, which tier set it
-gbrain schema list                  # bundled + installed packs
-gbrain schema detect                # propose types matching your filesystem
-gbrain schema suggest               # LLM-refined proposals on top of detect
-gbrain schema review-candidates     # human gate: promote / rename / ignore
-gbrain schema use my-pack           # activate
+zbrain schema active                # which pack is running, which tier set it
+zbrain schema list                  # bundled + installed packs
+zbrain schema detect                # propose types matching your filesystem
+zbrain schema suggest               # LLM-refined proposals on top of detect
+zbrain schema review-candidates     # human gate: promote / rename / ignore
+zbrain schema use my-pack           # activate
 ```
 
 The active pack threads through every read + write path: `parseMarkdown` infers page type from the pack's path prefixes; `whoknows` scopes expert routing to types declared `expert_routing: true`; `extract_facts` runs only on `extractable: true` types; the search cache folds the pack name + version into its key so cross-pack contamination is structurally impossible. Switch packs and the brain re-interprets itself; switch back and nothing's lost.
 
-Seven-tier resolution chain (per-call flag → env var → per-source DB key → brain-wide DB key → `gbrain.yml` → `~/.gbrain/config.json` → `gbrain-base` default). Full reference + authoring guide: [`docs/architecture/schema-packs.md`](docs/architecture/schema-packs.md).
+Seven-tier resolution chain (per-call flag → env var → per-source DB key → brain-wide DB key → `zbrain.yml` → `~/.zbrain/config.json` → `zbrain-base` default). Full reference + authoring guide: [`docs/architecture/schema-packs.md`](docs/architecture/schema-packs.md).
 
 ## Tutorials
 
-Step-by-step walkthroughs for getting the most out of GBrain. Each one takes you from zero to a working outcome, with concrete commands and real numbers.
+Step-by-step walkthroughs for getting the most out of ZBrain. Each one takes you from zero to a working outcome, with concrete commands and real numbers.
 
-- [**Set up your personal AI agent + brain from zero**](docs/tutorials/personal-brain.md) — the canonical full-stack install. Two GitHub repos, a Telegram bot, AlphaClaw on Render, OpenClaw + GBrain + Supabase. End-to-end in about 2 hours.
-- [**Set up GBrain as your company brain**](docs/tutorials/company-brain.md) — federated, multi-user, OAuth-scoped institutional memory for a 10-50 person team. About 90 minutes end-to-end.
+- [**Set up your personal AI agent + brain from zero**](docs/tutorials/personal-brain.md) — the canonical full-stack install. Two GitHub repos, a Telegram bot, AlphaClaw on Render, OpenClaw + ZBrain + Supabase. End-to-end in about 2 hours.
+- [**Set up ZBrain as your company brain**](docs/tutorials/company-brain.md) — federated, multi-user, OAuth-scoped institutional memory for a 10-50 person team. About 90 minutes end-to-end.
 
-More walkthroughs in progress: connecting an existing agent (Claude Code, Cursor, OpenClaw, Hermes) to a GBrain memory layer; setting up GBrain for VC dealflow with founder scorecards and meeting prep; migrating an existing Notion or Obsidian vault; indexing a codebase as a queryable code brain. Full tutorial index: [`docs/tutorials/`](docs/tutorials/).
+More walkthroughs in progress: connecting an existing agent (Claude Code, Cursor, OpenClaw, Hermes) to a ZBrain memory layer; setting up ZBrain for VC dealflow with founder scorecards and meeting prep; migrating an existing Notion or Obsidian vault; indexing a codebase as a queryable code brain. Full tutorial index: [`docs/tutorials/`](docs/tutorials/).
 
-Want to see a tutorial that isn't here yet? [Open an issue](https://github.com/garrytan/gbrain/issues) describing the workflow you want documented.
+Want to see a tutorial that isn't here yet? [Open an issue](https://github.com/jununfly/zbrain/issues) describing the workflow you want documented.
 
 ## What it does (the loop)
 
@@ -229,23 +229,23 @@ The whole loop is described in [`docs/architecture/topologies.md`](docs/architec
 
 ## Capabilities
 
-**Hybrid search.** Vector (HNSW on pgvector) + BM25 keyword + reciprocal-rank fusion + source-tier boost + intent-aware query rewriting. Three named search modes (`conservative`, `balanced`, `tokenmax`) bundle the cost/quality knobs into a single config key. Live cost/recall comparisons in [`docs/eval/SEARCH_MODE_METHODOLOGY.md`](docs/eval/SEARCH_MODE_METHODOLOGY.md). Default: `balanced` with ZeroEntropy reranker on. Per-query graph signals notice when a top result is a hub for THAT query (adjacency boost), is corroborated across team brains (cross-source boost), or is being crowded out by weak chunks from a chatty session (session demote). Run `gbrain search "<query>" --explain` to see per-stage attribution: base score, every boost that fired, what it multiplied. `gbrain doctor` ships a `graph_signals_coverage` check; `gbrain search stats` shows fire counts and failure breakdowns.
+**Hybrid search.** Vector (HNSW on pgvector) + BM25 keyword + reciprocal-rank fusion + source-tier boost + intent-aware query rewriting. Three named search modes (`conservative`, `balanced`, `tokenmax`) bundle the cost/quality knobs into a single config key. Live cost/recall comparisons in [`docs/eval/SEARCH_MODE_METHODOLOGY.md`](docs/eval/SEARCH_MODE_METHODOLOGY.md). Default: `balanced` with ZeroEntropy reranker on. Per-query graph signals notice when a top result is a hub for THAT query (adjacency boost), is corroborated across team brains (cross-source boost), or is being crowded out by weak chunks from a chatty session (session demote). Run `zbrain search "<query>" --explain` to see per-stage attribution: base score, every boost that fired, what it multiplied. `zbrain doctor` ships a `graph_signals_coverage` check; `zbrain search stats` shows fire counts and failure breakdowns.
 
-**Self-wiring knowledge graph.** Every `put_page` extracts entity refs from markdown/wikilinks/typed-link syntax and writes edges with zero LLM calls. Typed edges (`attended`, `works_at`, `invested_in`, `founded`, `advises`, `mentions`, …). Multi-hop traversal via `gbrain graph-query`. The graph is what produces the +31.4 P@5 lift over vector-only RAG.
+**Self-wiring knowledge graph.** Every `put_page` extracts entity refs from markdown/wikilinks/typed-link syntax and writes edges with zero LLM calls. Typed edges (`attended`, `works_at`, `invested_in`, `founded`, `advises`, `mentions`, …). Multi-hop traversal via `zbrain graph-query`. The graph is what produces the +31.4 P@5 lift over vector-only RAG.
 
 **Job queue (Minions).** BullMQ-shaped, Postgres-native job queue. Durable subagents (LLM tool loops that survive crashes via two-phase pending→done persistence), shell jobs with audit, child jobs with cascading timeouts, rate leases for outbound providers, attachments via S3/Supabase storage. Replaces "spawn subagent as fire-and-forget Promise" with something that recovers from anything.
 
 **43 curated skills.** Routing lives in [`skills/RESOLVER.md`](skills/RESOLVER.md). Covers signal capture, ingest (idea / media / meeting), enrichment, querying, brain ops, citation fixing, daily task management, cron scheduling, reports, voice, soul audit, skill creation, eval framework, and migrations. Skills are markdown files (tool-agnostic), packaged as a single skillpack the installer drops into your agent workspace.
 
-**Eval framework.** `gbrain eval longmemeval` runs the public [LongMemEval](https://huggingface.co/datasets/xiaowu0162/longmemeval) benchmark against your hybrid retrieval. `gbrain eval export` + `gbrain eval replay` capture real queries and replay them against code changes (set `GBRAIN_CONTRIBUTOR_MODE=1`). `gbrain eval cross-modal` cross-checks an output against the task using three different-provider frontier models. Full methodology in [`docs/eval/SEARCH_MODE_METHODOLOGY.md`](docs/eval/SEARCH_MODE_METHODOLOGY.md).
+**Eval framework.** `zbrain eval longmemeval` runs the public [LongMemEval](https://huggingface.co/datasets/xiaowu0162/longmemeval) benchmark against your hybrid retrieval. `zbrain eval export` + `zbrain eval replay` capture real queries and replay them against code changes (set `ZBRAIN_CONTRIBUTOR_MODE=1`). `zbrain eval cross-modal` cross-checks an output against the task using three different-provider frontier models. Full methodology in [`docs/eval/SEARCH_MODE_METHODOLOGY.md`](docs/eval/SEARCH_MODE_METHODOLOGY.md).
 
-**Brain consistency.** `gbrain eval suspected-contradictions` samples retrieval pairs, layered date pre-filter, query-conditioned LLM judge, persistent cache. Surfaces conflicts between takes + facts the agent has written. Wired into the daily dream cycle.
+**Brain consistency.** `zbrain eval suspected-contradictions` samples retrieval pairs, layered date pre-filter, query-conditioned LLM judge, persistent cache. Surfaces conflicts between takes + facts the agent has written. Wired into the daily dream cycle.
 
-**Agent-authored schema (v0.40.7.0).** Your brain has a shape — what page types exist (`person`, `meeting`, `paper`, `case`, `lab-result`), what they link to (`attended`, `authored`, `prescribed-by`), what facts get extracted automatically. The default ships with 22 universal types, but your brain's actual shape is not the default shape. Agents can now evolve that shape on your behalf via 14 `gbrain schema` CLI verbs + a batched MCP op (`schema_apply_mutations`, admin scope, NOT localOnly so remote agents reach it over HTTPS). Atomic file locks, audit log with the agent's identity, chunked UPDATE backfill in 1000-row batches that never wedge concurrent writers. The brain stops being a pile of notes and becomes something with structure. **Why it matters:** [`docs/what-schemas-unlock.md`](docs/what-schemas-unlock.md) — 7 killer use cases (4000 invisible meetings, founder ops brain, research brain, legal brain, team brain, agent-as-co-curator). **5-minute walkthrough:** [`docs/schema-author-tutorial.md`](docs/schema-author-tutorial.md). **Agent skill:** [`skills/schema-author/SKILL.md`](skills/schema-author/SKILL.md).
+**Agent-authored schema (v0.40.7.0).** Your brain has a shape — what page types exist (`person`, `meeting`, `paper`, `case`, `lab-result`), what they link to (`attended`, `authored`, `prescribed-by`), what facts get extracted automatically. The default ships with 22 universal types, but your brain's actual shape is not the default shape. Agents can now evolve that shape on your behalf via 14 `zbrain schema` CLI verbs + a batched MCP op (`schema_apply_mutations`, admin scope, NOT localOnly so remote agents reach it over HTTPS). Atomic file locks, audit log with the agent's identity, chunked UPDATE backfill in 1000-row batches that never wedge concurrent writers. The brain stops being a pile of notes and becomes something with structure. **Why it matters:** [`docs/what-schemas-unlock.md`](docs/what-schemas-unlock.md) — 7 killer use cases (4000 invisible meetings, founder ops brain, research brain, legal brain, team brain, agent-as-co-curator). **5-minute walkthrough:** [`docs/schema-author-tutorial.md`](docs/schema-author-tutorial.md). **Agent skill:** [`skills/schema-author/SKILL.md`](skills/schema-author/SKILL.md).
 
 ## Integrations
 
-Data flowing into the brain. Each integration is a recipe — markdown + setup hints — that ships in `recipes/` and is discoverable via `gbrain integrations list`.
+Data flowing into the brain. Each integration is a recipe — markdown + setup hints — that ships in `recipes/` and is discoverable via `zbrain integrations list`.
 
 - **Voice**: Phone calls create brain pages via Twilio + OpenAI Realtime (or DIY STT+LLM+TTS). Setup recipe: [`recipes/twilio-voice-brain.md`](recipes/twilio-voice-brain.md).
 - **Email + calendar**: webhook handlers that route to brain signals. [`docs/integrations/meeting-webhooks.md`](docs/integrations/meeting-webhooks.md).
@@ -258,21 +258,21 @@ Data flowing into the brain. Each integration is a recipe — markdown + setup h
 
 **Two engines, one contract.** PGLite (Postgres 17 via WASM, zero-config, default) for personal brains up to ~50K pages. Postgres + pgvector (Supabase or self-hosted) for shared / large / multi-machine deployments. The contract-first `BrainEngine` interface in [`src/core/engine.ts`](src/core/engine.ts) defines ~47 operations both engines implement; CLI and MCP server are generated from one source.
 
-**Brain repo is the system of record.** Your knowledge lives in a regular git repo (your "brain repo") as markdown files. GBrain syncs the repo into Postgres for retrieval; deletes in git become soft-deletes in DB. You can publish public subsets, share team mounts, run thin-client setups pointing at a colleague's brain server. Topologies in [`docs/architecture/topologies.md`](docs/architecture/topologies.md).
+**Brain repo is the system of record.** Your knowledge lives in a regular git repo (your "brain repo") as markdown files. ZBrain syncs the repo into Postgres for retrieval; deletes in git become soft-deletes in DB. You can publish public subsets, share team mounts, run thin-client setups pointing at a colleague's brain server. Topologies in [`docs/architecture/topologies.md`](docs/architecture/topologies.md).
 
-**Two organizational axes (brain ⊥ source).** A *brain* is a database (your personal brain, a team mount you joined). A *source* is a repo inside that brain (wiki, gstack, an essay, a knowledge base). Routing lives in `.gbrain-source` dotfiles and resolves via a documented 6-tier precedence chain. Full diagrams in [`docs/architecture/brains-and-sources.md`](docs/architecture/brains-and-sources.md).
+**Two organizational axes (brain ⊥ source).** A *brain* is a database (your personal brain, a team mount you joined). A *source* is a repo inside that brain (wiki, gstack, an essay, a knowledge base). Routing lives in `.zbrain-source` dotfiles and resolves via a documented 6-tier precedence chain. Full diagrams in [`docs/architecture/brains-and-sources.md`](docs/architecture/brains-and-sources.md).
 
 **Why the graph matters.** Vector search returns chunks that are semantically close. The graph returns chunks that are factually connected. Hybrid search pulls from both; auto-linking on every write keeps the graph fresh. Deep dive: [`docs/architecture/RETRIEVAL.md`](docs/architecture/RETRIEVAL.md).
 
 ## Troubleshooting
 
-**`gbrain import` fails with `expected N dimensions, not M`?** Run `gbrain doctor`. It will print the exact `gbrain config set ...` or `gbrain retrieval-upgrade` command to repair the mismatch. You should not need to delete `~/.gbrain`. Fresh `gbrain init --pglite` auto-detects your embedding provider from API keys in your environment: set `OPENAI_API_KEY` (or `ZEROENTROPY_API_KEY` / `VOYAGE_API_KEY`) before running init, or pass `--embedding-model <provider>:<model>` explicitly. With multiple keys set, init fires an interactive picker. In non-TTY contexts (CI, Docker) with no keys, init exits 1 with a paste-ready setup hint; pass `--no-embedding` to defer setup until runtime. See [`docs/integrations/embedding-providers.md`](docs/integrations/embedding-providers.md) for the full provider matrix and [`docs/operations/headless-install.md`](docs/operations/headless-install.md) for Docker/CI sequencing.
+**`zbrain import` fails with `expected N dimensions, not M`?** Run `zbrain doctor`. It will print the exact `zbrain config set ...` or `zbrain retrieval-upgrade` command to repair the mismatch. You should not need to delete `~/.zbrain`. Fresh `zbrain init --pglite` auto-detects your embedding provider from API keys in your environment: set `OPENAI_API_KEY` (or `ZEROENTROPY_API_KEY` / `VOYAGE_API_KEY`) before running init, or pass `--embedding-model <provider>:<model>` explicitly. With multiple keys set, init fires an interactive picker. In non-TTY contexts (CI, Docker) with no keys, init exits 1 with a paste-ready setup hint; pass `--no-embedding` to defer setup until runtime. See [`docs/integrations/embedding-providers.md`](docs/integrations/embedding-providers.md) for the full provider matrix and [`docs/operations/headless-install.md`](docs/operations/headless-install.md) for Docker/CI sequencing.
 
 ## Docs
 
 - [`docs/INSTALL.md`](docs/INSTALL.md) — every install path, end to end
 - [`docs/what-schemas-unlock.md`](docs/what-schemas-unlock.md) — why schemas matter: 7 killer use cases, the structural argument for typed page kinds, the agent-co-curates pattern (v0.40.7.0)
-- [`docs/schema-author-tutorial.md`](docs/schema-author-tutorial.md) — 5-minute walkthrough: fork the bundled pack, add a custom type, backfill existing pages, prove the wiring via `gbrain whoknows`
+- [`docs/schema-author-tutorial.md`](docs/schema-author-tutorial.md) — 5-minute walkthrough: fork the bundled pack, add a custom type, backfill existing pages, prove the wiring via `zbrain whoknows`
 - [`docs/architecture/`](docs/architecture/) — system design, topologies, retrieval theory
 - [`docs/guides/`](docs/guides/) — how-to runbooks (sub-agent routing, minion deployment, skill development, brain-first lookup, idea capture, diligence ingestion)
 - [`docs/integrations/`](docs/integrations/) — connecting external data sources (voice, email, calendar, embedding providers)
@@ -294,7 +294,7 @@ If you find a bug or want a feature: open an issue first. Quick fixes (typo, doc
 
 ## License + credit
 
-MIT. I built GBrain to run my OpenClaw and Hermes deployments — the production brain behind my AI agents.
+MIT. I built ZBrain to run my OpenClaw and Hermes deployments — the production brain behind my AI agents.
 
 Origin story: [`docs/ethos/ORIGIN.md`](docs/ethos/ORIGIN.md).
 

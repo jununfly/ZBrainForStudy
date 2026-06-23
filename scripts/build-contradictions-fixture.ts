@@ -4,7 +4,7 @@
  *
  * Build a privacy-redacted gold fixture for the contradiction probe judge
  * by running the probe against the user's REAL brain and hand-labeling
- * the candidate pairs. Output: test/fixtures/contradictions-eval-gold.jsonl.
+ * the candidate pairs. Output: tests/unit/fixtures/contradictions-eval-gold.jsonl.
  *
  * Privacy posture (CLAUDE.md rule): the operator MUST inspect the
  * generated file before commit. The redactor (fixture-redact.ts) is
@@ -17,7 +17,7 @@
  *     [--top-k N=5] \
  *     [--judge MODEL=claude-haiku-4-5] \
  *     [--max-pairs N=50] \
- *     [--output PATH=test/fixtures/contradictions-eval-gold.jsonl] \
+ *     [--output PATH=tests/unit/fixtures/contradictions-eval-gold.jsonl] \
  *     [--non-interactive]
  *
  * Interactive flow:
@@ -45,7 +45,7 @@ import { runContradictionProbe } from '../src/core/eval-contradictions/runner.ts
 
 async function connectLocalEngine(): Promise<BrainEngine> {
   const cfg = loadConfig();
-  if (!cfg) throw new Error('No brain configured. Run `gbrain init` first.');
+  if (!cfg) throw new Error('No brain configured. Run `zbrain init` first.');
   const engineCfg = toEngineConfig(cfg);
   const engine = await createEngine(engineCfg);
   await connectWithRetry(engine, engineCfg, { noRetry: false });
@@ -74,7 +74,7 @@ function parseFlags(argv: string[]): ParsedFlags {
     topK: 5,
     judge: 'anthropic:claude-haiku-4-5',
     maxPairs: 50,
-    output: 'test/fixtures/contradictions-eval-gold.jsonl',
+    output: 'tests/unit/fixtures/contradictions-eval-gold.jsonl',
     nonInteractive: false,
     help: false,
   };
@@ -106,7 +106,7 @@ Usage:
     [--top-k N=5]
     [--judge MODEL=claude-haiku-4-5]
     [--max-pairs N=50]
-    [--output PATH=test/fixtures/contradictions-eval-gold.jsonl]
+    [--output PATH=tests/unit/fixtures/contradictions-eval-gold.jsonl]
     [--non-interactive]
 
 Output: JSONL with one labeled-and-redacted pair per line. Lines that

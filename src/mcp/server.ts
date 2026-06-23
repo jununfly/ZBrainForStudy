@@ -10,7 +10,7 @@ import { getBrainHotMemoryMeta } from '../core/facts/meta-hook.ts';
 
 export async function startMcpServer(engine: BrainEngine) {
   const server = new Server(
-    { name: 'gbrain', version: VERSION },
+    { name: 'zbrain', version: VERSION },
     { capabilities: { tools: {} } },
   );
 
@@ -24,7 +24,7 @@ export async function startMcpServer(engine: BrainEngine) {
   // Dispatch tool calls via shared dispatch.ts (parity with HTTP transport).
   // MCP stdio callers are remote/untrusted; dispatch defaults remote=true.
   // The MCP SDK's response type widened in 1.29 to allow a managed-task wrapper;
-  // gbrain ops are synchronous, so we return the legacy `{ content, isError? }`
+  // zbrain ops are synchronous, so we return the legacy `{ content, isError? }`
   // shape and cast through `any` (the SDK accepts it via the ServerResult union).
   server.setRequestHandler(CallToolRequestSchema, async (request: any): Promise<any> => {
     const { name, arguments: params } = request.params;
@@ -32,14 +32,14 @@ export async function startMcpServer(engine: BrainEngine) {
     // takes-holder allow-list to ['world'] so agent-facing callers don't
     // see private hunches via takes_list / takes_search / query. Operators
     // who want stdio to see everything should call ops directly via
-    // `gbrain call <op>` (sets remote=false in src/cli.ts).
+    // `zbrain call <op>` (sets remote=false in src/cli.ts).
     return dispatchToolCall(engine, name, params, {
       remote: true,
       takesHoldersAllowList: ['world'],
       // v0.31: source defaults to 'default' for stdio (no per-token scope).
       // Operators who want a different source on stdio MCP should set
-      // GBRAIN_SOURCE in the env or use --source via `gbrain call`.
-      sourceId: process.env.GBRAIN_SOURCE || 'default',
+      // ZBRAIN_SOURCE in the env or use --source via `zbrain call`.
+      sourceId: process.env.ZBRAIN_SOURCE || 'default',
       // v0.31 (eD3): _meta.brain_hot_memory injection so Claude Desktop /
       // Code see the brain's relevant hot memory automatically alongside
       // every tool-call response. Best-effort; absorbs errors.
@@ -57,7 +57,7 @@ export async function startMcpServer(engine: BrainEngine) {
   const shutdown = (reason: string, code = 0) => {
     if (shuttingDown) return;
     shuttingDown = true;
-    process.stderr.write(`[gbrain-serve] shutdown: ${reason}\n`);
+    process.stderr.write(`[zbrain-serve] shutdown: ${reason}\n`);
     Promise.resolve(engine.disconnect?.())
       .catch(() => {})
       .finally(() => process.exit(code));
@@ -78,8 +78,8 @@ export async function startMcpServer(engine: BrainEngine) {
   process.on('SIGHUP', () => shutdown('SIGHUP'));
 }
 
-// Backward compat: used by `gbrain call` command (trusted local path).
-// v0.31.8 (D22): accept opts.sourceId so `gbrain call --source X <op> <json>`
+// Backward compat: used by `zbrain call` command (trusted local path).
+// v0.31.8 (D22): accept opts.sourceId so `zbrain call --source X <op> <json>`
 // can scope the op handler to that source. resolveSourceId() in call.ts is
 // the upstream resolver; this layer just passes the resolved id through.
 export async function handleToolCall(

@@ -1,7 +1,7 @@
 /**
  * eval-contradictions/types — stable shapes for the contradiction probe.
  *
- * `schema_version: 1` is the wire contract for `gbrain eval suspected-contradictions --json`.
+ * `schema_version: 1` is the wire contract for `zbrain eval suspected-contradictions --json`.
  * `PROMPT_VERSION` is the cache-key discriminator: bumping this invalidates every
  * cached judge verdict from prior runs, which is the point — when the prompt edits,
  * old verdicts are no longer trustworthy.
@@ -57,7 +57,7 @@ export type Verdict =
  * Resolution kinds. v0.34 / Lane A2 added three new members covering the new
  * verdicts; the original four still apply to `verdict === 'contradiction'`.
  *
- * - temporal_supersede     → render `gbrain takes supersede ... --since <date>`
+ * - temporal_supersede     → render `zbrain takes supersede ... --since <date>`
  * - flag_for_review        → informational; no CLI command rendered
  * - log_timeline_change    → render a hint pointing at the future
  *                             timeline-writer subcommand (deferred)
@@ -175,7 +175,7 @@ export interface PerQueryResult {
 
 /**
  * v0.34 / Lane A2: per-run tally across all 6 verdicts. Surfaces in the trend
- * rollup so operators can see whether `gbrain eval suspected-contradictions`
+ * rollup so operators can see whether `zbrain eval suspected-contradictions`
  * is finding mostly genuine contradictions or mostly temporal noise.
  */
 export interface VerdictBreakdown {

@@ -1,7 +1,7 @@
 /**
- * gbrain mounts — manage connected gbrains (v0.19.0, PR 0).
+ * zbrain mounts — manage connected gbrains (v0.19.0, PR 0).
  *
- * A "mount" is a SEPARATE gbrain DATABASE connected to your host agent.
+ * A "mount" is a SEPARATE zbrain DATABASE connected to your host agent.
  * Your host OpenClaw can mount N team-published brains (YC Media, YC
  * Politics, Garry's List) and route operations to each via `--brain <id>`.
  *
@@ -11,15 +11,15 @@
  *   --source meetings    → which repo WITHIN that database
  *
  * Subcommands (PR 0 — direct transport only):
- *   gbrain mounts add <id> --path <path> --engine pglite|postgres [--db-url|--db-path]
- *   gbrain mounts list [--json]
- *   gbrain mounts remove <id>
+ *   zbrain mounts add <id> --path <path> --engine pglite|postgres [--db-url|--db-path]
+ *   zbrain mounts list [--json]
+ *   zbrain mounts remove <id>
  *
  * Not yet shipped (PR 1+):
- *   gbrain mounts pin <id> <sha>        — freeze at a tested version (PR 1)
- *   gbrain mounts sync [--id <id>]      — git pull + cache refresh (PR 1)
- *   gbrain mounts enable/disable <id>   — toggle without removing (PR 1)
- *   gbrain mounts add --mcp-url         — HTTP MCP transport + OAuth (PR 2)
+ *   zbrain mounts pin <id> <sha>        — freeze at a tested version (PR 1)
+ *   zbrain mounts sync [--id <id>]      — git pull + cache refresh (PR 1)
+ *   zbrain mounts enable/disable <id>   — toggle without removing (PR 1)
+ *   zbrain mounts add --mcp-url         — HTTP MCP transport + OAuth (PR 2)
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, renameSync } from 'fs';
@@ -35,14 +35,14 @@ import {
 } from '../core/brain-registry.ts';
 import { findRepoRoot } from '../core/repo-root.ts';
 import { writeMountsCache, clearMountsCache } from '../core/mounts-cache.ts';
-import { GBrainError } from '../core/types.ts';
+import { ZBrainError } from '../core/types.ts';
 
-function getMountsDir(): string { return join(homedir(), '.gbrain'); }
-// v0.40.3.0: GBRAIN_MOUNTS_PATH override exists for tests (libuv caches
+function getMountsDir(): string { return join(homedir(), '.zbrain'); }
+// v0.40.3.0: ZBRAIN_MOUNTS_PATH override exists for tests (libuv caches
 // homedir() at startup on some platforms; HOME mutation alone isn't
 // reliably picked up). Production callers don't set this.
 function getMountsPath(): string {
-  const override = process.env.GBRAIN_MOUNTS_PATH;
+  const override = process.env.ZBRAIN_MOUNTS_PATH;
   if (override) return override;
   return join(getMountsDir(), 'mounts.json');
 }
@@ -60,12 +60,12 @@ function readMountsFile(path: string = getMountsPath()): MountsFile {
 /** Write mounts.json atomically with 0600 perms (contains no secrets, but
  *  is per-user config alongside config.json which IS secret-bearing).
  *
- *  Unique tmp filename per call (pid + random). Two concurrent `gbrain
+ *  Unique tmp filename per call (pid + random). Two concurrent `zbrain
  *  mounts add` invocations would otherwise clobber each other's `.tmp` file
  *  and one writer's update would be lost. Unique tmp names make each
  *  writer's atomic rename self-contained — last rename wins (read-modify-
  *  write lost-update is a separate concern that a true file lock would
- *  address, deferred to PR 1 under `gbrain mounts sync --lock`). */
+ *  address, deferred to PR 1 under `zbrain mounts sync --lock`). */
 function writeMountsFile(file: MountsFile, path: string = getMountsPath()): void {
   mkdirSync(getMountsDir(), { recursive: true });
   const tmpPath = `${path}.tmp.${process.pid}.${Math.random().toString(36).slice(2, 10)}`;
@@ -88,9 +88,9 @@ interface AddArgs {
 
 function parseAddArgs(args: string[]): AddArgs {
   if (args.length === 0) {
-    throw new GBrainError(
+    throw new ZBrainError(
       'Missing mount id',
-      'gbrain mounts add <id> --path <path> [flags]',
+      'zbrain mounts add <id> --path <path> [flags]',
       'Provide a kebab-case id as the first argument',
     );
   }
@@ -105,25 +105,25 @@ function parseAddArgs(args: string[]): AddArgs {
     const a = args[i];
     const next = (flag: string): string => {
       const v = args[++i];
-      if (!v) throw new GBrainError(`Missing value for ${flag}`, '', `Pass a value: ${flag} <value>`);
+      if (!v) throw new ZBrainError(`Missing value for ${flag}`, '', `Pass a value: ${flag} <value>`);
       return v;
     };
     if (a === '--path') path = next('--path');
     else if (a === '--engine') {
       const v = next('--engine');
       if (v !== 'postgres' && v !== 'pglite') {
-        throw new GBrainError(`Invalid engine: "${v}"`, 'Must be "postgres" or "pglite"', 'Pass --engine pglite or --engine postgres');
+        throw new ZBrainError(`Invalid engine: "${v}"`, 'Must be "postgres" or "pglite"', 'Pass --engine pglite or --engine postgres');
       }
       engine = v;
     }
     else if (a === '--db-url' || a === '--database-url') database_url = next(a);
     else if (a === '--db-path' || a === '--database-path') database_path = next(a);
     else if (a === '--alias') alias = validateMountId(next('--alias'), '--alias value');
-    else throw new GBrainError(`Unknown flag: ${a}`, '', 'See `gbrain mounts add --help`');
+    else throw new ZBrainError(`Unknown flag: ${a}`, '', 'See `zbrain mounts add --help`');
   }
 
   if (!path) {
-    throw new GBrainError('Missing --path', 'Every mount needs a local clone path (for skills + handlers)', 'Add --path /absolute/path/to/mount');
+    throw new ZBrainError('Missing --path', 'Every mount needs a local clone path (for skills + handlers)', 'Add --path /absolute/path/to/mount');
   }
 
   // Engine inference: if user supplied db-url → postgres, if db-path → pglite.
@@ -131,7 +131,7 @@ function parseAddArgs(args: string[]): AddArgs {
     if (database_url) engine = 'postgres';
     else if (database_path) engine = 'pglite';
     else {
-      throw new GBrainError(
+      throw new ZBrainError(
         'Missing --engine',
         'Could not infer engine from flags',
         'Pass --engine pglite --db-path <path> OR --engine postgres --db-url <url>',
@@ -140,10 +140,10 @@ function parseAddArgs(args: string[]): AddArgs {
   }
 
   if (engine === 'postgres' && !database_url) {
-    throw new GBrainError('postgres mount requires --db-url', '', 'Pass --db-url postgresql://...');
+    throw new ZBrainError('postgres mount requires --db-url', '', 'Pass --db-url postgresql://...');
   }
   if (engine === 'pglite' && !database_path && !database_url) {
-    throw new GBrainError('pglite mount requires --db-path', '', 'Pass --db-path /path/to/mount/.pglite');
+    throw new ZBrainError('pglite mount requires --db-path', '', 'Pass --db-path /path/to/mount/.pglite');
   }
 
   return { id, path: resolve(path), engine, database_url, database_path, alias };
@@ -157,7 +157,7 @@ async function runAdd(args: string[]): Promise<void> {
   // Mount path must exist on disk — otherwise skill/handler loading will
   // fail later with a less-actionable error.
   if (!existsSync(parsed.path)) {
-    throw new GBrainError(
+    throw new ZBrainError(
       `Mount path does not exist: ${parsed.path}`,
       'The local clone directory must exist before registering a mount',
       `Clone the repo first (git clone <repo> ${parsed.path}) then re-run`,
@@ -168,10 +168,10 @@ async function runAdd(args: string[]): Promise<void> {
 
   // Duplicate id check.
   if (file.mounts.some(m => m.id === parsed.id)) {
-    throw new GBrainError(
+    throw new ZBrainError(
       `Mount id already exists: "${parsed.id}"`,
-      `Use 'gbrain mounts list' to see registered mounts`,
-      `Remove the existing mount first: gbrain mounts remove ${parsed.id}`,
+      `Use 'zbrain mounts list' to see registered mounts`,
+      `Remove the existing mount first: zbrain mounts remove ${parsed.id}`,
     );
   }
 
@@ -214,10 +214,10 @@ async function runAdd(args: string[]): Promise<void> {
     `  ${parsed.database_url ? `db_url: ${redactUrl(parsed.database_url)}` : `db_path: ${parsed.database_path}`}\n`,
   );
 
-  // Publish aggregated resolver + manifest to ~/.gbrain/mounts-cache/. This
+  // Publish aggregated resolver + manifest to ~/.zbrain/mounts-cache/. This
   // is the runtime ownership seam — host agents read the aggregated file
   // instead of the checked-in skills/RESOLVER.md. When the current process
-  // isn't inside a gbrain repo, skip (a later mounts invocation from a
+  // isn't inside a zbrain repo, skip (a later mounts invocation from a
   // repo-rooted cwd will publish the cache).
   refreshMountsCache();
 }
@@ -244,7 +244,7 @@ function runList(args: string[]): void {
     process.stdout.write(
       'No mounts registered.\n\n' +
       `Add a mount with:\n` +
-      `  gbrain mounts add <id> --path <path> --engine pglite --db-path <path>\n`,
+      `  zbrain mounts add <id> --path <path> --engine pglite --db-path <path>\n`,
     );
     return;
   }
@@ -268,18 +268,18 @@ function runList(args: string[]): void {
 
 function runRemove(args: string[]): void {
   if (args.length === 0) {
-    throw new GBrainError(
+    throw new ZBrainError(
       'Missing mount id',
-      'gbrain mounts remove <id>',
-      `Run 'gbrain mounts list' to see registered mounts`,
+      'zbrain mounts remove <id>',
+      `Run 'zbrain mounts list' to see registered mounts`,
     );
   }
   const id = args[0];
   if (id === HOST_BRAIN_ID) {
-    throw new GBrainError(
+    throw new ZBrainError(
       `Cannot remove host brain`,
-      `"host" is not a mount — it is the default brain from ~/.gbrain/config.json`,
-      `Use 'gbrain init' to reconfigure the host brain`,
+      `"host" is not a mount — it is the default brain from ~/.zbrain/config.json`,
+      `Use 'zbrain init' to reconfigure the host brain`,
     );
   }
 
@@ -287,10 +287,10 @@ function runRemove(args: string[]): void {
   const before = file.mounts.length;
   file.mounts = file.mounts.filter(m => m.id !== id);
   if (file.mounts.length === before) {
-    throw new GBrainError(
+    throw new ZBrainError(
       `Mount "${id}" not found`,
       `No mount with id "${id}" is registered`,
-      `Run 'gbrain mounts list' to see registered mounts`,
+      `Run 'zbrain mounts list' to see registered mounts`,
     );
   }
 
@@ -308,19 +308,19 @@ function runRemove(args: string[]): void {
 }
 
 /**
- * Recompute + publish ~/.gbrain/mounts-cache/{RESOLVER.md,manifest.json}.
- * Looks for the host skills dir via findRepoRoot(cwd). When not in a gbrain
+ * Recompute + publish ~/.zbrain/mounts-cache/{RESOLVER.md,manifest.json}.
+ * Looks for the host skills dir via findRepoRoot(cwd). When not in a zbrain
  * repo, skips with a stderr note — next mounts invocation from a
  * repo-rooted cwd will publish. Failures are non-fatal: the mounts.json
- * write already succeeded; a stale cache is recoverable via `gbrain mounts
- * list` (PR 1 will add `gbrain mounts sync --cache` for explicit refresh).
+ * write already succeeded; a stale cache is recoverable via `zbrain mounts
+ * list` (PR 1 will add `zbrain mounts sync --cache` for explicit refresh).
  */
 function refreshMountsCache(): void {
   const repoRoot = findRepoRoot(process.cwd());
   if (!repoRoot) {
     process.stderr.write(
-      'NOTE: mounts-cache not refreshed (not inside a gbrain repo). ' +
-      'Run `gbrain mounts add|remove` from within a repo to publish ' +
+      'NOTE: mounts-cache not refreshed (not inside a zbrain repo). ' +
+      'Run `zbrain mounts add|remove` from within a repo to publish ' +
       'the aggregated resolver for host agents.\n',
     );
     return;
@@ -391,10 +391,10 @@ export async function runMounts(args: string[]): Promise<void> {
       runSetMountFlag(rest, 'trust_frontmatter_overrides', false, 'untrust-frontmatter');
       return;
     default:
-      throw new GBrainError(
-        `Unknown subcommand: gbrain mounts ${sub}`,
+      throw new ZBrainError(
+        `Unknown subcommand: zbrain mounts ${sub}`,
         `Supported: add, list, remove, enable, disable, trust-frontmatter, untrust-frontmatter`,
-        `Run 'gbrain mounts --help' for usage`,
+        `Run 'zbrain mounts --help' for usage`,
       );
   }
 }
@@ -415,30 +415,30 @@ function runSetMountFlag(
   verb: string,
 ): void {
   if (args.length === 0) {
-    throw new GBrainError(
+    throw new ZBrainError(
       `Missing mount id`,
-      `gbrain mounts ${verb} <id>`,
-      `Run 'gbrain mounts list' to see registered mounts`,
+      `zbrain mounts ${verb} <id>`,
+      `Run 'zbrain mounts list' to see registered mounts`,
     );
   }
   const id = args[0];
   if (id === HOST_BRAIN_ID) {
-    throw new GBrainError(
+    throw new ZBrainError(
       `Cannot ${verb} host brain`,
-      `"host" is not a mount — it is the default brain from ~/.gbrain/config.json`,
+      `"host" is not a mount — it is the default brain from ~/.zbrain/config.json`,
       verb === 'trust-frontmatter' || verb === 'untrust-frontmatter'
         ? `Host frontmatter is always trusted; this verb applies only to mounted brains.`
-        : `Use 'gbrain init' to reconfigure the host brain`,
+        : `Use 'zbrain init' to reconfigure the host brain`,
     );
   }
 
   const file = readMountsFile();
   const mount = file.mounts.find((m) => m.id === id);
   if (!mount) {
-    throw new GBrainError(
+    throw new ZBrainError(
       `Mount "${id}" not found`,
       `No mount with id "${id}" is registered`,
-      `Run 'gbrain mounts list' to see registered mounts`,
+      `Run 'zbrain mounts list' to see registered mounts`,
     );
   }
 
@@ -460,40 +460,40 @@ function runSetMountFlag(
 }
 
 function printHelp(): void {
-  process.stdout.write(`gbrain mounts — manage connected gbrains (PR 0: direct transport only)
+  process.stdout.write(`zbrain mounts — manage connected gbrains (PR 0: direct transport only)
 
 USAGE
-  gbrain mounts add <id> --path <path> --engine pglite|postgres [--db-url|--db-path]
-  gbrain mounts list [--json]
-  gbrain mounts remove <id>
+  zbrain mounts add <id> --path <path> --engine pglite|postgres [--db-url|--db-path]
+  zbrain mounts list [--json]
+  zbrain mounts remove <id>
 
 EXAMPLES
-  # Mount a team-published yc-media gbrain (PGLite)
-  git clone https://github.com/yc-team/yc-media-gbrain ~/gbrains/yc-media
-  gbrain mounts add yc-media --path ~/gbrains/yc-media --engine pglite \\
+  # Mount a team-published yc-media zbrain (PGLite)
+  git clone https://github.com/yc-team/yc-media-zbrain ~/gbrains/yc-media
+  zbrain mounts add yc-media --path ~/gbrains/yc-media --engine pglite \\
     --db-path ~/gbrains/yc-media/.pglite
 
   # List registered mounts
-  gbrain mounts list
+  zbrain mounts list
 
   # Remove a mount
-  gbrain mounts remove yc-media
+  zbrain mounts remove yc-media
 
 v0.40.3.0 ADDITIONS
-  gbrain mounts enable <id>             — re-enable a disabled mount
-  gbrain mounts disable <id>            — toggle a mount off without removing
-  gbrain mounts trust-frontmatter <id>  — let this mount's per-page
+  zbrain mounts enable <id>             — re-enable a disabled mount
+  zbrain mounts disable <id>            — toggle a mount off without removing
+  zbrain mounts trust-frontmatter <id>  — let this mount's per-page
                                           contextual_retrieval_mode
                                           frontmatter override the source
                                           default. Off by default for
                                           mounted brains; host is always
                                           trusted.
-  gbrain mounts untrust-frontmatter <id> — clear the trust flag.
+  zbrain mounts untrust-frontmatter <id> — clear the trust flag.
 
 NOT YET IMPLEMENTED (coming in PR 1/2)
-  gbrain mounts pin <id> <sha>          — freeze a mount at a tested version
-  gbrain mounts sync [--id <id>]        — git pull + refresh attestation
-  gbrain mounts add --mcp-url <url>     — HTTP MCP transport + OAuth
+  zbrain mounts pin <id> <sha>          — freeze a mount at a tested version
+  zbrain mounts sync [--id <id>]        — git pull + refresh attestation
+  zbrain mounts add --mcp-url <url>     — HTTP MCP transport + OAuth
 `);
 }
 

@@ -279,7 +279,7 @@ OpenClaw plugin (separate repo):
   Each iteration: readInbox → inject as system message, updateProgress, updateTokens
   Completion: store result + session transcript in job.result + job.stacktrace
 
-GBrain ships a test/echo handler for unit testing only.
+GBrain ships a tests/unit/echo handler for unit testing only.
 ```
 
 **Handler contract (GBrain side):**

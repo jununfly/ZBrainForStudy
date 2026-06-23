@@ -2,8 +2,8 @@
  * OpenClaw runner — invokes the real `openclaw` binary in a tempdir with a
  * BRIEF.md prompt. Live mode only.
  *
- * Invocation pattern (verified against test/e2e/skills.test.ts and
- * test/e2e/bench-vs-openclaw/harness.ts):
+ * Invocation pattern (verified against tests/unit/e2e/skills.test.ts and
+ * tests/unit/e2e/bench-vs-openclaw/harness.ts):
  *   openclaw agent --local --agent <agent-name> --message "<brief>"
  *
  * NOT `openclaw run --prompt-file BRIEF.md` (that flag does not exist —
@@ -23,7 +23,7 @@ const DEFAULT_AGENT_NAME = 'default';
 const ENV_ALLOWLIST = [
   'PATH', 'HOME', 'USER', 'LANG', 'TZ', 'NODE_ENV',
   'ANTHROPIC_API_KEY', 'OPENAI_API_KEY',
-  'GBRAIN_HOME', 'GBRAIN_FRICTION_RUN_ID', 'GBRAIN_DATABASE_URL',
+  'ZBRAIN_HOME', 'ZBRAIN_FRICTION_RUN_ID', 'ZBRAIN_DATABASE_URL',
 ];
 
 export class OpenClawRunner implements AgentRunner {

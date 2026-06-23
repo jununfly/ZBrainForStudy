@@ -1,0 +1,10 @@
+{
+  "name": "zbrain-context-engine-test",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Test-time fixture for openclaw-loads-the-plugin e2e",
+  "openclaw": {
+    "id": "zbrain-context-engine",
+    "extensions": ["./entry.js"]
+  }
+}

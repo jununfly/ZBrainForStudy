@@ -1,4 +1,4 @@
-// v0.39 T4 — gbrain schema review-candidates + T5 review-orphans.
+// v0.39 T4 — zbrain schema review-candidates + T5 review-orphans.
 //
 // Per D3(eng) + codex finding #10: review-candidates re-derives candidate
 // names from disk on demand instead of reading the privacy-redacted
@@ -13,7 +13,7 @@
 import type { BrainEngine } from '../engine.ts';
 import { runDetect } from './detect.ts';
 import { loadActivePack } from './load-active.ts';
-import { loadConfig, gbrainPath, configPath } from '../config.ts';
+import { loadConfig, zbrainPath, configPath } from '../config.ts';
 import { existsSync, writeFileSync, mkdirSync, appendFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
@@ -44,7 +44,7 @@ export async function runReviewCandidates(
   const detected = await runDetect(engine, { sourceId });
   const cfg = loadConfig();
   let activeTypeNames = new Set<string>();
-  let activePackName = 'gbrain-base';
+  let activePackName = 'zbrain-base';
   try {
     const pack = await loadActivePack({ cfg, remote: false, sourceId });
     activePackName = pack.manifest.name;
@@ -70,9 +70,9 @@ export async function runReviewCandidates(
     }
     // Append the new type to a USER pack derived from the active pack.
     // For v0.39.0.0 the simplest correct path is: write a delta file under
-    // ~/.gbrain/schema-pack-deltas/<active>-<timestamp>.json so users can
-    // review + merge into their pack via `gbrain schema edit`.
-    const deltaDir = gbrainPath('schema-pack-deltas');
+    // ~/.zbrain/schema-pack-deltas/<active>-<timestamp>.json so users can
+    // review + merge into their pack via `zbrain schema edit`.
+    const deltaDir = zbrainPath('schema-pack-deltas');
     mkdirSync(deltaDir, { recursive: true });
     const ts = new Date().toISOString().replace(/[:.]/g, '-');
     const deltaPath = `${deltaDir}/${activePackName}-${ts}.json`;

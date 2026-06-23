@@ -1,8 +1,8 @@
 /**
  * Shell-job submission audit log (operational trace, NOT forensic insurance).
  *
- * Writes a JSONL line per shell-job submission to `~/.gbrain/audit/shell-jobs-YYYY-Www.jsonl`
- * (ISO week rotation, override via `GBRAIN_AUDIT_DIR`). Best-effort: write failures go
+ * Writes a JSONL line per shell-job submission to `~/.zbrain/audit/shell-jobs-YYYY-Www.jsonl`
+ * (ISO week rotation, override via `ZBRAIN_AUDIT_DIR`). Best-effort: write failures go
  * to stderr and never block submission, which means a disk-full attacker could silently
  * disable the trail. CHANGELOG calls this out honestly: it's for debugging "what did
  * this cron submit last Tuesday?", not for security-critical forensics.
@@ -15,7 +15,7 @@
  * v0.40.4.0: internals delegate to the shared `src/core/audit/audit-writer.ts`
  * primitive. The public surface (logShellSubmission, computeAuditFilename,
  * resolveAuditDir) is preserved bit-for-bit because every other audit module
- * AND callers across `gbrain-home-isolation.test.ts`, `minions.test.ts`,
+ * AND callers across `zbrain-home-isolation.test.ts`, `minions.test.ts`,
  * `minions-shell.test.ts` import these by name.
  */
 
@@ -45,8 +45,8 @@ export function computeAuditFilename(now: Date = new Date()): string {
   return computeIsoWeekFilename('shell-jobs', now);
 }
 
-/** Resolve the audit dir. Honors `GBRAIN_AUDIT_DIR` for container/sandbox deployments
- *  where `$HOME` is read-only. Defaults to `~/.gbrain/audit/`.
+/** Resolve the audit dir. Honors `ZBRAIN_AUDIT_DIR` for container/sandbox deployments
+ *  where `$HOME` is read-only. Defaults to `~/.zbrain/audit/`.
  *
  *  v0.40.4.0: re-exported from `src/core/audit/audit-writer.ts` so the single
  *  source of truth lives in the shared primitive. Existing imports (every

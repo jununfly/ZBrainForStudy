@@ -2,13 +2,13 @@
  * v0.40.1.0 Track D / T6 — Nightly cross-modal quality probe phase.
  *
  * Once per 24h, runs the canonical quality pipeline:
- *   1. `gbrain eval longmemeval --by-type` against the committed nightly
- *      fixture (test/fixtures/longmemeval-nightly.jsonl) → JSONL output.
- *   2. `gbrain eval cross-modal --batch <jsonl> --max-usd $cap --yes`
+ *   1. `zbrain eval longmemeval --by-type` against the committed nightly
+ *      fixture (tests/unit/fixtures/longmemeval-nightly.jsonl) → JSONL output.
+ *   2. `zbrain eval cross-modal --batch <jsonl> --max-usd $cap --yes`
  *      → batch summary with verdict.
  *   3. Audit JSONL row recording outcome / cost / pass-fail counts.
  *
- * Default: DISABLED. Opt-in via `gbrain config set
+ * Default: DISABLED. Opt-in via `zbrain config set
  * autopilot.nightly_quality_probe.enabled true`. Doctor surfaces a
  * paste-ready enable hint when disabled.
  *
@@ -32,7 +32,7 @@ const NIGHTLY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_MAX_USD = 5.0;
 
 /** Committed fixture used as the probe's input dataset. */
-const NIGHTLY_FIXTURE_REL_PATH = 'test/fixtures/longmemeval-nightly.jsonl';
+const NIGHTLY_FIXTURE_REL_PATH = 'tests/unit/fixtures/longmemeval-nightly.jsonl';
 
 /** Result reported back to the cycle dispatcher / Minion handler. */
 export interface NightlyProbeResult {

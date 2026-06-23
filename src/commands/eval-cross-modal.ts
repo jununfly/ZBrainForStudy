@@ -1,5 +1,5 @@
 /**
- * gbrain eval cross-modal — multi-model quality gate (v0.27.x).
+ * zbrain eval cross-modal — multi-model quality gate (v0.27.x).
  *
  * Three different-provider frontier models score the OUTPUT against the TASK
  * on a fixed dimension list. Verdict: PASS (exit 0) / FAIL (exit 1) /
@@ -7,8 +7,8 @@
  *
  * Reuses `src/core/ai/gateway.ts` for provider config + auth (T1+T2). Bypasses
  * `connectEngine()` via the cli.ts no-DB branch (T3=A) so onboarding works
- * before `gbrain init`. Receipts are bound to (slug, SKILL.md sha-8) so
- * `gbrain skillify check` can detect stale audits (T10=A).
+ * before `zbrain init`. Receipts are bound to (slug, SKILL.md sha-8) so
+ * `zbrain skillify check` can detect stale audits (T10=A).
  *
  * Cost guardrails (T11=B):
  *   - Default cycles = 3 in TTY, 1 in non-TTY (limits scripted bulk spend).
@@ -21,7 +21,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { createHash } from 'crypto';
 
-import { gbrainPath, loadConfig } from '../core/config.ts';
+import { zbrainPath, loadConfig } from '../core/config.ts';
 import { configureGateway, isAvailable } from '../core/ai/gateway.ts';
 import {
   DEFAULT_DIMENSIONS,
@@ -35,11 +35,11 @@ import type {
   SlotConfig,
 } from '../core/cross-modal-eval/runner.ts';
 
-const HELP = `gbrain eval cross-modal — multi-model quality gate
+const HELP = `zbrain eval cross-modal — multi-model quality gate
 
 USAGE:
-  gbrain eval cross-modal --task "<description>" --output <path-or-skill-slug> [flags]
-  gbrain eval cross-modal --batch <jsonl> [--limit N] [--output <receipt-path>] [flags]   (v0.40.1.0 Track D)
+  zbrain eval cross-modal --task "<description>" --output <path-or-skill-slug> [flags]
+  zbrain eval cross-modal --batch <jsonl> [--limit N] [--output <receipt-path>] [flags]   (v0.40.1.0 Track D)
 
 REQUIRED (single-task mode):
   --task "..."             What the OUTPUT was meant to achieve.
@@ -48,7 +48,7 @@ REQUIRED (single-task mode):
                            to bind the receipt to that skill (T10).
 
 REQUIRED (batch mode, v0.40.1.0 Track D / T3):
-  --batch <jsonl>          LongMemEval-shape JSONL (output of \`gbrain eval
+  --batch <jsonl>          LongMemEval-shape JSONL (output of \`zbrain eval
                            longmemeval --output\`). Each row: {question, hypothesis,
                            question_id, ...}. Summary rows (kind:by_type_summary)
                            are filtered out. Mutually exclusive with --task.
@@ -64,7 +64,7 @@ BATCH FLAGS:
                            non-interactive (CI / cron) runs over the budget.
   --output PATH            Where to write the SUMMARY receipt (NOT where to
                            read agent response). Default:
-                           ~/.gbrain/eval-receipts/cross-modal-batch-<sha8>.json
+                           ~/.zbrain/eval-receipts/cross-modal-batch-<sha8>.json
 
 FLAGS:
   --slug <name>            Receipt filename slug. Defaults to inferred slug
@@ -77,7 +77,7 @@ FLAGS:
   --slot-a-model <id>      Override default 'openai:gpt-4o'.
   --slot-b-model <id>      Override default 'anthropic:claude-opus-4-7'.
   --slot-c-model <id>      Override default 'google:gemini-1.5-pro'.
-  --receipt-dir <path>     Default: gbrainPath('eval-receipts').
+  --receipt-dir <path>     Default: zbrainPath('eval-receipts').
   --max-tokens N           Output token budget per call. Default: 4000.
   --json                   Emit final aggregate as JSON to stdout (progress to stderr).
   --help, -h               Show this help.
@@ -89,19 +89,19 @@ EXIT CODES:
      is still written for forensics; the gate is not authoritative.
 
 CONFIGURATION:
-  Models resolve via the gbrain AI gateway. Configure with:
-    gbrain providers test            # see what's configured
-    gbrain config                    # set keys
+  Models resolve via the zbrain AI gateway. Configure with:
+    zbrain providers test            # see what's configured
+    zbrain config                    # set keys
   Or set env vars: OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY,
-  TOGETHER_API_KEY, etc. The gateway reads from \`~/.gbrain/config.json\` plus
+  TOGETHER_API_KEY, etc. The gateway reads from \`~/.zbrain/config.json\` plus
   process.env.
 
 EXAMPLES:
-  gbrain eval cross-modal \\
+  zbrain eval cross-modal \\
     --task "Skillify SKILL.md teaches the 11-item meta-skill checklist" \\
     --output skills/skillify/SKILL.md
 
-  gbrain eval cross-modal \\
+  zbrain eval cross-modal \\
     --task "PR description sells the value of cross-modal eval" \\
     --output /tmp/pr-description.md \\
     --cycles 1
@@ -242,7 +242,7 @@ function parseFloatStrict(s: string): number {
  * Per-item errors are captured in the result (NOT thrown) so a single
  * failure does not abort the whole batch.
  *
- * Pinned by test/eval-cross-modal-batch.test.ts: never exceeds limit,
+ * Pinned by tests/unit/eval-cross-modal-batch.test.ts: never exceeds limit,
  * surfaces per-item errors, preserves input order in the result array.
  */
 export async function runWithLimit<TIn, TOut>(
@@ -284,7 +284,7 @@ function isTTY(): boolean {
 }
 
 /**
- * Configure the AI gateway from `~/.gbrain/config.json` + process.env.
+ * Configure the AI gateway from `~/.zbrain/config.json` + process.env.
  *
  * Mirrors the body of `cli.ts:connectEngine()` minus the DB connect — we call
  * this from the no-DB branch so the gateway is ready when runEval starts.
@@ -372,7 +372,7 @@ export async function runEvalCrossModal(args: string[], opts: RunCrossModalOpts 
   const slug = parsed.slug ?? inferSlugFromOutputPath(parsed.output);
   const cycles = parsed.cycles ?? (isTTY() ? 3 : 1);
   const dimensions = parsed.dimensions ?? DEFAULT_DIMENSIONS;
-  const receiptDir = parsed.receiptDir ?? gbrainPath('eval-receipts');
+  const receiptDir = parsed.receiptDir ?? zbrainPath('eval-receipts');
   const maxTokens = parsed.maxTokens ?? 4000;
 
   const slots: SlotConfig[] = [
@@ -391,7 +391,7 @@ export async function runEvalCrossModal(args: string[], opts: RunCrossModalOpts 
     process.stderr.write(
       'Error: AI gateway has no usable chat provider. ' +
         'Configure one of OPENAI_API_KEY / ANTHROPIC_API_KEY / GOOGLE_GENERATIVE_AI_API_KEY ' +
-        'in your shell or run `gbrain config` to set keys.\n',
+        'in your shell or run `zbrain config` to set keys.\n',
     );
     return 1;
   }
@@ -483,7 +483,7 @@ export async function runEvalCrossModal(args: string[], opts: RunCrossModalOpts 
 // Reads {question, hypothesis, ...} rows, slices to --limit, fans out via
 // runWithLimit semaphore, aggregates per-question verdicts into a single
 // summary receipt. Per-question receipts land in a tempdir and are deleted
-// at end of run (per D10 — keeps ~/.gbrain/eval-receipts/ clean).
+// at end of run (per D10 — keeps ~/.zbrain/eval-receipts/ clean).
 // ---------------------------------------------------------------------------
 
 interface BatchRow {
@@ -494,7 +494,7 @@ interface BatchRow {
 
 /**
  * v0.40.1.0 Track D (codex CDX-1) — upstream-error row from
- * `gbrain eval longmemeval`. Carries `question`+`question_type` and an
+ * `zbrain eval longmemeval`. Carries `question`+`question_type` and an
  * `error` field but no usable hypothesis. Counted in the batch summary's
  * `upstream_error_count` so the denominator includes failed rows, never
  * silently dropped (which would let the gate pass on a surviving subset).
@@ -577,7 +577,7 @@ function readBatchRows(path: string): BatchReadResult {
       continue;
     }
     // v0.40.1.0 Track D (codex CDX-1): upstream error rows from
-    // `gbrain eval longmemeval` carry an `error` field and an empty/missing
+    // `zbrain eval longmemeval` carry an `error` field and an empty/missing
     // hypothesis. Treat them as upstream_error verdicts in the batch summary
     // so they count in the denominator instead of silently disappearing.
     if (typeof obj.error === 'string' && obj.error.length > 0) {
@@ -708,8 +708,8 @@ async function runBatchMode(parsed: ParsedArgs, opts: RunCrossModalOpts): Promis
   }
 
   // Per-question receipts land in a tempdir; we delete the tempdir at the
-  // end of the batch (per D10 — keeps ~/.gbrain/eval-receipts/ clean).
-  const batchTempDir = mkdtempSync(join(tmpdir(), 'gbrain-batch-receipts-'));
+  // end of the batch (per D10 — keeps ~/.zbrain/eval-receipts/ clean).
+  const batchTempDir = mkdtempSync(join(tmpdir(), 'zbrain-batch-receipts-'));
   const runEvalFn = opts.runEval ?? runEval;
 
   try {
@@ -803,7 +803,7 @@ async function runBatchMode(parsed: ParsedArgs, opts: RunCrossModalOpts): Promis
 
     // Write summary to --output or default path.
     const summaryPath = parsed.output ??
-      join(gbrainPath('eval-receipts'), `cross-modal-batch-${batchSha8(summary)}.json`);
+      join(zbrainPath('eval-receipts'), `cross-modal-batch-${batchSha8(summary)}.json`);
     // Ensure receipts dir exists (the inline ad-hoc default path bypasses
     // the per-cycle runEval mkdir).
     try {

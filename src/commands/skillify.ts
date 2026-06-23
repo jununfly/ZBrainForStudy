@@ -1,5 +1,5 @@
 /**
- * gbrain skillify <scaffold|check> — W4 CLI namespace.
+ * zbrain skillify <scaffold|check> — W4 CLI namespace.
  *
  * `scaffold`: creates 5 stub files for a new skill. Mechanical only.
  * `check`:    11-item audit of an existing skill (item 11, cross-modal
@@ -34,7 +34,7 @@ export { planScaffold, applyScaffold, SkillifyScaffoldError, SKILL_NAME_PATTERN 
 // Top-level dispatcher
 // ---------------------------------------------------------------------------
 
-const HELP_TOP = `gbrain skillify <subcommand> [options]
+const HELP_TOP = `zbrain skillify <subcommand> [options]
 
 Subcommands:
   scaffold <name>    Create SKILL.md, script, routing-eval, test stubs
@@ -43,7 +43,7 @@ Subcommands:
                      (or --recent). Wraps the legacy scripts/skillify-check.ts
                      (D-CX-2: subcommand namespace).
 
-Run \`gbrain skillify <subcommand> --help\` for per-subcommand options.
+Run \`zbrain skillify <subcommand> --help\` for per-subcommand options.
 `;
 
 export async function runSkillify(args: string[]): Promise<void> {
@@ -67,7 +67,7 @@ export async function runSkillify(args: string[]): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// `gbrain skillify scaffold`
+// `zbrain skillify scaffold`
 // ---------------------------------------------------------------------------
 
 interface ScaffoldFlags {
@@ -84,17 +84,17 @@ interface ScaffoldFlags {
   skillsDir: string | null;
 }
 
-const HELP_SCAFFOLD = `gbrain skillify scaffold <name> [options]
+const HELP_SCAFFOLD = `zbrain skillify scaffold <name> [options]
 
 Create 5 scaffold files for a new skill:
   1. skills/<name>/SKILL.md                 frontmatter + body template
   2. skills/<name>/scripts/<name>.mjs       deterministic-code stub
   3. skills/<name>/routing-eval.jsonl       routing fixture seed
-  4. test/<name>.test.ts                    vitest skeleton
+  4. tests/unit/<name>.test.ts                    vitest skeleton
   5. (append) RESOLVER.md or AGENTS.md      trigger row under "## Uncategorized"
 
 All generated files carry the SKILLIFY_STUB sentinel until replaced.
-\`gbrain check-resolvable --strict\` fails if any skill still has the
+\`zbrain check-resolvable --strict\` fails if any skill still has the
 sentinel in its committed script.
 
 Options:
@@ -293,14 +293,14 @@ export async function runSkillifyScaffold(args: string[]): Promise<void> {
     }
     console.log('\nNext:');
     console.log(`  1. Replace SKILLIFY_STUB sentinels in the generated files.`);
-    console.log(`  2. bun test test/${flags.name}.test.ts`);
-    console.log(`  3. gbrain skillify check skills/${flags.name}/scripts/${flags.name}.mjs`);
-    console.log(`  4. gbrain check-resolvable`);
+    console.log(`  2. bun test tests/unit/${flags.name}.test.ts`);
+    console.log(`  3. zbrain skillify check skills/${flags.name}/scripts/${flags.name}.mjs`);
+    console.log(`  4. zbrain check-resolvable`);
   }
 }
 
 // ---------------------------------------------------------------------------
-// `gbrain skillify check` — delegates to scripts/skillify-check.ts via same
+// `zbrain skillify check` — delegates to scripts/skillify-check.ts via same
 // internal helpers. Current design shells out to the script (kept as the
 // single source of truth for the check logic); a future release may inline
 // it further.

@@ -45,7 +45,7 @@ import type {
   SalienceOpts, SalienceResult, AnomaliesOpts, AnomalyResult,
   EmotionalWeightInputRow, EmotionalWeightWriteRow,
 } from './types.ts';
-import { GBrainError, PAGE_SORT_SQL } from './types.ts';
+import { ZBrainError, PAGE_SORT_SQL } from './types.ts';
 import { computeAnomaliesFromBuckets } from './cycle/anomaly.ts';
 import * as db from './db.ts';
 import { ConnectionManager } from './connection-manager.ts';
@@ -79,7 +79,7 @@ export function getPostgresSchema(
 // retry as unsound (regex idempotence-boundary doesn't hold for writable
 // CTEs or side-effecting SELECTs). Recovery now happens at the supervisor
 // level (3-strikes-then-reconnect). The unit tests in
-// test/connection-resilience.test.ts retain a self-contained copy of the
+// tests/unit/connection-resilience.test.ts retain a self-contained copy of the
 // helper so the regression-against-future-reintroduction guard still works.
 // See TODOS.md item: "err.code-based connection-error matching" for the
 // follow-up that will reintroduce a typed retry mechanism.
@@ -126,13 +126,13 @@ export class PostgresEngine implements BrainEngine {
     const url = config.database_url;
     if (config.poolSize) {
       // Instance-level connection for worker isolation. resolvePoolSize lets
-      // GBRAIN_POOL_SIZE cap below the caller's requested size when set — the
+      // ZBRAIN_POOL_SIZE cap below the caller's requested size when set — the
       // env var is a user escape hatch, so it wins.
       const url = config.database_url;
-      if (!url) throw new GBrainError('No database URL', 'database_url is missing', 'Provide --url');
+      if (!url) throw new ZBrainError('No database URL', 'database_url is missing', 'Provide --url');
       const size = Math.min(config.poolSize, db.resolvePoolSize(config.poolSize));
       // Honor PgBouncer transaction-mode detection on worker-instance pools too.
-      // Without this, `gbrain jobs work` against a Supabase pooler URL hits
+      // Without this, `zbrain jobs work` against a Supabase pooler URL hits
       // "prepared statement does not exist" under load just like the module
       // singleton did before v0.15.4.
       const prepare = db.resolvePrepare(url);
@@ -149,8 +149,8 @@ export class PostgresEngine implements BrainEngine {
         // Silence postgres NOTICE-level messages by default. See db.ts for
         // rationale (stdout-parsing callers like jobs-submit --json break when
         // idempotent CREATE migrations flood stdout). Opt back in with
-        // GBRAIN_PG_NOTICES=1.
-        onnotice: process.env.GBRAIN_PG_NOTICES === '1' ? undefined : () => {},
+        // ZBRAIN_PG_NOTICES=1.
+        onnotice: process.env.ZBRAIN_PG_NOTICES === '1' ? undefined : () => {},
       };
       if (Object.keys(timeouts).length > 0) {
         opts.connection = timeouts;
@@ -319,8 +319,8 @@ export class PostgresEngine implements BrainEngine {
    *     `idx_subagent_messages_provider`) — v0.27
    *
    * Keep this in sync with the PGLite version; covered by
-   * `test/schema-bootstrap-coverage.test.ts` (PGLite side) and
-   * `test/e2e/postgres-bootstrap.test.ts` (Postgres side).
+   * `tests/unit/schema-bootstrap-coverage.test.ts` (PGLite side) and
+   * `tests/unit/e2e/postgres-bootstrap.test.ts` (Postgres side).
    */
   private async applyForwardReferenceBootstrap(injectedConn?: postgres.Sql): Promise<void> {
     // Use the caller-provided connection (DDL pool, holding the advisory lock
@@ -1345,7 +1345,7 @@ export class PostgresEngine implements BrainEngine {
     const symbolKind = opts?.symbolKind;
 
     if (opts?.limit && opts.limit > MAX_SEARCH_LIMIT) {
-      console.warn(`[gbrain] Warning: search limit clamped from ${opts.limit} to ${MAX_SEARCH_LIMIT}`);
+      console.warn(`[zbrain] Warning: search limit clamped from ${opts.limit} to ${MAX_SEARCH_LIMIT}`);
     }
 
     const detailLow = opts?.detail === 'low';
@@ -1359,7 +1359,7 @@ export class PostgresEngine implements BrainEngine {
     // by multiplying the chunk-grain ts_rank with a source-factor CASE.
     // Detail-gated — disabled for `detail='high'` (temporal queries) so
     // chat surfaces normally for date-framed lookups. Hard-exclude prefixes
-    // (test/, archive/, attachments/, .raw/ by default) filter at the
+    // (tests/unit/, archive/, attachments/, .raw/ by default) filter at the
     // chunk-rank stage so they never enter the candidate set.
     const boostMap = resolveBoostMap();
     const sourceFactorCase = buildSourceFactorCase('p.slug', boostMap, opts?.detail);
@@ -1507,7 +1507,7 @@ export class PostgresEngine implements BrainEngine {
     const symbolKind = opts?.symbolKind;
 
     if (opts?.limit && opts.limit > MAX_SEARCH_LIMIT) {
-      console.warn(`[gbrain] Warning: search limit clamped from ${opts.limit} to ${MAX_SEARCH_LIMIT}`);
+      console.warn(`[zbrain] Warning: search limit clamped from ${opts.limit} to ${MAX_SEARCH_LIMIT}`);
     }
 
     // Source-aware ranking applies here too — searchKeywordChunks is the
@@ -1622,7 +1622,7 @@ export class PostgresEngine implements BrainEngine {
     const symbolKind = opts?.symbolKind;
 
     if (opts?.limit && opts.limit > MAX_SEARCH_LIMIT) {
-      console.warn(`[gbrain] Warning: search limit clamped from ${opts.limit} to ${MAX_SEARCH_LIMIT}`);
+      console.warn(`[zbrain] Warning: search limit clamped from ${opts.limit} to ${MAX_SEARCH_LIMIT}`);
     }
 
     const vecStr = '[' + Array.from(embedding).join(',') + ']';
@@ -1712,7 +1712,7 @@ export class PostgresEngine implements BrainEngine {
     // ResolvedColumn, undefined) and produces a canonical descriptor.
     //
     // v0.36 Phase 3: 'embedding_multimodal' is the unified column populated
-    // by `gbrain reindex --multimodal`. Carries BOTH text and image content
+    // by `zbrain reindex --multimodal`. Carries BOTH text and image content
     // in Voyage multimodal-3 space — no modality filter; the column itself
     // is the discriminator (rows without embedding_multimodal aren't searched).
     const resolvedCol = normalizeEngineColumn(opts?.embeddingColumn);
@@ -1890,7 +1890,7 @@ export class PostgresEngine implements BrainEngine {
     //   - existing is NULL → take new (cold path, no race)
     //   - new is fresher (embedded_at > existing.embedded_at) → take new
     //   - otherwise → keep existing (slower writer with stale embedding loses)
-    // Mirrored in pglite-engine.ts; pinned by test/e2e/concurrent-embed-race.test.ts.
+    // Mirrored in pglite-engine.ts; pinned by tests/unit/e2e/concurrent-embed-race.test.ts.
     await sql.unsafe(
       `INSERT INTO content_chunks ${cols} VALUES ${rows.join(', ')}
        ON CONFLICT (page_id, chunk_index) DO UPDATE SET
@@ -1949,7 +1949,7 @@ export class PostgresEngine implements BrainEngine {
     // embedding IS NULL regardless.
     //
     // D7: source_id scoping. NULL/undefined = scan all sources;
-    // a value scopes to that source so `gbrain embed --stale --source X`
+    // a value scopes to that source so `zbrain embed --stale --source X`
     // does what it says.
     if (opts?.sourceId === undefined) {
       const [row] = await sql`
@@ -1988,7 +1988,7 @@ export class PostgresEngine implements BrainEngine {
     //
     // D7: optional source_id filter. NULL/undefined = scan all sources
     // (pre-existing behavior); a value scopes to that source so
-    // `gbrain embed --stale --source X` actually does what it says.
+    // `zbrain embed --stale --source X` actually does what it says.
     //
     // v0.41 (D4+D8): NOT (frontmatter ? 'embed_skip') filter applied via
     // the always-JOINed pages row. Soft-blocked pages won't surface in
@@ -2495,7 +2495,7 @@ export class PostgresEngine implements BrainEngine {
 
     // v0.42.0.0 D12: filter mentions OUT of backlink-count for search
     // ranking. `link_source='mentions'` rows are auto-linked body-text
-    // mentions from `gbrain extract links --by-mention`; they're
+    // mentions from `zbrain extract links --by-mention`; they're
     // graph-completeness signal, NOT human-intent signal. Counting them
     // toward backlinks would shift search ranking globally on first
     // --by-mention run, boosting popular-mention pages over intentional-
@@ -3714,7 +3714,7 @@ export class PostgresEngine implements BrainEngine {
       RETURNING 1
     `;
     if (result.length === 0) {
-      throw new GBrainError('TAKE_ROW_NOT_FOUND', `take not found at page_id=${pageId} row=${rowNum}`, 'list takes for this page with `gbrain takes <slug>` to see valid row numbers');
+      throw new ZBrainError('TAKE_ROW_NOT_FOUND', `take not found at page_id=${pageId} row=${rowNum}`, 'list takes for this page with `zbrain takes <slug>` to see valid row numbers');
     }
   }
 
@@ -3728,9 +3728,9 @@ export class PostgresEngine implements BrainEngine {
       const [existing] = await tx`
         SELECT resolved_at FROM takes WHERE page_id = ${pageId} AND row_num = ${oldRow}
       `;
-      if (!existing) throw new GBrainError('TAKE_ROW_NOT_FOUND', `take not found at page_id=${pageId} row=${oldRow}`, 'list takes with `gbrain takes <slug>`');
+      if (!existing) throw new ZBrainError('TAKE_ROW_NOT_FOUND', `take not found at page_id=${pageId} row=${oldRow}`, 'list takes with `zbrain takes <slug>`');
       if ((existing as { resolved_at?: unknown }).resolved_at) {
-        throw new GBrainError('TAKE_RESOLVED_IMMUTABLE', `take ${pageId}#${oldRow} is resolved`, 'resolved bets are immutable; add a new take instead');
+        throw new ZBrainError('TAKE_RESOLVED_IMMUTABLE', `take ${pageId}#${oldRow} is resolved`, 'resolved bets are immutable; add a new take instead');
       }
       const [maxRow] = await tx`SELECT COALESCE(MAX(row_num), 0) + 1 AS next FROM takes WHERE page_id = ${pageId}`;
       const newRowNum = Number((maxRow as { next?: number })?.next ?? 1);
@@ -3752,9 +3752,9 @@ export class PostgresEngine implements BrainEngine {
   async resolveTake(pageId: number, rowNum: number, resolution: TakeResolution): Promise<void> {
     const sql = this.sql;
     const [existing] = await sql`SELECT resolved_at FROM takes WHERE page_id = ${pageId} AND row_num = ${rowNum}`;
-    if (!existing) throw new GBrainError('TAKE_ROW_NOT_FOUND', `take not found at page_id=${pageId} row=${rowNum}`, 'list takes for this page with `gbrain takes <slug>` to see valid row numbers');
+    if (!existing) throw new ZBrainError('TAKE_ROW_NOT_FOUND', `take not found at page_id=${pageId} row=${rowNum}`, 'list takes for this page with `zbrain takes <slug>` to see valid row numbers');
     if ((existing as { resolved_at?: unknown }).resolved_at) {
-      throw new GBrainError('TAKE_ALREADY_RESOLVED', `take ${pageId}#${rowNum} already resolved`, 'resolution is immutable; add a new take to record a new outcome');
+      throw new ZBrainError('TAKE_ALREADY_RESOLVED', `take ${pageId}#${rowNum} already resolved`, 'resolution is immutable; add a new take to record a new outcome');
     }
     // v0.30.0: derive (quality, outcome) tuple. quality wins when both set.
     // Schema CHECK enforces consistency as a defense-in-depth backstop.
@@ -4046,7 +4046,7 @@ export class PostgresEngine implements BrainEngine {
     // not 0. Semantically an empty brain has no coverage problem to penalize
     // — there's nothing to embed, nothing to link, nothing to orphan. The
     // pre-fix "empty = 0" caused fresh-init brains to score as critically
-    // unhealthy on `gbrain doctor`, which was a structural surprise to users
+    // unhealthy on `zbrain doctor`, which was a structural surprise to users
     // who'd just successfully run init. PGLite path has the same fix.
     const embedCoverageScore = pageCount === 0 ? 35 : Math.round(embedCoverage * 35);
     const linkDensityScore = pageCount === 0 ? 25 : Math.round(linkDensity * 25);
@@ -4385,7 +4385,7 @@ export class PostgresEngine implements BrainEngine {
     const since = filter?.since ?? new Date(0);
     const tool = filter?.tool ?? null;
     // id DESC tiebreaker so same-millisecond inserts return deterministically
-    // — without this, `gbrain eval export --since` could dupe or miss rows
+    // — without this, `zbrain eval export --since` could dupe or miss rows
     // across non-overlapping windows.
     const rows = tool
       ? await sql`

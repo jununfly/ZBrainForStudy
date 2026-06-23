@@ -33,7 +33,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { gbrainPath } from '../config.ts';
+import { zbrainPath } from '../config.ts';
 
 export interface CheckpointIdea {
   text: string;
@@ -69,7 +69,7 @@ const CURRENT_SCHEMA: 2 = 2;
 const STALE_MS = 7 * 24 * 60 * 60 * 1000;
 
 function checkpointDir(): string {
-  return gbrainPath('brainstorm');
+  return zbrainPath('brainstorm');
 }
 
 function pathForRunId(runId: string): string {

@@ -167,7 +167,7 @@ export class FactsQueue {
       this.counters.completed += 1;
     } catch (err) {
       // Don't propagate; caller sees nothing — the queue surface is fire-and-
-      // forget by design. Counters expose visibility for `gbrain doctor`.
+      // forget by design. Counters expose visibility for `zbrain doctor`.
       const wasAbort = err instanceof Error && (err.name === 'AbortError' || /aborted/i.test(err.message));
       if (!wasAbort) {
         this.counters.failed += 1;

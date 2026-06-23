@@ -3,8 +3,8 @@
  *
  * Pure module — no engine I/O, no filesystem access. Consumed by:
  *   - `src/core/import-file.ts` — wires the gate into `importFromContent`
- *     so EVERY ingestion path inherits it (sync, gbrain import, put_page
- *     MCP op, gbrain capture, POST /ingest webhook via ingest_capture).
+ *     so EVERY ingestion path inherits it (sync, zbrain import, put_page
+ *     MCP op, zbrain capture, POST /ingest webhook via ingest_capture).
  *   - `src/commands/lint.ts` — surfaces matching content as `huge-page`
  *     + `scraper-junk` lint rules so brain-authors see issues in their
  *     source repo before sync.
@@ -40,7 +40,7 @@
  * in via `extra_literals` from `src/core/content-sanity-literals.ts`
  * (literal substrings only — no regex per Codex r1 #10 ReDoS concerns).
  *
- * The kill-switch (`GBRAIN_NO_SANITY=1` / `content_sanity.disabled: true`)
+ * The kill-switch (`ZBRAIN_NO_SANITY=1` / `content_sanity.disabled: true`)
  * is honored by the CALLER (import-file.ts), not by this module. The
  * assessor stays pure so unit tests don't need env mutation.
  */
@@ -53,13 +53,13 @@
 export const SCAN_HEAD_BYTES = 2048;
 
 /** Default warn threshold. Operator override via
- *  `content_sanity.bytes_warn` config key or `GBRAIN_PAGE_WARN_BYTES`
+ *  `content_sanity.bytes_warn` config key or `ZBRAIN_PAGE_WARN_BYTES`
  *  env var. Above this, lint surfaces `huge-page` rule + ingest emits
  *  stderr warn. Page still writes. */
 export const DEFAULT_BYTES_WARN = 50_000;
 
 /** Default block threshold. Operator override via
- *  `content_sanity.bytes_block` config key or `GBRAIN_PAGE_BLOCK_BYTES`
+ *  `content_sanity.bytes_block` config key or `ZBRAIN_PAGE_BLOCK_BYTES`
  *  env var. Above this, page writes but `frontmatter.embed_skip` is set
  *  and the embedder skips on next sweep. Page is still queryable; just
  *  not searchable until manually re-embedded or split. */
@@ -215,7 +215,7 @@ export function assessContentSanity(opts: {
   /** Effective block threshold; defaults to DEFAULT_BYTES_BLOCK. */
   bytes_block?: number;
   /** Operator-supplied literal substrings loaded from
-   *  `~/.gbrain/junk-substrings.txt` via `src/core/content-sanity-literals.ts`.
+   *  `~/.zbrain/junk-substrings.txt` via `src/core/content-sanity-literals.ts`.
    *  Empty array (default) means built-ins only. */
   extra_literals?: ReadonlyArray<OperatorLiteral>;
 }): ContentSanityResult {

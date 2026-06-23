@@ -13,7 +13,7 @@
 # Exit 0 on no matches; exit 1 on any match. Wired into `bun run verify`.
 #
 # Test fixtures under recipes/agent-voice/tests/fixtures/scrub-{dirty,clean}.txt are
-# the deliberate dirty inputs used by test/check-no-pii.test.ts. They contain the
+# the deliberate dirty inputs used by tests/unit/check-no-pii.test.ts. They contain the
 # token FORBIDDEN_PLACEHOLDER_NAME_1 (NOT real names) and the test sets
 # AGENT_VOICE_PII_BLOCKLIST=FORBIDDEN_PLACEHOLDER_NAME_1 to verify the mechanism.
 

@@ -266,7 +266,7 @@ export class MinionWorker extends EventEmitter {
     // Periodic RSS watchdog — closes the production-freeze regression where
     // all concurrency slots are wedged with zero job completions, so the
     // per-job check in executeJob().finally() never fires. Disabled when
-    // maxRssMb is 0 (default for bare `gbrain jobs work`; supervisor sets 2048).
+    // maxRssMb is 0 (default for bare `zbrain jobs work`; supervisor sets 2048).
     let rssTimer: ReturnType<typeof setInterval> | null = null;
     if (this.opts.maxRssMb > 0) {
       rssTimer = setInterval(() => {
@@ -275,7 +275,7 @@ export class MinionWorker extends EventEmitter {
     }
 
     // Self-health-check — provides supervisor-grade monitoring for bare workers.
-    // Disabled when running under a supervisor (GBRAIN_SUPERVISED=1) or when
+    // Disabled when running under a supervisor (ZBRAIN_SUPERVISED=1) or when
     // healthCheckInterval is 0. Catches two failure modes that leave the process
     // alive but non-functional:
     //   1. DB connection death (Supabase/PgBouncer drops, network blip)
@@ -290,7 +290,7 @@ export class MinionWorker extends EventEmitter {
     // setInterval queues callbacks even when the prior is still awaiting; on a
     // hung DB probe that piles up overlapping async checks racing on
     // `consecutiveDbFailures`. The recursive pattern guarantees one tick at a time.
-    const isSupervisedChild = process.env.GBRAIN_SUPERVISED === '1';
+    const isSupervisedChild = process.env.ZBRAIN_SUPERVISED === '1';
     let healthTimer: ReturnType<typeof setTimeout> | null = null;
     if (!isSupervisedChild && this.opts.healthCheckInterval > 0) {
       let consecutiveDbFailures = 0;
@@ -773,7 +773,7 @@ export class MinionWorker extends EventEmitter {
       // gate and route through `queue.releaseLeaseFullJob` which mirrors
       // `failJob` minus the `attempts_made` increment. Audit row to
       // `minion_lease_pressure_log` so operators see pressure live in
-      // `gbrain doctor` + `gbrain jobs stats lease_pressure`.
+      // `zbrain doctor` + `zbrain jobs stats lease_pressure`.
       const isLeaseFull = err instanceof RateLeaseUnavailableError;
       if (isLeaseFull) {
         const leaseErr = err as RateLeaseUnavailableError;
@@ -788,7 +788,7 @@ export class MinionWorker extends EventEmitter {
           return;
         }
         // Audit row write is best-effort — never blocks the bypass path.
-        // Denormalized columns persist past `gbrain jobs prune` so post-NULL
+        // Denormalized columns persist past `zbrain jobs prune` so post-NULL
         // forensic queries still see context (Eng D8 / codex pass-3 #7).
         await logLeasePressure(this.engine, {
           job_id: job.id,

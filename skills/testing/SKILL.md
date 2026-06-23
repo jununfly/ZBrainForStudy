@@ -53,7 +53,7 @@ This mode guarantees:
 - Every skill directory has a `SKILL.md` file
 - Every `SKILL.md` has valid YAML frontmatter (`name`, `description`)
 - Every `SKILL.md` has required sections per
-  `test/skills-conformance.test.ts`
+  `tests/unit/skills-conformance.test.ts`
 - `skills/manifest.json` lists every skill directory
 - `skills/RESOLVER.md` references every skill in the manifest
 - `openclaw.plugin.json` `skills[]` round-trips with both
@@ -72,7 +72,7 @@ This mode guarantees:
 ### Automation
 
 ```bash
-bun test test/skills-conformance.test.ts test/resolver.test.ts
+bun test tests/unit/skills-conformance.test.ts tests/unit/resolver.test.ts
 ```
 
 The CI-gated check is the package.json `test` script.
@@ -218,7 +218,7 @@ Track results in `~/.gbrain/test-state.json` for trend tracking:
   "evals": { "passed": 17, "failed": 0 },
   "system": { "doctor": "ok", "gbrain": "0.25.1" },
   "failureHistory": [
-    { "test": "<name>", "since": "2026-04-14", "classification": "stale" }
+    { "tests/unit": "<name>", "since": "2026-04-14", "classification": "stale" }
   ]
 }
 ```
@@ -253,4 +253,4 @@ The full behavior contract is documented in the body sections above; this sectio
 
 ## Output Format
 
-The skill's output shape is documented inline in the body sections above (see "Output", "Brain page format", or equivalent). The literal section header here exists for the conformance test (`test/skills-conformance.test.ts`).
+The skill's output shape is documented inline in the body sections above (see "Output", "Brain page format", or equivalent). The literal section header here exists for the conformance test (`tests/unit/skills-conformance.test.ts`).

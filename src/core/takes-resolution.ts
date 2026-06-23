@@ -4,7 +4,7 @@
  * derivation are identical across backends.
  */
 
-import { GBrainError } from './types.ts';
+import { ZBrainError } from './types.ts';
 import type { TakeResolution, TakesScorecard } from './engine.ts';
 
 /**
@@ -24,7 +24,7 @@ export function deriveResolutionTuple(
 ): { quality: 'correct' | 'incorrect' | 'partial' | 'unresolvable'; outcome: boolean | null } {
   const { quality, outcome } = resolution;
   if (quality === undefined && outcome === undefined) {
-    throw new GBrainError(
+    throw new ZBrainError(
       'TAKE_RESOLUTION_INVALID',
       'resolveTake: must pass either `quality` (correct|incorrect|partial|unresolvable) or `outcome` (true|false)',
       'use --quality on the CLI; --outcome is the back-compat alias and cannot express partial or unresolvable',
@@ -37,7 +37,7 @@ export function deriveResolutionTuple(
     if (outcome !== undefined) {
       const expected = quality === 'correct' ? true : quality === 'incorrect' ? false : null;
       if (expected !== outcome) {
-        throw new GBrainError(
+        throw new ZBrainError(
           'TAKE_RESOLUTION_INVALID',
           `resolveTake: --quality=${quality} contradicts --outcome=${outcome}`,
           'pass only one of --quality or --outcome; they cannot disagree',

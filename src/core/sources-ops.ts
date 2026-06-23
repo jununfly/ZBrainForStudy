@@ -1,5 +1,5 @@
 /**
- * gbrain sources-ops — pure async functions for source-management operations
+ * zbrain sources-ops — pure async functions for source-management operations
  * (v0.28). Extracted from src/commands/sources.ts so the CLI handlers and the
  * MCP ops (sources_add / list / remove / status) share one implementation.
  *
@@ -14,7 +14,7 @@
  *                  pre-flight SELECT id ─── id taken? ──► error (Q4)
  *                              │
  *                              ▼  (id free)
- *                  mkdir $GBRAIN_HOME/clones/.tmp/<id>-<rand>/
+ *                  mkdir $ZBRAIN_HOME/clones/.tmp/<id>-<rand>/
  *                              │
  *                              ▼
  *                  cloneRepo(url, tmp/) ─── fail ──► rm -rf tmp/, throw
@@ -32,7 +32,7 @@
  *
  * Symlink-safe clone-cleanup for removeSource: realpath + lstat confinement
  * mirroring src/core/operations.ts:61 validateUploadPath. String startsWith
- * is symlink-unsafe and would let $GBRAIN_HOME/clones/<id> → /etc resolve
+ * is symlink-unsafe and would let $ZBRAIN_HOME/clones/<id> → /etc resolve
  * out of the confine.
  */
 
@@ -49,7 +49,7 @@ import {
   GitOperationError,
   type RepoState,
 } from './git-remote.ts';
-import { gbrainPath } from './config.ts';
+import { zbrainPath } from './config.ts';
 import { isValidSourceId } from './source-id.ts';
 
 // ── Errors ──────────────────────────────────────────────────────────────────
@@ -90,7 +90,7 @@ export interface SourceRow {
   created_at: Date;
   /**
    * v0.40.3.0: per-source CR mode override. NULL falls through to global
-   * mode bundle. Written only by `gbrain sources set-cr-mode <id> <mode>`
+   * mode bundle. Written only by `zbrain sources set-cr-mode <id> <mode>`
    * (CLI-write-only per D15 security gate); MCP / OAuth callers cannot
    * mutate this field.
    */
@@ -98,7 +98,7 @@ export interface SourceRow {
   /**
    * v0.40.3.0: per-source mount-frontmatter trust gate (D15). FALSE for
    * mounted sources by default. Flipped via
-   * `gbrain mounts trust-frontmatter <id>`. Host source (id='default') is
+   * `zbrain mounts trust-frontmatter <id>`. Host source (id='default') is
    * always trusted in the resolver regardless of this column value.
    */
   trust_frontmatter_overrides?: boolean;
@@ -139,7 +139,7 @@ export interface AddSourceOpts {
   remoteUrl?: string;
   federated?: boolean | null;
   /**
-   * Override clone destination. Defaults to $GBRAIN_HOME/clones/<id>/.
+   * Override clone destination. Defaults to $ZBRAIN_HOME/clones/<id>/.
    * Only honored when remoteUrl is set.
    */
   cloneDir?: string;
@@ -157,7 +157,7 @@ export interface RemoveSourceOpts {
 
 /**
  * Validate via the canonical regex from `source-id.ts` but rethrow as the
- * sources-ops-tagged error so `gbrain sources add` keeps its user-facing
+ * sources-ops-tagged error so `zbrain sources add` keeps its user-facing
  * SourceOpError shape. The regex itself is in one place; only the error
  * envelope differs per caller.
  */
@@ -218,22 +218,22 @@ async function countPages(engine: BrainEngine, id: string): Promise<number> {
   return rows[0]?.n ?? 0;
 }
 
-/** Default clone dir for a remote-URL source: $GBRAIN_HOME/clones/<id>/ */
+/** Default clone dir for a remote-URL source: $ZBRAIN_HOME/clones/<id>/ */
 export function defaultCloneDir(id: string): string {
-  return gbrainPath('clones', id);
+  return zbrainPath('clones', id);
 }
 
-/** Temp clone dir under $GBRAIN_HOME/clones/.tmp/<id>-<rand>/ */
+/** Temp clone dir under $ZBRAIN_HOME/clones/.tmp/<id>-<rand>/ */
 function makeTempCloneDir(id: string): string {
   const rand = randomBytes(6).toString('hex');
-  return gbrainPath('clones', '.tmp', `${id}-${rand}`);
+  return zbrainPath('clones', '.tmp', `${id}-${rand}`);
 }
 
 /**
  * Symlink-safe path confinement: realpath both sides, then lstat-walk to
  * confirm `child` is a real subtree of `parent`. Mirrors validateUploadPath
  * shape at src/core/operations.ts:61. String startsWith() would let
- * $GBRAIN_HOME/clones/<id> → /etc bypass the confine.
+ * $ZBRAIN_HOME/clones/<id> → /etc bypass the confine.
  *
  * Returns true if `child` exists and is contained under `parent`.
  * Returns false if the resolved path escapes, or either path is unresolvable.
@@ -269,7 +269,7 @@ export async function addSource(
     throw new SourceOpError(
       'source_id_taken',
       `Source id "${opts.id}" is already registered. ` +
-        `Use 'gbrain sources remove ${opts.id} --confirm-destructive' first, then re-add.`,
+        `Use 'zbrain sources remove ${opts.id} --confirm-destructive' first, then re-add.`,
     );
   }
 
@@ -348,9 +348,9 @@ export async function addSource(
     }
 
     // Final step: rename temp dir to final clone path. EXDEV (cross-device
-    // rename) is rare on a single-host brain but possible if $GBRAIN_HOME
+    // rename) is rare on a single-host brain but possible if $ZBRAIN_HOME
     // and the temp dir are on different mounts. We don't fall back to
-    // recursive copy because the temp dir is in $GBRAIN_HOME by design.
+    // recursive copy because the temp dir is in $ZBRAIN_HOME by design.
     try {
       mkdirSync(dirname(finalPath!), { recursive: true });
       // Refuse to rename over an existing path. If finalPath exists at this
@@ -430,7 +430,7 @@ export async function resolveDefaultSource(engine: BrainEngine): Promise<string>
   const sources = await listSources(engine);
   if (sources.length === 0) {
     throw new SourceResolutionError(
-      'no sources registered; run `gbrain sources add` first',
+      'no sources registered; run `zbrain sources add` first',
       'no_sources',
       [],
     );
@@ -500,7 +500,7 @@ export interface RemoveResult {
  * Hard-remove a source row + cascade. v0.28 additions:
  *  - protected-id guard for "default"
  *  - clone-cleanup: delete the on-disk clone IFF its resolved path is
- *    confined under $GBRAIN_HOME/clones/. realpath+lstat (not startsWith)
+ *    confined under $ZBRAIN_HOME/clones/. realpath+lstat (not startsWith)
  *    to defeat symlink escape attacks.
  *
  * Soft-delete (archive / restore) lives in destructive-guard.ts and is the
@@ -548,7 +548,7 @@ export async function removeSource(
 
   // Decide whether we own the clone dir before removing the row.
   const remoteUrl = getRemoteUrl(src.config);
-  const cloneRoot = gbrainPath('clones');
+  const cloneRoot = zbrainPath('clones');
   let cloneRemoved = false;
   if (
     !opts.keepStorage &&
@@ -574,7 +574,7 @@ export async function removeSource(
       // Don't fail the whole remove if rmSync had a permission hiccup — log
       // and continue. The DB row deletion is the user-facing operation.
       console.error(
-        `[gbrain] WARN: clone cleanup at ${src.local_path} failed: ${(e as Error).message}`,
+        `[zbrain] WARN: clone cleanup at ${src.local_path} failed: ${(e as Error).message}`,
       );
     }
   }
@@ -636,8 +636,8 @@ export async function getSourceStatus(
 
 /**
  * Re-clone a source's remote_url into its local_path if the clone is
- * missing on disk. Used by `gbrain sources restore` after an operator
- * autopurged $GBRAIN_HOME/clones/. Idempotent: returns false (didn't clone)
+ * missing on disk. Used by `zbrain sources restore` after an operator
+ * autopurged $ZBRAIN_HOME/clones/. Idempotent: returns false (didn't clone)
  * if the clone is already there.
  *
  * Throws SourceOpError on clone failure. Does NOT touch the DB row.

@@ -3,7 +3,7 @@
  *
  * Opt-in autopilot wrapper around `runExtractConversationFactsCore`.
  * Default OFF; user enables explicitly via
- * `gbrain config set cycle.conversation_facts_backfill.enabled true`.
+ * `zbrain config set cycle.conversation_facts_backfill.enabled true`.
  *
  * Architecture (per CEO + eng review + Codex outside voice):
  *
@@ -146,7 +146,7 @@ export async function runPhaseConversationFactsBackfill(
       details: {
         reason: 'disabled',
         enable_hint:
-          'gbrain config set cycle.conversation_facts_backfill.enabled true',
+          'zbrain config set cycle.conversation_facts_backfill.enabled true',
       },
     };
   }

@@ -1,30 +1,30 @@
 /**
- * v0.31 — `gbrain recall` + `gbrain forget` CLI.
+ * v0.31 — `zbrain recall` + `zbrain forget` CLI.
  *
  * Recall is the user-facing query surface over the hot memory `facts` table.
  * Same underlying engine queries as the MCP `recall` op, two output shapes:
  *
- *   gbrain recall <entity>                  # listFactsByEntity
- *   gbrain recall --since "8 hours ago"     # listFactsSince
- *   gbrain recall --session <id>            # listFactsBySession
- *   gbrain recall --today                   # markdown render with kind icons
- *   gbrain recall --grep <text>             # text filter (case-insensitive)
- *   gbrain recall --supersessions [--since DUR]   # audit log
- *   gbrain recall --include-expired
- *   gbrain recall --as-context              # prompt-injection-ready markdown
- *   gbrain recall --json                    # structured output
+ *   zbrain recall <entity>                  # listFactsByEntity
+ *   zbrain recall --since "8 hours ago"     # listFactsSince
+ *   zbrain recall --session <id>            # listFactsBySession
+ *   zbrain recall --today                   # markdown render with kind icons
+ *   zbrain recall --grep <text>             # text filter (case-insensitive)
+ *   zbrain recall --supersessions [--since DUR]   # audit log
+ *   zbrain recall --include-expired
+ *   zbrain recall --as-context              # prompt-injection-ready markdown
+ *   zbrain recall --json                    # structured output
  *
- *   gbrain forget <fact-id>                  # shorthand for expireFact
+ *   zbrain forget <fact-id>                  # shorthand for expireFact
  *
  * v0.32 additions (this file):
- *   --since-last-run            # read+advance ~/.gbrain/recall-cursors/<src>.json
+ *   --since-last-run            # read+advance ~/.zbrain/recall-cursors/<src>.json
  *   --pending                   # append "Pending consolidation: N" footer
  *   --rollup                    # prepend "Top mentions" header (top 5 entities)
  *   --watch [SECONDS]           # re-render on interval; clear-and-redraw TTY,
  *                                 plain delimited blocks non-TTY; backoff +
  *                                 exit-after-5-consecutive-failures
  *
- * v0.32 also adds thin-client routing: on `gbrain init --mcp-only` installs
+ * v0.32 also adds thin-client routing: on `zbrain init --mcp-only` installs
  * the runRecall / runForget entry points route through callRemoteTool against
  * the remote brain instead of opening the empty local PGLite. The cursor +
  * watch loop + rollup are CLI-only concerns and stay client-side regardless.
@@ -43,7 +43,7 @@ import { resolveSourceId } from '../core/source-resolver.ts';
 // check can't run (local sources table is empty by definition).
 const SOURCE_ID_RE = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
 
-// v0.31 grandfathered emoji icons (pinned by test/facts-recall-render.test.ts).
+// v0.31 grandfathered emoji icons (pinned by tests/unit/facts-recall-render.test.ts).
 // CLAUDE.md "no emojis" voice rule applies to new prose; this existing
 // test-contract surface stays as-is.
 const KIND_ICON: Record<FactKind, string> = {
@@ -186,7 +186,7 @@ async function resolveSourceForRecall(
 ): Promise<string> {
   if (thinClient) {
     if (flagValue !== 'default') return flagValue;
-    const env = process.env.GBRAIN_SOURCE;
+    const env = process.env.ZBRAIN_SOURCE;
     if (env && env.length > 0 && SOURCE_ID_RE.test(env)) return env;
     return 'default';
   }
@@ -362,9 +362,9 @@ async function fetchRowsLocal(
 /**
  * Codex round 1 #8: compute top-K mentions from the FULL result set, not a
  * LIMIT-100 slice. JSON shape uses `entity_slug` to match engine.getStats()
- * and test/facts-doctor-shape.test.ts:49 (the existing pinned key).
+ * and tests/unit/facts-doctor-shape.test.ts:49 (the existing pinned key).
  *
- * Exported for test/recall-rollup.test.ts — the rollup is a pure function of
+ * Exported for tests/unit/recall-rollup.test.ts — the rollup is a pure function of
  * the FactRow[] and its correctness is independent of transport. Pinning it
  * directly catches regressions of either Codex #8 finding (full-window or
  * shape drift).
@@ -425,7 +425,7 @@ async function runWatchLoop(
       if (isTty) {
         process.stdout.write('\x1b[2J\x1b[H');
         process.stdout.write(
-          `gbrain recall --watch ${intervalSec}s  ` +
+          `zbrain recall --watch ${intervalSec}s  ` +
           `(${new Date().toISOString()})  ` +
           `Ctrl-C to exit\n\n`,
         );
@@ -541,7 +541,7 @@ function factRowToJson(r: FactRow): Record<string, unknown> {
 export async function runForget(engine: BrainEngine, args: string[]): Promise<void> {
   const idArg = args.find(a => /^\d+$/.test(a));
   if (!idArg) {
-    process.stderr.write('Usage: gbrain forget <fact-id> [--reason <text>]\n');
+    process.stderr.write('Usage: zbrain forget <fact-id> [--reason <text>]\n');
     process.exit(1);
   }
   const id = parseInt(idArg, 10);
@@ -552,7 +552,7 @@ export async function runForget(engine: BrainEngine, args: string[]): Promise<vo
   const idx = args.indexOf('--reason');
   if (idx >= 0 && idx + 1 < args.length) reason = args[idx + 1];
 
-  // v0.33: thin-client routing. Without this, `gbrain forget <id>` on a
+  // v0.33: thin-client routing. Without this, `zbrain forget <id>` on a
   // thin-client install would call the local fence helper against the empty
   // local PGLite and report "No fact" while the real fact lives on the
   // remote brain.
@@ -571,7 +571,7 @@ export async function runForget(engine: BrainEngine, args: string[]): Promise<vo
   }
 
   // v0.32.2: route through forgetFactInFence so the forget rewrites the
-  // page's `## Facts` fence and survives `gbrain rebuild`. Legacy rows
+  // page's `## Facts` fence and survives `zbrain rebuild`. Legacy rows
   // fall back to the legacy DB-only expire path; the helper handles
   // the fallback internally.
   const { forgetFactInFence } = await import('../core/facts/forget.ts');
@@ -585,7 +585,7 @@ export async function runForget(engine: BrainEngine, args: string[]): Promise<vo
     process.stderr.write(`Fact id=${id} is already expired\n`);
     process.exit(1);
   }
-  const suffix = result.path === 'fence' ? '' : ' (legacy DB-only — will not survive gbrain rebuild)';
+  const suffix = result.path === 'fence' ? '' : ' (legacy DB-only — will not survive zbrain rebuild)';
   process.stdout.write(`Forgot fact id=${id}${suffix}\n`);
 }
 
@@ -642,8 +642,8 @@ function renderHumanList(rows: FactRow[]): string {
 }
 
 function renderAsContext(rows: FactRow[]): string {
-  if (rows.length === 0) return '<!-- gbrain hot memory: empty -->\n';
-  const parts = ['<!-- gbrain hot memory (auto-injected) -->', ''];
+  if (rows.length === 0) return '<!-- zbrain hot memory: empty -->\n';
+  const parts = ['<!-- zbrain hot memory (auto-injected) -->', ''];
   for (const r of rows) {
     const icon = KIND_ICON[r.kind];
     const tag = r.entity_slug ? ` [${r.entity_slug}]` : '';

@@ -7,7 +7,7 @@
  *   - Extended `sync` handler (D22, auto_embed_backfill)
  *   - POST /webhooks/github
  *   - `sources federate` / `unfederate` flip hook
- *   - `gbrain sync trigger`
+ *   - `zbrain sync trigger`
  *   - autopilot per-source dispatch (when source is stale and degraded)
  *
  * Why centralize: D2 added a per-source DB lock at handler entry. That
@@ -31,7 +31,7 @@
  *   - `embed.backfill_max_usd_per_source_24h`  (default 25)
  *
  * Returns a tagged-union status so callers can render the right user signal
- * (`gbrain sources status`, webhook response body, sync completion banner).
+ * (`zbrain sources status`, webhook response body, sync completion banner).
  */
 import type { BrainEngine } from './engine.ts';
 import { MinionQueue } from './minions/queue.ts';

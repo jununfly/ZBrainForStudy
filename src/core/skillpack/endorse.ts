@@ -1,8 +1,8 @@
 /**
  * skillpack/endorse.ts — Garry-only endorsement workflow for the registry.
  *
- * Operator runs `gbrain skillpack endorse <name> [--tier T]` inside a clone
- * of `garrytan/gbrain-skillpack-registry`. The CLI:
+ * Operator runs `zbrain skillpack endorse <name> [--tier T]` inside a clone
+ * of `garrytan/zbrain-skillpack-registry`. The CLI:
  *   1. Validates `<name>` exists in registry.json
  *   2. Reads + schema-validates endorsements.json
  *   3. Sets/clears the tier entry (community → endorsed is the common path)

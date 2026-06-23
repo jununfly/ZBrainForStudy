@@ -173,7 +173,7 @@ export interface BrainstormOptions {
   maxIdeasPerJudgeCall?: number;
   /**
    * TX4: resume from a previously-persisted checkpoint at
-   * `~/.gbrain/brainstorm/<run_id>.json`. Set by `--resume <run_id>`.
+   * `~/.zbrain/brainstorm/<run_id>.json`. Set by `--resume <run_id>`.
    * When the checkpoint's identity (run_id) doesn't match the active
    * inputs, the orchestrator refuses with a paste-ready hint rather
    * than silently starting fresh.
@@ -467,8 +467,8 @@ async function mapWithConcurrency<I, O>(
 const DEFAULT_PARALLELISM = 4;
 
 /**
- * Run the brainstorm or LSD pipeline. The CLI command (`gbrain brainstorm` /
- * `gbrain lsd`) calls this with the question + profile; renders the result
+ * Run the brainstorm or LSD pipeline. The CLI command (`zbrain brainstorm` /
+ * `zbrain lsd`) calls this with the question + profile; renders the result
  * via formatBrainstormMarkdown; optionally saves via put_page.
  */
 /**
@@ -620,7 +620,7 @@ async function _runBrainstormInner(
   }
   if (farResult.pages.length === 0) {
     throw new Error(
-      `${profile.label}: brain has no usable far pages. Try \`gbrain import <dir>\` to seed cross-domain content, or check the prefix cache via \`gbrain doctor\`.`
+      `${profile.label}: brain has no usable far pages. Try \`zbrain import <dir>\` to seed cross-domain content, or check the prefix cache via \`zbrain doctor\`.`
     );
   }
 
@@ -833,7 +833,7 @@ async function _runBrainstormInner(
 
   if (allRawIdeas.length === 0) {
     throw new Error(
-      `${profile.label}: no ideas generated across ${crosses.length} crosses. Check API keys via \`gbrain models doctor\`.`
+      `${profile.label}: no ideas generated across ${crosses.length} crosses. Check API keys via \`zbrain models doctor\`.`
     );
   }
 
@@ -896,7 +896,7 @@ async function _runBrainstormInner(
   // the missing crosses (failed_crosses + never-attempted).
   if (liveCheckpoint.failed_crosses.length > 0) {
     stderr(
-      `[${profile.label}] ${liveCheckpoint.failed_crosses.length} cross(es) failed. Resume with: gbrain ${profile.label} --resume ${runId}\n`,
+      `[${profile.label}] ${liveCheckpoint.failed_crosses.length} cross(es) failed. Resume with: zbrain ${profile.label} --resume ${runId}\n`,
     );
   } else {
     // Clean completion — every cross succeeded. Clear the checkpoint so we

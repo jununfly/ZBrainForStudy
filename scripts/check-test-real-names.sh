@@ -15,7 +15,7 @@
 #   - Allowlist: exact "file:offending-string" pairs that are intentional
 #     and pre-existing (e.g., the user's own email is not a "contact").
 #
-# Scope: test/**/*.test.ts only. Historical CHANGELOG entries, doc examples,
+# Scope: tests/unit/**/*.test.ts only. Historical CHANGELOG entries, doc examples,
 # and skill READMEs each have their own scrub status and are out of scope
 # for this guard.
 #
@@ -52,32 +52,32 @@ BANNED_EMAILS=(
 # NOT appear in production code — the name MUST be in the test file as a
 # literal).
 ALLOWLIST=(
-  "test/writer.test.ts:garry@ycombinator.com"          # user's own email — CLAUDE.md rule does not apply
-  "test/integrations.test.ts:Wintermute"               # regex pattern in personal-info filter test (structural)
-  "test/recency-decay.test.ts:Wintermute"              # regression-prevention test asserting wintermute is absent (structural)
-  "test/scripts/check-proposal-pii.test.ts:Wintermute" # privacy-guard test asserting docs/proposals/ rejects wintermute (structural; same meta-rule exception as check-privacy.sh)
-  "test/scripts/check-proposal-pii.test.ts:WINTERMUTE" # case-insensitive sentinel literal for the same privacy-guard test
-  "test/serve-stdio-lifecycle.test.ts:Hermes"          # comment naming a downstream-agent scenario — pre-existing, low signal
-  "test/extract.test.ts:Hermes"                        # markdown-link extraction test fixture — pre-existing, ambiguous (Greek god vs fork)
-  "test/readme-hero-anchors.test.ts:Hermes"            # v0.36.0.0 D9 anchor test — asserts README mentions Hermes as a credit
-  "test/readme-hero-anchors.test.ts:OpenClaw"          # v0.36.0.0 D9 anchor test — asserts README mentions OpenClaw as a credit
+  "tests/unit/writer.test.ts:garry@ycombinator.com"          # user's own email — CLAUDE.md rule does not apply
+  "tests/unit/integrations.test.ts:Wintermute"               # regex pattern in personal-info filter test (structural)
+  "tests/unit/recency-decay.test.ts:Wintermute"              # regression-prevention test asserting wintermute is absent (structural)
+  "tests/unit/scripts/check-proposal-pii.test.ts:Wintermute" # privacy-guard test asserting docs/proposals/ rejects wintermute (structural; same meta-rule exception as check-privacy.sh)
+  "tests/unit/scripts/check-proposal-pii.test.ts:WINTERMUTE" # case-insensitive sentinel literal for the same privacy-guard test
+  "tests/unit/serve-stdio-lifecycle.test.ts:Hermes"          # comment naming a downstream-agent scenario — pre-existing, low signal
+  "tests/unit/extract.test.ts:Hermes"                        # markdown-link extraction test fixture — pre-existing, ambiguous (Greek god vs fork)
+  "tests/unit/readme-hero-anchors.test.ts:Hermes"            # v0.36.0.0 D9 anchor test — asserts README mentions Hermes as a credit
+  "tests/unit/readme-hero-anchors.test.ts:OpenClaw"          # v0.36.0.0 D9 anchor test — asserts README mentions OpenClaw as a credit
   # v0.36.0.0: skillpack-harvest privacy linter tests structurally
   # require the literal "Wintermute" to verify the linter catches it.
   # Same meta-rule exception as integrations.test.ts and the proposal-pii
   # privacy guard test above.
-  "test/skillpack-harvest.test.ts:Wintermute"
-  "test/skillpack-harvest-lint.test.ts:Wintermute"
-  "test/e2e/skillpack-flow.test.ts:Wintermute"
+  "tests/unit/skillpack-harvest.test.ts:Wintermute"
+  "tests/unit/skillpack-harvest-lint.test.ts:Wintermute"
+  "tests/unit/e2e/skillpack-flow.test.ts:Wintermute"
   # v0.40.1.0 Track D: eval-replay-gate.test.ts has a privacy-grep regression
   # guard whose block list necessarily SPELLS the real names so the test can
   # assert they're NOT in the qrels fixture. Same meta-rule exception as the
   # skillpack-harvest privacy tests above.
-  "test/eval-replay-gate.test.ts:Pedro Franceschi"
-  "test/eval-replay-gate.test.ts:Brex"
-  "test/eval-replay-gate.test.ts:Wintermute"
-  "test/eval-replay-gate.test.ts:Garry Tan"
-  "test/eval-replay-gate.test.ts:Y Combinator"
-  "test/eval-replay-gate.test.ts:YC"
+  "tests/unit/eval-replay-gate.test.ts:Pedro Franceschi"
+  "tests/unit/eval-replay-gate.test.ts:Brex"
+  "tests/unit/eval-replay-gate.test.ts:Wintermute"
+  "tests/unit/eval-replay-gate.test.ts:Garry Tan"
+  "tests/unit/eval-replay-gate.test.ts:Y Combinator"
+  "tests/unit/eval-replay-gate.test.ts:YC"
 )
 
 # Build the combined regex. Names matched as whole words (\b), emails matched
@@ -100,9 +100,9 @@ IFS='|' eval 'PATTERN="${PATTERN_PARTS[*]}"'
 
 # Find tool.
 if command -v rg >/dev/null 2>&1; then
-  matches="$(rg -niH --no-heading -t ts "$PATTERN" test/ 2>/dev/null || true)"
+  matches="$(rg -niH --no-heading -t ts "$PATTERN" tests/unit/ 2>/dev/null || true)"
 elif command -v grep >/dev/null 2>&1; then
-  matches="$(grep -rniE --include='*.test.ts' "$PATTERN" test/ 2>/dev/null || true)"
+  matches="$(grep -rniE --include='*.test.ts' "$PATTERN" tests/unit/ 2>/dev/null || true)"
 else
   echo "check-test-real-names: ERROR: neither rg nor grep available." >&2
   exit 2
@@ -150,7 +150,7 @@ if [ -z "$filtered" ]; then
   exit 0
 fi
 
-echo "check-test-real-names: banned real-name references found in test/ fixtures." >&2
+echo "check-test-real-names: banned real-name references found in tests/unit/ fixtures." >&2
 echo "" >&2
 echo "$filtered" >&2
 echo "" >&2

@@ -1,12 +1,12 @@
 /**
  * v0.28: per-page file lock for atomic markdown read-modify-write.
  *
- * Eng-review fold: reuses the v0.17 `~/.gbrain/cycle.lock` PID-liveness
+ * Eng-review fold: reuses the v0.17 `~/.zbrain/cycle.lock` PID-liveness
  * pattern (src/core/cycle.ts:acquireFileLock) but scoped per page so two
- * parallel `gbrain takes add` calls + a `takes seed --refresh` running in
+ * parallel `zbrain takes add` calls + a `takes seed --refresh` running in
  * autopilot can't race on the same `<slug>.md` file.
  *
- * Lock file path: `~/.gbrain/page-locks/<sha256-of-slug>.lock`. SHA-256
+ * Lock file path: `~/.zbrain/page-locks/<sha256-of-slug>.lock`. SHA-256
  * keeps filenames safe regardless of slug content (slashes, unicode, etc.).
  *
  * File contents: `{pid}\n{iso-timestamp}`. Staleness = mtime older than
@@ -25,7 +25,7 @@
 import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { gbrainPath } from './config.ts';
+import { zbrainPath } from './config.ts';
 
 const LOCK_TTL_MS = 5 * 60 * 1000; // 5 minutes — matches eng-review fold spec
 
@@ -49,7 +49,7 @@ export interface AcquirePageLockOpts {
 
 function lockPathFor(slug: string, lockRoot?: string): string {
   const sha = createHash('sha256').update(slug).digest('hex');
-  const dir = lockRoot ?? gbrainPath('page-locks');
+  const dir = lockRoot ?? zbrainPath('page-locks');
   return join(dir, `${sha}.lock`);
 }
 

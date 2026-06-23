@@ -21,7 +21,7 @@
  * Strikethrough → date derivation:
  *   - `forgotten` rows get `valid_until = today` so the DB's existing
  *     `expired_at = valid_until + now()` rule produces the same forget
- *     state after `gbrain rebuild` (v0.32.3) as before.
+ *     state after `zbrain rebuild` (v0.32.3) as before.
  *   - `supersededBy` rows preserve their existing `validUntil` if set;
  *     otherwise leave `valid_until = null` (the consolidator phase fills
  *     this in based on the newer row's `valid_from`).

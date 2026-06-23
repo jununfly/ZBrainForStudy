@@ -169,7 +169,7 @@ export async function runEval(engine: BrainEngine, opts: RunOpts = {}): Promise<
   // Sample the corpus.
   const { takesText, nTakes } = await sampleTakesAsText(engine, { limit, slugPrefix: opts.slugPrefix ?? null });
   if (nTakes === 0) {
-    throw new Error('no takes to evaluate (empty corpus). Run `gbrain extract takes` first or check --slug-prefix.');
+    throw new Error('no takes to evaluate (empty corpus). Run `zbrain extract takes` first or check --slug-prefix.');
   }
 
   const corpus_sha8 = corpusSha8(takesText);

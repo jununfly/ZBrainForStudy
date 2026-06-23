@@ -1,10 +1,10 @@
 /**
  * skillpack/registry-client.ts — fetch + cache + stale-fallback for the
- * `gbrain skillpack-registry` catalog.
+ * `zbrain skillpack-registry` catalog.
  *
  * The default registry lives at
- *   https://raw.githubusercontent.com/garrytan/gbrain-skillpack-registry/main/registry.json
- *   https://raw.githubusercontent.com/garrytan/gbrain-skillpack-registry/main/endorsements.json
+ *   https://raw.githubusercontent.com/garrytan/zbrain-skillpack-registry/main/registry.json
+ *   https://raw.githubusercontent.com/garrytan/zbrain-skillpack-registry/main/endorsements.json
  *
  * Offline-safe per the user's decision: when the network fetch fails (DNS
  * miss, 5xx, timeout), fall back to the on-disk cache and emit a single
@@ -21,7 +21,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync } from 'fs
 import { createHash } from 'crypto';
 import { dirname, join } from 'path';
 
-import { gbrainPath, loadConfig } from '../config.ts';
+import { zbrainPath, loadConfig } from '../config.ts';
 import {
   RegistrySchemaError,
   validateEndorsementsFile,
@@ -35,11 +35,11 @@ import {
 
 /** Default registry URL — the canonical Garry-controlled catalog. */
 export const DEFAULT_REGISTRY_URL =
-  'https://raw.githubusercontent.com/garrytan/gbrain-skillpack-registry/main/registry.json';
+  'https://raw.githubusercontent.com/garrytan/zbrain-skillpack-registry/main/registry.json';
 
 /** Default endorsements URL — sibling file in the same repo. */
 export const DEFAULT_ENDORSEMENTS_URL =
-  'https://raw.githubusercontent.com/garrytan/gbrain-skillpack-registry/main/endorsements.json';
+  'https://raw.githubusercontent.com/garrytan/zbrain-skillpack-registry/main/endorsements.json';
 
 /** Soft TTL: prefer cache when it's younger than this (no fetch attempt). */
 const SOFT_TTL_MS = 60 * 60 * 1000; // 1 hour
@@ -126,9 +126,9 @@ export function resolveRegistryUrl(opts: { url?: string } = {}): string {
   return DEFAULT_REGISTRY_URL;
 }
 
-/** Default cache directory under ~/.gbrain/skillpack-cache. */
+/** Default cache directory under ~/.zbrain/skillpack-cache. */
 function defaultCacheDir(): string {
-  return gbrainPath('skillpack-cache');
+  return zbrainPath('skillpack-cache');
 }
 
 /** Read a cache file from disk; null if missing or malformed. */
@@ -274,7 +274,7 @@ export async function loadRegistry(opts: LoadRegistryOptions = {}): Promise<Load
         );
         if (origin === 'cache_hard_stale') {
           process.stderr.write(
-            `[skillpack] cache is older than 7 days. When back online run \`gbrain skillpack registry --refresh\`.\n`,
+            `[skillpack] cache is older than 7 days. When back online run \`zbrain skillpack registry --refresh\`.\n`,
           );
         }
         return {

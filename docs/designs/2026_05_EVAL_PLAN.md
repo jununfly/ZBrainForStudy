@@ -114,19 +114,19 @@ Ships at the end as v0.35.1.0.
 ```
 1. feat(pricing): add voyage-4-large + zembed-1 to EMBEDDING_PRICING
    - src/core/embedding-pricing.ts: add both entries
-   - test/embedding-pricing.test.ts: pin both with $0.18 and $0.05
-   - Verify: bun test test/embedding-pricing.test.ts
+   - tests/unit/embedding-pricing.test.ts: pin both with $0.18 and $0.05
+   - Verify: bun test tests/unit/embedding-pricing.test.ts
 
 2. feat(exports): expose gbrain/ai/gateway with canary test
    - package.json: add "./ai/gateway" to exports map
-   - test/public-exports.test.ts: add canary for configureGateway + embed
+   - tests/unit/public-exports.test.ts: add canary for configureGateway + embed
    - scripts/check-exports-count.sh: 17 -> 18
    - Verify: bun run verify
 
 3. feat(eval): add --resume-from <jsonl> to longmemeval
    - src/commands/eval-longmemeval.ts: parse flag, skip questions already in input JSONL
-   - test/eval-longmemeval.test.ts: simulated mid-run abort + resume regression
-   - Verify: bun test test/eval-longmemeval.test.ts
+   - tests/unit/eval-longmemeval.test.ts: simulated mid-run abort + resume regression
+   - Verify: bun test tests/unit/eval-longmemeval.test.ts
 
 4. chore: v0.35.1.0
    - VERSION: 0.35.1.0
@@ -139,7 +139,7 @@ Ships at the end as v0.35.1.0.
 ```bash
 bun run typecheck
 bun run verify
-bun test test/embedding-pricing.test.ts test/public-exports.test.ts test/eval-longmemeval.test.ts
+bun test tests/unit/embedding-pricing.test.ts tests/unit/public-exports.test.ts tests/unit/eval-longmemeval.test.ts
 ```
 
 ### Ship

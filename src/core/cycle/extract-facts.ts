@@ -25,7 +25,7 @@
  * destructive reconciliation pass when legacy rows (row_num IS NULL,
  * entity_slug IS NOT NULL) still exist in the brain — they're the
  * v0.31 hot-memory facts pending the v0_32_2 backfill. Status returns
- * `warn` with a hint to run `gbrain apply-migrations --yes`. Without
+ * `warn` with a hint to run `zbrain apply-migrations --yes`. Without
  * the guard, an interrupted upgrade where v0_32_2 hasn't run could
  * leave the cycle silently misreporting "0 facts on people/alice"
  * while legacy rows linger in the DB.
@@ -52,7 +52,7 @@ export interface ExtractFactsOpts {
    * v0.35.5 (codex #10): brain directory for the phantom-redirect pre-pass.
    * The phantom handler needs disk access to append migrated fence rows
    * to canonical pages and to unlink phantom `.md` files. When omitted,
-   * the phantom-redirect pass is skipped (callers like `gbrain dream`
+   * the phantom-redirect pass is skipped (callers like `zbrain dream`
    * that don't have a brainDir, e.g. headless eval runs, still get the
    * standard fence-reconcile loop).
    */
@@ -116,7 +116,7 @@ export async function runExtractFacts(
     result.guardTriggered = true;
     result.warnings.push(
       `extract_facts: ${legacyCount} legacy v0.31 fact rows pending fence backfill. ` +
-      `Run \`gbrain apply-migrations --yes\` to complete v0_32_2 before this phase ` +
+      `Run \`zbrain apply-migrations --yes\` to complete v0_32_2 before this phase ` +
       `can safely reconcile fence → DB.`,
     );
     return result;
@@ -249,7 +249,7 @@ export async function runExtractFacts(
       }
     }
 
-    const inserted = await engine.insertFacts(extracted, { source_id: sourceId }); // gbrain-allow-direct-insert: extract_facts cycle phase reconciles fence → DB
+    const inserted = await engine.insertFacts(extracted, { source_id: sourceId }); // zbrain-allow-direct-insert: extract_facts cycle phase reconciles fence → DB
     result.factsInserted += inserted.inserted;
   }
 

@@ -94,7 +94,7 @@ export function isLsdOutput(content: string): boolean {
   return LSD_OUTPUT_MARKER_RE.test(content);
 }
 
-/** True iff this content carries the brainstorm frontmatter marker (saved by `gbrain brainstorm --save`). */
+/** True iff this content carries the brainstorm frontmatter marker (saved by `zbrain brainstorm --save`). */
 export function isBrainstormOutput(content: string): boolean {
   return BRAINSTORM_OUTPUT_MARKER_RE.test(content);
 }
@@ -255,7 +255,7 @@ export function discoverTranscripts(opts: DiscoverOpts): DiscoveredTranscript[] 
 }
 
 /**
- * Read a single ad-hoc transcript file (`gbrain dream --input <file>`).
+ * Read a single ad-hoc transcript file (`zbrain dream --input <file>`).
  * Bypasses the corpus-dir scan and date filters but still applies
  * minChars + exclude_patterns when provided. The self-consumption guard
  * also still fires unless `bypassGuard` is set explicitly.

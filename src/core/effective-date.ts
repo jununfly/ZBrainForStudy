@@ -26,7 +26,7 @@
  * Out-of-range values are dropped (the chain falls through to the next
  * element). NaN / unparseable strings drop the same way.
  *
- * Pure function. No DB. Tested in test/effective-date.test.ts.
+ * Pure function. No DB. Tested in tests/unit/effective-date.test.ts.
  */
 
 import type { EffectiveDateSource } from './types.ts';

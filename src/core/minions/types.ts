@@ -1,5 +1,5 @@
 /**
- * Minions — BullMQ-inspired Postgres-native job queue for GBrain.
+ * Minions — BullMQ-inspired Postgres-native job queue for ZBrain.
  *
  * Usage:
  *   const queue = new MinionQueue(engine);
@@ -171,8 +171,8 @@ export interface MinionWorkerOpts {
    *  so the per-job check never fires. */
   rssCheckInterval?: number;
   /** Self-health-check interval in ms. 0 = disabled. Default: 60000 (1 minute).
-   *  Automatically disabled when running under a supervisor (GBRAIN_SUPERVISED=1).
-   *  Provides DB liveness probes and stall detection for bare `gbrain jobs work`
+   *  Automatically disabled when running under a supervisor (ZBRAIN_SUPERVISED=1).
+   *  Provides DB liveness probes and stall detection for bare `zbrain jobs work`
    *  deployments managed by external process managers (systemd, Docker, cron). */
   healthCheckInterval?: number;
   /** Stall detection: ms of continuous idle (waiting>0, inFlight=0, no completions)
@@ -426,7 +426,7 @@ export interface SubagentHandlerData {
    *
    * CURRENT BEHAVIOR: stamped onto every tool-call's `OperationContext.
    * brainId` but NOT yet used to select an engine at dispatch time.
-   * `gbrain agent run` does not yet accept a `--brain` flag that would
+   * `zbrain agent run` does not yet accept a `--brain` flag that would
    * populate this field — all subagent jobs submitted by the CLI today
    * default to the host engine. The field + handler acceptance exist so
    * PR 1 can add the registry lookup + CLI flag in a single commit.

@@ -21,7 +21,7 @@
  * "who is X right now" → suggestedRecency='on' even though "who is" is a
  * canonical pattern.
  *
- * Pure module. No DB, no LLM, no async. Tested in test/query-intent.test.ts.
+ * Pure module. No DB, no LLM, no async. Tested in tests/unit/query-intent.test.ts.
  */
 
 export type QueryIntent = 'entity' | 'temporal' | 'event' | 'general';

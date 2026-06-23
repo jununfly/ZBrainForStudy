@@ -150,7 +150,7 @@ async function applyTypeAssignment(
 }
 
 /**
- * Pure core for `gbrain schema sync` (CLI) AND `schema_sync` MCP op.
+ * Pure core for `zbrain schema sync` (CLI) AND `schema_sync` MCP op.
  *
  * Dry-run by default: probes each declared prefix for untyped page
  * count + a 10-slug sample (the agent's drilldown signal). With

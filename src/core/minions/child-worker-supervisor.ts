@@ -2,7 +2,7 @@
  * ChildWorkerSupervisor — Pure spawn-and-respawn core for child workers.
  *
  * Extracted from MinionSupervisor (src/core/minions/supervisor.ts) so it can
- * be reused by both MinionSupervisor (standalone `gbrain jobs supervisor`
+ * be reused by both MinionSupervisor (standalone `zbrain jobs supervisor`
  * daemon) and the autopilot command (src/commands/autopilot.ts). Pre-fix
  * those two had separate spawn loops with different crash-counting bugs;
  * this class is the single source of truth.
@@ -66,7 +66,7 @@ export type ChildSupervisorEvent =
     };
 
 export interface ChildWorkerSupervisorOpts {
-  /** Path to the gbrain CLI binary. */
+  /** Path to the zbrain CLI binary. */
   cliPath: string;
   /** Worker argv after cliPath (e.g. ['jobs', 'work', '--max-rss', '2048']). */
   args: string[];

@@ -3,8 +3,8 @@
  *
  * Strips userinfo from postgresql:// / postgres:// URLs so logging surfaces
  * never write credentials to disk. Used by every new v0.30.1 log site:
- *   - ~/.gbrain/upgrade-errors.jsonl
- *   - ~/.gbrain/audit/connection-events-*.jsonl
+ *   - ~/.zbrain/upgrade-errors.jsonl
+ *   - ~/.zbrain/audit/connection-events-*.jsonl
  *   - doctor's connection_routing check output
  *   - upgrade-pipeline summary
  *

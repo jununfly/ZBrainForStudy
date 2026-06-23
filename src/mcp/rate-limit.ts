@@ -1,5 +1,5 @@
 /**
- * Rate limiter for `gbrain serve --http`.
+ * Rate limiter for `zbrain serve --http`.
  *
  * Token-bucket per key, stored in a bounded LRU map so attacker-controlled keys
  * can't grow memory unbounded. TTL prune on every access (entries older than
@@ -133,10 +133,10 @@ function envInt(name: string, fallback: number): number {
 
 /** Build limiters from env. Keep this lazy — tests can construct RateLimiter directly. */
 export function buildDefaultLimiters(clock: Clock = Date.now): { ip: RateLimiter; token: RateLimiter } {
-  const lruCap = envInt('GBRAIN_HTTP_RATE_LIMIT_LRU', 10000);
+  const lruCap = envInt('ZBRAIN_HTTP_RATE_LIMIT_LRU', 10000);
   const windowMs = 60_000;
   return {
-    ip: new RateLimiter({ limit: envInt('GBRAIN_HTTP_RATE_LIMIT_IP', 30), windowMs, lruCap }, clock),
-    token: new RateLimiter({ limit: envInt('GBRAIN_HTTP_RATE_LIMIT_TOKEN', 60), windowMs, lruCap }, clock),
+    ip: new RateLimiter({ limit: envInt('ZBRAIN_HTTP_RATE_LIMIT_IP', 30), windowMs, lruCap }, clock),
+    token: new RateLimiter({ limit: envInt('ZBRAIN_HTTP_RATE_LIMIT_TOKEN', 60), windowMs, lruCap }, clock),
   };
 }

@@ -79,7 +79,7 @@ export async function listRecentTranscripts(
     } catch {
       // Missing dir or permission error → skip silently. The op deliberately
       // doesn't surface filesystem-level diagnostics; users running into this
-      // path should `gbrain doctor` to debug.
+      // path should `zbrain doctor` to debug.
       continue;
     }
     for (const name of entries) {

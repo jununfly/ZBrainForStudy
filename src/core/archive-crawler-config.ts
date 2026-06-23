@@ -1,9 +1,9 @@
 /**
- * archive-crawler-config.ts — gbrain.yml `archive-crawler:` section.
+ * archive-crawler-config.ts — zbrain.yml `archive-crawler:` section.
  *
  * D12 (codex HIGH-4): the archive-crawler skill REFUSES TO RUN unless
  * `archive-crawler.scan_paths:` is set explicitly in the brain repo's
- * gbrain.yml. This is a deliberate safety fence against the agent
+ * zbrain.yml. This is a deliberate safety fence against the agent
  * over-scoping a scan and ingesting sensitive content (tax PDFs,
  * medical records, credentials).
  *
@@ -14,7 +14,7 @@
  * storage-config.ts would muddy single-responsibility for code that
  * just happens to share a config file.
  *
- * Example gbrain.yml:
+ * Example zbrain.yml:
  *
  *   archive-crawler:
  *     scan_paths:
@@ -159,7 +159,7 @@ export function normalizeAndValidateArchiveCrawlerConfig(
 
   if (rawScan.length === 0) {
     throw new ArchiveCrawlerConfigError(
-      'archive-crawler.scan_paths is empty. The skill refuses to run without an explicit allow-list. Add at least one path under archive-crawler.scan_paths in gbrain.yml.',
+      'archive-crawler.scan_paths is empty. The skill refuses to run without an explicit allow-list. Add at least one path under archive-crawler.scan_paths in zbrain.yml.',
       'empty_scan_paths',
     );
   }
@@ -201,15 +201,15 @@ function normalizeOnePath(raw: string, field: 'scan_paths' | 'deny_paths'): stri
 }
 
 /**
- * Load gbrain.yml from the brain repo root and return the
+ * Load zbrain.yml from the brain repo root and return the
  * archive-crawler config, or throw missing_section if absent.
  *
  * Returns:
  *   - ArchiveCrawlerConfig on success
  *
  * Throws:
- *   - ArchiveCrawlerConfigError(missing_section) when gbrain.yml
- *     exists but has no archive-crawler section (or gbrain.yml is
+ *   - ArchiveCrawlerConfigError(missing_section) when zbrain.yml
+ *     exists but has no archive-crawler section (or zbrain.yml is
  *     absent entirely).
  *   - ArchiveCrawlerConfigError(empty_scan_paths) when the section
  *     exists but scan_paths is empty.
@@ -226,15 +226,15 @@ export function loadArchiveCrawlerConfig(
 ): ArchiveCrawlerConfig {
   if (!repoPath) {
     throw new ArchiveCrawlerConfigError(
-      'No brain repo path provided. archive-crawler requires a brain repo with gbrain.yml. Run `gbrain init` or set sync.repo_path in gbrain config.',
+      'No brain repo path provided. archive-crawler requires a brain repo with zbrain.yml. Run `zbrain init` or set sync.repo_path in zbrain config.',
       'missing_section',
     );
   }
 
-  const yamlPath = join(repoPath, 'gbrain.yml');
+  const yamlPath = join(repoPath, 'zbrain.yml');
   if (!existsSync(yamlPath)) {
     throw new ArchiveCrawlerConfigError(
-      `gbrain.yml not found at ${yamlPath}. archive-crawler refuses to run without an explicit allow-list — add an archive-crawler section to gbrain.yml first.`,
+      `zbrain.yml not found at ${yamlPath}. archive-crawler refuses to run without an explicit allow-list — add an archive-crawler section to zbrain.yml first.`,
       'missing_section',
     );
   }
@@ -253,7 +253,7 @@ export function loadArchiveCrawlerConfig(
 
   if (raw === null) {
     throw new ArchiveCrawlerConfigError(
-      `${yamlPath} has no archive-crawler section. archive-crawler refuses to run without an explicit allow-list. Add:\n\n  archive-crawler:\n    scan_paths:\n      - ~/path/to/scan/\n\nto your gbrain.yml.`,
+      `${yamlPath} has no archive-crawler section. archive-crawler refuses to run without an explicit allow-list. Add:\n\n  archive-crawler:\n    scan_paths:\n      - ~/path/to/scan/\n\nto your zbrain.yml.`,
       'missing_section',
     );
   }

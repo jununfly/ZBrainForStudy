@@ -1,5 +1,5 @@
 /**
- * gbrain brainstorm — bisociation-style idea generation grounded in your
+ * zbrain brainstorm — bisociation-style idea generation grounded in your
  * own notes.
  *
  * v0.37.0 wave (D14 + D6 + D11 + D12). Pulls a small close-set via
@@ -132,7 +132,7 @@ export function parseBrainstormArgs(args: string[]): BrainstormCliArgs {
   return out;
 }
 
-const BRAINSTORM_HELP = `Usage: gbrain brainstorm <question> [options]
+const BRAINSTORM_HELP = `Usage: zbrain brainstorm <question> [options]
 
 Bisociation idea generator grounded in your own notes. Pulls a close-set
 via hybrid search and a far-set via prefix-stratified domain-bank, crosses
@@ -156,19 +156,19 @@ Options:
   --help, -h                      Show this help
 
 Examples:
-  gbrain brainstorm "why are AI coding tools converging on the same UX?"
-  gbrain brainstorm "what's the real bottleneck on lab automation" --json
+  zbrain brainstorm "why are AI coding tools converging on the same UX?"
+  zbrain brainstorm "what's the real bottleneck on lab automation" --json
 
-Cost: ~$0.05-0.15 per run. Set GBRAIN_NO_BRAINSTORM_PREVIEW=1 or pass --yes
+Cost: ~$0.05-0.15 per run. Set ZBRAIN_NO_BRAINSTORM_PREVIEW=1 or pass --yes
 to skip the TTY grace window in scripted callers.
 
-See also: gbrain lsd — Lateral Synaptic Drift, the inverted-judge variant
+See also: zbrain lsd — Lateral Synaptic Drift, the inverted-judge variant
 that prefers forgotten pages and rejects ideas that are "too obvious."
 `;
 
-const LSD_HELP = `Usage: gbrain lsd <question> [options]
+const LSD_HELP = `Usage: zbrain lsd <question> [options]
 
-LSD = Lateral Synaptic Drift. Same bisociation engine as \`gbrain brainstorm\`
+LSD = Lateral Synaptic Drift. Same bisociation engine as \`zbrain brainstorm\`
 with the distance dial maxed: bigger far-bank (12 pages), smaller close-set
 (2 pages), forgotten pages preferred via the stale-bias signal, inverted
 judge that REJECTS ideas scoring too high on coherence ("too obvious — you'd
@@ -191,12 +191,12 @@ Options:
   --help, -h                      Show this help
 
 Examples:
-  gbrain lsd "why are AI coding tools converging on the same UX?"
-  gbrain lsd "the unspoken assumption in venture pricing" --save
+  zbrain lsd "why are AI coding tools converging on the same UX?"
+  zbrain lsd "the unspoken assumption in venture pricing" --save
 
 Cost: ~$0.20-0.40 per run.
 
-See also: gbrain brainstorm — the sober, cite-heavy default variant.
+See also: zbrain brainstorm — the sober, cite-heavy default variant.
 `;
 
 /** Shared body: brainstorm.ts → runBrainstormCli(BRAINSTORM_PROFILE); lsd.ts → runBrainstormCli(LSD_PROFILE). */
@@ -212,7 +212,7 @@ async function runBrainstormCli(
     return;
   }
   if (parsed.error) {
-    console.error(`gbrain ${profile.label}: ${parsed.error}`);
+    console.error(`zbrain ${profile.label}: ${parsed.error}`);
     console.error(help);
     process.exit(2);
     return;
@@ -236,7 +236,7 @@ async function runBrainstormCli(
     return;
   }
   if (!parsed.question || parsed.question.trim().length === 0) {
-    console.error(`gbrain ${profile.label}: question required`);
+    console.error(`zbrain ${profile.label}: question required`);
     console.error(help);
     process.exit(2);
     return;
@@ -244,7 +244,7 @@ async function runBrainstormCli(
 
   const config = loadConfig() ?? {};
   // Honor env-var skip for scripted environments that can't easily pass --yes.
-  const skipPreview = parsed.yes || process.env.GBRAIN_NO_BRAINSTORM_PREVIEW === '1';
+  const skipPreview = parsed.yes || process.env.ZBRAIN_NO_BRAINSTORM_PREVIEW === '1';
 
   // --limit override: replace m_far on a shallow copy of the profile.
   const effectiveProfile: BrainstormProfile = parsed.limit
@@ -329,7 +329,7 @@ async function runBrainstormCli(
       console.log(`\n_Saved to \`${slug}\`._`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error(`gbrain ${profile.label}: save failed: ${msg}`);
+      console.error(`zbrain ${profile.label}: save failed: ${msg}`);
     }
   }
 }
@@ -346,12 +346,12 @@ function buildIdeaSlug(question: string, label: 'brainstorm' | 'lsd'): string {
   return `wiki/ideas/${date}-${label}-${stem || 'untitled'}`;
 }
 
-/** CLI entry: `gbrain brainstorm`. */
+/** CLI entry: `zbrain brainstorm`. */
 export async function runBrainstormCommand(engine: BrainEngine, args: string[]): Promise<void> {
   return runBrainstormCli(engine, args, BRAINSTORM_PROFILE, BRAINSTORM_HELP);
 }
 
-/** CLI entry: `gbrain lsd`. */
+/** CLI entry: `zbrain lsd`. */
 export async function runLsdCommand(engine: BrainEngine, args: string[]): Promise<void> {
   return runBrainstormCli(engine, args, LSD_PROFILE, LSD_HELP);
 }

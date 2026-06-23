@@ -4,8 +4,8 @@
  * Reads `minion_jobs.last_error` (or any equivalent error string) and
  * returns a stable bucket. Two consumers:
  *
- *   1. **D3 error clustering** — `gbrain jobs stats --cluster-errors` and
- *      `gbrain jobs get --cluster <name>` group dead/failed jobs by bucket
+ *   1. **D3 error clustering** — `zbrain jobs stats --cluster-errors` and
+ *      `zbrain jobs get --cluster <name>` group dead/failed jobs by bucket
  *      so "92 jobs failed" becomes "92 jobs failed: 89 rate_lease_full,
  *      3 prompt_too_long" — the operator instantly knows the right fix.
  *
@@ -37,7 +37,7 @@ export type ErrorCluster =
   | 'malformed_json'       // model output failed JSON parse where required
   | 'auth'                 // 401 / API key invalid
   | 'rate_limit'           // 429 from upstream
-  | 'rate_lease_full'      // gbrain's internal RateLeaseUnavailableError
+  | 'rate_lease_full'      // zbrain's internal RateLeaseUnavailableError
   | 'timeout'              // local timeout / abort
   | 'http_5xx'             // upstream 5xx
   | 'context_canceled'     // worker abort signal fired
@@ -64,7 +64,7 @@ export function classifyJobError(lastError: string | null | undefined): ErrorClu
   if (!lastError) return 'unknown';
   const msg = lastError.toLowerCase();
 
-  // gbrain-internal errors first (most specific).
+  // zbrain-internal errors first (most specific).
   if (/rate lease ".*" full/i.test(lastError)) return 'rate_lease_full';
 
   // Anthropic 400 prompt too long.

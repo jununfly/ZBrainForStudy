@@ -1,5 +1,5 @@
 /**
- * skillpack/scrub-legacy.ts — `gbrain skillpack scrub-legacy-fence-rows`
+ * skillpack/scrub-legacy.ts — `zbrain skillpack scrub-legacy-fence-rows`
  * (TODO-2 folded into v0.33).
  *
  * Opt-in companion to `migrate-fence`. After the agent confirms it
@@ -21,8 +21,8 @@ import { join } from 'path';
 import { findResolverFile } from '../resolver-filenames.ts';
 import { parseMarkdown } from '../markdown.ts';
 
-const MANAGED_BEGIN = '<!-- gbrain:skillpack:begin -->';
-const MANAGED_END = '<!-- gbrain:skillpack:end -->';
+const MANAGED_BEGIN = '<!-- zbrain:skillpack:begin -->';
+const MANAGED_END = '<!-- zbrain:skillpack:end -->';
 // Row shape that migrate-fence leaves behind:
 //   | "trigger phrase" | `skills/<slug>/SKILL.md` |
 // Anchored to the start of a line so we don't accidentally strip

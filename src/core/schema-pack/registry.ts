@@ -24,12 +24,12 @@
 // Pack resolution chain (7 tiers per D13, tier-1 trust-gated):
 //   1. Per-call `schema_pack` opt — CLI only (`ctx.remote === false`).
 //      Rejected for `ctx.remote === true` (D13 trust boundary).
-//   2. `GBRAIN_SCHEMA_PACK` env var
+//   2. `ZBRAIN_SCHEMA_PACK` env var
 //   3. Per-source DB config key `schema_pack.source.<id>`
 //   4. Brain-wide DB config key `schema_pack`
-//   5. `gbrain.yml schema:` section
-//   6. `~/.gbrain/config.json schema_pack` field
-//   7. Default `gbrain-base`
+//   5. `zbrain.yml schema:` section
+//   6. `~/.zbrain/config.json schema_pack` field
+//   7. Default `zbrain-base`
 //
 // Extends chain semantics (E4):
 //   - Depth tracked via BFS during resolve.
@@ -41,7 +41,7 @@
 //     records the resolved pack PLUS every file path that fed it AND the
 //     identities of every parent in the extends chain.
 //   - Cache hits go through a stat-TTL gate (default 1000ms via
-//     STAT_TTL_MS, env override GBRAIN_PACK_STAT_TTL_MS). Inside the
+//     STAT_TTL_MS, env override ZBRAIN_PACK_STAT_TTL_MS). Inside the
 //     window: hot-path return (~10ns). Outside: statSync each file; if
 //     any mtime changed, invalidate by name + cascade to every dependent.
 //   - invalidatePackCache(name) walks the reverse extends-graph and
@@ -95,13 +95,13 @@ export interface ResolutionInput {
   sourceId?: string;
   envVar?: string;
   dbConfig?: string;
-  gbrainYml?: string;
+  zbrainYml?: string;
   homeConfig?: string;
 }
 
 export interface ResolutionResult {
   pack_name: string;
-  source: 'per-call' | 'env' | 'per-source-db' | 'db-config' | 'gbrain-yml' | 'home-config' | 'default';
+  source: 'per-call' | 'env' | 'per-source-db' | 'db-config' | 'zbrain-yml' | 'home-config' | 'default';
 }
 
 export function resolveActivePackName(input: ResolutionInput): ResolutionResult {
@@ -113,9 +113,9 @@ export function resolveActivePackName(input: ResolutionInput): ResolutionResult 
     return { pack_name: input.perSourceDb.get(input.sourceId)!, source: 'per-source-db' };
   }
   if (input.dbConfig) return { pack_name: input.dbConfig, source: 'db-config' };
-  if (input.gbrainYml) return { pack_name: input.gbrainYml, source: 'gbrain-yml' };
+  if (input.zbrainYml) return { pack_name: input.zbrainYml, source: 'zbrain-yml' };
   if (input.homeConfig) return { pack_name: input.homeConfig, source: 'home-config' };
-  return { pack_name: 'gbrain-base', source: 'default' };
+  return { pack_name: 'zbrain-base', source: 'default' };
 }
 
 /**
@@ -143,11 +143,11 @@ export function _resetPackCacheForTests(): void {
 
 /**
  * Resolve the effective STAT_TTL_MS, honoring the
- * `GBRAIN_PACK_STAT_TTL_MS` env override. Invalid values fall back to
+ * `ZBRAIN_PACK_STAT_TTL_MS` env override. Invalid values fall back to
  * the default with no warning (this is a power-user knob).
  */
 function resolveStatTtlMs(): number {
-  const raw = process.env.GBRAIN_PACK_STAT_TTL_MS;
+  const raw = process.env.ZBRAIN_PACK_STAT_TTL_MS;
   if (!raw) return STAT_TTL_MS_DEFAULT;
   const parsed = Number.parseInt(raw, 10);
   if (Number.isFinite(parsed) && parsed >= 0) return parsed;
@@ -196,7 +196,7 @@ function findDependents(name: string): string[] {
  * invalidates everything.
  *
  * Called automatically by `withMutation` (Phase 2) after every
- * successful pack mutation; also exposed via `gbrain schema reload`.
+ * successful pack mutation; also exposed via `zbrain schema reload`.
  */
 export function invalidatePackCache(name?: string): { invalidated: string[] } {
   if (name === undefined) {

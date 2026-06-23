@@ -1,16 +1,16 @@
 /**
  * seed-pglite — replay a SQL dump into a fresh PGLite database, then let
- * gbrain's migration chain walk forward.
+ * zbrain's migration chain walk forward.
  *
  * Codex caught (eng review pass 2) that existing migration helpers
- * (test/e2e/helpers.ts:204) are Postgres-only — they rewind schema_version
+ * (tests/unit/e2e/helpers.ts:204) are Postgres-only — they rewind schema_version
  * and replay against real Postgres. PGLite has no equivalent. This helper
  * fills that gap so the `upgrade-from-v0.18` claw-test scenario is
  * reproducible.
  *
  * Usage:
- *   const dbPath = await seedPglite('/tmp/run-x/.gbrain/brain.pglite', seedSql);
- *   // Then run `gbrain init --pglite --path <dbPath>` — the migration chain
+ *   const dbPath = await seedPglite('/tmp/run-x/.zbrain/brain.pglite', seedSql);
+ *   // Then run `zbrain init --pglite --path <dbPath>` — the migration chain
  *   // detects the seeded schema_version and migrates forward to LATEST.
  */
 

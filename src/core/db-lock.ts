@@ -2,8 +2,8 @@
  * Generic DB-backed lock primitive.
  *
  * Reuses the gbrain_cycle_locks table (id PK + holder_pid + ttl_expires_at)
- * with a parameterized lock id. Both `gbrain-cycle` (the broad cycle lock)
- * and `gbrain-sync` (performSync's writer lock) live here.
+ * with a parameterized lock id. Both `zbrain-cycle` (the broad cycle lock)
+ * and `zbrain-sync` (performSync's writer lock) live here.
  *
  * Why not pg_advisory_xact_lock: it is session-scoped, and PgBouncer
  * transaction pooling drops session state between calls. This row-based
@@ -14,9 +14,9 @@
  * the cycle lock is broader (covers every phase). performSync's write-window
  * is narrower. If performSync reused the cycle lock and the cycle handler
  * called performSync, the inner acquire would deadlock against itself. Two
- * lock ids let callers nest cleanly: cycle holds gbrain-cycle for its run;
+ * lock ids let callers nest cleanly: cycle holds zbrain-cycle for its run;
  * performSync (called from anywhere — cycle, jobs handler, CLI) takes
- * gbrain-sync just for the write window.
+ * zbrain-sync just for the write window.
  *
  * v0.22.13 — added in PR #490 to fix CODEX-2 (no cross-process lock for
  * direct sync paths). The cycle path was already protected.
@@ -163,9 +163,9 @@ export async function tryAcquireDbLock(
  * exists for `lockId`. Used by:
  *   - performSync's lock-busy error path to surface holder PID + hostname
  *     + age in the user-facing "Another sync is in progress" message.
- *   - gbrain doctor's `stale_locks` check (queries all rows where
+ *   - zbrain doctor's `stale_locks` check (queries all rows where
  *     ttl_expires_at < NOW()).
- *   - gbrain sync --break-lock to verify holder state before clearing.
+ *   - zbrain sync --break-lock to verify holder state before clearing.
  *
  * Pure read; no side effects, no lock acquire.
  */
@@ -226,7 +226,7 @@ export async function inspectLock(engine: BrainEngine, lockId: string): Promise<
 }
 
 /**
- * v0.41.6.0 D3: list every lock whose TTL has expired. Used by gbrain
+ * v0.41.6.0 D3: list every lock whose TTL has expired. Used by zbrain
  * doctor's `stale_locks` check. The query reuses the same canonical
  * staleness signal (ttl_expires_at < NOW()) that tryAcquireDbLock's
  * UPDATE-on-conflict already trusts — no parallel heuristic.
@@ -278,7 +278,7 @@ export async function listStaleLocks(engine: BrainEngine): Promise<LockSnapshot[
 }
 
 /**
- * v0.41.6.0 D3: atomic verify-and-delete for `gbrain sync --break-lock`.
+ * v0.41.6.0 D3: atomic verify-and-delete for `zbrain sync --break-lock`.
  *
  * Runs `DELETE ... WHERE id = $1 AND holder_pid = $2 RETURNING id`.
  * RETURNING shape:
@@ -324,18 +324,18 @@ export async function deleteLockRow(
 /**
  * v0.40 (Federated Sync v2): per-source sync lock helper.
  *
- * Before v0.40: SYNC_LOCK_ID was a bare 'gbrain-sync' constant, taken by
+ * Before v0.40: SYNC_LOCK_ID was a bare 'zbrain-sync' constant, taken by
  * performSync's writer window. That meant only ONE sync could run at a time
  * across the whole brain — even when two sources are completely independent
  * (different git repos, different last_commit, different DB row anchors).
  *
  * v0.40 namespaces the lock key by sourceId so cross-source sync runs in
- * parallel. The cycle's broader `gbrain-cycle` lock still serializes inside
+ * parallel. The cycle's broader `zbrain-cycle` lock still serializes inside
  * a single cycle invocation. Two-source layered semantics:
  *
- *   cycle              acquires `gbrain-cycle`
- *     → performSync(A) acquires `gbrain-sync:A`
- *     → performSync(B) acquires `gbrain-sync:B`  (in a different process, fine)
+ *   cycle              acquires `zbrain-cycle`
+ *     → performSync(A) acquires `zbrain-sync:A`
+ *     → performSync(B) acquires `zbrain-sync:B`  (in a different process, fine)
  *
  * Audit: `SYNC_LOCK_ID` (back-compat alias) resolves to `syncLockId('default')`.
  * Every consumer in src/ MUST namespace by source. Tracked consumers:
@@ -343,7 +343,7 @@ export async function deleteLockRow(
  *   - src/core/cycle/phantom-redirect.ts (per-source, D16)
  */
 export function syncLockId(sourceId: string): string {
-  return `gbrain-sync:${sourceId}`;
+  return `zbrain-sync:${sourceId}`;
 }
 
 /**
@@ -366,7 +366,7 @@ export const SYNC_LOCK_ID = syncLockId('default');
  * lock-holding backend is still responsive — if heartbeat hangs past
  * HEARTBEAT_TIMEOUT_MS, abort the operation and release the lock.
  *
- * Lock-id naming convention: `<scope>:<dbname>` (e.g. `gbrain-migrate:postgres`)
+ * Lock-id naming convention: `<scope>:<dbname>` (e.g. `zbrain-migrate:postgres`)
  * for multi-tenant safety per cherry D4. Caller composes the dbname.
  *
  * Failure paths:
@@ -514,7 +514,7 @@ export async function tryWithDbElection<T>(
 
 /**
  * Compose a multi-tenant-safe lock id (cherry D4). Suffixes the lock id
- * with the database name so two gbrain installs sharing a Postgres cluster
+ * with the database name so two zbrain installs sharing a Postgres cluster
  * (different databases on the same Supabase project) don't contend.
  *
  * Async: queries `current_database()` on the engine. PGLite returns a

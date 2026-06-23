@@ -6,13 +6,24 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+DRY_RUN=0
+if [ "${1:-}" = "--dry-run-list" ]; then
+  DRY_RUN=1
+  shift
+fi
+
 slow_files=()
 while IFS= read -r f; do
   slow_files+=("$f")
-done < <(find test -name '*.slow.test.ts' -not -path 'test/e2e/*' | sort)
+done < <(find tests/unit -name '*.slow.test.ts' -not -path 'tests/unit/e2e/*' | sort)
 
 if [ "${#slow_files[@]}" -eq 0 ]; then
   echo "[run-slow-tests] no *.slow.test.ts files; nothing to do."
+  exit 0
+fi
+
+if [ "$DRY_RUN" = "1" ]; then
+  printf '%s\n' "${slow_files[@]}"
   exit 0
 fi
 

@@ -1,10 +1,10 @@
 /**
- * gbrain frontmatter install-hook — Install a pre-commit hook in a brain
- * source's git repo that runs `gbrain frontmatter validate` against staged
+ * zbrain frontmatter install-hook — Install a pre-commit hook in a brain
+ * source's git repo that runs `zbrain frontmatter validate` against staged
  * .md/.mdx files. Skips non-git sources with a one-line note.
  *
  * Usage:
- *   gbrain frontmatter install-hook [--source <id>] [--force] [--uninstall]
+ *   zbrain frontmatter install-hook [--source <id>] [--force] [--uninstall]
  *
  *   --source <id>  Limit to one registered source. Default: all sources.
  *   --force        Overwrite an existing pre-commit hook (writes <hook>.bak).
@@ -13,8 +13,8 @@
  * Hook contract:
  *   - Located at <source>/.githooks/pre-commit. We `git config core.hooksPath
  *     .githooks` if no other hooksPath is set.
- *   - When the gbrain binary is missing, the hook prints a one-line warning
- *     and exits 0 (don't break commits if a developer uninstalls gbrain).
+ *   - When the zbrain binary is missing, the hook prints a one-line warning
+ *     and exits 0 (don't break commits if a developer uninstalls zbrain).
  *   - Bypass via `git commit --no-verify`.
  */
 
@@ -25,17 +25,17 @@ import type { BrainEngine } from '../core/engine.ts';
 import { loadConfig, toEngineConfig } from '../core/config.ts';
 import { createEngine } from '../core/engine-factory.ts';
 
-const HOOK_BANNER = '# gbrain frontmatter pre-commit hook (v0.22.4+)';
+const HOOK_BANNER = '# zbrain frontmatter pre-commit hook (v0.22.4+)';
 
 const HOOK_SCRIPT = `#!/bin/sh
 ${HOOK_BANNER}
 # Validates YAML frontmatter on staged .md / .mdx files. Bypass with
-# 'git commit --no-verify'. Uninstall with 'gbrain frontmatter install-hook --uninstall'.
+# 'git commit --no-verify'. Uninstall with 'zbrain frontmatter install-hook --uninstall'.
 
 set -e
 
-if ! command -v gbrain >/dev/null 2>&1; then
-  echo "gbrain not on PATH; skipping frontmatter pre-commit (install gbrain to re-enable)." >&2
+if ! command -v zbrain >/dev/null 2>&1; then
+  echo "zbrain not on PATH; skipping frontmatter pre-commit (install zbrain to re-enable)." >&2
   exit 0
 fi
 
@@ -45,15 +45,15 @@ staged=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\\\\.mdx?$' 
 failed=0
 for f in $staged; do
   [ -f "$f" ] || continue
-  if ! gbrain frontmatter validate "$f" >/dev/null 2>&1; then
-    gbrain frontmatter validate "$f" >&2
+  if ! zbrain frontmatter validate "$f" >/dev/null 2>&1; then
+    zbrain frontmatter validate "$f" >&2
     failed=1
   fi
 done
 
 if [ $failed -ne 0 ]; then
   echo "" >&2
-  echo "Frontmatter validation failed. Run 'gbrain frontmatter validate <file> --fix' to repair, or 'git commit --no-verify' to bypass." >&2
+  echo "Frontmatter validation failed. Run 'zbrain frontmatter validate <file> --fix' to repair, or 'git commit --no-verify' to bypass." >&2
   exit 1
 fi
 `;
@@ -84,7 +84,7 @@ export async function runFrontmatterInstallHook(args: string[]): Promise<void> {
 
   const config = loadConfig();
   if (!config) {
-    throw new Error('No brain configured. Run: gbrain init');
+    throw new Error('No brain configured. Run: zbrain init');
   }
   const engineConfig = toEngineConfig(config);
   const engine = await createEngine(engineConfig);
@@ -94,7 +94,7 @@ export async function runFrontmatterInstallHook(args: string[]): Promise<void> {
     if (sources.length === 0) {
       console.log(sourceId
         ? `Source "${sourceId}" not found.`
-        : 'No registered sources. Run `gbrain sources list` to inspect.');
+        : 'No registered sources. Run `zbrain sources list` to inspect.');
       return;
     }
 
@@ -116,7 +116,7 @@ export async function runFrontmatterInstallHook(args: string[]): Promise<void> {
           console.log(`[${src.id}] hook removed`);
           installed++;
         } else {
-          console.log(`[${src.id}] no gbrain pre-commit hook found; nothing to uninstall`);
+          console.log(`[${src.id}] no zbrain pre-commit hook found; nothing to uninstall`);
         }
         continue;
       }
@@ -139,12 +139,12 @@ export async function runFrontmatterInstallHook(args: string[]): Promise<void> {
 }
 
 function printHelp() {
-  console.log(`gbrain frontmatter install-hook — install pre-commit hook in source git repos
+  console.log(`zbrain frontmatter install-hook — install pre-commit hook in source git repos
 
 Usage:
-  gbrain frontmatter install-hook [--source <id>] [--force] [--uninstall]
+  zbrain frontmatter install-hook [--source <id>] [--force] [--uninstall]
 
-The hook runs \`gbrain frontmatter validate\` against staged .md/.mdx files,
+The hook runs \`zbrain frontmatter validate\` against staged .md/.mdx files,
 blocking commits with malformed frontmatter. Bypass with 'git commit --no-verify'.
 
 Options:
@@ -175,7 +175,7 @@ export function installHook(repoPath: string, force: boolean): InstallResult {
   if (existsSync(hookPath)) {
     const existing = readFileSync(hookPath, 'utf8');
     if (existing.includes(HOOK_BANNER)) {
-      // Already a gbrain hook — refresh the script content silently.
+      // Already a zbrain hook — refresh the script content silently.
       writeFileSync(hookPath, HOOK_SCRIPT);
       chmodSync(hookPath, 0o755);
       return 'unchanged';

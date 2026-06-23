@@ -32,8 +32,8 @@ export async function runExport(engine: BrainEngine, args: string[]) {
     repoPath = await getDefaultSourcePath(engine);
     if (!repoPath) {
       console.error(
-        `Error: gbrain export --restore-only requires --repo <path> or a configured\n` +
-          `default source with a local_path. Run \`gbrain sources list\` to inspect\n` +
+        `Error: zbrain export --restore-only requires --repo <path> or a configured\n` +
+          `default source with a local_path. Run \`zbrain sources list\` to inspect\n` +
           `sources, or pass --repo explicitly.`,
       );
       process.exit(1);
@@ -50,10 +50,10 @@ export async function runExport(engine: BrainEngine, args: string[]) {
   // page query fires.
   if (restoreOnly && !storageConfig) {
     console.error(
-      `Error: gbrain export --restore-only requires a storage tiering config\n` +
-        `(gbrain.yml with a "storage:" section) at ${repoPath}/gbrain.yml.\n` +
+      `Error: zbrain export --restore-only requires a storage tiering config\n` +
+        `(zbrain.yml with a "storage:" section) at ${repoPath}/zbrain.yml.\n` +
         `Without it, there's nothing to scope the restore to.\n` +
-        `Run \`gbrain storage status\` to inspect the current configuration.`,
+        `Run \`zbrain storage status\` to inspect the current configuration.`,
     );
     process.exit(1);
   }

@@ -20,9 +20,9 @@
 #      file boundaries within a shard process.
 #
 # Scope:
-#  - Recursively scans `test/**/*.test.ts`.
+#  - Recursively scans `tests/unit/**/*.test.ts`.
 #  - Skips `*.serial.test.ts` entirely (the quarantine escape hatch).
-#  - Skips `test/e2e/**` (E2E runs sequentially in its own runner; not in
+#  - Skips `tests/unit/e2e/**` (E2E runs sequentially in its own runner; not in
 #    the parallel pool).
 #
 # Allow-list:
@@ -40,7 +40,7 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$ROOT"
 
-TARGET_DIR="${1:-test}"
+TARGET_DIR="${1:-tests/unit}"
 ALLOWLIST_FILE="$ROOT/scripts/check-test-isolation.allowlist"
 
 # Read allowlist (one filename per line, # comments allowed). Empty file
@@ -70,7 +70,7 @@ is_allowlisted() {
   return 1
 }
 
-# Find non-serial unit test files (excluding test/e2e). Portable across
+# Find non-serial unit test files (excluding tests/unit/e2e). Portable across
 # bash 3.2 (macOS default) and bash 4+; no mapfile.
 FILE_LIST="$(find "$TARGET_DIR" -name '*.test.ts' \
   -not -name '*.serial.test.ts' \
@@ -141,10 +141,10 @@ if [ $violations -gt 0 ]; then
   echo "check-test-isolation: FAIL ($violations violation(s))"
   echo
   echo "Fix:"
-  echo "  - For env mutations, use withEnv() from test/helpers/with-env.ts"
+  echo "  - For env mutations, use withEnv() from tests/unit/helpers/with-env.ts"
   echo "  - For mock.module(), rename to *.serial.test.ts (quarantine)"
   echo "  - For PGLiteEngine, follow the canonical pattern in"
-  echo "    test/helpers/reset-pglite.ts JSDoc and CLAUDE.md."
+  echo "    tests/unit/helpers/reset-pglite.ts JSDoc and CLAUDE.md."
   echo
   echo "Or, if this is a baseline file from before the lint shipped,"
   echo "add it to scripts/check-test-isolation.allowlist (with a TODO"

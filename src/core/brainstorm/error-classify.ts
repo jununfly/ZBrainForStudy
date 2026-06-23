@@ -5,7 +5,7 @@
  * PgBouncer transaction-mode environments when listPrefixSampledPages
  * or hybrid search exceeded the statement timeout. The error reached
  * runBrainstormCli as a generic Error and surfaced as the catch-all
- * 'gbrain: unknown error' fallback, silently consuming the user's
+ * 'zbrain: unknown error' fallback, silently consuming the user's
  * cost-preview wait and producing zero ideas.
  *
  * Fix: orchestrator wraps its entire body in one try/catch (covers

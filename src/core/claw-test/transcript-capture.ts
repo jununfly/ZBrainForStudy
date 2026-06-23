@@ -1,7 +1,7 @@
 /**
  * Transcript capture for live-mode agent runs (D8 + D14, D17 backpressure).
  *
- * The existing minions/audit infrastructure is for INTERNAL gbrain subagents
+ * The existing minions/audit infrastructure is for INTERNAL zbrain subagents
  * only. External openclaw/hermes subprocesses don't write to those tables —
  * v1 builds its own capture channel here.
  *

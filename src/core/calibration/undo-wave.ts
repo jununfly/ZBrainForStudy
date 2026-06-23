@@ -12,7 +12,7 @@
  *   which (take_id, page_id, row_num) the grade_takes phase mutated. We
  *   UNSET the takes.resolved_at / resolved_quality / resolved_outcome
  *   columns to NULL for those takes ONLY IF resolved_by indicates this
- *   wave's auto-grade ('gbrain:grade_takes'). Manual resolutions
+ *   wave's auto-grade ('zbrain:grade_takes'). Manual resolutions
  *   (resolved_by='garry' etc.) are left alone — operator intent persists.
  *
  * Step 2 — Delete calibration_profiles rows from this wave.
@@ -50,7 +50,7 @@ export interface UndoWaveOpts {
   dryRun?: boolean;
   /** When true, attempt the gstack-learnings scrub via the binary. Default false. */
   scrubGstack?: boolean;
-  /** The resolved_by label that identifies wave-applied resolutions. Default 'gbrain:grade_takes'. */
+  /** The resolved_by label that identifies wave-applied resolutions. Default 'zbrain:grade_takes'. */
   resolvedByLabel?: string;
 }
 
@@ -84,7 +84,7 @@ export async function undoWave(
 ): Promise<UndoWaveResult> {
   const waveVersion = opts.waveVersion;
   const dryRun = opts.dryRun ?? false;
-  const resolvedByLabel = opts.resolvedByLabel ?? 'gbrain:grade_takes';
+  const resolvedByLabel = opts.resolvedByLabel ?? 'zbrain:grade_takes';
   const result: UndoWaveResult = {
     wave_version: waveVersion,
     dry_run: dryRun,
@@ -99,7 +99,7 @@ export async function undoWave(
   // Step 1: count + reverse takes resolutions written by this wave.
   // Identify wave-applied takes via take_grade_cache.applied=true AND
   // wave_version match. Cross-check resolved_by to ensure we're not
-  // un-resolving a take a manual `gbrain takes resolve` operation
+  // un-resolving a take a manual `zbrain takes resolve` operation
   // overrode after grade_takes wrote it.
   const targetTakeRows = await engine.executeRaw<{ take_id: number }>(
     `SELECT DISTINCT take_id FROM take_grade_cache

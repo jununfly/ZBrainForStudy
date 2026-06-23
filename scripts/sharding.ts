@@ -28,7 +28,7 @@
  *   1   internal error (e.g., malformed weights JSON)
  *   2   usage error
  *
- * Used by: scripts/test-shard.sh (thin wrapper), test/scripts/sharding.test.ts.
+ * Used by: scripts/test-shard.sh (thin wrapper), tests/unit/scripts/sharding.test.ts.
  */
 
 import { readFileSync, existsSync } from "node:fs";

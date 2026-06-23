@@ -160,7 +160,7 @@ gbrain stats > /tmp/after.txt
 diff /tmp/before.txt /tmp/after.txt
 ```
 
-The invariant E2E test at `test/e2e/system-of-record-invariant.test.ts`
+The invariant E2E test at `tests/unit/e2e/system-of-record-invariant.test.ts`
 exercises this exact flow on every CI run.
 
 ## Rule for new code
@@ -180,7 +180,7 @@ When you add a new user-knowledge category:
    fence, and rebuilds the derived table from scratch. The reconciler
    is the only legitimate call site for the engine method;
    `// gbrain-allow-direct-insert: <reason>` annotates it explicitly.
-6. **Add a round-trip test** in `test/e2e/system-of-record-invariant.test.ts`
+6. **Add a round-trip test** in `tests/unit/e2e/system-of-record-invariant.test.ts`
    that proves DELETE + reconcile rebuilds the table byte-identically.
 
 The CI gate at `scripts/check-system-of-record.sh` fails any PR that

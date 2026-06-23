@@ -16,7 +16,7 @@ my-skillpack/
 │       └── routing-eval.jsonl    # >= 5 intents pinning trigger -> skill
 ├── runbooks/
 │   └── bootstrap.md              # post-scaffold display (NOT an executor)
-├── test/
+├── tests/unit/
 │   └── *.test.ts                 # bun:test unit tests
 ├── e2e/
 │   └── *.test.ts                 # integration tests, gated on DATABASE_URL

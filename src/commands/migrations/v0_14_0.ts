@@ -12,9 +12,9 @@
  *      after the ALTER pick up the new default.
  *
  *   B. Pending-host-work ping: emit one entry to
- *      ~/.gbrain/migrations/pending-host-work.jsonl so the host agent knows
+ *      ~/.zbrain/migrations/pending-host-work.jsonl so the host agent knows
  *      to read skills/migrations/v0.14.0.md (shell-jobs adoption, autopilot
- *      cooperative handler wiring, GBRAIN_POOL_SIZE doc). Idempotent — the
+ *      cooperative handler wiring, ZBRAIN_POOL_SIZE doc). Idempotent — the
  *      write checks for an existing entry before appending.
  *
  * Ledger writes live in the runner (Bug 3). This orchestrator returns its
@@ -25,14 +25,14 @@ import { existsSync, readFileSync, mkdirSync, appendFileSync } from 'fs';
 import { join } from 'path';
 
 import type { Migration, OrchestratorOpts, OrchestratorResult, OrchestratorPhaseResult } from './types.ts';
-import { loadConfig, toEngineConfig, gbrainPath } from '../../core/config.ts';
+import { loadConfig, toEngineConfig, zbrainPath } from '../../core/config.ts';
 import { createEngine } from '../../core/engine-factory.ts';
 import type { BrainEngine } from '../../core/engine.ts';
 
-// gbrainPath() honors GBRAIN_HOME at call time (not module-load) and routes
+// zbrainPath() honors ZBRAIN_HOME at call time (not module-load) and routes
 // through the centralized config dir, so the prior resolveHome()/HOME-env
 // trick is no longer needed.
-function pendingHostWorkDir(): string { return gbrainPath('migrations'); }
+function pendingHostWorkDir(): string { return zbrainPath('migrations'); }
 function pendingHostWorkPath(): string { return join(pendingHostWorkDir(), 'pending-host-work.jsonl'); }
 
 // ---------------------------------------------------------------------------
@@ -47,7 +47,7 @@ async function phaseASchema(opts: OrchestratorOpts): Promise<{ result: Orchestra
     const config = loadConfig();
     if (!config) {
       return {
-        result: { name: 'schema', status: 'skipped', detail: 'no brain configured (run gbrain init first)' },
+        result: { name: 'schema', status: 'skipped', detail: 'no brain configured (run zbrain init first)' },
         engine: null,
       };
     }
@@ -168,7 +168,7 @@ export const v0_14_0: Migration = {
   featurePitch: {
     headline: 'Shell jobs + autopilot cooperative handler + max_stalled default bump.',
     description:
-      'v0.14.0 unlocks `shell` as a Minion job type (gated by GBRAIN_ALLOW_SHELL_JOBS=1 ' +
+      'v0.14.0 unlocks `shell` as a Minion job type (gated by ZBRAIN_ALLOW_SHELL_JOBS=1 ' +
       'on the worker). The autopilot-cycle handler now yields to the event loop ' +
       'between phases so lock renewal fires on huge brains. The minion_jobs.max_stalled ' +
       'default is bumped 1→3 so one lock-lost tick no longer dead-letters a job. ' +

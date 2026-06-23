@@ -1,10 +1,10 @@
 /**
  * InboxFolderSource — drop-in capture target for Shortcuts / AirDrop / Drafts.
  *
- * Watches `~/.gbrain/inbox/` by default. When a file appears (anyone can
+ * Watches `~/.zbrain/inbox/` by default. When a file appears (anyone can
  * drop one — iOS Shortcuts share-extension, macOS AirDrop, Drafts export,
  * Finder drag), the source emits an IngestionEvent then moves the file to
- * `~/.gbrain/inbox/.archived/YYYY-MM-DD/<filename>` so the user has a
+ * `~/.zbrain/inbox/.archived/YYYY-MM-DD/<filename>` so the user has a
  * visible audit trail of what was captured AND the inbox dir stays
  * uncluttered.
  *
@@ -56,7 +56,7 @@ const DEFAULT_STABILITY_MS = 1000;
 export interface InboxFolderSourceOpts {
   /** Source instance id. Defaults to 'inbox-folder'. */
   id?: string;
-  /** Inbox directory to watch. Required. Typical: ~/.gbrain/inbox/. */
+  /** Inbox directory to watch. Required. Typical: ~/.zbrain/inbox/. */
   inboxDir: string;
   /** Archive subdir name (relative to inbox). Default '.archived'. */
   archiveSubdir?: string;
@@ -139,7 +139,7 @@ function uniqueArchivePath(dir: string, filename: string): string {
 
 export function createInboxFolderSource(opts: InboxFolderSourceOpts): IngestionSource {
   if (!opts.inboxDir || typeof opts.inboxDir !== 'string') {
-    throw new Error('InboxFolderSource: inboxDir is required (typical: ~/.gbrain/inbox)');
+    throw new Error('InboxFolderSource: inboxDir is required (typical: ~/.zbrain/inbox)');
   }
   const id = opts.id ?? 'inbox-folder';
   const kind = 'inbox-folder';

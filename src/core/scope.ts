@@ -1,5 +1,5 @@
 /**
- * gbrain OAuth scope hierarchy + allowlist (v0.28).
+ * zbrain OAuth scope hierarchy + allowlist (v0.28).
  *
  * Single source of truth for the 5 scope strings. Used by:
  *  - src/commands/serve-http.ts (scopesSupported, request-time hasScope)

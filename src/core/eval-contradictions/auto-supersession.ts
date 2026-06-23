@@ -114,18 +114,18 @@ export function renderResolutionCommand(
       // Prefer the slug of the take side (intra_page) or the curated side.
       const takeSide = pair.b.take_id !== null ? pair.b : (pair.a.take_id !== null ? pair.a : pair.a);
       const takeId = takeSide.take_id ?? '<row>';
-      return `gbrain takes supersede ${takeSide.slug} --row ${takeId}`;
+      return `zbrain takes supersede ${takeSide.slug} --row ${takeId}`;
     }
     case 'dream_synthesize': {
       const curatedSide = isCuratedEntitySlug(pair.a.slug)
         ? pair.a
         : (isCuratedEntitySlug(pair.b.slug) ? pair.b : pair.a);
-      return `gbrain dream --phase synthesize --slug ${curatedSide.slug}`;
+      return `zbrain dream --phase synthesize --slug ${curatedSide.slug}`;
     }
     case 'takes_mark_debate': {
       const takeSide = pair.b.take_id !== null ? pair.b : (pair.a.take_id !== null ? pair.a : pair.a);
       const takeId = takeSide.take_id ?? '<row>';
-      return `gbrain takes mark-debate ${takeSide.slug} --row ${takeId}`;
+      return `zbrain takes mark-debate ${takeSide.slug} --row ${takeId}`;
     }
     case 'temporal_supersede': {
       // v0.34 / Lane A2: pick the newer-dated side as the survivor; render a
@@ -139,7 +139,7 @@ export function renderResolutionCommand(
         const newerDate = aDate < bDate ? bDate : aDate;
         const olderTakeId = olderSide.take_id;
         if (olderTakeId !== null) {
-          return `gbrain takes supersede ${olderSide.slug} --row ${olderTakeId} --since ${newerDate}`;
+          return `zbrain takes supersede ${olderSide.slug} --row ${olderTakeId} --since ${newerDate}`;
         }
         return `# temporal_supersession: ${olderSide.slug} (${aDate < bDate ? aDate : bDate}) superseded by ${newerDate}`;
       }
@@ -151,7 +151,7 @@ export function renderResolutionCommand(
       // operator can paste a follow-up note manually for now.
       const aDate = pair.a.effective_date ?? '<date-a>';
       const bDate = pair.b.effective_date ?? '<date-b>';
-      return `# temporal_evolution: ${pair.a.slug} (${aDate}) → ${pair.b.slug} (${bDate}); record in timeline when the gbrain timeline writer lands`;
+      return `# temporal_evolution: ${pair.a.slug} (${aDate}) → ${pair.b.slug} (${bDate}); record in timeline when the zbrain timeline writer lands`;
     }
     case 'flag_for_review': {
       // v0.34 / Lane A2: informational; covers temporal_regression and

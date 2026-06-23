@@ -28,7 +28,7 @@ export interface ToolResult {
 }
 
 export interface DispatchOpts {
-  /** Defaults to true (remote/untrusted). Local CLI callers (`gbrain call`) pass false. */
+  /** Defaults to true (remote/untrusted). Local CLI callers (`zbrain call`) pass false. */
   remote?: boolean;
   /** Override the default stderr logger (e.g. CLI uses console.* directly). */
   logger?: OperationContext['logger'];
@@ -44,7 +44,7 @@ export interface DispatchOpts {
    * v0.31 (eD4): tenancy axis for facts hot memory ops (extract_facts,
    * recall, forget_fact). When set, the OperationContext receives a
    * matching `sourceId`. CLI dispatch resolves this from --source flag /
-   * GBRAIN_SOURCE / .gbrain-source / 'default'; HTTP MCP transport
+   * ZBRAIN_SOURCE / .zbrain-source / 'default'; HTTP MCP transport
    * resolves it from the per-token allow-list (eE3).
    */
   sourceId?: string;
@@ -94,7 +94,7 @@ export interface DispatchOpts {
  * not named.
  *
  * Operators who want full payloads for debugging set `--log-full-params` on
- * `gbrain serve --http`; that path bypasses this helper and writes the raw
+ * `zbrain serve --http`; that path bypasses this helper and writes the raw
  * JSON, with a loud startup warning.
  */
 export interface ParamSummary {

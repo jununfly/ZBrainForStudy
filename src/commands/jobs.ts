@@ -1,5 +1,5 @@
 /**
- * CLI handler for `gbrain jobs` subcommands.
+ * CLI handler for `zbrain jobs` subcommands.
  * Thin wrapper around MinionQueue and MinionWorker.
  */
 
@@ -61,7 +61,7 @@ export function parseMaxRssFlag(args: string[]): number | undefined {
 }
 
 export function resolveWorkerConcurrency(args: string[], env: NodeJS.ProcessEnv = process.env): number {
-  const raw = parseFlag(args, '--concurrency') ?? env.GBRAIN_WORKER_CONCURRENCY ?? '1';
+  const raw = parseFlag(args, '--concurrency') ?? env.ZBRAIN_WORKER_CONCURRENCY ?? '1';
   const parsed = parseInt(raw, 10);
   // Without validation, NaN / 0 / negative values flow through to the worker
   // loop where `inFlight.size < concurrency` is always false → the worker
@@ -71,9 +71,9 @@ export function resolveWorkerConcurrency(args: string[], env: NodeJS.ProcessEnv 
   if (!Number.isFinite(parsed) || parsed < 1) {
     const source = parseFlag(args, '--concurrency') !== undefined
       ? '--concurrency flag'
-      : 'GBRAIN_WORKER_CONCURRENCY env';
+      : 'ZBRAIN_WORKER_CONCURRENCY env';
     process.stderr.write(
-      `[gbrain jobs] invalid concurrency from ${source} (${JSON.stringify(raw)}); ` +
+      `[zbrain jobs] invalid concurrency from ${source} (${JSON.stringify(raw)}); ` +
       `falling back to 1. Set a positive integer.\n`
     );
     return 1;
@@ -117,10 +117,10 @@ export async function runJobs(engine: BrainEngine, args: string[]): Promise<void
   const sub = args[0];
 
   if (!sub || sub === '--help' || sub === '-h') {
-    console.log(`gbrain jobs — Minions job queue
+    console.log(`zbrain jobs — Minions job queue
 
 USAGE
-  gbrain jobs submit <name> [--params JSON] [--follow] [--priority N]
+  zbrain jobs submit <name> [--params JSON] [--follow] [--priority N]
                             [--delay Nms] [--max-attempts N] [--max-stalled N]
                             [--max-waiting N]
                             [--backoff-type fixed|exponential] [--backoff-delay Nms]
@@ -128,30 +128,30 @@ USAGE
                             [--idempotency-key K] [--queue Q] [--dry-run]
                             [--redact-secrets]   (shell only; scrubs inherit
                                                   values from stdout/stderr)
-  gbrain jobs list [--status S] [--queue Q] [--limit N]
-  gbrain jobs get <id>
-  gbrain jobs cancel <id>
-  gbrain jobs retry <id>
-  gbrain jobs prune [--older-than 30d]
-  gbrain jobs delete <id>
-  gbrain jobs stats
-  gbrain jobs smoke
-  gbrain jobs work [--queue Q] [--concurrency N] [--max-rss MB]
+  zbrain jobs list [--status S] [--queue Q] [--limit N]
+  zbrain jobs get <id>
+  zbrain jobs cancel <id>
+  zbrain jobs retry <id>
+  zbrain jobs prune [--older-than 30d]
+  zbrain jobs delete <id>
+  zbrain jobs stats
+  zbrain jobs smoke
+  zbrain jobs work [--queue Q] [--concurrency N] [--max-rss MB]
                    [--health-interval MS]
-  gbrain jobs supervisor [start] [--detach] [--json]
+  zbrain jobs supervisor [start] [--detach] [--json]
                          [--concurrency N] [--queue Q] [--pid-file PATH]
                          [--max-crashes N] [--health-interval N]
                          [--allow-shell-jobs] [--cli-path PATH]
                          [--max-rss MB]
-  gbrain jobs supervisor status [--json] [--pid-file PATH]
-  gbrain jobs supervisor stop [--json] [--pid-file PATH]
+  zbrain jobs supervisor status [--json] [--pid-file PATH]
+  zbrain jobs supervisor stop [--json] [--pid-file PATH]
 
-    Auto-restarting wrapper around 'gbrain jobs work'. Spawns the worker
+    Auto-restarting wrapper around 'zbrain jobs work'. Spawns the worker
     as a child process and restarts on crash with exponential backoff
-    (1s -> 60s cap). Writes a PID file to ~/.gbrain/supervisor.pid by
-    default (override via --pid-file or GBRAIN_SUPERVISOR_PID_FILE env).
+    (1s -> 60s cap). Writes a PID file to ~/.zbrain/supervisor.pid by
+    default (override via --pid-file or ZBRAIN_SUPERVISOR_PID_FILE env).
     Lifecycle events are appended to
-      \${GBRAIN_AUDIT_DIR:-~/.gbrain/audit}/supervisor-YYYY-Www.jsonl
+      \${ZBRAIN_AUDIT_DIR:-~/.zbrain/audit}/supervisor-YYYY-Www.jsonl
 
     SUBCOMMANDS
       start        (default) Launch the supervisor. --detach returns a
@@ -170,11 +170,11 @@ USAGE
       3  PID file unwritable (permission / path error)
 
     EXAMPLES
-      gbrain jobs supervisor --concurrency 4         # foreground (Ctrl-C stops)
-      gbrain jobs supervisor start --detach --json   # agent-friendly: fork + return JSON
-      gbrain jobs supervisor status --json           # machine-readable health check
-      gbrain jobs supervisor stop                    # graceful stop
-      gbrain jobs supervisor --json --allow-shell-jobs  # JSONL events + shell-exec on
+      zbrain jobs supervisor --concurrency 4         # foreground (Ctrl-C stops)
+      zbrain jobs supervisor start --detach --json   # agent-friendly: fork + return JSON
+      zbrain jobs supervisor status --json           # machine-readable health check
+      zbrain jobs supervisor stop                    # graceful stop
+      zbrain jobs supervisor --json --allow-shell-jobs  # JSONL events + shell-exec on
 
 HANDLER TYPES (built in)
   sync              Pull and embed new pages from the repo
@@ -184,7 +184,7 @@ HANDLER TYPES (built in)
   extract           Extract links + timeline entries; '{"mode":"all"}'
   backlinks         Check or fix back-links; '{"action":"fix"}'
   autopilot-cycle   One autopilot pass (sync+extract+embed+backlinks)
-  shell             Run a command or argv. Requires GBRAIN_ALLOW_SHELL_JOBS=1
+  shell             Run a command or argv. Requires ZBRAIN_ALLOW_SHELL_JOBS=1
                     on the worker. Params: {cmd?, argv?, cwd, env?}.
                     See: docs/guides/minions-shell-jobs.md
 `);
@@ -197,7 +197,7 @@ HANDLER TYPES (built in)
     case 'submit': {
       const name = args[1];
       if (!name) {
-        console.error('Error: job name required. Usage: gbrain jobs submit <name>');
+        console.error('Error: job name required. Usage: zbrain jobs submit <name>');
         process.exit(1);
       }
 
@@ -329,18 +329,18 @@ HANDLER TYPES (built in)
       } catch { /* audit failures never block submission */ }
 
       // Starvation warning (DX polish). Fire for every non-`--follow` shell submit
-      // regardless of the submitter's own `GBRAIN_ALLOW_SHELL_JOBS` — the submitter
+      // regardless of the submitter's own `ZBRAIN_ALLOW_SHELL_JOBS` — the submitter
       // env is a weak proxy for the worker env (they may run on different machines),
       // so the warning remains useful any time the job might sit in 'waiting'.
       if (!follow && name.trim() === 'shell') {
         process.stderr.write(
-          `\n⚠  Shell jobs require GBRAIN_ALLOW_SHELL_JOBS=1 on the worker process.\n` +
+          `\n⚠  Shell jobs require ZBRAIN_ALLOW_SHELL_JOBS=1 on the worker process.\n` +
           `   Your job was queued (id=${job.id}) but will sit in 'waiting' until a\n` +
           `   worker with the env flag starts. To run now:\n\n` +
-          `     GBRAIN_ALLOW_SHELL_JOBS=1 gbrain jobs submit shell \\\n` +
+          `     ZBRAIN_ALLOW_SHELL_JOBS=1 zbrain jobs submit shell \\\n` +
           `       --params '...' --follow\n\n` +
           `   Or start a persistent worker (Postgres only — PGLite uses --follow):\n\n` +
-          `     GBRAIN_ALLOW_SHELL_JOBS=1 gbrain jobs work\n\n`,
+          `     ZBRAIN_ALLOW_SHELL_JOBS=1 zbrain jobs work\n\n`,
         );
       }
 
@@ -432,7 +432,7 @@ HANDLER TYPES (built in)
 
     case 'get': {
       const id = parseInt(args[1], 10);
-      if (isNaN(id)) { console.error('Error: job ID required. Usage: gbrain jobs get <id>'); process.exit(1); }
+      if (isNaN(id)) { console.error('Error: job ID required. Usage: zbrain jobs get <id>'); process.exit(1); }
 
       // v0.32: thin-client routing (mirrors `list` branch above).
       const cfg = loadConfig();
@@ -568,7 +568,7 @@ HANDLER TYPES (built in)
           const completed = parseInt(completedRows[0]?.count ?? '0', 10);
           const tag = completed > 0
             ? `(${completed} subagent job${completed === 1 ? '' : 's'} completed, throughput healthy)`
-            : `(no subagent jobs completed — cap may be too tight; \`export GBRAIN_ANTHROPIC_MAX_INFLIGHT=64\`)`;
+            : `(no subagent jobs completed — cap may be too tight; \`export ZBRAIN_ANTHROPIC_MAX_INFLIGHT=64\`)`;
           console.log(`  Lease pressure (1h): ${lpCount} bounce${lpCount === 1 ? '' : 's'} ${tag}`);
         } else {
           console.log(`  Lease pressure (1h): 0 bounces`);
@@ -597,7 +597,7 @@ HANDLER TYPES (built in)
             console.log(`\n  Error clusters (24h):`);
             for (const c of clusters.slice(0, 5)) {
               const sample = c.sample_ids.length > 0
-                ? `  (e.g. \`gbrain jobs get ${c.sample_ids[0]}\`)` : '';
+                ? `  (e.g. \`zbrain jobs get ${c.sample_ids[0]}\`)` : '';
               console.log(`    ${String(c.count).padStart(4)} × ${c.cluster.padEnd(22)}${sample}`);
             }
             if (clusters.length > 5) {
@@ -606,7 +606,7 @@ HANDLER TYPES (built in)
           }
         } catch (e) {
           // error-classify import or SQL fail. Don't block stats output.
-          if (process.env.GBRAIN_DEBUG === '1') {
+          if (process.env.ZBRAIN_DEBUG === '1') {
             console.error(`[jobs stats] cluster-errors skipped: ${e instanceof Error ? e.message : String(e)}`);
           }
         }
@@ -656,7 +656,7 @@ HANDLER TYPES (built in)
       // mid-flight by directly manipulating lock_until via handleStalled.
       // Verifies that with the v0.13.1 schema default (max_stalled=5), a
       // stalled job is REQUEUED rather than dead-lettered on first stall.
-      // Full subprocess-level SIGKILL lives in test/e2e/minions.test.ts.
+      // Full subprocess-level SIGKILL lives in tests/unit/e2e/minions.test.ts.
       if (sigkillRescue) {
         const rescueJob = await queue.add('noop', {}, { queue: 'smoke' });
 
@@ -760,7 +760,7 @@ HANDLER TYPES (built in)
       const tag = tags.length > 0 ? ` + ${tags.join(' + ')}` : '';
       console.log(`SMOKE PASS — Minions healthy${tag} in ${elapsedSec}s (engine: ${engineLabel})`);
       if (engineLabel === 'pglite') {
-        console.log('Note: the `gbrain jobs work` daemon requires Postgres. PGLite');
+        console.log('Note: the `zbrain jobs work` daemon requires Postgres. PGLite');
         console.log('supports inline execution only (`submit --follow`).');
       }
       try { await queue.removeJob(job.id); } catch { /* non-fatal cleanup */ }
@@ -772,7 +772,7 @@ HANDLER TYPES (built in)
       const config = (await import('../core/config.ts')).loadConfig();
       if (config?.engine === 'pglite') {
         console.error('Error: Worker daemon requires Postgres. PGLite uses an exclusive file lock that blocks other processes.');
-        console.error('Use --follow for inline execution: gbrain jobs submit <name> --follow');
+        console.error('Use --follow for inline execution: zbrain jobs submit <name> --follow');
         process.exit(1);
       }
 
@@ -786,7 +786,7 @@ HANDLER TYPES (built in)
 
       // --health-interval: self-health-check period in ms. 0 disables. Default: 60_000 (60s).
       // Provides DB liveness probes + stall detection for bare workers.
-      // Automatically skipped when running under a supervisor (GBRAIN_SUPERVISED=1).
+      // Automatically skipped when running under a supervisor (ZBRAIN_SUPERVISED=1).
       // Validated aggressively (parity with --max-rss): reject NaN/negative/non-integer
       // values, and reject suspicious sub-1000ms values that are likely a unit-confusion
       // typo (e.g. "--health-interval 60" thinking the unit is seconds).
@@ -835,7 +835,7 @@ HANDLER TYPES (built in)
         process.exit(1);
       });
 
-      const isSupervisedChild = process.env.GBRAIN_SUPERVISED === '1';
+      const isSupervisedChild = process.env.ZBRAIN_SUPERVISED === '1';
       const watchdogNote = maxRssMb > 0 ? `, watchdog: ${maxRssMb}MB` : '';
       const healthNote = !isSupervisedChild && healthCheckInterval > 0
         ? `, health-check: ${Math.round(healthCheckInterval / 1000)}s`
@@ -855,17 +855,17 @@ HANDLER TYPES (built in)
         // "engine ownership stays with the creator" invariant that broke
         // tests in earlier waves of this branch.
         try { await engine.disconnect(); }
-        catch (e) { console.error('[gbrain jobs work] engine disconnect failed during shutdown:', e); }
+        catch (e) { console.error('[zbrain jobs work] engine disconnect failed during shutdown:', e); }
       }
       break;
     }
 
     case 'supervisor': {
       // Dispatcher for supervisor subcommands:
-      //   gbrain jobs supervisor                    → foreground start (back-compat)
-      //   gbrain jobs supervisor start [--detach]   → foreground or detached start
-      //   gbrain jobs supervisor status             → JSON liveness + queue stats
-      //   gbrain jobs supervisor stop               → SIGTERM + drain wait
+      //   zbrain jobs supervisor                    → foreground start (back-compat)
+      //   zbrain jobs supervisor start [--detach]   → foreground or detached start
+      //   zbrain jobs supervisor status             → JSON liveness + queue stats
+      //   zbrain jobs supervisor stop               → SIGTERM + drain wait
       const { MinionSupervisor, DEFAULT_PID_FILE } = await import('../core/minions/supervisor.ts');
       const { writeSupervisorEvent } = await import('../core/minions/handlers/supervisor-audit.ts');
 
@@ -897,7 +897,7 @@ HANDLER TYPES (built in)
 
         const events = readSupervisorEvents({ sinceMs: 24 * 60 * 60 * 1000 });
         const lastStart = events.filter(e => e.event === 'started').pop()?.ts ?? null;
-        // Shared classifier — same code path runs in `gbrain doctor` so the
+        // Shared classifier — same code path runs in `zbrain doctor` so the
         // two surfaces cannot drift on what counts as a crash. Supersedes
         // v0.35.4.0's binary `classifyWorkerExit({code})` on this surface;
         // see doctor.ts for the layering rationale.
@@ -1019,7 +1019,7 @@ HANDLER TYPES (built in)
         healthInterval = parsed;
       }
       const allowShellJobs = hasFlag(args, '--allow-shell-jobs') ||
-                             !!process.env.GBRAIN_ALLOW_SHELL_JOBS;
+                             !!process.env.ZBRAIN_ALLOW_SHELL_JOBS;
       const detach = hasFlag(args, '--detach');
       // Supervisor defaults --max-rss 2048 (MB) — main production path uses
       // the supervisor, so the watchdog is on by default here.
@@ -1082,7 +1082,7 @@ HANDLER TYPES (built in)
     }
 
     default:
-      console.error(`Unknown subcommand: ${sub}. Run 'gbrain jobs --help' for usage.`);
+      console.error(`Unknown subcommand: ${sub}. Run 'zbrain jobs --help' for usage.`);
       process.exit(1);
   }
 }
@@ -1187,7 +1187,7 @@ export async function registerBuiltinHandlers(worker: MinionWorker, engine: Brai
   worker.register('embed', async (job) => {
     const { runEmbedCore } = await import('./embed.ts');
     // Primary Minion progress channel is job.updateProgress (DB-backed,
-    // readable via `gbrain jobs get <id>`). Stderr from the worker daemon
+    // readable via `zbrain jobs get <id>`). Stderr from the worker daemon
     // only emits coarse job-start / job-done lines; per-page detail lives
     // in the DB. Per Codex review #20.
     await runEmbedCore(engine, {
@@ -1303,7 +1303,7 @@ export async function registerBuiltinHandlers(worker: MinionWorker, engine: Brai
   });
 
   // Autopilot-cycle handler: delegates to runCycle. Shares the exact same
-  // phase set and ordering as `gbrain dream` and autopilot's inline path —
+  // phase set and ordering as `zbrain dream` and autopilot's inline path —
   // one source of truth for what the brain does overnight.
   //
   // Yields the event loop between phases so the worker's lock-renewal
@@ -1326,7 +1326,7 @@ export async function registerBuiltinHandlers(worker: MinionWorker, engine: Brai
   }
 
   // derivation); the handler returns { partial, status, report } so
-  // `gbrain jobs get <id>` shows the full structured report. Does NOT
+  // `zbrain jobs get <id>` shows the full structured report. Does NOT
   // throw on partial: a flaky phase must not block every future cycle.
   worker.register('autopilot-cycle', async (job) => {
     const { runCycle } = await import('../core/cycle.ts');
@@ -1413,14 +1413,14 @@ export async function registerBuiltinHandlers(worker: MinionWorker, engine: Brai
 
   // Shell handler is always registered. Runtime env guard lives inside the
   // handler so claimed jobs emit a clear rejection log on workers missing
-  // GBRAIN_ALLOW_SHELL_JOBS=1.
+  // ZBRAIN_ALLOW_SHELL_JOBS=1.
   {
     const { shellHandler } = await import('../core/minions/handlers/shell.ts');
     worker.register('shell', shellHandler);
-    if (process.env.GBRAIN_ALLOW_SHELL_JOBS === '1') {
-      process.stderr.write('[minion worker] shell handler enabled (GBRAIN_ALLOW_SHELL_JOBS=1)\n');
+    if (process.env.ZBRAIN_ALLOW_SHELL_JOBS === '1') {
+      process.stderr.write('[minion worker] shell handler enabled (ZBRAIN_ALLOW_SHELL_JOBS=1)\n');
     } else {
-      process.stderr.write('[minion worker] shell handler registered in guarded mode (set GBRAIN_ALLOW_SHELL_JOBS=1 to execute shell jobs)\n');
+      process.stderr.write('[minion worker] shell handler registered in guarded mode (set ZBRAIN_ALLOW_SHELL_JOBS=1 to execute shell jobs)\n');
     }
   }
 
@@ -1450,7 +1450,7 @@ export async function registerBuiltinHandlers(worker: MinionWorker, engine: Brai
 
   // ============================================================
   // v0.36+ brain-health-100 wave: 11 new handlers for autonomous
-  // remediation via `gbrain doctor --remediate` and autopilot.
+  // remediation via `zbrain doctor --remediate` and autopilot.
   //
   // PROTECTED via PROTECTED_JOB_NAMES (D11): synthesize, patterns,
   // consolidate — they internally submit `subagent` jobs with
@@ -1555,7 +1555,7 @@ export async function registerBuiltinHandlers(worker: MinionWorker, engine: Brai
 
   // Plugin discovery — one line per discovered plugin (mirrors the
   // openclaw-seam startup line convention from v0.11+). Loaded
-  // unconditionally; empty GBRAIN_PLUGIN_PATH is a no-op.
+  // unconditionally; empty ZBRAIN_PLUGIN_PATH is a no-op.
   try {
     const { loadPluginsFromEnv } = await import('../core/minions/plugin-loader.ts');
     const { BRAIN_TOOL_ALLOWLIST } = await import('../core/minions/tools/brain-allowlist.ts');

@@ -43,7 +43,7 @@ export interface PromptOpts {
   readKey?: () => Promise<string>;
   /** Where to write the prompt. Defaults to process.stderr. */
   write?: (line: string) => void;
-  /** Bypass the `prompt_shown` gate (for `gbrain ze-switch --force`). */
+  /** Bypass the `prompt_shown` gate (for `zbrain ze-switch --force`). */
   force?: boolean;
 }
 
@@ -93,7 +93,7 @@ export async function runRetrievalUpgradePrompt(
   writeFn(formatBanner(plan));
 
   if (!isTTY) {
-    writeFn('[ze-switch] non-TTY environment; skipping prompt. Run `gbrain ze-switch` manually when ready.');
+    writeFn('[ze-switch] non-TTY environment; skipping prompt. Run `zbrain ze-switch` manually when ready.');
     return { status: 'non_tty_skip', plan };
   }
 
@@ -109,7 +109,7 @@ export async function runRetrievalUpgradePrompt(
     // want to override use the non-interactive `--ignore-env-override`.
     const result = await applyRetrievalUpgrade(engine, plan);
     if (result.status === 'applied') {
-      writeFn('[ze-switch] Schema rebuilt at 1024d. Run `gbrain embed --stale` to refill embeddings (or wait for autopilot).');
+      writeFn('[ze-switch] Schema rebuilt at 1024d. Run `zbrain embed --stale` to refill embeddings (or wait for autopilot).');
       return { status: 'applied', plan };
     }
     if (result.status === 'refused' && result.reason === 'env_override') {
@@ -127,7 +127,7 @@ export async function runRetrievalUpgradePrompt(
   }
   if (normalized === 'n') {
     await recordDeclinedForever(engine);
-    writeFn('[ze-switch] Will not ask again. Re-enable with `gbrain ze-switch --force`.');
+    writeFn('[ze-switch] Will not ask again. Re-enable with `zbrain ze-switch --force`.');
     return { status: 'declined_forever', plan };
   }
   // Enter, 'l', or anything else = defer to next upgrade.
@@ -182,7 +182,7 @@ export async function runUndoPrompt(
 
   const result = await undoRetrievalUpgrade(engine);
   if (result.status === 'undone') {
-    writeFn(`[ze-switch --undo] Restored ${snapshot.embedding_model} at ${snapshot.embedding_dimensions}d. Run \`gbrain embed --stale\` to refill embeddings.`);
+    writeFn(`[ze-switch --undo] Restored ${snapshot.embedding_model} at ${snapshot.embedding_dimensions}d. Run \`zbrain embed --stale\` to refill embeddings.`);
     return result;
   }
   return result;
@@ -224,13 +224,13 @@ export function formatBanner(plan: RetrievalUpgradeState): string {
   const pages = Math.max(plan.pages_pending_chunker, plan.pages_pending_dim);
   lines.push(`Schema change: ~${plan.est_schema_change_seconds}s (drops + recreates embedding column with new index)`);
   lines.push(`Re-embed:      ~${plan.est_minutes}min and ${dollars} for ${pages.toLocaleString()} pages`);
-  lines.push('               (runs via `gbrain embed --stale` or autopilot — you can walk away)');
+  lines.push('               (runs via `zbrain embed --stale` or autopilot — you can walk away)');
 
   // C2: privacy callout for the balanced-mode reranker flip.
   lines.push('');
   lines.push('Heads-up: reranking on this default sends your query and top-30');
   lines.push('search snippets to api.zeroentropy.dev. Disable any time with');
-  lines.push('`gbrain config set search.reranker.enabled false`.');
+  lines.push('`zbrain config set search.reranker.enabled false`.');
 
   lines.push('');
   lines.push('Options:');

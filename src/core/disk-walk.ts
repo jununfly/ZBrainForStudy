@@ -52,7 +52,7 @@ export function walkBrainRepo(repoPath: string): Map<string, DiskFileEntry> {
     }
 
     for (const entry of entries) {
-      // Skip dot-directories (.git, .gbrain, .vscode, etc) and node_modules.
+      // Skip dot-directories (.git, .zbrain, .vscode, etc) and node_modules.
       if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
       const childPath = join(dirPath, entry.name);
 

@@ -2,7 +2,7 @@
  * Outbound HTTP probes for thin-client mode (multi-topology v1).
  *
  * Three pure functions covering the discovery + auth + smoke surface that
- * `gbrain init --mcp-only` and the thin-client doctor both need. No SDK
+ * `zbrain init --mcp-only` and the thin-client doctor both need. No SDK
  * dependency; just `fetch`. Lane B's `src/core/mcp-client.ts` builds on
  * these helpers (or supersedes them with the official SDK Client) but for
  * Lane A's setup-flow smoke test, raw HTTP keeps the scope tight and avoids
@@ -133,7 +133,7 @@ export async function mintClientCredentialsToken(
  *
  * Note: This is a one-shot probe, not a long-lived session. We don't follow
  * up with `notifications/initialized` because we tear down immediately.
- * Servers that strictly require the full handshake will reject; gbrain's
+ * Servers that strictly require the full handshake will reject; zbrain's
  * own `serve --http` accepts the bare initialize request and returns
  * server info, which is exactly what we want for a connectivity check.
  */
@@ -159,7 +159,7 @@ export async function smokeTestMcp(
         params: {
           protocolVersion: '2024-11-05',
           capabilities: {},
-          clientInfo: { name: 'gbrain-init-smoke', version: '1' },
+          clientInfo: { name: 'zbrain-init-smoke', version: '1' },
         },
       }),
       signal: controller.signal,

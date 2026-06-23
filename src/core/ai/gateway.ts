@@ -1,5 +1,5 @@
 /**
- * AI Gateway — unified seam for every AI call gbrain makes.
+ * AI Gateway — unified seam for every AI call zbrain makes.
  *
  * v0.14 exports:
  *   - configureGateway(config) — called once by cli.ts connectEngine()
@@ -97,7 +97,7 @@ const _extendedModels: Map<string, Set<string>> = new Map();
  * even when it isn't in the recipe's declared `models:` array.
  *
  * Idempotent + safe to call before/after configureGateway. Exported only
- * for the `gbrain models doctor` probe path (where the operator may want
+ * for the `zbrain models doctor` probe path (where the operator may want
  * to probe any user-supplied id without re-running configure).
  */
 function registerExtendedModel(modelStr: string): void {
@@ -195,7 +195,7 @@ export class VoyageResponseTooLargeError extends Error {
  * throws (avoids cross-recipe entanglement if both shims fire in the same
  * process). Plan called for unifying these into one
  * `EmbeddingResponseTooLargeError` class — descoped because
- * `test/voyage-response-cap.test.ts` does structural source-text greps
+ * `tests/unit/voyage-response-cap.test.ts` does structural source-text greps
  * pinning the Voyage name. Unification is a follow-up cleanup.
  */
 const MAX_ZEROENTROPY_RESPONSE_BYTES = 256 * 1024 * 1024;
@@ -397,7 +397,7 @@ export function configureGateway(config: AIGatewayConfig): void {
  * config plane.
  *
  * Sync `configureGateway` stays for pre-connect callers (rare bootstrap
- * paths like `gbrain --version` that never touch a brain). Per Codex F3
+ * paths like `zbrain --version` that never touch a brain). Per Codex F3
  * in the v0.31.12 plan review: spelling out the sync→async boundary instead
  * of hand-waving "config-build time."
  *
@@ -531,7 +531,7 @@ export function __setEmbedTransportForTests(fn: EmbedManyFn | null): void {
  * `chat()` skips provider resolution and SDK invocation and calls the
  * transport directly. Pass `null` to restore real provider routing.
  *
- * Used by smoke + parser-pin tests in `test/facts-extract*.test.ts` to
+ * Used by smoke + parser-pin tests in `tests/unit/facts-extract*.test.ts` to
  * drive prompt-drift fixtures without spending real API tokens. The
  * transport receives the resolved `ChatOpts` and returns a `ChatResult`.
  *
@@ -547,7 +547,7 @@ function requireConfig(): AIGatewayConfig {
   if (!_config) {
     throw new AIConfigError(
       'AI gateway is not configured. Call configureGateway() during engine connect.',
-      'This is a gbrain bug — file an issue at https://github.com/garrytan/gbrain/issues',
+      'This is a zbrain bug — file an issue at https://github.com/garrytan/zbrain/issues',
     );
   }
   return _config;
@@ -1455,7 +1455,7 @@ async function embedSubBatch(
       if (Array.isArray(embedding) && embedding.length !== expectedDims) {
         throw new AIConfigError(
           `Embedding dim mismatch: model ${modelId} returned ${embedding.length} but schema expects ${expectedDims}.`,
-          `Run \`gbrain migrate --embedding-model ${getEmbeddingModel()} --embedding-dimensions ${embedding.length}\` or change models.`,
+          `Run \`zbrain migrate --embedding-model ${getEmbeddingModel()} --embedding-dimensions ${embedding.length}\` or change models.`,
         );
       }
     }
@@ -2473,7 +2473,7 @@ export interface ToolHandler {
 
 /**
  * State the caller carries in from a prior crashed run. The reconciler keys
- * by gbrain-owned `gbrainToolUseId` (D11), NOT provider-supplied IDs.
+ * by zbrain-owned `gbrainToolUseId` (D11), NOT provider-supplied IDs.
  * `priorMessages` is the chat history up to the assistant's last turn;
  * `priorTools` maps gbrainToolUseId → outcome. The D5 read-time shim
  * synthesizes gbrainToolUseIds for legacy v1 rows so this Map sees both
@@ -2557,7 +2557,7 @@ export interface ToolLoopResult {
 /**
  * Provider-agnostic tool-calling loop. Wraps `gateway.chat()` with:
  *   - assistant→tool-dispatch→tool-result cycle
- *   - gbrain-stable IDs (D11) at first observation
+ *   - zbrain-stable IDs (D11) at first observation
  *   - write-ordering invariant (persist before side effect)
  *   - crash-replay reconciliation via gbrainToolUseId
  *   - capability-driven cache_control (Anthropic only)

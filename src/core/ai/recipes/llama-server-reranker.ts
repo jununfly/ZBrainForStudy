@@ -49,7 +49,7 @@ export const llamaServerReranker: Recipe = {
     reranker: {
       models: [], // user-provided; whatever model the server was launched with
       // Informational placeholder for docs/wizard copy. Real model id is set
-      // by the user via `gbrain config set search.reranker.model
+      // by the user via `zbrain config set search.reranker.model
       // llama-server-reranker:<--alias value>`.
       default_model: 'qwen3-reranker-4b',
       // Local inference cost — consumed by budget-tracker.ts's rerank
@@ -78,7 +78,7 @@ export const llamaServerReranker: Recipe = {
     'Build llama.cpp, then `llama-server --model <gguf-path> --alias ' +
     '<short-id> --reranking --port 8081`. The --alias makes provider:model ' +
     'strings short (without it, /v1/models defaults the id to the gguf file ' +
-    'path). Then `gbrain config set search.reranker.model ' +
-    'llama-server-reranker:<short-id>` and `gbrain config set ' +
+    'path). Then `zbrain config set search.reranker.model ' +
+    'llama-server-reranker:<short-id>` and `zbrain config set ' +
     'provider_base_urls.llama-server-reranker http://<host>:8081/v1`.',
 };

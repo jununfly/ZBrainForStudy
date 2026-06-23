@@ -2,7 +2,7 @@
  * Global CLI flags parsed before command dispatch.
  *
  * Keeping this separate from per-command flag parsing so that
- * `gbrain --progress-json doctor` works: the global flag is stripped
+ * `zbrain --progress-json doctor` works: the global flag is stripped
  * before cli.ts looks at argv[0] for the subcommand.
  *
  * Threading: every command handler receives a resolved CliOptions object.
@@ -23,7 +23,7 @@ export interface CliOptions {
    */
   timeoutMs: number | null;
   /**
-   * v0.40.4 — `--explain` flag for `gbrain search/query`. Switches the
+   * v0.40.4 — `--explain` flag for `zbrain search/query`. Switches the
    * default formatter to a per-stage attribution view that shows
    * base_score + each boost stage's multiplier + rank delta from
    * the reranker. Has no effect on other commands.
@@ -109,7 +109,7 @@ export function parseGlobalFlags(argv: string[]): { cliOpts: CliOptions; rest: s
       rest.push(a);
       continue;
     }
-    // v0.40.4 — --explain for `gbrain search/query` per-stage attribution.
+    // v0.40.4 — --explain for `zbrain search/query` per-stage attribution.
     if (a === '--explain') {
       cliOpts.explain = true;
       continue;
@@ -187,7 +187,7 @@ export function _resetCliOptionsForTest(): void {
 }
 
 /**
- * Build the global-flag suffix to append to child `gbrain …` subprocess
+ * Build the global-flag suffix to append to child `zbrain …` subprocess
  * commands so children inherit the parent's progress-mode.
  *
  * Returns a string ready to concat onto an execSync command string, with
@@ -213,10 +213,10 @@ export function childGlobalFlags(cliOpts?: CliOptions): string {
 // Per the locked decision: --background means submit-and-exit ALWAYS.
 // Same semantics in TTY and cron. Composable in shell pipelines:
 //
-//   JOB=$(gbrain embed --stale --background | grep -oE 'job_id=[0-9]+' | cut -d= -f2)
-//   gbrain jobs get $JOB
+//   JOB=$(zbrain embed --stale --background | grep -oE 'job_id=[0-9]+' | cut -d= -f2)
+//   zbrain jobs get $JOB
 //
-// `--background --follow` submits then execs `gbrain jobs follow <id>`
+// `--background --follow` submits then execs `zbrain jobs follow <id>`
 // so the user sees live stream while still getting durable queue
 // semantics (worker survives if user disconnects).
 //
@@ -280,7 +280,7 @@ export async function maybeBackground(opts: MaybeBackgroundOpts): Promise<boolea
     process.stdout.write(`job_id=${job.id}\n`);
 
     if (follow) {
-      // exec `gbrain jobs follow <id>` so the user sees live stream
+      // exec `zbrain jobs follow <id>` so the user sees live stream
       // without losing the durable-queue submission.
       const { spawn } = await import('child_process');
       const cmd = process.argv[0] ?? 'bun';

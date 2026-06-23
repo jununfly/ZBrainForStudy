@@ -1,12 +1,12 @@
 /**
  * v0.32.3 — Single source of truth for evaluation-metric plain-English
- * glosses. Drives `gbrain search stats` JSON output (`_meta.metric_glossary`
- * block), `gbrain eval compare` reports, and the auto-generated
+ * glosses. Drives `zbrain search stats` JSON output (`_meta.metric_glossary`
+ * block), `zbrain eval compare` reports, and the auto-generated
  * `docs/eval/METRIC_GLOSSARY.md` file.
  *
  * Per [CDX-25]: glosses live in one `_meta.metric_glossary` block per
  * response, NOT as sibling `_gloss` fields on every metric. Less invasive
- * to machine-readable consumers (gbrain-evals repo, CI gates).
+ * to machine-readable consumers (zbrain-evals repo, CI gates).
  *
  * Every entry has THREE fields:
  *   - industry_term: the canonical name used in IR / NLP literature
@@ -130,7 +130,7 @@ export function getMetricGloss(metric: string): MetricGlossEntry | null {
 
 /**
  * Convenience: return ONLY the plain-English gloss for a metric. Used in
- * `gbrain search stats` JSON output's _meta.metric_glossary block and in
+ * `zbrain search stats` JSON output's _meta.metric_glossary block and in
  * the eval-compare report's per-metric "Plain English:" lines.
  */
 export function eli10For(metric: string): string | null {
@@ -177,7 +177,7 @@ export function renderMetricGlossaryMarkdown(): string {
   lines.push('');
   lines.push('**Auto-generated from `src/core/eval/metric-glossary.ts`. Do not edit by hand.** Run `bun run scripts/generate-metric-glossary.ts` to regenerate.');
   lines.push('');
-  lines.push('Every metric `gbrain eval *` and `gbrain search stats` reports has a plain-English explanation here. Industry terms are preserved verbatim so users searching the literature find what we report.');
+  lines.push('Every metric `zbrain eval *` and `zbrain search stats` reports has a plain-English explanation here. Industry terms are preserved verbatim so users searching the literature find what we report.');
   lines.push('');
 
   const groups: Array<[string, string[]]> = [
@@ -208,7 +208,7 @@ export function renderMetricGlossaryMarkdown(): string {
   lines.push('');
   lines.push('## Coverage');
   lines.push('');
-  lines.push(`Every metric printed by any \`gbrain eval *\` or \`gbrain search stats\` command resolves through \`getMetricGloss()\` in \`src/core/eval/metric-glossary.ts\`. Adding a new metric to the glossary REQUIRES updating this doc; the CI guard catches drift.`);
+  lines.push(`Every metric printed by any \`zbrain eval *\` or \`zbrain search stats\` command resolves through \`getMetricGloss()\` in \`src/core/eval/metric-glossary.ts\`. Adding a new metric to the glossary REQUIRES updating this doc; the CI guard catches drift.`);
   lines.push('');
 
   return lines.join('\n') + '\n';

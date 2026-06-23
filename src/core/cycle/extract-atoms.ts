@@ -31,7 +31,7 @@
 // Config:
 //   Reads dream.synthesize.session_corpus_dir + meeting_transcripts_dir
 //   via loadConfigWithEngine() (D9 #10: precedence is file > DB > defaults;
-//   no GBRAIN_DREAM_* env vars exist). Closes PR #1416's silent-config bug
+//   no ZBRAIN_DREAM_* env vars exist). Closes PR #1416's silent-config bug
 //   for this caller.
 //
 // Budget: $0.30/source/run, key `cycle.extract_atoms.budget_usd`.
@@ -46,7 +46,7 @@
 
 import type { BrainEngine } from '../engine.ts';
 import type { PhaseResult } from '../cycle.ts';
-import type { GBrainConfig } from '../config.ts';
+import type { ZBrainConfig } from '../config.ts';
 import { chat as gatewayChat } from '../ai/gateway.ts';
 
 const DEFAULT_BUDGET_USD = 0.3;
@@ -79,7 +79,7 @@ export interface ExtractAtomsOpts {
    * Test seam: alternative config loader. Sync OR async — extended in
    * v0.41.2.1 to allow loadConfigWithEngine() (async) to be the default.
    */
-  _loadConfig?: () => GBrainConfig | Promise<GBrainConfig | null> | null;
+  _loadConfig?: () => ZBrainConfig | Promise<ZBrainConfig | null> | null;
   /** Test seam: skip transcript discovery; use these transcripts directly. */
   _transcripts?: Array<{ filePath: string; content: string; contentHash: string }>;
   /**

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # tests/heavy/pg_upgrade_matrix.sh
 # Schema-migration walk-forward matrix. For each "historical shape," build the
-# fixture, then run `gbrain doctor` and assert it reaches LATEST cleanly.
+# fixture, then run `zbrain doctor` and assert it reaches LATEST cleanly.
 #
 # This exercises the bootstrap → SCHEMA_SQL → runMigrations path against
-# real Postgres (the pre-existing test/e2e/postgres-bootstrap.test.ts covers
+# real Postgres (the pre-existing tests/unit/e2e/postgres-bootstrap.test.ts covers
 # the engine-level case; this matrix runs it end-to-end via the CLI shell
 # under multiple simulated historical brain shapes).
 #
@@ -15,7 +15,7 @@
 # shapes catches the next member of that bug class before users hit it.
 #
 # Honest contract (smoke-tested 2026-05-19): this matrix catches whole-system
-# wedges, not single-layer bootstrap regressions. gbrain has a multi-layer
+# wedges, not single-layer bootstrap regressions. zbrain has a multi-layer
 # defense (bootstrap → SCHEMA_SQL replay → migrations → verifySchema), and
 # any one layer can heal what an upstream layer misses. We verified that
 # stubbing out `applyForwardReferenceBootstrap` entirely still produces a
@@ -23,8 +23,8 @@
 # matrix detects: (a) a regression that breaks ALL repair layers for a given
 # column, (b) genuine wedge bugs where a hard SQL error escapes every layer,
 # (c) timeouts in the walk-forward path. Single-layer regressions are caught
-# by `test/schema-bootstrap-coverage.test.ts` (static) and
-# `test/e2e/postgres-bootstrap.test.ts` (engine-level).
+# by `tests/unit/schema-bootstrap-coverage.test.ts` (static) and
+# `tests/unit/e2e/postgres-bootstrap.test.ts` (engine-level).
 #
 # Usage:
 #   DATABASE_URL=postgresql://... ./tests/heavy/pg_upgrade_matrix.sh
@@ -37,18 +37,18 @@ cd "$(dirname "$0")/../.."
 
 if [ -z "${DATABASE_URL:-}" ]; then
   echo "[pg_upgrade_matrix] DATABASE_URL not set; skipping (informational)." >&2
-  echo "  Local: docker run -d --name gbrain-test-pg -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=gbrain_test -p 5434:5432 pgvector/pgvector:pg16" >&2
-  echo "  Then: export DATABASE_URL=postgresql://postgres:postgres@localhost:5434/gbrain_test" >&2
+  echo "  Local: docker run -d --name zbrain-test-pg -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=zbrain_test -p 5434:5432 pgvector/pgvector:pg16" >&2
+  echo "  Then: export DATABASE_URL=postgresql://postgres:postgres@localhost:5434/zbrain_test" >&2
   exit 0
 fi
 
 # Audit log path
 TS=$(date -u +%Y%m%d-%H%M%SZ)
-LOG_DIR="${GBRAIN_HOME:-$HOME/.gbrain}/audit"
+LOG_DIR="${ZBRAIN_HOME:-$HOME/.zbrain}/audit"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/heavy-pg_upgrade_matrix-${TS}.log"
 
-# Each entry runs build_legacy_fixtures.sh <shape> + gbrain doctor.
+# Each entry runs build_legacy_fixtures.sh <shape> + zbrain doctor.
 SHAPES=(pre-v0.13 pre-v0.18)
 
 echo "[pg_upgrade_matrix] running ${#SHAPES[@]} shape(s): ${SHAPES[*]}"
@@ -70,7 +70,7 @@ for SHAPE in "${SHAPES[@]}"; do
     continue
   fi
 
-  # Step 2: walk forward. `gbrain doctor` triggers engine.connect() which
+  # Step 2: walk forward. `zbrain doctor` triggers engine.connect() which
   # runs applyForwardReferenceBootstrap → SCHEMA_SQL → runMigrations.
   # Wedges manifest as either a timeout, a non-zero exit, or status != 'ok'
   # in the JSON output.
@@ -88,7 +88,7 @@ for SHAPE in "${SHAPES[@]}"; do
   # Step 3: assert status is non-fatal. We accept 'ok' and 'warnings' because
   # a freshly walked-forward brain may have legitimate warnings (zero pages,
   # no embeddings, etc) that are not wedge-class failures. We do NOT accept
-  # 'fail' or 'failures' (gbrain doctor's terminal-failure shape).
+  # 'fail' or 'failures' (zbrain doctor's terminal-failure shape).
   STATUS=$(grep -oE '"status"[[:space:]]*:[[:space:]]*"[^"]+"' "$DOCTOR_OUT" | head -1 | sed -E 's/.*"([^"]+)"$/\1/')
   case "$STATUS" in
     ok|warn|warnings)

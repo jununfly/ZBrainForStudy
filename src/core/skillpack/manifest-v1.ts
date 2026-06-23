@@ -2,7 +2,7 @@
  * skillpack/manifest-v1.ts — third-party skillpack.json validator.
  *
  * Third-party packs declare a `skillpack.json` at their repo root.
- * Schema is `gbrain-skillpack-v1` plus forward-compat extensions for
+ * Schema is `zbrain-skillpack-v1` plus forward-compat extensions for
  * runbook + eval schema evolution.
  *
  * Shape is a SUPERSET of `BundleManifest` (bundle.ts) so the v0.36
@@ -23,7 +23,7 @@ import { join } from 'path';
 import type { BundleManifest } from './bundle.ts';
 
 /** Current manifest API version. */
-export const SKILLPACK_API_VERSION = 'gbrain-skillpack-v1' as const;
+export const SKILLPACK_API_VERSION = 'zbrain-skillpack-v1' as const;
 
 /** Current runbook schema version. */
 export const RUNBOOK_SCHEMA_VERSION = 1 as const;
@@ -39,7 +39,7 @@ export interface SkillpackManifest {
   name: string;
   /** Semver-ish version string (Keep-a-Changelog compatible). */
   version: string;
-  /** One-line description, shown by `gbrain skillpack info`. */
+  /** One-line description, shown by `zbrain skillpack info`. */
   description: string;
   /** Author name (display name optionally with email; not parsed). */
   author: string;
@@ -47,8 +47,8 @@ export interface SkillpackManifest {
   license: string;
   /** Homepage URL (canonical source repo). */
   homepage: string;
-  /** Minimum gbrain version this pack requires (semver). */
-  gbrain_min_version: string;
+  /** Minimum zbrain version this pack requires (semver). */
+  zbrain_min_version: string;
   /** Runbook format schema version (default 1). */
   runbook_schema_version?: number;
   /** Eval format schema version (default 1). */
@@ -109,7 +109,7 @@ const REQUIRED_FIELDS = [
   'author',
   'license',
   'homepage',
-  'gbrain_min_version',
+  'zbrain_min_version',
   'skills',
 ] as const;
 
@@ -167,7 +167,7 @@ export function validateSkillpackManifest(
     );
   }
 
-  for (const field of ['description', 'author', 'license', 'homepage', 'gbrain_min_version']) {
+  for (const field of ['description', 'author', 'license', 'homepage', 'zbrain_min_version']) {
     const value = obj[field];
     if (typeof value !== 'string' || value.length === 0) {
       throw new SkillpackManifestError(
@@ -186,11 +186,11 @@ export function validateSkillpackManifest(
     );
   }
 
-  if (!SEMVER_RE.test(obj.gbrain_min_version as string)) {
+  if (!SEMVER_RE.test(obj.zbrain_min_version as string)) {
     throw new SkillpackManifestError(
-      `gbrain_min_version must be semver shape (e.g. "0.36.0"); got ${JSON.stringify(obj.gbrain_min_version)}`,
+      `zbrain_min_version must be semver shape (e.g. "0.36.0"); got ${JSON.stringify(obj.zbrain_min_version)}`,
       'manifest_invalid_field',
-      { field: 'gbrain_min_version', expected: SEMVER_RE.source, actual: obj.gbrain_min_version },
+      { field: 'zbrain_min_version', expected: SEMVER_RE.source, actual: obj.zbrain_min_version },
     );
   }
 
@@ -272,7 +272,7 @@ export function validateSkillpackManifest(
     }
     if (v > maxRunbook) {
       throw new SkillpackManifestError(
-        `runbook_schema_version ${v} exceeds maximum supported (${maxRunbook}). Run \`gbrain upgrade\``,
+        `runbook_schema_version ${v} exceeds maximum supported (${maxRunbook}). Run \`zbrain upgrade\``,
         'manifest_unsupported_schema_version',
         { field: 'runbook_schema_version', expected: `<= ${maxRunbook}`, actual: v },
       );
@@ -289,7 +289,7 @@ export function validateSkillpackManifest(
     }
     if (v > maxEval) {
       throw new SkillpackManifestError(
-        `eval_schema_version ${v} exceeds maximum supported (${maxEval}). Run \`gbrain upgrade\``,
+        `eval_schema_version ${v} exceeds maximum supported (${maxEval}). Run \`zbrain upgrade\``,
         'manifest_unsupported_schema_version',
         { field: 'eval_schema_version', expected: `<= ${maxEval}`, actual: v },
       );

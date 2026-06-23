@@ -3,7 +3,7 @@
  *
  * ## Why this exists
  *
- * GBrain's sync and import pipelines work fine without frontmatter — gray-matter
+ * ZBrain's sync and import pipelines work fine without frontmatter — gray-matter
  * returns the full content as body, and `inferType`/`inferTitle` in markdown.ts
  * provide fallbacks. But the inferred metadata is minimal:
  *
@@ -16,9 +16,9 @@
  * heading extraction from content, and source/folder tagging. It produces a
  * complete frontmatter block that can be:
  *
- *   1. Written back to the file on disk (via `gbrain frontmatter generate --fix`)
+ *   1. Written back to the file on disk (via `zbrain frontmatter generate --fix`)
  *   2. Used at import time without modifying the file (DB-only inference)
- *   3. Shown as a dry-run preview (via `gbrain frontmatter generate --dry-run`)
+ *   3. Shown as a dry-run preview (via `zbrain frontmatter generate --dry-run`)
  *
  * ## Design principles
  *

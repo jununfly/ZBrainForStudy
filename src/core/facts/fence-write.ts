@@ -11,15 +11,15 @@
  *
  * Concurrency: reuses the v0.28 page-lock primitive
  * (`src/core/page-lock.ts`), an FS-level lockfile under
- * `~/.gbrain/page-locks/<sha256-of-slug>.lock` with PID-liveness +
- * 5-minute TTL. Multi-process safe — two `gbrain` invocations writing
+ * `~/.zbrain/page-locks/<sha256-of-slug>.lock` with PID-liveness +
+ * 5-minute TTL. Multi-process safe — two `zbrain` invocations writing
  * to the same entity page serialize through the same kernel-visible
  * lockfile. 5-second timeout per the plan's "5s retry" failure mode.
  *
  * Atomicity: write the fence to `<file>.tmp`, re-parse the .tmp body,
  * THEN `renameSync` to the canonical file. If parse fails the .tmp
  * stays in place as quarantine evidence and the JSONL surface
- * (`facts.write_failures.jsonl`) records the failure for `gbrain
+ * (`facts.write_failures.jsonl`) records the failure for `zbrain
  * doctor` to surface. The on-disk markdown file is never corrupted
  * mid-write (renameSync is atomic on POSIX) and the DB is never
  * inserted when the fence isn't valid (Codex Q7 atomic-write
@@ -38,7 +38,7 @@ import { join, dirname } from 'node:path';
 
 import type { BrainEngine, NewFact, FactVisibility } from '../engine.ts';
 import { withPageLock } from '../page-lock.ts';
-import { gbrainPath } from '../config.ts';
+import { zbrainPath } from '../config.ts';
 import { upsertFactRow, parseFactsFence } from '../facts-fence.ts';
 import { extractFactsFromFenceText } from './extract-from-fence.ts';
 import { logStubGuardEvent } from './stub-guard-audit.ts';
@@ -89,11 +89,11 @@ export interface FenceWriteResult {
   stubGuardBlocked?: true;
 }
 
-const FAILURE_LOG_PATH = (): string => gbrainPath('facts.write_failures.jsonl');
+const FAILURE_LOG_PATH = (): string => zbrainPath('facts.write_failures.jsonl');
 
 function recordWriteFailure(slug: string, sourceId: string, warnings: string[], filePath: string): void {
   // Best-effort JSONL append — never throws back into the caller. The
-  // log is the operator-visibility surface; `gbrain doctor` reads it
+  // log is the operator-visibility surface; `zbrain doctor` reads it
   // to surface facts.write_failures.
   try {
     const dir = dirname(FAILURE_LOG_PATH());
@@ -114,7 +114,7 @@ function recordWriteFailure(slug: string, sourceId: string, warnings: string[], 
 
 /**
  * Stub-create body for a new entity page. Minimum frontmatter so the
- * page validates as gbrain-canonical markdown and survives an
+ * page validates as zbrain-canonical markdown and survives an
  * `importFromFile` round-trip. Type inferred from slug prefix
  * (e.g. `people/alice` → 'person'); unknown prefixes fall back to
  * 'concept' which is the most permissive PageType.
@@ -188,11 +188,11 @@ export async function writeFactsToFence(
         // still gets recorded, it just doesn't spawn a phantom entity
         // page on disk.
         //
-        // Sunset target: v0.36. Once `stub_guard_24h` (the gbrain doctor
+        // Sunset target: v0.36. Once `stub_guard_24h` (the zbrain doctor
         // surface backed by the audit log written here) reads <5 hits/week
         // for 3 consecutive weeks on production brains, the prefix-expansion
         // in resolveEntitySlug is sufficient and this guard can be removed.
-        // The audit log under `~/.gbrain/audit/stub-guard-YYYY-Www.jsonl`
+        // The audit log under `~/.zbrain/audit/stub-guard-YYYY-Www.jsonl`
         // is the operator visibility surface for that retirement decision.
         if (!target.slug.includes('/')) {
           logStubGuardEvent({
@@ -268,7 +268,7 @@ export async function writeFactsToFence(
         source_session: facts[i].sessionId,
       }));
 
-      const result = await engine.insertFacts(enriched, { source_id: target.sourceId }); // gbrain-allow-direct-insert: writeFactsToFence is the markdown-first reconcile path; runs only after the atomic fence write commits
+      const result = await engine.insertFacts(enriched, { source_id: target.sourceId }); // zbrain-allow-direct-insert: writeFactsToFence is the markdown-first reconcile path; runs only after the atomic fence write commits
       return { inserted: result.inserted, ids: result.ids };
     },
     { timeoutMs: 5_000 },

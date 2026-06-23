@@ -4,7 +4,7 @@
  * Pre-v0.30.3 putPage misrouted multi-source writes from intended source X
  * to (default, slug). The fixwave fixed forward-going writes but explicitly
  * deferred backfilling the misrouted rows. This module surfaces evidence of
- * misroute to operators via `gbrain doctor`.
+ * misroute to operators via `zbrain doctor`.
  *
  * Heuristic (codex OV12 — softened from "is misrouted" to "appears misrouted"):
  * a non-default source X is configured with `local_path`, AND the filesystem
@@ -14,7 +14,7 @@
  *   2. Source X never completed initial sync, and the default page is
  *      unrelated content that happens to share the slug.
  * The doctor warning surfaces evidence; the operator decides which cause
- * applies and runs `gbrain sync --source X --full` or `gbrain delete <slug>`
+ * applies and runs `zbrain sync --source X --full` or `zbrain delete <slug>`
  * accordingly.
  *
  * Implementation notes:

@@ -1,9 +1,9 @@
 /**
- * v0.32 — Per-source last-run cursor for `gbrain recall --since-last-run`.
+ * v0.32 — Per-source last-run cursor for `zbrain recall --since-last-run`.
  *
  * Two cursor variants per source (Codex round 2 #8):
- *   'briefing' → ~/.gbrain/recall-cursors/<source>.json
- *   'watch'    → ~/.gbrain/recall-cursors/<source>.watch.json
+ *   'briefing' → ~/.zbrain/recall-cursors/<source>.json
+ *   'watch'    → ~/.zbrain/recall-cursors/<source>.watch.json
  *
  * Standalone `--since-last-run` reads + writes the briefing cursor. `--watch`
  * ticks write only the watch cursor. Operator who quits a watch session does
@@ -18,7 +18,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, unlinkSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { gbrainPath } from './config.ts';
+import { zbrainPath } from './config.ts';
 
 export type CursorVariant = 'briefing' | 'watch';
 
@@ -31,7 +31,7 @@ const CURSOR_DIR_SEGMENT = 'recall-cursors';
 
 function cursorPath(sourceId: string, variant: CursorVariant): string {
   const basename = variant === 'watch' ? `${sourceId}.watch.json` : `${sourceId}.json`;
-  return gbrainPath(CURSOR_DIR_SEGMENT, basename);
+  return zbrainPath(CURSOR_DIR_SEGMENT, basename);
 }
 
 /**

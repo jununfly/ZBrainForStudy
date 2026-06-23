@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # tests/heavy/build_legacy_fixtures.sh
 # Build a legacy brain fixture by:
-#   1. Bringing a fresh DB to LATEST shape (via `gbrain doctor` which triggers initSchema)
+#   1. Bringing a fresh DB to LATEST shape (via `zbrain doctor` which triggers initSchema)
 #   2. Applying a down-mutation SQL file to strip forward-referenced state
 #
 # Deterministic alternative to committed pg_dump blobs (which rot via pg_dump
 # version noise, opaque diffs, and undocumented regeneration). The down-mutate
-# pattern matches what test/bootstrap.test.ts uses for PGLite.
+# pattern matches what tests/unit/bootstrap.test.ts uses for PGLite.
 #
 # Usage:
 #   DATABASE_URL=postgresql://... ./tests/heavy/build_legacy_fixtures.sh <shape>
@@ -35,8 +35,8 @@ fi
 
 if [ -z "${DATABASE_URL:-}" ]; then
   echo "[build_legacy_fixtures] DATABASE_URL not set." >&2
-  echo "  Local: docker run -d --name gbrain-test-pg -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=gbrain_test -p 5434:5432 pgvector/pgvector:pg16" >&2
-  echo "  Then: export DATABASE_URL=postgresql://postgres:postgres@localhost:5434/gbrain_test" >&2
+  echo "  Local: docker run -d --name zbrain-test-pg -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=zbrain_test -p 5434:5432 pgvector/pgvector:pg16" >&2
+  echo "  Then: export DATABASE_URL=postgresql://postgres:postgres@localhost:5434/zbrain_test" >&2
   exit 2
 fi
 
@@ -59,12 +59,12 @@ echo "[build_legacy_fixtures] db=$DATABASE_URL"
 echo "[build_legacy_fixtures] dropping public schema..."
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;'
 
-# Step 2: bring to LATEST via gbrain. The CLI's `doctor --json` triggers
+# Step 2: bring to LATEST via zbrain. The CLI's `doctor --json` triggers
 # engine.connect() which runs applyForwardReferenceBootstrap → SCHEMA_SQL →
 # runMigrations. On an empty DB this is a no-op bootstrap + full schema replay
 # + zero migrations (already at LATEST).
 # NOTE: `--fast` short-circuits schema init checks; we deliberately omit it.
-echo "[build_legacy_fixtures] initializing to LATEST via gbrain doctor..."
+echo "[build_legacy_fixtures] initializing to LATEST via zbrain doctor..."
 timeout 180s bun run src/cli.ts doctor --json > /dev/null
 
 # Step 3: down-mutate to the target shape

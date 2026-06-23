@@ -9,7 +9,7 @@
  * deployment isn't this repo's content, so coupling CI to it would
  * produce drift the moment OpenClaw evolves independently.
  *
- * Use this manually during dev / QA / after `gbrain doctor --fix` runs
+ * Use this manually during dev / QA / after `zbrain doctor --fix` runs
  * to validate the wave against the real deployment.
  *
  * Usage:
@@ -42,9 +42,9 @@ function main(): number {
   const jsonMode = args.includes('--json');
   const fixPreview = args.includes('--fix-preview');
 
-  if (!process.env.OPENCLAW_WORKSPACE && !process.env.GBRAIN_SKILLS_DIR) {
+  if (!process.env.OPENCLAW_WORKSPACE && !process.env.ZBRAIN_SKILLS_DIR) {
     process.stderr.write(
-      '[live-brain-first] No skills dir source set. Set OPENCLAW_WORKSPACE or GBRAIN_SKILLS_DIR.\n' +
+      '[live-brain-first] No skills dir source set. Set OPENCLAW_WORKSPACE or ZBRAIN_SKILLS_DIR.\n' +
       '  $OPENCLAW_WORKSPACE=~/.openclaw/workspace bun run scripts/live-brain-first-check.ts\n',
     );
     return 0; // not configured = not a failure
@@ -53,7 +53,7 @@ function main(): number {
   const detected = autoDetectSkillsDirReadOnly();
   if (!detected || !detected.dir || !existsSync(detected.dir)) {
     process.stderr.write(
-      `[live-brain-first] Could not resolve skills dir from OPENCLAW_WORKSPACE / GBRAIN_SKILLS_DIR / cwd walk-up.\n`,
+      `[live-brain-first] Could not resolve skills dir from OPENCLAW_WORKSPACE / ZBRAIN_SKILLS_DIR / cwd walk-up.\n`,
     );
     return 2;
   }
@@ -142,8 +142,8 @@ function main(): number {
       console.log('STATUS: ok — no brain-first violators in the live deployment');
     } else {
       console.log('STATUS: warn — fix with:');
-      console.log('  gbrain doctor --fix       # auto-add canonical Convention callout (writes files)');
-      console.log('  gbrain doctor --fix --dry-run   # preview without writing');
+      console.log('  zbrain doctor --fix       # auto-add canonical Convention callout (writes files)');
+      console.log('  zbrain doctor --fix --dry-run   # preview without writing');
       console.log('  or add `brain_first: exempt` to each flagged skill\'s frontmatter');
     }
   }

@@ -51,7 +51,7 @@ export interface ControllerWindowStats {
 }
 
 export interface ControllerOpts {
-  /** Lease cap to start from on first tick (matches GBRAIN_ANTHROPIC_MAX_INFLIGHT default). */
+  /** Lease cap to start from on first tick (matches ZBRAIN_ANTHROPIC_MAX_INFLIGHT default). */
   initial_cap: number;
   /** Per-step ramp-up amount (additive). */
   ramp_up_step: number;

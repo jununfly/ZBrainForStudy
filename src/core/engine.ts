@@ -182,7 +182,7 @@ export interface ReservedConnection {
 // poison rows that runtime-validate cleanly. v0.38 migration v76 drops
 // the CHECK; this widens the type. Runtime validation moves to the
 // active schema pack's `takes_kinds:` declaration. The annotation
-// primitive's seed list in gbrain-base reproduces {fact|take|bet|hunch}
+// primitive's seed list in zbrain-base reproduces {fact|take|bet|hunch}
 // so existing behavior is unchanged; packs can extend to {finding|
 // hypothesis|observation|...} per domain.
 export interface TakeKindLiteral { kind: string }
@@ -454,7 +454,7 @@ export interface NewFact {
   embedding?: Float32Array | null;     // pre-computed; if null, insertFact computes via gateway
   /**
    * v0.35.4 (D-CDX-5) — typed-claim fields. Optional. When populated,
-   * `gbrain eval trajectory` + `find_trajectory` MCP op consume them for
+   * `zbrain eval trajectory` + `find_trajectory` MCP op consume them for
    * chronological regression detection and drift_score. `claim_metric` is
    * normalized to lowercase snake_case by the extraction layer before
    * this method sees it; the engine stores verbatim.
@@ -488,7 +488,7 @@ export interface FactListOpts {
   visibility?: FactVisibility[];
 }
 
-/** Per-source operational health snapshot consumed by `gbrain doctor`. */
+/** Per-source operational health snapshot consumed by `zbrain doctor`. */
 export interface FactsHealth {
   source_id: string;
   total_active: number;          // facts where expired_at IS NULL
@@ -611,7 +611,7 @@ export interface BrainEngine {
    * Fetch a page by slug.
    * v0.26.5: by default soft-deleted rows return null (matches the search
    * filter contract). Pass `opts.includeDeleted: true` to surface them with
-   * `deleted_at` populated — used by `gbrain pages purge-deleted` listing,
+   * `deleted_at` populated — used by `zbrain pages purge-deleted` listing,
    * by `restore_page` flow, and by operator diagnostics.
    */
   getPage(slug: string, opts?: GetPageOpts): Promise<Page | null>;
@@ -635,8 +635,8 @@ export interface BrainEngine {
    *     AND `deleted_at IS NULL`
    *
    * Background: the overlapping-ingest-roots bug class (infiniteGameExp,
-   * issue #1309) created two pages per file when a user ran `gbrain import
-   * /vault/Subdir/` then `gbrain import /vault/` — the slug-shape changed
+   * issue #1309) created two pages per file when a user ran `zbrain import
+   * /vault/Subdir/` then `zbrain import /vault/` — the slug-shape changed
    * but the content + external ID were identical. Pre-fix, the import
    * pipeline dedup-checked by `getPage(slug)` alone and missed the
    * cross-slug duplicate. This method gives the importer a deterministic
@@ -683,7 +683,7 @@ export interface BrainEngine {
   restorePage(slug: string, opts?: { sourceId?: string }): Promise<boolean>;
   /**
    * v0.26.5 — hard-delete pages whose `deleted_at` is older than the cutoff.
-   * Called by the autopilot purge phase and by the `gbrain pages purge-deleted`
+   * Called by the autopilot purge phase and by the `zbrain pages purge-deleted`
    * CLI escape hatch. Cascades through existing FKs.
    */
   purgeDeletedPages(olderThanHours: number): Promise<{ slugs: string[]; count: number }>;
@@ -702,7 +702,7 @@ export interface BrainEngine {
    * Source-bleed via fuzzy resolution was the bug class infiniteGameExp
    * reported as #1436. When neither opt is set, the original unscoped
    * behavior is preserved for back-compat with internal callers (the
-   * `gbrain query --resolve` CLI path, etc.). Field names match the
+   * `zbrain query --resolve` CLI path, etc.). Field names match the
    * `sourceScopeOpts(ctx)` helper output so callers can spread directly.
    */
   resolveSlugs(partial: string, opts?: { sourceId?: string; sourceIds?: string[] }): Promise<string[]>;
@@ -771,7 +771,7 @@ export interface BrainEngine {
   updateSourceConfig(sourceId: string, patch: Record<string, unknown>): Promise<boolean>;
 
   /**
-   * v0.37.0 — prefix-stratified page sampling for `gbrain brainstorm` / `gbrain lsd`
+   * v0.37.0 — prefix-stratified page sampling for `zbrain brainstorm` / `zbrain lsd`
    * domain-bank module. Takes a caller-supplied prefix list (cached at the domain-bank
    * layer per D3), returns one page per prefix tiebroken by `connection_count`
    * (LEFT JOIN to page_links, count of inbound links).
@@ -790,7 +790,7 @@ export interface BrainEngine {
   listPrefixSampledPages(opts: DomainBankSampleOpts): Promise<DomainBankRow[]>;
 
   /**
-   * v0.37.0 — corpus-sampling fallback for `gbrain brainstorm` when prefix-stratified
+   * v0.37.0 — corpus-sampling fallback for `zbrain brainstorm` when prefix-stratified
    * can't fill M (small brain, single-prefix corpus). Random sample of N pages with
    * the same exclusion + source-scope semantics as `listPrefixSampledPages`.
    * Deterministic with `opts.seed` set; falls back to RANDOM() otherwise.
@@ -840,7 +840,7 @@ export interface BrainEngine {
    *
    * `opts.sourceId` scopes the count to a single source. When omitted,
    * counts across every source in the brain. Operators running
-   * `gbrain embed --stale --source media-corpus` expect only that
+   * `zbrain embed --stale --source media-corpus` expect only that
    * source's NULLs touched; the caller threads `sourceId` here.
    */
   countStaleChunks(opts?: { sourceId?: string }): Promise<number>;
@@ -1039,7 +1039,7 @@ export interface BrainEngine {
    * Return every page with no inbound links (from any source).
    * Domain comes from the frontmatter `domain` field (null if unset).
    * The caller filters pseudo-pages + derives display domain.
-   * Used by `gbrain orphans` and `runCycle`'s orphan sweep phase.
+   * Used by `zbrain orphans` and `runCycle`'s orphan sweep phase.
    */
   findOrphanPages(): Promise<Array<{ slug: string; title: string; domain: string | null }>>;
 
@@ -1142,7 +1142,7 @@ export interface BrainEngine {
   /** Look up embeddings by take id (mirrors getEmbeddingsByChunkIds). */
   getTakeEmbeddings(ids: number[]): Promise<Map<number, Float32Array>>;
 
-  /** Pre-flight count for `gbrain embed --stale`. WHERE active AND embedding IS NULL. */
+  /** Pre-flight count for `zbrain embed --stale`. WHERE active AND embedding IS NULL. */
   countStaleTakes(): Promise<number>;
 
   /** List stale takes (no embedding column in payload — same pattern as listStaleChunks). */
@@ -1265,7 +1265,7 @@ export interface BrainEngine {
 
   /**
    * Load contradiction-probe run history within the last N days, ordered
-   * newest first. Used by `gbrain eval suspected-contradictions trend` and
+   * newest first. Used by `zbrain eval suspected-contradictions trend` and
    * by the doctor `contradictions` check. `report_json` and
    * `source_tier_breakdown` are parsed JSONB columns.
    */
@@ -1428,7 +1428,7 @@ export interface BrainEngine {
 
   /**
    * Audit log: facts that were superseded (expired_at + superseded_by both set),
-   * newest first. Drives `gbrain recall --supersessions`.
+   * newest first. Drives `zbrain recall --supersessions`.
    */
   listSupersessions(
     source_id: string,
@@ -1437,7 +1437,7 @@ export interface BrainEngine {
 
   /**
    * v0.32: count facts that haven't been promoted to takes by the consolidate
-   * phase yet (active + unconsolidated). Drives `gbrain recall --pending`.
+   * phase yet (active + unconsolidated). Drives `zbrain recall --pending`.
    * Single SQL: COUNT(*) WHERE consolidated_at IS NULL AND expired_at IS NULL.
    */
   countUnconsolidatedFacts(source_id: string): Promise<number>;
@@ -1476,7 +1476,7 @@ export interface BrainEngine {
    */
   findTrajectory(opts: TrajectoryOpts): Promise<TrajectoryPoint[]>;
 
-  /** Per-source operational metrics for `gbrain doctor` facts_health check. */
+  /** Per-source operational metrics for `zbrain doctor` facts_health check. */
   getFactsHealth(source_id: string): Promise<FactsHealth>;
 
   // Versions
@@ -1525,7 +1525,7 @@ export interface BrainEngine {
    * Used by the phantom-redirect pass in `extract_facts` after appending
    * migrated fact rows to a canonical page's disk fence: we just rewrote the
    * `.md` on disk, so the DB body must match before the next reconcile reads
-   * stale state. content_hash is included so the next `gbrain sync` sees the
+   * stale state. content_hash is included so the next `zbrain sync` sees the
    * canonical as unchanged and skips re-import (round-14 + codex #7 — the
    * "second cycle is a no-op" premise depends on all three columns moving
    * together).
@@ -1590,13 +1590,13 @@ export interface BrainEngine {
   setConfig(key: string, value: string): Promise<void>;
   /**
    * v0.32.3 — delete a config row. Returns the number of rows deleted (0 or 1).
-   * No-op when the key doesn't exist. Used by `gbrain config unset` and by
-   * `gbrain search modes --reset`. Engine-agnostic.
+   * No-op when the key doesn't exist. Used by `zbrain config unset` and by
+   * `zbrain search modes --reset`. Engine-agnostic.
    */
   unsetConfig(key: string): Promise<number>;
   /**
    * v0.32.3 — list config keys matching a literal prefix (e.g. "search.").
-   * Used by `gbrain config unset --pattern` and the search-modes --reset path.
+   * Used by `zbrain config unset --pattern` and the search-modes --reset path.
    * Does NOT support glob/regex on purpose — the caller knows the prefix.
    */
   listConfigKeys(prefix: string): Promise<string[]>;
@@ -1669,18 +1669,18 @@ export interface BrainEngine {
 
   // Eval capture (v0.25.0 — BrainBench-Real substrate).
   // Captured at the op-layer wrapper in src/core/operations.ts; reads via
-  // `gbrain eval export` (NDJSON) for sibling gbrain-evals consumption.
+  // `zbrain eval export` (NDJSON) for sibling zbrain-evals consumption.
   // Adding these to BrainEngine is a breaking-interface change for third-
   // party engine implementers — this is why v0.25.0 is a minor bump.
   /** Insert a captured candidate. Returns the new row id. Best-effort: callers swallow failures and route them through `logEvalCaptureFailure`. */
   logEvalCandidate(input: EvalCandidateInput): Promise<number>;
-  /** Read candidates by time window / limit / tool filter. Used by `gbrain eval export`. */
+  /** Read candidates by time window / limit / tool filter. Used by `zbrain eval export`. */
   listEvalCandidates(filter?: { since?: Date; limit?: number; tool?: 'query' | 'search' }): Promise<EvalCandidate[]>;
-  /** Delete candidates created before `date`. Returns rows deleted. Used by `gbrain eval prune`. */
+  /** Delete candidates created before `date`. Returns rows deleted. Used by `zbrain eval prune`. */
   deleteEvalCandidatesBefore(date: Date): Promise<number>;
-  /** Log a capture failure so `gbrain doctor` can surface drops cross-process. Best-effort; symmetric with logEvalCandidate (failure-of-failure is lost). */
+  /** Log a capture failure so `zbrain doctor` can surface drops cross-process. Best-effort; symmetric with logEvalCandidate (failure-of-failure is lost). */
   logEvalCaptureFailure(reason: EvalCaptureFailureReason): Promise<void>;
-  /** Read capture failures within an optional time window. Used by `gbrain doctor`. */
+  /** Read capture failures within an optional time window. Used by `zbrain doctor`. */
   listEvalCaptureFailures(filter?: { since?: Date }): Promise<EvalCaptureFailure[]>;
 
   // ============================================================

@@ -11,7 +11,7 @@
  *   2. v0.36.0.0 ZE-as-default switch (schema goes from current width to
  *      1024d via Matryoshka + provider flips to zeroentropyai:zembed-1).
  *
- * Letting these fire as two separate prompts on the same `gbrain upgrade`
+ * Letting these fire as two separate prompts on the same `zbrain upgrade`
  * would double-charge the user for re-embed (codex outside-voice flag #2).
  * The planner returns a single `RetrievalUpgradeState` capturing the
  * combined work; `applyRetrievalUpgrade` runs one schema transition (when
@@ -30,7 +30,7 @@
  *
  *   [fresh brain]
  *        |
- *        |  user picks "s" or runs `gbrain ze-switch`
+ *        |  user picks "s" or runs `zbrain ze-switch`
  *        v
  *   prompt_shown=true, requested=true
  *        |
@@ -40,7 +40,7 @@
  *        |
  *        |  config writes (embedding_model, dim, reranker)
  *        v
- *   applied=true  -> stable. Re-embed via `gbrain embed --stale` or autopilot.
+ *   applied=true  -> stable. Re-embed via `zbrain embed --stale` or autopilot.
  *
  *   Crash between schema and config writes:
  *     requested=true, applied=false, schema is at target width.
@@ -134,7 +134,7 @@ export type ZeSwitchSnapshot = {
  * parsing the `reason` string. `failed` carries a reason; all others omit it.
  *
  * v0.41.2.1 D9 #8 — `refused` is the new pre-apply gate variant when
- * GBRAIN_EMBEDDING_* env vars would override the target at runtime.
+ * ZBRAIN_EMBEDDING_* env vars would override the target at runtime.
  * CLI renders the warning box; planner stays data-pure.
  */
 export type ApplyResult =
@@ -149,7 +149,7 @@ export type ApplyResult =
 /**
  * v0.41.2.1 — env-override safety gate.
  *
- * `process.env.GBRAIN_EMBEDDING_MODEL` and `GBRAIN_EMBEDDING_DIMENSIONS`
+ * `process.env.ZBRAIN_EMBEDDING_MODEL` and `ZBRAIN_EMBEDDING_DIMENSIONS`
  * win over DB+file config in `loadConfig()`. The 716K-chunk damage
  * incident (PR #1421) shipped because ze-switch wrote DB config but
  * the env override silently kept the old model active at embed time —
@@ -170,16 +170,16 @@ export function detectEnvOverride(
   env: NodeJS.ProcessEnv = process.env,
 ): EnvOverrideWarning {
   const vars: EnvOverrideWarning['vars'] = [];
-  const envModel = env.GBRAIN_EMBEDDING_MODEL?.trim();
+  const envModel = env.ZBRAIN_EMBEDDING_MODEL?.trim();
   if (envModel && envModel !== targetModel) {
-    vars.push({ name: 'GBRAIN_EMBEDDING_MODEL', current: envModel, target: targetModel });
+    vars.push({ name: 'ZBRAIN_EMBEDDING_MODEL', current: envModel, target: targetModel });
   }
-  const envDimRaw = env.GBRAIN_EMBEDDING_DIMENSIONS?.trim();
+  const envDimRaw = env.ZBRAIN_EMBEDDING_DIMENSIONS?.trim();
   if (envDimRaw) {
     const envDim = Number(envDimRaw);
     if (!Number.isFinite(envDim) || envDim !== targetDim) {
       vars.push({
-        name: 'GBRAIN_EMBEDDING_DIMENSIONS',
+        name: 'ZBRAIN_EMBEDDING_DIMENSIONS',
         current: envDimRaw,
         target: String(targetDim),
       });
@@ -346,7 +346,7 @@ export async function planRetrievalUpgrade(engine: BrainEngine): Promise<Retriev
  *
  * Crash between (3) and (4) leaves the schema at the target width but the
  * config at the source. Doctor's `embedding_width_consistency` detects this
- * and suggests `gbrain ze-switch --resume`.
+ * and suggests `zbrain ze-switch --resume`.
  */
 export async function applyRetrievalUpgrade(
   engine: BrainEngine,
@@ -362,7 +362,7 @@ export async function applyRetrievalUpgrade(
     return { status: 'skipped_no_work', plan };
   }
   // The chunker-only path doesn't need a schema transition. Caller's
-  // responsibility to invoke the existing `gbrain reindex --markdown` flow.
+  // responsibility to invoke the existing `zbrain reindex --markdown` flow.
   // We return skipped_no_work for this case since the planner is the ZE-switch
   // applier; chunker-only re-embed continues through the legacy v0.32.7 path.
   if (!plan.ze_switch_offered) {

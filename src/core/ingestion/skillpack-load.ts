@@ -1,20 +1,20 @@
 /**
  * Skillpack-distributed IngestionSource loader. Sibling to plugin-loader.ts
- * (which loads subagent definitions); shares the same GBRAIN_PLUGIN_PATH
- * discovery mechanism and gbrain.plugin.json manifest format, but reads a
+ * (which loads subagent definitions); shares the same ZBRAIN_PLUGIN_PATH
+ * discovery mechanism and zbrain.plugin.json manifest format, but reads a
  * different optional field (`ingestion_sources`) and produces a different
  * shape (factory functions, not subagent definitions).
  *
- * A skillpack that ships an ingestion source adds to its gbrain.plugin.json:
+ * A skillpack that ships an ingestion source adds to its zbrain.plugin.json:
  *
  *   {
  *     "name": "granola-source",
- *     "plugin_version": "gbrain-plugin-v1",
+ *     "plugin_version": "zbrain-plugin-v1",
  *     "ingestion_sources": [
  *       {
  *         "kind": "voice-granola",
  *         "module": "./dist/source.js",
- *         "api_version": "gbrain-ingestion-source-v1",
+ *         "api_version": "zbrain-ingestion-source-v1",
  *         "default_config": { "transcription_model": "whisper-1" },
  *         "permissions": ["network"]
  *       }
@@ -27,7 +27,7 @@
  *     IngestionSource { return { id, kind, start, stop, healthCheck? }; }
  *
  * Trust model (v1): sources are in-process, evaluated as TS/JS modules in
- * the daemon. The TOFU prompt during `gbrain skillpack scaffold` is the user
+ * the daemon. The TOFU prompt during `zbrain skillpack scaffold` is the user
  * acknowledging they trust the source's code. Subprocess / VM isolation is
  * a v2 hardening wave — see TODOS.md.
  *
@@ -48,7 +48,7 @@ const COMPATIBLE_API_VERSIONS: ReadonlySet<string> = new Set([
   INGESTION_SOURCE_API_VERSION,
 ]);
 
-const SUPPORTED_PLUGIN_VERSION = 'gbrain-plugin-v1';
+const SUPPORTED_PLUGIN_VERSION = 'zbrain-plugin-v1';
 
 export interface IngestionSourceDeclaration {
   /** Source kind taxonomy. Must be unique across all loaded sources. */
@@ -100,14 +100,14 @@ export interface SkillpackSourceLoadResult {
 }
 
 export interface LoadSkillpackSourcesOpts {
-  /** Override the GBRAIN_PLUGIN_PATH env (for tests). */
+  /** Override the ZBRAIN_PLUGIN_PATH env (for tests). */
   envPath?: string;
   /** Test seam: alternative import() function for stubbing module loads. */
   _import?: (specifier: string) => Promise<unknown>;
 }
 
 /**
- * Discover and load every IngestionSource from GBRAIN_PLUGIN_PATH. Iteration
+ * Discover and load every IngestionSource from ZBRAIN_PLUGIN_PATH. Iteration
  * order follows the path list (left-to-right); collisions on `kind` are
  * surfaced as warnings and the later one is skipped.
  *
@@ -119,13 +119,13 @@ export interface LoadSkillpackSourcesOpts {
 export async function loadSkillpackSources(
   opts: LoadSkillpackSourcesOpts = {},
 ): Promise<SkillpackSourceLoadResult> {
-  const raw = opts.envPath ?? process.env.GBRAIN_PLUGIN_PATH ?? '';
+  const raw = opts.envPath ?? process.env.ZBRAIN_PLUGIN_PATH ?? '';
   const paths = raw.split(':').map((s) => s.trim()).filter(Boolean);
   const result: SkillpackSourceLoadResult = { sources: [], warnings: [] };
 
   // Left-wins collision tracking on `kind`. Two skillpacks declaring the
   // same kind is a real problem — sources are identified by kind in
-  // gbrain.yml — and we want the warning to name both sides so the user
+  // zbrain.yml — and we want the warning to name both sides so the user
   // can pick.
   const kindByPlugin = new Map<string, { pluginName: string; pluginRoot: string }>();
 
@@ -144,7 +144,7 @@ export async function loadSkillpackSources(
       continue;
     }
 
-    const manifestPath = path.join(p, 'gbrain.plugin.json');
+    const manifestPath = path.join(p, 'zbrain.plugin.json');
     if (!fs.existsSync(manifestPath)) {
       // Not an error — many plugins ship only subagents and skip the
       // ingestion_sources field. Silently move on.
@@ -164,7 +164,7 @@ export async function loadSkillpackSources(
     if (manifest.plugin_version !== SUPPORTED_PLUGIN_VERSION) {
       result.warnings.push(
         `[ingestion-load] unsupported plugin_version '${manifest.plugin_version}' at ${manifestPath} ` +
-          `(gbrain supports '${SUPPORTED_PLUGIN_VERSION}')`,
+          `(zbrain supports '${SUPPORTED_PLUGIN_VERSION}')`,
       );
       continue;
     }
@@ -195,12 +195,12 @@ export async function loadSkillpackSources(
       if (!COMPATIBLE_API_VERSIONS.has(decl.api_version)) {
         result.warnings.push(
           `[ingestion-load] ${manifest.name} source '${decl.kind}' declares ` +
-            `api_version='${decl.api_version}' but gbrain expects ` +
+            `api_version='${decl.api_version}' but zbrain expects ` +
             `'${INGESTION_SOURCE_API_VERSION}'. The skillpack was built ` +
             `against a different contract version. Fix: upgrade the ` +
             `skillpack (publisher needs to rebuild against the new ` +
-            `IngestionSource contract) OR downgrade gbrain. Skillpack docs: ` +
-            `https://github.com/garrytan/gbrain/blob/master/docs/ingestion-source-skillpack.md`,
+            `IngestionSource contract) OR downgrade zbrain. Skillpack docs: ` +
+            `https://github.com/garrytan/zbrain/blob/master/docs/ingestion-source-skillpack.md`,
         );
         continue;
       }

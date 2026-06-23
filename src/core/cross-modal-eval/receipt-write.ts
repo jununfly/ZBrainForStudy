@@ -1,10 +1,10 @@
 /**
  * cross-modal-eval/receipt-write — auto-mkdir receipt writer.
  *
- * `gbrainPath()` from `src/core/config.ts` does NOT auto-mkdir (Codex T5
+ * `zbrainPath()` from `src/core/config.ts` does NOT auto-mkdir (Codex T5
  * correction). Every receipt write needs an explicit `mkdirSync({recursive})`
  * ahead of the write so first-run users don't get `ENOENT: no such file or
- * directory` from a fresh `~/.gbrain/`.
+ * directory` from a fresh `~/.zbrain/`.
  */
 
 import { mkdirSync, writeFileSync } from 'fs';

@@ -38,7 +38,7 @@
  * against the same owner as the parent.
  *
  * **Default state:** ON for fresh install AND on upgrade (D9 + D15).
- * Off-switch: `gbrain config set minions.self_fix_enabled false`
+ * Off-switch: `zbrain config set minions.self_fix_enabled false`
  * (global) or `data.no_self_fix: true` (per-job).
  */
 

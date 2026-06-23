@@ -23,7 +23,7 @@
 #      or (b) apply the canonical filter at import.
 #
 # This is a structural defense. The runtime defense lives in
-# test/operations-trust-boundary.test.ts (the canonical filter contract +
+# tests/unit/operations-trust-boundary.test.ts (the canonical filter contract +
 # handler-invocation cases for the historically-broken classes).
 #
 # To allow a new importer: add the relative path to ALLOWED below with a
@@ -47,7 +47,7 @@ ALLOWED=(
   "src/core/minions/tools/brain-allowlist.ts"   # subagent registry; has its own opt-in allowlist (separate from localOnly)
   "src/commands/capture.ts"                     # local CLI tool; not network-exposed
   "src/commands/book-mirror.ts"                 # local CLI tool; not network-exposed
-  "src/commands/tools-json.ts"                  # gbrain --tools-json introspection; full op list IS the purpose
+  "src/commands/tools-json.ts"                  # zbrain --tools-json introspection; full op list IS the purpose
   "src/commands/serve-http.ts"                  # MUST APPLY .filter(op => !op.localOnly) — verified by grep below
 )
 
@@ -108,7 +108,7 @@ fi
 
 if [ "$FAIL" -eq 1 ]; then
   echo ""
-  echo "Hint: see test/operations-trust-boundary.test.ts for the runtime contract."
+  echo "Hint: see tests/unit/operations-trust-boundary.test.ts for the runtime contract."
   exit 1
 fi
 

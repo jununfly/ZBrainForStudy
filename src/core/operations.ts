@@ -7,7 +7,7 @@ import { lstatSync, realpathSync } from 'fs';
 import { resolve, relative, sep } from 'path';
 import type { BrainEngine } from './engine.ts';
 import { clampSearchLimit } from './engine.ts';
-import type { GBrainConfig } from './config.ts';
+import type { ZBrainConfig } from './config.ts';
 import type { PageType } from './types.ts';
 import { importFromContent } from './import-file.ts';
 import { serializePageToMarkdown, resolvePageFilePath } from './markdown.ts';
@@ -47,8 +47,8 @@ import {
 /**
  * v0.31 (eD6 / eE7): ErrorCode is now an OPEN union via the
  * `(string & {})` autocomplete-friendly hack. Downstream consumers (e.g.
- * gbrain-evals) get autocomplete on the named codes AND remain TS-forward-
- * compatible when gbrain adds new codes in future releases. This shape is
+ * zbrain-evals) get autocomplete on the named codes AND remain TS-forward-
+ * compatible when zbrain adds new codes in future releases. This shape is
  * the standard Anthropic-API/OpenAI-API pattern.
  *
  * v0.31 added: 'rate_limited', 'extraction_failed', 'fact_not_found'.
@@ -252,7 +252,7 @@ export interface AuthInfo {
    * NULL → 'default' for pre-existing rows so this field is populated
    * on the upgrade path; brand-new public-client registrations may
    * still leave it null until an operator explicitly scopes via
-   * `gbrain auth scope-client`.
+   * `zbrain auth scope-client`.
    */
   sourceId?: string;
   /**
@@ -272,12 +272,12 @@ export interface AuthInfo {
 
 export interface OperationContext {
   engine: BrainEngine;
-  config: GBrainConfig;
+  config: ZBrainConfig;
   logger: Logger;
   dryRun: boolean;
   /**
    * OAuth auth info (v0.8+). Present when the caller authenticated via OAuth 2.1
-   * through `gbrain serve --http`. Contains clientId and granted scopes for
+   * through `zbrain serve --http`. Contains clientId and granted scopes for
    * per-operation scope enforcement.
    */
   auth?: AuthInfo;
@@ -353,7 +353,7 @@ export interface OperationContext {
   /**
    * Connected-gbrains brain id (v0.19+ / v0.26 mounts). Identifies which brain
    * this op is targeting. 'host' for the default brain configured in
-   * ~/.gbrain/config.json; otherwise a mount id registered in ~/.gbrain/mounts.json.
+   * ~/.zbrain/config.json; otherwise a mount id registered in ~/.zbrain/mounts.json.
    *
    * `ctx.engine` is the resolved BrainEngine for this id (populated by
    * BrainRegistry at dispatch time). `brainId` exists alongside for:
@@ -373,7 +373,7 @@ export interface OperationContext {
    * `sources.id` is TEXT (not INTEGER) — keep this as a string.
    *
    * Resolved once in the dispatcher from CLI flag (--source) / env
-   * (GBRAIN_SOURCE) / `.gbrain-source` dotfile / per-token sources scope
+   * (ZBRAIN_SOURCE) / `.zbrain-source` dotfile / per-token sources scope
    * (HTTP). Defaults to 'default' when nothing else applies.
    *
    * Every facts read/write filter starts with `WHERE source_id = $X`
@@ -541,7 +541,7 @@ const get_page: Operation = {
 
 const put_page: Operation = {
   name: 'put_page',
-  description: 'Write/update a page (markdown with frontmatter). Chunks, embeds, reconciles tags, and (when auto_link/auto_timeline are enabled) extracts + reconciles graph links and timeline entries. For large content on Windows (pipe-buffer limit ~45KB) or any file-as-input workflow, use `gbrain capture --file PATH --slug SLUG` — capture reads the file as a Buffer with a binary-NUL guard and adds provenance write-through (v0.39.3.0).',
+  description: 'Write/update a page (markdown with frontmatter). Chunks, embeds, reconciles tags, and (when auto_link/auto_timeline are enabled) extracts + reconciles graph links and timeline entries. For large content on Windows (pipe-buffer limit ~45KB) or any file-as-input workflow, use `zbrain capture --file PATH --slug SLUG` — capture reads the file as a Buffer with a binary-NUL guard and adds provenance write-through (v0.39.3.0).',
   params: {
     slug: { type: 'string', required: true, description: 'Page slug' },
     content: { type: 'string', required: true, description: 'Full markdown content with YAML frontmatter' },
@@ -674,7 +674,7 @@ const put_page: Operation = {
     //     candidate audit.
     //   - Non-TTY callers: ALWAYS succeed; silently append to candidate
     //     audit. NEVER block. Critical regression test:
-    //     test/put-page-unknown-type-prompt.test.ts pins this.
+    //     tests/unit/put-page-unknown-type-prompt.test.ts pins this.
     //   - Subagent / MCP / claw-test / autopilot all go through here;
     //     non-TTY contract preserves their semantics.
     //   - Pack-load failures (activePack undefined) skip the gate entirely
@@ -692,8 +692,8 @@ const put_page: Operation = {
           });
           if (process.stderr.isTTY && ctx.remote === false) {
             console.error(
-              `[schema] put_page wrote type=\`${pageType}\` which isn't in active pack \`${activePack.page_types.length ? '<configured>' : 'gbrain-base'}\`. ` +
-              `Run \`gbrain schema review-candidates\` to promote or ignore.`,
+              `[schema] put_page wrote type=\`${pageType}\` which isn't in active pack \`${activePack.page_types.length ? '<configured>' : 'zbrain-base'}\`. ` +
+              `Run \`zbrain schema review-candidates\` to promote or ignore.`,
             );
           }
         }
@@ -866,7 +866,7 @@ const put_page: Operation = {
     // Post-write validator lint (PR 2.5): feature-flag-gated, non-blocking.
     // When `writer.lint_on_put_page` is enabled, runs the BrainWriter's
     // validators on the freshly-written page and logs findings to
-    // ingest_log + ~/.gbrain/validator-lint.jsonl. Does NOT reject the
+    // ingest_log + ~/.zbrain/validator-lint.jsonl. Does NOT reject the
     // write — that's the deferred strict-mode flip after the 7-day soak.
     let writerLint: { error_count: number; warning_count: number } | { skipped: string } | undefined;
     try {
@@ -1293,7 +1293,7 @@ const query: Operation = {
         "  'off' — default for entity / canonical / definitional queries\n" +
         "  'on'  — surface emotionally-weighted + take-rich pages\n" +
         "  'strong' — aggressive mattering tilt\n" +
-        "Omit and gbrain auto-detects from query text. Independent of `recency`.",
+        "Omit and zbrain auto-detects from query text. Independent of `recency`.",
     },
     recency: {
       type: 'string',
@@ -1303,7 +1303,7 @@ const query: Operation = {
         "  'off' — default for canonical truth\n" +
         "  'on'  — daily/, media/x/, chat/ decay aggressively; concepts/, originals/, writing/ stay evergreen\n" +
         "  'strong' — multiplies the recency factor by 1.5 (use for 'today' / 'right now')\n" +
-        "Omit and gbrain auto-detects. Independent of `salience` (orthogonal axes).",
+        "Omit and zbrain auto-detects. Independent of `salience` (orthogonal axes).",
     },
     since: {
       type: 'string',
@@ -1318,7 +1318,7 @@ const query: Operation = {
     source_id: {
       type: 'string',
       description:
-        "v0.34: scope search to a single source. Defaults to OperationContext.sourceId (set from CLI --source / GBRAIN_SOURCE / .gbrain-source dotfile). Pass '__all__' to force cross-source search in multi-source brains.",
+        "v0.34: scope search to a single source. Defaults to OperationContext.sourceId (set from CLI --source / ZBRAIN_SOURCE / .zbrain-source dotfile). Pass '__all__' to force cross-source search in multi-source brains.",
     },
     cross_modal: {
       type: 'string',
@@ -1431,7 +1431,7 @@ const query: Operation = {
     // search handler — fire-and-forget, internal callers bypass this path.
     bumpLastRetrievedAt(ctx.engine, results.map((r) => r.page_id));
 
-    // Op-layer capture (v0.25.0). Fire-and-forget. meta tells gbrain-evals
+    // Op-layer capture (v0.25.0). Fire-and-forget. meta tells zbrain-evals
     // what hybridSearch *actually* did so replay can distinguish "with API
     // key" from "keyword-only fallback" and "expansion fired" from
     // "expansion requested + silently fell back."
@@ -1580,7 +1580,7 @@ const think: Operation = {
     rounds: { type: 'number', description: 'Multi-pass: 1 (default). Round-loop scaffolding is in place; gap-driven retrieval ships in v0.29.' },
     save: { type: 'boolean', description: 'Persist a synthesis page (local-CLI only; ignored for MCP)' },
     take: { type: 'boolean', description: 'Append a take row to the anchor page (requires anchor)' },
-    model: { type: 'string', description: 'Model override (alias or full id). Falls through models.think → models.default → GBRAIN_MODEL → opus.' },
+    model: { type: 'string', description: 'Model override (alias or full id). Falls through models.think → models.default → ZBRAIN_MODEL → opus.' },
     since: { type: 'string', description: 'Start of temporal window (YYYY-MM-DD or YYYY-MM)' },
     until: { type: 'string', description: 'End of temporal window' },
   },
@@ -1707,7 +1707,7 @@ const add_link: Operation = {
     const linkOpts = ctx.sourceId
       ? { fromSourceId: ctx.sourceId, toSourceId: ctx.sourceId, originSourceId: ctx.sourceId }
       : undefined;
-    await ctx.engine.addLink( // gbrain-allow-direct-insert: add_link MCP op is the explicit canonical surface for manual link creation; auto-link reconciliation runs separately via auto_link post-hook
+    await ctx.engine.addLink( // zbrain-allow-direct-insert: add_link MCP op is the explicit canonical surface for manual link creation; auto-link reconciliation runs separately via auto_link post-hook
       p.from as string, p.to as string,
       (p.context as string) || '', (p.link_type as string) || '',
       undefined, undefined, undefined,
@@ -1790,7 +1790,7 @@ const traverse_graph: Operation = {
     const slug = p.slug as string;
     const requestedDepth = (p.depth as number) || 5;
     if (requestedDepth > TRAVERSE_DEPTH_CAP) {
-      ctx.logger.warn(`[gbrain] traverse_graph depth clamped from ${requestedDepth} to ${TRAVERSE_DEPTH_CAP}`);
+      ctx.logger.warn(`[zbrain] traverse_graph depth clamped from ${requestedDepth} to ${TRAVERSE_DEPTH_CAP}`);
     }
     const depth = Math.max(1, Math.min(requestedDepth, TRAVERSE_DEPTH_CAP));
     const linkType = p.link_type as string | undefined;
@@ -1845,7 +1845,7 @@ const add_timeline_entry: Operation = {
     }
     // v0.31.8 (D7): thread ctx.sourceId.
     const sourceOpts = ctx.sourceId ? { sourceId: ctx.sourceId } : {};
-    await ctx.engine.addTimelineEntry(p.slug as string, { // gbrain-allow-direct-insert: add_timeline_entry MCP op is the explicit canonical surface for manual timeline entries
+    await ctx.engine.addTimelineEntry(p.slug as string, { // zbrain-allow-direct-insert: add_timeline_entry MCP op is the explicit canonical surface for manual timeline entries
       date,
       source: (p.source as string) || '',
       summary: p.summary as string,
@@ -1932,7 +1932,7 @@ const get_brain_identity: Operation = {
  * First read-only diagnostic op exposed over HTTP MCP. Wraps the focused
  * thin-client check set in `src/commands/doctor.ts:doctorReportRemote()` and
  * returns the structured `DoctorReport` JSON verbatim. The matching client-
- * side renderer lives in `src/commands/remote.ts` (used by `gbrain remote
+ * side renderer lives in `src/commands/remote.ts` (used by `zbrain remote
  * doctor`). Local doctor is unchanged — operators on the host still get the
  * full check set.
  *
@@ -2251,7 +2251,7 @@ const file_url: Operation = {
       throw new OperationError('storage_error', `File not found: ${p.storage_path}`);
     }
     // TODO: generate signed URL from Supabase Storage
-    return { storage_path: rows[0].storage_path, url: `gbrain:files/${rows[0].storage_path}` };
+    return { storage_path: rows[0].storage_path, url: `zbrain:files/${rows[0].storage_path}` };
   },
 };
 
@@ -2278,7 +2278,7 @@ const submit_job: Operation = {
     // Submit-side MCP guard: reject protected job names from untrusted callers
     // BEFORE we touch the DB. This is the first of the two security layers
     // (the second is MinionQueue.add's check). Independent of the worker-side
-    // GBRAIN_ALLOW_SHELL_JOBS env flag — even if that flag is on, MCP callers
+    // ZBRAIN_ALLOW_SHELL_JOBS env flag — even if that flag is on, MCP callers
     // cannot submit protected-type jobs.
     const { isProtectedJobName } = await import('./minions/protected-names.ts');
     // F7b fail-closed: anything that is not strictly false (i.e., remote=true OR
@@ -2372,10 +2372,10 @@ const submit_agent: Operation = {
   handler: async (ctx, p) => {
     // Remote-callable but only when the OAuth client has scope=agent AND
     // a binding row. Local CLI callers (ctx.remote === false) skip the
-    // binding check — `gbrain agent run` already runs through subagent.ts
+    // binding check — `zbrain agent run` already runs through subagent.ts
     // directly without going through this op.
     if (ctx.remote === false) {
-      throw new OperationError('invalid_request', 'submit_agent over the local CLI: use `gbrain agent run` instead.');
+      throw new OperationError('invalid_request', 'submit_agent over the local CLI: use `zbrain agent run` instead.');
     }
 
     const clientId = (ctx as { auth?: { clientId?: string } }).auth?.clientId;
@@ -2784,7 +2784,7 @@ const find_anomalies: Operation = {
   cliHints: { name: 'anomalies' },
 };
 
-// v0.33: expertise + relationship-proximity routing. CLI: gbrain whoknows.
+// v0.33: expertise + relationship-proximity routing. CLI: zbrain whoknows.
 const find_experts: Operation = {
   name: 'find_experts',
   description: FIND_EXPERTS_DESCRIPTION,
@@ -2862,7 +2862,7 @@ const find_contradictions: Operation = {
       : null;
     const rows = await ctx.engine.loadContradictionsTrend(30);
     if (rows.length === 0) {
-      return { contradictions: [], note: 'No probe runs in the last 30 days; run `gbrain eval suspected-contradictions` first.' };
+      return { contradictions: [], note: 'No probe runs in the last 30 days; run `zbrain eval suspected-contradictions` first.' };
     }
     const latest = rows[0];
     const report = latest.report_json as Record<string, unknown> | null;
@@ -3015,7 +3015,7 @@ const get_recent_transcripts: Operation = {
     if (ctx.remote === true) {
       throw new OperationError(
         'permission_denied',
-        'get_recent_transcripts is local-only — call via the gbrain CLI.',
+        'get_recent_transcripts is local-only — call via the zbrain CLI.',
       );
     }
     const { listRecentTranscripts } = await import('./transcripts.ts');
@@ -3058,10 +3058,10 @@ const whoami: Operation = {
           'or set ctx.remote === false.',
       );
     }
-    // OAuth tokens have client_id starting with 'gbrain_cl_'; legacy
+    // OAuth tokens have client_id starting with 'zbrain_cl_'; legacy
     // access_tokens reuse `name` as both clientId and clientName (verifyAccessToken
     // at oauth-provider.ts:417-430). Detect by inspecting the prefix.
-    const isOauth = ctx.auth.clientId.startsWith('gbrain_cl_');
+    const isOauth = ctx.auth.clientId.startsWith('zbrain_cl_');
     if (isOauth) {
       return {
         transport: 'oauth',
@@ -3086,7 +3086,7 @@ const sources_add: Operation = {
   description:
     'Register a new source. Supports either --path (existing v0.17 behavior) ' +
     'or --url (v0.28 federated remote-clone path: parses the URL through the ' +
-    'SSRF gate, clones into $GBRAIN_HOME/clones/<id>/ via temp-dir + rename ' +
+    'SSRF gate, clones into $ZBRAIN_HOME/clones/<id>/ via temp-dir + rename ' +
     'atomicity, and stores remote_url in sources.config). Pre-flight collision ' +
     'check on id; rollback on either-side failure.',
   params: {
@@ -3100,7 +3100,7 @@ const sources_add: Operation = {
     url: {
       type: 'string',
       description:
-        'HTTPS git URL. Cloned into $GBRAIN_HOME/clones/<id>/. SSRF-guarded.',
+        'HTTPS git URL. Cloned into $ZBRAIN_HOME/clones/<id>/. SSRF-guarded.',
     },
     federated: {
       type: 'boolean',
@@ -3109,7 +3109,7 @@ const sources_add: Operation = {
     clone_dir: {
       type: 'string',
       description:
-        'Override clone destination (only valid with url). Default: $GBRAIN_HOME/clones/<id>/.',
+        'Override clone destination (only valid with url). Default: $ZBRAIN_HOME/clones/<id>/.',
     },
   },
   mutating: true,
@@ -3121,7 +3121,7 @@ const sources_add: Operation = {
     // HTTP MCP must not be able to plant content at arbitrary host paths.
     //
     // - `path` lets a remote caller register `/etc/` (or any host dir) as a
-    //   "source"; later `gbrain sync --all` walks every sources.local_path,
+    //   "source"; later `zbrain sync --all` walks every sources.local_path,
     //   which exfiltrates host content into the brain.
     // - `clone_dir` lets a remote caller name the destination directly;
     //   addSource's renameSync places the cloned tree there with no
@@ -3129,9 +3129,9 @@ const sources_add: Operation = {
     //   does rm -rf on src.local_path, so the same primitive doubles as
     //   arbitrary-delete.
     //
-    // Both fields are CLI-only (the operator runs `gbrain sources add --path
+    // Both fields are CLI-only (the operator runs `zbrain sources add --path
     // /home/me/notes`). For HTTP MCP, ignore overrides — clone_dir defaults
-    // to $GBRAIN_HOME/clones/<id>/ and path is rejected. Local CLI callers
+    // to $ZBRAIN_HOME/clones/<id>/ and path is rejected. Local CLI callers
     // (ctx.remote === false, per F7b fail-closed contract) keep the override.
     const isLocal = ctx.remote === false;
     const remotePath = isLocal ? (p.path as string | undefined) ?? null : null;
@@ -3140,7 +3140,7 @@ const sources_add: Operation = {
       ctx.logger.warn(
         '[sources_add] ignoring path/clone_dir overrides on HTTP MCP transport ' +
           '(remote callers can only register a remote --url; the clone path is ' +
-          'fixed under $GBRAIN_HOME/clones/).',
+          'fixed under $ZBRAIN_HOME/clones/).',
       );
     }
 
@@ -3184,7 +3184,7 @@ const sources_remove: Operation = {
   description:
     'Hard-remove a source (cascades pages/chunks/embeddings). Refuses to ' +
     'delete the auto-managed clone dir unless its resolved path is confined ' +
-    'under $GBRAIN_HOME/clones/ (realpath+lstat — symlink-safe). For most ' +
+    'under $ZBRAIN_HOME/clones/ (realpath+lstat — symlink-safe). For most ' +
     'workflows prefer sources_archive for the soft-delete path.',
   params: {
     id: { type: 'string', required: true },
@@ -3406,7 +3406,7 @@ const recall: Operation = {
 
 const forget_fact: Operation = {
   name: 'forget_fact',
-  description: 'v0.32.2: forget a fact. Rewrites the page\'s `## Facts` fence to strike through the row and set valid_until=today (the DB\'s expired_at derives via valid_until + now() on the next reconcile so the forget survives `gbrain rebuild`). Falls back to legacy DB-only expire for pre-v51 / thin-client rows. Idempotent on already-expired or unknown ids.',
+  description: 'v0.32.2: forget a fact. Rewrites the page\'s `## Facts` fence to strike through the row and set valid_until=today (the DB\'s expired_at derives via valid_until + now() on the next reconcile so the forget survives `zbrain rebuild`). Falls back to legacy DB-only expire for pre-v51 / thin-client rows. Idempotent on already-expired or unknown ids.',
   params: {
     id: { type: 'number', required: true, description: 'Fact id to forget.' },
     reason: { type: 'string', required: false, description: 'Optional reason; written to the fence row\'s context cell as "forgotten: <reason>". Default: "forgotten".' },
@@ -3464,7 +3464,7 @@ function parseSinceParam(raw: unknown): Date | null {
 // v0.34 Cathedral III — code-intelligence ops (MCP-exposed).
 //
 // Pre-v0.34 code-callers / code-callees / code-def / code-refs lived only in
-// the CLI_ONLY set at cli.ts:30 — agents calling gbrain via MCP couldn't reach
+// the CLI_ONLY set at cli.ts:30 — agents calling zbrain via MCP couldn't reach
 // them and fell through to text search. These wrappers expose the existing
 // engine + library functions to the MCP surface with resolver-grade
 // descriptions (operations-descriptions.ts) so agents route to them
@@ -3678,7 +3678,7 @@ const search_by_image: Operation = {
     'v0.36 cross-modal Phase 2: image-as-query retrieval. Accepts a local path (CLI), data: URI, or http(s):// URL ' +
     '(SSRF-defended). Returns visually-similar image chunks plus any OCR text they carry. Optional `query` text ' +
     'refinement merges via weighted RRF (D13 hybrid intersect). True image→full-text-knowledge requires Phase 3 ' +
-    '(`gbrain reindex --multimodal` + `search.unified_multimodal: true`).',
+    '(`zbrain reindex --multimodal` + `search.unified_multimodal: true`).',
   params: {
     image_path: { type: 'string', description: 'Absolute path to image (local CLI callers only — rejected for remote MCP per D18).' },
     image_url: { type: 'string', description: 'http(s):// URL to image. SSRF-defended; max 3 redirect hops; 10MB cap.' },
@@ -3867,9 +3867,9 @@ const list_schema_packs: Operation = {
   handler: async (_ctx) => {
     const { existsSync, readdirSync } = await import('node:fs');
     const { join } = await import('node:path');
-    const { gbrainPath } = await import('./config.ts');
-    const bundled = ['gbrain-base', 'gbrain-recommended'];
-    const installedDir = gbrainPath('schema-packs');
+    const { zbrainPath } = await import('./config.ts');
+    const bundled = ['zbrain-base', 'zbrain-recommended'];
+    const installedDir = zbrainPath('schema-packs');
     const installed: string[] = [];
     if (existsSync(installedDir)) {
       for (const entry of readdirSync(installedDir)) {
@@ -3908,7 +3908,7 @@ const schema_lint: Operation = {
   handler: async (ctx, p) => {
     const { runAllLintRules } = await import('./schema-pack/lint-rules.ts');
     const { loadActivePack } = await import('./schema-pack/load-active.ts');
-    const { loadConfig, gbrainPath } = await import('./config.ts');
+    const { loadConfig, zbrainPath } = await import('./config.ts');
     const { existsSync } = await import('node:fs');
     const { join } = await import('node:path');
     const cfg = loadConfig();
@@ -3920,7 +3920,7 @@ const schema_lint: Operation = {
       const candidates = ['pack.yaml', 'pack.yml', 'pack.json'];
       let path: string | null = null;
       for (const c of candidates) {
-        const candidate = join(gbrainPath('schema-packs', packName), c);
+        const candidate = join(zbrainPath('schema-packs', packName), c);
         if (existsSync(candidate)) { path = candidate; break; }
       }
       if (!path) return { error: 'pack_not_found', pack: packName };

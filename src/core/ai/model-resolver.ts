@@ -106,7 +106,7 @@ export function assertTouchpoint(
       // v0.31.12 recipe-models merge: if the user opted into this model via
       // config (cfg.chat_model, models.default, models.tier.*), skip the
       // throw. The model goes to the provider; provider 404s surface as
-      // `model_not_found` via `gbrain models doctor`.
+      // `model_not_found` via `zbrain models doctor`.
       if (extendedModels && extendedModels.has(modelId)) {
         return;
       }

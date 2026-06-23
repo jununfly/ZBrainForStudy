@@ -1,5 +1,5 @@
 /**
- * gbrain extract-conversation-facts — batch fact extraction for
+ * zbrain extract-conversation-facts — batch fact extraction for
  * conversation pages (and adjacent long-form types).
  *
  * Background
@@ -17,7 +17,7 @@
  *     the surrounding 50K messages of context that establish the topic.
  *
  * The facts table doesn't have this problem. Each row is a discrete
- * claim with its own embedding and entity linkage, and `gbrain search`
+ * claim with its own embedding and entity linkage, and `zbrain search`
  * blends facts into the result set. The extraction pipeline that
  * builds facts (src/core/facts/extract.ts) is already wired into
  * real-time MCP turns and the post-sync backstop — but had never been
@@ -567,7 +567,7 @@ async function processPage(
           fact.context ?? `from ${page.slug} segment ${seg.startIso}..${seg.endIso}`,
       }));
       try {
-        const ins = await state.engine.insertFacts(rows, { source_id: state.sourceId }); // gbrain-allow-direct-insert: canonical bulk extraction path for conversation pages — fences-as-system-of-record doesn't apply because conversations don't carry `## Facts` fences (the chat-log shape is the source-of-truth)
+        const ins = await state.engine.insertFacts(rows, { source_id: state.sourceId }); // zbrain-allow-direct-insert: canonical bulk extraction path for conversation pages — fences-as-system-of-record doesn't apply because conversations don't carry `## Facts` fences (the chat-log shape is the source-of-truth)
         pageInsertedTotal += ins.inserted;
         state.result.facts_inserted += ins.inserted;
       } catch (err) {
@@ -642,7 +642,7 @@ async function writeTerminalAuditRow(
     row_num: rowNum,
     source_markdown_slug: slug,
   };
-  await engine.insertFacts([fact], { source_id: sourceId }); // gbrain-allow-direct-insert: page-level TERMINAL audit row (Codex C7 / E16) marks extraction completion in the durable facts table — there's no fence equivalent because this is internal audit state, not user-facing knowledge
+  await engine.insertFacts([fact], { source_id: sourceId }); // zbrain-allow-direct-insert: page-level TERMINAL audit row (Codex C7 / E16) marks extraction completion in the durable facts table — there's no fence equivalent because this is internal audit state, not user-facing knowledge
 }
 
 /**
@@ -925,7 +925,7 @@ function parseArgs(args: string[]): ParsedArgs {
   return out;
 }
 
-const HELP = `Usage: gbrain extract-conversation-facts [options]
+const HELP = `Usage: zbrain extract-conversation-facts [options]
 
 Batch-extract facts from conversation pages (and adjacent long-form
 types: meeting, slack, email) into the facts table. Each page is parsed
@@ -948,17 +948,17 @@ Options:
   --segment-limit <N>    Max segments per page (0 = unlimited).
   --max-cost-usd <FLOAT> Cost cap for this run (default ${DEFAULT_MAX_COST_USD}).
   --override-disabled    Bypass facts.extraction_enabled=false brain-wide kill-switch.
-  --background           Submit as a Minion job; print job_id; exit (use 'gbrain jobs follow').
+  --background           Submit as a Minion job; print job_id; exit (use 'zbrain jobs follow').
   --yes                  Auto-confirm cost preview in non-TTY contexts.
   --help, -h             Show this help.
 
 Multi-source: when --source-id is omitted, the command iterates ALL
-sources from gbrain sources list. Per-source budget cap defaults to
+sources from zbrain sources list. Per-source budget cap defaults to
 --max-cost-usd; the brain-wide cap when running via the autopilot cycle
 phase is cycle.conversation_facts_backfill.max_total_cost_usd.
 
 Resumability: per-page completion is durable via a terminal audit row
-in the facts table (source='${TERMINAL_AUDIT_SOURCE}'). gbrain doctor's
+in the facts table (source='${TERMINAL_AUDIT_SOURCE}'). zbrain doctor's
 conversation_facts_backlog check counts pages without this row.
 `;
 

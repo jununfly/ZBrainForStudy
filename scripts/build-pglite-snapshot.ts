@@ -3,11 +3,11 @@
 //
 // Tier 3 fast-restore: boot a fresh PGLite, run the full initSchema (forward
 // bootstrap + PGLITE_SCHEMA_SQL + every migration), dump the post-init state
-// to a tar fixture. Test files that read GBRAIN_PGLITE_SNAPSHOT can skip the
+// to a tar fixture. Test files that read ZBRAIN_PGLITE_SNAPSHOT can skip the
 // 1-3 seconds of cold init and load the post-schema state directly.
 //
-// Output: test/fixtures/pglite-snapshot.tar (binary, gitignored)
-//         test/fixtures/pglite-snapshot.version (hex SHA256 of MIGRATIONS SQL)
+// Output: tests/unit/fixtures/pglite-snapshot.tar (binary, gitignored)
+//         tests/unit/fixtures/pglite-snapshot.version (hex SHA256 of MIGRATIONS SQL)
 //
 // The version file lets the engine detect snapshot staleness — if the tar's
 // recorded version doesn't match the current MIGRATIONS hash, the engine
@@ -31,8 +31,8 @@ function computeSchemaHash(): string {
 }
 
 async function main() {
-  const fixturePath = "test/fixtures/pglite-snapshot.tar";
-  const versionPath = "test/fixtures/pglite-snapshot.version";
+  const fixturePath = "tests/unit/fixtures/pglite-snapshot.tar";
+  const versionPath = "tests/unit/fixtures/pglite-snapshot.version";
   mkdirSync(dirname(fixturePath), { recursive: true });
 
   const schemaHash = computeSchemaHash();
@@ -41,7 +41,7 @@ async function main() {
   const engine = new PGLiteEngine();
 
   // Bypass the env-aware short-circuit: we WANT a real init here.
-  delete process.env.GBRAIN_PGLITE_SNAPSHOT;
+  delete process.env.ZBRAIN_PGLITE_SNAPSHOT;
 
   await engine.connect({});
   console.log(`[build-pglite-snapshot] running initSchema (forward bootstrap + ${MIGRATIONS.length} migrations)...`);

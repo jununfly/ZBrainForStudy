@@ -3,8 +3,8 @@
 // Composes:
 //   1. Resolution chain (registry.resolveActivePackName) — 7 tiers per D13
 //   2. Pack manifest loading from disk:
-//      - Built-in 'gbrain-base' lives at src/core/schema-pack/base/gbrain-base.yaml
-//      - User packs live at ~/.gbrain/schema-packs/<name>/pack.yaml
+//      - Built-in 'zbrain-base' lives at src/core/schema-pack/base/zbrain-base.yaml
+//      - User packs live at ~/.zbrain/schema-packs/<name>/pack.yaml
 //      - Custom paths supported via `__setPackLocatorForTests` (test seam)
 //   3. `extends` chain resolution (registry.resolvePack)
 //
@@ -19,13 +19,13 @@
 //
 // Test seam: `__setPackLocatorForTests` replaces the disk-loader so unit
 // tests can drive the boundary helper with synthetic packs without
-// writing to `~/.gbrain/schema-packs/`.
+// writing to `~/.zbrain/schema-packs/`.
 
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { GBrainConfig } from '../config.ts';
-import { gbrainPath } from '../config.ts';
+import type { ZBrainConfig } from '../config.ts';
+import { zbrainPath } from '../config.ts';
 import type { SchemaPackManifest } from './manifest-v1.ts';
 import { loadPackFromFile } from './loader.ts';
 import {
@@ -44,25 +44,25 @@ import {
  * ops pass additional fields.
  */
 export interface LoadActivePackInput {
-  /** Loaded GBrain config (file + env merged). Pass null for default-only resolution. */
-  cfg: GBrainConfig | null;
+  /** Loaded ZBrain config (file + env merged). Pass null for default-only resolution. */
+  cfg: ZBrainConfig | null;
   /** Tier-1 trust gate: false for CLI, true for MCP/OAuth callers. */
   remote: boolean;
   /** Tier-1 per-call opt. Honored only when remote=false. */
   perCall?: string;
   /** Tier-3 per-source query target. */
   sourceId?: string;
-  /** Tier-3 per-source DB config map (from `gbrain config get` keyspace). */
+  /** Tier-3 per-source DB config map (from `zbrain config get` keyspace). */
   perSourceDb?: ReadonlyMap<string, string>;
-  /** Tier-5 gbrain.yml schema.pack field (already parsed by storage-config). */
-  gbrainYml?: string;
+  /** Tier-5 zbrain.yml schema.pack field (already parsed by storage-config). */
+  zbrainYml?: string;
   /** Tier-4 brain-wide DB config (overrides tier 6 file-plane). */
   dbConfig?: string;
 }
 
 /**
  * Test seam — a function that maps a pack name to the file path on disk.
- * Production wires this to the built-in + ~/.gbrain/schema-packs lookup.
+ * Production wires this to the built-in + ~/.zbrain/schema-packs lookup.
  * Tests inject a Map-backed locator.
  */
 export type PackLocator = (name: string) => string | null;
@@ -71,7 +71,7 @@ let _packLocator: PackLocator = defaultPackLocator;
 
 /**
  * Replace the pack locator. Tests use this to inject synthetic packs
- * without writing to ~/.gbrain. Always pair with `_resetPackLocatorForTests`
+ * without writing to ~/.zbrain. Always pair with `_resetPackLocatorForTests`
  * in afterAll to avoid leaking across files.
  */
 export function __setPackLocatorForTests(locator: PackLocator): void {
@@ -85,14 +85,14 @@ export function _resetPackLocatorForTests(): void {
 
 /**
  * Default pack locator: maps a pack name to its filesystem path.
- *   'gbrain-base' → bundled src/core/schema-pack/base/gbrain-base.yaml
- *   other         → ~/.gbrain/schema-packs/<name>/pack.yaml or pack.json
+ *   'zbrain-base' → bundled src/core/schema-pack/base/zbrain-base.yaml
+ *   other         → ~/.zbrain/schema-packs/<name>/pack.yaml or pack.json
  *
  * Returns null when the pack is not found. Callers handle null by
  * throwing UnknownPackError with a paste-ready install hint.
  */
 function defaultPackLocator(name: string): string | null {
-  // v0.39 T8 — bundled packs registry. gbrain-base + gbrain-recommended
+  // v0.39 T8 — bundled packs registry. zbrain-base + zbrain-recommended
   // ship in src/core/schema-pack/base/. Add a new entry here to bundle
   // additional canonical packs.
   //
@@ -102,12 +102,12 @@ function defaultPackLocator(name: string): string | null {
   // + 3 calibration domains), everything (meta-pack stacking all three
   // via extends + borrow_from). Each ships as a real YAML at base/<name>.yaml.
   const BUNDLED: ReadonlyArray<string> = [
-    'gbrain-base',
-    'gbrain-recommended',
-    'gbrain-creator',
-    'gbrain-investor',
-    'gbrain-engineer',
-    'gbrain-everything',
+    'zbrain-base',
+    'zbrain-recommended',
+    'zbrain-creator',
+    'zbrain-investor',
+    'zbrain-engineer',
+    'zbrain-everything',
   ];
   if (BUNDLED.includes(name)) {
     // Resolve bundled YAML relative to this source file. Works in both
@@ -121,8 +121,8 @@ function defaultPackLocator(name: string): string | null {
     if (existsSync(repoRootFallback)) return repoRootFallback;
     return null;
   }
-  // User-installed pack at ~/.gbrain/schema-packs/<name>/pack.{yaml,json}
-  const baseDir = gbrainPath('schema-packs', name);
+  // User-installed pack at ~/.zbrain/schema-packs/<name>/pack.{yaml,json}
+  const baseDir = zbrainPath('schema-packs', name);
   const candidates = ['pack.yaml', 'pack.yml', 'pack.json'];
   for (const c of candidates) {
     const candidate = join(baseDir, c);
@@ -172,8 +172,8 @@ export async function loadActivePack(input: LoadActivePackInput): Promise<Resolv
 
 /**
  * Return the resolved pack NAME and source tier WITHOUT loading the
- * manifest from disk. Used by `gbrain schema active` to surface
- * provenance ("active pack: garry — source: gbrain.yml") without
+ * manifest from disk. Used by `zbrain schema active` to surface
+ * provenance ("active pack: garry — source: zbrain.yml") without
  * paying the load cost.
  */
 export function resolveActivePackNameOnly(input: LoadActivePackInput): ResolutionResult {
@@ -181,8 +181,8 @@ export function resolveActivePackNameOnly(input: LoadActivePackInput): Resolutio
 }
 
 function buildResolutionInput(input: LoadActivePackInput): ResolutionInput {
-  const envVar = process.env.GBRAIN_SCHEMA_PACK?.trim() || undefined;
-  // tier-6: ~/.gbrain/config.json schema_pack field
+  const envVar = process.env.ZBRAIN_SCHEMA_PACK?.trim() || undefined;
+  // tier-6: ~/.zbrain/config.json schema_pack field
   const homeConfig = input.cfg?.schema_pack?.trim() || undefined;
   return {
     perCall: input.perCall,
@@ -191,7 +191,7 @@ function buildResolutionInput(input: LoadActivePackInput): ResolutionInput {
     sourceId: input.sourceId,
     envVar,
     dbConfig: input.dbConfig,
-    gbrainYml: input.gbrainYml,
+    zbrainYml: input.zbrainYml,
     homeConfig,
   };
 }

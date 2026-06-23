@@ -1,7 +1,7 @@
 /**
  * Resolver SDK public surface.
  *
- * Import from 'gbrain/resolvers' (or '../core/resolvers' internally) rather
+ * Import from 'zbrain/resolvers' (or '../core/resolvers' internally) rather
  * than reaching into ./interface or ./registry directly.
  */
 

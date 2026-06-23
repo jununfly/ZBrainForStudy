@@ -1,9 +1,9 @@
 /**
  * v0.32.2 — forget-as-fence path (Codex R2-#3).
  *
- * Before v0.32.2 `gbrain forget` and the MCP `forget_fact` op called
+ * Before v0.32.2 `zbrain forget` and the MCP `forget_fact` op called
  * `engine.expireFact(id)` directly, which UPDATEs `facts.expired_at`
- * in the DB. After `gbrain rebuild` (v0.32.3) that DB-only mutation
+ * in the DB. After `zbrain rebuild` (v0.32.3) that DB-only mutation
  * would evaporate because the canonical markdown fence is unchanged
  * — the forget would un-happen.
  *
@@ -76,7 +76,7 @@ function todayUtc(): string {
  * the row's `expired_at` is already non-null.
  *
  * Reason defaults to `'forgotten'` when the caller doesn't provide one
- * (matches the existing `gbrain forget` CLI which takes no reason
+ * (matches the existing `zbrain forget` CLI which takes no reason
  * argument). MCP `forget_fact` op can pass a more specific reason
  * when the user provides it.
  */
@@ -108,8 +108,8 @@ export async function forgetFactInFence(
     row.entity_slug !== null;
 
   if (!canFence) {
-    // Legacy path — DB-only forget. Doesn't survive `gbrain rebuild`.
-    const ok = await engine.expireFact(factId); // gbrain-allow-direct-insert: legacy fallback path inside forgetFactInFence — fence rewrite not possible (pre-v51 row / missing local_path / file deleted / row_num drift)
+    // Legacy path — DB-only forget. Doesn't survive `zbrain rebuild`.
+    const ok = await engine.expireFact(factId); // zbrain-allow-direct-insert: legacy fallback path inside forgetFactInFence — fence rewrite not possible (pre-v51 row / missing local_path / file deleted / row_num drift)
     return { ok, path: 'legacy_db', reason };
   }
 
@@ -120,7 +120,7 @@ export async function forgetFactInFence(
   );
   const localPath = sources[0]?.local_path ?? null;
   if (!localPath) {
-    const ok = await engine.expireFact(factId); // gbrain-allow-direct-insert: legacy fallback path inside forgetFactInFence — fence rewrite not possible (pre-v51 row / missing local_path / file deleted / row_num drift)
+    const ok = await engine.expireFact(factId); // zbrain-allow-direct-insert: legacy fallback path inside forgetFactInFence — fence rewrite not possible (pre-v51 row / missing local_path / file deleted / row_num drift)
     return { ok, path: 'legacy_db', reason };
   }
 
@@ -133,7 +133,7 @@ export async function forgetFactInFence(
     // File deleted out from under us — only the DB has the row.
     // Legacy path is the safe behavior; the operator can fix the
     // tree mismatch separately.
-    const ok = await engine.expireFact(factId); // gbrain-allow-direct-insert: legacy fallback path inside forgetFactInFence — fence rewrite not possible (pre-v51 row / missing local_path / file deleted / row_num drift)
+    const ok = await engine.expireFact(factId); // zbrain-allow-direct-insert: legacy fallback path inside forgetFactInFence — fence rewrite not possible (pre-v51 row / missing local_path / file deleted / row_num drift)
     return { ok, path: 'legacy_db', reason };
   }
 
@@ -147,7 +147,7 @@ export async function forgetFactInFence(
       // Fence is missing the row — DB drifted from markdown. Fall
       // through to legacy expire so the user's intent succeeds; doctor
       // surfaces the drift separately.
-      const ok = await engine.expireFact(factId); // gbrain-allow-direct-insert: legacy fallback path inside forgetFactInFence — fence rewrite not possible (pre-v51 row / missing local_path / file deleted / row_num drift)
+      const ok = await engine.expireFact(factId); // zbrain-allow-direct-insert: legacy fallback path inside forgetFactInFence — fence rewrite not possible (pre-v51 row / missing local_path / file deleted / row_num drift)
       return { ok, path: 'legacy_db', reason };
     }
 
@@ -174,15 +174,15 @@ export async function forgetFactInFence(
 
     // Render + atomic .tmp + parse-validate + rename.
     const newFence = renderFactsTable(updated);
-    const begin = body.indexOf('<!--- gbrain:facts:begin -->');
-    const end   = body.indexOf('<!--- gbrain:facts:end -->', begin + 1);
+    const begin = body.indexOf('<!--- zbrain:facts:begin -->');
+    const end   = body.indexOf('<!--- zbrain:facts:end -->', begin + 1);
     if (begin === -1 || end === -1) {
       // Race / corruption: fence disappeared between parse and render.
       // Legacy fallback.
-      const ok = await engine.expireFact(factId); // gbrain-allow-direct-insert: legacy fallback path inside forgetFactInFence — fence rewrite not possible (pre-v51 row / missing local_path / file deleted / row_num drift)
+      const ok = await engine.expireFact(factId); // zbrain-allow-direct-insert: legacy fallback path inside forgetFactInFence — fence rewrite not possible (pre-v51 row / missing local_path / file deleted / row_num drift)
       return { ok, path: 'legacy_db', reason };
     }
-    const newBody = body.slice(0, begin) + newFence + body.slice(end + '<!--- gbrain:facts:end -->'.length);
+    const newBody = body.slice(0, begin) + newFence + body.slice(end + '<!--- zbrain:facts:end -->'.length);
 
     writeFileSync(tmpPath, newBody, 'utf-8');
     const tmpBody = readFileSync(tmpPath, 'utf-8');
@@ -190,7 +190,7 @@ export async function forgetFactInFence(
     if (validate.warnings.length > 0) {
       // Quarantine .tmp; leave the canonical file alone; fall back to
       // DB expire so the user's forget intent still succeeds.
-      const ok = await engine.expireFact(factId); // gbrain-allow-direct-insert: legacy fallback path inside forgetFactInFence — fence rewrite not possible (pre-v51 row / missing local_path / file deleted / row_num drift)
+      const ok = await engine.expireFact(factId); // zbrain-allow-direct-insert: legacy fallback path inside forgetFactInFence — fence rewrite not possible (pre-v51 row / missing local_path / file deleted / row_num drift)
       return { ok, path: 'legacy_db', reason };
     }
     renameSync(tmpPath, filePath);

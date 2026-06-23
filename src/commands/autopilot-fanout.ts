@@ -149,7 +149,7 @@ export function selectSourcesForDispatch(
  * dispatch when `shouldFullCycle` is true.
  *
  * Fallback path: if `listAllSources` returns 0 rows (fresh install before
- * `gbrain sources add`, or `sources` table not migrated yet), submit ONE
+ * `zbrain sources add`, or `sources` table not migrated yet), submit ONE
  * legacy autopilot-cycle with no source_id so the existing single-source
  * brain keeps working.
  */

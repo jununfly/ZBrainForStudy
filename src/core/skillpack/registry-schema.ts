@@ -1,6 +1,6 @@
 /**
  * skillpack/registry-schema.ts — runtime validators for the
- * `garrytan/gbrain-skillpack-registry` catalog files.
+ * `garrytan/zbrain-skillpack-registry` catalog files.
  *
  * Two files at the registry repo root:
  *   - registry.json     — catalog of all listed skillpacks
@@ -12,8 +12,8 @@
  * and by the publish-gate when validating PR submissions.
  */
 
-export const REGISTRY_SCHEMA_VERSION = 'gbrain-registry-v1' as const;
-export const ENDORSEMENTS_SCHEMA_VERSION = 'gbrain-endorsements-v1' as const;
+export const REGISTRY_SCHEMA_VERSION = 'zbrain-registry-v1' as const;
+export const ENDORSEMENTS_SCHEMA_VERSION = 'zbrain-endorsements-v1' as const;
 
 export type RegistryTier = 'endorsed' | 'community' | 'experimental' | 'dead';
 
@@ -29,7 +29,7 @@ export interface RegistrySource {
 export interface RegistryEntry {
   /** Pack name (must match skillpack.json `name`). Unique in the catalog. */
   name: string;
-  /** One-line description for `gbrain skillpack search` output. */
+  /** One-line description for `zbrain skillpack search` output. */
   description: string;
   /** Author display name (display only; account binding is via author_handle). */
   author: string;
@@ -43,11 +43,11 @@ export interface RegistryEntry {
    *  durability path: if source repo disappears, the registry-hosted
    *  tarballs/<name>-<version>.tgz mirror matches this hash. */
   tarball_sha256: string;
-  /** Minimum gbrain version the pack supports. */
-  gbrain_min_version: string;
+  /** Minimum zbrain version the pack supports. */
+  zbrain_min_version: string;
   /** Default tier — may be overridden by endorsements.json. Catalog PRs
    *  always land at `community`. Endorsement happens via the separate
-   *  `gbrain skillpack endorse` command writing endorsements.json. */
+   *  `zbrain skillpack endorse` command writing endorsements.json. */
   default_tier: Exclude<RegistryTier, 'endorsed'>;
   /** Searchable tags (lowercase kebab strings). */
   tags: string[];
@@ -64,7 +64,7 @@ export interface RegistryEntry {
 }
 
 export interface RegistryBundles {
-  /** Named bundles — `gbrain skillpack scaffold starter-pack` walks the list. */
+  /** Named bundles — `zbrain skillpack scaffold starter-pack` walks the list. */
   [bundleName: string]: string[];
 }
 
@@ -176,7 +176,7 @@ export function validateRegistryEntry(raw: unknown): RegistryEntry {
     'homepage',
     'source',
     'tarball_sha256',
-    'gbrain_min_version',
+    'zbrain_min_version',
     'default_tier',
     'tags',
     'validated_at',
@@ -202,7 +202,7 @@ export function validateRegistryEntry(raw: unknown): RegistryEntry {
       { field: 'name' },
     );
   }
-  for (const f of ['description', 'author', 'author_handle', 'homepage', 'tarball_sha256', 'gbrain_min_version', 'validated_at', 'validation_run_id', 'version']) {
+  for (const f of ['description', 'author', 'author_handle', 'homepage', 'tarball_sha256', 'zbrain_min_version', 'validated_at', 'validation_run_id', 'version']) {
     if (typeof e[f] !== 'string' || (e[f] as string).length === 0) {
       throw new RegistrySchemaError(
         `registry entry ${e.name}.${f} must be a non-empty string`,

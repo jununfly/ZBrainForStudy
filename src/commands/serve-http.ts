@@ -1,5 +1,5 @@
 /**
- * GBrain HTTP MCP server with OAuth 2.1.
+ * ZBrain HTTP MCP server with OAuth 2.1.
  *
  * Combines:
  * - MCP SDK's mcpAuthRouter (OAuth endpoints: /authorize, /token, /register, /revoke)
@@ -25,7 +25,7 @@ import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middlew
 import type { BrainEngine } from '../core/engine.ts';
 import { operations, OperationError } from '../core/operations.ts';
 import type { OperationContext, AuthInfo } from '../core/operations.ts';
-import { GBrainOAuthProvider, validateTokenEndpointAuthMethod } from '../core/oauth-provider.ts';
+import { ZBrainOAuthProvider, validateTokenEndpointAuthMethod } from '../core/oauth-provider.ts';
 import type { SqlQuery } from '../core/oauth-provider.ts';
 import { hasScope, ALLOWED_SCOPES_LIST, normalizeScopesInput } from '../core/scope.ts';
 import { summarizeMcpParams, dispatchToolCall } from '../mcp/dispatch.ts';
@@ -82,7 +82,7 @@ export function resolveBootstrapToken(
     return {
       kind: 'error',
       message:
-        'GBRAIN_ADMIN_BOOTSTRAP_TOKEN must be at least 32 chars and match [A-Za-z0-9_-]+.\n' +
+        'ZBRAIN_ADMIN_BOOTSTRAP_TOKEN must be at least 32 chars and match [A-Za-z0-9_-]+.\n' +
         '  Refusing to start with a weak admin bootstrap token. Generate one with:\n' +
         '    head -c 32 /dev/urandom | base64 | tr -d "+/=" | head -c 48',
     };
@@ -188,7 +188,7 @@ export async function probeLiveness(
 }
 
 /**
- * Resolve `GBRAIN_HTTP_TRUST_PROXY` into a value Express's `app.set('trust
+ * Resolve `ZBRAIN_HTTP_TRUST_PROXY` into a value Express's `app.set('trust
  * proxy', ...)` accepts. Pure function so the test surface is one place,
  * not the whole Express stack.
  *
@@ -203,7 +203,7 @@ export async function probeLiveness(
  *   - any other string → pass through verbatim (Express accepts named modes
  *     like 'uniquelocal', 'linklocal', and CIDR/IP lists)
  *
- * SECURITY: only set GBRAIN_HTTP_TRUST_PROXY when BOTH (a) gbrain is
+ * SECURITY: only set ZBRAIN_HTTP_TRUST_PROXY when BOTH (a) zbrain is
  * reachable only via a trusted reverse proxy, AND (b) the proxy strips
  * client-supplied X-Forwarded-For headers before re-emitting its own.
  * Otherwise clients can spoof their IP and defeat the pre-auth IP rate
@@ -218,7 +218,7 @@ export function resolveTrustProxy(env: string | undefined): string | number | bo
 }
 
 /**
- * Parse `GBRAIN_HTTP_CORS_ORIGIN` into a Set of allowed origins for OAuth
+ * Parse `ZBRAIN_HTTP_CORS_ORIGIN` into a Set of allowed origins for OAuth
  * endpoints. Mirrors `src/mcp/http-transport.ts:parseCorsAllowlist`. Single
  * env var so operators don't need to maintain two allowlists.
  *
@@ -227,7 +227,7 @@ export function resolveTrustProxy(env: string | undefined): string | number | bo
  * already takes).
  */
 export function parseCorsAllowlistOAuth(): Set<string> | null {
-  const v = process.env.GBRAIN_HTTP_CORS_ORIGIN;
+  const v = process.env.ZBRAIN_HTTP_CORS_ORIGIN;
   if (!v) return null;
   const origins = v.split(',').map(s => s.trim()).filter(Boolean);
   return origins.length === 0 ? null : new Set(origins);
@@ -272,14 +272,14 @@ interface ServeHttpOptions {
    * feed. Default false: payloads are summarized via dispatch.summarizeMcpParams
    * (declared keys only, no values, no attacker-controlled key names).
    *
-   * Operators running gbrain on their own laptop and debugging agent behavior
+   * Operators running zbrain on their own laptop and debugging agent behavior
    * can flip this on with `--log-full-params`. The flag prints a loud warning
    * at startup so the privacy posture change is visible.
    */
   logFullParams?: boolean;
   /**
    * Network interface(s) to bind. Defaults to `127.0.0.1` (loopback only) in
-   * v0.34.1+ — gbrain's primary use case is a personal-knowledge brain on a
+   * v0.34.1+ — zbrain's primary use case is a personal-knowledge brain on a
    * laptop, and the pre-v0.34 default of `0.0.0.0` made it one accidental
    * `--http` invocation away from publishing the brain to a LAN.
    *
@@ -292,7 +292,7 @@ interface ServeHttpOptions {
   bind?: string;
   /**
    * v0.36.x #1024: suppress the printed admin bootstrap token line on
-   * startup. Combined with `GBRAIN_ADMIN_BOOTSTRAP_TOKEN`, lets long-lived
+   * startup. Combined with `ZBRAIN_ADMIN_BOOTSTRAP_TOKEN`, lets long-lived
    * production deployments avoid leaking the token into log aggregators on
    * every supervisor-managed restart. When the env var is NOT set, this
    * flag still suppresses the print — operators take responsibility for
@@ -303,7 +303,7 @@ interface ServeHttpOptions {
 
 /**
  * v0.38 Slice 4 — per-OAuth-client agent spend snapshot. Exported so the
- * admin endpoint and `test/admin-agents-spend.test.ts` share the same SQL
+ * admin endpoint and `tests/unit/admin-agents-spend.test.ts` share the same SQL
  * (single source of truth for the spend query shape).
  *
  * Returns one row per OAuth client that EITHER has the `agent` scope OR
@@ -377,7 +377,7 @@ export async function queryAgentClientSpend(engine: BrainEngine): Promise<AgentC
 export async function runServeHttp(engine: BrainEngine, options: ServeHttpOptions) {
   const { port, tokenTtl, enableDcr, publicUrl, logFullParams } = options;
   // v0.34.1 (#864, D11): default bind flipped from 0.0.0.0 to 127.0.0.1.
-  // gbrain's primary use case is a personal-knowledge brain on a laptop;
+  // zbrain's primary use case is a personal-knowledge brain on a laptop;
   // the pre-v0.34 default exposed brains on every interface. Server
   // operators who need remote access pass `--bind 0.0.0.0` (or a specific
   // interface). Declaring `--public-url` without `--bind` is almost always
@@ -400,7 +400,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
 
   // Engine-aware SQL adapter. Routes through engine.executeRaw on both
   // Postgres and PGLite — the OAuth/admin/auth surface no longer requires
-  // a postgres.js singleton, so `gbrain serve --http` works against PGLite
+  // a postgres.js singleton, so `zbrain serve --http` works against PGLite
   // brains too. The narrow SqlQuery contract is scalar-binds-only; JSONB
   // writes use executeRawJsonb (see mcp_request_log INSERT sites below).
   const sql = sqlQueryForEngine(engine);
@@ -409,7 +409,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
   // constructor option instead of monkey-patching `_clientsStore` after
   // construction. Same outcome (no /register endpoint when --enable-dcr
   // is not passed); cleaner shape for tests and future maintainers.
-  const oauthProvider = new GBrainOAuthProvider({
+  const oauthProvider = new ZBrainOAuthProvider({
     sql,
     tokenTtl,
     dcrDisabled: !enableDcr,
@@ -429,9 +429,9 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
   // can paste into /admin login. Stable across restarts only when env var
   // is set. The env override must be a strong secret — `[A-Za-z0-9_-]{32+}`
   // — otherwise refuse to start. Logging the bootstrap-token value every
-  // restart is the original gripe; with `GBRAIN_ADMIN_BOOTSTRAP_TOKEN` set
+  // restart is the original gripe; with `ZBRAIN_ADMIN_BOOTSTRAP_TOKEN` set
   // and `--suppress-bootstrap-token`, no value reaches the log.
-  const resolved = resolveBootstrapToken(process.env.GBRAIN_ADMIN_BOOTSTRAP_TOKEN);
+  const resolved = resolveBootstrapToken(process.env.ZBRAIN_ADMIN_BOOTSTRAP_TOKEN);
   if (resolved.kind === 'error') {
     console.error(resolved.message);
     process.exit(1);
@@ -455,14 +455,14 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
 
   // Express 5 app
   const app = express();
-  // v0.41.3 (T8): configurable trust-proxy via GBRAIN_HTTP_TRUST_PROXY env.
+  // v0.41.3 (T8): configurable trust-proxy via ZBRAIN_HTTP_TRUST_PROXY env.
   // Default 'loopback' (trust Caddy/Tailscale on the same host) preserves
   // pre-v0.41.3 behavior. Operators behind Fly.io / Render / Vercel / nginx
-  // set GBRAIN_HTTP_TRUST_PROXY=1 (one hop) so X-Forwarded-For lands as the
+  // set ZBRAIN_HTTP_TRUST_PROXY=1 (one hop) so X-Forwarded-For lands as the
   // real client IP for rate-limiting and req.secure detection. The legacy
   // transport already reads this env var (src/mcp/http-transport.ts:111)
   // for the same purpose; T8 makes the Express path agree.
-  app.set('trust proxy', resolveTrustProxy(process.env.GBRAIN_HTTP_TRUST_PROXY));
+  app.set('trust proxy', resolveTrustProxy(process.env.ZBRAIN_HTTP_TRUST_PROXY));
 
   // ---------------------------------------------------------------------------
   // Cookie parsing — required for /admin auth (express 5 has no built-in)
@@ -475,7 +475,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
   // Pre-v0.41.3 every OAuth endpoint used bare `cors()` which defaults to
   // `Access-Control-Allow-Origin: *` — any web origin could complete a token
   // exchange from a logged-in operator's browser. The fix parses
-  // GBRAIN_HTTP_CORS_ORIGIN the same way the legacy transport already does
+  // ZBRAIN_HTTP_CORS_ORIGIN the same way the legacy transport already does
   // (src/mcp/http-transport.ts:parseCorsAllowlist) and gates every OAuth
   // surface behind the allowlist. When the env var is unset the OAuth
   // endpoints reject all cross-origin requests (default deny). Same-origin
@@ -487,7 +487,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
   const corsAllowlistOAuth = parseCorsAllowlistOAuth();
   if (!corsAllowlistOAuth && bind === '0.0.0.0') {
     console.error(
-      '[serve-http] WARNING: --bind 0.0.0.0 is set but GBRAIN_HTTP_CORS_ORIGIN is unset. OAuth endpoints will reject ALL cross-origin requests until you set the env var (comma-separated origins).',
+      '[serve-http] WARNING: --bind 0.0.0.0 is set but ZBRAIN_HTTP_CORS_ORIGIN is unset. OAuth endpoints will reject ALL cross-origin requests until you set the env var (comma-separated origins).',
     );
   }
   const corsOAuthOptions: cors.CorsOptions = {
@@ -652,7 +652,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
     // users_admin via /.well-known/oauth-authorization-server. The legacy
     // ['read','write','admin'] list left those new scopes invisible.
     scopesSupported: [...ALLOWED_SCOPES_LIST],
-    resourceName: 'GBrain MCP Server',
+    resourceName: 'ZBrain MCP Server',
   };
 
   // F12: DCR disable lives on the provider's constructor option above. The
@@ -712,7 +712,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
     const expiresAt = Date.now() + 24 * 60 * 60 * 1000; // 24 hours
     adminSessions.set(sessionId, expiresAt);
 
-    res.cookie('gbrain_admin', sessionId, adminCookie(req, 24 * 60 * 60 * 1000));
+    res.cookie('zbrain_admin', sessionId, adminCookie(req, 24 * 60 * 60 * 1000));
     res.json({ status: 'authenticated' });
   });
 
@@ -798,7 +798,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
     if (!isValid) {
       res.status(401).send(`<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>GBrain</title>
+<title>ZBrain</title>
 <style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;background:#0a0a0f;color:#e0e0e0;min-height:100vh;display:flex;align-items:center;justify-content:center}
 .box{max-width:400px;padding:32px;text-align:left}
 .logo{font-size:28px;font-weight:600;margin-bottom:24px}
@@ -807,10 +807,10 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
 .hint b{color:#e0e0e0}
 .prompt{background:rgba(0,0,0,0.3);border-radius:6px;padding:8px 12px;margin-top:8px;font-family:monospace;font-size:12px;color:#88aaff}
 </style></head><body><div class="box">
-<div class="logo">GBrain</div>
+<div class="logo">ZBrain</div>
 <div class="msg">⚠️ This admin link has expired, was already used, or the server has restarted.</div>
 <div class="hint"><b>Get a fresh link from your AI agent:</b>
-<div class="prompt">&ldquo;Give me the GBrain admin login link&rdquo;</div>
+<div class="prompt">&ldquo;Give me the ZBrain admin login link&rdquo;</div>
 </div></div></body></html>`);
       return;
     }
@@ -823,13 +823,13 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
     const sessionExpiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000; // 7 days for magic link
     adminSessions.set(sessionId, sessionExpiresAt);
 
-    res.cookie('gbrain_admin', sessionId, adminCookie(req, 7 * 24 * 60 * 60 * 1000));
+    res.cookie('zbrain_admin', sessionId, adminCookie(req, 7 * 24 * 60 * 60 * 1000));
     res.redirect('/admin/');
   });
 
   // Admin auth middleware
   function requireAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
-    const sessionId = (req.cookies as Record<string, string>)?.gbrain_admin;
+    const sessionId = (req.cookies as Record<string, string>)?.zbrain_admin;
     if (!sessionId || !adminSessions.has(sessionId)) {
       res.status(401).json({ error: 'Admin authentication required' });
       return;
@@ -944,7 +944,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
   });
 
   // v0.41 D2 — live jobs dashboard data. Shares readSnapshot() with the
-  // TTY `gbrain jobs watch` command so the two surfaces stay 1:1.
+  // TTY `zbrain jobs watch` command so the two surfaces stay 1:1.
   app.get('/admin/api/jobs/watch', requireAdmin, async (_req: Request, res: Response) => {
     try {
       const { readSnapshot } = await import('./jobs-watch.ts');
@@ -1171,7 +1171,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
       const { name } = req.body;
       if (!name) { res.status(400).json({ error: 'Name required' }); return; }
       const { generateToken, hashToken } = await import('../core/utils.ts');
-      const token = generateToken('gbrain_');
+      const token = generateToken('zbrain_');
       const hash = hashToken(token);
       const id = (await import('crypto')).randomUUID();
       await sql`INSERT INTO access_tokens (id, name, token_hash) VALUES (${id}, ${name}, ${hash})`;
@@ -1302,7 +1302,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
   //      manifest of request-path → resolved-path keyed by every file in
   //      admin/dist at generation time. Bun's `with { type: 'file' }` ESM
   //      imports resolve correctly inside the compiled binary, so a
-  //      globally-installed `gbrain serve --http` actually serves /admin
+  //      globally-installed `zbrain serve --http` actually serves /admin
   //      instead of 404. Pre-fix the cwd-relative path was the ONLY
   //      resolution path, and every fresh install of the compiled binary
   //      hit 404 on /admin (issue #1090).
@@ -1358,7 +1358,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
   const mcpOperations = operations.filter(op => !op.localOnly);
 
   // v0.36.x #1076: MCP Streamable HTTP spec — GET /mcp opens an optional SSE
-  // backchannel for server-initiated messages. gbrain's transport is stateless
+  // backchannel for server-initiated messages. zbrain's transport is stateless
   // and doesn't push server-initiated messages, so per spec we MUST return 405
   // (not 404) so probing clients (claude.ai, etc.) recognize this as an MCP
   // endpoint, not a missing route. Without this, clients display "endpoint not
@@ -1380,7 +1380,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
 
     // Create a fresh MCP server per request (stateless)
     const server = new Server(
-      { name: 'gbrain', version: VERSION },
+      { name: 'zbrain', version: VERSION },
       { capabilities: { tools: {} } },
     );
 
@@ -1525,7 +1525,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
       // v0.34.1 (#861, D13): AuthInfo.sourceId is now a real typed field
       // populated from oauth_clients.source_id (migration v60 backfilled
       // NULL → 'default'). Pre-fix this site cast through AuthInfo and
-      // fell back to GBRAIN_SOURCE env / 'default' — the silent-fallback
+      // fell back to ZBRAIN_SOURCE env / 'default' — the silent-fallback
       // path codex flagged in plan review. Post-v60, every OAuth client
       // has source_id set; legacy bearer tokens default to 'default' in
       // verifyAccessToken. The env-fallback is gone.
@@ -1687,7 +1687,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
 
   // Maximum payload bytes for POST /ingest. Configurable via env. Default 1 MB.
   const ingestMaxBytes = (() => {
-    const fromEnv = process.env.GBRAIN_INGEST_MAX_BYTES;
+    const fromEnv = process.env.ZBRAIN_INGEST_MAX_BYTES;
     if (!fromEnv) return 1_048_576;
     const n = parseInt(fromEnv, 10);
     return Number.isFinite(n) && n > 0 ? n : 1_048_576;
@@ -1765,7 +1765,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
       // Detect content_type. Caller can override via the X-Gbrain-Content-Type
       // header for the JSON case (since the request's Content-Type would say
       // application/json but the user might intend the body to be markdown).
-      const declared = (req.header('x-gbrain-content-type') || req.header('content-type') || '').toLowerCase();
+      const declared = (req.header('x-zbrain-content-type') || req.header('content-type') || '').toLowerCase();
       let contentType: IngestionContentType;
       if (declared.startsWith('text/markdown')) {
         contentType = 'text/markdown';
@@ -1798,9 +1798,9 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
 
       const content = body.toString('utf8');
       const contentHash = computeContentHash(content);
-      const sourceUri = (req.header('x-gbrain-source-uri') || `mcp-webhook:${authInfo.clientId}:${Date.now()}`).slice(0, 1024);
-      const sourceId = (req.header('x-gbrain-source-id') || `webhook-${authInfo.clientId}`).slice(0, 256);
-      const callerSlug = req.header('x-gbrain-slug');
+      const sourceUri = (req.header('x-zbrain-source-uri') || `mcp-webhook:${authInfo.clientId}:${Date.now()}`).slice(0, 1024);
+      const sourceId = (req.header('x-zbrain-source-id') || `webhook-${authInfo.clientId}`).slice(0, 256);
+      const callerSlug = req.header('x-zbrain-slug');
 
       const event: IngestionEvent = {
         source_id: sourceId,
@@ -2006,7 +2006,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
 
       const secret = cfg.webhook_secret;
       if (!secret || typeof secret !== 'string') {
-        res.status(401).json({ error: 'webhook_not_configured', message: 'Run: gbrain sources webhook set ' + source.id });
+        res.status(401).json({ error: 'webhook_not_configured', message: 'Run: zbrain sources webhook set ' + source.id });
         return;
       }
 
@@ -2014,7 +2014,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
       // safeHexEqual because Buffer.from('sha256=...', 'hex') silently
       // truncates at the first non-hex char (the 's'), leaving both
       // operands as 0-byte buffers and making every signature "match".
-      // Pinned by test/sources-webhook.test.ts tamper assertions.
+      // Pinned by tests/unit/sources-webhook.test.ts tamper assertions.
       const { createHmac } = await import('node:crypto');
       const computedHex = createHmac('sha256', secret).update(payload).digest('hex');
       const prefix = 'sha256=';
@@ -2060,7 +2060,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
   app.listen(port, bind, () => {
     console.error(`
 ╔══════════════════════════════════════════════════════╗
-║  GBrain MCP Server v${VERSION.padEnd(37)}║
+║  ZBrain MCP Server v${VERSION.padEnd(37)}║
 ╠══════════════════════════════════════════════════════╣
 ║  Port:      ${String(port).padEnd(40)}║
 ║  Bind:      ${bind.padEnd(40)}║
@@ -2077,7 +2077,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
 ${suppressBootstrapPrint
   ? '║  Admin Token: suppressed (--suppress-bootstrap-token) ║\n╚══════════════════════════════════════════════════════╝'
   : bootstrapFromEnv
-    ? '║  Admin Token: from $GBRAIN_ADMIN_BOOTSTRAP_TOKEN     ║\n╚══════════════════════════════════════════════════════╝'
+    ? '║  Admin Token: from $ZBRAIN_ADMIN_BOOTSTRAP_TOKEN     ║\n╚══════════════════════════════════════════════════════╝'
     : `║  Admin Token (paste into /admin login):              ║\n║  ${bootstrapToken.substring(0, 50)}  ║\n║  ${bootstrapToken.substring(50).padEnd(50)}  ║\n╚══════════════════════════════════════════════════════╝`}
 `);
   });

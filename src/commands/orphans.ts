@@ -1,15 +1,15 @@
 /**
- * gbrain orphans — Surface pages with no inbound wikilinks.
+ * zbrain orphans — Surface pages with no inbound wikilinks.
  *
  * Deterministic: zero LLM calls. Queries the links table for pages with
  * no entries where to_page_id = pages.id. By default filters out
  * auto-generated pages and pseudo-pages where no inbound links is expected.
  *
  * Usage:
- *   gbrain orphans                  # list orphans grouped by domain
- *   gbrain orphans --json           # JSON output for agent consumption
- *   gbrain orphans --count          # just the number
- *   gbrain orphans --include-pseudo # include auto-generated/pseudo pages
+ *   zbrain orphans                  # list orphans grouped by domain
+ *   zbrain orphans --json           # JSON output for agent consumption
+ *   zbrain orphans --count          # just the number
+ *   zbrain orphans --include-pseudo # include auto-generated/pseudo pages
  */
 
 import type { BrainEngine } from '../core/engine.ts';
@@ -122,7 +122,7 @@ export async function queryOrphanPages(
  * `getOrphansData` for the doctor `orphan_ratio` check and any other
  * consumer that needs the same exclusion logic (AUTO_SUFFIX_PATTERNS,
  * PSEUDO_SLUGS, RAW_SEGMENT, DENY_PREFIXES, FIRST_SEGMENT_EXCLUSIONS).
- * Two consumers sharing one definition = doctor and `gbrain orphans`
+ * Two consumers sharing one definition = doctor and `zbrain orphans`
  * cannot disagree on the orphan count.
  */
 export async function findOrphans(
@@ -174,7 +174,7 @@ export async function findOrphans(
 
 /**
  * v0.42.0.0 D1: canonical name for the pure data fn consumed by both
- * `gbrain orphans` CLI AND doctor's `orphan_ratio` check. Aliased to
+ * `zbrain orphans` CLI AND doctor's `orphan_ratio` check. Aliased to
  * `findOrphans` so the existing CLI behavior + the test surface stay
  * byte-identical; new consumers should import `getOrphansData` to make
  * the data-only intent explicit at the call site.
@@ -226,7 +226,7 @@ export async function runOrphans(engine: BrainEngine, args: string[]) {
   const includePseudo = args.includes('--include-pseudo');
 
   if (args.includes('--help') || args.includes('-h')) {
-    console.log(`Usage: gbrain orphans [options]
+    console.log(`Usage: zbrain orphans [options]
 
 Find pages with no inbound wikilinks.
 

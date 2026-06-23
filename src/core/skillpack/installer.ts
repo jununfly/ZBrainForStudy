@@ -9,7 +9,7 @@
  *     exists" gate.
  *   - Dependency closure (D-CX-10): every skill install pulls the
  *     full `shared_deps` set so cross-references don't break.
- *   - Concurrency / lockfile (D-CX-11): acquire `.gbrain-skillpack.lock`
+ *   - Concurrency / lockfile (D-CX-11): acquire `.zbrain-skillpack.lock`
  *     before any write. Atomic AGENTS.md managed-block update via
  *     tmp + rename. Stale lock (>10 min PID mismatch) emits a warning
  *     and refuses to overwrite unless `--force-unlock`.
@@ -65,7 +65,7 @@ export interface ManagedBlockResult {
 }
 
 export interface InstallPlan {
-  gbrainRoot: string;
+  zbrainRoot: string;
   targetSkillsDir: string;
   targetWorkspace: string;
   entries: BundleEntry[];
@@ -79,8 +79,8 @@ export interface InstallOptions {
   targetWorkspace: string;
   /** Absolute path to the target skills directory. */
   targetSkillsDir: string;
-  /** Gbrain repo root (source). Defaults to the one found by findGbrainRoot. */
-  gbrainRoot: string;
+  /** Gbrain repo root (source). Defaults to the one found by findZbrainRoot. */
+  zbrainRoot: string;
   /** Scope to a single skill slug, or `null` for --all. */
   skillSlug: string | null;
   /** Overwrite local files that differ from the bundle source. */
@@ -140,9 +140,9 @@ const DEFAULT_LOCK_STALE_MS = 10 * 60 * 1000; // 10 minutes
  * closure (shared_deps + target skills).
  */
 export function planInstall(opts: InstallOptions): InstallPlan {
-  const manifest = loadBundleManifest(opts.gbrainRoot);
+  const manifest = loadBundleManifest(opts.zbrainRoot);
   const entries = enumerateBundle({
-    gbrainRoot: opts.gbrainRoot,
+    zbrainRoot: opts.zbrainRoot,
     skillSlug: opts.skillSlug ?? undefined,
     manifest,
   });
@@ -164,7 +164,7 @@ export function planInstall(opts: InstallOptions): InstallPlan {
   });
 
   return {
-    gbrainRoot: opts.gbrainRoot,
+    zbrainRoot: opts.zbrainRoot,
     targetSkillsDir: opts.targetSkillsDir,
     targetWorkspace: opts.targetWorkspace,
     entries,
@@ -178,7 +178,7 @@ export function planInstall(opts: InstallOptions): InstallPlan {
 // ---------------------------------------------------------------------------
 
 function lockPath(workspace: string): string {
-  return join(workspace, '.gbrain-skillpack.lock');
+  return join(workspace, '.zbrain-skillpack.lock');
 }
 
 interface LockInfo {
@@ -256,24 +256,24 @@ function releaseLock(workspace: string): void {
 // Managed block (AGENTS.md / RESOLVER.md)
 // ---------------------------------------------------------------------------
 
-const MANAGED_BEGIN = '<!-- gbrain:skillpack:begin -->';
-const MANAGED_END = '<!-- gbrain:skillpack:end -->';
+const MANAGED_BEGIN = '<!-- zbrain:skillpack:begin -->';
+const MANAGED_END = '<!-- zbrain:skillpack:end -->';
 
 // Receipt comment embedded inside the fence on every write. Lets the
-// next install distinguish "row gbrain installed previously" from
+// next install distinguish "row zbrain installed previously" from
 // "row a user hand-added inside the fence." Format is intentionally
 // regex-friendly.
 //
-//   <!-- gbrain:skillpack:manifest cumulative-slugs="a,b,c" version="0.19.0" -->
+//   <!-- zbrain:skillpack:manifest cumulative-slugs="a,b,c" version="0.19.0" -->
 //
-// Sorted, comma-separated slug list. version is the gbrain version
+// Sorted, comma-separated slug list. version is the zbrain version
 // that wrote this receipt.
 const RECEIPT_RE =
-  /<!-- gbrain:skillpack:manifest cumulative-slugs="([^"]*)" version="([^"]*)" -->/;
+  /<!-- zbrain:skillpack:manifest cumulative-slugs="([^"]*)" version="([^"]*)" -->/;
 
 function buildReceipt(cumulativeSlugs: string[], version: string): string {
   const sorted = [...cumulativeSlugs].sort();
-  return `<!-- gbrain:skillpack:manifest cumulative-slugs="${sorted.join(',')}" version="${version}" -->`;
+  return `<!-- zbrain:skillpack:manifest cumulative-slugs="${sorted.join(',')}" version="${version}" -->`;
 }
 
 /**
@@ -308,7 +308,7 @@ export function buildManagedBlock(
   return [
     MANAGED_BEGIN,
     '',
-    `<!-- Installed by gbrain ${manifest.version} — do not hand-edit between markers. -->`,
+    `<!-- Installed by zbrain ${manifest.version} — do not hand-edit between markers. -->`,
     receipt,
     '',
     '| Trigger | Skill |',
@@ -458,10 +458,10 @@ function applyManagedBlock(
   }
   const existing = readFileSync(resolver, 'utf-8');
 
-  // Step 1: figure out what gbrain previously installed into this fence.
+  // Step 1: figure out what zbrain previously installed into this fence.
   //   - If receipt is present, trust it as the cumulative-slug history.
   //   - If receipt is absent (pre-v0.19 fence), fall back to the rows
-  //     currently in the fence — they were ALL gbrain-written before
+  //     currently in the fence — they were ALL zbrain-written before
   //     the receipt feature existed, so trust them as the prior set.
   const receipt = parseReceipt(existing);
   const priorCumulativeSlugs =
@@ -494,7 +494,7 @@ function applyManagedBlock(
 
   // Step 3: detect unknown rows. A row inside the fence whose slug
   // is NOT in newCumulative AND NOT in bundleSlugs AND NOT in the
-  // intentionally-pruned set is something gbrain never wrote: a user
+  // intentionally-pruned set is something zbrain never wrote: a user
   // hand-add, a typo, or stale debris from an unknown bundle.
   // Preserve it (do not destroy data) and emit a single stderr
   // warning per slug instructing the agent to investigate.
@@ -502,7 +502,7 @@ function applyManagedBlock(
   const bundleSet = new Set(bundleSlugs);
   const unknownSlugs: string[] = [];
   // Skip the unknown-row check on the very first v0.19 install (no
-  // receipt yet). All existing rows are presumed gbrain-written and
+  // receipt yet). All existing rows are presumed zbrain-written and
   // captured into newCumulative via the fallback above; warning here
   // would create false positives.
   if (receipt !== null) {
@@ -517,7 +517,7 @@ function applyManagedBlock(
   }
   for (const slug of unknownSlugs) {
     console.error(
-      `[skillpack] unknown row in managed block: "${slug}" at skills/${slug}/SKILL.md — not in gbrain's installed set. Investigate: user-added skill, hand-edited fence, or typo?`,
+      `[skillpack] unknown row in managed block: "${slug}" at skills/${slug}/SKILL.md — not in zbrain's installed set. Investigate: user-added skill, hand-edited fence, or typo?`,
     );
   }
 
@@ -562,12 +562,12 @@ export interface SkillDiff {
 }
 
 export function diffSkill(
-  gbrainRoot: string,
+  zbrainRoot: string,
   skillSlug: string,
   targetSkillsDir: string,
 ): SkillDiff[] {
-  const manifest = loadBundleManifest(gbrainRoot);
-  const entries = enumerateBundle({ gbrainRoot, skillSlug, manifest });
+  const manifest = loadBundleManifest(zbrainRoot);
+  const entries = enumerateBundle({ zbrainRoot, skillSlug, manifest });
   const out: SkillDiff[] = [];
   for (const e of entries) {
     const target = join(targetSkillsDir, e.relTarget);
@@ -602,12 +602,12 @@ export function diffSkill(
 // ---------------------------------------------------------------------------
 
 /**
- * `gbrain skillpack uninstall <name>` is the inverse of install. Two
+ * `zbrain skillpack uninstall <name>` is the inverse of install. Two
  * data-loss safeguards mirror install's existing posture:
  *
  *   D8 (refuse-and-warn for user-added rows):
  *     If the slug isn't in the managed-block's cumulative-slugs receipt,
- *     gbrain didn't install it; gbrain won't uninstall it either. Exit
+ *     zbrain didn't install it; zbrain won't uninstall it either. Exit
  *     1 with a message instructing the user to remove it manually.
  *
  *   D11 (content-hash guard, symmetric to install's
@@ -651,7 +651,7 @@ export interface UninstallOptions {
   /** Absolute path to the target skills directory. */
   targetSkillsDir: string;
   /** Gbrain repo root (source-of-truth bundle). */
-  gbrainRoot: string;
+  zbrainRoot: string;
   /** Required: a single skill slug. v0.25.1 has no --all uninstall. */
   skillSlug: string;
   /** Bypass D11 content-hash guard and remove locally-modified files. */
@@ -702,39 +702,39 @@ export function applyUninstall(opts: UninstallOptions): UninstallResult {
     const receipt = parseReceipt(resolverContent);
     if (!receipt) {
       // Pre-v0.19 fence with no receipt: every existing row is presumed
-      // gbrain-installed. Trust it, but warn.
+      // zbrain-installed. Trust it, but warn.
       const existingRowSlugs = extractManagedSlugs(resolverContent);
       if (!existingRowSlugs.includes(opts.skillSlug)) {
         throw new UninstallError(
-          `Skill '${opts.skillSlug}' is not in the managed block. Either it was never installed by gbrain, or the slug is mistyped. Inspect ${resolver} and the skills/${opts.skillSlug}/ directory before retrying.`,
+          `Skill '${opts.skillSlug}' is not in the managed block. Either it was never installed by zbrain, or the slug is mistyped. Inspect ${resolver} and the skills/${opts.skillSlug}/ directory before retrying.`,
           'unknown_skill',
         );
       }
       // Otherwise proceed; we'll write a fresh receipt on the way out.
     } else if (!receipt.cumulativeSlugs.includes(opts.skillSlug)) {
       // D8 — slug IS NOT in the receipt's cumulative set. Either
-      // user-added (not gbrain's row) or the slug doesn't exist at all.
+      // user-added (not zbrain's row) or the slug doesn't exist at all.
       // Either way, refuse-and-warn.
       throw new UninstallError(
-        `Skill '${opts.skillSlug}' is not in gbrain's installed set (cumulative-slugs receipt has no record of it). gbrain refuses to uninstall what it didn't install. If you hand-added this row to ${resolver}, remove it manually. If the slug is mistyped, run \`gbrain skillpack list\` to see what's installed.`,
+        `Skill '${opts.skillSlug}' is not in zbrain's installed set (cumulative-slugs receipt has no record of it). zbrain refuses to uninstall what it didn't install. If you hand-added this row to ${resolver}, remove it manually. If the slug is mistyped, run \`zbrain skillpack list\` to see what's installed.`,
         'user_added_slug',
       );
     }
 
     // ── Step 3: enumerate bundle entries for this skill ───────────
-    const manifest = loadBundleManifest(opts.gbrainRoot);
+    const manifest = loadBundleManifest(opts.zbrainRoot);
     // Scope to the skill itself; do NOT include shared_deps — other
     // installed skills depend on them. shared_dep cleanup is a separate
     // operation (e.g., on the last uninstall of the last skill).
     const entries = enumerateBundle({
-      gbrainRoot: opts.gbrainRoot,
+      zbrainRoot: opts.zbrainRoot,
       skillSlug: opts.skillSlug,
       manifest,
     }).filter(e => !e.sharedDep);
 
     if (entries.length === 0) {
       throw new UninstallError(
-        `Skill '${opts.skillSlug}' has no bundle entries — likely an unknown slug or stale receipt. Verify with \`gbrain skillpack list\`.`,
+        `Skill '${opts.skillSlug}' has no bundle entries — likely an unknown slug or stale receipt. Verify with \`zbrain skillpack list\`.`,
         'unknown_skill',
       );
     }
@@ -775,7 +775,7 @@ export function applyUninstall(opts: UninstallOptions): UninstallResult {
     // Refuse loudly BEFORE any filesystem mutation if anything blocked.
     if (blockedByLocalMod.length > 0) {
       throw new UninstallError(
-        `Refusing to uninstall '${opts.skillSlug}': ${blockedByLocalMod.length} file(s) differ from the bundle (you've hand-edited them):\n  ${blockedByLocalMod.join('\n  ')}\n\nPass --overwrite-local to drop your edits, or run \`gbrain skillpack diff ${opts.skillSlug}\` to inspect first.`,
+        `Refusing to uninstall '${opts.skillSlug}': ${blockedByLocalMod.length} file(s) differ from the bundle (you've hand-edited them):\n  ${blockedByLocalMod.join('\n  ')}\n\nPass --overwrite-local to drop your edits, or run \`zbrain skillpack diff ${opts.skillSlug}\` to inspect first.`,
         'locally_modified',
       );
     }
@@ -885,7 +885,7 @@ function applyManagedBlockUninstall(
   }
   for (const slug of unknownSlugs) {
     console.error(
-      `[skillpack] unknown row in managed block: "${slug}" at skills/${slug}/SKILL.md — not in gbrain's installed set. Investigate: user-added skill, hand-edited fence, or typo?`,
+      `[skillpack] unknown row in managed block: "${slug}" at skills/${slug}/SKILL.md — not in zbrain's installed set. Investigate: user-added skill, hand-edited fence, or typo?`,
     );
   }
 

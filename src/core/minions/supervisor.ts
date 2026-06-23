@@ -1,17 +1,17 @@
 /**
  * MinionSupervisor — Process manager for the Minion worker.
  *
- * Spawns `gbrain jobs work` as a child process and restarts it on crash
+ * Spawns `zbrain jobs work` as a child process and restarts it on crash
  * with exponential backoff. Provides health monitoring, PID file locking
  * (atomic via O_CREAT|O_EXCL), and graceful shutdown.
  *
  * ENGINE: Postgres only. PGLite uses an exclusive file lock that blocks
- * any separate worker process, so `gbrain jobs supervisor` cannot work
+ * any separate worker process, so `zbrain jobs supervisor` cannot work
  * against a PGLite brain — `src/commands/jobs.ts` rejects that combination
  * at the CLI layer. The health-check SQL below assumes Postgres schema.
  *
  * Usage:
- *   gbrain jobs supervisor [--concurrency N] [--queue Q] [--pid-file PATH]
+ *   zbrain jobs supervisor [--concurrency N] [--queue Q] [--pid-file PATH]
  *                          [--max-crashes N] [--health-interval N]
  *                          [--allow-shell-jobs] [--json]
  *
@@ -66,15 +66,15 @@ export interface SupervisorOpts {
   concurrency: number;
   /** Queue name (passed to child). Default: 'default'. */
   queue: string;
-  /** PID file path. Default: `${HOME}/.gbrain/supervisor.pid` (parent dir auto-created). */
+  /** PID file path. Default: `${HOME}/.zbrain/supervisor.pid` (parent dir auto-created). */
   pidFile: string;
   /** Max consecutive crashes before giving up. Default: 10. */
   maxCrashes: number;
   /** Health check interval in ms. Default: 60000. */
   healthInterval: number;
-  /** Path to the gbrain CLI executable (MUST be a compiled binary; .ts sources cannot be spawned). */
+  /** Path to the zbrain CLI executable (MUST be a compiled binary; .ts sources cannot be spawned). */
   cliPath: string;
-  /** Allow shell jobs on child worker. Default: false. When true, sets GBRAIN_ALLOW_SHELL_JOBS=1 on child env. */
+  /** Allow shell jobs on child worker. Default: false. When true, sets ZBRAIN_ALLOW_SHELL_JOBS=1 on child env. */
   allowShellJobs: boolean;
   /** JSON mode: emit JSONL events on stderr, reserve stdout for data payloads. Default: false. */
   json: boolean;
@@ -93,10 +93,10 @@ export interface SupervisorOpts {
 }
 
 export const DEFAULT_PID_FILE: string = (() => {
-  const envOverride = process.env.GBRAIN_SUPERVISOR_PID_FILE;
+  const envOverride = process.env.ZBRAIN_SUPERVISOR_PID_FILE;
   if (envOverride && envOverride.length > 0) return envOverride;
   const home = process.env.HOME ?? '/tmp';
-  return `${home}/.gbrain/supervisor.pid`;
+  return `${home}/.zbrain/supervisor.pid`;
 })();
 
 const DEFAULTS: Omit<SupervisorOpts, 'cliPath'> = {
@@ -169,7 +169,7 @@ export class MinionSupervisor {
 
   /**
    * Read-only accessor for whether tini was detected at construction.
-   * Used by `test/supervisor-tini.test.ts` to verify the wiring without
+   * Used by `tests/unit/supervisor-tini.test.ts` to verify the wiring without
    * exposing the resolved path. Returns true when `worker_spawned` events
    * will include `tini: true` in their payload.
    */
@@ -315,7 +315,7 @@ export class MinionSupervisor {
    *   'unwritable' — can't write to the PID path (permission / missing parent, exit code 3).
    */
   private acquirePidLock(): 'acquired' | 'held' | 'unwritable' {
-    // Ensure parent directory exists. Idempotent; creates ~/.gbrain on fresh installs.
+    // Ensure parent directory exists. Idempotent; creates ~/.zbrain on fresh installs.
     try {
       mkdirSync(dirname(this.opts.pidFile), { recursive: true });
     } catch (err: unknown) {
@@ -324,7 +324,7 @@ export class MinionSupervisor {
         console.error(
           `Cannot create PID file directory ${dirname(this.opts.pidFile)}: ${
             err instanceof Error ? err.message : String(err)
-          }. Set GBRAIN_SUPERVISOR_PID_FILE or pass --pid-file to a writable location.`
+          }. Set ZBRAIN_SUPERVISOR_PID_FILE or pass --pid-file to a writable location.`
         );
         return 'unwritable';
       }
@@ -389,7 +389,7 @@ export class MinionSupervisor {
       console.error(
         `Cannot write PID file ${this.opts.pidFile}: ${
           err instanceof Error ? err.message : String(err)
-        }. Set GBRAIN_SUPERVISOR_PID_FILE or pass --pid-file to a writable location.`
+        }. Set ZBRAIN_SUPERVISOR_PID_FILE or pass --pid-file to a writable location.`
       );
       return 'unwritable';
     }
@@ -412,19 +412,19 @@ export class MinionSupervisor {
       workerArgs.push('--max-rss', String(this.opts.maxRssMb));
     }
 
-    // Build child env. Explicit handling for GBRAIN_ALLOW_SHELL_JOBS:
+    // Build child env. Explicit handling for ZBRAIN_ALLOW_SHELL_JOBS:
     // inherit only when caller opts in, otherwise strip from the clone.
     const env: Record<string, string | undefined> = { ...process.env };
     if (this.opts.allowShellJobs) {
-      env.GBRAIN_ALLOW_SHELL_JOBS = '1';
+      env.ZBRAIN_ALLOW_SHELL_JOBS = '1';
     } else {
-      delete env.GBRAIN_ALLOW_SHELL_JOBS;
+      delete env.ZBRAIN_ALLOW_SHELL_JOBS;
     }
     // Signal to the child worker that it's running under a supervisor.
     // The worker's self-health-check (DB probes, stall detection) is
     // redundant when the supervisor already provides these — setting
     // this env var causes the worker to skip its own health timer.
-    env.GBRAIN_SUPERVISED = '1';
+    env.ZBRAIN_SUPERVISED = '1';
 
     this.childSupervisor = new ChildWorkerSupervisor({
       cliPath: this.opts.cliPath,

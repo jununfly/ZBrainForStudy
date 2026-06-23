@@ -21,7 +21,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 #   - The redactor itself: src/core/url-redact.ts
 #   - Test fixtures that build redacted strings from full URLs
 #   - Documentation comments referring to the pattern
-ALLOW_REGEX='url-redact\.ts|test/url-redact\.test\.ts|/\* allow-pg-url-literal \*/'
+ALLOW_REGEX='url-redact\.ts|tests/unit/url-redact\.test\.ts|/\* allow-pg-url-literal \*/'
 
 # The pattern matches an unredacted Postgres URL appearing in a string
 # literal, NOT preceded by `redactPgUrl(` or `***@`. We also match any

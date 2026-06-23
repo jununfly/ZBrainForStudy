@@ -27,9 +27,9 @@ export interface ParseOpts {
   /**
    * v0.39 T1.5 — active schema pack to drive type inference. When set,
    * `inferType` uses the pack's `page_types[].path_prefixes` instead of
-   * the hardcoded gbrain-base table. When unset, falls back to the
+   * the hardcoded zbrain-base table. When unset, falls back to the
    * pre-v0.39 hardcoded behavior (preserves byte-for-byte parity gate
-   * `test/regressions/gbrain-base-equivalence.test.ts`).
+   * `tests/unit/regressions/zbrain-base-equivalence.test.ts`).
    *
    * Callers thread this from `loadActivePack(ctx)` once per command —
    * NEVER per file inside sync, per codex perf finding #7.
@@ -299,7 +299,7 @@ function collectValidationErrors(
  *   1. `<!-- timeline -->` — preferred, unambiguous, what serializeMarkdown emits
  *   2. `--- timeline ---` — decorated separator
  *   3. `---` ONLY when the next non-empty line is `## Timeline` or `## History`
- *      (backward-compat fallback for older gbrain-written files)
+ *      (backward-compat fallback for older zbrain-written files)
  *
  * A plain `---` line is a markdown horizontal rule, NOT a timeline separator.
  * Treating bare `---` as a separator caused 83% content truncation on wiki corpora.
@@ -377,16 +377,16 @@ export function serializeMarkdown(
 // v0.38 T7a (Phase B): inferType is now pack-aware.
 //
 // The original hardcoded behavior is preserved IDENTICALLY when the
-// pack is gbrain-base (or when no pack is provided — back-compat
+// pack is zbrain-base (or when no pack is provided — back-compat
 // callers). Schema packs can extend the path → type mapping by
 // declaring `page_types[].path_prefixes` in their manifest; users
 // who add `paper: { path_prefixes: [papers/, literature/] }` get
 // papers/foo.md → type 'paper' without forking the engine.
 //
 // inferType (legacy sync wrapper) → calls inferTypeWithPrefixes with
-//   the GBRAIN_BASE_PATH_PREFIXES table below, which reproduces the
+//   the ZBRAIN_BASE_PATH_PREFIXES table below, which reproduces the
 //   pre-v0.38 hardcoded behavior byte-for-byte (parity-pinned by
-//   test/regressions/gbrain-base-equivalence.test.ts).
+//   tests/unit/regressions/zbrain-base-equivalence.test.ts).
 // inferTypeFromPack(filePath, manifest) → new primitive that walks
 //   the active pack's page_types[].path_prefixes. Priority: pack
 //   declarations are scanned in order they appear in the manifest;
@@ -395,16 +395,16 @@ export function serializeMarkdown(
 // Callers in async paths (import-file.ts, sync.ts, cycle phases) can
 // adopt inferTypeFromPack(path, pack) to honor user-defined types.
 // The bare inferType(path) call site remains for sync legacy paths
-// and matches gbrain-base by construction.
+// and matches zbrain-base by construction.
 
 /**
  * Hardcoded path-prefix table mirroring pre-v0.38 inferType behavior.
- * MUST stay in lockstep with the gbrain-base.yaml `path_prefixes` field
- * (parity-pinned by test/regressions/gbrain-base-equivalence.test.ts).
+ * MUST stay in lockstep with the zbrain-base.yaml `path_prefixes` field
+ * (parity-pinned by tests/unit/regressions/zbrain-base-equivalence.test.ts).
  * Order matters: wiki subtypes + writing scan first (stronger signal
  * than ancestor directories).
  */
-const GBRAIN_BASE_PATH_PREFIXES: ReadonlyArray<{ prefixes: string[]; type: PageType }> = [
+const ZBRAIN_BASE_PATH_PREFIXES: ReadonlyArray<{ prefixes: string[]; type: PageType }> = [
   { prefixes: ['/writing/'], type: 'writing' },
   { prefixes: ['/wiki/analysis/'], type: 'analysis' },
   { prefixes: ['/wiki/guides/', '/wiki/guide/'], type: 'guide' },
@@ -427,19 +427,19 @@ const GBRAIN_BASE_PATH_PREFIXES: ReadonlyArray<{ prefixes: string[]; type: PageT
 ];
 
 function inferType(filePath?: string): PageType {
-  return inferTypeWithPrefixes(filePath, GBRAIN_BASE_PATH_PREFIXES);
+  return inferTypeWithPrefixes(filePath, ZBRAIN_BASE_PATH_PREFIXES);
 }
 
 /**
  * Pack-aware variant. Callers with access to the active pack pass it
  * here to honor user-declared types. Empty `page_types` array (no
- * `extends: null` pack) falls back to gbrain-base defaults.
+ * `extends: null` pack) falls back to zbrain-base defaults.
  *
  * Algorithm: each pack page_type contributes its `path_prefixes` array
  * in declaration order. First prefix that matches wins. Default
  * 'concept' applies when nothing matches.
  *
- * Note on prefix shape: gbrain-base stores prefixes WITHOUT the
+ * Note on prefix shape: zbrain-base stores prefixes WITHOUT the
  * leading `/` (e.g. `people/`). For matching, we lower-case the path
  * with a leading `/` prepended (matches the original behavior) and
  * test against `'/' + prefix` so `people/` matches `/people/` inside
@@ -450,9 +450,9 @@ export function inferTypeFromPack(
   pack: { page_types: ReadonlyArray<{ name: string; path_prefixes: ReadonlyArray<string> }> },
 ): PageType {
   if (!filePath) return 'concept';
-  // Empty pack → fall back to gbrain-base hardcoded defaults.
+  // Empty pack → fall back to zbrain-base hardcoded defaults.
   if (pack.page_types.length === 0) {
-    return inferTypeWithPrefixes(filePath, GBRAIN_BASE_PATH_PREFIXES);
+    return inferTypeWithPrefixes(filePath, ZBRAIN_BASE_PATH_PREFIXES);
   }
   const lower = ('/' + filePath).toLowerCase();
   for (const pt of pack.page_types) {

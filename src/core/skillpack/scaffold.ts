@@ -1,8 +1,8 @@
 /**
- * skillpack/scaffold.ts — `gbrain skillpack scaffold <name>`.
+ * skillpack/scaffold.ts — `zbrain skillpack scaffold <name>`.
  *
  * One-time, additive copy of a bundled skill into a host workspace. The
- * file-copy primitive is shared with harvest (host→gbrain) via
+ * file-copy primitive is shared with harvest (host→zbrain) via
  * `copyArtifacts`. The bundle enumeration is shared with the bundle
  * manifest itself via `enumerateScaffoldEntries` — which now also picks
  * up paired source files declared in each skill's frontmatter
@@ -13,7 +13,7 @@
  *      stays untouched. Routing happens via each skill's frontmatter
  *      `triggers:` array, which downstream agents walk at runtime.
  *   2. **Refuses to overwrite existing files.** Once a file lands, the
- *      user owns it. To update, run `gbrain skillpack reference <name>`
+ *      user owns it. To update, run `zbrain skillpack reference <name>`
  *      and decide.
  *   3. **Partial-state policy.** When `skills/<slug>/` already exists
  *      but the skill's frontmatter declares paired `sources:` that are
@@ -33,8 +33,8 @@ import { enumerateScaffoldEntries, loadBundleManifest } from './bundle.ts';
 import type { ScaffoldEntry } from './bundle.ts';
 
 export interface ScaffoldOptions {
-  /** Absolute path to gbrain repo root (source-of-truth bundle). */
-  gbrainRoot: string;
+  /** Absolute path to zbrain repo root (source-of-truth bundle). */
+  zbrainRoot: string;
   /** Absolute path to the target agent-repo workspace. */
   targetWorkspace: string;
   /** Single skill slug, or `null` for --all. */
@@ -89,7 +89,7 @@ export class ScaffoldError extends Error {
  * the present ones are skipped.
  */
 export function runScaffold(opts: ScaffoldOptions): ScaffoldResult {
-  const manifest = loadBundleManifest(opts.gbrainRoot);
+  const manifest = loadBundleManifest(opts.zbrainRoot);
 
   // enumerateScaffoldEntries throws BundleError if the slug is unknown
   // or if any declared paired source is missing on disk. Surface those
@@ -97,7 +97,7 @@ export function runScaffold(opts: ScaffoldOptions): ScaffoldResult {
   let entries: ScaffoldEntry[];
   try {
     entries = enumerateScaffoldEntries({
-      gbrainRoot: opts.gbrainRoot,
+      zbrainRoot: opts.zbrainRoot,
       skillSlug: opts.skillSlug ?? undefined,
       manifest,
     });
@@ -116,7 +116,7 @@ export function runScaffold(opts: ScaffoldOptions): ScaffoldResult {
   }));
 
   // Shared copy primitive. Refuses to overwrite existing files; no
-  // symlink check or path confinement (the scaffold source is gbrain's
+  // symlink check or path confinement (the scaffold source is zbrain's
   // own trusted bundle).
   const copyResult = copyArtifacts(items, { dryRun: opts.dryRun });
 

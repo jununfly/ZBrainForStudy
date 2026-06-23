@@ -37,7 +37,7 @@
 import { createHash } from 'node:crypto';
 import { BaseCyclePhase, type ScopedReadOpts, type BasePhaseOpts } from './base-phase.ts';
 import { chat as gatewayChat } from '../ai/gateway.ts';
-import { GBrainError } from '../types.ts';
+import { ZBrainError } from '../types.ts';
 import type { OperationContext } from '../operations.ts';
 import type { BrainEngine, Take, TakeResolution } from '../engine.ts';
 import type { PhaseStatus, CyclePhase } from '../cycle.ts';
@@ -201,7 +201,7 @@ export interface GradeTakesOpts extends BasePhaseOpts {
    * lives in the takes resolution layer, not here.
    */
   autoResolveThreshold?: number;
-  /** Identifier recorded as resolved_by when auto-applying. Default 'gbrain:grade_takes'. */
+  /** Identifier recorded as resolved_by when auto-applying. Default 'zbrain:grade_takes'. */
   resolvedByLabel?: string;
   /**
    * v0.36.1.0 (T11 / E4) — gstack-learnings coupling on incorrect/partial
@@ -373,7 +373,7 @@ class GradeTakesPhase extends BaseCyclePhase {
   protected readonly budgetUsdDefault = 3.0;
 
   protected override mapErrorCode(err: unknown): string {
-    if (err instanceof GBrainError) return err.problem;
+    if (err instanceof ZBrainError) return err.problem;
     if (err instanceof Error) {
       if (err.message.includes('budget') || err.message.includes('Budget')) return 'CALIBRATION_GRADE_BUDGET_EXHAUSTED';
       if (err.message.includes('parse')) return 'CALIBRATION_GRADE_PARSE_FAIL';
@@ -394,7 +394,7 @@ class GradeTakesPhase extends BaseCyclePhase {
     const takeLimit = opts.takeLimit ?? 50;
     const autoResolve = opts.autoResolve ?? false; // D17 default OFF
     const autoResolveThreshold = opts.autoResolveThreshold ?? 0.95; // D12 conservative
-    const resolvedByLabel = opts.resolvedByLabel ?? 'gbrain:grade_takes';
+    const resolvedByLabel = opts.resolvedByLabel ?? 'zbrain:grade_takes';
     const judgeModelId = opts.model ?? 'claude-sonnet-4-6';
 
     const useEnsemble = opts.useEnsemble ?? false;

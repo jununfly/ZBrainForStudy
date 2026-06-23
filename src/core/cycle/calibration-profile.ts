@@ -33,7 +33,7 @@ import { patternStatementTemplate, type PatternStatementSlots } from '../calibra
 // pack's calibration_domains declarations into per-domain Brier+accuracy+
 // extras scorecards stored in calibration_profiles.domain_scorecards JSONB.
 import { aggregateDomainScorecards, type DomainScorecards } from '../calibration/domain-aggregators.ts';
-import { GBrainError } from '../types.ts';
+import { ZBrainError } from '../types.ts';
 import type { OperationContext } from '../operations.ts';
 import type { BrainEngine, TakesScorecard } from '../engine.ts';
 import type { PhaseStatus, CyclePhase } from '../cycle.ts';
@@ -213,7 +213,7 @@ class CalibrationProfilePhase extends BaseCyclePhase {
   protected readonly budgetUsdDefault = 0.5;
 
   protected override mapErrorCode(err: unknown): string {
-    if (err instanceof GBrainError) return err.problem;
+    if (err instanceof ZBrainError) return err.problem;
     if (err instanceof Error) {
       if (err.message.includes('voice_gate')) return 'CALIBRATION_VOICE_GATE_EXHAUSTED';
     }

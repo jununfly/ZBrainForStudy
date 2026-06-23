@@ -1,11 +1,11 @@
 /**
  * resolver-filenames.ts — shared filename policy for the resolver file.
  *
- * gbrain-native convention: `RESOLVER.md`. OpenClaw convention (per
+ * zbrain-native convention: `RESOLVER.md`. OpenClaw convention (per
  * essay referenced in CLAUDE.md): `AGENTS.md`. Both are valid at the
  * same path (skills dir or workspace root for the OpenClaw layout).
  * When both exist at a location, `RESOLVER.md` wins by policy —
- * gbrain-native precedence keeps gbrain's own repo unaffected.
+ * zbrain-native precedence keeps zbrain's own repo unaffected.
  *
  * One source of truth. Imported by `repo-root.ts` (auto-detect) and
  * `check-resolvable.ts` (parser + error messages). Never hardcode

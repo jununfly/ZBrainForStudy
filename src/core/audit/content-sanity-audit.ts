@@ -1,10 +1,10 @@
 /**
  * Content-sanity audit JSONL.
  *
- * Writes events at `~/.gbrain/audit/content-sanity-YYYY-Www.jsonl`
+ * Writes events at `~/.zbrain/audit/content-sanity-YYYY-Www.jsonl`
  * (ISO-week rotation, mirrors `audit-slug-fallback.ts`). Built on the
  * shared `audit-writer.ts` primitive from v0.40.4.0; honors
- * `GBRAIN_AUDIT_DIR` env override.
+ * `ZBRAIN_AUDIT_DIR` env override.
  *
  * One stream, three event types:
  *   - `hard_block` — assessor rejected the content; importFromContent
@@ -25,7 +25,7 @@
  * but never throws — ingest path continues regardless. Documented
  * caveat (Codex r1 #14): filesystem JSONL doesn't surface cleanly in
  * remote/server deployments. Operators on multi-host setups should
- * point `GBRAIN_AUDIT_DIR` at a shared filesystem. Doctor's message
+ * point `ZBRAIN_AUDIT_DIR` at a shared filesystem. Doctor's message
  * for `content_sanity_audit_recent` explicitly names this limitation.
  *
  * Caller contract: the ingest gate calls `logContentSanityAssessment`
@@ -73,7 +73,7 @@ export function computeContentSanityAuditFilename(now: Date = new Date()): strin
 
 const writer = createAuditWriter<ContentSanityAuditEvent>({
   featureName: 'content-sanity',
-  errorLabel: 'gbrain',
+  errorLabel: 'zbrain',
   errorMessagePrefix: 'content-sanity audit ',
   errorTrailer: '; import continues',
 });

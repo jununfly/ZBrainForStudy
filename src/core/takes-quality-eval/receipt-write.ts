@@ -11,7 +11,7 @@
  *     receipt JSON in receipt_json JSONB column. ON CONFLICT DO NOTHING on
  *     the 4-sha unique key (idempotent re-runs).
  *   - writeReceiptArtifact: best-effort disk write at
- *     ~/.gbrain/eval-receipts/<filename>. Failure logs to stderr but does
+ *     ~/.zbrain/eval-receipts/<filename>. Failure logs to stderr but does
  *     NOT fail the run (DB row is the durable artifact).
  *
  * The DB write is the gating step for whether `trend` and `regress` see the

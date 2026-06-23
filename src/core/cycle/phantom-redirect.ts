@@ -6,7 +6,7 @@
  * (e.g. `alice.md` at brain root), tries to resolve each to a canonical
  * prefixed slug (`people/alice-example`), migrates fact rows + disk
  * fence, soft-deletes the phantom, unlinks the `.md`. Bounded at 50
- * phantoms per cycle (configurable via `GBRAIN_PHANTOM_REDIRECT_LIMIT`).
+ * phantoms per cycle (configurable via `ZBRAIN_PHANTOM_REDIRECT_LIMIT`).
  *
  * Reuses existing infrastructure where it can: `softDeletePage`,
  * `rewriteLinks`, `deleteFactsForPage`, fence parser. Adds TWO new
@@ -23,7 +23,7 @@
  *      drops embeddings + supersession metadata, so migrating through it
  *      would resurrect forgotten facts and lose embeddings.
  *
- * Lock contract: single `gbrain-sync` writer-lock acquisition at the top
+ * Lock contract: single `zbrain-sync` writer-lock acquisition at the top
  * of the pass, held across all up-to-50 phantoms. Single 30s timeout.
  * On contention, the entire pass skips this cycle with one audit entry
  * (`pass_skipped_lock_busy`); next cycle retries.
@@ -176,7 +176,7 @@ export function stripFenceAndFrontmatterAndLeadingH1(body: string): string {
 
 /**
  * Compute the canonical content_hash for a page. Matches
- * `src/core/import-file.ts:241`'s shape exactly so `gbrain sync`'s
+ * `src/core/import-file.ts:241`'s shape exactly so `zbrain sync`'s
  * idempotency check sees the redirected canonical as unchanged.
  */
 function computePageContentHash(parsed: {
@@ -443,7 +443,7 @@ export async function tryRedirectPhantom(
   appendPhantomFenceRowsToCanonical(canonicalPath, phantomFence.facts);
 
   // Codex #7: refresh canonical's compiled_truth + content_hash so the
-  // next `gbrain sync` sees the canonical as unchanged. We re-parse the
+  // next `zbrain sync` sees the canonical as unchanged. We re-parse the
   // disk body and recompute the hash with the same shape import-file
   // uses, so the idempotency check round-trips byte-for-byte.
   const newCanonicalBody = fs.readFileSync(canonicalPath, 'utf-8');
@@ -491,7 +491,7 @@ export async function tryRedirectPhantom(
       if (code !== 'ENOENT') {
         const msg = err instanceof Error ? err.message : String(err);
         process.stderr.write(
-          `[gbrain] phantom-redirect: unlink ${phantomPath} failed (${msg}); cycle continues\n`,
+          `[zbrain] phantom-redirect: unlink ${phantomPath} failed (${msg}); cycle continues\n`,
         );
       }
     }
@@ -520,7 +520,7 @@ export async function runPhantomRedirectPass(
   dryRun: boolean,
 ): Promise<PhantomPassResult> {
   const result = emptyPhantomPassResult();
-  const limitRaw = process.env.GBRAIN_PHANTOM_REDIRECT_LIMIT;
+  const limitRaw = process.env.ZBRAIN_PHANTOM_REDIRECT_LIMIT;
   const limit = (() => {
     if (limitRaw === undefined || limitRaw === '') return DEFAULT_PHANTOM_LIMIT;
     const n = parseInt(limitRaw, 10);
@@ -564,7 +564,7 @@ export async function runPhantomRedirectPass(
         redirectResult = await tryRedirectPhantom(engine, page, sourceId, brainDir, dryRun);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`[gbrain] phantom-redirect: ${slug} failed (${msg}); skipping\n`);
+        process.stderr.write(`[zbrain] phantom-redirect: ${slug} failed (${msg}); skipping\n`);
         logPhantomEvent({
           phantom_slug: slug,
           outcome: 'drift',

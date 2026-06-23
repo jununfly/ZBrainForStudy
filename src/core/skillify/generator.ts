@@ -1,5 +1,5 @@
 /**
- * skillify/generator.ts — pure file-tree generator for `gbrain skillify scaffold`.
+ * skillify/generator.ts — pure file-tree generator for `zbrain skillify scaffold`.
  *
  * Takes a scaffold spec + target skillsDir and returns the list of
  * files that would be written (dry-run) or writes them (apply).
@@ -34,7 +34,7 @@ export interface ScaffoldOptions {
   /** Scaffold variables (name, description, triggers, etc.). */
   vars: ScaffoldVars;
   /**
-   * Repo root for the `test/` and `scripts/` directories. Falls back
+   * Repo root for the `tests/unit/` and `scripts/` directories. Falls back
    * to `dirname(skillsDir)` when unset. Tests pass explicit values.
    */
   repoRoot?: string;
@@ -77,7 +77,7 @@ export function planScaffold(opts: ScaffoldOptions): ScaffoldPlan {
   const skillMdPath = join(skillDir, 'SKILL.md');
   const scriptPath = join(skillDir, 'scripts', `${vars.name}.mjs`);
   const routingEvalPath = join(skillDir, 'routing-eval.jsonl');
-  const testPath = join(repoRoot, 'test', `${vars.name}.test.ts`);
+  const testPath = join(repoRoot, 'tests/unit', `${vars.name}.test.ts`);
 
   const files: ScaffoldPlan['files'] = [];
 

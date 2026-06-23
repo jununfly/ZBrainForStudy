@@ -26,7 +26,7 @@
  */
 
 import type { BrainEngine } from '../engine.ts';
-import { GBrainError } from '../types.ts';
+import { ZBrainError } from '../types.ts';
 
 export const FACTS_ABSORB_REASONS = [
   'gateway_error',
@@ -84,12 +84,12 @@ export async function writeFactsAbsorbLog(
   } catch (e) {
     // v0.39.3.0 WARN-4 + CQ1 — typed access via instanceof + .problem field
     // (NOT string-match on e.message). The 'No database connection' class
-    // fires after every `gbrain capture` invocation because the facts
+    // fires after every `zbrain capture` invocation because the facts
     // subsystem opens its own engine handle that isn't connected in the
     // CLI capture path. Per-capture noise is suppressed; CV13 prints
     // ONE first-occurrence stack trace so the next user reporting it
     // gives us the call site to fix in v0.38.4.
-    if (e instanceof GBrainError && e.problem === 'No database connection') {
+    if (e instanceof ZBrainError && e.problem === 'No database connection') {
       if (!_hasLoggedDisconnectedFactsAbsorb) {
         _hasLoggedDisconnectedFactsAbsorb = true;
         // eslint-disable-next-line no-console

@@ -11,7 +11,7 @@
  * Gated on config `writer.lint_on_put_page`. Default: false (no change to
  * current put_page behavior). When enabled, findings land in:
  *   - ingest_log (via engine.logIngest) — durable, agent-inspectable
- *   - ~/.gbrain/validator-lint.jsonl — local file for drift-over-time analysis
+ *   - ~/.zbrain/validator-lint.jsonl — local file for drift-over-time analysis
  *
  * Pages with `validate: false` frontmatter skip the validators entirely
  * (grandfather opt-out from PR 2 migration).
@@ -19,7 +19,7 @@
 
 import { appendFileSync, existsSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
-import { gbrainPath } from '../config.ts';
+import { zbrainPath } from '../config.ts';
 
 import type { BrainEngine } from '../engine.ts';
 import {
@@ -30,7 +30,7 @@ import {
 } from './validators/index.ts';
 import type { ValidationFinding, PageValidator } from './writer.ts';
 
-const getLintLogFile = () => gbrainPath('validator-lint.jsonl');
+const getLintLogFile = () => zbrainPath('validator-lint.jsonl');
 const LINT_CONFIG_KEY = 'writer.lint_on_put_page';
 
 export interface PostWriteLintOpts {

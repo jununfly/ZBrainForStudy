@@ -2,8 +2,8 @@
 # tests/heavy/sync_lock_regression.sh
 # Sync writer-lock concurrency regression test.
 #
-# Spawns N concurrent `gbrain sync` processes against one DB; asserts:
-#   1. Exactly one wins the writer lock (`gbrain-sync` row in `gbrain_cycle_locks`).
+# Spawns N concurrent `zbrain sync` processes against one DB; asserts:
+#   1. Exactly one wins the writer lock (`zbrain-sync` row in `gbrain_cycle_locks`).
 #   2. N-1 lose with "Another sync is in progress" — they fail FAST, they don't queue.
 #      (Per src/commands/sync.ts:377 — performSync uses `tryAcquireDbLock`, no wait.)
 #   3. After all processes exit, zero leaked `gbrain_cycle_locks` rows remain.
@@ -21,8 +21,8 @@ cd "$(dirname "$0")/../.."
 
 if [ -z "${DATABASE_URL:-}" ]; then
   echo "[sync_lock_regression] DATABASE_URL not set; skipping (informational)." >&2
-  echo "  Local: docker run -d --name gbrain-test-pg -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=gbrain_test -p 5434:5432 pgvector/pgvector:pg16" >&2
-  echo "  Then: export DATABASE_URL=postgresql://postgres:postgres@localhost:5434/gbrain_test" >&2
+  echo "  Local: docker run -d --name zbrain-test-pg -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=zbrain_test -p 5434:5432 pgvector/pgvector:pg16" >&2
+  echo "  Then: export DATABASE_URL=postgresql://postgres:postgres@localhost:5434/zbrain_test" >&2
   exit 0
 fi
 
@@ -32,16 +32,16 @@ if ! command -v psql >/dev/null 2>&1; then
 fi
 
 TS=$(date -u +%Y%m%d-%H%M%SZ)
-# Isolate from the developer's real ~/.gbrain so writing sync.repo_path doesn't
+# Isolate from the developer's real ~/.zbrain so writing sync.repo_path doesn't
 # clobber their config. Restored on exit.
-TMP_GBRAIN_HOME=$(mktemp -d -t gbrain-sync-lock-home-XXXXXX)
-export GBRAIN_HOME="$TMP_GBRAIN_HOME"
-LOG_DIR="$GBRAIN_HOME/audit"
+TMP_ZBRAIN_HOME=$(mktemp -d -t zbrain-sync-lock-home-XXXXXX)
+export ZBRAIN_HOME="$TMP_ZBRAIN_HOME"
+LOG_DIR="$ZBRAIN_HOME/audit"
 mkdir -p "$LOG_DIR"
 LOG="$LOG_DIR/heavy-sync_lock_regression-$TS.log"
-# Surface the log path so it survives the EXIT trap that nukes GBRAIN_HOME.
+# Surface the log path so it survives the EXIT trap that nukes ZBRAIN_HOME.
 SURFACE_LOG="${TMPDIR:-/tmp}/heavy-sync_lock_regression-$TS.log"
-trap 'rm -rf "$TMP_GBRAIN_HOME"; cp -f "$LOG" "$SURFACE_LOG" 2>/dev/null || true' EXIT
+trap 'rm -rf "$TMP_ZBRAIN_HOME"; cp -f "$LOG" "$SURFACE_LOG" 2>/dev/null || true' EXIT
 
 NUM_PARALLEL="${NUM_PARALLEL:-4}"
 echo "[sync_lock_regression] DATABASE_URL=$DATABASE_URL"
@@ -49,14 +49,14 @@ echo "[sync_lock_regression] log=$LOG"
 echo "[sync_lock_regression] spawning $NUM_PARALLEL parallel sync processes..."
 
 # Step 1: ensure schema is up-to-date by running doctor once
-echo "[sync_lock_regression] init schema via gbrain doctor..." | tee -a "$LOG"
+echo "[sync_lock_regression] init schema via zbrain doctor..." | tee -a "$LOG"
 timeout 180s bun run src/cli.ts doctor --json > /dev/null 2>>"$LOG"
 
 # Step 2: create a tiny brain dir + register it as sync.repo_path so each sync
 # call has something legitimate to do.
-BRAIN_DIR=$(mktemp -d -t gbrain-sync-lock-XXXXXX)
-# Compose with the earlier GBRAIN_HOME-cleanup trap (NOT overwrite it).
-trap 'rm -rf "$BRAIN_DIR" "$TMP_GBRAIN_HOME"; cp -f "$LOG" "$SURFACE_LOG" 2>/dev/null || true' EXIT
+BRAIN_DIR=$(mktemp -d -t zbrain-sync-lock-XXXXXX)
+# Compose with the earlier ZBRAIN_HOME-cleanup trap (NOT overwrite it).
+trap 'rm -rf "$BRAIN_DIR" "$TMP_ZBRAIN_HOME"; cp -f "$LOG" "$SURFACE_LOG" 2>/dev/null || true' EXIT
 
 # Seed two markdown pages so sync has real (but trivial) work
 mkdir -p "$BRAIN_DIR"
@@ -78,7 +78,7 @@ EOF
 # git-init so sync's diff-walk has something to anchor (sync expects a git repo)
 (cd "$BRAIN_DIR" && git init -q && git add . && git -c user.email=test@test -c user.name=test commit -q -m "seed" >/dev/null 2>&1) || true
 
-# Tell gbrain to use this brain dir
+# Tell zbrain to use this brain dir
 bun run src/cli.ts config set sync.repo_path "$BRAIN_DIR" >/dev/null 2>&1 || true
 
 # Step 3: spawn N parallel sync processes. Capture each one's exit code +
@@ -127,8 +127,8 @@ echo "[sync_lock_regression] outcomes: winners=$WINNERS losers=$LOSERS unknown=$
 
 # Step 5: assert no leaked gbrain_cycle_locks rows. The pkey column is `id`,
 # not `lock_id` (column name confirmed via \d gbrain_cycle_locks).
-LEAKED=$(psql "$DATABASE_URL" -t -A -c "SELECT COUNT(*) FROM gbrain_cycle_locks WHERE id = 'gbrain-sync';" 2>>"$LOG" | tr -d ' ')
-echo "[sync_lock_regression] post-run gbrain_cycle_locks(gbrain-sync) row count: $LEAKED" | tee -a "$LOG"
+LEAKED=$(psql "$DATABASE_URL" -t -A -c "SELECT COUNT(*) FROM gbrain_cycle_locks WHERE id = 'zbrain-sync';" 2>>"$LOG" | tr -d ' ')
+echo "[sync_lock_regression] post-run gbrain_cycle_locks(zbrain-sync) row count: $LEAKED" | tee -a "$LOG"
 
 # Step 6: verdict
 FAIL=0
@@ -151,7 +151,7 @@ fi
 
 # The lock row must be cleaned up on exit (release via try/finally).
 if [ "$LEAKED" != "0" ]; then
-  echo "[sync_lock_regression] FAIL: $LEAKED leaked gbrain_cycle_locks(gbrain-sync) row(s) after all syncs exited" >&2
+  echo "[sync_lock_regression] FAIL: $LEAKED leaked gbrain_cycle_locks(zbrain-sync) row(s) after all syncs exited" >&2
   FAIL=1
 fi
 

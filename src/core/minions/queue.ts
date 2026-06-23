@@ -48,7 +48,7 @@ export class MinionQueue {
     const current = parseInt(ver || '1', 10);
     if (current < MIGRATION_VERSION) {
       throw new Error(
-        `minion_jobs table not found (schema version ${current}, need ${MIGRATION_VERSION}). Run 'gbrain init' to apply migrations.`
+        `minion_jobs table not found (schema version ${current}, need ${MIGRATION_VERSION}). Run 'zbrain init' to apply migrations.`
       );
     }
   }

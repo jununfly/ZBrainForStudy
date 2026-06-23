@@ -9,11 +9,11 @@
  * All DDL is `CREATE TABLE IF NOT EXISTS` and ships in src/schema.sql +
  * src/core/pglite-schema.ts (both Postgres and PGLite fresh-install paths).
  * This orchestrator's job is therefore only to VERIFY the tables exist after
- * `gbrain init --migrate-only` has run, so an upgrade that somehow skipped
+ * `zbrain init --migrate-only` has run, so an upgrade that somehow skipped
  * the schema step fails loudly instead of silently.
  *
  * Phases (all idempotent):
- *   A. Schema — gbrain init --migrate-only (creates tables via SCHEMA_SQL).
+ *   A. Schema — zbrain init --migrate-only (creates tables via SCHEMA_SQL).
  *   B. Verify — confirm all three tables exist.
  *   C. Record — append completed.jsonl.
  */
@@ -31,7 +31,7 @@ const REQUIRED_TABLES = ['subagent_messages', 'subagent_tool_executions', 'subag
 function phaseASchema(opts: OrchestratorOpts): OrchestratorPhaseResult {
   if (opts.dryRun) return { name: 'schema', status: 'skipped', detail: 'dry-run' };
   try {
-    execSync('gbrain init --migrate-only', { stdio: 'inherit', timeout: 60_000, env: process.env });
+    execSync('zbrain init --migrate-only', { stdio: 'inherit', timeout: 60_000, env: process.env });
     return { name: 'schema', status: 'complete' };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -125,8 +125,8 @@ export const v0_16_0: Migration = {
     description:
       'v0.16.0 adds the subagent runtime: run long-running, fan-out Anthropic LLM loops ' +
       'as first-class Minion jobs. Crash-resumable turn persistence, two-phase tool ledger, ' +
-      'lease-based rate limit, parent-child fan-out with aggregation. Entry points: `gbrain ' +
-      'agent run` and `gbrain agent logs`. See docs/guides/plugin-authors.md for shipping ' +
+      'lease-based rate limit, parent-child fan-out with aggregation. Entry points: `zbrain ' +
+      'agent run` and `zbrain agent logs`. See docs/guides/plugin-authors.md for shipping ' +
       'custom subagent defs from a host repo (your OpenClaw etc.).',
   },
   orchestrator,

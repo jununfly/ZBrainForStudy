@@ -9,12 +9,12 @@
 # react/vite/etc. are present, then runs Vite's build which performs
 # TypeScript type-check + bundle.
 #
-# Skip with GBRAIN_SKIP_ADMIN_BUILD=1 (e.g., for fast inner-loop test
+# Skip with ZBRAIN_SKIP_ADMIN_BUILD=1 (e.g., for fast inner-loop test
 # runs that don't touch admin/src). Production CI must NOT skip.
 set -euo pipefail
 
-if [ "${GBRAIN_SKIP_ADMIN_BUILD:-0}" = "1" ]; then
-  echo "[check:admin-build] GBRAIN_SKIP_ADMIN_BUILD=1, skipping"
+if [ "${ZBRAIN_SKIP_ADMIN_BUILD:-0}" = "1" ]; then
+  echo "[check:admin-build] ZBRAIN_SKIP_ADMIN_BUILD=1, skipping"
   exit 0
 fi
 

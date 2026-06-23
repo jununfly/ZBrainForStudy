@@ -1,5 +1,5 @@
 /**
- * HTTP transport for `gbrain serve --http` (legacy bearer-auth path).
+ * HTTP transport for `zbrain serve --http` (legacy bearer-auth path).
  *
  * Engine-aware via SqlQuery (works on both Postgres and PGLite as of the
  * v0.31 wave). The access_tokens and mcp_request_log tables exist on both
@@ -8,15 +8,15 @@
  * Security model:
  *   - Every request must include `Authorization: Bearer <token>` (except /health)
  *   - Tokens are validated against SHA-256 hashes in the access_tokens table
- *   - Create/manage tokens with auth.ts (gbrain auth create/list/revoke)
+ *   - Create/manage tokens with auth.ts (zbrain auth create/list/revoke)
  *   - No open OAuth, no client_credentials, no self-service tokens
  *
  * Hardening:
- *   - CORS default-deny: allowlist via GBRAIN_HTTP_CORS_ORIGIN (comma-separated)
+ *   - CORS default-deny: allowlist via ZBRAIN_HTTP_CORS_ORIGIN (comma-separated)
  *   - Rate limit: per-IP pre-auth (protects DB from brute-force load) + per-token-id post-auth
  *     (limits runaway clients). Default 30 req/min per IP, 60 req/min per token. Bounded LRU
  *     so attacker-controlled keys can't grow memory unbounded.
- *   - Body cap: 1 MiB default (GBRAIN_HTTP_MAX_BODY_BYTES). Stream-counted, not buffered —
+ *   - Body cap: 1 MiB default (ZBRAIN_HTTP_MAX_BODY_BYTES). Stream-counted, not buffered —
  *     chunked transfers without Content-Length are still capped.
  *   - last_used_at debounce: only one UPDATE per token per 60s (SQL-level WHERE clause).
  *   - mcp_request_log: one row per request with token_name + operation + status + latency.
@@ -48,7 +48,7 @@ function envInt(name: string, fallback: number): number {
 }
 
 function parseCorsAllowlist(): Set<string> | null {
-  const v = process.env.GBRAIN_HTTP_CORS_ORIGIN;
+  const v = process.env.ZBRAIN_HTTP_CORS_ORIGIN;
   if (!v) return null;
   return new Set(v.split(',').map(s => s.trim()).filter(Boolean));
 }
@@ -70,7 +70,7 @@ interface AuthResult {
    * v0.34.1 (#861, D13): source-isolation scope for the auth'd request.
    * Legacy bearer tokens here default to 'default' to match the v0.33
    * effective behavior (the now-removed serve-http.ts fallback chain).
-   * Operators migrate to the full OAuth transport (gbrain serve --http)
+   * Operators migrate to the full OAuth transport (zbrain serve --http)
    * for narrower scoping.
    */
   sourceId?: string;
@@ -108,9 +108,9 @@ async function readBodyWithCap(req: Request, cap: number): Promise<string | null
   return new TextDecoder().decode(merged);
 }
 
-/** Resolve client IP. Honors X-Forwarded-For only when GBRAIN_HTTP_TRUST_PROXY=1. */
+/** Resolve client IP. Honors X-Forwarded-For only when ZBRAIN_HTTP_TRUST_PROXY=1. */
 function resolveClientIp(req: Request, server: { requestIP: (r: Request) => { address: string } | null }): string {
-  if (process.env.GBRAIN_HTTP_TRUST_PROXY === '1') {
+  if (process.env.ZBRAIN_HTTP_TRUST_PROXY === '1') {
     const xff = req.headers.get('x-forwarded-for');
     if (xff) {
       const first = xff.split(',')[0]?.trim();
@@ -133,7 +133,7 @@ export async function startHttpTransport(opts: HttpTransportOptions) {
   const sql = sqlQueryForEngine(engine);
 
   const limiters = opts.limiters || buildDefaultLimiters();
-  const bodyCap = envInt('GBRAIN_HTTP_MAX_BODY_BYTES', DEFAULT_BODY_CAP);
+  const bodyCap = envInt('ZBRAIN_HTTP_MAX_BODY_BYTES', DEFAULT_BODY_CAP);
   const corsAllowlist = parseCorsAllowlist();
   const tools = buildToolDefs(operations);
 
@@ -287,7 +287,7 @@ export async function startHttpTransport(opts: HttpTransportOptions) {
       if (!auth.ok) {
         logRequest(null, 'unknown', 'auth_failed', Date.now() - startedMs);
         return Response.json(
-          { error: 'invalid_token', message: 'Bearer token required. Create one: gbrain auth create <name>' },
+          { error: 'invalid_token', message: 'Bearer token required. Create one: zbrain auth create <name>' },
           { status: 401, headers: corsHeaders(origin) },
         );
       }
@@ -326,7 +326,7 @@ export async function startHttpTransport(opts: HttpTransportOptions) {
           {
             result: {
               protocolVersion: '2025-03-26',
-              serverInfo: { name: 'gbrain', version: VERSION },
+              serverInfo: { name: 'zbrain', version: VERSION },
               capabilities: { tools: {} },
             },
             jsonrpc: '2.0',
@@ -379,18 +379,18 @@ export async function startHttpTransport(opts: HttpTransportOptions) {
     },
   });
 
-  console.error(`GBrain HTTP MCP server running on port ${port}`);
+  console.error(`ZBrain HTTP MCP server running on port ${port}`);
   console.error(`  Health: http://localhost:${port}/health`);
   console.error(`  MCP:    http://localhost:${port}/mcp`);
-  console.error(`  Auth:   Bearer token required (create with: gbrain auth create <name>)`);
+  console.error(`  Auth:   Bearer token required (create with: zbrain auth create <name>)`);
   if (!corsAllowlist) {
-    console.error('  CORS:   default-deny. Set GBRAIN_HTTP_CORS_ORIGIN=https://your.app to allow browser clients.');
+    console.error('  CORS:   default-deny. Set ZBRAIN_HTTP_CORS_ORIGIN=https://your.app to allow browser clients.');
   } else {
     console.error(`  CORS:   allowlist = ${[...corsAllowlist].join(', ')}`);
   }
   console.error('');
   console.error('⚠️  Do NOT use open OAuth registration for remote MCP access.');
-  console.error('   Tokens are managed via: gbrain auth create/list/revoke');
+  console.error('   Tokens are managed via: zbrain auth create/list/revoke');
 
   return server;
 }

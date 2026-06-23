@@ -1,5 +1,5 @@
 /**
- * gbrain skillpack <list|scaffold|reference|migrate-fence|scrub-legacy-fence-rows|harvest|diff|check>
+ * zbrain skillpack <list|scaffold|reference|migrate-fence|scrub-legacy-fence-rows|harvest|diff|check>
  *
  * v0.33 contract change: dropped `install` and `uninstall` (managed-block
  * model). Replaced by:
@@ -8,7 +8,7 @@
  *                                Add `--apply-clean-hunks` to two-way auto-apply
  *   - `migrate-fence`          — one-shot strip of the legacy fence
  *   - `scrub-legacy-fence-rows` — opt-in cleanup of legacy rows post-migrate
- *   - `harvest`                — inverse: lift host skill into gbrain
+ *   - `harvest`                — inverse: lift host skill into zbrain
  *
  * `install` and `uninstall` now exit non-zero with a hint pointing at the
  * replacement command. Clean break, no deprecated alias (D10-amended).
@@ -19,7 +19,7 @@ import { isAbsolute, resolve as resolvePath, join } from 'path';
 
 import {
   bundledSkillSlugs,
-  findGbrainRoot,
+  findZbrainRoot,
   loadBundleManifest,
   BundleError,
 } from '../core/skillpack/bundle.ts';
@@ -41,7 +41,7 @@ import {
 import { SkillpackManifestError } from '../core/skillpack/manifest-v1.ts';
 import { VERSION } from '../version.ts';
 
-const HELP_TOP = `gbrain skillpack <subcommand> [options]
+const HELP_TOP = `zbrain skillpack <subcommand> [options]
 
 Subcommands:
   list                       Print every skill bundled in openclaw.plugin.json.
@@ -50,9 +50,9 @@ Subcommands:
                              into your agent repo. Additive; refuses to
                              overwrite. Third-party sources: owner/repo,
                              https://...git, ./local-dir, ./local.tgz.
-  scaffold --all             Scaffold every bundled skill (gbrain only).
+  scaffold --all             Scaffold every bundled skill (zbrain only).
 
-  reference <name>           Read-only: diff gbrain's bundle vs your local copy.
+  reference <name>           Read-only: diff zbrain's bundle vs your local copy.
   reference --all            Sweep over every bundled skill.
   reference <n> --apply-clean-hunks
                              Two-way diff, auto-apply non-conflicting hunks.
@@ -65,7 +65,7 @@ Subcommands:
 
   harvest <slug> --from <host-repo-root>
                              Lift a proven skill from a host agent repo
-                             back into gbrain.
+                             back into zbrain.
 
   diff <name>                (Informational) per-file status; exit 0 always.
 
@@ -80,13 +80,13 @@ Subcommands:
                              third-party pack. --quick (~5s), --fix to
                              auto-scaffold missing artifacts.
   init <name>                Scaffold a fresh skillpack tree (cathedral
-                             default; --minimal opts out of test/e2e/evals).
+                             default; --minimal opts out of tests/unit/e2e/evals).
   pack [<pack-dir>]          Run doctor then emit a deterministic
                              <name>-<version>.tgz tarball with SHA-256.
   endorse <name>             (Operator-only) Set the tier for a pack in
                              endorsements.json inside a registry repo clone.
 
-Run \`gbrain skillpack <subcommand> --help\` for per-subcommand options.
+Run \`zbrain skillpack <subcommand> --help\` for per-subcommand options.
 
 Removed in v0.33 (use migrate-fence to upgrade, then \`scaffold\`):
   install       — replaced by \`scaffold\`. Run \`migrate-fence\` once.
@@ -149,14 +149,14 @@ export async function runSkillpack(args: string[]): Promise<void> {
       return;
     case 'install':
       console.error(
-        "Error: 'gbrain skillpack install' was removed in v0.33. Use 'gbrain skillpack scaffold <name>' instead.\n" +
-          "If you're upgrading from an older release, run 'gbrain skillpack migrate-fence' once to strip the legacy managed block, then scaffold any new skills.",
+        "Error: 'zbrain skillpack install' was removed in v0.33. Use 'zbrain skillpack scaffold <name>' instead.\n" +
+          "If you're upgrading from an older release, run 'zbrain skillpack migrate-fence' once to strip the legacy managed block, then scaffold any new skills.",
       );
       process.exit(2);
       return;
     case 'uninstall':
       console.error(
-        "Error: 'gbrain skillpack uninstall' was removed in v0.33. The new scaffold model lets you own scaffolded files outright — to remove a skill, delete its directory (rm -rf skills/<slug>/) and any paired source files declared in its frontmatter.",
+        "Error: 'zbrain skillpack uninstall' was removed in v0.33. The new scaffold model lets you own scaffolded files outright — to remove a skill, delete its directory (rm -rf skills/<slug>/) and any paired source files declared in its frontmatter.",
       );
       process.exit(2);
       return;
@@ -171,10 +171,10 @@ function resolveAbs(p: string): string {
   return isAbsolute(p) ? p : resolvePath(process.cwd(), p);
 }
 
-function findGbrainOrDie(): string {
-  const root = findGbrainRoot();
+function findZbrainOrDie(): string {
+  const root = findZbrainRoot();
   if (!root) {
-    console.error('Error: could not find gbrain repo root.');
+    console.error('Error: could not find zbrain repo root.');
     process.exit(2);
   }
   return root;
@@ -197,14 +197,14 @@ function resolveWorkspace(opts: { workspace?: string | null; skillsDir?: string 
 
 async function cmdList(args: string[]): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) {
-    console.log('gbrain skillpack list [--json]\n\nPrint every skill bundled in openclaw.plugin.json.');
+    console.log('zbrain skillpack list [--json]\n\nPrint every skill bundled in openclaw.plugin.json.');
     process.exit(0);
   }
   const json = args.includes('--json');
-  const gbrainRoot = findGbrainOrDie();
+  const zbrainRoot = findZbrainOrDie();
   let manifest;
   try {
-    manifest = loadBundleManifest(gbrainRoot);
+    manifest = loadBundleManifest(zbrainRoot);
   } catch (err) {
     console.error(`skillpack list: ${(err as Error).message}`);
     process.exit(2);
@@ -212,7 +212,7 @@ async function cmdList(args: string[]): Promise<void> {
   const slugs = bundledSkillSlugs(manifest);
   if (json) {
     const entries = slugs.map(slug => {
-      const skillMd = join(gbrainRoot, 'skills', slug, 'SKILL.md');
+      const skillMd = join(zbrainRoot, 'skills', slug, 'SKILL.md');
       let description: string | null = null;
       if (existsSync(skillMd)) {
         const body = readFileSync(skillMd, 'utf-8');
@@ -239,7 +239,7 @@ async function cmdList(args: string[]): Promise<void> {
 async function cmdScaffold(args: string[]): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) {
     console.log(
-      'gbrain skillpack scaffold <name> | <source> | --all [--workspace PATH] [--dry-run] [--trust] [--no-cache] [--json]\n\n' +
+      'zbrain skillpack scaffold <name> | <source> | --all [--workspace PATH] [--dry-run] [--trust] [--no-cache] [--json]\n\n' +
       '<name>   — bundled skill slug (e.g. `book-mirror`)\n' +
       '<source> — third-party skillpack source. Accepted shapes:\n' +
       '             owner/repo                (expands to https://github.com/owner/repo)\n' +
@@ -248,7 +248,7 @@ async function cmdScaffold(args: string[]): Promise<void> {
       '             ./local/pack.tgz          (local tarball)\n' +
       '\nFlags:\n' +
       '  --workspace PATH    Target workspace (default: auto-detected)\n' +
-      '  --all               Scaffold every bundled skill (gbrain only)\n' +
+      '  --all               Scaffold every bundled skill (zbrain only)\n' +
       '  --dry-run           Validate + report; no writes\n' +
       '  --trust             Skip first-install confirm prompt (CI / unattended agents)\n' +
       '  --no-cache          Force fresh clone/extract for third-party sources\n' +
@@ -292,10 +292,10 @@ async function cmdScaffold(args: string[]): Promise<void> {
 
   if (!all && name !== null && !isThirdPartyShape) {
     // Check if the kebab name matches a bundled-skill slug.
-    const gbrainRoot = findGbrainRoot();
-    if (gbrainRoot) {
+    const zbrainRoot = findZbrainRoot();
+    if (zbrainRoot) {
       try {
-        const manifest = loadBundleManifest(gbrainRoot);
+        const manifest = loadBundleManifest(zbrainRoot);
         const slugs = bundledSkillSlugs(manifest);
         if (!slugs.includes(name)) {
           // Not a bundled slug — try the registry.
@@ -325,10 +325,10 @@ async function cmdScaffold(args: string[]): Promise<void> {
     return;
   }
 
-  const gbrainRoot = findGbrainOrDie();
+  const zbrainRoot = findZbrainOrDie();
   try {
     const result = runScaffold({
-      gbrainRoot,
+      zbrainRoot,
       targetWorkspace,
       skillSlug: all ? null : name!,
       dryRun,
@@ -344,7 +344,7 @@ async function cmdScaffold(args: string[]): Promise<void> {
       if (!dryRun && result.summary.wroteNew > 0) {
         const onboardingPath = join(targetWorkspace, 'skills', '_AGENT_README.md');
         console.log(
-          `\nNext: your agent walks \`skills/*/SKILL.md\` frontmatter \`triggers:\` for routing.\nIf this is a fresh install, read ${onboardingPath} for the agent contract.\nWhen gbrain ships an update later, run \`gbrain skillpack reference --all\` to sweep.`,
+          `\nNext: your agent walks \`skills/*/SKILL.md\` frontmatter \`triggers:\` for routing.\nIf this is a fresh install, read ${onboardingPath} for the agent contract.\nWhen zbrain ships an update later, run \`zbrain skillpack reference --all\` to sweep.`,
         );
       }
     }
@@ -386,7 +386,7 @@ async function runThirdPartyScaffold(opts: ThirdPartyScaffoldOptions): Promise<v
       if (!found) {
         console.error(
           `Error: no skillpack named "${cls.normalized}" in the registry (${loaded.registry_url}).\n` +
-            `Run \`gbrain skillpack search ${cls.normalized}\` for matches, or pass a full source (owner/repo, https URL, ./path, ./*.tgz).`,
+            `Run \`zbrain skillpack search ${cls.normalized}\` for matches, or pass a full source (owner/repo, https URL, ./path, ./*.tgz).`,
         );
         process.exit(2);
       }
@@ -469,7 +469,7 @@ async function runThirdPartyScaffold(opts: ThirdPartyScaffoldOptions): Promise<v
       if (!opts.dryRun && summary && summary.wroteNew > 0) {
         console.log(
           `\nNext: your agent walks skills/*/SKILL.md frontmatter triggers: for routing.\n` +
-            `Run \`gbrain skillpack reference ${m.name}\` later if upstream changes.`,
+            `Run \`zbrain skillpack reference ${m.name}\` later if upstream changes.`,
         );
       }
     }
@@ -490,10 +490,10 @@ async function runThirdPartyScaffold(opts: ThirdPartyScaffoldOptions): Promise<v
 async function cmdReference(args: string[]): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) {
     console.log(
-      'gbrain skillpack reference <name> | --all [--workspace PATH] [--apply-clean-hunks] [--since <version>] [--dry-run] [--json]\n\n' +
+      'zbrain skillpack reference <name> | --all [--workspace PATH] [--apply-clean-hunks] [--since <version>] [--dry-run] [--json]\n\n' +
         '  --since <version>   With --all, restrict the sweep to skills whose source\n' +
-        '                      changed in gbrain between <version> and HEAD. Useful\n' +
-        '                      after `gbrain upgrade` to see only what moved.',
+        '                      changed in zbrain between <version> and HEAD. Useful\n' +
+        '                      after `zbrain upgrade` to see only what moved.',
     );
     process.exit(0);
   }
@@ -525,7 +525,7 @@ async function cmdReference(args: string[]): Promise<void> {
     process.exit(2);
   }
 
-  const gbrainRoot = findGbrainOrDie();
+  const zbrainRoot = findZbrainOrDie();
   const targetWorkspace = resolveWorkspace({ workspace });
 
   try {
@@ -543,14 +543,14 @@ async function cmdReference(args: string[]): Promise<void> {
       // output's `framing` field already, and the docstring on the
       // command-help covers it.
       const twoWayWarning =
-        'WARNING: --apply-clean-hunks is a two-way diff against gbrain\'s CURRENT bundle.\n' +
-        '         gbrain does NOT have access to the version you originally scaffolded.\n' +
-        '         Hunks where your LOCAL edits differ from gbrain WILL be aligned to gbrain.\n' +
-        '         If you have intentional local edits, run `gbrain skillpack reference ' + name + '`\n' +
+        'WARNING: --apply-clean-hunks is a two-way diff against zbrain\'s CURRENT bundle.\n' +
+        '         zbrain does NOT have access to the version you originally scaffolded.\n' +
+        '         Hunks where your LOCAL edits differ from zbrain WILL be aligned to zbrain.\n' +
+        '         If you have intentional local edits, run `zbrain skillpack reference ' + name + '`\n' +
         '         (read-only) first to inspect, OR pass --dry-run on this command.';
       if (!dryRun && !json) console.error(twoWayWarning);
 
-      const result = runReferenceApply({ gbrainRoot, targetWorkspace, skillSlug: name!, dryRun });
+      const result = runReferenceApply({ zbrainRoot, targetWorkspace, skillSlug: name!, dryRun });
       if (json) console.log(JSON.stringify(result, null, 2));
       else {
         console.log(result.framing);
@@ -564,7 +564,7 @@ async function cmdReference(args: string[]): Promise<void> {
         }
         if (result.summary.totalHunksConflicted > 0) {
           console.log(
-            '\nConflicts left in place. Run `gbrain skillpack reference ' + name + '` to inspect\nthe unified diffs and patch by hand. The conflict_missing / conflict_ambiguous\nlabels above indicate WHY the hunk could not be applied automatically.',
+            '\nConflicts left in place. Run `zbrain skillpack reference ' + name + '` to inspect\nthe unified diffs and patch by hand. The conflict_missing / conflict_ambiguous\nlabels above indicate WHY the hunk could not be applied automatically.',
           );
         }
       }
@@ -572,14 +572,14 @@ async function cmdReference(args: string[]): Promise<void> {
     }
 
     if (all) {
-      const result = runReferenceAll({ gbrainRoot, targetWorkspace });
-      // --since filter: keep only skills whose source changed in gbrain
+      const result = runReferenceAll({ zbrainRoot, targetWorkspace });
+      // --since filter: keep only skills whose source changed in zbrain
       // since the given version. Falls back loudly when git can't resolve
       // the ref (tarball install, missing tag, etc).
       let sinceFilter: Set<string> | null = null;
       if (since) {
         const { changedSlugsSinceVersion } = await import('../core/skillpack/bundle.ts');
-        const slugs = changedSlugsSinceVersion(gbrainRoot, since);
+        const slugs = changedSlugsSinceVersion(zbrainRoot, since);
         if (slugs === null) {
           console.error(
             `warn: --since '${since}' could not be resolved (no git checkout, missing tag, or git error). Falling back to full sweep.`,
@@ -610,7 +610,7 @@ async function cmdReference(args: string[]): Promise<void> {
       process.exit(0);
     }
 
-    const result = runReference({ gbrainRoot, targetWorkspace, skillSlug: name! });
+    const result = runReference({ zbrainRoot, targetWorkspace, skillSlug: name! });
     if (json) console.log(JSON.stringify(result, null, 2));
     else {
       console.log(result.framing);
@@ -627,12 +627,12 @@ async function cmdReference(args: string[]): Promise<void> {
         console.log('\nAgent decision policy per file:');
         if (result.summary.missing > 0) {
           console.log(
-            '  missing → gbrain has a file you don\'t. Usually safe to `gbrain skillpack scaffold ' + name + '` again to land it.',
+            '  missing → zbrain has a file you don\'t. Usually safe to `zbrain skillpack scaffold ' + name + '` again to land it.',
           );
         }
         if (result.summary.differs > 0) {
           console.log(
-            '  differs → was your local edit intentional? Keep it (gbrain is reference, not law).\n            Accidental drift? Patch by hand, or `gbrain skillpack reference ' + name + ' --apply-clean-hunks`\n            (READ the two-way merge warning in that command\'s output first).',
+            '  differs → was your local edit intentional? Keep it (zbrain is reference, not law).\n            Accidental drift? Patch by hand, or `zbrain skillpack reference ' + name + ' --apply-clean-hunks`\n            (READ the two-way merge warning in that command\'s output first).',
           );
         }
       }
@@ -653,7 +653,7 @@ async function cmdReference(args: string[]): Promise<void> {
 
 async function cmdMigrateFence(args: string[]): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) {
-    console.log('gbrain skillpack migrate-fence [--workspace PATH] [--dry-run] [--json]');
+    console.log('zbrain skillpack migrate-fence [--workspace PATH] [--dry-run] [--json]');
     process.exit(0);
   }
   const json = args.includes('--json');
@@ -668,9 +668,9 @@ async function cmdMigrateFence(args: string[]): Promise<void> {
       workspace = a.slice('--workspace='.length) || null;
     }
   }
-  const gbrainRoot = findGbrainOrDie();
+  const zbrainRoot = findZbrainOrDie();
   const targetWorkspace = resolveWorkspace({ workspace });
-  const result = runMigrateFence({ targetWorkspace, gbrainRoot, dryRun });
+  const result = runMigrateFence({ targetWorkspace, zbrainRoot, dryRun });
   if (json) console.log(JSON.stringify(result, null, 2));
   else {
     console.log(`migrate-fence: ${result.status}`);
@@ -684,7 +684,7 @@ async function cmdMigrateFence(args: string[]): Promise<void> {
     // Next-action hint for the agent on a successful strip.
     if (result.status === 'fence_stripped' && !dryRun) {
       console.log(
-        '\nNext: your routing model just changed. The managed-block fence is gone.\nYour agent should walk `skills/*/SKILL.md` frontmatter `triggers:` for routing.\nPreserved table rows are a transitional bridge — once frontmatter walking is\nconfirmed working, run `gbrain skillpack scrub-legacy-fence-rows` to clean up.\nFresh install? Read `skills/_AGENT_README.md` for the full agent contract.',
+        '\nNext: your routing model just changed. The managed-block fence is gone.\nYour agent should walk `skills/*/SKILL.md` frontmatter `triggers:` for routing.\nPreserved table rows are a transitional bridge — once frontmatter walking is\nconfirmed working, run `zbrain skillpack scrub-legacy-fence-rows` to clean up.\nFresh install? Read `skills/_AGENT_README.md` for the full agent contract.',
       );
     }
   }
@@ -698,7 +698,7 @@ async function cmdMigrateFence(args: string[]): Promise<void> {
 async function cmdScrubLegacy(args: string[]): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) {
     console.log(
-      'gbrain skillpack scrub-legacy-fence-rows [--workspace PATH] [--dry-run] [--json]',
+      'zbrain skillpack scrub-legacy-fence-rows [--workspace PATH] [--dry-run] [--json]',
     );
     process.exit(0);
   }
@@ -734,7 +734,7 @@ async function cmdScrubLegacy(args: string[]): Promise<void> {
 async function cmdSearch(args: string[]): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) {
     console.log(
-      'gbrain skillpack search [<query>] [--tier endorsed|community|experimental|dead] [--json] [--refresh] [--url URL]',
+      'zbrain skillpack search [<query>] [--tier endorsed|community|experimental|dead] [--json] [--refresh] [--url URL]',
     );
     process.exit(0);
   }
@@ -805,7 +805,7 @@ async function cmdSearch(args: string[]): Promise<void> {
 
 async function cmdInfo(args: string[]): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) {
-    console.log('gbrain skillpack info <name> [--json] [--refresh] [--url URL]');
+    console.log('zbrain skillpack info <name> [--json] [--refresh] [--url URL]');
     process.exit(0);
   }
   const json = args.includes('--json');
@@ -848,7 +848,7 @@ async function cmdInfo(args: string[]): Promise<void> {
           tags: found.entry.tags,
           source: found.entry.source,
           tarball_sha256: found.entry.tarball_sha256,
-          gbrain_min_version: found.entry.gbrain_min_version,
+          zbrain_min_version: found.entry.zbrain_min_version,
           validated_at: found.entry.validated_at,
           validation_run_id: found.entry.validation_run_id,
           skills_count: found.entry.skills_count,
@@ -867,22 +867,22 @@ async function cmdInfo(args: string[]): Promise<void> {
   console.log(`  Source:        ${found.entry.source.url}`);
   console.log(`  Pinned commit: ${found.entry.source.pinned_commit}`);
   console.log(`  Tarball SHA:   sha256:${found.entry.tarball_sha256}`);
-  console.log(`  gbrain min:    ${found.entry.gbrain_min_version}`);
+  console.log(`  zbrain min:    ${found.entry.zbrain_min_version}`);
   console.log(`  Validated:     ${found.entry.validated_at} (run ${found.entry.validation_run_id})`);
   console.log(`  Tags:          ${found.entry.tags.join(', ')}`);
   console.log(`  Skills (${found.entry.skills_count}):`);
   for (const s of found.entry.skills) console.log(`    - ${s}`);
   console.log('\nTo scaffold:');
-  console.log(`  gbrain skillpack scaffold ${found.entry.name}`);
+  console.log(`  zbrain skillpack scaffold ${found.entry.name}`);
   process.exit(0);
 }
 
 async function cmdRegistry(args: string[]): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) {
     console.log(
-      'gbrain skillpack registry [--url URL] [--refresh] [--json]\n' +
+      'zbrain skillpack registry [--url URL] [--refresh] [--json]\n' +
         '\n' +
-        '  --url URL    Set the registry URL (writes to ~/.gbrain/config.json)\n' +
+        '  --url URL    Set the registry URL (writes to ~/.zbrain/config.json)\n' +
         '  --refresh    Force a fresh fetch from the current registry URL\n' +
         '  --json       JSON output for agent consumption',
     );
@@ -899,9 +899,9 @@ async function cmdRegistry(args: string[]): Promise<void> {
   }
 
   if (setUrl) {
-    // Persist to ~/.gbrain/config.json under skillpack.registry_url.
-    const { gbrainPath } = await import('../core/config.ts');
-    const cfgPath = gbrainPath('config.json');
+    // Persist to ~/.zbrain/config.json under skillpack.registry_url.
+    const { zbrainPath } = await import('../core/config.ts');
+    const cfgPath = zbrainPath('config.json');
     let cfg: Record<string, unknown> = {};
     if (existsSync(cfgPath)) {
       try {
@@ -964,7 +964,7 @@ async function cmdRegistry(args: string[]): Promise<void> {
 async function cmdDoctor(args: string[]): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) {
     console.log(
-      'gbrain skillpack doctor <pack-dir> [--quick|--full] [--fix] [--yes] [--json]\n\n' +
+      'zbrain skillpack doctor <pack-dir> [--quick|--full] [--fix] [--yes] [--json]\n\n' +
         '  <pack-dir>   Path to the skillpack root (where skillpack.json lives)\n' +
         '  --quick      Structural rubric (~5s, no sandbox/LLM/DB) — default\n' +
         '  --full       Add publish-gate suite execution (lands in a follow-up wave)\n' +
@@ -1012,10 +1012,10 @@ async function cmdDoctor(args: string[]): Promise<void> {
 async function cmdInit(args: string[]): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) {
     console.log(
-      'gbrain skillpack init <name> [--target PATH] [--minimal] [--author NAME] [--license SPDX] [--homepage URL] [--dry-run] [--json]\n\n' +
+      'zbrain skillpack init <name> [--target PATH] [--minimal] [--author NAME] [--license SPDX] [--homepage URL] [--dry-run] [--json]\n\n' +
         '  <name>       Pack name (lowercase kebab; becomes manifest.name + dir leaf)\n' +
         '  --target     Target dir (default: ./<name>)\n' +
-        '  --minimal    Skip test/, e2e/, evals/ (advanced; doctor will score lower)\n' +
+        '  --minimal    Skip tests/unit/, e2e/, evals/ (advanced; doctor will score lower)\n' +
         '  --dry-run    Report intent, no writes\n' +
         '  --json       JSON envelope for agent consumption',
     );
@@ -1090,7 +1090,7 @@ async function cmdInit(args: string[]): Promise<void> {
       }
       if (!dryRun) {
         console.log(
-          `\nNext:\n  cd ${result.targetDir}\n  gbrain skillpack doctor . --quick\n  # iterate, then:\n  gbrain skillpack pack`,
+          `\nNext:\n  cd ${result.targetDir}\n  zbrain skillpack doctor . --quick\n  # iterate, then:\n  zbrain skillpack pack`,
         );
       }
     }
@@ -1111,7 +1111,7 @@ async function cmdInit(args: string[]): Promise<void> {
 async function cmdPack(args: string[]): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) {
     console.log(
-      'gbrain skillpack pack [<pack-dir>] [--out PATH] [--dry-run] [--skip-doctor] [--json]\n\n' +
+      'zbrain skillpack pack [<pack-dir>] [--out PATH] [--dry-run] [--skip-doctor] [--json]\n\n' +
         '  <pack-dir>    Pack root (default: .)\n' +
         '  --out PATH    Output dir for the tarball (default: <pack-dir>)\n' +
         '  --dry-run     Validate only, no tarball\n' +
@@ -1152,7 +1152,7 @@ async function cmdPack(args: string[]): Promise<void> {
         const blocked = result.doctor.dimensions.filter((d) => !d.passed && d.category === 'core');
         for (const d of blocked) console.error(`  ✗ ${d.name}: ${d.detail}`);
       }
-      console.error('\nRun `gbrain skillpack doctor . --fix --yes` to auto-scaffold what you can, then re-run.');
+      console.error('\nRun `zbrain skillpack doctor . --fix --yes` to auto-scaffold what you can, then re-run.');
       process.exit(2);
     } else if (result.tarball) {
       console.log(`pack: ${result.pack_name}@${result.pack_version} -> ${result.tarball.outPath}`);
@@ -1180,7 +1180,7 @@ async function cmdPack(args: string[]): Promise<void> {
 async function cmdEndorse(args: string[]): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) {
     console.log(
-      'gbrain skillpack endorse <name> [--tier endorsed|community|experimental|dead] [--repo PATH] [--note TEXT] [--push] [--dry-run] [--json]\n\n' +
+      'zbrain skillpack endorse <name> [--tier endorsed|community|experimental|dead] [--repo PATH] [--note TEXT] [--push] [--dry-run] [--json]\n\n' +
         '  <name>     Pack name as it appears in registry.json\n' +
         '  --tier     Target tier (default: endorsed)\n' +
         '  --repo     Path to a clone of the registry repo (default: .)\n' +
@@ -1189,7 +1189,7 @@ async function cmdEndorse(args: string[]): Promise<void> {
         '  --dry-run  Report what would change without writing or committing\n' +
         '  --json     Stable JSON envelope for agent consumption\n\n' +
         'This is the Garry-only operator workflow. It writes endorsements.json + commits;\n' +
-        'requires a clone of garrytan/gbrain-skillpack-registry (or any registry-shaped repo).',
+        'requires a clone of garrytan/zbrain-skillpack-registry (or any registry-shaped repo).',
     );
     process.exit(0);
   }
@@ -1261,7 +1261,7 @@ async function cmdEndorse(args: string[]): Promise<void> {
 async function cmdHarvest(args: string[]): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) {
     console.log(
-      'gbrain skillpack harvest <slug> --from <host-repo-root> [--no-lint] [--dry-run] [--overwrite-local] [--json]',
+      'zbrain skillpack harvest <slug> --from <host-repo-root> [--no-lint] [--dry-run] [--overwrite-local] [--json]',
     );
     process.exit(0);
   }
@@ -1290,13 +1290,13 @@ async function cmdHarvest(args: string[]): Promise<void> {
     console.error('Error: pass --from <host-repo-root>.');
     process.exit(2);
   }
-  const gbrainRoot = findGbrainOrDie();
+  const zbrainRoot = findZbrainOrDie();
 
   try {
     const result = runHarvest({
       slug,
       hostRepoRoot: resolveAbs(from),
-      gbrainRoot,
+      zbrainRoot,
       noLint,
       dryRun,
       overwriteLocal,
@@ -1335,7 +1335,7 @@ async function cmdDiff(args: string[]): Promise<void> {
   // then this path keeps the existing semantics.
   const { diffSkill } = await import('../core/skillpack/installer.ts');
   if (args.includes('--help') || args.includes('-h')) {
-    console.log('gbrain skillpack diff <name> [--workspace PATH] [--json]');
+    console.log('zbrain skillpack diff <name> [--workspace PATH] [--json]');
     process.exit(0);
   }
   const json = args.includes('--json');
@@ -1362,12 +1362,12 @@ async function cmdDiff(args: string[]): Promise<void> {
     console.error('Error: pass a skill name.');
     process.exit(2);
   }
-  const gbrainRoot = findGbrainOrDie();
+  const zbrainRoot = findZbrainOrDie();
   const targetSkillsDir = skillsDir
     ? resolveAbs(skillsDir)
     : join(resolveWorkspace({ workspace }), 'skills');
   try {
-    const diffs = diffSkill(gbrainRoot, name, targetSkillsDir);
+    const diffs = diffSkill(zbrainRoot, name, targetSkillsDir);
     const clean = diffs.every(d => d.identical && d.existing);
     if (json) console.log(JSON.stringify({ ok: true, skillName: name, diffs }, null, 2));
     else {
@@ -1379,7 +1379,7 @@ async function cmdDiff(args: string[]): Promise<void> {
         else tag = 'differs  ';
         console.log(`  ${tag}  ${d.target}  (src ${d.sourceBytes}B / tgt ${d.targetBytes}B)`);
       }
-      console.log(clean ? '\n✓ all files match the bundle.' : '\n(Run `gbrain skillpack reference ' + name + '` for a unified diff.)');
+      console.log(clean ? '\n✓ all files match the bundle.' : '\n(Run `zbrain skillpack reference ' + name + '` for a unified diff.)');
     }
     // v0.33: diff is informational; exit 0 always.
     process.exit(0);

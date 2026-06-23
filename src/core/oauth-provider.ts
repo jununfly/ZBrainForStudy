@@ -1,5 +1,5 @@
 /**
- * GBrain OAuth 2.1 Provider — implements MCP SDK's OAuthServerProvider.
+ * ZBrain OAuth 2.1 Provider — implements MCP SDK's OAuthServerProvider.
  *
  * Backed by raw SQL (PGLite or Postgres), not the BrainEngine interface.
  * OAuth is infrastructure, not brain operations.
@@ -51,7 +51,7 @@ function pgArray(arr: string[]): string {
 }
 
 /**
- * Allow-list of RFC 7591 §2 `token_endpoint_auth_method` values gbrain
+ * Allow-list of RFC 7591 §2 `token_endpoint_auth_method` values zbrain
  * accepts at registration. Three values, chosen because the SDK's
  * `mcpAuthRouter` advertises exactly these three in
  * `token_endpoint_auth_methods_supported`:
@@ -61,9 +61,9 @@ function pgArray(arr: string[]): string {
  * - `none` — public PKCE-only client (Claude Code, Cursor, ChatGPT custom connector)
  *
  * Three call sites enforce this set:
- *   1. CLI `gbrain auth register-client` (src/commands/auth.ts)
+ *   1. CLI `zbrain auth register-client` (src/commands/auth.ts)
  *   2. Admin `POST /admin/api/register-client` (src/commands/serve-http.ts)
- *   3. DCR `POST /register` (this file, GBrainClientsStore.registerClient)
+ *   3. DCR `POST /register` (this file, ZBrainClientsStore.registerClient)
  *
  * **Read-tolerant by design.** `getClient` returns whatever is stored
  * verbatim — legacy rows with non-allowlist values (e.g. pre-v0.41.3
@@ -165,7 +165,7 @@ export function coerceTimestamp(value: unknown): number | undefined {
   return n;
 }
 
-interface GBrainOAuthProviderOptions {
+interface ZBrainOAuthProviderOptions {
   sql: SqlQuery;
   /** Default token TTL in seconds (default: 3600 = 1 hour) */
   tokenTtl?: number;
@@ -187,7 +187,7 @@ interface GBrainOAuthProviderOptions {
 // Clients Store
 // ---------------------------------------------------------------------------
 
-class GBrainClientsStore implements OAuthRegisteredClientsStore {
+class ZBrainClientsStore implements OAuthRegisteredClientsStore {
   constructor(private sql: SqlQuery) {}
 
   async getClient(clientId: string): Promise<OAuthClientInformationFull | undefined> {
@@ -241,7 +241,7 @@ class GBrainClientsStore implements OAuthRegisteredClientsStore {
     // registration entry points share one allow-list.
     const authMethod = validateTokenEndpointAuthMethod(client.token_endpoint_auth_method);
 
-    const clientId = generateToken('gbrain_cl_');
+    const clientId = generateToken('zbrain_cl_');
     // v0.34.1 (#909): RFC 7591 §2 — clients that authenticate at the token
     // endpoint via PKCE alone declare `token_endpoint_auth_method: "none"`.
     // For those clients the authorization server MUST NOT issue a client
@@ -255,7 +255,7 @@ class GBrainClientsStore implements OAuthRegisteredClientsStore {
     // `client_secret_post` and explicit `client_secret_basic`) still mint
     // a secret as before.
     const isPublicClient = authMethod === 'none';
-    const clientSecret = isPublicClient ? undefined : generateToken('gbrain_cs_');
+    const clientSecret = isPublicClient ? undefined : generateToken('zbrain_cs_');
     const secretHash = clientSecret ? hashToken(clientSecret) : null;
     const now = Math.floor(Date.now() / 1000);
 
@@ -339,16 +339,16 @@ class GBrainClientsStore implements OAuthRegisteredClientsStore {
 // OAuth Provider
 // ---------------------------------------------------------------------------
 
-export class GBrainOAuthProvider implements OAuthServerProvider {
+export class ZBrainOAuthProvider implements OAuthServerProvider {
   private sql: SqlQuery;
-  private _clientsStore: GBrainClientsStore;
+  private _clientsStore: ZBrainClientsStore;
   private readonly dcrDisabled: boolean;
   private tokenTtl: number;
   private refreshTtl: number;
 
-  constructor(options: GBrainOAuthProviderOptions) {
+  constructor(options: ZBrainOAuthProviderOptions) {
     this.sql = options.sql;
-    this._clientsStore = new GBrainClientsStore(this.sql);
+    this._clientsStore = new ZBrainClientsStore(this.sql);
     this.dcrDisabled = options.dcrDisabled === true;
     this.tokenTtl = options.tokenTtl || 3600;
     this.refreshTtl = options.refreshTtl || 30 * 24 * 3600;
@@ -377,7 +377,7 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
     params: AuthorizationParams,
     res: Response,
   ): Promise<void> {
-    const code = generateToken('gbrain_code_');
+    const code = generateToken('zbrain_code_');
     const codeHash = hashToken(code);
     const expiresAt = Math.floor(Date.now() / 1000) + 600; // 10 minute TTL
 
@@ -524,7 +524,7 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
     //
     // v0.28: hasScope replaces exact-string-match so an `admin` grant CAN
     // refresh down to `sources_admin` (admin implies all). Without this,
-    // gstack /setup-gbrain Path 4 — which mints a sources_admin-scoped
+    // gstack /setup-zbrain Path 4 — which mints a sources_admin-scoped
     // refresh — would fail when the brain admin's bootstrap token was
     // issued at the `admin` tier.
     const grantedScopes = (row.scopes as string[]) || [];
@@ -654,7 +654,7 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
         expiresAt: Math.floor(Date.now() / 1000) + 365 * 24 * 3600, // Legacy tokens never expire — set 1yr future
         // v0.34.1 (#861, D13): legacy bearer tokens default to 'default'
         // source — matches the pre-v0.34 effective behavior where the
-        // serve-http transport fell back to GBRAIN_SOURCE/'default' for
+        // serve-http transport fell back to ZBRAIN_SOURCE/'default' for
         // any caller without explicit scope. Operators who want a
         // narrower scope for legacy tokens migrate to OAuth.
         sourceId: 'default',
@@ -832,7 +832,7 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
     // Default is `client_secret_post` (RFC 7591 §2).
     const authMethod = validateTokenEndpointAuthMethod(tokenEndpointAuthMethod);
 
-    const clientId = generateToken('gbrain_cl_');
+    const clientId = generateToken('zbrain_cl_');
     // v0.41.3 (T2): atomic public-client INSERT. When the caller declares
     // `tokenEndpointAuthMethod: 'none'` we mint NO secret and INSERT with
     // client_secret_hash = NULL in a single statement. Pre-fix, the admin
@@ -841,7 +841,7 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
     // (`client_secret_post` / `client_secret_basic`) get the secret minted
     // and hashed as before.
     const isPublicClient = authMethod === 'none';
-    const clientSecret = isPublicClient ? undefined : generateToken('gbrain_cs_');
+    const clientSecret = isPublicClient ? undefined : generateToken('zbrain_cs_');
     const secretHash = clientSecret ? hashToken(clientSecret) : null;
     const now = Math.floor(Date.now() / 1000);
 
@@ -914,7 +914,7 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
     includeRefresh: boolean,
     ttlOverride?: number,
   ): Promise<OAuthTokens> {
-    const accessToken = generateToken('gbrain_at_');
+    const accessToken = generateToken('zbrain_at_');
     const accessHash = hashToken(accessToken);
     const now = Math.floor(Date.now() / 1000);
     const effectiveTtl = ttlOverride || this.tokenTtl;
@@ -934,7 +934,7 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
     };
 
     if (includeRefresh) {
-      const refreshToken = generateToken('gbrain_rt_');
+      const refreshToken = generateToken('zbrain_rt_');
       const refreshHash = hashToken(refreshToken);
       const refreshExpiry = now + this.refreshTtl;
 

@@ -1,5 +1,5 @@
 /**
- * gbrain transcripts — Recent raw conversation transcripts.
+ * zbrain transcripts — Recent raw conversation transcripts.
  *
  * Local-only: this command reads `.txt` files from the dream-cycle corpus
  * directories. It exists as a CLI surface so humans can trigger the same
@@ -7,10 +7,10 @@
  * gated on remote=false; subagents and MCP/HTTP callers cannot reach it).
  *
  * Usage:
- *   gbrain transcripts recent              # last 7 days, summaries
- *   gbrain transcripts recent --days 14
- *   gbrain transcripts recent --full       # full content (capped at 100KB/file)
- *   gbrain transcripts recent --json
+ *   zbrain transcripts recent              # last 7 days, summaries
+ *   zbrain transcripts recent --days 14
+ *   zbrain transcripts recent --full       # full content (capped at 100KB/file)
+ *   zbrain transcripts recent --json
  */
 
 import type { BrainEngine } from '../core/engine.ts';
@@ -43,7 +43,7 @@ function parseArgs(args: string[]): RunOpts | { help: true } {
   return opts;
 }
 
-const HELP = `Usage: gbrain transcripts recent [options]
+const HELP = `Usage: zbrain transcripts recent [options]
 
 Recent raw conversation transcripts (NOT polished reflections). Reads from
 the dream-cycle corpus dirs (dream.synthesize.session_corpus_dir and

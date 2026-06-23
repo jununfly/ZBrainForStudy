@@ -161,7 +161,7 @@ suggest LLM polish to v0.38.1 (~1 week).
   v77 + bootstrap parity, ~50 for examples × byte-for-byte
   gbrain-base equivalence regression. **gbrain-base byte-for-byte
   parity is a CI gate**, not a hope — pinned by
-  `test/regressions/gbrain-base-equivalence.test.ts` asserting the
+  `tests/unit/regressions/gbrain-base-equivalence.test.ts` asserting the
   pre-v0.38 hardcoded behavior reproduces from the pack-driven
   paths on a fixture brain.
 

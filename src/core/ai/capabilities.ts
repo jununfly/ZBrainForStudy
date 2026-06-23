@@ -5,7 +5,7 @@
  * in `src/core/minions/handlers/subagent.ts`). The three-layer pin
  * (`queue.ts:87-106` + `subagent.ts:149-167` + `doctor.ts:1190-1225` enforced
  * Anthropic-only because crash-replay relied on Anthropic's stable `tool_use_id`s
- * for reconciliation. v0.38 (D11) moves the stable-ID generation gbrain-side
+ * for reconciliation. v0.38 (D11) moves the stable-ID generation zbrain-side
  * (ordinal + uuid v7 persisted in `subagent_tool_executions` at first observation),
  * which decouples the loop from any specific provider's response format.
  *
@@ -51,7 +51,7 @@ export interface ProviderCapabilities {
 
   /**
    * Provider supports an extended-thinking / reasoning block in responses.
-   * Not load-bearing for the loop; surfaced so callers (e.g. `gbrain agent run`)
+   * Not load-bearing for the loop; surfaced so callers (e.g. `zbrain agent run`)
    * can decide whether to surface the reasoning trace in `--follow` output.
    */
   supportsThinking: boolean;

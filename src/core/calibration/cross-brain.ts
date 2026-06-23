@@ -4,7 +4,7 @@
  * Team-brain sharing: when a holder's calibration profile is not present in
  * the local brain, optionally fall back to mounted brains that have
  * `published=true` profiles for that holder. The four cross-brain leak
- * test cases from D18 are pinned in test/cross-brain-calibration.test.ts.
+ * test cases from D18 are pinned in tests/unit/cross-brain-calibration.test.ts.
  *
  * D18 semantics (committed):
  *
@@ -32,7 +32,7 @@
  *
  * v0.36.1.0 ship state scope:
  *   - The CALIBRATION query path supports cross-brain. The actual MOUNT
- *     infrastructure (gbrain mounts add — v0.19+) is reused as-is. This
+ *     infrastructure (zbrain mounts add — v0.19+) is reused as-is. This
  *     module adds the cross-brain READ filter on top of mount discovery.
  *   - Mount engine access is via injected `mountResolver` callback so tests
  *     drive the cross-brain shape without needing a real multi-brain setup.
@@ -61,7 +61,7 @@ export interface CrossBrainQueryOpts {
   canReadMounts: boolean;
   /**
    * Mount resolver — production wires this to the mounts subsystem
-   * (gbrain mounts add). Tests inject a stub returning an ordered list
+   * (zbrain mounts add). Tests inject a stub returning an ordered list
    * of mounted-brain engines. Each mount must declare its brain id so
    * the response can carry source_brain_id attribution.
    */

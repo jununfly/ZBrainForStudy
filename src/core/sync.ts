@@ -80,7 +80,7 @@ const CODE_EXTENSIONS = new Set<string>([
   '.yaml', '.yml',
   '.toml',
   // v0.36.x #878: Terraform / HCL. Closes the silent-data-loss bug where
-  // Terraform repos were invisible to `gbrain sync --strategy code`.
+  // Terraform repos were invisible to `zbrain sync --strategy code`.
   // detectCodeLanguage() returns null for these so they chunk via the
   // recursive chunker (no tree-sitter grammar), which is the correct
   // fallback — same path as toml / yaml without language-specific AST.
@@ -151,7 +151,7 @@ export function isCodeFilePath(path: string): boolean {
 
 /**
  * v0.27.1: image extensions are admitted only when the multimodal config
- * gate is on. The runtime gate flips through `process.env.GBRAIN_EMBEDDING_MULTIMODAL`
+ * gate is on. The runtime gate flips through `process.env.ZBRAIN_EMBEDDING_MULTIMODAL`
  * which loadConfigWithEngine populates from the DB plane after engine connect
  * (or env directly when the operator overrides). When the gate is off,
  * existing brains keep their current "markdown + code only" sync behavior.
@@ -175,7 +175,7 @@ export function isMarkdownFilePath(path: string): boolean {
 }
 
 function isMultimodalEnabled(): boolean {
-  return process.env.GBRAIN_EMBEDDING_MULTIMODAL === 'true';
+  return process.env.ZBRAIN_EMBEDDING_MULTIMODAL === 'true';
 }
 
 function isAllowedByStrategy(path: string, strategy: SyncStrategy): boolean {
@@ -229,7 +229,7 @@ function matchesAnyGlob(path: string, patterns?: string[]): boolean {
  * Directory names that walkers must NEVER descend into. Used at descent
  * time (before recursion) to prune entire subtrees — saves the IO cost of
  * walking thousands of vendor / generated / hidden files only to filter
- * them at file-emit time. Used by every walker in gbrain (sync, extract,
+ * them at file-emit time. Used by every walker in zbrain (sync, extract,
  * transcript-discovery, etc.).
  *
  * Pattern: dirname matching at single path-segment granularity. Walkers
@@ -265,7 +265,7 @@ export function pruneDir(name: string, parentDir?: string): boolean {
   if (!name) return true;
   if (name.startsWith('.')) return false;
   if (PRUNE_DIR_NAMES.has(name)) return false;
-  // `.raw` is the literal directory name; `*.raw` is the gbrain sidecar
+  // `.raw` is the literal directory name; `*.raw` is the zbrain sidecar
   // convention (e.g. `people/pedro.raw/` holds raw source for pedro.md).
   // Both forms should be skipped at descent time.
   if (name.endsWith('.raw')) return false;
@@ -294,7 +294,7 @@ export function pruneDir(name: string, parentDir?: string): boolean {
  * v0.41.13 (#1433): pre-fix, the cleanup loop in performSync treated all
  * unsyncable-modified paths the same and DELETED any pre-existing page for
  * them. That silently dropped `log.md` / `schema.md` / `README.md` pages
- * that had been indexed by older gbrain versions (or via direct put_page).
+ * that had been indexed by older zbrain versions (or via direct put_page).
  * The fix guards that loop on `unsyncableReason(...) === 'metafile'` and
  * preserves those rows.
  */
@@ -347,7 +347,7 @@ function classifySync(path: string, opts: SyncableOptions = {}): SyncableReason 
 }
 
 /**
- * Filter a file path to determine if it should be synced to GBrain.
+ * Filter a file path to determine if it should be synced to ZBrain.
  * Strategy-aware: 'markdown' (default) = .md/.mdx only, 'code' = code files only, 'auto' = both.
  */
 export function isSyncable(path: string, opts: SyncableOptions = {}): boolean {
@@ -431,7 +431,7 @@ export function slugifyCodePath(filePath: string): string {
 }
 
 /**
- * Convert a repo-relative file path to a GBrain page slug.
+ * Convert a repo-relative file path to a ZBrain page slug.
  */
 export function pathToSlug(
   filePath: string,
@@ -475,15 +475,15 @@ export function resolveSlugForPath(filePath: string, repoPrefix?: string): strin
 // colons, malformed frontmatter, etc.), we record it here instead of just
 // logging and moving on. Three goals:
 //   1. Gate the sync.last_commit bookmark advance in all three sync paths
-//      (incremental, full/runImport, `gbrain import` git continuity).
+//      (incremental, full/runImport, `zbrain import` git continuity).
 //   2. Give users a visible record of what failed, with the commit hash
 //      they can use to re-attempt after fixing the source file.
-//   3. Let `gbrain sync --skip-failed` acknowledge a known-bad set so
+//   3. Let `zbrain sync --skip-failed` acknowledge a known-bad set so
 //      repos with many broken files aren't permanently stuck.
 
 import { existsSync as _existsSync, readFileSync as _readFileSync, appendFileSync as _appendFileSync, mkdirSync as _mkdirSync } from 'fs';
 import { join as _joinPath } from 'path';
-import { gbrainPath as _gbrainPath } from './config.ts';
+import { zbrainPath as _zbrainPath } from './config.ts';
 import { createHash as _createHash } from 'crypto';
 
 export interface SyncFailure {
@@ -636,7 +636,7 @@ export function formatCodeBreakdown(
 }
 
 function _failuresDir(): string {
-  return _gbrainPath();
+  return _zbrainPath();
 }
 
 export function syncFailuresPath(): string {
@@ -709,7 +709,7 @@ export interface AcknowledgeResult {
 
 /**
  * Mark all unacknowledged failures as acknowledged. Used by
- * `gbrain sync --skip-failed`. Returns count and a structured summary
+ * `zbrain sync --skip-failed`. Returns count and a structured summary
  * grouped by error code so the operator can see *why* files were skipped.
  *
  * We do not delete — acknowledged entries stay as historical record so

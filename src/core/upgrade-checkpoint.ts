@@ -1,8 +1,8 @@
 /**
  * Upgrade pipeline checkpoint (v0.30.1 Cherry D5 + Codex X2).
  *
- * Persists step-by-step progress through `gbrain post-upgrade` so a partial
- * failure can be resumed via `gbrain upgrade --resume` instead of
+ * Persists step-by-step progress through `zbrain post-upgrade` so a partial
+ * failure can be resumed via `zbrain upgrade --resume` instead of
  * re-running every step from scratch.
  *
  * Codex X2 fix: checkpoint is bound to the brain it was created for, via
@@ -16,7 +16,7 @@
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { createHash } from 'node:crypto';
-import { gbrainPath, loadConfig } from './config.ts';
+import { zbrainPath, loadConfig } from './config.ts';
 
 export type UpgradeStep = 'pull' | 'install' | 'schema' | 'features' | 'backfills' | 'verify';
 
@@ -41,7 +41,7 @@ const CHECKPOINT_FILENAME = 'upgrade-checkpoint.json';
 const ALL_STEPS: UpgradeStep[] = ['pull', 'install', 'schema', 'features', 'backfills', 'verify'];
 
 function checkpointPath(): string {
-  return gbrainPath(CHECKPOINT_FILENAME);
+  return zbrainPath(CHECKPOINT_FILENAME);
 }
 
 /**

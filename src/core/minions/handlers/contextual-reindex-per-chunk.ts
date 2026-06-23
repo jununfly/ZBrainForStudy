@@ -50,7 +50,7 @@ const RATE_LEASE_KEY = 'anthropic:utility:contextual-synopsis';
 const DEFAULT_HAIKU_RPM = 50;
 
 function resolveMaxConcurrent(): number {
-  const env = process.env.GBRAIN_CONTEXTUAL_HAIKU_RPM;
+  const env = process.env.ZBRAIN_CONTEXTUAL_HAIKU_RPM;
   if (env) {
     const n = parseInt(env, 10);
     if (Number.isFinite(n) && n > 0) return n;

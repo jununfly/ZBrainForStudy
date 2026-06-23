@@ -97,19 +97,19 @@ export function makeIngestCaptureHandler(engine: BrainEngine) {
     if (!isText) {
       // Binary content without a processor would land as a path-string
       // page, which isn't useful. Surface as job-level error so the
-      // operator sees the gap in `gbrain doctor` and can decide whether
+      // operator sees the gap in `zbrain doctor` and can decide whether
       // to install the appropriate skillpack-distributed processor.
       throw new Error(
         `ingest_capture: content_type '${event.content_type}' requires a content-type ` +
           `processor that is not yet installed. Install a processor skillpack ` +
-          `(e.g. gbrain-audio-transcribe, gbrain-image-ocr) or pre-extract the ` +
+          `(e.g. zbrain-audio-transcribe, zbrain-image-ocr) or pre-extract the ` +
           `content to text/markdown before emitting.`,
       );
     }
 
     // noEmbed defaults to true. Mirrors the sync handler's pattern:
     // embed runs as a separate Minion job (autopilot's embed phase OR an
-    // explicit `gbrain embed --stale`). Callers can opt in to inline embed
+    // explicit `zbrain embed --stale`). Callers can opt in to inline embed
     // by passing { noEmbed: false } in job.data.
     const noEmbed = (data as { noEmbed?: unknown }).noEmbed !== false;
 

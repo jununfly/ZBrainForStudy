@@ -48,7 +48,7 @@ export interface ReconcileLinksOpts {
  * that resolves to a code page. Idempotent via ON CONFLICT DO
  * NOTHING in the underlying addLink path.
  *
- * Called by `gbrain reconcile-links` CLI surface. Respects the
+ * Called by `zbrain reconcile-links` CLI surface. Respects the
  * `auto_link` config: if the user has disabled auto-linking on
  * put_page, reconcile-links doesn't silently re-populate those
  * edges either.
@@ -125,8 +125,8 @@ export async function runReconcileLinks(
         // if codeSlug isn't a page yet (benign — counted below). Source-
         // qualified per opts.sourceId; same-source assumption mirrors the
         // import-file.ts:303 doc↔impl auto-link.
-        await engine.addLink(mdSlug, codeSlug, ctx, 'documents', 'markdown', mdSlug, 'compiled_truth', linkOpts); // gbrain-allow-direct-insert: gbrain reconcile-links command — code-graph reconciliation from markdown references
-        await engine.addLink(codeSlug, mdSlug, ref.path, 'documented_by', 'markdown', mdSlug, 'compiled_truth', linkOpts); // gbrain-allow-direct-insert: gbrain reconcile-links command — reverse documented_by edge
+        await engine.addLink(mdSlug, codeSlug, ctx, 'documents', 'markdown', mdSlug, 'compiled_truth', linkOpts); // zbrain-allow-direct-insert: zbrain reconcile-links command — code-graph reconciliation from markdown references
+        await engine.addLink(codeSlug, mdSlug, ref.path, 'documented_by', 'markdown', mdSlug, 'compiled_truth', linkOpts); // zbrain-allow-direct-insert: zbrain reconcile-links command — reverse documented_by edge
       } catch (e: unknown) {
         // Per-link errors don't abort the batch. Track them for the summary.
         const msg = e instanceof Error ? e.message : String(e);
@@ -170,7 +170,7 @@ export async function runReconcileLinksCli(engine: BrainEngine, args: string[]):
   if (result.status === 'auto_link_disabled') {
     console.log(
       '[reconcile-links] auto_link is disabled in config; skipping. ' +
-      'Set `gbrain config set auto_link true` to re-enable.',
+      'Set `zbrain config set auto_link true` to re-enable.',
     );
     return;
   }

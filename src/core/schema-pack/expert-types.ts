@@ -5,7 +5,7 @@
 // find_experts SQL — codex finding #3 named all three sites).
 //
 // v0.38 T_W: the active schema pack declares which types are
-// `expert_routing: true`. gbrain-base preserves person + company as
+// `expert_routing: true`. zbrain-base preserves person + company as
 // the default expert types so existing behavior is unchanged. Research
 // brains declaring `researcher` + `principal-investigator` with
 // `expert_routing: true` get those types routed to whoknows queries
@@ -17,7 +17,7 @@
 //   const results = await hybridSearch(engine, query, { types, ... });
 //
 // Until the wiring lands, legacy whoknows.ts callers continue to use
-// the hardcoded DEFAULT_TYPES = ['person', 'company'] — which gbrain-
+// the hardcoded DEFAULT_TYPES = ['person', 'company'] — which zbrain-
 // base also declares, so behavior is preserved.
 
 import type { SchemaPackManifest } from './manifest-v1.ts';
@@ -26,10 +26,10 @@ import type { SchemaPackManifest } from './manifest-v1.ts';
  * Extract the list of pack-declared types with expert_routing: true,
  * in pack manifest declaration order. Empty array means the pack has
  * NO expert types — callers should treat this as "expert search not
- * applicable" rather than falling back to gbrain-base defaults (the
+ * applicable" rather than falling back to zbrain-base defaults (the
  * pack made an explicit choice).
  *
- * For gbrain-base, this returns ['person', 'company'] (the pre-v0.38
+ * For zbrain-base, this returns ['person', 'company'] (the pre-v0.38
  * hardcoded defaults). Custom packs override freely.
  */
 export function expertTypesFromPack(
@@ -53,7 +53,7 @@ export function expertTypesFromPackOrThrow(
   if (types.length === 0) {
     throw new Error(
       `active schema pack "${pack.name}" declares no types with ` +
-      `expert_routing: true. \`gbrain whoknows\` and \`find_experts\` ` +
+      `expert_routing: true. \`zbrain whoknows\` and \`find_experts\` ` +
       `cannot route queries. Edit the pack manifest to mark at least one ` +
       `page_type as expert_routing: true, or switch packs.`,
     );

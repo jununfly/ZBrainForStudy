@@ -1,7 +1,7 @@
 /**
  * v0.29 — Tool descriptions, extracted to a constants module so that:
  *   1. The exact LLM-facing strings are pinnable in tests
- *      (`test/operations-descriptions.test.ts`).
+ *      (`tests/unit/operations-descriptions.test.ts`).
  *   2. Routing changes ship as data, not buried-in-handler edits.
  *   3. The `salience-llm-routing.test.ts` Tier-2 eval has a stable surface
  *      to load tool definitions from.
@@ -49,7 +49,7 @@ export const GET_RECENT_TRANSCRIPTS_DESCRIPTION =
   "'what have I been thinking about', or anything personal/emotional. Raw " +
   "transcripts are the canonical source for the user's own state — polished pages " +
   "summarize and flatten. Local-only: rejects remote (MCP/HTTP) callers with a " +
-  "clear permission_denied; call via the gbrain CLI.";
+  "clear permission_denied; call via the zbrain CLI.";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Redirect hints appended to existing op descriptions
@@ -82,13 +82,13 @@ export const SEARCH_DESCRIPTION =
 
 export const FIND_CONTRADICTIONS_DESCRIPTION =
   "v0.32.6 — return suspected-contradiction findings from the most recent " +
-  "`gbrain eval suspected-contradictions` probe run, optionally filtered by slug " +
+  "`zbrain eval suspected-contradictions` probe run, optionally filtered by slug " +
   "and/or severity. Use this when the user asks 'what's inconsistent in my " +
   "brain', 'show me contradictions about Acme', 'high-severity issues only', or " +
   "wants to act on the probe's findings without re-running it. Returns " +
   "{contradictions: [{a, b, severity, axis, confidence, resolution_command}]}. " +
   "Reads the cached run row — does NOT trigger a new probe; users run " +
-  "`gbrain eval suspected-contradictions` for that.";
+  "`zbrain eval suspected-contradictions` for that.";
 
 export const FIND_TRAJECTORY_DESCRIPTION =
   "v0.35.4 — return the chronological claim trajectory for an entity (typed " +
@@ -102,7 +102,7 @@ export const FIND_TRAJECTORY_DESCRIPTION =
   "drift_score: number|null, schema_version: 1}`. Drift score 0 = stable narrative, " +
   "1 = every consecutive claim is unrelated; null when fewer than 3 typed points " +
   "exist. Visibility-filtered for remote callers (world-only); source-scoped by " +
-  "the caller's OAuth source binding. Pair with `gbrain founder scorecard <slug>` " +
+  "the caller's OAuth source binding. Pair with `zbrain founder scorecard <slug>` " +
   "for an aggregated rollup of the same data.";
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -114,7 +114,7 @@ export const FIND_TRAJECTORY_DESCRIPTION =
 //
 // Style notes per the v0.34 eng review D10 finding: every description carries
 // an inline example response so agents don't burn first-call context discovering
-// shape. Pin via test/operations-descriptions.test.ts.
+// shape. Pin via tests/unit/operations-descriptions.test.ts.
 // ──────────────────────────────────────────────────────────────────────────────
 
 export const CODE_CALLERS_DESCRIPTION =

@@ -16,7 +16,7 @@ export const PROTECTED_JOB_NAMES: ReadonlySet<string> = new Set([
   'shell',
   // v0.15: subagent + aggregator are protected because they call the
   // Anthropic API. MCP callers can't submit them directly; only the
-  // `gbrain agent run` CLI path (which sets allowProtectedSubmit) or a
+  // `zbrain agent run` CLI path (which sets allowProtectedSubmit) or a
   // trusted local `submit_job` (ctx.remote=false) can insert these rows.
   'subagent',
   'subagent_aggregator',

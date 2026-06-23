@@ -88,7 +88,7 @@ export interface BrainFirstAnalysis {
    * hardcoded EXEMPT_SKILLS allowlist. The doctor message appends a
    * dedicated hint for these on first detection (CMT1 from plan review:
    * replaces the dropped upgrade migration with a guided opt-in via
-   * `gbrain doctor --fix`).
+   * `zbrain doctor --fix`).
    */
   formerly_hardcoded_exempt: boolean;
 }
@@ -176,7 +176,7 @@ const FRONTMATTER_RE = /^---\n[\s\S]*?\n---\n?/;
  * preserved here ONLY for the doctor hint flow: when a skill in this
  * set newly flags after v0.36.x ships the structural-signal exemption,
  * the doctor message guides the user to either:
- *   1. `gbrain doctor --fix` to auto-add the canonical callout, OR
+ *   1. `zbrain doctor --fix` to auto-add the canonical callout, OR
  *   2. add `brain_first: exempt` to frontmatter (if genuinely infra)
  *
  * The list is informational — removing it later doesn't break
@@ -196,7 +196,7 @@ export const FORMERLY_HARDCODED_EXEMPT: ReadonlySet<string> = new Set([
   'brain-ingest-gate', 'brain-librarian', 'brain-link-refs', 'brain-link-report',
   'brain-pdf', 'brain-pdf-auto', 'brain-plan', 'brain-publish', 'brain-storage',
   'brain-storage-links', 'brain-taxonomist',
-  'gbrain', 'gbrain-pr', 'gbrain-upgrade', 'benchmark-gbrain',
+  'zbrain', 'zbrain-pr', 'zbrain-upgrade', 'benchmark-zbrain',
   // External-tool wrappers (their entire job IS external lookup)
   'exa', 'happenstance', 'crustdata', 'captain-api',
   // Pure-infra skills (system, not knowledge)
@@ -389,7 +389,7 @@ export function buildBrainFirstSummaryLine(a: BrainFirstAnalysis): string {
   ];
   if (a.formerly_hardcoded_exempt) {
     parts.push(
-      `(was hardcoded-exempt in PR #1206 — opt out explicitly via 'brain_first: exempt' or run 'gbrain doctor --fix' to add the canonical callout)`,
+      `(was hardcoded-exempt in PR #1206 — opt out explicitly via 'brain_first: exempt' or run 'zbrain doctor --fix' to add the canonical callout)`,
     );
   }
   if (a.typo_hint) {

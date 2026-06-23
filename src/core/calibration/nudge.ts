@@ -16,7 +16,7 @@
  *   - take_nudge_log records every fire keyed on (take_id|proposal_id,
  *     nudge_pattern). The cooldown probe checks "was this same pattern fired
  *     on this same take in the last NUDGE_COOLDOWN_DAYS?" If yes, silently skip.
- *   - Reset via `gbrain takes nudge --reset <take_id>` clears the cooldown
+ *   - Reset via `zbrain takes nudge --reset <take_id>` clears the cooldown
  *     for that take so the next sync re-fires fresh nudges.
  *
  * Output channel:

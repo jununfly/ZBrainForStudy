@@ -34,7 +34,7 @@ export interface EmbedOpts {
    * Optional progress callback. Called after each page. CLI wrappers
    * supply a reporter.tick()-backed implementation; Minion handlers
    * supply a job.updateProgress()-backed one so per-job progress lives
-   * in the DB where `gbrain jobs get` can read it.
+   * in the DB where `zbrain jobs get` can read it.
    */
   onProgress?: (done: number, total: number, embedded: number) => void;
 }
@@ -224,7 +224,7 @@ export async function runEmbed(engine: BrainEngine, args: string[]): Promise<Emb
   } else {
     const slug = args.find(a => !a.startsWith('--'));
     if (!slug) {
-      serr('Usage: gbrain embed [<slug>|--all|--stale|--slugs s1 s2 ...] [--dry-run]');
+      serr('Usage: zbrain embed [<slug>|--all|--stale|--slugs s1 s2 ...] [--dry-run]');
       process.exit(1);
     }
     opts = { slug, dryRun, sourceId };
@@ -369,14 +369,14 @@ async function embedAll(
   // chunks that already have embeddings.
   // ─────────────────────────────────────────────────────────────
   if (staleOnly) {
-    // D7: thread sourceId so `gbrain embed --stale --source X` actually scopes.
+    // D7: thread sourceId so `zbrain embed --stale --source X` actually scopes.
     return await embedAllStale(engine, sourceId, dryRun, result, onProgress);
   }
 
   // v0.31.12: when sourceId is set, scope listPages to that source.
   // v0.41 (D8 + Codex r2 #11): apply embed-skip filter via the shared
   // helper so the `--all` path honors `frontmatter.embed_skip` the same
-  // way the `--stale` path does. Without this filter, `gbrain embed --all`
+  // way the `--stale` path does. Without this filter, `zbrain embed --all`
   // (common after model swaps) re-embeds every soft-blocked page,
   // defeating the soft-block. Filtering JS-side here mirrors the SQL-side
   // filter that listStaleChunks/countStaleChunks apply on --stale.
@@ -395,8 +395,8 @@ async function embedAll(
   // Default 20: keeps us well under OpenAI's embedding RPM limit
   // (3000+/min for tier 1 = 50+/sec, 20 parallel is safely below) and
   // avoids overwhelming postgres connection pools. Users can tune via
-  // GBRAIN_EMBED_CONCURRENCY env var based on their tier/infra.
-  const CONCURRENCY = parseInt(process.env.GBRAIN_EMBED_CONCURRENCY || '20', 10);
+  // ZBRAIN_EMBED_CONCURRENCY env var based on their tier/infra.
+  const CONCURRENCY = parseInt(process.env.ZBRAIN_EMBED_CONCURRENCY || '20', 10);
 
   async function embedOnePage(page: typeof pages[number]) {
     // v0.31.12: thread source_id from the page row so getChunks/upsertChunks
@@ -527,7 +527,7 @@ async function embedAllStale(
   // we page through 2000 rows at a time via keyset pagination on
   // (page_id, chunk_index). Each query finishes in <1s.
   const PAGE_SIZE = 2000;
-  const CONCURRENCY = parseInt(process.env.GBRAIN_EMBED_CONCURRENCY || '20', 10);
+  const CONCURRENCY = parseInt(process.env.ZBRAIN_EMBED_CONCURRENCY || '20', 10);
 
   // D3 + D3a + D8: wall-clock budget. 30 min default; env override.
   // The old single-shot `LIMIT 100000` query implicitly capped runtime
@@ -535,7 +535,7 @@ async function embedAllStale(
   // threads cancellation into (a) the retry sleep below, (b) the worker
   // claim loop, and (c) the gateway embed call so an in-flight HTTP
   // request also unwinds.
-  const BUDGET_MS = parseInt(process.env.GBRAIN_EMBED_TIME_BUDGET_MS || `${30 * 60 * 1000}`, 10);
+  const BUDGET_MS = parseInt(process.env.ZBRAIN_EMBED_TIME_BUDGET_MS || `${30 * 60 * 1000}`, 10);
   const budgetController = new AbortController();
   const budgetTimer = setTimeout(() => budgetController.abort(), BUDGET_MS);
   const budgetSignal = budgetController.signal;

@@ -19,13 +19,13 @@
  *      and DO NOT throw — calibration data writes are independent of gstack.
  *
  * Namespace:
- *   Every entry's `key` starts with 'gbrain:calibration:v0.36.1.0:' so an
+ *   Every entry's `key` starts with 'zbrain:calibration:v0.36.1.0:' so an
  *   `--undo-wave v0.36.1.0` can later prune these via
  *   `gstack-learnings-prune` (Lane D / T17).
  */
 
 import { execFileSync } from 'node:child_process';
-import { GBrainError } from '../types.ts';
+import { ZBrainError } from '../types.ts';
 
 export interface IncorrectResolutionEvent {
   /** Take that resolved incorrect/partial. */
@@ -66,7 +66,7 @@ export interface GstackLearningEntry {
 export type GstackWriter = (entry: GstackLearningEntry) => Promise<void> | void;
 
 /** v0.36.1.0 — namespace prefix. Lane D `--undo-wave` filters on this. */
-export const GSTACK_LEARNING_NAMESPACE = 'gbrain:calibration:v0.36.1.0:';
+export const GSTACK_LEARNING_NAMESPACE = 'zbrain:calibration:v0.36.1.0:';
 
 /** Build the learning entry from a resolution event. Pure. */
 export function buildLearningEntry(event: IncorrectResolutionEvent): GstackLearningEntry {
@@ -80,7 +80,7 @@ export function buildLearningEntry(event: IncorrectResolutionEvent): GstackLearn
     ? ` Pattern: ${event.activeBiasTags.join(', ')}.`
     : '';
   return {
-    skill: 'gbrain-calibration',
+    skill: 'zbrain-calibration',
     type: 'observation',
     key: `${GSTACK_LEARNING_NAMESPACE}take-${event.takeId}${tagSuffix}`,
     insight:
@@ -103,14 +103,14 @@ export function defaultGstackWriter(entry: GstackLearningEntry): void {
   try {
     binaryPath = execFileSync('which', ['gstack-learnings-log'], { encoding: 'utf8' }).trim();
   } catch {
-    throw new GBrainError(
+    throw new ZBrainError(
       'GSTACK_BINARY_NOT_FOUND',
       'gstack-learnings-log binary not on PATH',
       'install gstack (~/.claude/skills/gstack/setup) or set cycle.grade_takes.write_gstack_learnings: false to disable',
     );
   }
   if (!binaryPath) {
-    throw new GBrainError(
+    throw new ZBrainError(
       'GSTACK_BINARY_NOT_FOUND',
       'gstack-learnings-log resolved to empty path',
       'install gstack (~/.claude/skills/gstack/setup) or disable via config',

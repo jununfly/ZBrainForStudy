@@ -1,5 +1,5 @@
 /**
- * v0.28: `gbrain takes` CLI.
+ * v0.28: `zbrain takes` CLI.
  *
  * Subcommands:
  *   takes <slug>                          — list takes for a page
@@ -53,7 +53,7 @@ async function resolveBrainDir(engine: BrainEngine | null, explicitDir: string |
     const configured = await engine.getConfig('sync.repo_path');
     if (configured && existsSync(configured)) return configured;
   }
-  console.error('No brain directory configured. Pass --dir <path> or run `gbrain init` first.');
+  console.error('No brain directory configured. Pass --dir <path> or run `zbrain init` first.');
   process.exit(1);
 }
 
@@ -89,7 +89,7 @@ async function getPageId(engine: BrainEngine, slug: string): Promise<number> {
     [slug],
   );
   if (!rows[0]) {
-    console.error(`Page not found in brain: ${slug}. Run \`gbrain sync\` first.`);
+    console.error(`Page not found in brain: ${slug}. Run \`zbrain sync\` first.`);
     process.exit(1);
   }
   return rows[0].id;
@@ -110,7 +110,7 @@ function writeBody(path: string, body: string): void {
 async function cmdList(engine: BrainEngine, args: string[]): Promise<void> {
   const slug = args[0];
   if (!slug) {
-    console.error('Usage: gbrain takes <slug> [--json]');
+    console.error('Usage: zbrain takes <slug> [--json]');
     process.exit(1);
   }
   const json = flagPresent(args, '--json');
@@ -149,7 +149,7 @@ async function cmdList(engine: BrainEngine, args: string[]): Promise<void> {
 async function cmdSearch(engine: BrainEngine, args: string[]): Promise<void> {
   const query = args[0];
   if (!query) {
-    console.error('Usage: gbrain takes search "<query>" [--who h] [--json]');
+    console.error('Usage: zbrain takes search "<query>" [--who h] [--json]');
     process.exit(1);
   }
   const json = flagPresent(args, '--json');
@@ -172,7 +172,7 @@ async function cmdSearch(engine: BrainEngine, args: string[]): Promise<void> {
 async function cmdAdd(engine: BrainEngine, args: string[]): Promise<void> {
   const slug = args[0];
   if (!slug) {
-    console.error('Usage: gbrain takes add <slug> --claim "..." --kind <k> --who <h> [--weight 0.5] [--source "..."] [--since YYYY-MM]');
+    console.error('Usage: zbrain takes add <slug> --claim "..." --kind <k> --who <h> [--weight 0.5] [--source "..."] [--since YYYY-MM]');
     process.exit(1);
   }
   const claim = flagValue(args, '--claim');
@@ -208,7 +208,7 @@ async function cmdUpdate(engine: BrainEngine, args: string[]): Promise<void> {
   const slug = args[0];
   const rowNumStr = flagValue(args, '--row');
   if (!slug || !rowNumStr) {
-    console.error('Usage: gbrain takes update <slug> --row N [--weight 0.7] [--source "..."] [--since YYYY-MM]');
+    console.error('Usage: zbrain takes update <slug> --row N [--weight 0.7] [--source "..."] [--since YYYY-MM]');
     process.exit(1);
   }
   const rowNum = parseInt(rowNumStr, 10);
@@ -232,7 +232,7 @@ async function cmdUpdate(engine: BrainEngine, args: string[]): Promise<void> {
     const parsed = parseTakesFence(body);
     const target = parsed.takes.find(t => t.rowNum === rowNum);
     if (!target) {
-      console.warn(`[takes update] DB updated but row #${rowNum} not in markdown fence on disk; markdown may be out of sync. Run 'gbrain extract takes --slugs ${slug}' to reconcile.`);
+      console.warn(`[takes update] DB updated but row #${rowNum} not in markdown fence on disk; markdown may be out of sync. Run 'zbrain extract takes --slugs ${slug}' to reconcile.`);
       return;
     }
     const updated: ParsedTake = {
@@ -258,7 +258,7 @@ async function cmdSupersede(engine: BrainEngine, args: string[]): Promise<void> 
   const slug = args[0];
   const rowNumStr = flagValue(args, '--row');
   if (!slug || !rowNumStr) {
-    console.error('Usage: gbrain takes supersede <slug> --row N --claim "..." [--kind k] [--who h] [--weight 0.5] [--source "..."]');
+    console.error('Usage: zbrain takes supersede <slug> --row N --claim "..." [--kind k] [--who h] [--weight 0.5] [--source "..."]');
     process.exit(1);
   }
   const rowNum = parseInt(rowNumStr, 10);
@@ -308,8 +308,8 @@ async function cmdResolve(engine: BrainEngine, args: string[]): Promise<void> {
   const qualityStr = flagValue(args, '--quality');
   const outcomeStr = flagValue(args, '--outcome');
   if (!slug || !rowNumStr || (!qualityStr && !outcomeStr)) {
-    console.error('Usage: gbrain takes resolve <slug> --row N --quality correct|incorrect|partial|unresolvable [--evidence "..."] [--value N --unit usd|pct|count] [--by <slug>]');
-    console.error('       (back-compat) gbrain takes resolve <slug> --row N --outcome true|false [...]');
+    console.error('Usage: zbrain takes resolve <slug> --row N --quality correct|incorrect|partial|unresolvable [--evidence "..."] [--value N --unit usd|pct|count] [--by <slug>]');
+    console.error('       (back-compat) zbrain takes resolve <slug> --row N --outcome true|false [...]');
     process.exit(1);
   }
   if (qualityStr && outcomeStr) {
@@ -373,7 +373,7 @@ async function cmdResolve(engine: BrainEngine, args: string[]): Promise<void> {
     const parsed = parseTakesFence(body);
     const target = parsed.takes.find(t => t.rowNum === rowNum);
     if (!target) {
-      console.warn(`[takes resolve] DB updated but row #${rowNum} not in markdown fence; run 'gbrain extract takes --slugs ${slug}' to reconcile.`);
+      console.warn(`[takes resolve] DB updated but row #${rowNum} not in markdown fence; run 'zbrain extract takes --slugs ${slug}' to reconcile.`);
       return;
     }
     // Derive resolved fields from the inputs. Mirror the engine semantics:
@@ -529,7 +529,7 @@ async function cmdCalibration(engine: BrainEngine, args: string[]): Promise<void
 
 export async function runTakes(engine: BrainEngine, args: string[]): Promise<void> {
   if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
-    console.log(`Usage: gbrain takes <subcommand> [options]
+    console.log(`Usage: zbrain takes <subcommand> [options]
 
 Subcommands:
   takes <slug> [--json] [--who h] [--kind k] [--sort weight|since_date|created_at] [--expired]
@@ -578,18 +578,18 @@ Common flags:
 }
 
 /**
- * v0.36.1.0 (TD4 / D30) — `gbrain takes revisit <slug>` opens $EDITOR on
+ * v0.36.1.0 (TD4 / D30) — `zbrain takes revisit <slug>` opens $EDITOR on
  * the source page so the user can write a follow-up immediately. The
  * action the admin SPA's "revisit now" link triggers (via a small
  * route handler that dispatches into this CLI command).
  *
- * Inserts a `<!-- gbrain:revisit -->` cursor marker at the bottom of the
+ * Inserts a `<!-- zbrain:revisit -->` cursor marker at the bottom of the
  * page body so the editor opens with intent visible.
  */
 async function cmdRevisit(_engine: BrainEngine, rest: string[]): Promise<void> {
   const slug = rest[0];
   if (!slug) {
-    process.stderr.write('Usage: gbrain takes revisit <slug>\n');
+    process.stderr.write('Usage: zbrain takes revisit <slug>\n');
     process.exit(1);
   }
   const { existsSync, readFileSync, writeFileSync } = await import('node:fs');
@@ -599,7 +599,7 @@ async function cmdRevisit(_engine: BrainEngine, rest: string[]): Promise<void> {
   const cfg = loadConfig();
   const repoPath = (cfg as { sync?: { repo_path?: string } } | null)?.sync?.repo_path;
   if (!repoPath) {
-    process.stderr.write('No brain repo configured. Run `gbrain config set sync.repo_path /path/to/brain`.\n');
+    process.stderr.write('No brain repo configured. Run `zbrain config set sync.repo_path /path/to/brain`.\n');
     process.exit(1);
   }
   const filePath = join(repoPath, `${slug}.md`);
@@ -609,8 +609,8 @@ async function cmdRevisit(_engine: BrainEngine, rest: string[]): Promise<void> {
   }
   // Append a cursor marker if not already present.
   const existing = readFileSync(filePath, 'utf8');
-  const marker = '\n<!-- gbrain:revisit -->\n';
-  if (!existing.includes('<!-- gbrain:revisit -->')) {
+  const marker = '\n<!-- zbrain:revisit -->\n';
+  if (!existing.includes('<!-- zbrain:revisit -->')) {
     writeFileSync(filePath, existing + marker);
   }
   const editor = process.env.EDITOR || process.env.VISUAL || 'vi';

@@ -2,7 +2,7 @@
  * v0.35.5 — phantom-redirect audit trail.
  *
  * Writes one JSONL row per phantom-redirect decision to
- * `~/.gbrain/audit/phantoms-YYYY-Www.jsonl` (ISO-week rotation, mirrors
+ * `~/.zbrain/audit/phantoms-YYYY-Www.jsonl` (ISO-week rotation, mirrors
  * `audit-slug-fallback.ts`). Records BOTH success ('redirected') and
  * informational skip outcomes ('ambiguous', 'drift', 'no_canonical',
  * 'not_phantom_has_residue', 'pass_skipped_lock_busy') so operators can
@@ -52,7 +52,7 @@ export function computePhantomAuditFilename(now: Date = new Date()): string {
 
 const writer = createAuditWriter<PhantomAuditEvent>({
   featureName: 'phantoms',
-  errorLabel: 'gbrain',
+  errorLabel: 'zbrain',
   errorMessagePrefix: 'phantom audit ',
   errorTrailer: '; cycle continues',
 });
@@ -85,7 +85,7 @@ export function logPhantomEvent(event: Omit<PhantomAuditEvent, 'ts'> & { ts?: st
 
 /**
  * Read recent phantom-redirect events from the current + previous ISO
- * weeks. Used by future `gbrain doctor` `phantoms_pending` check (T9
+ * weeks. Used by future `zbrain doctor` `phantoms_pending` check (T9
  * follow-up) and by tests asserting the audit-write contract.
  *
  * Missing files / corrupt rows are skipped silently — the audit trail is

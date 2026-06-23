@@ -1,12 +1,12 @@
 /**
  * Friction reporter — JSONL-backed signal capture for the claw-test feedback loop.
  *
- * The friction CLI (`gbrain friction log/render/list/summary`) writes here.
- * The claw-test harness reads here. The agent calls `gbrain friction log`
+ * The friction CLI (`zbrain friction log/render/list/summary`) writes here.
+ * The claw-test harness reads here. The agent calls `zbrain friction log`
  * directly when it hits something confusing, missing, or wrong.
  *
- * Storage shape: append-only JSONL files under `$GBRAIN_HOME/friction/`.
- *   - `<run-id>.jsonl` for each harness run (run-id from $GBRAIN_FRICTION_RUN_ID)
+ * Storage shape: append-only JSONL files under `$ZBRAIN_HOME/friction/`.
+ *   - `<run-id>.jsonl` for each harness run (run-id from $ZBRAIN_FRICTION_RUN_ID)
  *   - `standalone.jsonl` for entries logged outside a harness run
  *
  * Schema is a flat extension of StructuredAgentError fields (per D20). Render
@@ -26,7 +26,7 @@
 import { appendFileSync, existsSync, readdirSync, readFileSync, mkdirSync, statSync } from 'fs';
 import { dirname, join } from 'path';
 import { homedir } from 'os';
-import { gbrainPath } from './config.ts';
+import { zbrainPath } from './config.ts';
 import { VERSION } from '../version.ts';
 
 // ---------------------------------------------------------------------------
@@ -55,7 +55,7 @@ export interface FrictionEntry {
   docs_url?: string;
   source: FrictionSource;
   cwd: string;
-  gbrain_version: string;
+  zbrain_version: string;
   agent?: string;
   /** Byte offset into the run's transcript.jsonl (live mode). */
   transcript_offset?: number;
@@ -86,7 +86,7 @@ export interface FrictionLogInput {
 
 /** Resolve the directory all friction JSONL files live under. */
 export function frictionDir(): string {
-  return gbrainPath('friction');
+  return zbrainPath('friction');
 }
 
 /** Resolve the JSONL file path for a given run-id. */
@@ -96,7 +96,7 @@ export function frictionFile(runId: string): string {
 
 /** Resolve the active run-id, falling back to 'standalone' (D19). */
 export function activeRunId(): string {
-  const env = process.env.GBRAIN_FRICTION_RUN_ID?.trim();
+  const env = process.env.ZBRAIN_FRICTION_RUN_ID?.trim();
   return env && env.length > 0 ? env : 'standalone';
 }
 
@@ -131,7 +131,7 @@ export function logFriction(input: FrictionLogInput): void {
     message,
     source: input.source ?? 'claw',
     cwd: process.cwd(),
-    gbrain_version: VERSION,
+    zbrain_version: VERSION,
   };
   if (input.severity) entry.severity = input.severity;
   if (input.hint) entry.hint = input.hint;

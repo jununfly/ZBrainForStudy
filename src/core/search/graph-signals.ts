@@ -135,7 +135,7 @@ interface GraphSignalsFailureEvent {
 
 const failureWriter = createAuditWriter<GraphSignalsFailureEvent>({
   featureName: 'graph-signals-failures',
-  errorLabel: 'gbrain',
+  errorLabel: 'zbrain',
   errorTrailer: '; search continues',
 });
 
@@ -146,8 +146,8 @@ function truncateErrorSummary(msg: string, max = 200): string {
 
 /**
  * Read recent graph-signals fail-open events. Consumed by
- * `gbrain doctor`'s graph_signals_coverage check and by
- * `gbrain search stats`'s error-rate rollup.
+ * `zbrain doctor`'s graph_signals_coverage check and by
+ * `zbrain search stats`'s error-rate rollup.
  */
 export function readRecentGraphSignalsFailures(
   days = 7,

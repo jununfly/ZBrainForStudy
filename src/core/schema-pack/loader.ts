@@ -6,7 +6,7 @@
 // (manifest-v1.ts handles the validation half).
 //
 // YAML parsing: hand-rolled following the `storage-config.ts` pattern.
-// Avoids js-yaml dependency add (gbrain already ships ~70% of its YAML
+// Avoids js-yaml dependency add (zbrain already ships ~70% of its YAML
 // touchpoints hand-parsed). For pack manifests, the YAML subset we accept
 // is intentionally narrow: scalars, lists, nested objects up to 4 levels
 // deep, no anchors, no aliases, no tags. If users want broader YAML,

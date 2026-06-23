@@ -33,7 +33,7 @@ import type { ResolvedPack } from './registry.ts';
  *
  * NEVER throws. Never logs to stderr (callers don't need the noise on
  * routine queries; the underlying pack-load errors surface through
- * `gbrain doctor`'s schema_pack_coverage / schema_pack_writability
+ * `zbrain doctor`'s schema_pack_coverage / schema_pack_writability
  * checks).
  *
  * @example

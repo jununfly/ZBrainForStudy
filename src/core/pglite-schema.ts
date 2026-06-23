@@ -13,19 +13,19 @@
  *
  * Includes OAuth tables (oauth_clients, oauth_tokens, oauth_codes) and
  * auth infrastructure (access_tokens, mcp_request_log) because
- * `gbrain serve --http` makes PGLite network-accessible.
+ * `zbrain serve --http` makes PGLite network-accessible.
  *
  * Everything else is identical: same tables, triggers, indexes, pgvector HNSW, tsvector GIN.
  *
  * DRIFT WARNING: When schema-embedded.ts changes, update this file to match.
- * test/edge-bundle.test.ts has a drift detection test.
+ * tests/unit/edge-bundle.test.ts has a drift detection test.
  */
 
 import { applyChunkEmbeddingIndexPolicy } from './vector-index.ts';
 import { DEFAULT_EMBEDDING_MODEL, DEFAULT_EMBEDDING_DIMENSIONS } from './ai/defaults.ts';
 
 const PGLITE_SCHEMA_SQL_TEMPLATE = `
--- GBrain PGLite schema (local embedded Postgres)
+-- ZBrain PGLite schema (local embedded Postgres)
 
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS pages (
   effective_date_source TEXT,
   import_filename       TEXT,
   salience_touched_at   TIMESTAMPTZ,
-  -- v0.37.0 (migration v79): real stale-page signal for gbrain lsd
+  -- v0.37.0 (migration v79): real stale-page signal for zbrain lsd
   -- (mirrors src/schema.sql). NULL = never retrieved.
   last_retrieved_at     TIMESTAMPTZ,
   -- v0.40.3.0 contextual retrieval (renumbered from v81 to v90 on master
@@ -213,7 +213,7 @@ CREATE TABLE IF NOT EXISTS links (
   link_type      TEXT    NOT NULL DEFAULT '',
   context        TEXT    NOT NULL DEFAULT '',
   -- v0.42.0.0: 'mentions' added for auto-linked body-text mentions
-  -- (gbrain extract links --by-mention). Filtered OUT of backlink-count
+  -- (zbrain extract links --by-mention). Filtered OUT of backlink-count
   -- for search ranking; only counts toward orphan-ratio + graph traversal.
   link_source    TEXT    CHECK (link_source IS NULL OR link_source IN ('markdown', 'frontmatter', 'manual', 'mentions')),
   origin_page_id INTEGER REFERENCES pages(id) ON DELETE SET NULL,
@@ -494,7 +494,7 @@ CREATE TABLE IF NOT EXISTS subagent_tool_executions (
   error               TEXT,
   schema_version      INTEGER     NOT NULL DEFAULT 1,
   provider_id         TEXT,
-  -- v0.38 D11: gbrain-owned stable IDs (ordinal assigned at first observation;
+  -- v0.38 D11: zbrain-owned stable IDs (ordinal assigned at first observation;
   -- gbrain_tool_use_id is uuid v7). Reconciliation on crash-replay uses
   -- (job_id, message_idx, ordinal) as the unique key. Legacy rows (pre-v82)
   -- have ordinal=NULL and resolve via the read-time D5 shim.
@@ -522,7 +522,7 @@ CREATE INDEX IF NOT EXISTS idx_rate_leases_key_expires ON subagent_rate_leases (
 -- ============================================================
 -- See src/schema.sql for full rationale. One row per active cycle.
 -- PGLite is single-writer, so the lock doubly protects: the DB-level
--- row + the file lock at ~/.gbrain/cycle.lock prevent concurrent
+-- row + the file lock at ~/.zbrain/cycle.lock prevent concurrent
 -- CLI invocations from racing.
 CREATE TABLE IF NOT EXISTS gbrain_cycle_locks (
   id              TEXT        PRIMARY KEY,
@@ -620,7 +620,7 @@ CREATE INDEX IF NOT EXISTS eval_contradictions_cache_expires_idx
 
 -- ============================================================
 -- eval_contradictions_runs (v0.32.6): time-series tracking for the probe.
--- One row per 'gbrain eval suspected-contradictions' run; source for the
+-- One row per 'zbrain eval suspected-contradictions' run; source for the
 -- 'trend' sub-subcommand and the doctor 'contradictions' check.
 -- ============================================================
 CREATE TABLE IF NOT EXISTS eval_contradictions_runs (

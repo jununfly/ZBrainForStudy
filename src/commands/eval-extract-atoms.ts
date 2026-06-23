@@ -1,4 +1,4 @@
-// v0.41 T11 — `gbrain eval extract-atoms` command (minimal scaffold).
+// v0.41 T11 — `zbrain eval extract-atoms` command (minimal scaffold).
 //
 // v0.41 ships the COMMAND SURFACE. Full parity baseline against
 // your OpenClaw's existing 13K atoms on a 500-page subset (the codex T4

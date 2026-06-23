@@ -214,7 +214,7 @@ async function detectDeadPrefixes(
 }
 
 /**
- * Pure core for `gbrain schema stats` (CLI) AND `schema_stats` MCP op.
+ * Pure core for `zbrain schema stats` (CLI) AND `schema_stats` MCP op.
  * Returns the StatsResult ready for human-formatter, JSON output, or
  * operation envelope wrapping.
  */

@@ -1,23 +1,23 @@
 /**
- * skillpack/harvest.ts — `gbrain skillpack harvest <slug> --from <host-repo-root>`.
+ * skillpack/harvest.ts — `zbrain skillpack harvest <slug> --from <host-repo-root>`.
  *
  * Inverse of scaffold: lifts a skill from a host agent repo into
- * gbrain's tree so other clients can scaffold it via the normal path.
+ * zbrain's tree so other clients can scaffold it via the normal path.
  *
  * Source contract (D11): `--from` points at the host repo root.
  * `<from>/skills/<slug>/` is the skill dir. Paired source files
  * declared in the host skill's frontmatter `sources:` array land at
- * the mirror path inside gbrain.
+ * the mirror path inside zbrain.
  *
  * Security (D13): every harvested file goes through canonical-path
  * validation and symlink rejection. `realpath(file).startsWith
  * (realpath(host-skill-dir))`. Mirrors `validateUploadPath` from
  * `src/core/operations.ts`. Without this gate, a malicious or careless
- * symlink could leak secrets into gbrain's source tree.
+ * symlink could leak secrets into zbrain's source tree.
  *
  * Privacy (D4, T7): after copying but before declaring success, the
  * harvested files are scanned against a regex allowlist of "private
- * patterns" (defaults + user-maintained `~/.gbrain/harvest-private-patterns.txt`).
+ * patterns" (defaults + user-maintained `~/.zbrain/harvest-private-patterns.txt`).
  * Any match → rollback (delete harvested files) and exit non-zero.
  * `--no-lint` bypasses the linter (used by the editorial workflow
  * skill after a manual scrub).
@@ -44,15 +44,15 @@ export interface HarvestOptions {
   slug: string;
   /** Absolute path to the host agent repo root. */
   hostRepoRoot: string;
-  /** Absolute path to gbrain repo root (destination). */
-  gbrainRoot: string;
+  /** Absolute path to zbrain repo root (destination). */
+  zbrainRoot: string;
   /** Skip the privacy linter. */
   noLint?: boolean;
   /** Dry-run: preview, no writes. */
   dryRun?: boolean;
-  /** Custom private-patterns file (defaults to ~/.gbrain/harvest-private-patterns.txt). */
+  /** Custom private-patterns file (defaults to ~/.zbrain/harvest-private-patterns.txt). */
   privatePatternsPath?: string;
-  /** Allow overwriting an existing gbrain/skills/<slug>/ tree. */
+  /** Allow overwriting an existing zbrain/skills/<slug>/ tree. */
   overwriteLocal?: boolean;
 }
 
@@ -62,7 +62,7 @@ export interface HarvestResult {
   status: HarvestStatus;
   slug: string;
   hostSkillDir: string;
-  /** Files written under gbrain/. */
+  /** Files written under zbrain/. */
   filesCopied: string[];
   /** Paired source files (from frontmatter) included. */
   pairedSources: string[];
@@ -91,7 +91,7 @@ export class HarvestError extends Error {
 const PLUGIN_JSON = 'openclaw.plugin.json';
 const DEFAULT_PRIVATE_PATTERNS_PATH = join(
   homedir(),
-  '.gbrain',
+  '.zbrain',
   'harvest-private-patterns.txt',
 );
 
@@ -107,10 +107,10 @@ export function runHarvest(opts: HarvestOptions): HarvestResult {
     );
   }
 
-  const gbrainSkillDir = join(opts.gbrainRoot, 'skills', opts.slug);
-  if (existsSync(gbrainSkillDir) && !opts.overwriteLocal) {
+  const zbrainSkillDir = join(opts.zbrainRoot, 'skills', opts.slug);
+  if (existsSync(zbrainSkillDir) && !opts.overwriteLocal) {
     throw new HarvestError(
-      `Slug collision: gbrain already has skills/${opts.slug}/. Pass --overwrite-local to replace.`,
+      `Slug collision: zbrain already has skills/${opts.slug}/. Pass --overwrite-local to replace.`,
       'slug_collision',
     );
   }
@@ -121,16 +121,16 @@ export function runHarvest(opts: HarvestOptions): HarvestResult {
   const pairedSources = readHostSkillSources(opts.hostRepoRoot, opts.slug);
 
   // Build items list:
-  //   - skill dir → gbrain/skills/<slug>/
-  //   - paired sources → gbrain/<source-path>
+  //   - skill dir → zbrain/skills/<slug>/
+  //   - paired sources → zbrain/<source-path>
   const items: Array<{ source: string; target: string }> = [];
-  for (const item of walkSourceDir(hostSkillDir, gbrainSkillDir)) {
+  for (const item of walkSourceDir(hostSkillDir, zbrainSkillDir)) {
     items.push(item);
   }
   for (const src of pairedSources) {
     items.push({
       source: join(opts.hostRepoRoot, src),
-      target: join(opts.gbrainRoot, src),
+      target: join(opts.zbrainRoot, src),
     });
   }
 
@@ -182,7 +182,7 @@ export function runHarvest(opts: HarvestOptions): HarvestResult {
     } catch (err) {
       if (err instanceof PrivacyLintError) {
         // Rollback: remove every file we just wrote.
-        rollbackHarvest(gbrainSkillDir, pairedItems.map(i => i.target));
+        rollbackHarvest(zbrainSkillDir, pairedItems.map(i => i.target));
         return {
           status: 'lint_failed',
           slug: opts.slug,
@@ -201,7 +201,7 @@ export function runHarvest(opts: HarvestOptions): HarvestResult {
   // Update openclaw.plugin.json — add slug to "skills" array if missing.
   let manifestUpdated = false;
   if (!dryRun) {
-    manifestUpdated = addToBundleManifest(opts.gbrainRoot, opts.slug);
+    manifestUpdated = addToBundleManifest(opts.zbrainRoot, opts.slug);
   }
 
   return {
@@ -218,7 +218,7 @@ export function runHarvest(opts: HarvestOptions): HarvestResult {
 
 /**
  * Read a host skill's frontmatter `sources:` without using the bundler
- * (the bundler resolves paths against gbrainRoot, not the host). Mirrors
+ * (the bundler resolves paths against zbrainRoot, not the host). Mirrors
  * `loadSkillSources`'s validation but resolves against the host root.
  */
 function readHostSkillSources(hostRoot: string, slug: string): string[] {
@@ -230,10 +230,10 @@ function readHostSkillSources(hostRoot: string, slug: string): string[] {
 }
 
 /** Delete everything we just wrote. */
-function rollbackHarvest(gbrainSkillDir: string, pairedTargets: string[]): void {
+function rollbackHarvest(zbrainSkillDir: string, pairedTargets: string[]): void {
   try {
-    if (existsSync(gbrainSkillDir)) {
-      rmSync(gbrainSkillDir, { recursive: true, force: true });
+    if (existsSync(zbrainSkillDir)) {
+      rmSync(zbrainSkillDir, { recursive: true, force: true });
     }
   } catch {}
   for (const p of pairedTargets) {
@@ -249,8 +249,8 @@ function rollbackHarvest(gbrainSkillDir: string, pairedTargets: string[]): void 
  *
  * Returns true if the manifest was modified.
  */
-export function addToBundleManifest(gbrainRoot: string, slug: string): boolean {
-  const manifestPath = join(gbrainRoot, PLUGIN_JSON);
+export function addToBundleManifest(zbrainRoot: string, slug: string): boolean {
+  const manifestPath = join(zbrainRoot, PLUGIN_JSON);
   if (!existsSync(manifestPath)) return false;
   const raw = readFileSync(manifestPath, 'utf-8');
   let manifest;

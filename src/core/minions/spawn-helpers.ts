@@ -1,5 +1,5 @@
 /**
- * Pure helpers for spawning the gbrain worker, optionally wrapped in tini.
+ * Pure helpers for spawning the zbrain worker, optionally wrapped in tini.
  *
  * Background: zombie children spawned by the worker (shell jobs, embed
  * batches, sub-agents) need a SIGCHLD handler to be reaped. The cli.ts
@@ -38,7 +38,7 @@ export function detectTini(): string {
 }
 
 /**
- * Build the (cmd, args) tuple for spawning the gbrain worker, optionally
+ * Build the (cmd, args) tuple for spawning the zbrain worker, optionally
  * wrapped in tini. When `tiniPath` is non-empty, returns
  *   { cmd: tiniPath, args: ['--', cliPath, ...args] }
  * which makes tini PID 1 of the spawned subtree. When empty, returns

@@ -1,13 +1,13 @@
 /**
- * gbrain frontmatter — Frontmatter validation, audit, and auto-repair.
+ * zbrain frontmatter — Frontmatter validation, audit, and auto-repair.
  *
  * Subcommands:
- *   gbrain frontmatter validate <path> [--json] [--fix] [--dry-run]
+ *   zbrain frontmatter validate <path> [--json] [--fix] [--dry-run]
  *     Validate one file or recursively a directory. --fix writes centralized
- *     backups under ~/.gbrain/backups/frontmatter/... then rewrites in place.
+ *     backups under ~/.zbrain/backups/frontmatter/... then rewrites in place.
  *     --dry-run previews without writing.
  *
- *   gbrain frontmatter audit [--source <id>] [--json]
+ *   zbrain frontmatter audit [--source <id>] [--json]
  *     Read-only scan across all registered sources (or one with --source).
  *     Returns AuditReport-shaped JSON with --json.
  *
@@ -69,7 +69,7 @@ export async function runFrontmatter(args: string[]): Promise<void> {
 async function connectEngineForAudit(): Promise<BrainEngine> {
   const config = loadConfig();
   if (!config) {
-    throw new Error('No brain configured. Run: gbrain init');
+    throw new Error('No brain configured. Run: zbrain init');
   }
   const engineConfig = toEngineConfig(config);
   const engine = await createEngine(engineConfig);
@@ -78,13 +78,13 @@ async function connectEngineForAudit(): Promise<BrainEngine> {
 }
 
 function printHelp() {
-  console.log(`gbrain frontmatter — frontmatter validation, audit, auto-repair, and generation
+  console.log(`zbrain frontmatter — frontmatter validation, audit, auto-repair, and generation
 
 Usage:
-  gbrain frontmatter validate <path> [--json] [--fix] [--dry-run]
-  gbrain frontmatter generate <path> [--fix] [--dry-run] [--json] [--include-catch-all]
-  gbrain frontmatter audit [--source <id>] [--json]
-  gbrain frontmatter install-hook [--source <id>] [--force] [--uninstall]
+  zbrain frontmatter validate <path> [--json] [--fix] [--dry-run]
+  zbrain frontmatter generate <path> [--fix] [--dry-run] [--json] [--include-catch-all]
+  zbrain frontmatter audit [--source <id>] [--json]
+  zbrain frontmatter install-hook [--source <id>] [--force] [--uninstall]
 
 validate
   Validate one .md file or recursively a directory. Each file is parsed via
@@ -94,7 +94,7 @@ validate
 
   --fix      Auto-repair the fixable subset (NULL_BYTES, MISSING_CLOSE,
              NESTED_QUOTES, SLUG_MISMATCH). Writes a backup under
-             ~/.gbrain/backups/frontmatter/... before any in-place rewrite.
+             ~/.zbrain/backups/frontmatter/... before any in-place rewrite.
              Backups work for both git and non-git brain repos without
              littering the source tree.
   --dry-run  Preview --fix without writing.
@@ -107,7 +107,7 @@ generate
 
   Without --fix: dry-run preview showing what would be generated.
   With --fix: writes frontmatter to files with centralized safety backups.
-  Unknown/catch-all files are skipped by default so GBrain does not stamp
+  Unknown/catch-all files are skipped by default so ZBrain does not stamp
   meaningless "type: note" metadata onto arbitrary workspace documents. Pass
   --include-catch-all to opt into the legacy catch-all note behavior.
 
@@ -115,9 +115,9 @@ generate
   Add new directory conventions by adding rules to the table.
 
   Examples:
-    gbrain frontmatter generate /path/to/brain              # preview all
-    gbrain frontmatter generate /path/to/brain --fix        # write all
-    gbrain frontmatter generate /path/to/brain/people/ --fix # just people/
+    zbrain frontmatter generate /path/to/brain              # preview all
+    zbrain frontmatter generate /path/to/brain --fix        # write all
+    zbrain frontmatter generate /path/to/brain/people/ --fix # just people/
 
   --fix      Write generated frontmatter to files with centralized backups.
   --dry-run  Preview without writing (default when --fix is omitted).
@@ -163,7 +163,7 @@ async function runValidate(rest: string[]): Promise<void> {
     else if (!a.startsWith('--')) target = a;
   }
   if (!target) {
-    console.error('error: gbrain frontmatter validate requires a <path> argument');
+    console.error('error: zbrain frontmatter validate requires a <path> argument');
     process.exitCode = 1;
     return;
   }
@@ -237,7 +237,7 @@ async function runValidate(rest: string[]): Promise<void> {
         }
       }
       if (flags.fix && !flags.dryRun) {
-        console.log(`\nWrote centralized backups for ${filesFixed} file(s) under ~/.gbrain/backups/frontmatter/.`);
+        console.log(`\nWrote centralized backups for ${filesFixed} file(s) under ~/.zbrain/backups/frontmatter/.`);
       }
     }
   }
@@ -255,7 +255,7 @@ async function runValidate(rest: string[]): Promise<void> {
  * .git, .obsidian, etc. That was the second instance of the v0.38.2.0 hang
  * class (the first being brain-writer.ts:walkDir). Codex outside-voice
  * caught it during plan-eng-review — fixing only walkDir would have left
- * `gbrain frontmatter validate` (doctor's own remediation hint) hanging
+ * `zbrain frontmatter validate` (doctor's own remediation hint) hanging
  * users in the same way.
  *
  * Optional `visitDir(dir)` is the test-observability hook: fired once per
@@ -334,7 +334,7 @@ async function runAudit(engine: BrainEngine, rest: string[]): Promise<void> {
 
 function printAuditHumanReport(report: AuditReport): void {
   if (report.per_source.length === 0) {
-    console.log('No registered sources to audit. Run `gbrain sources list` to inspect.');
+    console.log('No registered sources to audit. Run `zbrain sources list` to inspect.');
     return;
   }
   console.log(`Frontmatter audit — ${report.total} malformed issue(s) across ${report.per_source.length} source(s) (scanned at ${report.scanned_at})`);
@@ -360,7 +360,7 @@ function printAuditHumanReport(report: AuditReport): void {
     }
   }
   if (report.total > 0) {
-    console.log(`\nFix with: gbrain frontmatter validate <source-path> --fix`);
+    console.log(`\nFix with: zbrain frontmatter validate <source-path> --fix`);
   }
 }
 
@@ -376,8 +376,8 @@ async function runGenerate(args: string[]): Promise<void> {
   const includeCatchAll = args.includes('--include-catch-all') || args.includes('--allow-catch-all');
 
   if (!targetPath) {
-    console.error('error: gbrain frontmatter generate requires a <path> argument');
-    console.error('usage: gbrain frontmatter generate <path> [--fix] [--dry-run] [--json]');
+    console.error('error: zbrain frontmatter generate requires a <path> argument');
+    console.error('usage: zbrain frontmatter generate <path> [--fix] [--dry-run] [--json]');
     process.exitCode = 1;
     return;
   }
@@ -522,7 +522,7 @@ async function runGenerate(args: string[]): Promise<void> {
       console.log(`    ... and ${results.length - 10} more`);
     }
     if (!doFix) {
-      console.log(`\n  To write: gbrain frontmatter generate ${targetPath} --fix`);
+      console.log(`\n  To write: zbrain frontmatter generate ${targetPath} --fix`);
     }
   }
 }

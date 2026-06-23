@@ -68,7 +68,7 @@ async function runStorageStatus(engine: BrainEngine, args: string[]): Promise<vo
 
 /**
  * D4: storage tiering on PGLite is a partial feature. The "DB" the pages
- * live in IS the local file gbrain uses for everything else, so "db_only"
+ * live in IS the local file zbrain uses for everything else, so "db_only"
  * has no real offload effect. The .gitignore management still helps
  * (keeps bulk content out of git history), so we warn but proceed.
  *
@@ -84,7 +84,7 @@ function warnIfPGLite(engine: BrainEngine): void {
     `Note: storage tiering has limited effect on PGLite — pages live in your ` +
       `local database file regardless of tier. The .gitignore management still ` +
       `keeps bulk content out of git history. To get full tiering, migrate to ` +
-      `Postgres with \`gbrain migrate --to supabase\`.`,
+      `Postgres with \`zbrain migrate --to supabase\`.`,
   );
 }
 
@@ -101,7 +101,7 @@ export function __resetPGLiteWarn(): void {
  * Side-effect-free apart from the engine.listPages call and one recursive
  * filesystem walk. Pure for testability — formatters are tested separately.
  *
- * Returns null `config` when no gbrain.yml is present at repoPath. In that
+ * Returns null `config` when no zbrain.yml is present at repoPath. In that
  * case pagesByTier is all zeros for db_tracked/db_only and totals roll up
  * into unspecified.
  */
@@ -171,8 +171,8 @@ export function formatStorageStatusHuman(result: StorageStatusResult): string {
   lines.push('');
 
   if (!result.config) {
-    lines.push('No gbrain.yml configuration found.');
-    if (result.repoPath) lines.push(`Checked: ${result.repoPath}/gbrain.yml`);
+    lines.push('No zbrain.yml configuration found.');
+    if (result.repoPath) lines.push(`Checked: ${result.repoPath}/zbrain.yml`);
     lines.push('');
     lines.push('All pages are stored in git by default.');
     lines.push(`Total pages: ${result.totalPages}`);
@@ -214,7 +214,7 @@ export function formatStorageStatusHuman(result: StorageStatusResult): string {
       lines.push(`  ... and ${result.missingFiles.length - 10} more`);
     }
     lines.push('');
-    lines.push(`Use: gbrain export --restore-only --repo "${result.repoPath}"`);
+    lines.push(`Use: zbrain export --restore-only --repo "${result.repoPath}"`);
   }
 
   if (result.warnings.length > 0) {

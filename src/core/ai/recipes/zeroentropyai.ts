@@ -2,7 +2,7 @@ import type { Recipe } from '../types.ts';
 
 /**
  * ZeroEntropy ships two specialized small models that target the two weakest
- * retrieval moments in a gbrain pipeline:
+ * retrieval moments in a zbrain pipeline:
  *
  *  - zembed-1 — flexible-dim embedding (2560 default; also 1280/640/320/160/80/40),
  *    distilled from zerank-2, 32K context. Asymmetric `input_type: query|document`

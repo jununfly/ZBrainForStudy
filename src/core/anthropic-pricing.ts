@@ -3,7 +3,7 @@
  *
  * Prices in USD per 1M tokens (input | output). Numbers reflect Anthropic's
  * published pricing as of 2026-05-01. Update when Anthropic publishes new
- * pricing — the JSON in `~/.gbrain/audit/dream-budget-*.jsonl` carries the
+ * pricing — the JSON in `~/.zbrain/audit/dream-budget-*.jsonl` carries the
  * snapshot per call so historical estimates stay reproducible.
  *
  * Codex P1 #10 fold: non-Anthropic models (gemini, gpt, anything not in

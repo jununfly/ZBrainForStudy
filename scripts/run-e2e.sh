@@ -21,13 +21,13 @@
 # CI runners under load (one CI flake observed on PR #475 hitting
 # exactly 5000.09ms in the Tags beforeAll).
 #
-# HOME isolation: E2E tests call paths that resolve to gbrain init / saveConfig
+# HOME isolation: E2E tests call paths that resolve to zbrain init / saveConfig
 # (e.g. setupDB writing config for the test container) and would otherwise
-# write the user's real ~/.gbrain/config.json. The wrapper redirects HOME and
-# GBRAIN_HOME to a tmpdir before bun starts so config writes land in the
+# write the user's real ~/.zbrain/config.json. The wrapper redirects HOME and
+# ZBRAIN_HOME to a tmpdir before bun starts so config writes land in the
 # tmpdir, then verifies the user's real config md5 didn't change after the run.
 # Both env vars are required: loadConfig/saveConfig resolve via HOME, while
-# configPath/getDbUrlSource honor GBRAIN_HOME; setting only one leaves the
+# configPath/getDbUrlSource honor ZBRAIN_HOME; setting only one leaves the
 # other path escaping isolation. HOME is set before bun starts because Bun's
 # os.homedir() caches at first call and in-process mutation would not take.
 # Trap cleans up the tmpdir even on test failure.
@@ -39,7 +39,7 @@ cd "$(dirname "$0")/.."
 # --- HOME isolation: snapshot real user config before switching ---
 # Tolerate unset HOME (minimal containers, exotic CI shells) without tripping set -u.
 REAL_HOME="${HOME:-/tmp}"
-USER_CONFIG="$REAL_HOME/.gbrain/config.json"
+USER_CONFIG="$REAL_HOME/.zbrain/config.json"
 USER_CONFIG_EXISTED=0
 USER_CONFIG_MD5=""
 # `{ ... } || true` swallows non-zero exit when the file is missing or md5 isn't
@@ -59,12 +59,12 @@ fi
 
 # Portable mktemp: explicit XXXXXX is required by GNU mktemp on Linux CI.
 # `-t prefix` works on BSD but errors on GNU when the template lacks Xs.
-E2E_TMP_HOME=$(mktemp -d "${TMPDIR:-/tmp}/gbrain-e2e.XXXXXX")
+E2E_TMP_HOME=$(mktemp -d "${TMPDIR:-/tmp}/zbrain-e2e.XXXXXX")
 trap 'rm -rf "$E2E_TMP_HOME"' EXIT
 
 export HOME="$E2E_TMP_HOME"
-export GBRAIN_HOME="$E2E_TMP_HOME"
-mkdir -p "$E2E_TMP_HOME/.gbrain"
+export ZBRAIN_HOME="$E2E_TMP_HOME"
+mkdir -p "$E2E_TMP_HOME/.zbrain"
 
 # --dry-run-list: print the resolved file list (one per line) and exit. Used
 # by scripts/ci-local.sh to smoke-test the argv branching at startup.
@@ -78,7 +78,7 @@ fi
 if [ "$#" -gt 0 ]; then
   files=("$@")
 else
-  files=(test/e2e/*.test.ts)
+  files=(tests/unit/e2e/*.test.ts)
 fi
 
 # SHARD env (e.g. SHARD=1/4) keeps every M-th file starting at index N (1-indexed).

@@ -1,5 +1,5 @@
 /**
- * gbrain integrity — scan, report, and repair brain-integrity issues.
+ * zbrain integrity — scan, report, and repair brain-integrity issues.
  *
  * The user-visible shipping milestone for the Knowledge Runtime delta.
  * Uses PR 1's resolver SDK + PR 2's BrainWriter to target two known pain
@@ -10,16 +10,16 @@
  *   2. Dead or rotted URLs in existing citations
  *
  * Subcommands:
- *   gbrain integrity check              Read-only report to stdout
- *   gbrain integrity auto               Three-bucket repair with confidence
- *   gbrain integrity --dry-run          Same as auto, no writes
+ *   zbrain integrity check              Read-only report to stdout
+ *   zbrain integrity auto               Three-bucket repair with confidence
+ *   zbrain integrity --dry-run          Same as auto, no writes
  *
  * Three-bucket confidence (contract with x_handle_to_tweet resolver):
  *   >= 0.8 → auto-repair through BrainWriter transaction
- *   0.5–0.8 → append to ~/.gbrain/integrity-review.md for human review
- *   < 0.5 → skip, log to ~/.gbrain/integrity.log.jsonl
+ *   0.5–0.8 → append to ~/.zbrain/integrity-review.md for human review
+ *   < 0.5 → skip, log to ~/.zbrain/integrity.log.jsonl
  *
- * Progress is durable at ~/.gbrain/integrity-progress.jsonl. Re-running
+ * Progress is durable at ~/.zbrain/integrity-progress.jsonl. Re-running
  * after a kill resumes from the last processed slug; already-repaired pages
  * are not revisited.
  */
@@ -27,7 +27,7 @@
 import { appendFileSync, existsSync, readFileSync, mkdirSync, writeFileSync } from 'fs';
 import { dirname } from 'path';
 
-import { loadConfig, toEngineConfig, gbrainPath } from '../core/config.ts';
+import { loadConfig, toEngineConfig, zbrainPath } from '../core/config.ts';
 import { createEngine } from '../core/engine-factory.ts';
 import type { BrainEngine } from '../core/engine.ts';
 import * as db from '../core/db.ts';
@@ -44,10 +44,10 @@ import { tweetCitation } from '../core/output/scaffold.ts';
 // Paths
 // ---------------------------------------------------------------------------
 
-// Lazy: GBRAIN_HOME may be set after module load.
-const getReviewFile = () => gbrainPath('integrity-review.md');
-const getLogFile = () => gbrainPath('integrity.log.jsonl');
-const getProgressFile = () => gbrainPath('integrity-progress.jsonl');
+// Lazy: ZBRAIN_HOME may be set after module load.
+const getReviewFile = () => zbrainPath('integrity-review.md');
+const getLogFile = () => zbrainPath('integrity.log.jsonl');
+const getProgressFile = () => zbrainPath('integrity-progress.jsonl');
 
 // ---------------------------------------------------------------------------
 // Bare-tweet detection
@@ -284,8 +284,8 @@ export interface IntegrityScanResult {
 
 /**
  * Read-only integrity scan over the engine's pages. No network, no writes,
- * no resolver calls. Called by `gbrain integrity check` for the full report
- * and by `gbrain doctor` (non-fast) for a sampled health signal.
+ * no resolver calls. Called by `zbrain integrity check` for the full report
+ * and by `zbrain doctor` (non-fast) for a sampled health signal.
  *
  * Caller owns the engine lifecycle.
  */
@@ -298,16 +298,16 @@ export async function scanIntegrity(
   // Fast path: single SQL query instead of N sequential getPage() calls.
   // Eliminates ~500 round-trips through PgBouncer that caused doctor to
   // timeout on transaction-mode pooling. Postgres-only: PGLite has no
-  // postgres.js connection, so the gate keeps the GBRAIN_DEBUG fallback
+  // postgres.js connection, so the gate keeps the ZBRAIN_DEBUG fallback
   // log clean for real Postgres errors instead of expected PGLite skips.
   if (batchLoad && limit !== Infinity && engine.kind === 'postgres') {
     try {
       return await scanIntegrityBatch(limit, typeFilter);
     } catch (err) {
-      // GBRAIN_DEBUG=1 surfaces real Postgres errors (deadlock, connection
+      // ZBRAIN_DEBUG=1 surfaces real Postgres errors (deadlock, connection
       // drop, SQL bug) that would otherwise vanish into the sequential
       // fallback. Quiet by default since the fallback is harmless.
-      if (process.env.GBRAIN_DEBUG) {
+      if (process.env.ZBRAIN_DEBUG) {
         console.error(
           '[integrity] batch path failed, falling back to sequential:',
           err instanceof Error ? err.message : err,
@@ -361,7 +361,7 @@ async function scanIntegrityBatch(
   const typeCondition = typeFilter ? sql`AND slug LIKE ${typeFilter + '/%'}` : sql``;
   // Boolean validate is the documented contract; stringly-typed 'false' (quoted
   // YAML) diverges from the sequential path's strict === false check. Intentional
-  // — gbrain lint should reject stringly-typed validate at write time.
+  // — zbrain lint should reject stringly-typed validate at write time.
   const validateCondition = sql`AND (frontmatter->>'validate' IS NULL OR frontmatter->>'validate' != 'false')`;
 
   // v0.32.8: scan ONE row per (source_id, slug) pair, not one per slug.
@@ -415,7 +415,7 @@ async function cmdAuto(args: string[]): Promise<void> {
     process.exit(1);
   }
 
-  ensureDir(gbrainPath());
+  ensureDir(zbrainPath());
 
   const engine = await connect();
   const registry = getDefaultRegistry();
@@ -573,7 +573,7 @@ async function cmdAuto(args: string[]): Promise<void> {
 
 function cmdReview(): void {
   if (!existsSync(getReviewFile())) {
-    console.log(`No review queue yet. Run: gbrain integrity auto --confidence 0.8`);
+    console.log(`No review queue yet. Run: zbrain integrity auto --confidence 0.8`);
     return;
   }
   const content = readFileSync(getReviewFile(), 'utf-8');
@@ -632,7 +632,7 @@ async function repairBareTweet(args: RepairArgs): Promise<void> {
     // until a more thorough repair pass removes the bare phrase.
     await tx.appendTimeline(slug, {
       date: dateISO,
-      source: 'gbrain integrity --auto',
+      source: 'zbrain integrity --auto',
       summary: `Bare-tweet reference repaired (line ${hit.line}): "${truncate(hit.rawLine, 80)}"`,
       detail: cite,
     });
@@ -711,7 +711,7 @@ export function extractXHandleFromFrontmatter(fm: Record<string, unknown> | unde
 async function connect(): Promise<BrainEngine> {
   const config = loadConfig();
   if (!config) {
-    console.error('No brain configured. Run: gbrain init');
+    console.error('No brain configured. Run: zbrain init');
     process.exit(1);
   }
   const engine = await createEngine(toEngineConfig(config));
@@ -746,7 +746,7 @@ function truncate(s: string, n: number): string {
 }
 
 function printHelp(): void {
-  console.log(`Usage: gbrain integrity <subcommand> [options]
+  console.log(`Usage: zbrain integrity <subcommand> [options]
 
 Subcommands:
   check                         Read-only report (pages scanned, bare tweets found)
@@ -763,11 +763,11 @@ Subcommands:
     --skip-urls                 Skip dead-link detection
 
   review                        Print review-queue path + entry count
-  reset-progress                Clear ~/.gbrain/integrity-progress.jsonl
+  reset-progress                Clear ~/.zbrain/integrity-progress.jsonl
 
 Paths:
-  Review queue: ~/.gbrain/integrity-review.md
-  Skip log:     ~/.gbrain/integrity.log.jsonl
-  Progress:     ~/.gbrain/integrity-progress.jsonl
+  Review queue: ~/.zbrain/integrity-review.md
+  Skip log:     ~/.zbrain/integrity.log.jsonl
+  Progress:     ~/.zbrain/integrity-progress.jsonl
 `);
 }

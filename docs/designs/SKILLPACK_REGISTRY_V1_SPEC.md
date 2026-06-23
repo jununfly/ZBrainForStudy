@@ -286,7 +286,7 @@ No contributor hand-runs git. The skill drives:
      in SKILL.md must be in a declared `external_resources:` array
    - Trial install: extract pack into a tempdir, run `gbrain skillpack
      install <tempdir>` against an ephemeral PGLite-backed gbrain (mirrors
-     the `test/e2e/longmemeval` ephemeral-PGLite pattern at
+     the `tests/unit/e2e/longmemeval` ephemeral-PGLite pattern at
      `src/eval/longmemeval/harness.ts`), assert `gbrain check-resolvable`
      stays clean and the skill rows appear in the managed block.
    - Trial install runs with `GBRAIN_SKILLPACK_SANDBOX=1`, which disables
@@ -381,7 +381,7 @@ package artifacts.
   "shared_deps": [],
   "excluded_from_install": [],
 
-  "unit_tests": ["test/**/*.test.ts"],
+  "unit_tests": ["tests/unit/**/*.test.ts"],
   "e2e_tests": ["e2e/**/*.test.ts"],
   "llm_evals": ["evals/*.judge.json"],
   "routing_evals": ["skills/*/routing-eval.jsonl"],
@@ -577,7 +577,7 @@ export const SKILLPACK_RUBRIC_V1: RubricDimension[] = [
   {
     id: 6,
     name: 'unit_tests_present',
-    description: 'Every skill has at least one unit test that imports it (test/**/*.test.ts)',
+    description: 'Every skill has at least one unit test that imports it (tests/unit/**/*.test.ts)',
     check: async (pack) => everySkillHasUnitTest(pack),
     fix_hint: 'gbrain skillify scaffold drops a passing example.test.ts you can extend',
     weight: 1,
@@ -754,7 +754,7 @@ hackathon-evaluation/
 │   └── hackathon-evaluation/
 │       ├── SKILL.md              # frontmatter + example triggers
 │       └── routing-eval.jsonl    # 5 example intents
-├── test/
+├── tests/unit/
 │   └── example.test.ts           # one passing unit test importing the skill helper
 ├── e2e/
 │   └── example.e2e.test.ts       # one E2E skeleton, marked skip-if-no-DB
@@ -930,7 +930,7 @@ gbrain skillpack pack [--out <path>]         # NEW: validate + emit .tgz tarball
   directory entry. Caps on extract: max 5000 files, max 100MB
   decompressed total, max 1MB per file, max path length 255 chars,
   max compression ratio 100:1 (compression-bomb defense). Pinned by
-  `test/skillpack-tarball-determinism.test.ts` (pack the same dir
+  `tests/unit/skillpack-tarball-determinism.test.ts` (pack the same dir
   twice on different days → same SHA).
 - `src/core/skillpack/collision-resolver.ts` — pure function
   `resolveSlugCollisions(incoming: string[], existing: Set<string>): {
@@ -1001,7 +1001,7 @@ gbrain skillpack pack [--out <path>]         # NEW: validate + emit .tgz tarball
     deny-write profiles): only the pack tempdir is read-write; every
     other path is read-only or unmounted. `/proc` masked where bwrap
     supports it (`--proc /proc --new-session`).
-  - Pinned by `test/skillpack-sandbox-env-scrub.test.ts`: 8 cases
+  - Pinned by `tests/unit/skillpack-sandbox-env-scrub.test.ts`: 8 cases
     asserting each known-credential env var is stripped, HOME is
     overridden, the denylist constant matches the test fixture.
 - `src/core/skillpack/sandbox-profiles/macos.sb` — sandbox-exec policy
@@ -1068,7 +1068,7 @@ gbrain skillpack pack [--out <path>]         # NEW: validate + emit .tgz tarball
   what the gate will see.
 - `src/commands/skillpack-init.ts` (extended scope from earlier section)
   — scaffolds the full cathedral tree above. `--minimal` flag drops
-  test/, e2e/, evals/ for power users who explicitly opt out.
+  tests/unit/, e2e/, evals/ for power users who explicitly opt out.
 - `src/core/skillpack/rubric.ts` — declarative `SKILLPACK_RUBRIC_V1`
   array of `RubricDimension` (see schema above). Pure-data + check
   functions that take a parsed pack and return `{ passed: boolean,
@@ -1194,86 +1194,86 @@ gbrain skillpack pack [--out <path>]         # NEW: validate + emit .tgz tarball
     privileged tokens. Mirror commit = least-privilege deploy key.
 - `bundles.json` (or a `bundles` section in `registry.json`) — named
   bundles like `starter-pack`, `founder-pack`, `journalist-pack`
-- `test/skillpack-manifest-v1.test.ts`,
-  `test/skillpack-multi-source-receipt.test.ts`,
-  `test/skillpack-remote-source.test.ts`,
-  `test/skillpack-collision-resolver.test.ts` (covers `-2` walk, the
+- `tests/unit/skillpack-manifest-v1.test.ts`,
+  `tests/unit/skillpack-multi-source-receipt.test.ts`,
+  `tests/unit/skillpack-remote-source.test.ts`,
+  `tests/unit/skillpack-collision-resolver.test.ts` (covers `-2` walk, the
   pack-authored-`-2` corner case, the `-99` cap),
-  `test/skillpack-tarball.test.ts` (round-trip, allowlist enforcement,
+  `tests/unit/skillpack-tarball.test.ts` (round-trip, allowlist enforcement,
   symlink rejection, SHA-256 stability),
-  `test/skillpack-pack.test.ts`,
-  `test/skillpack-registry-client.test.ts` (etag handling, schema
+  `tests/unit/skillpack-pack.test.ts`,
+  `tests/unit/skillpack-registry-client.test.ts` (etag handling, schema
   rejection on malformed registry, stale-cache behavior, network-down
   graceful fallback to last good cache),
-  `test/skillpack-registry-schema.test.ts` (every tier valid, missing
+  `tests/unit/skillpack-registry-schema.test.ts` (every tier valid, missing
   required field caught, unknown tier rejected),
-  `test/skillpack-search.test.ts` (tier ordering, tag rank, JSON shape),
-  `test/skillpack-sandbox.test.ts` (trial install creates + tears down
+  `tests/unit/skillpack-search.test.ts` (tier ordering, tag rank, JSON shape),
+  `tests/unit/skillpack-sandbox.test.ts` (trial install creates + tears down
   PGLite cleanly, network-disabled assertion fires),
-  `test/skillpack-security-gates.test.ts` (forbidden filetypes caught,
+  `tests/unit/skillpack-security-gates.test.ts` (forbidden filetypes caught,
   shellcheck path AND fallback regex path both work, external_resources
   declaration enforced),
-  `test/e2e/skillpack-third-party.test.ts` (PGLite-only, no
+  `tests/unit/e2e/skillpack-third-party.test.ts` (PGLite-only, no
   `DATABASE_URL` required; uses both a local-filesystem source fixture
   AND a local-tarball source fixture so both install paths are pinned),
-  `test/e2e/skillpack-registry-install.test.ts` (PGLite-only; serves a
+  `tests/unit/e2e/skillpack-registry-install.test.ts` (PGLite-only; serves a
   fixture `registry.json` via a localhost HTTP harness, installs by
   short name, asserts the right pack lands; covers missing-pack-name
   error path and stale-pin error path),
-  `test/skillpack-publish-preflight.test.ts` (T-GAP-1 from eng review:
+  `tests/unit/skillpack-publish-preflight.test.ts` (T-GAP-1 from eng review:
   `gh not installed` AND `gh not authed` both surface actionable
   errors with paste-ready install/login commands),
-  `test/skillpack-sandbox-network-block.test.ts` (T-GAP-2 from eng
+  `tests/unit/skillpack-sandbox-network-block.test.ts` (T-GAP-2 from eng
   review: synthetic pack inside sandbox attempts `fetch(...)` and
   `https.request(...)` — both must be rejected by the chosen backend.
   Runs against every sandbox backend the test host can spin up; skips
   gracefully when a backend is unavailable.),
-  `test/e2e/skillpack-bundle-atomicity.test.ts` (T-GAP-3 from eng
+  `tests/unit/e2e/skillpack-bundle-atomicity.test.ts` (T-GAP-3 from eng
   review: 5-pack starter-pack fixture where pack #3 has a synthetic
   failure; asserts per-pack-independent contract — packs 1-2 land,
   pack-3 reported failed, packs 4-5 skipped, retry hint printed,
   managed block intact for packs 1-2 only),
-  `test/skillpack-uninstall-renamed.test.ts` (T-GAP-4 from eng review:
+  `tests/unit/skillpack-uninstall-renamed.test.ts` (T-GAP-4 from eng review:
   install pack-A with `judge-submission`, install pack-B which
   auto-renames to `judge-submission-2` via the rename map. Uninstall
   pack-B and assert it removes the `-2` row, not the bare-name row.
   Then uninstall pack-A and assert clean state),
-  `test/skillpack-runbook-parser.test.ts` (frontmatter validation,
+  `tests/unit/skillpack-runbook-parser.test.ts` (frontmatter validation,
   three step kinds parsed correctly, malformed runbook fails loud,
   upgrade-runbook frontmatter requires from_version + to_version),
-  `test/skillpack-runbook-walker.test.ts` (each step kind dispatches
+  `tests/unit/skillpack-runbook-walker.test.ts` (each step kind dispatches
   to the right handler; `ask user:` honors --yes in non-TTY; refused
   confirmation halts the walk and reports which step refused; agent
   step that fails halts the walk and surfaces the failing CLI exit
   code),
-  `test/skillpack-upgrade-planner.test.ts` (single-hop path v0.1->v0.2;
+  `tests/unit/skillpack-upgrade-planner.test.ts` (single-hop path v0.1->v0.2;
   multi-hop path v0.1->v0.2->v0.3; refuses when no path exists;
   refuses silent downgrade),
-  `test/skillpack-coverage-score.test.ts` (tier eligibility math:
+  `tests/unit/skillpack-coverage-score.test.ts` (tier eligibility math:
   endorsed needs routing + runbooks + >=95%; community needs routing +
   install + >=80%; everything else falls to experimental),
-  `test/e2e/skillpack-publish-gate-full-suite.test.ts` (PGLite-only;
+  `tests/unit/e2e/skillpack-publish-gate-full-suite.test.ts` (PGLite-only;
   synthetic pack with declared unit tests + LLM-judge evals + routing
   evals, publish gate runs the suite inside the sandbox with stubbed
   gateway, produces validation log with coverage score, tier
   assignment matches expectations),
-  `test/skillpack-rubric.test.ts` (every dimension in
+  `tests/unit/skillpack-rubric.test.ts` (every dimension in
   `SKILLPACK_RUBRIC_V1` has a check function that returns
   `{passed, detail}`; pure-function tests against fixture packs that
   pass / fail each dimension individually + a known-bad pack that
   triggers all 10 fixes simultaneously),
-  `test/skillpack-doctor-quick.test.ts` (the `--quick` mode runs in
+  `tests/unit/skillpack-doctor-quick.test.ts` (the `--quick` mode runs in
   < 1s on the reference pack; produces stable JSON envelope; refuses
   scores < 5; exit codes correct per band),
-  `test/skillpack-doctor-fix.test.ts` (`--fix` scaffolds missing
+  `tests/unit/skillpack-doctor-fix.test.ts` (`--fix` scaffolds missing
   pieces; respects the mtime-vs-manifest heuristic and refuses to
   overwrite hand-edited files; confirm prompt fires on TTY;
   `--yes` skips it; non-TTY without `--yes` refuses),
-  `test/e2e/skillpack-reference-is-ten.test.ts` (regression guard:
+  `tests/unit/e2e/skillpack-reference-is-ten.test.ts` (regression guard:
   `gbrain skillpack doctor --quick --json examples/skillpack-reference`
   always scores 10/10; if a future PR drops the reference pack
   below 10, this test fails loud and CI rejects),
-  `test/skillpack-anatomy-fresh.test.ts` (asserts
+  `tests/unit/skillpack-anatomy-fresh.test.ts` (asserts
   `scripts/check-anatomy-fresh.sh` passes: the rubric section of
   `docs/skillpack-anatomy.md` matches what
   `bun run build:skillpack-anatomy` would emit from the current

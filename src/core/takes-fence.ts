@@ -8,14 +8,14 @@
  *
  *   ## Takes
  *
- *   <!--- gbrain:takes:begin -->
+ *   <!--- zbrain:takes:begin -->
  *   | # | claim | kind | who | weight | since | source |
  *   |---|-------|------|-----|--------|-------|--------|
  *   | 1 | CEO of Acme | fact | world | 1.0 | 2017-01 | Crustdata |
  *   | 2 | Strong technical founder | take | garry | 0.85 | 2026-04-29 | OH 2026-04-29 |
  *   | 3 | ~~Will reach $50B~~ | bet | garry | 0.7 | 2026-04-29 → 2026-06 | superseded by #4 |
  *   | 4 | Will reach $30B | bet | garry | 0.55 | 2026-06 | revised after Q2 numbers |
- *   <!--- gbrain:takes:end -->
+ *   <!--- zbrain:takes:end -->
  *
  * Parsing rules (Codex P1 #8 fold — strict on canonical, lenient on hand-edits):
  *
@@ -39,7 +39,7 @@
 // v0.38: TakeKind opens from closed 4-element union to string (T3 + T10).
 // See `src/core/engine.ts` TakeKind for full rationale. Runtime validation
 // moves to active schema pack's annotation primitive declarations; the
-// pre-v0.38 {fact|take|bet|hunch} seed lives in `gbrain-base.yaml`.
+// pre-v0.38 {fact|take|bet|hunch} seed lives in `zbrain-base.yaml`.
 export type TakeKind = string;
 
 export type TakeQuality = 'correct' | 'incorrect' | 'partial' | 'unresolvable';
@@ -103,8 +103,8 @@ export interface ParseResult {
 }
 
 // HTML-comment fence markers — verbatim per spec.
-export const TAKES_FENCE_BEGIN = '<!--- gbrain:takes:begin -->';
-export const TAKES_FENCE_END   = '<!--- gbrain:takes:end -->';
+export const TAKES_FENCE_BEGIN = '<!--- zbrain:takes:begin -->';
+export const TAKES_FENCE_END   = '<!--- zbrain:takes:end -->';
 
 /**
  * Holder grammar (v0.32 — EXP-4). The contract documented on ParsedTake.holder
@@ -398,7 +398,7 @@ export function parseTakesFence(body: string): ParseResult {
  * cmdAdd) must read existing rows via parseTakesFence and pass them
  * through to renderTakesFence so resolution data on resolved rows survives
  * unrelated edits to other rows on the same page. The
- * round-trip-preservation test in test/takes-fence.test.ts is the
+ * round-trip-preservation test in tests/unit/takes-fence.test.ts is the
  * regression gate.
  */
 export function renderTakesFence(takes: ParsedTake[]): string {

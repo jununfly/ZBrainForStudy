@@ -49,7 +49,7 @@ The script greps for '${BANNED_NAME}' (case-insensitive) in:
   - docs/**
   - skills/**
   - src/**
-  - test/**
+  - tests/unit/**
   - scripts/**
 
 Allow-list (references to the name are permitted):
@@ -99,19 +99,19 @@ ALLOW_LIST=(
   'CLAUDE.md'
   'llms-full.txt'
   'docs/UPGRADING_DOWNSTREAM_AGENTS.md'
-  'test/integrations.test.ts'
+  'tests/unit/integrations.test.ts'
   # v0.25.1 (codex T7) BANNED_PATHS allow-list:
   # Historical docs, frozen migration files, test fixtures, and env-var
   # fallbacks where /data/brain/ or /data/.openclaw/ appears legitimately.
   # New skills/, src/, and tests must NOT slip onto this list — extend the
   # banned check above instead.
-  'docs/GBRAIN_RECOMMENDED_SCHEMA.md'
-  'docs/GBRAIN_V0.md'
+  'docs/ZBRAIN_RECOMMENDED_SCHEMA.md'
+  'docs/ZBRAIN_V0.md'
   'docs/guides/minions-shell-jobs.md'
   'scripts/smoke-test.sh'
   'skills/migrations/v0.9.0.md'
   'skills/migrations/v0.14.0.md'
-  'test/storage-status.test.ts'
+  'tests/unit/storage-status.test.ts'
   # CHANGELOG.md documents the rule (the v0.25.1 entry references the
   # banned literals in describing what's banned). Same exception status
   # as CLAUDE.md and this script itself: meta-documentation needs to
@@ -127,7 +127,7 @@ ALLOW_LIST=(
   # absence — same exception status as scripts/check-privacy.sh,
   # CHANGELOG.md, and CLAUDE.md (meta-rule enforcement requires
   # mentioning what the rule forbids).
-  'test/recency-decay.test.ts'
+  'tests/unit/recency-decay.test.ts'
   # v0.32.5: the sibling check-test-real-names.sh enforces the same
   # privacy rule for test fixtures and lists the banned names literally
   # (Wintermute, Hermes, etc) inside its BANNED_NAMES + ALLOWLIST arrays.
@@ -138,15 +138,15 @@ ALLOW_LIST=(
   # docs/proposals/*.md. Same meta-rule-enforcement exception as the two
   # entries above — describing what the rule forbids requires naming it.
   'scripts/check-proposal-pii.sh'
-  'test/scripts/check-proposal-pii.test.ts'
+  'tests/unit/scripts/check-proposal-pii.test.ts'
   # v0.32.3.0: the functional-area-resolver skill's behavior-contract
   # section describes the privacy guarantees the skill preserves and
   # references the banned literals while doing so (line 306). Same
   # meta-rule-enforcement exception as scripts/check-privacy.sh and
   # CHANGELOG.md — describing what the rule forbids requires naming it.
   'skills/functional-area-resolver/SKILL.md'
-  # v0.36.0.0: the gbrain skillpack harvest privacy linter's whole job
-  # is to catch the banned literal leaking into gbrain. The regex
+  # v0.36.0.0: the zbrain skillpack harvest privacy linter's whole job
+  # is to catch the banned literal leaking into zbrain. The regex
   # pattern in harvest-lint.ts is `\bWintermute\b` by necessity; the
   # tests verify that pattern fires by feeding it the banned string;
   # the harvest skill markdown describes the substitution policy
@@ -154,15 +154,15 @@ ALLOW_LIST=(
   # checklist. Same meta-rule-enforcement exception as the privacy
   # checks themselves.
   'src/core/skillpack/harvest-lint.ts'
-  'test/skillpack-harvest-lint.test.ts'
-  'test/skillpack-harvest.test.ts'
-  'test/e2e/skillpack-flow.test.ts'
+  'tests/unit/skillpack-harvest-lint.test.ts'
+  'tests/unit/skillpack-harvest.test.ts'
+  'tests/unit/e2e/skillpack-flow.test.ts'
   'skills/skillpack-harvest/SKILL.md'
   # v0.40.1.0 Track D / T5: the qrels gate test contains a privacy-grep
   # regression guard whose block list names the banned literal to assert
   # it's NOT in the qrels fixture. Same meta-rule-enforcement exception
   # as the other test entries above.
-  'test/eval-replay-gate.test.ts'
+  'tests/unit/eval-replay-gate.test.ts'
 )
 
 is_allowed() {

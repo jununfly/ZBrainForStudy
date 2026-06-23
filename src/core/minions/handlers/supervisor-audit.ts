@@ -4,22 +4,22 @@
  * Writes one line per supervisor event (started, worker_spawned, worker_exited,
  * backoff, health_warn, health_error, max_crashes_exceeded, shutting_down,
  * stopped, worker_spawn_failed) to
- *   `${GBRAIN_AUDIT_DIR:-~/.gbrain/audit}/supervisor-YYYY-Www.jsonl`
+ *   `${ZBRAIN_AUDIT_DIR:-~/.zbrain/audit}/supervisor-YYYY-Www.jsonl`
  * using ISO-8601 week numbering. `computeAuditFilename(kind, now)` derives
  * the filename; the ISO-week math is shared with `shell-audit.ts` via the
  * `computeIsoWeekFilename()` helper that both call.
  *
  * Shape: every emission already includes `event` and `ts`; we write it
- * verbatim and let consumers (like `gbrain doctor`) grep for events of
+ * verbatim and let consumers (like `zbrain doctor`) grep for events of
  * interest. `supervisor_pid` is added at start() time so each line is
  * self-describing even if a log shipper concatenates multiple supervisors'
  * files.
  *
  * Best-effort: write failures go to stderr and never block supervisor work.
  * A disk-full attacker could silently disable the trail — this is an
- * operational trace for `gbrain doctor`, not forensic insurance.
+ * operational trace for `zbrain doctor`, not forensic insurance.
  *
- * `GBRAIN_AUDIT_DIR` overrides the default `~/.gbrain/audit/` path for
+ * `ZBRAIN_AUDIT_DIR` overrides the default `~/.zbrain/audit/` path for
  * container deploys where `$HOME` is read-only.
  *
  * v0.40.4.0: internals delegate to the shared `src/core/audit/audit-writer.ts`
@@ -72,7 +72,7 @@ export function writeSupervisorEvent(emission: SupervisorEmission, supervisorPid
 /**
  * Read back the latest supervisor audit file. Returns events sorted
  * oldest-first. Best-effort: missing file / parse errors return [].
- * Used by `gbrain doctor` (Lane D) to surface supervisor health.
+ * Used by `zbrain doctor` (Lane D) to surface supervisor health.
  *
  * Pre-v0.40.4 this only walked the CURRENT week's file. v0.40.4 keeps
  * that semantic (single-file read, no cross-week walk) so doctor's
@@ -169,7 +169,7 @@ export function isCrashExit(event: SupervisorEmission): boolean {
 
 /**
  * Summarize crash counts across a window of supervisor audit events. Both
- * `gbrain doctor` and `gbrain jobs supervisor status` consume this — single
+ * `zbrain doctor` and `zbrain jobs supervisor status` consume this — single
  * regression point, single test target.
  *
  * Bucketing rule: `worker_exited` events classified as crashes by

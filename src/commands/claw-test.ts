@@ -1,15 +1,15 @@
 /**
- * gbrain claw-test — end-to-end "fresh user" test harness.
+ * zbrain claw-test — end-to-end "fresh user" test harness.
  *
  * Two tiers:
- *   gbrain claw-test                              — scripted (no LLM, CI gate)
- *   gbrain claw-test --live --agent openclaw      — real agent, friction discovery
+ *   zbrain claw-test                              — scripted (no LLM, CI gate)
+ *   zbrain claw-test --live --agent openclaw      — real agent, friction discovery
  *
  * Phases (scripted mode):
  *   setup → install_brain → import → query → extract → verify → render
  *
- * The harness sets GBRAIN_HOME=<tempdir> so the run is hermetic. Each child
- * gbrain invocation runs with --progress-json and the harness captures stderr
+ * The harness sets ZBRAIN_HOME=<tempdir> so the run is hermetic. Each child
+ * zbrain invocation runs with --progress-json and the harness captures stderr
  * to assert expected_phases from scenario.json fired.
  *
  * See ~/.claude/plans/system-instruction-you-are-working-noble-biscuit.md
@@ -38,8 +38,8 @@ interface HarnessOpts {
   keepTempdir: boolean;
   listAgents: boolean;
   help: boolean;
-  /** Path to the gbrain binary used to invoke child commands. Defaults to argv[0]. */
-  gbrainBin?: string;
+  /** Path to the zbrain binary used to invoke child commands. Defaults to argv[0]. */
+  zbrainBin?: string;
 }
 
 interface PhaseOutcome {
@@ -78,7 +78,7 @@ export async function runClawTest(args: string[]): Promise<number> {
 
   const runId = newRunId(opts.agent);
   const runRoot = mkdtempSync(join(tmpdir(), `claw-test-${runId}-`));
-  const gbrainHome = runRoot; // configDir() appends '.gbrain' itself
+  const zbrainHome = runRoot; // configDir() appends '.zbrain' itself
   const transcriptPath = join(runRoot, 'transcript.jsonl');
   console.log(`run-id: ${runId}`);
   console.log(`tempdir: ${runRoot}`);
@@ -104,9 +104,9 @@ export async function runClawTest(args: string[]): Promise<number> {
   let exitCode = 0;
   try {
     if (opts.live) {
-      exitCode = await runLive(opts, scenario, { runId, runRoot, gbrainHome, transcriptPath });
+      exitCode = await runLive(opts, scenario, { runId, runRoot, zbrainHome, transcriptPath });
     } else {
-      exitCode = await runScripted(opts, scenario, { runId, runRoot, gbrainHome });
+      exitCode = await runScripted(opts, scenario, { runId, runRoot, zbrainHome });
     }
   } finally {
     process.off('SIGINT', onSignal);
@@ -121,7 +121,7 @@ export async function runClawTest(args: string[]): Promise<number> {
   // Always render at the end so the operator can immediately see the report.
   console.log('---');
   console.log(`friction log:    ${join(frictionDir(), runId + '.jsonl')}`);
-  console.log(`render report:   gbrain friction render --run-id ${runId}`);
+  console.log(`render report:   zbrain friction render --run-id ${runId}`);
 
   if (interrupted) return 130;
   return exitCode;
@@ -134,7 +134,7 @@ export async function runClawTest(args: string[]): Promise<number> {
 /**
  * v0.32.x: env vars that, when inherited from the parent process, would
  * break the claw-test scripted harness's "hermetic PGLite tempdir"
- * contract. The harness runs `gbrain init --pglite` then a sequence of
+ * contract. The harness runs `zbrain init --pglite` then a sequence of
  * subsequent phases that ALL must hit the same tempdir brain. If the
  * parent process (e.g. a CI runner with DATABASE_URL set for OTHER e2e
  * tests) leaks DATABASE_URL into the children, loadConfig sees the env
@@ -146,28 +146,28 @@ export async function runClawTest(args: string[]): Promise<number> {
  * Strip these on entry so the child env carries no Postgres-pointing
  * variable. PGLite-only by design.
  */
-const POSTGRES_POLLUTION_ENV_VARS = ['DATABASE_URL', 'GBRAIN_DATABASE_URL'];
+const POSTGRES_POLLUTION_ENV_VARS = ['DATABASE_URL', 'ZBRAIN_DATABASE_URL'];
 
 async function runScripted(
   opts: HarnessOpts,
   scenario: ScenarioConfig,
-  ctx: { runId: string; runRoot: string; gbrainHome: string },
+  ctx: { runId: string; runRoot: string; zbrainHome: string },
 ): Promise<number> {
   // Filter out Postgres-pointing env vars before forwarding to children.
   // The harness is PGLite-only by design; an inherited DATABASE_URL
   // would force loadConfig() to flip the engine to 'postgres' at the
   // next phase boundary and break the hermetic-tempdir contract.
   const parentEnv = process.env as Record<string, string | undefined>;
-  const childEnv: Record<string, string> = { GBRAIN_HOME: ctx.gbrainHome, GBRAIN_FRICTION_RUN_ID: ctx.runId };
+  const childEnv: Record<string, string> = { ZBRAIN_HOME: ctx.zbrainHome, ZBRAIN_FRICTION_RUN_ID: ctx.runId };
   for (const [k, v] of Object.entries(parentEnv)) {
     if (v === undefined) continue;
     if (POSTGRES_POLLUTION_ENV_VARS.includes(k)) continue;
     childEnv[k] = v;
   }
-  // Re-apply the explicit overrides so a parent GBRAIN_HOME / GBRAIN_FRICTION_RUN_ID
+  // Re-apply the explicit overrides so a parent ZBRAIN_HOME / ZBRAIN_FRICTION_RUN_ID
   // can't accidentally win the merge.
-  childEnv.GBRAIN_HOME = ctx.gbrainHome;
-  childEnv.GBRAIN_FRICTION_RUN_ID = ctx.runId;
+  childEnv.ZBRAIN_HOME = ctx.zbrainHome;
+  childEnv.ZBRAIN_FRICTION_RUN_ID = ctx.runId;
 
   const phases: { name: string; argv: string[] }[] = [];
   // Phase 2: install_brain. `--no-embedding` defers embedding setup so the
@@ -179,7 +179,7 @@ async function runScripted(
   // Phase 3: import (only when scenario has a brain dir)
   // Capture brainDir for downstream phases that need an explicit --dir
   // (extract requires it post-#688 — defaults to configured source, and
-  // gbrain init --pglite doesn't register a fs source).
+  // zbrain init --pglite doesn't register a fs source).
   let brainDir: string | undefined;
   if (scenario.brainRelative) {
     brainDir = join(scenario.dir, scenario.brainRelative);
@@ -204,8 +204,8 @@ async function runScripted(
   if (scenario.kind === 'upgrade' && scenario.seedRelative) {
     const seedSql = join(scenario.dir, scenario.seedRelative, 'dump.sql');
     if (existsSync(seedSql)) {
-      const dbPath = join(ctx.gbrainHome, '.gbrain', 'brain.pglite');
-      mkdirSync(join(ctx.gbrainHome, '.gbrain'), { recursive: true });
+      const dbPath = join(ctx.zbrainHome, '.zbrain', 'brain.pglite');
+      mkdirSync(join(ctx.zbrainHome, '.zbrain'), { recursive: true });
       const { seedPgliteFromFile } = await import('../core/claw-test/seed-pglite.ts');
       try {
         await seedPgliteFromFile({ dbPath, sqlPath: seedSql });
@@ -228,7 +228,7 @@ async function runScripted(
   const allStderr: string[] = [];
   const outcomes: PhaseOutcome[] = [];
   for (const phase of phases) {
-    const outcome = await invokeGbrain(opts.gbrainBin ?? 'gbrain', phase.argv, ctx.runRoot, childEnv);
+    const outcome = await invokeZbrain(opts.zbrainBin ?? 'zbrain', phase.argv, ctx.runRoot, childEnv);
     outcome.phase = phase.name;
     outcomes.push(outcome);
     allStderr.push(outcome.stderrTail);
@@ -236,7 +236,7 @@ async function runScripted(
       logFriction({
         runId: ctx.runId,
         phase: phase.name,
-        message: `command failed (exit ${outcome.exitCode}): gbrain ${phase.argv.join(' ')}`,
+        message: `command failed (exit ${outcome.exitCode}): zbrain ${phase.argv.join(' ')}`,
         severity: 'error',
         hint: outcome.stderrTail.trim().slice(0, 500),
         source: 'harness',
@@ -284,7 +284,7 @@ async function runScripted(
 async function runLive(
   opts: HarnessOpts,
   scenario: ScenarioConfig,
-  ctx: { runId: string; runRoot: string; gbrainHome: string; transcriptPath: string },
+  ctx: { runId: string; runRoot: string; zbrainHome: string; transcriptPath: string },
 ): Promise<number> {
   let runner;
   try {
@@ -311,8 +311,8 @@ async function runLive(
 
   const sink = createTranscriptSink(ctx.transcriptPath);
   const env: Record<string, string> = {
-    GBRAIN_HOME: ctx.gbrainHome,
-    GBRAIN_FRICTION_RUN_ID: ctx.runId,
+    ZBRAIN_HOME: ctx.zbrainHome,
+    ZBRAIN_FRICTION_RUN_ID: ctx.runId,
   };
 
   const brief = readBrief(scenario);
@@ -347,7 +347,7 @@ async function runLive(
 // Subprocess helpers
 // ---------------------------------------------------------------------------
 
-function invokeGbrain(
+function invokeZbrain(
   bin: string,
   argv: string[],
   cwd: string,
@@ -402,7 +402,7 @@ function parseArgs(args: string[]): HarnessOpts {
     keepTempdir: false,
     listAgents: false,
     help: args.includes('--help') || args.includes('-h'),
-    gbrainBin: process.env.GBRAIN_BIN_OVERRIDE || process.execPath,
+    zbrainBin: process.env.ZBRAIN_BIN_OVERRIDE || process.execPath,
   };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -443,11 +443,11 @@ function cmdListAgents(): number {
 }
 
 function printHelp() {
-  console.log(`gbrain claw-test — end-to-end claw-setup friction harness
+  console.log(`zbrain claw-test — end-to-end claw-setup friction harness
 
 Usage:
-  gbrain claw-test [--scenario <name>] [--live --agent <name>] [--keep-tempdir]
-  gbrain claw-test --list-agents
+  zbrain claw-test [--scenario <name>] [--live --agent <name>] [--keep-tempdir]
+  zbrain claw-test --list-agents
 
 Defaults:
   --scenario fresh-install
@@ -457,7 +457,7 @@ Scripted mode runs canonical commands without an LLM (CI gate).
 Live mode spawns a real agent and lets it drive (~5–10 min, costs tokens).
 
 Examples:
-  gbrain claw-test --scenario fresh-install
-  gbrain claw-test --scenario upgrade-from-v0.18 --keep-tempdir
-  gbrain claw-test --live --agent openclaw`);
+  zbrain claw-test --scenario fresh-install
+  zbrain claw-test --scenario upgrade-from-v0.18 --keep-tempdir
+  zbrain claw-test --live --agent openclaw`);
 }

@@ -35,7 +35,7 @@ import type {
   ToolDef,
 } from '../types.ts';
 import type { BrainEngine } from '../../engine.ts';
-import type { GBrainConfig } from '../../config.ts';
+import type { ZBrainConfig } from '../../config.ts';
 import { loadConfig } from '../../config.ts';
 import { buildBrainTools, filterAllowedTools } from '../tools/brain-allowlist.ts';
 import {
@@ -79,11 +79,11 @@ export function resolveLeaseCap(raw: string | undefined): number {
   const n = Number(raw);
   if (Number.isFinite(n) && n > 0) return n;
   throw new Error(
-    `GBRAIN_ANTHROPIC_MAX_INFLIGHT="${raw}" is invalid. ` +
+    `ZBRAIN_ANTHROPIC_MAX_INFLIGHT="${raw}" is invalid. ` +
     `Use a positive integer, "unlimited" (or "none"), or omit for default 32.`,
   );
 }
-const DEFAULT_MAX_CONCURRENT = resolveLeaseCap(process.env.GBRAIN_ANTHROPIC_MAX_INFLIGHT);
+const DEFAULT_MAX_CONCURRENT = resolveLeaseCap(process.env.ZBRAIN_ANTHROPIC_MAX_INFLIGHT);
 const DEFAULT_LEASE_TTL_MS = 120_000;
 // v0.41 Approach C: DEFAULT_SUBAGENT_SYSTEM lives in ./system-prompt.ts
 // so the renderer and the handler share one source of truth. Kept as
@@ -113,10 +113,10 @@ export interface SubagentDeps {
    */
   makeAnthropic?: () => Anthropic;
   /** Config (MCP, brain, etc.). Defaults to loadConfig(). */
-  config?: GBrainConfig;
+  config?: ZBrainConfig;
   /** Rate-lease key. Defaults to `anthropic:messages`. */
   rateLeaseKey?: string;
-  /** Max concurrent inflight calls on that key. Defaults to GBRAIN_ANTHROPIC_MAX_INFLIGHT or 8. */
+  /** Max concurrent inflight calls on that key. Defaults to ZBRAIN_ANTHROPIC_MAX_INFLIGHT or 8. */
   maxConcurrent?: number;
   /** Lease TTL. Defaults to 120s. */
   leaseTtlMs?: number;
@@ -167,7 +167,7 @@ export function makeSubagentHandler(deps: SubagentDeps) {
   // site (subagent.ts invokes client.create(...) with client === sdk.messages).
   const makeAnthropic = deps.makeAnthropic ?? (() => new Anthropic());
   const client: MessagesClient = deps.client ?? makeAnthropic().messages;
-  const config = deps.config ?? loadConfig() ?? ({ engine: 'postgres' } as GBrainConfig);
+  const config = deps.config ?? loadConfig() ?? ({ engine: 'postgres' } as ZBrainConfig);
   const rateLeaseKey = deps.rateLeaseKey ?? DEFAULT_RATE_KEY;
   const maxConcurrent = deps.maxConcurrent ?? DEFAULT_MAX_CONCURRENT;
   const leaseTtlMs = deps.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS;
@@ -181,14 +181,14 @@ export function makeSubagentHandler(deps: SubagentDeps) {
     // v0.38 (S1.5 + S1.7) — capability-based gate replaces the v0.31.12
     // Anthropic-only check. The handler now routes between two paths:
     //   1. Gateway path (gateway.toolLoop, provider-agnostic) — opt in via
-    //      `gbrain config set agent.use_gateway_loop true`
+    //      `zbrain config set agent.use_gateway_loop true`
     //   2. Legacy Anthropic-direct path (existing code below)
     // Default is the legacy path so v0.38 patch releases ship the same
     // behavior as v0.37. Users dogfood the gateway path by flipping the flag.
     //
     // Refuse-at-handler-entry when the model literally lacks tool calling
     // OR is from an unknown provider. The queue.ts gate already catches this
-    // for queue-submitted jobs; the check here covers direct `gbrain agent run`
+    // for queue-submitted jobs; the check here covers direct `zbrain agent run`
     // invocations and any code path that bypasses the queue's capability check.
     if (data.model) {
       const verdict = classifyCapabilities(data.model);
@@ -229,7 +229,7 @@ export function makeSubagentHandler(deps: SubagentDeps) {
       throw new Error(
         `subagent job: resolved model "${model}" is non-Anthropic but agent.use_gateway_loop is not enabled. ` +
         `Enable the gateway-native loop to run on this provider: ` +
-        `\`gbrain config set agent.use_gateway_loop true\`. ` +
+        `\`zbrain config set agent.use_gateway_loop true\`. ` +
         `Or use an Anthropic model (e.g. anthropic:claude-sonnet-4-6).`,
       );
     }
@@ -835,7 +835,7 @@ async function runSubagentViaGateway(args: GatewayRunArgs): Promise<SubagentResu
     // on fresh runs and the first onAssistantTurn callback tries to write
     // role='assistant' at idx 0, colliding with the seed user message at idx 0
     // (unique constraint on (job_id, message_idx)). Pinned by
-    // test/e2e/subagent-gateway-path.test.ts ("happy path 1-turn" + "write-
+    // tests/unit/e2e/subagent-gateway-path.test.ts ("happy path 1-turn" + "write-
     // ordering invariant").
     replayState: {
       priorMessages: priorChatMessages,
@@ -873,7 +873,7 @@ async function runSubagentViaGateway(args: GatewayRunArgs): Promise<SubagentResu
       // loop's `replayState.priorTools.get(stableKey)` lookup would miss
       // because priorTools is keyed by the original UUID — the short-
       // circuit silently breaks and the tool re-executes. Pinned by
-      // test/e2e/subagent-crash-replay-multi-provider.test.ts.
+      // tests/unit/e2e/subagent-crash-replay-multi-provider.test.ts.
       const candidateId = randomUUIDv7();
       const rows = await engine.executeRaw<{ gbrain_tool_use_id: string }>(
         `INSERT INTO subagent_tool_executions
@@ -947,7 +947,7 @@ function recipeIdFromModel(modelString: string): string {
  *   stripProviderPrefix('anthropic:claude-sonnet-4-6') === 'claude-sonnet-4-6'
  *   stripProviderPrefix('claude-sonnet-4-6') === 'claude-sonnet-4-6'
  *
- * v0.41 Bug 3 — pre-fix, `gbrain agent run --model anthropic:claude-sonnet-4-6`
+ * v0.41 Bug 3 — pre-fix, `zbrain agent run --model anthropic:claude-sonnet-4-6`
  * sent the prefixed string straight into `client.messages.create()`, which
  * Anthropic rejects with "model not found." Omitting `--model` worked because
  * `resolveModel()` returns the bare id; explicit-model users hit the bug.
@@ -1042,7 +1042,7 @@ async function loadPriorToolsV2(engine: BrainEngine, jobId: number): Promise<Pri
     [jobId],
   );
   return rows.map(r => {
-    const gbrainId = r.gbrain_tool_use_id as string | null;
+    const gbrainId = r.zbrain_tool_use_id as string | null;
     const stableKey = gbrainId
       ? gbrainId
       // D5 legacy shim: derive a stable key from (job, msg_idx, tool_name, tool_use_id).
@@ -1267,7 +1267,7 @@ export const __testing = {
   asStringIfNotObject,
   DEFAULT_MODEL,
   // v0.38 Slice 1 D5 — read-time shim for crash-replay across the v1→v2
-  // content_blocks shape boundary. Exposed for test/subagent-v1-v2-shim.test.ts
+  // content_blocks shape boundary. Exposed for tests/unit/subagent-v1-v2-shim.test.ts
   // which pins legacy-row adaptation correctness.
   adaptContentBlocksToChatBlocks,
   loadPriorToolsV2,

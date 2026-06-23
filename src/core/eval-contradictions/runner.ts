@@ -1,7 +1,7 @@
 /**
  * eval-contradictions/runner — the orchestrator.
  *
- * One run of `gbrain eval suspected-contradictions`:
+ * One run of `zbrain eval suspected-contradictions`:
  *   1. Load queries from one of three sources (file, single, capture).
  *      --from-capture detects an empty eval_candidates table and exits 2.
  *   2. For each query, run hybridSearch (engine-side, embedding cost

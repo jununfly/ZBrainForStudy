@@ -5,7 +5,7 @@
  * (Commit 4) has data to retrieve. The benchmark contract change is
  * disclosed in the CHANGELOG + the JSON envelope's `methodology_note`
  * field (Codex D1 decision): this is full-haystack preprocessing, NOT a
- * gbrain-retrieval-only result.
+ * zbrain-retrieval-only result.
  *
  * Per-session flow:
  *   1. Hash the session body (sha256). Cache hit → reuse parsed claims.
@@ -355,7 +355,7 @@ export async function extractAndInsertClaims(opts: {
 
   if (rows.length === 0) return { inserted: 0, parsed: claims.length, cacheHit };
   try {
-    const ins = await opts.engine.insertFacts(rows, { source_id: opts.sourceId }); // gbrain-allow-direct-insert: benchmark harness only — populates ephemeral in-memory PGLite per LongMemEval run; no markdown source-of-truth contract applies (chat sessions are the corpus, NOT a brain repo).
+    const ins = await opts.engine.insertFacts(rows, { source_id: opts.sourceId }); // zbrain-allow-direct-insert: benchmark harness only — populates ephemeral in-memory PGLite per LongMemEval run; no markdown source-of-truth contract applies (chat sessions are the corpus, NOT a brain repo).
     return { inserted: ins.inserted, parsed: claims.length, cacheHit };
   } catch {
     // Insert collision (row_num unique-index conflict on cache hit

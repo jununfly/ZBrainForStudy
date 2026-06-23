@@ -2,7 +2,7 @@
 //
 // Extracted from CLI handlers per codex C13 / D16 so:
 //   - Phase 2's `withMutation` validation gate can run pre-write checks.
-//   - Phase 5's `gbrain schema lint` CLI verb wires to the same rules.
+//   - Phase 5's `zbrain schema lint` CLI verb wires to the same rules.
 //   - Phase 7's `schema_lint` MCP op composes them without printing to stdout.
 //
 // Each rule is a pure function: takes a manifest (+ optional opts) and

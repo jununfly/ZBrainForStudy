@@ -14,7 +14,7 @@
  *
  * Daemon list is currently just `serve` (both stdio and HTTP forms use
  * the same command). If a future long-running command is added (e.g.
- * `gbrain watch` or `gbrain daemon`), add it here.
+ * `zbrain watch` or `zbrain daemon`), add it here.
  */
 
 const DAEMON_COMMANDS: ReadonlySet<string> = new Set(['serve']);

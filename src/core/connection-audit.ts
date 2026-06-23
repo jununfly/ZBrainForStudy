@@ -4,7 +4,7 @@
  * Mirrors the shell-jobs / subagent / backpressure audit pattern.
  *
  * Writes one JSONL line per ddl()/bulk() acquire+release+error to
- * ~/.gbrain/audit/connection-events-YYYY-Www.jsonl (ISO-week rotation).
+ * ~/.zbrain/audit/connection-events-YYYY-Www.jsonl (ISO-week rotation).
  * Doctor's connection_routing check tail-reads the JSONL and surfaces
  * the last 5 errors as warning context.
  *
@@ -16,7 +16,7 @@
 
 import { mkdirSync, appendFileSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { gbrainPath } from './config.ts';
+import { zbrainPath } from './config.ts';
 import { redactPgUrl } from './url-redact.ts';
 
 export interface ConnectionEvent {
@@ -39,7 +39,7 @@ export function setAuditEnabled(enabled: boolean): void {
 
 function getAuditDir(): string {
   if (_auditDirCache) return _auditDirCache;
-  _auditDirCache = gbrainPath('audit');
+  _auditDirCache = zbrainPath('audit');
   return _auditDirCache;
 }
 

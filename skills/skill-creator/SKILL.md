@@ -24,7 +24,7 @@ This skill guarantees:
 - MECE check: no overlap with existing skills' triggers
 - Manifest.json updated
 - RESOLVER.md updated with routing entry
-- Skill passes conformance tests (`bun test test/skills-conformance.test.ts`)
+- Skill passes conformance tests (`bun test tests/unit/skills-conformance.test.ts`)
 
 ## Phases
 
@@ -67,7 +67,7 @@ mutating: {true|false}
 
 4. **Add to manifest.** Update `skills/manifest.json` with name, path, description.
 5. **Add to resolver.** Update `skills/RESOLVER.md` with routing entry in the appropriate category.
-6. **Verify.** Run `bun test test/skills-conformance.test.ts` to confirm the new skill passes.
+6. **Verify.** Run `bun test tests/unit/skills-conformance.test.ts` to confirm the new skill passes.
 
 ## Output Format
 

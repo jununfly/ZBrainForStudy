@@ -1,25 +1,25 @@
 /**
- * gbrain dream — run one brain maintenance cycle.
+ * zbrain dream — run one brain maintenance cycle.
  *
  * The README brand promise: "the agent runs while I sleep, the dream
  * cycle ... I wake up and the brain is smarter." Cron-friendly, JSON
  * report, phase-selectable.
  *
  * Thin alias over runCycle (src/core/cycle.ts). Both this command and
- * `gbrain autopilot` converge on the same primitive so there's one
+ * `zbrain autopilot` converge on the same primitive so there's one
  * source of truth for what "overnight maintenance" means.
  *
  * Usage:
- *   gbrain dream                       # full 6-phase cycle
- *   gbrain dream --dry-run             # preview, no writes
- *   gbrain dream --json                # CycleReport JSON (for agents)
- *   gbrain dream --phase lint          # run a single phase
- *   gbrain dream --pull                # also git pull the brain repo
- *   gbrain dream --dir /path/to/brain  # explicit brain location
+ *   zbrain dream                       # full 6-phase cycle
+ *   zbrain dream --dry-run             # preview, no writes
+ *   zbrain dream --json                # CycleReport JSON (for agents)
+ *   zbrain dream --phase lint          # run a single phase
+ *   zbrain dream --pull                # also git pull the brain repo
+ *   zbrain dream --dir /path/to/brain  # explicit brain location
  *
- * Cron: 0 2 * * * gbrain dream --json >> /var/log/gbrain-dream.log
+ * Cron: 0 2 * * * zbrain dream --json >> /var/log/zbrain-dream.log
  *
- * Related: `gbrain autopilot --install` for continuous daemonized
+ * Related: `zbrain autopilot --install` for continuous daemonized
  * maintenance. dream is the one-shot, autopilot is the scheduler.
  */
 
@@ -132,7 +132,7 @@ function parseArgs(args: string[]): DreamArgs {
  * happily run lint + sync against an unrelated git repo the user happened
  * to be cd'd into. This resolver only trusts two sources:
  *   1. An explicit --dir argument.
- *   2. The `sync.repo_path` config key set by `gbrain init` (engine-backed).
+ *   2. The `sync.repo_path` config key set by `zbrain init` (engine-backed).
  *
  * If neither is available, we error out instead of guessing.
  */
@@ -158,13 +158,13 @@ async function resolveBrainDir(
   }
 
   console.error(
-    'No brain directory found. Pass --dir <path> or configure one via `gbrain init`.',
+    'No brain directory found. Pass --dir <path> or configure one via `zbrain init`.',
   );
   process.exit(1);
 }
 
 function printHelp() {
-  console.log(`Usage: gbrain dream [options]
+  console.log(`Usage: zbrain dream [options]
 
 Run one brain maintenance cycle. Eight phases:
   lint -> backlinks -> sync -> synthesize -> extract -> patterns -> embed -> orphans
@@ -198,20 +198,20 @@ Options:
   --help, -h          Show this help
 
 Examples:
-  gbrain dream
-  gbrain dream --dry-run --json
-  gbrain dream --phase lint
-  gbrain dream --phase synthesize --input ~/transcripts/2026-04-25.txt
-  gbrain dream --phase synthesize --from 2026-04-01 --to 2026-04-25
-  0 2 * * * gbrain dream --json         # nightly via cron
+  zbrain dream
+  zbrain dream --dry-run --json
+  zbrain dream --phase lint
+  zbrain dream --phase synthesize --input ~/transcripts/2026-04-25.txt
+  zbrain dream --phase synthesize --from 2026-04-01 --to 2026-04-25
+  0 2 * * * zbrain dream --json         # nightly via cron
 
 Configure synthesize:
-  gbrain config set dream.synthesize.session_corpus_dir /path/to/transcripts
-  gbrain config set dream.synthesize.session_corpus_dir /path/to/transcripts
+  zbrain config set dream.synthesize.session_corpus_dir /path/to/transcripts
+  zbrain config set dream.synthesize.session_corpus_dir /path/to/transcripts
 
 Related:
-  gbrain autopilot --install            # continuous maintenance as a daemon
-  gbrain autopilot                      # same maintenance cycle, scheduled
+  zbrain autopilot --install            # continuous maintenance as a daemon
+  zbrain autopilot                      # same maintenance cycle, scheduled
 `);
 }
 

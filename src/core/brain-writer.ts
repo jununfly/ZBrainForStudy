@@ -4,7 +4,7 @@
  * Thin layer on top of `parseMarkdown(..., {validate:true})` (the canonical
  * source of frontmatter validation rules) and `isSyncable()` (the canonical
  * brain-page filter). Three consumers call into this module: the
- * `gbrain frontmatter` CLI, the `frontmatter_integrity` doctor subcheck, and
+ * `zbrain frontmatter` CLI, the `frontmatter_integrity` doctor subcheck, and
  * the v0.22.4 migration audit phase. Single source of truth — no parallel
  * validation stack.
  *
@@ -12,7 +12,7 @@
  * path. Pre-write backups are the safety contract (works for both git and
  * non-git brain repos; the existing src/core/dry-fix.ts:getWorkingTreeStatus
  * rejects non-git repos as unsafe, which is the wrong shape for brain
- * rewrites). Backups live under ~/.gbrain/backups/frontmatter/... instead of
+ * rewrites). Backups live under ~/.zbrain/backups/frontmatter/... instead of
  * beside source files so bulk repair never litters the user's workspace.
  */
 
@@ -21,7 +21,7 @@ import { existsSync, readFileSync, readdirSync, copyFileSync, writeFileSync, mkd
 import { join, relative, resolve, dirname, basename, isAbsolute } from 'path';
 import type { BrainEngine } from './engine.ts';
 import type { ProgressReporter } from './progress.ts';
-import { gbrainPath } from './config.ts';
+import { zbrainPath } from './config.ts';
 import {
   parseMarkdown,
   type ParseValidationCode,
@@ -93,7 +93,7 @@ function sourceKey(sourcePath: string): string {
 }
 
 export function defaultFrontmatterBackupRoot(runId = makeFrontmatterBackupRunId()): string {
-  return gbrainPath('backups', 'frontmatter', runId);
+  return zbrainPath('backups', 'frontmatter', runId);
 }
 
 export function createFrontmatterBackup(filePath: string, opts: FrontmatterBackupOpts = {}): string {
@@ -118,7 +118,7 @@ export function createFrontmatterBackup(filePath: string, opts: FrontmatterBacku
  *   - NESTED_QUOTES     — rewrite `"... "inner" ..."` to single-quoted outer
  *   - MISSING_CLOSE     — insert `---` before the first heading found inside
  *                          the YAML zone
- *   - SLUG_MISMATCH     — remove `slug:` line (gbrain derives slug from path)
+ *   - SLUG_MISMATCH     — remove `slug:` line (zbrain derives slug from path)
  *
  * Idempotent: running twice is a no-op on already-clean input. Any error class
  * not in the list above is left untouched (e.g. EMPTY_FRONTMATTER, YAML_PARSE,
@@ -288,7 +288,7 @@ export function autoFixFrontmatter(
 
   // 4. SLUG_MISMATCH — remove `slug:` line if filePath is provided and the
   //    declared slug doesn't match the path-derived one. Per PR #392 spec,
-  //    gbrain derives slug from path; the field shouldn't be in frontmatter.
+  //    zbrain derives slug from path; the field shouldn't be in frontmatter.
   if (opts?.filePath) {
     const expectedSlug = slugifyPath(opts.filePath);
     // Use the (possibly partially-fixed) working content to detect whether
@@ -324,7 +324,7 @@ export class BrainWriterError extends Error {
 
 /**
  * Path-guarded brain page writer. Always writes a backup under
- * ~/.gbrain/backups/frontmatter/... before any in-place mutation (the contract
+ * ~/.zbrain/backups/frontmatter/... before any in-place mutation (the contract
  * that replaces git-tree-clean for non-git brain repos). Throws
  * BrainWriterError if filePath is not under sourcePath.
  */
@@ -504,7 +504,7 @@ export async function scanBrainSources(
             // least one millisecond regardless of runner timer drift. Cost is
             // 1ms additional wall-clock latency on hung COUNT queries, which
             // is operationally negligible. Flake repro:
-            // https://github.com/garrytan/gbrain/actions/runs/77611667786
+            // https://github.com/garrytan/zbrain/actions/runs/77611667786
             dbPageCount = await Promise.race([
               opts.dbPageCountForSource(src.id),
               new Promise<null>(resolve => setTimeout(() => resolve(null), remainingMs + 1)),
@@ -660,7 +660,7 @@ function scanOneSource(
  * Pre-v0.38.2.0 this walker descended into every subtree and let
  * `isSyncable` filter at the leaf — paying the IO cost of stat'ing hundreds
  * of thousands of vendor entries that were never going to be parsed. That
- * was the root cause of the `gbrain doctor` hang on 216K-page brains
+ * was the root cause of the `zbrain doctor` hang on 216K-page brains
  * reported in PR #1287.
  *
  * Optional `visitDir(dir)` is fired once per directory the walker decides

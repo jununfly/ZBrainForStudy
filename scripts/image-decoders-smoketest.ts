@@ -15,8 +15,8 @@
 // bun --compile embeds the bytes into the binary itself. Otherwise a compiled
 // binary running away from the repo would fail to find the fixtures.
 
-import heicFixture from '../test/fixtures/images/tiny.heic' with { type: 'file' };
-import avifFixture from '../test/fixtures/images/tiny.avif' with { type: 'file' };
+import heicFixture from '../tests/unit/fixtures/images/tiny.heic' with { type: 'file' };
+import avifFixture from '../tests/unit/fixtures/images/tiny.avif' with { type: 'file' };
 // @jsquash/avif loads its WASM relative to its own JS file, which fails inside
 // a bun --compile VFS. Pre-compile the module via `init()` with the embedded
 // bytes — `with { type: 'file' }` works correctly inside compiled binaries.

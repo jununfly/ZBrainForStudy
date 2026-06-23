@@ -4,7 +4,7 @@
  * Two event flavors:
  *   - submission: one line per subagent job submit (mirrors shell-audit).
  *   - heartbeat:  one line per LLM turn boundary (started / completed) so
- *                 `gbrain agent logs <job> --follow` has fresh content to
+ *                 `zbrain agent logs <job> --follow` has fresh content to
  *                 show during long Anthropic calls. Without these, a
  *                 30-second model call produces zero output between turns
  *                 and --follow looks frozen.
@@ -13,7 +13,7 @@
  * vars may contain emails, free text from the user, etc.). DO log
  * non-identifying operational fields: tokens, duration, model, tool_name.
  *
- * `GBRAIN_AUDIT_DIR` overrides the default ~/.gbrain/audit/ path — useful
+ * `ZBRAIN_AUDIT_DIR` overrides the default ~/.zbrain/audit/ path — useful
  * for container deploys with a read-only $HOME.
  */
 
@@ -91,7 +91,7 @@ export function logSubagentHeartbeat(event: Omit<SubagentHeartbeatEvent, 'ts' | 
 
 /**
  * Read back all audit events for a job id from the current + prior week
- * files. Used by `gbrain agent logs <job>`. Returns chronological order.
+ * files. Used by `zbrain agent logs <job>`. Returns chronological order.
  *
  * `sinceIso` (if present) filters to events with ts >= sinceIso.
  */

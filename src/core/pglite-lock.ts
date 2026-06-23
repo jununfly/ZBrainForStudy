@@ -2,7 +2,7 @@
  * PGLite File Lock — prevents concurrent process access to the same data directory.
  *
  * PGLite uses embedded Postgres (WASM) which only supports one connection at a time.
- * When `gbrain embed` (which can take minutes) is running and another process tries
+ * When `zbrain embed` (which can take minutes) is running and another process tries
  * to connect, PGLite throws `Aborted()` because it can't handle concurrent access.
  *
  * This module implements a simple advisory lock using a lock file next to the data
@@ -17,7 +17,7 @@
 import { mkdirSync, existsSync, readFileSync, writeFileSync, rmSync, statSync } from 'fs';
 import { join } from 'path';
 
-const LOCK_DIR_NAME = '.gbrain-lock';
+const LOCK_DIR_NAME = '.zbrain-lock';
 const LOCK_FILE = 'lock';
 const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes — embed jobs can be long
 
@@ -115,13 +115,13 @@ export async function acquireLock(dataDir: string | undefined, opts?: { timeoutM
         try {
           const lockData = JSON.parse(readFileSync(lockPath, 'utf-8'));
           throw new Error(
-            `GBrain: Timed out waiting for PGLite lock. Process ${lockData.pid} has held it since ${new Date(lockData.acquired_at).toISOString()} (command: ${lockData.command}). ` +
+            `ZBrain: Timed out waiting for PGLite lock. Process ${lockData.pid} has held it since ${new Date(lockData.acquired_at).toISOString()} (command: ${lockData.command}). ` +
             `If that process is dead, remove ${lockDir} and try again.`
           );
         } catch (readErr) {
-          if (readErr instanceof Error && readErr.message.startsWith('GBrain')) throw readErr;
+          if (readErr instanceof Error && readErr.message.startsWith('ZBrain')) throw readErr;
           throw new Error(
-            `GBrain: Timed out waiting for PGLite lock. Remove ${lockDir} and try again.`
+            `ZBrain: Timed out waiting for PGLite lock. Remove ${lockDir} and try again.`
           );
         }
       }
@@ -131,7 +131,7 @@ export async function acquireLock(dataDir: string | undefined, opts?: { timeoutM
   }
 
   // Should not reach here, but just in case
-  throw new Error(`GBrain: Timed out waiting for PGLite lock.`);
+  throw new Error(`ZBrain: Timed out waiting for PGLite lock.`);
 }
 
 /**

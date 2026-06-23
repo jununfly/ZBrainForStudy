@@ -6,7 +6,7 @@
 # that caused the v0.12.0 silent-data-loss bug (JSONB columns stored as
 # string literals on Postgres while PGLite hid the bug). Multi-line and
 # helper-wrapped variants are NOT caught here — those are covered by
-# test/e2e/postgres-jsonb.test.ts which round-trips actual writes through
+# tests/unit/e2e/postgres-jsonb.test.ts which round-trips actual writes through
 # real Postgres and asserts `frontmatter->>'k'` returns objects, not strings.
 #
 # Usage: scripts/check-jsonb-pattern.sh

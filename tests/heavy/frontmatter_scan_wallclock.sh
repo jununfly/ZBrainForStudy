@@ -10,7 +10,7 @@
 # 30s budget.
 #
 # Asserts post-v0.38.2.0:
-#   1. `gbrain doctor` exits 0 OR 1 (some warns OK), NOT killed by timeout.
+#   1. `zbrain doctor` exits 0 OR 1 (some warns OK), NOT killed by timeout.
 #   2. frontmatter_integrity status is `ok` (clean prefix, no partial), NOT `warn`.
 #   3. Total wall-clock under WALLCLOCK_BUDGET_S (default 15s).
 #
@@ -37,15 +37,15 @@ REAL_PAGES="${REAL_PAGES:-10000}"
 NODE_MODULES_PAGES="${NODE_MODULES_PAGES:-50000}"
 
 TS=$(date -u +%Y%m%d-%H%M%SZ)
-# Isolate from the developer's real ~/.gbrain. Each run uses a fresh tmpdir.
-TMP_GBRAIN_HOME=$(mktemp -d -t gbrain-fm-wallclock-home-XXXXXX)
-export GBRAIN_HOME="$TMP_GBRAIN_HOME"
-BRAIN_DIR=$(mktemp -d -t gbrain-fm-wallclock-brain-XXXXXX)
-LOG_DIR="$GBRAIN_HOME/audit"
+# Isolate from the developer's real ~/.zbrain. Each run uses a fresh tmpdir.
+TMP_ZBRAIN_HOME=$(mktemp -d -t zbrain-fm-wallclock-home-XXXXXX)
+export ZBRAIN_HOME="$TMP_ZBRAIN_HOME"
+BRAIN_DIR=$(mktemp -d -t zbrain-fm-wallclock-brain-XXXXXX)
+LOG_DIR="$ZBRAIN_HOME/audit"
 mkdir -p "$LOG_DIR"
 LOG="$LOG_DIR/heavy-frontmatter_scan_wallclock-$TS.log"
 SURFACE_LOG="${TMPDIR:-/tmp}/heavy-frontmatter_scan_wallclock-$TS.log"
-trap 'cp -f "$LOG" "$SURFACE_LOG" 2>/dev/null || true; rm -rf "$TMP_GBRAIN_HOME" "$BRAIN_DIR"' EXIT
+trap 'cp -f "$LOG" "$SURFACE_LOG" 2>/dev/null || true; rm -rf "$TMP_ZBRAIN_HOME" "$BRAIN_DIR"' EXIT
 
 echo "[fm_wallclock] log=$LOG"
 echo "[fm_wallclock] brain=$BRAIN_DIR (real_pages=$REAL_PAGES node_modules_pages=$NODE_MODULES_PAGES)"
@@ -81,13 +81,13 @@ echo "[fm_wallclock] fixture seeded in ${SEED_ELAPSED}s" | tee -a "$LOG"
 # Step 2: init brain + register the source.
 echo "[fm_wallclock] init brain..." | tee -a "$LOG"
 timeout 120s bun run src/cli.ts init --pglite --yes >> "$LOG" 2>&1 || {
-  echo "[fm_wallclock] FAIL: gbrain init exited non-zero" >&2
+  echo "[fm_wallclock] FAIL: zbrain init exited non-zero" >&2
   echo "Log tail:" >&2
   tail -30 "$LOG" >&2
   exit 1
 }
 
-# Register the brain dir as a source. Use raw SQL since `gbrain sources add`
+# Register the brain dir as a source. Use raw SQL since `zbrain sources add`
 # might not exist in this version-window; the schema is what doctor reads.
 echo "[fm_wallclock] register source..." | tee -a "$LOG"
 bun run -e "
@@ -103,8 +103,8 @@ await e.disconnect();
 console.log('source registered');
 " 2>&1 | tee -a "$LOG"
 
-# Step 3: run gbrain doctor; capture wall-clock + exit + frontmatter_integrity status.
-echo "[fm_wallclock] running gbrain doctor (budget ${WALLCLOCK_BUDGET_S}s)..." | tee -a "$LOG"
+# Step 3: run zbrain doctor; capture wall-clock + exit + frontmatter_integrity status.
+echo "[fm_wallclock] running zbrain doctor (budget ${WALLCLOCK_BUDGET_S}s)..." | tee -a "$LOG"
 DOCTOR_START_NS=$(date +%s%N)
 set +e
 timeout "${WALLCLOCK_BUDGET_S}s" bun run src/cli.ts doctor --json > "$LOG.doctor" 2>>"$LOG"

@@ -1,5 +1,5 @@
 /**
- * TS migration registry. Compiled into the gbrain binary so migration
+ * TS migration registry. Compiled into the zbrain binary so migration
  * discovery works on both source installs and `bun build --compile`
  * distributions without reading `skills/migrations/*.md` from disk.
  *

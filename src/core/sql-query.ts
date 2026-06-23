@@ -71,7 +71,7 @@ function assertSqlValue(value: unknown): asserts value is SqlValue {
  * `unsafe(sql, params)` path (via PostgresEngine) and PGLite's
  * `db.query(sql, params)` accept objects for `$N::jsonb` positions and
  * round-trip them with `jsonb_typeof = 'object'` (verified by
- * test/e2e/auth-permissions.test.ts:67 on Postgres and test/sql-query.test.ts
+ * tests/unit/e2e/auth-permissions.test.ts:67 on Postgres and tests/unit/sql-query.test.ts
  * on PGLite).
  *
  * Why this exists separately from SqlQuery: the SqlQuery contract is

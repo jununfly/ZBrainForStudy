@@ -3,12 +3,12 @@
  *
  * Wraps the official @modelcontextprotocol/sdk Client + StreamableHTTPClientTransport
  * with OAuth `client_credentials` minting + token caching + 401 retry. Used by:
- *   - `gbrain remote ping`   — submits autopilot-cycle, polls get_job
- *   - `gbrain remote doctor` — calls run_doctor MCP op
+ *   - `zbrain remote ping`   — submits autopilot-cycle, polls get_job
+ *   - `zbrain remote doctor` — calls run_doctor MCP op
  *
  * Token caching strategy: in-process Map keyed by mcp_url, value carries the
  * access_token + expires_at. CLI invocations are short-lived; the cache
- * amortizes when a single `gbrain remote ping` makes multiple calls (submit_job
+ * amortizes when a single `zbrain remote ping` makes multiple calls (submit_job
  * + N × get_job). Persisting to disk would create a credential-on-disk
  * surface for marginal benefit — re-mint is a single sub-100ms /token call.
  *
@@ -20,7 +20,7 @@
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import type { GBrainConfig } from './config.ts';
+import type { ZBrainConfig } from './config.ts';
 import { discoverOAuth, mintClientCredentialsToken } from './remote-mcp-probe.ts';
 
 interface CachedToken {
@@ -87,7 +87,7 @@ export class RemoteMcpError extends Error {
  * outermost catch in `callRemoteTool` so the dispatcher's exhaustive switch
  * is sound — no plain `Error` (undici, AbortError, JSON parse) escapes.
  *
- * @internal Exported for test access (test/mcp-client-hardening.test.ts).
+ * @internal Exported for test access (tests/unit/mcp-client-hardening.test.ts).
  * Not part of the public API — production code should consume this only via
  * the callRemoteTool funnel.
  */
@@ -124,10 +124,10 @@ export function toRemoteMcpError(e: unknown, mcpUrl: string): RemoteMcpError {
  * `code` (e.g. 'missing_scope') if the server provided one. Tries JSON-parsed
  * payload first, then falls back to substring detection on the message.
  *
- * @internal Exported for test access (test/mcp-client-hardening.test.ts).
+ * @internal Exported for test access (tests/unit/mcp-client-hardening.test.ts).
  */
 export function extractToolErrorCode(message: string): string | undefined {
-  // Try to parse a JSON payload first — gbrain server-side tool errors
+  // Try to parse a JSON payload first — zbrain server-side tool errors
   // sometimes come through as `{"error":{"code":"...","message":"..."}}`.
   try {
     const parsed = JSON.parse(message);
@@ -142,22 +142,22 @@ export function extractToolErrorCode(message: string): string | undefined {
   return undefined;
 }
 
-function requireRemoteMcp(config: GBrainConfig | null): NonNullable<GBrainConfig['remote_mcp']> {
+function requireRemoteMcp(config: ZBrainConfig | null): NonNullable<ZBrainConfig['remote_mcp']> {
   if (!config?.remote_mcp) {
     throw new RemoteMcpError(
       'config',
-      'No remote_mcp config. Run `gbrain init --mcp-only` first.',
+      'No remote_mcp config. Run `zbrain init --mcp-only` first.',
     );
   }
   return config.remote_mcp;
 }
 
-function resolveSecret(remote: NonNullable<GBrainConfig['remote_mcp']>): string {
-  const secret = process.env.GBRAIN_REMOTE_CLIENT_SECRET ?? remote.oauth_client_secret;
+function resolveSecret(remote: NonNullable<ZBrainConfig['remote_mcp']>): string {
+  const secret = process.env.ZBRAIN_REMOTE_CLIENT_SECRET ?? remote.oauth_client_secret;
   if (!secret) {
     throw new RemoteMcpError(
       'config',
-      'No client_secret available. Set GBRAIN_REMOTE_CLIENT_SECRET or rerun `gbrain init --mcp-only`.',
+      'No client_secret available. Set ZBRAIN_REMOTE_CLIENT_SECRET or rerun `zbrain init --mcp-only`.',
     );
   }
   return secret;
@@ -167,7 +167,7 @@ function resolveSecret(remote: NonNullable<GBrainConfig['remote_mcp']>): string 
  * Mint or reuse a cached access_token for the given config. Throws
  * RemoteMcpError on discovery failure or auth rejection.
  */
-async function getAccessToken(config: GBrainConfig, force = false): Promise<string> {
+async function getAccessToken(config: ZBrainConfig, force = false): Promise<string> {
   const remote = requireRemoteMcp(config);
   const cached = tokenCache.get(remote.mcp_url);
   if (!force && cached && cached.expires_at_ms > Date.now()) {
@@ -221,7 +221,7 @@ async function buildClient(mcpUrl: string, accessToken: string, signal?: AbortSi
     },
   });
   const client = new Client(
-    { name: 'gbrain-remote-cli', version: '1' },
+    { name: 'zbrain-remote-cli', version: '1' },
     { capabilities: {} },
   );
   await client.connect(transport);
@@ -244,7 +244,7 @@ export interface CallRemoteToolOptions {
  * Returns the controller (so callers can pass `controller.signal` to
  * downstream fetch) plus a `cleanup` to stop the timer + drop listeners.
  */
-/** @internal Exported for test access (test/mcp-client-hardening.test.ts). */
+/** @internal Exported for test access (tests/unit/mcp-client-hardening.test.ts). */
 export function buildAbortController(opts: CallRemoteToolOptions): { signal: AbortSignal; cleanup: () => void } {
   const controller = new AbortController();
   const cleanups: Array<() => void> = [];
@@ -281,7 +281,7 @@ export function buildAbortController(opts: CallRemoteToolOptions): { signal: Abo
  *   - network errors
  */
 export async function callRemoteTool(
-  config: GBrainConfig,
+  config: ZBrainConfig,
   toolName: string,
   args: Record<string, unknown> = {},
   opts: CallRemoteToolOptions = {},
@@ -343,7 +343,7 @@ export async function callRemoteTool(
         if (mintErr instanceof RemoteMcpError && mintErr.reason === 'auth') {
           throw new RemoteMcpError(
             'auth_after_refresh',
-            `Auth failed after token refresh. Verify oauth_client_id and secret are still valid; the host operator may need to re-run \`gbrain auth register-client\`.`,
+            `Auth failed after token refresh. Verify oauth_client_id and secret are still valid; the host operator may need to re-run \`zbrain auth register-client\`.`,
             { mcp_url: remote.mcp_url },
           );
         }
@@ -356,7 +356,7 @@ export async function callRemoteTool(
         if (/401|unauthor|invalid.token/i.test(m2)) {
           throw new RemoteMcpError(
             'auth_after_refresh',
-            `Auth failed after token refresh. Verify oauth_client_id and secret are still valid; the host operator may need to re-run \`gbrain auth register-client\`.`,
+            `Auth failed after token refresh. Verify oauth_client_id and secret are still valid; the host operator may need to re-run \`zbrain auth register-client\`.`,
             { mcp_url: remote.mcp_url },
           );
         }
@@ -376,7 +376,7 @@ export async function callRemoteTool(
 /**
  * Extract the structured result from a successful tool-call response. The MCP
  * spec says tool results are returned as `content: Array<{type, text|...}>`.
- * gbrain ops set the JSON-encoded result as `text` of the first content item.
+ * zbrain ops set the JSON-encoded result as `text` of the first content item.
  * This helper parses + types it for the caller.
  */
 export function unpackToolResult<T = unknown>(res: unknown): T {

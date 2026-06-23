@@ -1,5 +1,5 @@
 /**
- * gbrain extract — Extract links and timeline entries from brain content.
+ * zbrain extract — Extract links and timeline entries from brain content.
  *
  * Two data sources:
  *   --source fs  (default): walk markdown files on disk
@@ -7,9 +7,9 @@
  *                           with no local checkout, e.g. live MCP servers)
  *
  * Subcommands:
- *   gbrain extract links    [--source fs|db] [--dir <brain>] [--dry-run] [--json] [--type T] [--since DATE]
- *   gbrain extract timeline [--source fs|db] [--dir <brain>] [--dry-run] [--json] [--type T] [--since DATE]
- *   gbrain extract all      [--source fs|db] [--dir <brain>] [--dry-run] [--json] [--type T] [--since DATE]
+ *   zbrain extract links    [--source fs|db] [--dir <brain>] [--dry-run] [--json] [--type T] [--since DATE]
+ *   zbrain extract timeline [--source fs|db] [--dir <brain>] [--dry-run] [--json] [--type T] [--since DATE]
+ *   zbrain extract all      [--source fs|db] [--dir <brain>] [--dry-run] [--json] [--type T] [--since DATE]
  *
  * The DB-source path uses the v0.10.3 graph extractor (typed link inference,
  * within-page dedup, snapshot iteration so concurrent writes don't corrupt
@@ -392,7 +392,7 @@ export async function runExtractCore(engine: BrainEngine, opts: ExtractOpts): Pr
     return result;
   }
 
-  // Full walk path: CLI `gbrain extract` or first-run.
+  // Full walk path: CLI `zbrain extract` or first-run.
   if (opts.mode === 'links' || opts.mode === 'all') {
     const r = await extractLinksFromDir(engine, opts.dir, dryRun, jsonMode);
     result.links_created = r.created;
@@ -413,14 +413,14 @@ export async function runExtract(engine: BrainEngine, args: string[]) {
   const explicitDir = dirIdx >= 0 && dirIdx + 1 < args.length;
   // When --dir is not passed, resolve from the configured brain source
   // BEFORE falling back to '.' (the prior default). The bare `.` default was
-  // a footgun: a user who runs `gbrain extract links` from anywhere outside
+  // a footgun: a user who runs `zbrain extract links` from anywhere outside
   // their brain dir (e.g., a project checkout with a node_modules tree) had
   // the recursive walker grab tens of thousands of unrelated .md files,
   // attempt to extract links between them, then write 0 rows because the
   // synthetic from_slugs don't match any pages row. The output ("created 0
   // links from 28989 pages") looks like a no-op, but it walked 28K junk files
   // first. Resolving from sources(local_path) makes the no-arg invocation
-  // match what `gbrain sync` already does, and keeps cwd-cwd usage available
+  // match what `zbrain sync` already does, and keeps cwd-cwd usage available
   // via explicit `--dir .`.
   let brainDir = explicitDir ? args[dirIdx + 1] : '.';
   const sourceIdx = args.indexOf('--source');
@@ -459,7 +459,7 @@ export async function runExtract(engine: BrainEngine, args: string[]) {
   }
 
   if (!subcommand || !['links', 'timeline', 'all'].includes(subcommand)) {
-    console.error('Usage: gbrain extract <links|timeline|all> [--source fs|db] [--source-id <id>] [--dir <brain-dir>] [--dry-run] [--json] [--type T] [--since DATE]');
+    console.error('Usage: zbrain extract <links|timeline|all> [--source fs|db] [--source-id <id>] [--dir <brain-dir>] [--dry-run] [--json] [--type T] [--since DATE]');
     process.exit(1);
   }
 
@@ -476,7 +476,7 @@ export async function runExtract(engine: BrainEngine, args: string[]) {
     console.error(
       `--by-mention requires --source db (currently --source fs). The mention scanner ` +
       `needs the engine to build the entity gazetteer. Re-run as:\n\n` +
-      `  gbrain extract ${subcommand} --by-mention --source db` +
+      `  zbrain extract ${subcommand} --by-mention --source db` +
       (sourceIdFilter ? ` --source-id ${sourceIdFilter}` : '') +
       (since ? ` --since ${since}` : '') +
       (dryRun ? ' --dry-run' : '') + '\n',
@@ -486,13 +486,13 @@ export async function runExtract(engine: BrainEngine, args: string[]) {
   if (byMention && subcommand === 'timeline') {
     console.error(
       `--by-mention is a links-pass only; it does not apply to timeline extraction. ` +
-      `Re-run as 'gbrain extract links --by-mention' or 'gbrain extract all --by-mention'.`,
+      `Re-run as 'zbrain extract links --by-mention' or 'zbrain extract all --by-mention'.`,
     );
     process.exit(2);
   }
 
   // FS source needs a brain dir. When --dir wasn't passed, resolve from
-  // sources(local_path) — same path `gbrain sync` uses — instead of
+  // sources(local_path) — same path `zbrain sync` uses — instead of
   // silently walking cwd. See the brainDir comment above for the footgun.
   if (source === 'fs' && !explicitDir) {
     const { getDefaultSourcePath } = await import('../core/source-resolver.ts');
@@ -503,7 +503,7 @@ export async function runExtract(engine: BrainEngine, args: string[]) {
       console.error(
         `No brain directory configured. Pass --dir <path> explicitly, or use --source db ` +
         `to extract from already-synced pages. To register a brain dir as the default, ` +
-        `run: gbrain sources add default --path <brain-dir>`,
+        `run: zbrain sources add default --path <brain-dir>`,
       );
       process.exit(1);
     }
@@ -608,7 +608,7 @@ async function extractForSlugs(
     linkBatch.length = 0;
     try {
       linksCreated += await withRetry(
-        () => engine.addLinksBatch(snapshot), // gbrain-allow-direct-insert: gbrain extract command — canonical link reconciliation from markdown body
+        () => engine.addLinksBatch(snapshot), // zbrain-allow-direct-insert: zbrain extract command — canonical link reconciliation from markdown body
         { onRetry: (_a, err) => logBatchRetry('extract.links_inc', snapshot.length, err, jsonMode) },
       );
     } catch (e) {
@@ -709,7 +709,7 @@ async function extractLinksFromDir(
     batch.length = 0;
     try {
       created += await withRetry(
-        () => engine.addLinksBatch(snapshot), // gbrain-allow-direct-insert: gbrain extract command — canonical link reconciliation from markdown body
+        () => engine.addLinksBatch(snapshot), // zbrain-allow-direct-insert: zbrain extract command — canonical link reconciliation from markdown body
         { onRetry: (_a, err) => logBatchRetry('extract.links_fs', snapshot.length, err, jsonMode) },
       );
     } catch (e) {
@@ -836,7 +836,7 @@ export async function extractLinksForSlugs(
     try {
       const content = readFileSync(filePath, 'utf-8');
       for (const link of await extractLinksFromFile(content, slug + '.md', allSlugs)) {
-        try { await engine.addLink(link.from_slug, link.to_slug, link.context, link.link_type, undefined, undefined, undefined, linkOpts); created++; } catch { /* skip */ } // gbrain-allow-direct-insert: gbrain extract single-row fallback when batch path declines a row
+        try { await engine.addLink(link.from_slug, link.to_slug, link.context, link.link_type, undefined, undefined, undefined, linkOpts); created++; } catch { /* skip */ } // zbrain-allow-direct-insert: zbrain extract single-row fallback when batch path declines a row
       }
     } catch { /* skip */ }
   }
@@ -860,7 +860,7 @@ export async function extractTimelineForSlugs(
     try {
       const content = readFileSync(filePath, 'utf-8');
       for (const entry of extractTimelineFromContent(content, slug)) {
-        try { await engine.addTimelineEntry(entry.slug, { date: entry.date, source: entry.source, summary: entry.summary, detail: entry.detail }, entryOpts); created++; } catch { /* skip */ } // gbrain-allow-direct-insert: gbrain extract single-row fallback for timeline entries
+        try { await engine.addTimelineEntry(entry.slug, { date: entry.date, source: entry.source, summary: entry.summary, detail: entry.detail }, entryOpts); created++; } catch { /* skip */ } // zbrain-allow-direct-insert: zbrain extract single-row fallback for timeline entries
       }
     } catch { /* skip */ }
   }
@@ -941,7 +941,7 @@ async function extractLinksFromDB(
     batch.length = 0;
     try {
       created += await withRetry(
-        () => engine.addLinksBatch(snapshot), // gbrain-allow-direct-insert: gbrain extract command — canonical link reconciliation from markdown body
+        () => engine.addLinksBatch(snapshot), // zbrain-allow-direct-insert: zbrain extract command — canonical link reconciliation from markdown body
         { onRetry: (_a, err) => logBatchRetry('extract.links_db', snapshot.length, err, jsonMode) },
       );
     } catch (e) {
@@ -967,7 +967,7 @@ async function extractLinksFromDB(
     const fullContent = page.compiled_truth + '\n' + page.timeline;
     // --include-frontmatter default OFF in v0.13 (codex tension 5, back-compat).
     // Migration orchestrator explicitly enables it for the one-time backfill;
-    // user-invoked `gbrain extract links` stays outgoing-only.
+    // user-invoked `zbrain extract links` stays outgoing-only.
     const activeResolver = includeFrontmatter ? resolver : nullResolver;
     const extracted = await extractPageLinks(
       slug, fullContent, page.frontmatter, page.type, activeResolver,
@@ -1210,7 +1210,7 @@ async function extractMentionsFromDb(
   async function flush() {
     if (batch.length === 0) return;
     try {
-      created += await engine.addLinksBatch(batch); // gbrain-allow-direct-insert: gbrain extract --by-mention — canonical auto-link write from body-text mention scan
+      created += await engine.addLinksBatch(batch); // zbrain-allow-direct-insert: zbrain extract --by-mention — canonical auto-link write from body-text mention scan
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (jsonMode) {

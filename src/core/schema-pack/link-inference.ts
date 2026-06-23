@@ -4,11 +4,11 @@
 // rich production regexes (FOUNDED_RE / INVESTED_RE / ADVISES_RE /
 // WORKS_AT_RE / PARTNER_ROLE_RE / ADVISOR_ROLE_RE / EMPLOYEE_ROLE_RE)
 // that are highly tuned against real brain content. Reproducing these
-// in gbrain-base.yaml literally would require multi-line YAML escape
+// in zbrain-base.yaml literally would require multi-line YAML escape
 // jujitsu and lose the in-source comments documenting WHY each pattern
 // is shaped the way it is.
 //
-// Pragmatic split: gbrain-base.yaml carries verb NAMES + simplified
+// Pragmatic split: zbrain-base.yaml carries verb NAMES + simplified
 // SKETCH regexes (sufficient for documentation + community-pack
 // authors who want to copy the pattern); the production regexes stay
 // where they are in link-extraction.ts. `inferLinkTypeFromPack`
@@ -26,7 +26,7 @@
 //      manifest; first match wins). Runs under PageRegexBudget for
 //      ReDoS protection.
 //   3. Fall-through to the caller's legacy `inferLinkType` for
-//      gbrain-base's production-quality matching of founded /
+//      zbrain-base's production-quality matching of founded /
 //      invested_in / advises / works_at + page-role priors.
 //
 // Callers that want pack-aware behavior wrap their inference call:
@@ -35,7 +35,7 @@
 //   return inferLinkType(pageType, context, globalContext, targetSlug);
 //
 // Pack-driven verbs WIN over legacy inference because users opt into
-// them deliberately; legacy fall-through covers the gbrain-base
+// them deliberately; legacy fall-through covers the zbrain-base
 // universe.
 
 import type { SchemaPackManifest } from './manifest-v1.ts';

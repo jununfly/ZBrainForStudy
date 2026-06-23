@@ -8,14 +8,14 @@
  *          timeline; parse fence; batch upsert
  *
  * Source-of-truth contract: markdown is canonical. The takes table is a
- * derived index. `gbrain extract takes --rebuild` deletes all takes for
+ * derived index. `zbrain extract takes --rebuild` deletes all takes for
  * the affected pages first, then re-inserts. Without --rebuild, ON CONFLICT
  * (page_id, row_num) DO UPDATE keeps the table in sync incrementally.
  *
  * Sync-failure surfacing: malformed table rows produce
  * `TAKES_TABLE_MALFORMED` and `TAKES_ROW_NUM_COLLISION` warnings. v0.28
  * threads them through as ExtractTakesResult.warnings; the v0_28_0
- * orchestrator persists to ~/.gbrain/sync-failures.jsonl via the existing
+ * orchestrator persists to ~/.zbrain/sync-failures.jsonl via the existing
  * v0.22.12 classifier path (extension follow-up — not blocking v0.28).
  */
 
@@ -154,7 +154,7 @@ export async function extractTakesFromFs(
 
     const pageId = await getPageIdForSlug(engine, slug);
     if (pageId === null) {
-      result.warnings.push(`TAKES_PAGE_NOT_IN_DB: slug=${slug} has takes fence but no page row; run 'gbrain sync' first`);
+      result.warnings.push(`TAKES_PAGE_NOT_IN_DB: slug=${slug} has takes fence but no page row; run 'zbrain sync' first`);
       continue;
     }
 
@@ -232,7 +232,7 @@ export async function extractTakesFromDb(
   return result;
 }
 
-/** Single-entry dispatch for `gbrain extract takes` and the v0_28_0 orchestrator. */
+/** Single-entry dispatch for `zbrain extract takes` and the v0_28_0 orchestrator. */
 export async function extractTakes(
   engine: BrainEngine,
   opts: ExtractTakesOpts,

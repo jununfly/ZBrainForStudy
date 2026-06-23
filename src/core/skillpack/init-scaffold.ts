@@ -1,12 +1,12 @@
 /**
- * skillpack/init-scaffold.ts — `gbrain skillpack init <name>` scaffold.
+ * skillpack/init-scaffold.ts — `zbrain skillpack init <name>` scaffold.
  *
  * Cathedral default per codex T4 + DX-Round-2: lands a complete 10/10
  * pack tree out of the box. Publisher edits or deletes what they don't
- * need; `gbrain skillpack doctor --quick` on a freshly-init'd pack
+ * need; `zbrain skillpack doctor --quick` on a freshly-init'd pack
  * passes 10/10 immediately.
  *
- * `--minimal` flag drops test/, e2e/, evals/ for power users who
+ * `--minimal` flag drops tests/unit/, e2e/, evals/ for power users who
  * explicitly opt out.
  *
  * Refuses to overwrite any existing file — same contract as v0.36's
@@ -23,7 +23,7 @@ export interface InitScaffoldOptions {
   targetDir: string;
   /** Pack name (lowercase kebab; becomes manifest.name). */
   name: string;
-  /** Skip test/, e2e/, evals/ for power users. */
+  /** Skip tests/unit/, e2e/, evals/ for power users. */
   minimal?: boolean;
   /** Optional initial skill slug (default: <pack-name>). */
   firstSkillSlug?: string;
@@ -79,14 +79,14 @@ export function runInitScaffold(opts: InitScaffoldOptions): InitScaffoldResult {
     author: opts.author ?? 'Your Name <you@example.com>',
     license: opts.license ?? 'MIT',
     homepage: opts.homepage ?? `https://github.com/your-user/skillpack-${opts.name}`,
-    gbrain_min_version: '0.36.0',
+    zbrain_min_version: '0.36.0',
     skills: [`skills/${firstSlug}`],
     runbooks: { bootstrap: 'runbooks/bootstrap.md' },
     changelog: 'CHANGELOG.md',
   };
 
   if (!opts.minimal) {
-    manifest.unit_tests = ['test/**/*.test.ts'];
+    manifest.unit_tests = ['tests/unit/**/*.test.ts'];
     manifest.e2e_tests = ['e2e/**/*.test.ts'];
     manifest.llm_evals = ['evals/*.judge.json'];
     manifest.routing_evals = [`skills/${firstSlug}/routing-eval.jsonl`];
@@ -142,11 +142,11 @@ export function runInitScaffold(opts: InitScaffoldOptions): InitScaffoldResult {
     content: [
       '# Bootstrap',
       '',
-      'Post-scaffold steps. gbrain displays this but does NOT auto-execute.',
+      'Post-scaffold steps. zbrain displays this but does NOT auto-execute.',
       'The agent reads it and walks per-step at its own discretion.',
       '',
       `1. show user: "${opts.name} is installed. Try one of the trigger phrases from skills/${firstSlug}/SKILL.md."`,
-      `2. (edit me) agent: gbrain put_page wiki/_${opts.name}-config --frontmatter type=config`,
+      `2. (edit me) agent: zbrain put_page wiki/_${opts.name}-config --frontmatter type=config`,
       '',
     ].join('\n'),
   });
@@ -175,7 +175,7 @@ export function runInitScaffold(opts: InitScaffoldOptions): InitScaffoldResult {
       '## Install',
       '',
       '```bash',
-      `gbrain skillpack scaffold your-user/skillpack-${opts.name}`,
+      `zbrain skillpack scaffold your-user/skillpack-${opts.name}`,
       '```',
       '',
       '## What it does',
@@ -201,7 +201,7 @@ export function runInitScaffold(opts: InitScaffoldOptions): InitScaffoldResult {
 
   if (!opts.minimal) {
     plan.push({
-      path: join(opts.targetDir, 'test/example.test.ts'),
+      path: join(opts.targetDir, 'tests/unit/example.test.ts'),
       content: [
         "import { describe, test, expect } from 'bun:test';",
         '',

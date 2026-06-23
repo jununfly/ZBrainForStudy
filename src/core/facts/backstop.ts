@@ -391,7 +391,7 @@ async function runPipelineWithBody(
     warnOnce(
       'facts:thin-client-fallback',
       '[facts] sources.local_path unset for source_id=' + ctx.sourceId +
-      ' — falling through to DB-only inserts. Configure local_path via `gbrain sources update` to enable system-of-record fence writes.',
+      ' — falling through to DB-only inserts. Configure local_path via `zbrain sources update` to enable system-of-record fence writes.',
     );
     for (const s of survived) legacyBucket.push(s);
   } else {
@@ -410,7 +410,7 @@ async function runPipelineWithBody(
       confidence: f.confidence,
       embedding: f.embedding ?? null,
     };
-    const result = await ctx.engine.insertFact(newFact, { source_id: ctx.sourceId }); // gbrain-allow-direct-insert: legacy DB-only fallback for unparented / thin-client facts (no entity page to fence onto)
+    const result = await ctx.engine.insertFact(newFact, { source_id: ctx.sourceId }); // zbrain-allow-direct-insert: legacy DB-only fallback for unparented / thin-client facts (no entity page to fence onto)
     fact_ids.push(result.id);
     if (result.status === 'inserted') inserted += 1;
     else if ((result.status as FactInsertStatus) === 'duplicate') duplicate += 1;
@@ -473,7 +473,7 @@ async function runPipelineWithBody(
           confidence: f.confidence,
           embedding: f.embedding ?? null,
         };
-        const legacyResult = await ctx.engine.insertFact(newFact, { source_id: ctx.sourceId }); // gbrain-allow-direct-insert: stub-guard fallback for unprefixed entity slugs (no fenceable page)
+        const legacyResult = await ctx.engine.insertFact(newFact, { source_id: ctx.sourceId }); // zbrain-allow-direct-insert: stub-guard fallback for unprefixed entity slugs (no fenceable page)
         fact_ids.push(legacyResult.id);
         if (legacyResult.status === 'inserted') inserted += 1;
         else if ((legacyResult.status as FactInsertStatus) === 'duplicate') duplicate += 1;

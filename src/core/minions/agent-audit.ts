@@ -2,8 +2,8 @@
  * v0.38 Slice 3 — D4 — JSONL audit for `submit_agent` MCP op.
  *
  * Mirrors `shell-audit.ts`: weekly-rotated JSONL at
- * `~/.gbrain/audit/agent-jobs-YYYY-Www.jsonl` (override via
- * `GBRAIN_AUDIT_DIR`). Best-effort writes — disk-full / permission errors
+ * `~/.zbrain/audit/agent-jobs-YYYY-Www.jsonl` (override via
+ * `ZBRAIN_AUDIT_DIR`). Best-effort writes — disk-full / permission errors
  * go to stderr and do not block dispatch.
  *
  * What we log (every submit_agent call):
@@ -25,12 +25,12 @@
  * `summarizeMcpParams`. tools + slug_prefixes are user-declared identifiers,
  * not content, so they're fine to log verbatim. Audit file mode is the
  * process umask (typically 644) — operators should treat the audit dir
- * the same way they treat ~/.gbrain (private).
+ * the same way they treat ~/.zbrain (private).
  */
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { gbrainPath } from '../config.ts';
+import { zbrainPath } from '../config.ts';
 
 export interface AgentAuditEvent {
   ts: string;
@@ -63,9 +63,9 @@ export function computeAuditFilename(now: Date = new Date()): string {
 }
 
 function resolveAuditDir(): string {
-  const env = process.env.GBRAIN_AUDIT_DIR;
+  const env = process.env.ZBRAIN_AUDIT_DIR;
   if (env && env.trim()) return env.trim();
-  return gbrainPath('audit');
+  return zbrainPath('audit');
 }
 
 /** Append one event. Best-effort; logs to stderr on failure. */
@@ -87,7 +87,7 @@ export function logAgentSubmission(event: Omit<AgentAuditEvent, 'ts'>): void {
   }
 }
 
-/** Read recent events across files (for `gbrain doctor` integrations + tests). */
+/** Read recent events across files (for `zbrain doctor` integrations + tests). */
 export function readRecentAgentEvents(days: number, now: Date = new Date()): AgentAuditEvent[] {
   const dir = resolveAuditDir();
   if (!fs.existsSync(dir)) return [];

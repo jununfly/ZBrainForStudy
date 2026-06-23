@@ -39,8 +39,8 @@ src/
     server.ts             MCP stdio server (generated from operations)
   schema.sql              Postgres DDL
 skills/                   Fat markdown skills for AI agents
-test/                     Unit tests (bun test, no DB required)
-test/e2e/                 E2E tests (requires DATABASE_URL, real Postgres+pgvector)
+tests/unit/                     Unit tests (bun test, no DB required)
+tests/unit/e2e/                 E2E tests (requires DATABASE_URL, real Postgres+pgvector)
   fixtures/               Miniature realistic brain corpus (16 files)
   helpers.ts              DB lifecycle, fixture import, timing
   mechanical.test.ts      All operations against real DB
@@ -54,7 +54,7 @@ docs/                     Architecture docs
 ```bash
 # Inner edit loop (~85s on a Mac dev box, 3700+ unit tests)
 bun run test                      # parallel 8-shard fan-out + serial post-pass
-bun test test/markdown.test.ts    # specific unit test
+bun test tests/unit/markdown.test.ts    # specific unit test
 
 # Pre-push gate (matches what CI runs on shard 1 + typecheck)
 bun run verify                    # privacy + jsonb + progress + test-isolation + wasm + admin-build + resolver + typecheck
@@ -96,7 +96,7 @@ lint rules (`scripts/check-test-isolation.sh`, R1-R4) enforce isolation:
 
 | Rule | What it bans | Fix |
 |---|---|---|
-| **R1** | Direct `process.env.X = ...` mutation | Use `withEnv()` from `test/helpers/with-env.ts`, or rename to `*.serial.test.ts` |
+| **R1** | Direct `process.env.X = ...` mutation | Use `withEnv()` from `tests/unit/helpers/with-env.ts`, or rename to `*.serial.test.ts` |
 | **R2** | `mock.module(...)` anywhere in the file | Rename to `*.serial.test.ts` |
 | **R3** | `new PGLiteEngine(` outside ~50 lines after `beforeAll(` | Use the canonical PGLite block (see below) |
 | **R4** | `new PGLiteEngine(` without paired `afterAll(disconnect)` | Add the `afterAll(() => engine.disconnect())` |
@@ -182,7 +182,7 @@ For CLI-only commands (init, upgrade, import, export, files, embed, doctor, sync
 1. Create `src/commands/mycommand.ts`
 2. Add the case to `src/cli.ts`
 
-Parity tests (`test/parity.test.ts`) verify CLI/MCP/tools-json stay in sync.
+Parity tests (`tests/unit/parity.test.ts`) verify CLI/MCP/tools-json stay in sync.
 
 ## Adding a new engine
 

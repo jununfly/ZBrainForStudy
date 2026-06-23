@@ -10,7 +10,7 @@
  * postgres.js's existing pool primitives + PostgresEngine.withReservedConnection.
  *
  *   ┌─────────────────────────────┐
- *   │ GBRAIN_DATABASE_URL         │   GBRAIN_DIRECT_DATABASE_URL (override)
+ *   │ ZBRAIN_DATABASE_URL         │   ZBRAIN_DIRECT_DATABASE_URL (override)
  *   │ (pooler, port 6543)         │
  *   └────────┬────────────────────┘
  *            │
@@ -29,11 +29,11 @@
  *    via constructor option `parent`. transaction() clones share the parent's.
  *  - Lazy direct pool init via cached Promise<Sql> (A1): concurrent first
  *    callers await the same Promise, so no double-init.
- *  - Kill-switch (F1): GBRAIN_DISABLE_DIRECT_POOL=1 falls back to single-pool
+ *  - Kill-switch (F1): ZBRAIN_DISABLE_DIRECT_POOL=1 falls back to single-pool
  *    legacy path. With parent set, inherit parent's kill-switch state (A2).
  *  - Audit (F8): every acquire/release/error logs to connection-events.jsonl.
  *  - Non-Supabase passthrough: if URL isn't a Supabase pooler and no
- *    GBRAIN_DIRECT_DATABASE_URL override, ddl()/bulk() share the read pool.
+ *    ZBRAIN_DIRECT_DATABASE_URL override, ddl()/bulk() share the read pool.
  */
 
 import postgres from 'postgres';
@@ -48,7 +48,7 @@ export interface ConnectionManagerOpts {
   url: string;
   /**
    * Override for the direct URL. When set, takes precedence over auto-derivation.
-   * Sourced from GBRAIN_DIRECT_DATABASE_URL or explicit caller config.
+   * Sourced from ZBRAIN_DIRECT_DATABASE_URL or explicit caller config.
    */
   directUrl?: string | null;
   /**
@@ -62,7 +62,7 @@ export interface ConnectionManagerOpts {
    */
   readPoolSize?: number;
   /**
-   * Direct pool size override (defaults to GBRAIN_DIRECT_POOL_SIZE env or 3).
+   * Direct pool size override (defaults to ZBRAIN_DIRECT_POOL_SIZE env or 3).
    */
   directPoolSize?: number;
   /**
@@ -172,8 +172,8 @@ export function deriveDirectUrl(url: string): string | null {
  * when present (A2 inheritance).
  */
 export function readKillSwitchEnv(): boolean {
-  return process.env.GBRAIN_DISABLE_DIRECT_POOL === '1' ||
-    process.env.GBRAIN_DISABLE_DIRECT_POOL === 'true';
+  return process.env.ZBRAIN_DISABLE_DIRECT_POOL === '1' ||
+    process.env.ZBRAIN_DISABLE_DIRECT_POOL === 'true';
 }
 
 /**
@@ -181,7 +181,7 @@ export function readKillSwitchEnv(): boolean {
  */
 export function resolveDirectPoolSize(explicit?: number): number {
   if (typeof explicit === 'number' && explicit > 0) return explicit;
-  const raw = process.env.GBRAIN_DIRECT_POOL_SIZE;
+  const raw = process.env.ZBRAIN_DIRECT_POOL_SIZE;
   if (raw) {
     const parsed = parseInt(raw, 10);
     if (Number.isFinite(parsed) && parsed > 0 && parsed <= 20) return parsed;
@@ -214,7 +214,7 @@ export class ConnectionManager {
       this._killSwitch = readKillSwitchEnv();
       this._isSupabase = isSupabasePoolerUrl(opts.url);
       // Direct URL: explicit override > env > derive > null
-      const envOverride = process.env.GBRAIN_DIRECT_DATABASE_URL;
+      const envOverride = process.env.ZBRAIN_DIRECT_DATABASE_URL;
       this._directUrl = opts.directUrl ?? envOverride ?? deriveDirectUrl(opts.url);
     }
   }

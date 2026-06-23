@@ -1,9 +1,9 @@
 /**
- * gbrain bench publish — turn a captured-run NDJSON into a baseline file (v0.41).
+ * zbrain bench publish — turn a captured-run NDJSON into a baseline file (v0.41).
  *
  * The LOOP-closing verb. Without `bench publish`, the eval gate has nothing
  * to gate against except hand-curated fixtures. This verb takes the output
- * of `gbrain eval export` and writes a `*.baseline.ndjson` file with:
+ * of `zbrain eval export` and writes a `*.baseline.ndjson` file with:
  *   - line 1: metadata header (label, thresholds, source_hash, baseline_mean_latency_ms)
  *   - lines 2..N: raw captured rows with `query_hash` stamped on each
  *
@@ -18,7 +18,7 @@
  * + sort + hash all together is impossible). In-memory read + sort + write.
  *
  * Usage:
- *   gbrain bench publish --from <captured.ndjson> --to <X.baseline.ndjson>
+ *   zbrain bench publish --from <captured.ndjson> --to <X.baseline.ndjson>
  *     [--threshold-jaccard FLOAT] [--threshold-top1 FLOAT]
  *     [--threshold-latency-multiplier FLOAT] [--label STRING]
  *     [--force] [--json]
@@ -116,13 +116,13 @@ function parseArgs(args: string[]): PublishOpts {
 }
 
 function printHelp(): void {
-  console.log(`gbrain bench publish — write a baseline file from captured queries
+  console.log(`zbrain bench publish — write a baseline file from captured queries
 
 Usage:
-  gbrain bench publish --from <captured.ndjson> --to <X.baseline.ndjson> [flags]
+  zbrain bench publish --from <captured.ndjson> --to <X.baseline.ndjson> [flags]
 
 Required:
-  --from FILE                    Input NDJSON from \`gbrain eval export\`
+  --from FILE                    Input NDJSON from \`zbrain eval export\`
   --to FILE                      Output baseline path (recommend .baseline.ndjson extension)
 
 Optional:
@@ -142,11 +142,11 @@ Exit codes:
 
 Examples:
   # Publish your own personal baseline
-  gbrain eval export --limit 200 --tool query > /tmp/captured.ndjson
-  gbrain bench publish --from /tmp/captured.ndjson --to ~/.gbrain/baselines/personal.baseline.ndjson --label "personal-2026-05"
+  zbrain eval export --limit 200 --tool query > /tmp/captured.ndjson
+  zbrain bench publish --from /tmp/captured.ndjson --to ~/.zbrain/baselines/personal.baseline.ndjson --label "personal-2026-05"
 
   # Gate against it later
-  gbrain eval gate --baseline ~/.gbrain/baselines/personal.baseline.ndjson
+  zbrain eval gate --baseline ~/.zbrain/baselines/personal.baseline.ndjson
 `);
 }
 
@@ -162,7 +162,7 @@ function parseInputRow(line: string, lineNo: number): EvalCandidateInput {
     throw new Error(`Line ${lineNo} is not a JSON object`);
   }
   const row = parsed as Partial<EvalCandidateInput> & Record<string, unknown>;
-  // schema_version is optional on input (some test/synthetic inputs omit it).
+  // schema_version is optional on input (some tests/unit/synthetic inputs omit it).
   // Strict shape check on the actual fields we use.
   if (row.tool_name !== 'query' && row.tool_name !== 'search') {
     throw new Error(`Line ${lineNo} missing or invalid tool_name (must be 'query' or 'search')`);
