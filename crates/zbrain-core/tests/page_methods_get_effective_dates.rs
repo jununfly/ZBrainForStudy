@@ -1,7 +1,7 @@
 //! Slice 6a-libsql advanced reads (libsql parity): `get_effective_dates` behavior tests.
 //!
-//! Mirrors the PG semantics locked in slice 6a-pg (plan 14 §11.1):
-//!   `SELECT p.slug, p.source_id, COALESCE(p.updated_at, p.created_at) AS ts
+//! Mirrors TS-compatible effective-date fallback semantics:
+//!   `SELECT p.slug, p.source_id, COALESCE(p.effective_date, p.updated_at, p.created_at) AS ts
 //!    FROM pages p
 //!    WHERE (p.slug, p.source_id) IN ((?1,?2), …) AND p.deleted_at IS NULL`
 //! returning a `HashMap<String, String>` keyed by `format!("{source_id}::{slug}")`.
@@ -13,7 +13,7 @@ mod support;
 use tempfile::NamedTempFile;
 use zbrain_core::engine::{BrainEngine, EngineConfig, PageInput};
 use zbrain_core::libsql::LibsqlEngine;
-use zbrain_core::PageRef;
+use zbrain_core::{EffectiveDateSource, PageRef};
 
 async fn init_clean_engine() -> (LibsqlEngine, NamedTempFile) {
     let path = NamedTempFile::new().expect("alloc temp db file");
@@ -50,6 +50,43 @@ fn note_input(title: &str, body: &str) -> PageInput {
         compiled_truth: body.to_string(),
         ..PageInput::default()
     }
+}
+
+fn note_input_with_effective_date(title: &str, body: &str, effective_date: &str) -> PageInput {
+    PageInput {
+        effective_date: Some(effective_date.to_string()),
+        effective_date_source: Some(EffectiveDateSource::Filename),
+        ..note_input(title, body)
+    }
+}
+
+#[tokio::test]
+async fn libsql_get_effective_dates_prefers_effective_date_before_row_timestamps() {
+    let (engine, tmp) = init_clean_engine().await;
+    libsql_seed_source(&tmp, "src-1").await;
+    engine
+        .put_page(
+            "dated-slug",
+            Some("src-1"),
+            &note_input_with_effective_date("Dated title", "body", "2026-01-15"),
+        )
+        .await
+        .expect("seed page");
+
+    let dates = engine
+        .get_effective_dates(&[PageRef {
+            slug: "dated-slug".to_string(),
+            source_id: "src-1".to_string(),
+        }])
+        .await
+        .expect("get_effective_dates");
+
+    assert_eq!(
+        dates.get("src-1::dated-slug").map(String::as_str),
+        Some("2026-01-15"),
+        "effective_date must win over updated_at/created_at when present"
+    );
+    engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
@@ -183,8 +220,9 @@ async fn libsql_get_effective_dates_returns_empty_map_for_empty_input() {
 // ---------------------------------------------------------------------------
 // PostgresEngine mirror tests (slice 6a-pg PG-advanced-reads)
 //
-// Locks the PG `get_effective_dates` semantics from plan 14 §11.1:
-//   SELECT p.slug, p.source_id, COALESCE(p.updated_at, p.created_at)::text AS ts
+// Locks TS-compatible `get_effective_dates` fallback semantics:
+//   SELECT p.slug, p.source_id,
+//          COALESCE(p.effective_date, p.updated_at::text, p.created_at::text) AS ts
 //   FROM pages p
 //   JOIN unnest($1::text[], $2::text[]) AS u(slug, source_id)
 //     ON p.slug = u.slug AND p.source_id = u.source_id
@@ -208,6 +246,35 @@ async fn pg_seed_source(url: &str, id: &str) {
         .await
         .expect("seed source");
     pool.close().await;
+}
+
+#[tokio::test]
+async fn postgres_get_effective_dates_prefers_effective_date_before_row_timestamps() {
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    pg_seed_source(&fix.url, "src-1").await;
+    engine
+        .put_page(
+            "dated-slug",
+            Some("src-1"),
+            &note_input_with_effective_date("Dated title", "body", "2026-01-15"),
+        )
+        .await
+        .expect("seed page");
+
+    let dates = engine
+        .get_effective_dates(&[PageRef {
+            slug: "dated-slug".to_string(),
+            source_id: "src-1".to_string(),
+        }])
+        .await
+        .expect("get_effective_dates");
+
+    assert_eq!(
+        dates.get("src-1::dated-slug").map(String::as_str),
+        Some("2026-01-15"),
+        "effective_date must win over updated_at/created_at when present"
+    );
 }
 
 #[tokio::test]

@@ -256,7 +256,7 @@
     "1-2-1": {
       "id": "1-2-1",
       "label": "Finish Page contract parity across storage backends",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-2",
       "children": [
@@ -668,67 +668,113 @@
     "1-2-1-2": {
       "id": "1-2-1-2",
       "label": "Align getPage no-source lookup semantics",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-2-1",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "GitHub #7 acceptance verified: InMemory, libsql, and Postgres get_page no-source lookup now perform TS-compatible unscoped slug lookup while explicit source_id remains scoped and include_deleted controls soft-deleted rows. Focused validation passed on 2026-06-24."
     },
     "1-2-1-3": {
       "id": "1-2-1-3",
       "label": "Decide findDuplicatePage return shape parity",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-2-1",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "GitHub #8 acceptance verified: find_duplicate_page returns TS-compatible DuplicatePage { slug, id } | None across InMemory/libsql/Postgres, is source-scoped, ignores soft-deleted rows, matches content_hash or frontmatter.id, selects lowest id on multiple matches, and returns None for no-match. Focused validation passed on 2026-06-24."
     },
     "1-2-1-4": {
       "id": "1-2-1-4",
       "label": "Align getPageTimestamps deleted-row visibility",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-2-1",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "GitHub #9 acceptance verified: get_page_timestamps mirrors TS deleted-row visibility by not filtering soft-deleted rows, keeps slug-keyed map, omits missing slugs, and returns empty map for empty input. Focused validation passed on 2026-06-24."
     },
     "1-2-1-5": {
       "id": "1-2-1-5",
       "label": "Align getEffectiveDates effective_date fallback",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-2-1",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "GitHub #10 acceptance verified: get_effective_dates uses effective_date before updated_at before created_at, excludes soft-deleted rows, and keeps compound {source_id}::{slug} keys. Focused validation passed on 2026-06-24."
     },
     "1-2-1-6": {
       "id": "1-2-1-6",
       "label": "Add Rust file storage contract parity",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-2-1",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "What is the next plan after Page parity status sync?",
+          "answer": "Execute 1-2-1-6 / GitHub #11 next: add Rust file storage contract parity before moving to 1-2-2 or 1-2-3.",
+          "note": "User confirmed. This is the only remaining pending leaf under 1-2-1, so finishing it closes the Page contract parity subtree."
+        },
+        {
+          "q": "Should #11 start with audit or implementation?",
+          "answer": "Start with a narrow file storage contract audit only; do not implement Rust yet.",
+          "note": "User confirmed. Audit scope: TS file-storage public contract, backend semantics, existing schema/tests, and resulting Rust public-interface/TDD slice proposal."
+        },
+        {
+          "q": "Which Rust file storage public methods should #11 add?",
+          "answer": "Only add parity for the three TS BrainEngine file methods: upsert_file, get_file, and list_files_for_page.",
+          "note": "User confirmed. Do not introduce delete_file or generic list_files in #11 because TS BrainEngine does not expose them; this slice is parity, not API expansion."
+        },
+        {
+          "q": "Which uniqueness semantics should Rust file upsert follow?",
+          "answer": "Follow the current TS schema/backend implementation: files are unique by storage_path only.",
+          "note": "User confirmed. Although some TS comments imply (source_id, storage_path), the actual schema uses UNIQUE(storage_path) and the backend upsert conflict target follows storage_path. Any change to source-scoped identity should be a separate design/migration issue, not part of #11 parity."
+        },
+        {
+          "q": "Should #11 include Rust schema/migration work?",
+          "answer": "Yes. Include Rust schema/migration for the files table as part of #11.",
+          "note": "User confirmed. File storage parity is DB-backed in TS, so Rust parity must cover InMemory plus libsql/Postgres schema/backend behavior. Keep the schema scope narrow to fields required by upsert_file, get_file, and list_files_for_page."
+        },
+        {
+          "q": "Should Rust FileSpec/FileRow be complete or minimal?",
+          "answer": "Keep FileSpec and FileRow field shapes complete against the TS contract, while implementing only the behavior needed by upsert_file, get_file, and list_files_for_page.",
+          "note": "User confirmed. Public shape parity matters for TS-to-Rust migration, but #11 remains behavior-scoped to metadata rows only; no bytes/blob storage and no extra file APIs."
+        },
+        {
+          "q": "What TDD slice order should #11 follow?",
+          "answer": "Use vertical TDD slices in this order: contract compile, InMemory behavior, libsql DB parity, Postgres DB parity.",
+          "note": "User confirmed. Each slice should use public-interface tests and only enough implementation to turn that slice green."
+        },
+        {
+          "q": "Where should the #11 contract audit/plan live?",
+          "answer": "Create a short canonical document at docs/plans/2026-06-24-file-storage-contract-parity-audit.md.",
+          "note": "User confirmed. Keep the document narrow: TS facts, Rust gap, public interface, schema scope, and TDD slices only. Roadmap should only point to the document and track execution."
+        },
+        {
+          "q": "How was #11 split into GitHub issues?",
+          "answer": "Published dependency-ordered ready-for-agent issues #13, #14, #16, #17, and #18 for contract compile, InMemory behavior, libsql parity, Postgres parity, and final validation/closure.",
+          "note": "A transient GitHub 502 still created #14; retry created duplicate #15, which was closed as duplicate retry output. Parent #11 was commented with the final child issue list."
+        }
+      ],
+      "notes": "Rust file storage contract parity completed via GitHub #13/#14/#16/#17/#18. Final validation passed: engine_object_safety 9/9, in_memory_engine_contract in_memory_ 22/22, libsql_engine_file_storage 4/4, postgres_engine_file_storage 4/4, cargo fmt -p zbrain-core --check, git diff --check. Parent #11 and child #18 closed."
     },
     "1-2-1-7": {
       "id": "1-2-1-7",
       "label": "Implement resolveSlugs source and fuzzy parity",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-2-1",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "GitHub #12 closed: resolve_slugs now supports ResolveSlugsOpts with source_id/source_ids precedence, exact-first lookup, fuzzy fallback, soft-deleted row hiding, LIMIT 5, and [] no-match behavior across InMemory/libsql/Postgres. Focused validation passed on 2026-06-24."
     }
   },
   "metadata": {
     "created": "2026-06-23 18:09:00",
-    "updated": "2026-06-24 14:24:11",
+    "updated": "2026-06-24 19:38:41",
     "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_ROADMAP.md"
   }
 }

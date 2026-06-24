@@ -99,6 +99,30 @@ async fn inmemory_put_page_same_slug_different_source_ids_produces_two_rows() {
 // -- S6a follow-up — get_page source scope --------------------------------
 
 #[tokio::test]
+async fn inmemory_get_page_without_source_id_uses_unscoped_slug_lookup() {
+    let engine = init_inmemory().await;
+
+    engine
+        .put_page(
+            "alt-only-slug",
+            Some("alt-source"),
+            &note_input("Alt title", "alt-body"),
+        )
+        .await
+        .expect("put alt source");
+
+    let got = engine
+        .get_page("alt-only-slug", &GetPageOpts::default())
+        .await
+        .expect("get_page")
+        .expect("unscoped get_page should find alt source page");
+
+    assert_eq!(got.source_id, "alt-source");
+    assert_eq!(got.title, "Alt title");
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
 async fn inmemory_get_page_respects_source_id_filter_for_same_slug() {
     let engine = init_inmemory().await;
 
@@ -120,13 +144,19 @@ async fn inmemory_get_page_respects_source_id_filter_for_same_slug() {
         .expect("put alt source");
 
     let default_lookup = engine
-        .get_page("shared-get", &GetPageOpts::default())
+        .get_page(
+            "shared-get",
+            &GetPageOpts {
+                source_id: Some("default".to_string()),
+                include_deleted: false,
+            },
+        )
         .await
-        .expect("get default source")
+        .expect("get explicit default source")
         .expect("default page exists");
     assert_eq!(
         default_lookup.id, default_page.id,
-        "GetPageOpts::default() must read only the default source"
+        "explicit default source_id must read the default source"
     );
 
     let alt_lookup = engine
@@ -192,7 +222,13 @@ async fn inmemory_delete_page_with_source_id_only_removes_matching_source_row() 
         .expect("delete alt source");
 
     let default_lookup = engine
-        .get_page("shared-delete", &GetPageOpts::default())
+        .get_page(
+            "shared-delete",
+            &GetPageOpts {
+                source_id: Some("default".to_string()),
+                include_deleted: false,
+            },
+        )
         .await
         .expect("get default source after delete")
         .expect("default page must remain");

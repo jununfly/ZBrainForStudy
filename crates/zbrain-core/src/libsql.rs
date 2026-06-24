@@ -17,16 +17,17 @@
 use std::sync::{LazyLock, OnceLock};
 
 use async_trait::async_trait;
+use serde_json::json;
 
 use crate::engine::{
     page_sort_sql, BrainEngine, EngineConfig, EngineKind, GetPageOpts, Page, PageFilters,
-    PageInput, PageSort,
+    PageInput, PageSort, ResolveSlugsOpts,
 };
 use crate::error::{Error, Result};
 use crate::time::current_utc_iso8601;
 use crate::types::{
-    CRMode, EffectiveDateSource, FindDuplicatePageOpts, OrphanPage, PageKind, PageRef, PurgeResult,
-    RefreshPageBodyArgs,
+    CRMode, DuplicatePage, EffectiveDateSource, FileRow, FileSpec, FindDuplicatePageOpts,
+    OrphanPage, PageKind, PageRef, PurgeResult, RefreshPageBodyArgs, UpsertFileResult,
 };
 
 /// Embedded `SQLite` schema. Mirrors the PG migration semantics:
@@ -63,6 +64,9 @@ const MIGRATION_0005: &str = include_str!("../migrations-sqlite/0005_takes_min.s
 /// needed for inbound-link existence checks. Full link CRUD remains deferred.
 const MIGRATION_0006: &str = include_str!("../migrations-sqlite/0006_links.sql");
 
+/// File metadata rows for TS BrainEngine file-storage parity.
+const MIGRATION_0007: &str = include_str!("../migrations-sqlite/0007_files.sql");
+
 /// Ordered list of migrations. Index `i` is applied when `user_version <= i`,
 /// then `user_version` is set to `i + 1`. Append-only — never reorder.
 const MIGRATIONS: &[&str] = &[
@@ -72,13 +76,14 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_0004,
     MIGRATION_0005,
     MIGRATION_0006,
+    MIGRATION_0007,
 ];
 
 /// Highest schema version we know how to produce. Equals `MIGRATIONS.len()`.
 /// Guarded via `PRAGMA user_version`. Hand-kept in sync with `MIGRATIONS`
 /// because `len() as i64` is not const-evaluable in stable Rust and casting
 /// `usize → i64` trips `clippy::cast_possible_wrap`.
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 /// Process-wide gate that serializes the *entire* `init_schema` flow
 /// — including the very first `connect()` + `PRAGMA foreign_keys = ON`
@@ -165,6 +170,57 @@ impl LibsqlEngine {
             .get(0)
             .map_err(|e| Error::engine(format!("user_version decode failed: {e}")))
     }
+}
+
+fn libsql_row_to_file(row: &::libsql::Row) -> Result<FileRow> {
+    let id: i64 = row
+        .get(0)
+        .map_err(|e| Error::engine(format!("file row decode id: {e}")))?;
+    let source_id: String = row
+        .get(1)
+        .map_err(|e| Error::engine(format!("file row decode source_id: {e}")))?;
+    let page_slug: Option<String> = row
+        .get(2)
+        .map_err(|e| Error::engine(format!("file row decode page_slug: {e}")))?;
+    let page_id_i64: Option<i64> = row
+        .get(3)
+        .map_err(|e| Error::engine(format!("file row decode page_id: {e}")))?;
+    let filename: String = row
+        .get(4)
+        .map_err(|e| Error::engine(format!("file row decode filename: {e}")))?;
+    let storage_path: String = row
+        .get(5)
+        .map_err(|e| Error::engine(format!("file row decode storage_path: {e}")))?;
+    let mime_type: Option<String> = row
+        .get(6)
+        .map_err(|e| Error::engine(format!("file row decode mime_type: {e}")))?;
+    let size_bytes: Option<i64> = row
+        .get(7)
+        .map_err(|e| Error::engine(format!("file row decode size_bytes: {e}")))?;
+    let content_hash: String = row
+        .get(8)
+        .map_err(|e| Error::engine(format!("file row decode content_hash: {e}")))?;
+    let metadata_text: String = row
+        .get(9)
+        .map_err(|e| Error::engine(format!("file row decode metadata: {e}")))?;
+    let created_at: String = row
+        .get(10)
+        .map_err(|e| Error::engine(format!("file row decode created_at: {e}")))?;
+    let metadata = serde_json::from_str(&metadata_text).unwrap_or_else(|_| json!({}));
+
+    Ok(FileRow {
+        id: id as u64,
+        source_id,
+        page_slug,
+        page_id: page_id_i64.map(|value| value as u64),
+        filename,
+        storage_path,
+        mime_type,
+        size_bytes,
+        content_hash,
+        metadata,
+        created_at,
+    })
 }
 
 impl Default for LibsqlEngine {
@@ -269,20 +325,20 @@ impl BrainEngine for LibsqlEngine {
 
     async fn get_page(&self, slug: &str, opts: &GetPageOpts) -> Result<Option<Page>> {
         // Slice 6a S6-T4: full 30-column projection backed by
-        // `full_row_to_page`, with `deleted_at` filtering and `source_id`
-        // scoping that mirror `soft_delete_page` / `find_duplicate_page`.
+        // `full_row_to_page`, with `deleted_at` filtering and optional
+        // `source_id` scoping that mirror TS `getPage` semantics.
         //
         // Filters:
-        // - `slug = ?1` (primary key after source_id scoping)
-        // - `source_id = ?2` with `None` normalised to "default"
-        // - `(?3 = 1 OR deleted_at IS NULL)` – default hides soft-deleted
+        // - `slug = ?1`
+        // - `(?2 IS NULL OR source_id = ?2)` so `None` is unscoped
+        // - `(?3 = 1 OR deleted_at IS NULL)` - default hides soft-deleted
         //
         // `include_deleted` is bound as an INTEGER (0/1) because libsql /
         // SQLite type affinity coerces TEXT booleans loosely; explicit i64
         // avoids any surprise.
         let conn = self.conn().await?;
         let include_deleted_flag: i64 = i64::from(opts.include_deleted);
-        let source_id_param = opts.source_id.as_deref().unwrap_or("default");
+        let source_id_param = opts.source_id.as_deref();
         let mut rows = conn
             .query(
                 "SELECT id, slug, type, page_kind, title, compiled_truth, timeline, \
@@ -294,8 +350,9 @@ impl BrainEngine for LibsqlEngine {
                         corpus_generation \
                  FROM pages \
                  WHERE slug = ?1 \
-                   AND source_id = ?2 \
+                   AND (?2 IS NULL OR source_id = ?2) \
                    AND (?3 = 1 OR deleted_at IS NULL) \
+                 ORDER BY source_id ASC \
                  LIMIT 1",
                 ::libsql::params![slug, source_id_param, include_deleted_flag],
             )
@@ -670,53 +727,166 @@ impl BrainEngine for LibsqlEngine {
         Ok(out)
     }
 
-    async fn resolve_slugs(&self, partial: &str) -> Result<Vec<String>> {
-        // FixMe: fuzzy LIKE %partial% lands in slice 6.5c — keep exact
-        // matching in lockstep with PostgresEngine so the two engines are
-        // observationally identical at this slice.
+    async fn resolve_slugs(&self, partial: &str, opts: &ResolveSlugsOpts) -> Result<Vec<String>> {
+        let conn = self.conn().await?;
+        let (source_clause, mut params) =
+            match opts.source_ids.as_ref().filter(|ids| !ids.is_empty()) {
+                Some(source_ids) => {
+                    let placeholders = (0..source_ids.len())
+                        .map(|idx| format!("?{}", idx + 2))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let mut params = vec![partial.to_string()];
+                    params.extend(source_ids.iter().cloned());
+                    (format!(" AND source_id IN ({placeholders})"), params)
+                }
+                None => match opts.source_id.as_ref() {
+                    Some(source_id) => (
+                        " AND source_id = ?2".to_string(),
+                        vec![partial.to_string(), source_id.clone()],
+                    ),
+                    None => (String::new(), vec![partial.to_string()]),
+                },
+            };
+
+        let exact_sql = format!(
+            "SELECT slug FROM pages WHERE slug = ?1 AND deleted_at IS NULL{source_clause} ORDER BY slug ASC"
+        );
+        let mut exact_rows = conn
+            .query(&exact_sql, ::libsql::params_from_iter(params.clone()))
+            .await
+            .map_err(|e| Error::engine(format!("resolve_slugs exact query failed: {e}")))?;
+        let exact = collect_slug_rows(&mut exact_rows).await?;
+        if !exact.is_empty() {
+            return Ok(exact);
+        }
+
+        let fuzzy_param_idx = params.len() + 1;
+        let fuzzy_sql = format!(
+            "SELECT slug FROM pages WHERE deleted_at IS NULL AND slug LIKE ?{fuzzy_param_idx}{source_clause} ORDER BY slug ASC LIMIT 5"
+        );
+        params.push(format!("%{partial}%"));
+        let mut fuzzy_rows = conn
+            .query(&fuzzy_sql, ::libsql::params_from_iter(params))
+            .await
+            .map_err(|e| Error::engine(format!("resolve_slugs fuzzy query failed: {e}")))?;
+        collect_slug_rows(&mut fuzzy_rows).await
+    }
+
+    async fn upsert_file(&self, spec: &FileSpec) -> Result<UpsertFileResult> {
+        let conn = self.conn().await?;
+        let source_id = spec.source_id.as_deref().unwrap_or("default");
+        let metadata = spec.metadata.clone().unwrap_or_else(|| json!({}));
+        let metadata_text = serde_json::to_string(&metadata)
+            .map_err(|e| Error::engine(format!("serialize file metadata failed: {e}")))?;
+        let page_id = spec.page_id.map(|id| id as i64);
+
+        let existed = conn
+            .query(
+                "SELECT id FROM files WHERE storage_path = ?1",
+                ::libsql::params![spec.storage_path.clone()],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("upsert_file existence query failed: {e}")))?
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("upsert_file existence fetch failed: {e}")))?
+            .is_some();
+
+        let mut rows = conn
+            .query(
+                "INSERT INTO files (source_id, page_slug, page_id, filename, storage_path, mime_type, size_bytes, content_hash, metadata) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
+                 ON CONFLICT(storage_path) DO UPDATE SET \
+                   source_id = excluded.source_id, \
+                   page_slug = excluded.page_slug, \
+                   page_id = excluded.page_id, \
+                   filename = excluded.filename, \
+                   mime_type = excluded.mime_type, \
+                   size_bytes = excluded.size_bytes, \
+                   content_hash = excluded.content_hash, \
+                   metadata = excluded.metadata \
+                 RETURNING id",
+                ::libsql::params![
+                    source_id,
+                    spec.page_slug.as_deref(),
+                    page_id,
+                    spec.filename.clone(),
+                    spec.storage_path.clone(),
+                    spec.mime_type.as_deref(),
+                    spec.size_bytes,
+                    spec.content_hash.clone(),
+                    metadata_text,
+                ],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("upsert_file failed: {e}")))?;
+        let row = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("upsert_file returning fetch failed: {e}")))?
+            .ok_or_else(|| Error::engine("upsert_file returned no row"))?;
+        let id: i64 = row
+            .get(0)
+            .map_err(|e| Error::engine(format!("upsert_file decode id failed: {e}")))?;
+
+        Ok(UpsertFileResult {
+            id: id as u64,
+            created: !existed,
+        })
+    }
+
+    async fn get_file(&self, source_id: &str, storage_path: &str) -> Result<Option<FileRow>> {
         let conn = self.conn().await?;
         let mut rows = conn
             .query(
-                "SELECT slug FROM pages WHERE slug = ?1 ORDER BY slug ASC",
-                ::libsql::params![partial],
+                "SELECT id, source_id, page_slug, page_id, filename, storage_path, mime_type, size_bytes, content_hash, metadata, created_at \
+                 FROM files \
+                 WHERE source_id = ?1 AND storage_path = ?2 \
+                 LIMIT 1",
+                ::libsql::params![source_id, storage_path],
             )
             .await
-            .map_err(|e| Error::engine(format!("resolve_slugs query failed: {e}")))?;
+            .map_err(|e| Error::engine(format!("get_file query failed: {e}")))?;
+        rows.next()
+            .await
+            .map_err(|e| Error::engine(format!("get_file fetch failed: {e}")))?
+            .map(|row| libsql_row_to_file(&row))
+            .transpose()
+    }
 
-        let mut out = Vec::new();
-        loop {
-            let next = rows
-                .next()
-                .await
-                .map_err(|e| Error::engine(format!("resolve_slugs row fetch failed: {e}")))?;
-            match next {
-                Some(row) => {
-                    let slug: String = row
-                        .get(0)
-                        .map_err(|e| Error::engine(format!("resolve_slugs decode failed: {e}")))?;
-                    out.push(slug);
-                }
-                None => break,
-            }
+    async fn list_files_for_page(&self, page_id: u64) -> Result<Vec<FileRow>> {
+        let conn = self.conn().await?;
+        let mut rows = conn
+            .query(
+                "SELECT id, source_id, page_slug, page_id, filename, storage_path, mime_type, size_bytes, content_hash, metadata, created_at \
+                 FROM files \
+                 WHERE page_id = ?1 \
+                 ORDER BY id ASC",
+                ::libsql::params![page_id as i64],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("list_files_for_page query failed: {e}")))?;
+        let mut files = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("list_files_for_page fetch failed: {e}")))?
+        {
+            files.push(libsql_row_to_file(&row)?);
         }
-        Ok(out)
+        Ok(files)
     }
 
     async fn find_duplicate_page(
         &self,
         source_id: &str,
         opts: &FindDuplicatePageOpts,
-    ) -> Result<Option<Page>> {
+    ) -> Result<Option<DuplicatePage>> {
         let conn = self.conn().await?;
         let mut rows = conn
             .query(
-                "SELECT id, slug, type, page_kind, title, compiled_truth, timeline, \
-                        frontmatter, content_hash, emotional_weight, created_at, updated_at, \
-                        deleted_at, last_retrieved_at, effective_date, effective_date_source, \
-                        import_filename, salience_touched_at, salience_score, generation, \
-                        embedding, chunker_version, source_path, source_id, source_kind, \
-                        source_uri, ingested_via, ingested_at, contextual_retrieval_mode, \
-                        corpus_generation \
+                "SELECT id, slug \
                  FROM pages \
                  WHERE source_id = ?1 \
                    AND deleted_at IS NULL \
@@ -733,7 +903,20 @@ impl BrainEngine for LibsqlEngine {
             .await
             .map_err(|e| Error::engine(format!("find_duplicate_page row fetch failed: {e}")))?
         {
-            Some(row) => Ok(Some(full_row_to_page(&row)?)),
+            Some(row) => {
+                let id: i64 = row
+                    .get(0)
+                    .map_err(|e| Error::engine(format!("find_duplicate_page decode id: {e}")))?;
+                let slug: String = row
+                    .get(1)
+                    .map_err(|e| Error::engine(format!("find_duplicate_page decode slug: {e}")))?;
+                Ok(Some(DuplicatePage {
+                    slug,
+                    id: u64::try_from(id).map_err(|e| {
+                        Error::engine(format!("find_duplicate_page decode id range: {e}"))
+                    })?,
+                }))
+            }
             None => Ok(None),
         }
     }
@@ -1113,7 +1296,7 @@ impl BrainEngine for LibsqlEngine {
         let sql = format!(
             "SELECT slug, COALESCE(updated_at, created_at) AS ts \
              FROM pages \
-             WHERE slug IN ({placeholders}) AND deleted_at IS NULL"
+             WHERE slug IN ({placeholders})"
         );
         let params: Vec<::libsql::Value> = slugs
             .iter()
@@ -1144,8 +1327,6 @@ impl BrainEngine for LibsqlEngine {
         &self,
         refs: &[PageRef],
     ) -> Result<std::collections::HashMap<String, String>> {
-        // Despite the method name, column `effective_date` is intentionally
-        // NOT consulted — TS parity falls back to row mtime instead.
         let mut out = std::collections::HashMap::new();
         if refs.is_empty() {
             return Ok(out);
@@ -1161,7 +1342,7 @@ impl BrainEngine for LibsqlEngine {
             params.push(::libsql::Value::from(r.source_id.clone()));
         }
         let sql = format!(
-            "SELECT slug, source_id, COALESCE(updated_at, created_at) AS ts \
+            "SELECT slug, source_id, COALESCE(effective_date, updated_at, created_at) AS ts \
              FROM pages \
              WHERE (slug, source_id) IN ({}) AND deleted_at IS NULL",
             pairs.join(", ")
@@ -1276,9 +1457,28 @@ impl BrainEngine for LibsqlEngine {
     }
 }
 
-/// Decode one full-width `pages` row into [`Page`]. Column order is the SELECT
-/// projection used by `find_duplicate_page` and mirrors the complete 6a page
-/// shape.
+async fn collect_slug_rows(rows: &mut ::libsql::Rows) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    loop {
+        let next = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("resolve_slugs row fetch failed: {e}")))?;
+        match next {
+            Some(row) => {
+                let slug: String = row
+                    .get(0)
+                    .map_err(|e| Error::engine(format!("resolve_slugs decode failed: {e}")))?;
+                out.push(slug);
+            }
+            None => break,
+        }
+    }
+    Ok(out)
+}
+
+/// Decode one full-width `pages` row into [`Page`]. Column order mirrors the
+/// complete 6a page shape used by full-page read paths.
 fn full_row_to_page(row: &::libsql::Row) -> Result<Page> {
     macro_rules! get_col {
         ($idx:expr, $name:literal, $ty:ty) => {

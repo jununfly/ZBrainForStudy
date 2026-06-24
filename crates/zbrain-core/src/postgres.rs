@@ -33,12 +33,13 @@
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
+use serde_json::{json, Value};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
 
 use crate::engine::{
     page_sort_sql, BrainEngine, EngineConfig, EngineKind, GetPageOpts, Page, PageFilters,
-    PageInput, PageSort,
+    PageInput, PageSort, ResolveSlugsOpts,
 };
 use crate::error::{Error, Result};
 use crate::types::FindDuplicatePageOpts;
@@ -46,7 +47,9 @@ use crate::types::OrphanPage;
 use crate::types::PageRef;
 use crate::types::PurgeResult;
 use crate::types::RefreshPageBodyArgs;
-use crate::types::{CRMode, EffectiveDateSource, PageKind};
+use crate::types::{
+    CRMode, DuplicatePage, EffectiveDateSource, FileRow, FileSpec, PageKind, UpsertFileResult,
+};
 
 /// Embedded SQL migrations, baked into the binary at compile time. Driven by
 /// `init_schema`. Future migrations are append-only files under `migrations/`.
@@ -249,19 +252,22 @@ impl BrainEngine for PostgresEngine {
     // the real round-trip when `ZBRAIN_TEST_PG_URL` is set.
 
     async fn get_page(&self, slug: &str, opts: &GetPageOpts) -> Result<Option<Page>> {
-        // - `source_id = $2` with `None` normalised to "default" (cross-engine contract).
+        // - `opts.source_id = None` is an unscoped slug lookup, matching TS
+        //   `getPage(slug)` semantics; explicit sources stay scoped.
         // - `(deleted_at IS NULL OR $3)` — default hides soft-deleted rows;
         //   `include_deleted=true` returns them. Mirrors libsql get_page semantics.
         // Slice #110-b: SELECT projection widened to the full 30-column shape
         //   so every `Page` field round-trips faithfully.
         let pool = self.pool()?;
-        let source_id = opts.source_id.as_deref().unwrap_or("default");
+        let source_id = opts.source_id.as_deref();
         let sql = format!(
             "SELECT {FULL_PAGE_PROJECTION} \
              FROM pages \
              WHERE slug = $1 \
-               AND source_id = $2 \
-               AND (deleted_at IS NULL OR $3)"
+               AND ($2::text IS NULL OR source_id = $2) \
+               AND (deleted_at IS NULL OR $3) \
+             ORDER BY source_id ASC \
+             LIMIT 1"
         );
         let row = sqlx::query(&sql)
             .bind(slug)
@@ -389,11 +395,91 @@ impl BrainEngine for PostgresEngine {
         row_to_page(&row)
     }
 
+    async fn upsert_file(&self, spec: &FileSpec) -> Result<UpsertFileResult> {
+        let pool = self.pool()?;
+        let source_id = spec.source_id.as_deref().unwrap_or("default");
+        let metadata = spec.metadata.clone().unwrap_or_else(|| json!({}));
+        let page_id = spec.page_id.map(|id| id as i32);
+        let row = sqlx::query(
+            "WITH existing AS ( \
+                 SELECT id FROM files WHERE storage_path = $5 \
+             ), upserted AS ( \
+                 INSERT INTO files (source_id, page_slug, page_id, filename, storage_path, mime_type, size_bytes, content_hash, metadata) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+                 ON CONFLICT(storage_path) DO UPDATE SET \
+                   source_id = EXCLUDED.source_id, \
+                   page_slug = EXCLUDED.page_slug, \
+                   page_id = EXCLUDED.page_id, \
+                   filename = EXCLUDED.filename, \
+                   mime_type = EXCLUDED.mime_type, \
+                   size_bytes = EXCLUDED.size_bytes, \
+                   content_hash = EXCLUDED.content_hash, \
+                   metadata = EXCLUDED.metadata \
+                 RETURNING id \
+             ) \
+             SELECT upserted.id, NOT EXISTS (SELECT 1 FROM existing) AS created \
+             FROM upserted",
+        )
+        .bind(source_id)
+        .bind(spec.page_slug.as_deref())
+        .bind(page_id)
+        .bind(&spec.filename)
+        .bind(&spec.storage_path)
+        .bind(spec.mime_type.as_deref())
+        .bind(spec.size_bytes)
+        .bind(&spec.content_hash)
+        .bind(metadata)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| Error::engine(format!("upsert_file failed: {e}")))?;
+        let id: i64 = row
+            .try_get("id")
+            .map_err(|e| Error::engine(format!("upsert_file decode id failed: {e}")))?;
+        let created: bool = row
+            .try_get("created")
+            .map_err(|e| Error::engine(format!("upsert_file decode created failed: {e}")))?;
+        Ok(UpsertFileResult {
+            id: id as u64,
+            created,
+        })
+    }
+
+    async fn get_file(&self, source_id: &str, storage_path: &str) -> Result<Option<FileRow>> {
+        let pool = self.pool()?;
+        let row = sqlx::query(
+            "SELECT id, source_id, page_slug, page_id, filename, storage_path, mime_type, size_bytes, content_hash, metadata, created_at \
+             FROM files \
+             WHERE source_id = $1 AND storage_path = $2 \
+             LIMIT 1",
+        )
+        .bind(source_id)
+        .bind(storage_path)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_file query failed: {e}")))?;
+        row.as_ref().map(pg_row_to_file).transpose()
+    }
+
+    async fn list_files_for_page(&self, page_id: u64) -> Result<Vec<FileRow>> {
+        let pool = self.pool()?;
+        let rows = sqlx::query(
+            "SELECT id, source_id, page_slug, page_id, filename, storage_path, mime_type, size_bytes, content_hash, metadata, created_at \
+             FROM files \
+             WHERE page_id = $1 \
+             ORDER BY id ASC",
+        )
+        .bind(page_id as i32)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("list_files_for_page query failed: {e}")))?;
+        rows.iter().map(pg_row_to_file).collect()
+    }
+
     async fn find_duplicate_page(
         &self,
         source_id: &str,
         opts: &FindDuplicatePageOpts,
-    ) -> Result<Option<Page>> {
+    ) -> Result<Option<DuplicatePage>> {
         // PG mirror of libsql `find_duplicate_page` (slice 6a-pg).
         // Reverse-mapped per 14-plan §2 dialect table:
         //   - `?N`           → `$N`
@@ -401,28 +487,41 @@ impl BrainEngine for PostgresEngine {
         //     (PG JSONB native operator; column is JSONB on this side).
         // Behavior contract: within a single `source_id`, ignore soft-deleted
         // rows, then return the lowest-`id` row whose `content_hash` matches OR
-        // (when supplied) whose `frontmatter.id` matches. Re-uses the same 28-
-        // column `FULL_PAGE_PROJECTION` and `row_to_page` decoder as `get_page`.
+        // (when supplied) whose `frontmatter.id` matches. Mirrors the TS return
+        // shape by selecting only `id, slug`, not the full page projection.
         let pool = self.pool()?;
-        let sql = format!(
-            "SELECT {FULL_PAGE_PROJECTION} \
+        let row = sqlx::query(
+            "SELECT id, slug \
              FROM pages \
              WHERE source_id = $1 \
                AND deleted_at IS NULL \
                AND (content_hash = $2 \
                     OR ($3::text IS NOT NULL AND (frontmatter->>'id') = $3)) \
              ORDER BY id ASC \
-             LIMIT 1"
-        );
-        let row = sqlx::query(&sql)
-            .bind(source_id)
-            .bind(&opts.content_hash)
-            .bind(opts.frontmatter_id.as_deref())
-            .fetch_optional(pool)
-            .await
-            .map_err(|e| Error::engine(format!("find_duplicate_page query failed: {e}")))?;
+             LIMIT 1",
+        )
+        .bind(source_id)
+        .bind(&opts.content_hash)
+        .bind(opts.frontmatter_id.as_deref())
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::engine(format!("find_duplicate_page query failed: {e}")))?;
 
-        row.as_ref().map(row_to_page).transpose()
+        row.map(|row| {
+            let id: i64 = row
+                .try_get("id")
+                .map_err(|e| Error::engine(format!("find_duplicate_page decode id: {e}")))?;
+            let slug: String = row
+                .try_get("slug")
+                .map_err(|e| Error::engine(format!("find_duplicate_page decode slug: {e}")))?;
+            Ok(DuplicatePage {
+                slug,
+                id: u64::try_from(id).map_err(|e| {
+                    Error::engine(format!("find_duplicate_page decode id range: {e}"))
+                })?,
+            })
+        })
+        .transpose()
     }
 
     async fn soft_delete_page(
@@ -658,23 +757,92 @@ impl BrainEngine for PostgresEngine {
         .map_err(|e| Error::engine(format!("get_tags query failed: {e}")))
     }
 
-    async fn resolve_slugs(&self, partial: &str) -> Result<Vec<String>> {
-        // FixMe: slug ILIKE '%partial%' fuzzy matching from TS source code
-        // lands in slice 6.5c. For 4b we deliberately do exact matching so
-        // callers get a deterministic, schema-honest answer.
+    async fn resolve_slugs(&self, partial: &str, opts: &ResolveSlugsOpts) -> Result<Vec<String>> {
         let pool = self.pool()?;
-        let rows = sqlx::query("SELECT slug FROM pages WHERE slug = $1 ORDER BY slug ASC")
-            .bind(partial)
-            .fetch_all(pool)
-            .await
-            .map_err(|e| Error::engine(format!("resolve_slugs failed: {e}")))?;
+        let exact_rows = match opts.source_ids.as_ref().filter(|ids| !ids.is_empty()) {
+            Some(source_ids) => {
+                sqlx::query(
+                    "SELECT slug FROM pages \
+                     WHERE slug = $1 AND deleted_at IS NULL AND source_id = ANY($2::text[]) \
+                     ORDER BY slug ASC",
+                )
+                .bind(partial)
+                .bind(source_ids)
+                .fetch_all(pool)
+                .await
+            }
+            None => match opts.source_id.as_ref() {
+                Some(source_id) => {
+                    sqlx::query(
+                        "SELECT slug FROM pages \
+                         WHERE slug = $1 AND deleted_at IS NULL AND source_id = $2 \
+                         ORDER BY slug ASC",
+                    )
+                    .bind(partial)
+                    .bind(source_id)
+                    .fetch_all(pool)
+                    .await
+                }
+                None => {
+                    sqlx::query(
+                        "SELECT slug FROM pages \
+                         WHERE slug = $1 AND deleted_at IS NULL \
+                         ORDER BY slug ASC",
+                    )
+                    .bind(partial)
+                    .fetch_all(pool)
+                    .await
+                }
+            },
+        }
+        .map_err(|e| Error::engine(format!("resolve_slugs exact query failed: {e}")))?;
+        let exact = collect_pg_slug_rows(exact_rows)?;
+        if !exact.is_empty() {
+            return Ok(exact);
+        }
 
-        rows.into_iter()
-            .map(|r| {
-                r.try_get::<String, _>("slug")
-                    .map_err(|e| Error::engine(format!("resolve_slugs decode failed: {e}")))
-            })
-            .collect()
+        let like = format!("%{partial}%");
+        let fuzzy_rows = match opts.source_ids.as_ref().filter(|ids| !ids.is_empty()) {
+            Some(source_ids) => {
+                sqlx::query(
+                    "SELECT slug FROM pages \
+                     WHERE deleted_at IS NULL AND slug ILIKE $1 AND source_id = ANY($2::text[]) \
+                     ORDER BY slug ASC \
+                     LIMIT 5",
+                )
+                .bind(&like)
+                .bind(source_ids)
+                .fetch_all(pool)
+                .await
+            }
+            None => match opts.source_id.as_ref() {
+                Some(source_id) => {
+                    sqlx::query(
+                        "SELECT slug FROM pages \
+                         WHERE deleted_at IS NULL AND slug ILIKE $1 AND source_id = $2 \
+                         ORDER BY slug ASC \
+                         LIMIT 5",
+                    )
+                    .bind(&like)
+                    .bind(source_id)
+                    .fetch_all(pool)
+                    .await
+                }
+                None => {
+                    sqlx::query(
+                        "SELECT slug FROM pages \
+                         WHERE deleted_at IS NULL AND slug ILIKE $1 \
+                         ORDER BY slug ASC \
+                         LIMIT 5",
+                    )
+                    .bind(&like)
+                    .fetch_all(pool)
+                    .await
+                }
+            },
+        }
+        .map_err(|e| Error::engine(format!("resolve_slugs fuzzy query failed: {e}")))?;
+        collect_pg_slug_rows(fuzzy_rows)
     }
 
     // ─── PG-advanced-writes overrides ────────────────────────────────────────
@@ -800,7 +968,8 @@ impl BrainEngine for PostgresEngine {
     }
 
     /// Resolve `slug` → `COALESCE(updated_at, created_at)` for many slugs.
-    /// Missing slugs are omitted. §11.1 R3.
+    /// Missing slugs are omitted. Mirrors TS `getPageTimestamps`, including
+    /// its deleted-row visibility: the TS query does not filter `deleted_at`.
     async fn get_page_timestamps(
         &self,
         slugs: &[String],
@@ -809,7 +978,7 @@ impl BrainEngine for PostgresEngine {
         let rows = sqlx::query(
             "SELECT slug, COALESCE(updated_at, created_at)::text AS ts \
              FROM pages \
-             WHERE slug = ANY($1::text[]) AND deleted_at IS NULL",
+             WHERE slug = ANY($1::text[])",
         )
         .bind(slugs)
         .fetch_all(pool)
@@ -829,12 +998,8 @@ impl BrainEngine for PostgresEngine {
         Ok(out)
     }
 
-    /// Resolve `(slug, source_id)` → `COALESCE(updated_at, created_at)`.
-    /// Key format: `"{source_id}::{slug}"`. §11.1 R4.
-    ///
-    /// Note: despite the method name, the column `effective_date` is
-    /// intentionally NOT consulted — the contract mirrors TS, which falls
-    /// back to row mtime, not the metadata-derived `effective_date` field.
+    /// Resolve `(slug, source_id)` → `COALESCE(effective_date, updated_at, created_at)`.
+    /// Key format: `"{source_id}::{slug}"`. Mirrors TS `getEffectiveDates`.
     async fn get_effective_dates(
         &self,
         refs: &[PageRef],
@@ -845,7 +1010,7 @@ impl BrainEngine for PostgresEngine {
 
         let rows = sqlx::query(
             "SELECT p.slug, p.source_id, \
-                    COALESCE(p.updated_at, p.created_at)::text AS ts \
+                    COALESCE(p.effective_date, p.updated_at::text, p.created_at::text) AS ts \
              FROM pages p \
              JOIN unnest($1::text[], $2::text[]) AS u(slug, source_id) \
                ON p.slug = u.slug AND p.source_id = u.source_id \
@@ -976,6 +1141,56 @@ impl BrainEngine for PostgresEngine {
         }
         Ok(out)
     }
+}
+
+fn pg_row_to_file(row: &sqlx::postgres::PgRow) -> Result<FileRow> {
+    let id: i64 = row
+        .try_get("id")
+        .map_err(|e| Error::engine(format!("file row decode id: {e}")))?;
+    let page_id: Option<i32> = row
+        .try_get("page_id")
+        .map_err(|e| Error::engine(format!("file row decode page_id: {e}")))?;
+    Ok(FileRow {
+        id: id as u64,
+        source_id: row
+            .try_get("source_id")
+            .map_err(|e| Error::engine(format!("file row decode source_id: {e}")))?,
+        page_slug: row
+            .try_get("page_slug")
+            .map_err(|e| Error::engine(format!("file row decode page_slug: {e}")))?,
+        page_id: page_id.map(|value| value as u64),
+        filename: row
+            .try_get("filename")
+            .map_err(|e| Error::engine(format!("file row decode filename: {e}")))?,
+        storage_path: row
+            .try_get("storage_path")
+            .map_err(|e| Error::engine(format!("file row decode storage_path: {e}")))?,
+        mime_type: row
+            .try_get("mime_type")
+            .map_err(|e| Error::engine(format!("file row decode mime_type: {e}")))?,
+        size_bytes: row
+            .try_get("size_bytes")
+            .map_err(|e| Error::engine(format!("file row decode size_bytes: {e}")))?,
+        content_hash: row
+            .try_get("content_hash")
+            .map_err(|e| Error::engine(format!("file row decode content_hash: {e}")))?,
+        metadata: row
+            .try_get::<Value, _>("metadata")
+            .map_err(|e| Error::engine(format!("file row decode metadata: {e}")))?,
+        created_at: row
+            .try_get::<sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>, _>("created_at")
+            .map_err(|e| Error::engine(format!("file row decode created_at: {e}")))?
+            .to_rfc3339(),
+    })
+}
+
+fn collect_pg_slug_rows(rows: Vec<sqlx::postgres::PgRow>) -> Result<Vec<String>> {
+    rows.into_iter()
+        .map(|r| {
+            r.try_get::<String, _>("slug")
+                .map_err(|e| Error::engine(format!("resolve_slugs decode failed: {e}")))
+        })
+        .collect()
 }
 
 /// Decode a single `pages` row into the engine-level [`Page`] value.

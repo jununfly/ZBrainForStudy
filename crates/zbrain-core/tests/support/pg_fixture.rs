@@ -81,6 +81,14 @@ impl PgFixture {
         let mut pg = PgEmbed::new(pg_settings, fetch_settings)
             .await
             .expect("pg-embed init failed");
+        // pg-embed stores Windows binary paths without an explicit `.exe`
+        // suffix. `tokio::process::Command` does not apply PATHEXT when the
+        // executable is a full path, so use the actual cached executable names.
+        #[cfg(windows)]
+        {
+            pg.pg_access.init_db_exe.set_extension("exe");
+            pg.pg_access.pg_ctl_exe.set_extension("exe");
+        }
 
         // Download PG binary + run initdb (cached after first download).
         pg.setup().await.expect("pg-embed setup failed");

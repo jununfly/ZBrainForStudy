@@ -6,7 +6,9 @@
 
 mod support;
 
-use zbrain_core::engine::{BrainEngine, GetPageOpts, PageFilters, PageInput, PageSort};
+use zbrain_core::engine::{
+    BrainEngine, GetPageOpts, PageFilters, PageInput, PageSort, ResolveSlugsOpts,
+};
 
 fn note_input(title: &str, body: &str) -> PageInput {
     PageInput {
@@ -125,7 +127,7 @@ async fn get_page_respects_source_id_scope() {
 }
 
 #[tokio::test]
-async fn get_page_without_source_id_does_not_fall_back_to_non_default_source() {
+async fn get_page_without_source_id_falls_back_to_unscoped_slug_lookup() {
     let fix = support::pg_fixture::PgFixture::start().await;
     let engine = &fix.engine;
     seed_source(&fix.url, "pg-alt").await;
@@ -142,12 +144,11 @@ async fn get_page_without_source_id_does_not_fall_back_to_non_default_source() {
     let got = engine
         .get_page("alt-only-slug", &GetPageOpts::default())
         .await
-        .expect("get_page");
+        .expect("get_page")
+        .expect("unscoped get_page should find alt source page");
 
-    assert!(
-        got.is_none(),
-        "GetPageOpts::default() must only search the default source, got {got:?}"
-    );
+    assert_eq!(got.source_id, "pg-alt");
+    assert_eq!(got.title, "Alt title");
 }
 
 /// Side-channel: soft-delete a page by stamping `deleted_at = now()` directly
@@ -1131,7 +1132,7 @@ async fn list_pages_filters_by_tag() {
 // -- resolve_slugs ---------------------------------------------------------
 
 #[tokio::test]
-async fn resolve_slugs_exact_match_only_in_slice_4b() {
+async fn resolve_slugs_exact_match_returns_before_fuzzy_candidates() {
     let fix = support::pg_fixture::PgFixture::start().await;
     let engine = &fix.engine;
     engine
@@ -1145,18 +1146,169 @@ async fn resolve_slugs_exact_match_only_in_slice_4b() {
 
     // Exact match returns the one slug.
     let exact = engine
-        .resolve_slugs("alpha-beta")
+        .resolve_slugs("alpha-beta", &ResolveSlugsOpts::default())
         .await
         .expect("resolve_slugs exact");
     assert_eq!(exact, vec!["alpha-beta".to_string()]);
 
-    // Substring "alpha" must NOT match - fuzzy is deferred to slice 6.5c.
-    let partial = engine
-        .resolve_slugs("alpha")
+    let fuzzy = engine
+        .resolve_slugs("alpha", &ResolveSlugsOpts::default())
         .await
-        .expect("resolve_slugs partial");
-    assert!(
-        partial.is_empty(),
-        "slice 4b resolve_slugs is exact-only, got {partial:?}"
+        .expect("resolve_slugs fuzzy");
+    assert_eq!(
+        fuzzy,
+        vec!["alpha-beta".to_string(), "alpha-gamma".to_string()]
     );
+}
+
+#[tokio::test]
+async fn resolve_slugs_exact_first_then_fuzzy_fallback() {
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    engine
+        .put_page("alpha-beta", None, &note_input("Alpha exact", "x"))
+        .await
+        .expect("put exact candidate");
+    engine
+        .put_page("prefix-alpha-suffix", None, &note_input("Alpha fuzzy", "x"))
+        .await
+        .expect("put fuzzy candidate");
+
+    let exact = engine
+        .resolve_slugs("alpha-beta", &ResolveSlugsOpts::default())
+        .await
+        .expect("resolve exact slug");
+    assert_eq!(exact, vec!["alpha-beta".to_string()]);
+
+    let fuzzy = engine
+        .resolve_slugs("alpha", &ResolveSlugsOpts::default())
+        .await
+        .expect("resolve fuzzy slug");
+    assert_eq!(
+        fuzzy,
+        vec!["alpha-beta".to_string(), "prefix-alpha-suffix".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn resolve_slugs_fuzzy_fallback_limits_results_and_reports_no_match() {
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+
+    for idx in 0..6 {
+        let slug = format!("limit-match-{idx}");
+        engine
+            .put_page(&slug, None, &note_input(&slug, "x"))
+            .await
+            .expect("put limit candidate");
+    }
+
+    let fuzzy = engine
+        .resolve_slugs("limit-match", &ResolveSlugsOpts::default())
+        .await
+        .expect("resolve fuzzy limit candidates");
+    assert_eq!(
+        fuzzy.len(),
+        5,
+        "fuzzy fallback must apply the TS-compatible LIMIT 5 contract, got {fuzzy:?}"
+    );
+
+    let missing = engine
+        .resolve_slugs("missing-match", &ResolveSlugsOpts::default())
+        .await
+        .expect("resolve missing slug");
+    assert!(
+        missing.is_empty(),
+        "no-match lookup must return [], got {missing:?}"
+    );
+}
+
+#[tokio::test]
+async fn resolve_slugs_hides_soft_deleted_exact_match() {
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    engine
+        .put_page("resolve-soft-deleted", None, &note_input("Deleted", "x"))
+        .await
+        .expect("put deleted candidate");
+    engine
+        .put_page("resolve-live", None, &note_input("Live", "x"))
+        .await
+        .expect("put live candidate");
+    soft_delete_via_sql(&fix.url, "resolve-soft-deleted").await;
+
+    let deleted_hit = engine
+        .resolve_slugs("resolve-soft-deleted", &ResolveSlugsOpts::default())
+        .await
+        .expect("resolve soft-deleted exact slug");
+    assert!(
+        deleted_hit.is_empty(),
+        "resolve_slugs must hide soft-deleted exact matches, got {deleted_hit:?}"
+    );
+
+    let live_hit = engine
+        .resolve_slugs("resolve-live", &ResolveSlugsOpts::default())
+        .await
+        .expect("resolve live exact slug");
+    assert_eq!(live_hit, vec!["resolve-live".to_string()]);
+}
+
+#[tokio::test]
+async fn resolve_slugs_exact_match_honors_source_scope() {
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    seed_source(&fix.url, "pg-alpha").await;
+    seed_source(&fix.url, "pg-beta").await;
+
+    engine
+        .put_page(
+            "resolve-scoped",
+            Some("pg-alpha"),
+            &note_input("Alpha", "x"),
+        )
+        .await
+        .expect("put alpha candidate");
+    engine
+        .put_page("resolve-scoped", Some("pg-beta"), &note_input("Beta", "x"))
+        .await
+        .expect("put beta candidate");
+
+    let alpha = engine
+        .resolve_slugs(
+            "resolve-scoped",
+            &ResolveSlugsOpts {
+                source_id: Some("pg-alpha".to_string()),
+                source_ids: None,
+            },
+        )
+        .await
+        .expect("resolve alpha source");
+    assert_eq!(alpha, vec!["resolve-scoped".to_string()]);
+
+    let missing = engine
+        .resolve_slugs(
+            "resolve-scoped",
+            &ResolveSlugsOpts {
+                source_id: Some("pg-gamma".to_string()),
+                source_ids: None,
+            },
+        )
+        .await
+        .expect("resolve missing source");
+    assert!(
+        missing.is_empty(),
+        "source_id scope must avoid cross-source bleed, got {missing:?}"
+    );
+
+    let federated = engine
+        .resolve_slugs(
+            "resolve-scoped",
+            &ResolveSlugsOpts {
+                source_id: Some("pg-gamma".to_string()),
+                source_ids: Some(vec!["pg-beta".to_string()]),
+            },
+        )
+        .await
+        .expect("resolve federated source_ids");
+    assert_eq!(federated, vec!["resolve-scoped".to_string()]);
 }

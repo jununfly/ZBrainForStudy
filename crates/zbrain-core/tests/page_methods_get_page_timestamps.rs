@@ -1,12 +1,13 @@
 //! Slice 6a-libsql advanced reads (libsql parity): `get_page_timestamps` behavior tests.
 //!
-//! Mirrors the PG semantics locked in slice 6a-pg (plan 14 §11.1):
+//! Mirrors TS-compatible `getPageTimestamps` semantics:
 //!   `SELECT slug, COALESCE(updated_at, created_at) AS ts FROM pages
-//!    WHERE slug IN (?...) AND deleted_at IS NULL`
+//!    WHERE slug IN (?...)`
 //! returning a `HashMap<String, String>` keyed by slug. Soft-deleted rows
-//! are excluded; missing slugs are silently dropped from the result.
+//! remain visible because TS does not filter `deleted_at`; missing slugs are
+//! silently dropped from the result.
 //!
-//! PG mirror tests below this libsql block stay unchanged.
+//! PG mirror tests below this libsql block use the same public behavior.
 
 mod support;
 
@@ -80,7 +81,7 @@ async fn libsql_get_page_timestamps_returns_iso_ts_for_each_existing_slug() {
 }
 
 #[tokio::test]
-async fn libsql_get_page_timestamps_excludes_soft_deleted_rows() {
+async fn libsql_get_page_timestamps_includes_soft_deleted_rows() {
     let (engine, tmp) = init_clean_engine().await;
     libsql_seed_source(&tmp, "src-1").await;
     for slug in ["live-slug", "tombstone-slug"] {
@@ -101,10 +102,10 @@ async fn libsql_get_page_timestamps_excludes_soft_deleted_rows() {
 
     assert!(stamps.contains_key("live-slug"));
     assert!(
-        !stamps.contains_key("tombstone-slug"),
-        "soft-deleted rows must be excluded by `deleted_at IS NULL` filter"
+        stamps.contains_key("tombstone-slug"),
+        "TS getPageTimestamps does not filter deleted_at, so tombstones stay visible"
     );
-    assert_eq!(stamps.len(), 1);
+    assert_eq!(stamps.len(), 2);
     engine.disconnect().await.expect("disconnect");
 }
 
@@ -146,11 +147,11 @@ async fn libsql_get_page_timestamps_returns_empty_map_for_empty_input() {
 // ---------------------------------------------------------------------------
 // PostgresEngine mirror tests (slice 6a-pg PG-advanced-reads)
 //
-// Locks the PG `get_page_timestamps` semantics from plan 14 §11.1:
+// Locks TS-compatible PG `get_page_timestamps` semantics:
 //   SELECT slug, COALESCE(updated_at, created_at)::text AS ts
 //   FROM pages
-//   WHERE slug = ANY($1::text[]) AND deleted_at IS NULL
-// (i.e. keyed by slug; soft-deleted rows excluded; missing slugs silently
+//   WHERE slug = ANY($1::text[])
+// (i.e. keyed by slug; soft-deleted rows remain visible; missing slugs silently
 // dropped.) Uses pg-embed via PgFixture for ephemeral, isolated databases.
 // No serial gating needed — each test gets its own database.
 // ---------------------------------------------------------------------------
@@ -208,7 +209,7 @@ async fn postgres_get_page_timestamps_returns_iso_ts_for_each_existing_slug() {
 }
 
 #[tokio::test]
-async fn postgres_get_page_timestamps_excludes_soft_deleted_rows() {
+async fn postgres_get_page_timestamps_includes_soft_deleted_rows() {
     let fix = support::pg_fixture::PgFixture::start().await;
     let engine = &fix.engine;
     pg_seed_source(&fix.url, "src-1").await;
@@ -239,10 +240,10 @@ async fn postgres_get_page_timestamps_excludes_soft_deleted_rows() {
 
     assert!(stamps.contains_key("live-slug"));
     assert!(
-        !stamps.contains_key("tombstone-slug"),
-        "soft-deleted rows must be excluded by `deleted_at IS NULL` filter"
+        stamps.contains_key("tombstone-slug"),
+        "TS getPageTimestamps does not filter deleted_at, so tombstones stay visible"
     );
-    assert_eq!(stamps.len(), 1);
+    assert_eq!(stamps.len(), 2);
 }
 
 #[tokio::test]

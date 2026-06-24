@@ -10,8 +10,9 @@ use std::sync::Arc;
 
 use zbrain_core::engine::{
     BrainEngine, EngineConfig, EngineKind, GetPageOpts, InMemoryEngine, Page, PageFilters,
-    PageInput,
+    PageInput, ResolveSlugsOpts,
 };
+use zbrain_core::FileSpec;
 
 fn page_input(title: &str, body: &str) -> PageInput {
     PageInput {
@@ -132,9 +133,34 @@ async fn resolve_slugs_does_substring_match() {
             .unwrap();
     }
 
-    let mut hits = engine.resolve_slugs("alpha").await.expect("resolve ok");
+    let mut hits = engine
+        .resolve_slugs("alpha", &ResolveSlugsOpts::default())
+        .await
+        .expect("resolve ok");
     hits.sort();
     assert_eq!(hits, vec!["alpha-one".to_string(), "alpha-two".to_string()]);
+}
+
+#[tokio::test]
+async fn trait_object_exposes_file_storage_contract_methods() {
+    let engine: Arc<dyn BrainEngine> = boxed_engine();
+    let spec = FileSpec {
+        source_id: None,
+        page_slug: None,
+        page_id: None,
+        filename: "photo.jpg".to_string(),
+        storage_path: "originals/photos/photo.jpg".to_string(),
+        mime_type: Some("image/jpeg".to_string()),
+        size_bytes: Some(12345),
+        content_hash: "sha256:abc".to_string(),
+        metadata: None,
+    };
+
+    let _ = engine.upsert_file(&spec).await;
+    let _ = engine
+        .get_file("default", "originals/photos/photo.jpg")
+        .await;
+    let _ = engine.list_files_for_page(1).await;
 }
 
 #[tokio::test]

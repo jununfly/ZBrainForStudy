@@ -14,8 +14,9 @@ use async_trait::async_trait;
 use serde_json::{json, Map, Value};
 
 use crate::{
-    time::current_utc_iso8601, CRMode, EffectiveDateSource, Error, FindDuplicatePageOpts,
-    OrphanPage, PageKind, PageRef, PageType, PurgeResult, RefreshPageBodyArgs,
+    time::current_utc_iso8601, CRMode, DuplicatePage, EffectiveDateSource, Error, FileRow,
+    FileSpec, FindDuplicatePageOpts, OrphanPage, PageKind, PageRef, PageType, PurgeResult,
+    RefreshPageBodyArgs, UpsertFileResult,
 };
 
 // ─── Value types ─────────────────────────────────────────────────────────────
@@ -209,11 +210,22 @@ pub struct PageFilters {
 /// Options for [`BrainEngine::get_page`]. Mirrors `GetPageOpts`.
 #[derive(Debug, Default, Clone)]
 pub struct GetPageOpts {
-    /// Source scope for slug lookup. `None` is normalised to `"default"`,
-    /// matching [`BrainEngine::put_page`] rather than performing an unscoped
-    /// cross-source search.
+    /// Source scope for slug lookup. `None` performs an unscoped slug lookup,
+    /// matching TS `getPage(slug)` semantics. Callers that need the default
+    /// source only must pass `Some("default")` explicitly.
     pub source_id: Option<String>,
     pub include_deleted: bool,
+}
+
+/// Options for [`BrainEngine::resolve_slugs`]. Mirrors TS
+/// `resolveSlugs(partial, { sourceId, sourceIds })`.
+#[derive(Debug, Default, Clone)]
+pub struct ResolveSlugsOpts {
+    /// Scope to a single source when present.
+    pub source_id: Option<String>,
+    /// Scope to a federated set of sources when non-empty. This takes
+    /// precedence over `source_id`, matching TS source scope precedence.
+    pub source_ids: Option<Vec<String>>,
 }
 
 // ─── Trait ───────────────────────────────────────────────────────────────────
@@ -247,11 +259,11 @@ pub trait BrainEngine: Send + Sync {
 
     // ── Page CRUD (slice 3 subset) ────────────────────────────────────────
 
-    /// Fetch a single page by `slug` within `opts.source_id`.
+    /// Fetch a single page by `slug`.
     ///
-    /// `opts.source_id = None` is normalised to `"default"`; callers that need
-    /// a non-default source must pass it explicitly. Returns `None` if not found
-    /// or soft-deleted (unless `opts.include_deleted` is true).
+    /// `opts.source_id = Some(_)` scopes the lookup to that source. `None`
+    /// performs the TS-compatible unscoped slug lookup. Returns `None` if not
+    /// found or soft-deleted (unless `opts.include_deleted` is true).
     async fn get_page(&self, slug: &str, opts: &GetPageOpts) -> crate::Result<Option<Page>>;
 
     /// Insert or update a page (upsert semantics — same `(source_id, slug)` →
@@ -283,9 +295,32 @@ pub trait BrainEngine: Send + Sync {
     /// unscoped when no single source is provided.
     async fn list_pages(&self, filters: &PageFilters) -> crate::Result<Vec<Page>>;
 
-    /// Fuzzy slug resolver — returns all slugs containing `partial` as a
-    /// substring. Mirrors `resolveSlugs` in `engine.ts:708`.
-    async fn resolve_slugs(&self, partial: &str) -> crate::Result<Vec<String>>;
+    /// Slug resolver with TS-compatible exact-first / fuzzy-fallback behavior.
+    /// Exact slug matches win and suppress fuzzy candidates; otherwise fuzzy
+    /// fallback returns live slugs containing `partial`. Source scoping mirrors
+    /// TS `resolveSlugs(partial, opts)` where non-empty `source_ids` takes
+    /// precedence over `source_id`.
+    async fn resolve_slugs(
+        &self,
+        partial: &str,
+        opts: &ResolveSlugsOpts,
+    ) -> crate::Result<Vec<String>>;
+
+    // ── Files (metadata rows; bytes live outside the DB) ──────────────────
+    /// Insert or update a file metadata row. Mirrors TS `upsertFile`.
+    ///
+    /// Identity follows the current TS schema/backend implementation:
+    /// `UNIQUE(storage_path)`, not `(source_id, storage_path)`.
+    async fn upsert_file(&self, spec: &FileSpec) -> crate::Result<UpsertFileResult>;
+
+    /// Fetch one file metadata row by source and storage path. Mirrors TS
+    /// `getFile(sourceId, storagePath)`.
+    async fn get_file(&self, source_id: &str, storage_path: &str)
+        -> crate::Result<Option<FileRow>>;
+
+    /// List file metadata rows linked to a page id. Mirrors TS
+    /// `listFilesForPage(pageId)`.
+    async fn list_files_for_page(&self, page_id: u64) -> crate::Result<Vec<FileRow>>;
 
     // ── Slice 6a S6 method group (15 required methods) ────────────────────
     //
@@ -297,11 +332,16 @@ pub trait BrainEngine: Send + Sync {
     // Method ordering: §13.2 of `13-slice-6a-gap-checklist.md`.
 
     // — Duplicate detection (1) —
+    /// Return the first live duplicate page identity within `source_id`.
+    ///
+    /// Mirrors TS `findDuplicatePage`, including its minimal return shape:
+    /// `{ slug: string; id: number } | null`. Matching is by `content_hash` or,
+    /// when supplied, `frontmatter.id`; soft-deleted rows are ignored.
     async fn find_duplicate_page(
         &self,
         source_id: &str,
         opts: &FindDuplicatePageOpts,
-    ) -> crate::Result<Option<Page>>;
+    ) -> crate::Result<Option<DuplicatePage>>;
 
     // — Soft-delete lifecycle (3) —
     /// Soft-delete a page (set `deleted_at = CURRENT_TIMESTAMP`).
@@ -379,8 +419,9 @@ pub trait BrainEngine: Send + Sync {
 
     // — Batch timestamps / scores (3) —
     /// Resolve `slug` → `COALESCE(updated_at, created_at)` for many slugs at
-    /// once. Mirrors TS `getPageTimestamps`. Missing slugs are omitted from
-    /// the returned map (caller must handle absence).
+    /// once. Mirrors TS `getPageTimestamps`, including deleted-row visibility:
+    /// the TS query does not filter `deleted_at`. Missing slugs are omitted
+    /// from the returned map (caller must handle absence).
     ///
     /// Values are ISO-8601 strings, matching the rest of the core API (see
     /// `Page::created_at` / `Page::updated_at`). §13 originally specified
@@ -431,6 +472,8 @@ pub trait BrainEngine: Send + Sync {
 pub struct InMemoryEngine {
     store: Mutex<Vec<Page>>,
     next_id: Mutex<u64>,
+    file_store: Mutex<Vec<FileRow>>,
+    next_file_id: Mutex<u64>,
 }
 
 // ─── Tag helpers ─────────────────────────────────────────────────────────────
@@ -487,7 +530,7 @@ impl BrainEngine for InMemoryEngine {
     }
 
     async fn get_page(&self, slug: &str, opts: &GetPageOpts) -> crate::Result<Option<Page>> {
-        let source_id = opts.source_id.as_deref().unwrap_or("default");
+        let source_id = opts.source_id.as_deref();
         let store = self
             .store
             .lock()
@@ -496,7 +539,7 @@ impl BrainEngine for InMemoryEngine {
             .iter()
             .find(|p| {
                 p.slug == slug
-                    && p.source_id == source_id
+                    && source_id.is_none_or(|scope| p.source_id == scope)
                     && (opts.include_deleted || p.deleted_at.is_none())
             })
             .cloned())
@@ -631,15 +674,113 @@ impl BrainEngine for InMemoryEngine {
         Ok(pages)
     }
 
-    async fn resolve_slugs(&self, partial: &str) -> crate::Result<Vec<String>> {
+    async fn resolve_slugs(
+        &self,
+        partial: &str,
+        opts: &ResolveSlugsOpts,
+    ) -> crate::Result<Vec<String>> {
         let store = self
             .store
             .lock()
             .expect("InMemoryEngine store mutex poisoned");
+        let source_matches =
+            |source_id: &str| match opts.source_ids.as_ref().filter(|ids| !ids.is_empty()) {
+                Some(ids) => ids.iter().any(|id| id == source_id),
+                None => opts.source_id.as_deref().is_none_or(|id| source_id == id),
+            };
+
+        let exact: Vec<String> = store
+            .iter()
+            .filter(|p| p.deleted_at.is_none() && p.slug == partial && source_matches(&p.source_id))
+            .map(|p| p.slug.clone())
+            .collect();
+        if !exact.is_empty() {
+            return Ok(exact);
+        }
+
         Ok(store
             .iter()
-            .filter(|p| p.slug.contains(partial))
+            .filter(|p| {
+                p.deleted_at.is_none() && p.slug.contains(partial) && source_matches(&p.source_id)
+            })
+            .take(5)
             .map(|p| p.slug.clone())
+            .collect())
+    }
+
+    async fn upsert_file(&self, spec: &FileSpec) -> crate::Result<UpsertFileResult> {
+        let source_id = spec.source_id.as_deref().unwrap_or("default");
+        let metadata = spec.metadata.clone().unwrap_or_else(|| json!({}));
+        let mut file_store = self
+            .file_store
+            .lock()
+            .expect("InMemoryEngine file_store mutex poisoned");
+
+        if let Some(existing) = file_store
+            .iter_mut()
+            .find(|file| file.storage_path == spec.storage_path)
+        {
+            existing.source_id = source_id.to_string();
+            existing.page_slug = spec.page_slug.clone();
+            existing.page_id = spec.page_id;
+            existing.filename.clone_from(&spec.filename);
+            existing.mime_type = spec.mime_type.clone();
+            existing.size_bytes = spec.size_bytes;
+            existing.content_hash.clone_from(&spec.content_hash);
+            existing.metadata = metadata;
+            return Ok(UpsertFileResult {
+                id: existing.id,
+                created: false,
+            });
+        }
+
+        let mut next_file_id = self
+            .next_file_id
+            .lock()
+            .expect("InMemoryEngine next_file_id mutex poisoned");
+        *next_file_id += 1;
+        let id = *next_file_id;
+        let row = FileRow {
+            id,
+            source_id: source_id.to_string(),
+            page_slug: spec.page_slug.clone(),
+            page_id: spec.page_id,
+            filename: spec.filename.clone(),
+            storage_path: spec.storage_path.clone(),
+            mime_type: spec.mime_type.clone(),
+            size_bytes: spec.size_bytes,
+            content_hash: spec.content_hash.clone(),
+            metadata,
+            created_at: current_utc_iso8601(),
+        };
+        file_store.push(row);
+        Ok(UpsertFileResult { id, created: true })
+    }
+
+    async fn get_file(
+        &self,
+        source_id: &str,
+        storage_path: &str,
+    ) -> crate::Result<Option<FileRow>> {
+        let file_store = self
+            .file_store
+            .lock()
+            .expect("InMemoryEngine file_store mutex poisoned");
+        Ok(file_store
+            .iter()
+            .find(|file| file.source_id == source_id && file.storage_path == storage_path)
+            .cloned())
+    }
+
+    async fn list_files_for_page(&self, page_id: u64) -> crate::Result<Vec<FileRow>> {
+        let file_store = self
+            .file_store
+            .lock()
+            .expect("InMemoryEngine file_store mutex poisoned");
+        Ok(file_store
+            .iter()
+            .filter(|file| file.page_id == Some(page_id))
+            .cloned()
             .collect())
     }
 
@@ -647,7 +788,7 @@ impl BrainEngine for InMemoryEngine {
         &self,
         source_id: &str,
         opts: &FindDuplicatePageOpts,
-    ) -> crate::Result<Option<Page>> {
+    ) -> crate::Result<Option<DuplicatePage>> {
         let store = self
             .store
             .lock()
@@ -662,7 +803,10 @@ impl BrainEngine for InMemoryEngine {
                             p.frontmatter.get("id").and_then(Value::as_str) == Some(id)
                         }))
             })
-            .cloned())
+            .map(|p| DuplicatePage {
+                slug: p.slug.clone(),
+                id: p.id,
+            }))
     }
 
     async fn soft_delete_page(
@@ -917,7 +1061,7 @@ impl BrainEngine for InMemoryEngine {
     }
 
     /// `get_page_timestamps` — key = slug, value = `COALESCE(updated_at,
-    /// created_at)`. Live pages only; missing slugs omitted.
+    /// created_at)`. Mirrors TS deleted-row visibility; missing slugs omitted.
     async fn get_page_timestamps(
         &self,
         slugs: &[String],
@@ -927,10 +1071,7 @@ impl BrainEngine for InMemoryEngine {
             .lock()
             .expect("InMemoryEngine store mutex poisoned");
         let mut out = std::collections::HashMap::new();
-        for p in store
-            .iter()
-            .filter(|p| p.deleted_at.is_none() && slugs.iter().any(|s| s == &p.slug))
-        {
+        for p in store.iter().filter(|p| slugs.iter().any(|s| s == &p.slug)) {
             let ts = if p.updated_at.is_empty() {
                 p.created_at.clone()
             } else {
@@ -942,8 +1083,7 @@ impl BrainEngine for InMemoryEngine {
     }
 
     /// `get_effective_dates` — key = `"{source_id}::{slug}"`, value =
-    /// `COALESCE(updated_at, created_at)`. Does NOT consult `effective_date`,
-    /// matching the SQL contract at postgres.rs:840-842.
+    /// `COALESCE(effective_date, updated_at, created_at)`.
     async fn get_effective_dates(
         &self,
         refs: &[PageRef],
@@ -958,11 +1098,13 @@ impl BrainEngine for InMemoryEngine {
                 .iter()
                 .find(|p| p.slug == r.slug && p.source_id == r.source_id && p.deleted_at.is_none())
             {
-                let ts = if p.updated_at.is_empty() {
-                    p.created_at.clone()
-                } else {
-                    p.updated_at.clone()
-                };
+                let ts = p.effective_date.clone().unwrap_or_else(|| {
+                    if p.updated_at.is_empty() {
+                        p.created_at.clone()
+                    } else {
+                        p.updated_at.clone()
+                    }
+                });
                 out.insert(format!("{}::{}", r.source_id, r.slug), ts);
             }
         }

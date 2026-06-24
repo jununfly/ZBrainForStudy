@@ -2,9 +2,11 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use serde_json::json;
-use zbrain_core::engine::{BrainEngine, EngineConfig, GetPageOpts, InMemoryEngine, PageInput};
+use zbrain_core::engine::{
+    BrainEngine, EngineConfig, GetPageOpts, InMemoryEngine, PageInput, ResolveSlugsOpts,
+};
 use zbrain_core::types::{CRMode, OrphanPage, PageRef, RefreshPageBodyArgs};
-use zbrain_core::PurgeResult;
+use zbrain_core::{FileSpec, PurgeResult};
 
 async fn init_in_memory() -> InMemoryEngine {
     let engine = InMemoryEngine::default();
@@ -32,6 +34,20 @@ fn get_opts(source_id: &str, include_deleted: bool) -> GetPageOpts {
     }
 }
 
+fn file_spec(storage_path: &str, content_hash: &str) -> FileSpec {
+    FileSpec {
+        source_id: None,
+        page_slug: None,
+        page_id: None,
+        filename: "photo.jpg".to_string(),
+        storage_path: storage_path.to_string(),
+        mime_type: Some("image/jpeg".to_string()),
+        size_bytes: Some(12345),
+        content_hash: content_hash.to_string(),
+        metadata: Some(json!({"alt": "Photo"})),
+    }
+}
+
 fn assert_purge_result(actual: &PurgeResult, expected_sorted: &[&str]) {
     let mut got = actual.slugs.clone();
     got.sort();
@@ -42,6 +58,122 @@ fn assert_purge_result(actual: &PurgeResult, expected_sorted: &[&str]) {
         expected_sorted.len() as u64,
         "PurgeResult.count must match returned slugs length"
     );
+}
+
+#[tokio::test]
+async fn in_memory_upsert_file_inserts_and_get_file_round_trips_metadata() {
+    let engine = init_in_memory().await;
+
+    let inserted = engine
+        .upsert_file(&file_spec("originals/photos/photo.jpg", "sha256:abc"))
+        .await
+        .expect("upsert file");
+    assert!(inserted.created, "first upsert should create a row");
+    assert!(inserted.id > 0, "file id must be assigned");
+
+    let row = engine
+        .get_file("default", "originals/photos/photo.jpg")
+        .await
+        .expect("get file")
+        .expect("file exists");
+
+    assert_eq!(row.id, inserted.id);
+    assert_eq!(row.source_id, "default");
+    assert_eq!(row.filename, "photo.jpg");
+    assert_eq!(row.mime_type.as_deref(), Some("image/jpeg"));
+    assert_eq!(row.size_bytes, Some(12345));
+    assert_eq!(row.content_hash, "sha256:abc");
+    assert_eq!(row.metadata, json!({"alt": "Photo"}));
+}
+
+#[tokio::test]
+async fn in_memory_upsert_file_updates_existing_storage_path_in_place() {
+    let engine = init_in_memory().await;
+
+    let first = engine
+        .upsert_file(&file_spec("originals/photos/photo.jpg", "sha256:v1"))
+        .await
+        .expect("first upsert");
+    let mut replacement = file_spec("originals/photos/photo.jpg", "sha256:v2");
+    replacement.size_bytes = Some(9999);
+
+    let second = engine
+        .upsert_file(&replacement)
+        .await
+        .expect("second upsert");
+
+    assert_eq!(second.id, first.id, "upsert must keep stable id");
+    assert!(!second.created, "second upsert should update in place");
+    let row = engine
+        .get_file("default", "originals/photos/photo.jpg")
+        .await
+        .expect("get file")
+        .expect("file exists");
+    assert_eq!(row.content_hash, "sha256:v2");
+    assert_eq!(row.size_bytes, Some(9999));
+}
+
+#[tokio::test]
+async fn in_memory_get_file_is_source_and_path_scoped() {
+    let engine = init_in_memory().await;
+    let mut spec = file_spec("photos/a.jpg", "sha256:a");
+    spec.source_id = Some("src-1".to_string());
+    engine.upsert_file(&spec).await.expect("upsert file");
+
+    assert!(
+        engine
+            .get_file("src-1", "photos/a.jpg")
+            .await
+            .expect("matching source/path")
+            .is_some(),
+        "matching source/path should find row"
+    );
+    assert!(
+        engine
+            .get_file("src-2", "photos/a.jpg")
+            .await
+            .expect("wrong source")
+            .is_none(),
+        "source mismatch must return None"
+    );
+    assert!(
+        engine
+            .get_file("src-1", "photos/missing.jpg")
+            .await
+            .expect("wrong path")
+            .is_none(),
+        "path mismatch must return None"
+    );
+}
+
+#[tokio::test]
+async fn in_memory_list_files_for_page_returns_only_matching_page_id() {
+    let engine = init_in_memory().await;
+    let mut first = file_spec("photos/page-7-a.jpg", "sha256:a");
+    first.page_id = Some(7);
+    first.page_slug = Some("page-7".to_string());
+    first.filename = "a.jpg".to_string();
+    let mut second = file_spec("photos/page-7-b.jpg", "sha256:b");
+    second.page_id = Some(7);
+    second.page_slug = Some("page-7".to_string());
+    second.filename = "b.jpg".to_string();
+    let mut other = file_spec("photos/page-8.jpg", "sha256:c");
+    other.page_id = Some(8);
+    other.filename = "c.jpg".to_string();
+
+    engine.upsert_file(&first).await.expect("upsert first");
+    engine.upsert_file(&second).await.expect("upsert second");
+    engine.upsert_file(&other).await.expect("upsert other");
+
+    let mut filenames: Vec<String> = engine
+        .list_files_for_page(7)
+        .await
+        .expect("list files")
+        .into_iter()
+        .map(|file| file.filename)
+        .collect();
+    filenames.sort();
+    assert_eq!(filenames, vec!["a.jpg", "b.jpg"]);
 }
 
 #[tokio::test]
@@ -520,6 +652,173 @@ async fn in_memory_update_cr_state_updates_fields_and_noops_for_missing_or_delet
 // ── Advanced-read contract tests (C1 Task 4) ─────────────────────────────────
 
 #[tokio::test]
+async fn in_memory_resolve_slugs_exact_first_then_fuzzy_fallback() {
+    let engine = init_in_memory().await;
+
+    engine
+        .put_page("alpha-beta", Some("src-1"), &page_input("Alpha exact"))
+        .await
+        .expect("seed exact page");
+    engine
+        .put_page(
+            "prefix-alpha-suffix",
+            Some("src-1"),
+            &page_input("Alpha fuzzy"),
+        )
+        .await
+        .expect("seed fuzzy page");
+
+    let exact = engine
+        .resolve_slugs("alpha-beta", &ResolveSlugsOpts::default())
+        .await
+        .expect("resolve exact slug");
+    assert_eq!(exact, vec!["alpha-beta".to_string()]);
+
+    let fuzzy = engine
+        .resolve_slugs("alpha", &ResolveSlugsOpts::default())
+        .await
+        .expect("resolve fuzzy slug");
+    assert_eq!(
+        fuzzy,
+        vec!["alpha-beta".to_string(), "prefix-alpha-suffix".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn in_memory_resolve_slugs_fuzzy_fallback_limits_results_and_reports_no_match() {
+    let engine = init_in_memory().await;
+
+    for idx in 0..6 {
+        let slug = format!("limit-match-{idx}");
+        engine
+            .put_page(&slug, Some("src-1"), &page_input(&slug))
+            .await
+            .expect("seed limit candidate");
+    }
+
+    let fuzzy = engine
+        .resolve_slugs("limit-match", &ResolveSlugsOpts::default())
+        .await
+        .expect("resolve fuzzy limit candidates");
+    assert_eq!(
+        fuzzy.len(),
+        5,
+        "fuzzy fallback must apply the TS-compatible LIMIT 5 contract, got {fuzzy:?}"
+    );
+
+    let missing = engine
+        .resolve_slugs("missing-match", &ResolveSlugsOpts::default())
+        .await
+        .expect("resolve missing slug");
+    assert!(
+        missing.is_empty(),
+        "no-match lookup must return [], got {missing:?}"
+    );
+}
+
+#[tokio::test]
+async fn in_memory_resolve_slugs_hides_soft_deleted_exact_match() {
+    let engine = init_in_memory().await;
+
+    engine
+        .put_page(
+            "resolve-soft-deleted",
+            Some("src-1"),
+            &page_input("resolve-soft-deleted"),
+        )
+        .await
+        .expect("seed soft-deleted page");
+    engine
+        .put_page("resolve-live", Some("src-1"), &page_input("resolve-live"))
+        .await
+        .expect("seed live page");
+    engine
+        .soft_delete_page("resolve-soft-deleted", Some("src-1"))
+        .await
+        .expect("soft delete page");
+
+    let deleted_hit = engine
+        .resolve_slugs("resolve-soft-deleted", &ResolveSlugsOpts::default())
+        .await
+        .expect("resolve soft-deleted exact slug");
+    assert!(
+        deleted_hit.is_empty(),
+        "resolve_slugs must hide soft-deleted exact matches, got {deleted_hit:?}"
+    );
+
+    let live_hit = engine
+        .resolve_slugs("resolve-live", &ResolveSlugsOpts::default())
+        .await
+        .expect("resolve live exact slug");
+    assert_eq!(live_hit, vec!["resolve-live".to_string()]);
+
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn in_memory_resolve_slugs_exact_match_honors_source_scope() {
+    let engine = init_in_memory().await;
+
+    engine
+        .put_page(
+            "resolve-scoped",
+            Some("src-alpha"),
+            &page_input("Alpha scoped"),
+        )
+        .await
+        .expect("seed alpha page");
+    engine
+        .put_page(
+            "resolve-scoped",
+            Some("src-beta"),
+            &page_input("Beta scoped"),
+        )
+        .await
+        .expect("seed beta page");
+
+    let alpha = engine
+        .resolve_slugs(
+            "resolve-scoped",
+            &ResolveSlugsOpts {
+                source_id: Some("src-alpha".to_string()),
+                source_ids: None,
+            },
+        )
+        .await
+        .expect("resolve alpha source");
+    assert_eq!(alpha, vec!["resolve-scoped".to_string()]);
+
+    let missing = engine
+        .resolve_slugs(
+            "resolve-scoped",
+            &ResolveSlugsOpts {
+                source_id: Some("src-gamma".to_string()),
+                source_ids: None,
+            },
+        )
+        .await
+        .expect("resolve missing source");
+    assert!(
+        missing.is_empty(),
+        "source_id scope must avoid cross-source bleed, got {missing:?}"
+    );
+
+    let federated = engine
+        .resolve_slugs(
+            "resolve-scoped",
+            &ResolveSlugsOpts {
+                source_id: Some("src-gamma".to_string()),
+                source_ids: Some(vec!["src-beta".to_string()]),
+            },
+        )
+        .await
+        .expect("resolve federated source_ids");
+    assert_eq!(federated, vec!["resolve-scoped".to_string()]);
+
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
 async fn in_memory_get_all_slugs_returns_all_including_soft_deleted() {
     let engine = init_in_memory().await;
 
@@ -745,17 +1044,22 @@ async fn in_memory_get_page_timestamps_returns_coalesce_and_omits_missing() {
         "key is slug, value is COALESCE(updated_at, created_at)"
     );
     assert!(!result.contains_key("missing"), "missing slug omitted");
-    assert!(!result.contains_key("deleted"), "soft-deleted slug omitted");
+    assert!(
+        result.contains_key("deleted"),
+        "TS getPageTimestamps does not filter deleted_at, so tombstones stay visible"
+    );
 
     engine.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
-async fn in_memory_get_effective_dates_uses_coalesce_updated_created() {
+async fn in_memory_get_effective_dates_uses_effective_date_before_row_timestamps() {
     let engine = init_in_memory().await;
 
+    let mut page_a_input = page_input("page-a");
+    page_a_input.effective_date = Some("2026-01-15".to_string());
     engine
-        .put_page("page-a", Some("src-1"), &page_input("page-a"))
+        .put_page("page-a", Some("src-1"), &page_a_input)
         .await
         .expect("seed page-a");
     engine
@@ -763,15 +1067,15 @@ async fn in_memory_get_effective_dates_uses_coalesce_updated_created() {
         .await
         .expect("seed page-b");
 
-    let page_a = engine
-        .get_page("page-a", &get_opts("src-1", false))
+    let page_b = engine
+        .get_page("page-b", &get_opts("src-2", false))
         .await
-        .expect("get page-a")
+        .expect("get page-b")
         .expect("exists");
-    let expected_ts_a = if page_a.updated_at.is_empty() {
-        page_a.created_at.clone()
+    let expected_ts_b = if page_b.updated_at.is_empty() {
+        page_b.created_at.clone()
     } else {
-        page_a.updated_at.clone()
+        page_b.updated_at.clone()
     };
 
     let refs = vec![
@@ -796,11 +1100,15 @@ async fn in_memory_get_effective_dates_uses_coalesce_updated_created() {
 
     // Key format: "{source_id}::{slug}"
     assert_eq!(
-        result.get("src-1::page-a"),
-        Some(&expected_ts_a),
-        "key is source_id::slug, value is COALESCE(updated_at, created_at)"
+        result.get("src-1::page-a").map(String::as_str),
+        Some("2026-01-15"),
+        "effective_date must win over updated_at/created_at when present"
     );
-    assert!(result.contains_key("src-2::page-b"), "page-b present");
+    assert_eq!(
+        result.get("src-2::page-b"),
+        Some(&expected_ts_b),
+        "missing effective_date falls back to COALESCE(updated_at, created_at)"
+    );
     assert!(
         !result.contains_key("src-1::no-such"),
         "missing ref omitted"

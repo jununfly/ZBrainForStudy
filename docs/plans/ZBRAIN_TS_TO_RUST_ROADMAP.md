@@ -1,22 +1,7 @@
 <!-- ROADMAP_SECTION_START -->
-<!-- ROADMAP_SECTION_START -->
-<!-- ROADMAP_SECTION_START -->
-<!-- ROADMAP_SECTION_START -->
-<!-- ROADMAP_SECTION_START -->
-<!-- ROADMAP_SECTION_START -->
-<!-- ROADMAP_SECTION_START -->
-<!-- ROADMAP_SECTION_START -->
-<!-- ROADMAP_SECTION_START -->
-<!-- ROADMAP_SECTION_START -->
-<!-- ROADMAP_SECTION_START -->
-<!-- ROADMAP_SECTION_START -->
-<!-- ROADMAP_SECTION_START -->
-<!-- ROADMAP_SECTION_START -->
-<!-- ROADMAP_SECTION_START -->
-<!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust-roadmap.json` | 最后更新: 2026-06-24 14:24:11
+> 数据文件: `zbrain-ts-to-rust-roadmap.json` | 最后更新: 2026-06-24 19:38:41
 
 [~][X+] 1. ZBrain TS to Rust Migration
 ├── [x][Y+] 1-1. Roadmap and TypeScript runtime inventory
@@ -25,7 +10,7 @@
 │   ├── [x][Y+] 1-1-3. Classify TypeScript runtime and frontend retention surfaces
 │   └── [x][Y+] 1-1-4. Define per-slice deletion checklist and verification gates
 ├── [ ][Y+] 1-2. Core storage parity closure
-│   ├── [~][Y+] 1-2-1. Finish Page contract parity across storage backends
+│   ├── [x][Y+] 1-2-1. Finish Page contract parity across storage backends
 │   ├── [ ][Y+] 1-2-2. Port missing advanced Page writes to Rust
 │   ├── [ ][Y+] 1-2-3. Move schema migrations ownership to Rust
 │   ├── [x][X+] 1-2-4. Decide internal DB legacy identifier migration

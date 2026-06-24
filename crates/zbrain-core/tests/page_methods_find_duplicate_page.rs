@@ -10,7 +10,7 @@ use serde_json::json;
 use tempfile::NamedTempFile;
 use zbrain_core::engine::{BrainEngine, EngineConfig, InMemoryEngine, PageInput};
 use zbrain_core::libsql::LibsqlEngine;
-use zbrain_core::FindDuplicatePageOpts;
+use zbrain_core::{DuplicatePage, FindDuplicatePageOpts};
 
 async fn init_clean_engine() -> (LibsqlEngine, NamedTempFile) {
     let path = NamedTempFile::new().expect("alloc temp db file");
@@ -84,10 +84,12 @@ async fn libsql_find_duplicate_page_matches_content_hash() {
         .await
         .expect("find duplicate");
 
-    let page = found.expect("matching content_hash should return a page");
+    let page: DuplicatePage = found.expect("matching content_hash should return duplicate ref");
     assert_eq!(page.slug, "hash-hit");
-    assert_eq!(page.source_id, "src-1");
-    assert_eq!(page.content_hash.as_deref(), Some("hash-1"));
+    assert!(
+        page.id > 0,
+        "duplicate result should expose the matched row id"
+    );
     engine.disconnect().await.expect("disconnect");
 }
 
@@ -115,9 +117,81 @@ async fn libsql_find_duplicate_page_matches_frontmatter_id() {
         .await
         .expect("find duplicate");
 
-    let page = found.expect("matching frontmatter.id should return a page");
+    let page = found.expect("matching frontmatter.id should return duplicate ref");
     assert_eq!(page.slug, "frontmatter-hit");
-    assert_eq!(page.frontmatter["id"], "fm-1");
+    assert!(
+        page.id > 0,
+        "duplicate result should expose the matched row id"
+    );
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn libsql_find_duplicate_page_selects_lowest_id_when_multiple_rows_match() {
+    let (engine, tmp) = init_clean_engine().await;
+    seed_libsql_page(
+        &tmp,
+        "src-1",
+        "lowest-id-hit",
+        Some("hash-1"),
+        json!({"id": "fm-other"}),
+        None,
+    )
+    .await;
+    seed_libsql_page(
+        &tmp,
+        "src-1",
+        "later-id-hit",
+        Some("hash-1"),
+        json!({"id": "fm-other-2"}),
+        None,
+    )
+    .await;
+
+    let found = engine
+        .find_duplicate_page(
+            "src-1",
+            &FindDuplicatePageOpts {
+                content_hash: "hash-1".to_string(),
+                frontmatter_id: None,
+            },
+        )
+        .await
+        .expect("find duplicate");
+
+    let page = found.expect("multiple matching rows should return duplicate ref");
+    assert_eq!(
+        page.slug, "lowest-id-hit",
+        "when multiple rows match, the lowest id must be selected"
+    );
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn libsql_find_duplicate_page_returns_none_when_no_row_matches() {
+    let (engine, tmp) = init_clean_engine().await;
+    seed_libsql_page(
+        &tmp,
+        "src-1",
+        "non-matching-page",
+        Some("hash-other"),
+        json!({"id": "fm-other"}),
+        None,
+    )
+    .await;
+
+    let found = engine
+        .find_duplicate_page(
+            "src-1",
+            &FindDuplicatePageOpts {
+                content_hash: "hash-miss".to_string(),
+                frontmatter_id: Some("fm-miss".to_string()),
+            },
+        )
+        .await
+        .expect("find duplicate");
+
+    assert!(found.is_none(), "no-match lookup must return None");
     engine.disconnect().await.expect("disconnect");
 }
 
@@ -199,6 +273,10 @@ async fn in_memory_find_duplicate_page_matches_content_hash_and_frontmatter_id()
         .expect("find duplicate")
         .expect("content_hash match");
     assert_eq!(hash_hit.slug, "hash-hit");
+    assert!(
+        hash_hit.id > 0,
+        "duplicate result should expose the matched row id"
+    );
 
     let frontmatter_hit = engine
         .find_duplicate_page(
@@ -212,6 +290,10 @@ async fn in_memory_find_duplicate_page_matches_content_hash_and_frontmatter_id()
         .expect("find duplicate")
         .expect("frontmatter.id match");
     assert_eq!(frontmatter_hit.slug, "frontmatter-hit");
+    assert!(
+        frontmatter_hit.id > 0,
+        "duplicate result should expose the matched row id"
+    );
 
     let miss = engine
         .find_duplicate_page(
@@ -301,10 +383,12 @@ async fn postgres_find_duplicate_page_matches_content_hash() {
         .await
         .expect("find duplicate");
 
-    let page = found.expect("matching content_hash should return a page");
+    let page = found.expect("matching content_hash should return duplicate ref");
     assert_eq!(page.slug, "hash-hit");
-    assert_eq!(page.source_id, "src-1");
-    assert_eq!(page.content_hash.as_deref(), Some("hash-1"));
+    assert!(
+        page.id > 0,
+        "duplicate result should expose the matched row id"
+    );
 }
 
 #[tokio::test]
@@ -339,9 +423,101 @@ async fn postgres_find_duplicate_page_matches_frontmatter_id() {
         .await
         .expect("find duplicate");
 
-    let page = found.expect("matching frontmatter.id should return a page");
+    let page = found.expect("matching frontmatter.id should return duplicate ref");
     assert_eq!(page.slug, "frontmatter-hit");
-    assert_eq!(page.frontmatter["id"], "fm-1");
+    assert!(
+        page.id > 0,
+        "duplicate result should expose the matched row id"
+    );
+}
+
+#[tokio::test]
+async fn postgres_find_duplicate_page_selects_lowest_id_when_multiple_rows_match() {
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    pg_seed_source(&fix.url, "src-1").await;
+    engine
+        .put_page(
+            "lowest-id-hit",
+            Some("src-1"),
+            &PageInput {
+                page_type: "note".to_string(),
+                title: "Lowest Id Hit".to_string(),
+                compiled_truth: "body".to_string(),
+                content_hash: Some("hash-1".to_string()),
+                frontmatter: Some(json!({"id": "fm-other"})),
+                ..PageInput::default()
+            },
+        )
+        .await
+        .expect("seed first matching page");
+    engine
+        .put_page(
+            "later-id-hit",
+            Some("src-1"),
+            &PageInput {
+                page_type: "note".to_string(),
+                title: "Later Id Hit".to_string(),
+                compiled_truth: "body".to_string(),
+                content_hash: Some("hash-1".to_string()),
+                frontmatter: Some(json!({"id": "fm-other-2"})),
+                ..PageInput::default()
+            },
+        )
+        .await
+        .expect("seed second matching page");
+
+    let found = engine
+        .find_duplicate_page(
+            "src-1",
+            &FindDuplicatePageOpts {
+                content_hash: "hash-1".to_string(),
+                frontmatter_id: None,
+            },
+        )
+        .await
+        .expect("find duplicate");
+
+    let page = found.expect("multiple matching rows should return duplicate ref");
+    assert_eq!(
+        page.slug, "lowest-id-hit",
+        "when multiple rows match, the lowest id must be selected"
+    );
+}
+
+#[tokio::test]
+async fn postgres_find_duplicate_page_returns_none_when_no_row_matches() {
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    pg_seed_source(&fix.url, "src-1").await;
+    engine
+        .put_page(
+            "non-matching-page",
+            Some("src-1"),
+            &PageInput {
+                page_type: "note".to_string(),
+                title: "Non Matching Page".to_string(),
+                compiled_truth: "body".to_string(),
+                content_hash: Some("hash-other".to_string()),
+                frontmatter: Some(json!({"id": "fm-other"})),
+                ..PageInput::default()
+            },
+        )
+        .await
+        .expect("seed non-matching page");
+
+    let found = engine
+        .find_duplicate_page(
+            "src-1",
+            &FindDuplicatePageOpts {
+                content_hash: "hash-miss".to_string(),
+                frontmatter_id: Some("fm-miss".to_string()),
+            },
+        )
+        .await
+        .expect("find duplicate");
+
+    assert!(found.is_none(), "no-match lookup must return None");
 }
 
 #[tokio::test]

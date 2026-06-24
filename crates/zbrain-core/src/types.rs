@@ -14,6 +14,7 @@
 //!   serialize as kebab-/snake-case strings matching the TS values.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// Open page-type alias. Pre-v0.38 this was a closed union of 23 strings;
 /// v0.38 schema packs took validation runtime-side, so the type system here
@@ -120,6 +121,17 @@ pub struct FindDuplicatePageOpts {
     pub frontmatter_id: Option<String>,
 }
 
+/// Minimal duplicate-page reference returned by [`BrainEngine::find_duplicate_page`].
+///
+/// Mirrors the TS return shape `{ slug: string; id: number } | null` from
+/// `BrainEngine.findDuplicatePage`. Duplicate detection intentionally returns
+/// only the row identity needed by import deduplication, not a full [`Page`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DuplicatePage {
+    pub slug: String,
+    pub id: u64,
+}
+
 /// `(slug, source_id)` pair returned by [`BrainEngine::list_all_page_refs`]
 /// and consumed by [`BrainEngine::get_effective_dates`] /
 /// [`BrainEngine::get_salience_scores`] as the canonical addressing form.
@@ -173,6 +185,48 @@ pub struct OrphanPage {
     pub slug: String,
     pub title: String,
     pub domain: Option<String>,
+}
+
+/// File metadata row returned by [`BrainEngine::get_file`] and
+/// [`BrainEngine::list_files_for_page`]. Mirrors TS `FileRow` in
+/// `src/core/engine.ts`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FileRow {
+    pub id: u64,
+    pub source_id: String,
+    pub page_slug: Option<String>,
+    pub page_id: Option<u64>,
+    pub filename: String,
+    pub storage_path: String,
+    pub mime_type: Option<String>,
+    pub size_bytes: Option<i64>,
+    pub content_hash: String,
+    pub metadata: Value,
+    pub created_at: String,
+}
+
+/// File metadata write spec for [`BrainEngine::upsert_file`]. Mirrors TS
+/// `FileSpec` in `src/core/engine.ts`. File bytes never enter the DB;
+/// `storage_path` points to repo/external storage.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FileSpec {
+    pub source_id: Option<String>,
+    pub page_slug: Option<String>,
+    pub page_id: Option<u64>,
+    pub filename: String,
+    pub storage_path: String,
+    pub mime_type: Option<String>,
+    pub size_bytes: Option<i64>,
+    pub content_hash: String,
+    pub metadata: Option<Value>,
+}
+
+/// Result of [`BrainEngine::upsert_file`]. Mirrors TS
+/// `Promise<{ id: number; created: boolean }>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpsertFileResult {
+    pub id: u64,
+    pub created: bool,
 }
 
 #[cfg(test)]
