@@ -1,0 +1,734 @@
+{
+  "title": "ZBrain TS to Rust Migration",
+  "description": "Complete ZBrain migration from TypeScript runtime to Rust runtime; JSON is the source of truth and Markdown is the rendered view.",
+  "version": 1,
+  "nodes": {
+    "1": {
+      "id": "1",
+      "label": "ZBrain TS to Rust Migration",
+      "status": "in_progress",
+      "mode": "explore",
+      "parent": null,
+      "children": [
+        "1-1",
+        "1-2",
+        "1-3",
+        "1-4",
+        "1-5",
+        "1-6",
+        "1-7",
+        "1-8",
+        "1-9",
+        "1-10",
+        "1-11",
+        "1-12"
+      ],
+      "decisions": [
+        {
+          "q": "What is the canonical migration strategy?",
+          "answer": "Rust is the canonical runtime; TypeScript runtime is a shrinking reference layer. Each Rust slice must prove behavior and delete the corresponding TypeScript implementation/tests/scripts/docs, or record a retention decision.",
+          "note": "Based on docs/prd/complete-ts-to-rust.md."
+        }
+      ],
+      "notes": ""
+    },
+    "1-1": {
+      "id": "1-1",
+      "label": "Roadmap and TypeScript runtime inventory",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1",
+      "children": [
+        "1-1-1",
+        "1-1-2",
+        "1-1-3",
+        "1-1-4"
+      ],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-2": {
+      "id": "1-2",
+      "label": "Core storage parity closure",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1",
+      "children": [
+        "1-2-1",
+        "1-2-2",
+        "1-2-3",
+        "1-2-4",
+        "1-2-5"
+      ],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-3": {
+      "id": "1-3",
+      "label": "Config bootstrap and package entrypoint cutover",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1",
+      "children": [
+        "1-3-1",
+        "1-3-2",
+        "1-3-3",
+        "1-3-4"
+      ],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-4": {
+      "id": "1-4",
+      "label": "Operations layer and trust boundary migration",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1",
+      "children": [
+        "1-4-1",
+        "1-4-2",
+        "1-4-3"
+      ],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-5": {
+      "id": "1-5",
+      "label": "MCP server migration",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1",
+      "children": [
+        "1-5-1",
+        "1-5-2",
+        "1-5-3"
+      ],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6": {
+      "id": "1-6",
+      "label": "Web backend and admin API migration",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1",
+      "children": [
+        "1-6-1",
+        "1-6-2",
+        "1-6-3"
+      ],
+      "decisions": [
+        {
+          "q": "Can TypeScript remain for admin/frontend?",
+          "answer": "Yes. React/Vite/browser TypeScript under admin/ is an explicit retention candidate. Backend API/runtime ownership still migrates to Rust zbrain-web.",
+          "note": "Frontend retention must not justify keeping Express/backend runtime TypeScript."
+        }
+      ],
+      "notes": ""
+    },
+    "1-7": {
+      "id": "1-7",
+      "label": "Ingestion sources search and retrieval migration",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1",
+      "children": [
+        "1-7-1",
+        "1-7-2",
+        "1-7-3"
+      ],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-8": {
+      "id": "1-8",
+      "label": "Facts takes timeline salience and graph migration",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1",
+      "children": [
+        "1-8-1",
+        "1-8-2"
+      ],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-9": {
+      "id": "1-9",
+      "label": "AI gateway providers models and routing migration",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1",
+      "children": [
+        "1-9-1",
+        "1-9-2"
+      ],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-10": {
+      "id": "1-10",
+      "label": "Jobs agents minions autopilot and remote execution migration",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1",
+      "children": [
+        "1-10-1",
+        "1-10-2"
+      ],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-11": {
+      "id": "1-11",
+      "label": "Evals benchmarks and developer tooling migration",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1",
+      "children": [
+        "1-11-1",
+        "1-11-2"
+      ],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-12": {
+      "id": "1-12",
+      "label": "Final cutover and TypeScript runtime cleanup",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1",
+      "children": [
+        "1-12-1",
+        "1-12-2",
+        "1-12-3",
+        "1-12-4"
+      ],
+      "decisions": [
+        {
+          "q": "How do we close slices?",
+          "answer": "A slice is not complete until Rust replacement is implemented, tested at an external seam, corresponding TypeScript is deleted or explicitly retained, docs/scripts/package references are updated, and guards/scans show no stale residue.",
+          "note": "Deletion checklist is defined in the PRD."
+        }
+      ],
+      "notes": ""
+    },
+    "1-1-1": {
+      "id": "1-1-1",
+      "label": "Restore canonical roadmap files",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-1-2": {
+      "id": "1-1-2",
+      "label": "Expand complete TS to Rust PRD from codebase facts",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-1-3": {
+      "id": "1-1-3",
+      "label": "Classify TypeScript runtime and frontend retention surfaces",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-1-4": {
+      "id": "1-1-4",
+      "label": "Define per-slice deletion checklist and verification gates",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-2-1": {
+      "id": "1-2-1",
+      "label": "Finish Page contract parity across storage backends",
+      "status": "in_progress",
+      "mode": "exploit",
+      "parent": "1-2",
+      "children": [
+        "1-2-1-1",
+        "1-2-1-2",
+        "1-2-1-3",
+        "1-2-1-4",
+        "1-2-1-5",
+        "1-2-1-6",
+        "1-2-1-7"
+      ],
+      "decisions": [
+        {
+          "q": "What is the next execution plan after DB identifier rename?",
+          "answer": "Execute 1-2-1 first: finish Page contract parity across storage backends by starting with a Page parity gap audit, then split only the confirmed gaps into minimal implementation slices.",
+          "note": "User confirmed this direction. Do not jump directly to advanced writes or migration ownership until Page parity is mapped."
+        },
+        {
+          "q": "What is the audit boundary for Page contract parity?",
+          "answer": "Limit 1-2-1 to the Page/storage contract layer: compare TS BrainEngine and storage backend semantics with Rust zbrain-core trait/backend tests, without migrating ingestion/search/facts/takes/agents in this plan.",
+          "note": "User confirmed the boundary. If the audit reveals a semantic drift with follow-up value, split it into a sub-node instead of absorbing it into 1-2-1."
+        },
+        {
+          "q": "Should the Page parity gap audit produce a canonical plan document before issues or implementation?",
+          "answer": "Yes. Produce docs/plans/2026-06-24-page-contract-parity-audit.md first, then use that audit to split sub-nodes/issues or implementation slices.",
+          "note": "User confirmed. The document should classify Page contract behavior as covered, missing, semantic drift, deferred, or out of scope before changing Rust code."
+        },
+        {
+          "q": "What did the Page contract parity audit produce?",
+          "answer": "A canonical audit document was created at docs/plans/2026-06-24-page-contract-parity-audit.md, with method/behavior rows and fixed status/follow-up classifications.",
+          "note": "The audit identified high-value semantic drift/missing work for getPage, findDuplicatePage, getPageTimestamps, getEffectiveDates, file storage, and resolveSlugs; these were split into sub-nodes."
+        }
+      ],
+      "notes": "Confirmed boundary: Page/storage contract parity audit only. Compare TS BrainEngine/PGLite/Postgres semantics with Rust zbrain-core trait/backend tests. Do not migrate ingestion/search/facts/takes/agents here; split valuable semantic drift into sub-nodes."
+    },
+    "1-2-2": {
+      "id": "1-2-2",
+      "label": "Port missing advanced Page writes to Rust",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-2",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-2-3": {
+      "id": "1-2-3",
+      "label": "Move schema migrations ownership to Rust",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-2",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-2-4": {
+      "id": "1-2-4",
+      "label": "Decide internal DB legacy identifier migration",
+      "status": "completed",
+      "mode": "explore",
+      "parent": "1-2",
+      "children": [],
+      "decisions": [
+        {
+          "q": "What is the next execution plan?",
+          "answer": "Split and execute node 1-2-4 first: decide the internal DB legacy identifier strategy for gbrain_cycle_locks and gbrain_tool_use_id before deeper storage/schema migration.",
+          "note": "User confirmed this as the next plan. This is a decision/planning slice, not the schema migration implementation itself."
+        },
+        {
+          "q": "Should internal DB legacy identifiers be renamed in the first ZBrain migration stage?",
+          "answer": "Rename directly: gbrain_cycle_locks -> zbrain_cycle_locks and gbrain_tool_use_id -> zbrain_tool_use_id.",
+          "note": "Matches the already-confirmed project convention: no GBrain compatibility aliases/fallbacks in the first stage because there are no online users; brain/source remain domain terms only."
+        },
+        {
+          "q": "What is the execution boundary after deciding to rename the DB identifiers?",
+          "answer": "Write a detailed implementation plan first; do not modify schema/code yet.",
+          "note": "User selected a planning-document step before implementation. The implementation plan should cover migrations, raw SQL references, TS/Rust touchpoints, tests, heavy/e2e tests, eval/docs references, and brand guard allowlist changes."
+        }
+      ],
+      "notes": "Decision/planning slice completed. Plan document: docs/plans/2026-06-23-db-legacy-identifier-rename.md. Implementation should be a separate node/slice."
+    },
+    "1-3-1": {
+      "id": "1-3-1",
+      "label": "Port config discovery loading and writing to Rust",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-3",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-3-2": {
+      "id": "1-3-2",
+      "label": "Port init doctor config storage and schema commands",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-3",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-3-3": {
+      "id": "1-3-3",
+      "label": "Cut package bin and install flow to Rust binary",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-3",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-3-4": {
+      "id": "1-3-4",
+      "label": "Delete replaced TypeScript bootstrap command surface",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-3",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-4-1": {
+      "id": "1-4-1",
+      "label": "Port operation definitions schemas and context",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-4",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-4-2": {
+      "id": "1-4-2",
+      "label": "Port local and remote trust boundary enforcement",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-4",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-4-3": {
+      "id": "1-4-3",
+      "label": "Move shared CLI MCP dispatch to Rust operations",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-4",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-5-1": {
+      "id": "1-5-1",
+      "label": "Implement Rust MCP tool definitions and parameter validation",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-5",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-5-2": {
+      "id": "1-5-2",
+      "label": "Implement Rust MCP transports rate limiting and audit hooks",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-5",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-5-3": {
+      "id": "1-5-3",
+      "label": "Delete TypeScript MCP implementation after parity",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-5",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-1": {
+      "id": "1-6-1",
+      "label": "Implement Axum admin backend API",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-6",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-2": {
+      "id": "1-6-2",
+      "label": "Port auth session token request log jobs calibration and agents endpoints",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-6",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-3": {
+      "id": "1-6-3",
+      "label": "Retain React TypeScript admin frontend by explicit decision",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-6",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-7-1": {
+      "id": "1-7-1",
+      "label": "Port source management import capture extract and sync flows",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-7",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-7-2": {
+      "id": "1-7-2",
+      "label": "Port embeddings chunking hybrid search and reindex flows",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-7",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-7-3": {
+      "id": "1-7-3",
+      "label": "Delete replaced TypeScript ingestion search and source modules",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-7",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-8-1": {
+      "id": "1-8-1",
+      "label": "Port facts takes timeline salience backlinks orphans and graph behavior",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-8",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-8-2": {
+      "id": "1-8-2",
+      "label": "Delete replaced TypeScript knowledge graph modules",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-8",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-9-1": {
+      "id": "1-9-1",
+      "label": "Port provider config model capabilities pricing and routed gateway",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-9",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-9-2": {
+      "id": "1-9-2",
+      "label": "Preserve routed gateway and no direct provider guardrails",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-9",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-10-1": {
+      "id": "1-10-1",
+      "label": "Port jobs lifecycle agent logs minions autopilot fanout and remote execution",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-10",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-10-2": {
+      "id": "1-10-2",
+      "label": "Preserve privacy PII and remote execution trust guardrails",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-10",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-11-1": {
+      "id": "1-11-1",
+      "label": "Decide product critical evals and benchmarks",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-11",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-11-2": {
+      "id": "1-11-2",
+      "label": "Port or archive TypeScript eval and developer tooling",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-11",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-12-1": {
+      "id": "1-12-1",
+      "label": "Remove TypeScript runtime package exports and entrypoints",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-12",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-12-2": {
+      "id": "1-12-2",
+      "label": "Add TypeScript runtime residue guard with frontend allowlist",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-12",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-12-3": {
+      "id": "1-12-3",
+      "label": "Verify final Rust workspace and retained TypeScript surfaces",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-12",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-12-4": {
+      "id": "1-12-4",
+      "label": "Update docs examples and release baseline for Rust first ZBrain",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-12",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-2-5": {
+      "id": "1-2-5",
+      "label": "Implement DB legacy identifier rename migration",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-2",
+      "children": [],
+      "decisions": [
+        {
+          "q": "How was DB legacy identifier rename implemented?",
+          "answer": "Added migration v98, updated fresh schema/runtime SQL/tests/docs/brand guard to use zbrain_cycle_locks and zbrain_tool_use_id, preserving old data through rename migration.",
+          "note": "Validation: db-legacy-identifier-rename, zbrain-brand-guard, gateway-tool-loop, subagent-v1-v2-shim, db-lock inspect/election, typecheck."
+        }
+      ],
+      "notes": ""
+    },
+    "1-2-1-1": {
+      "id": "1-2-1-1",
+      "label": "Write Page contract parity audit plan",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-2-1",
+      "children": [],
+      "decisions": [
+        {
+          "q": "What sources should the Page parity audit compare?",
+          "answer": "Fix the audit sources to four categories: TS contract, TS backend semantics, Rust contract, and Rust backend/tests.",
+          "note": "User confirmed. Do not run an open-ended whole-repo audit for this plan; upper-layer callers such as ingestion/search/facts/takes/agents are out of scope unless a semantic drift deserves a separate sub-node."
+        },
+        {
+          "q": "What row granularity should the Page parity audit use?",
+          "answer": "Use Page contract method / behavior rows, not file-level or module-level rows.",
+          "note": "User confirmed. Each audit row should capture TS method/behavior, TS backend semantic notes, Rust trait equivalent, Rust backend coverage, test coverage, status, and follow-up classification."
+        },
+        {
+          "q": "Should audit status labels have fixed judgment rules?",
+          "answer": "Yes. Fix judgment rules for covered, missing, semantic-drift, deferred, and out-of-scope before doing the audit.",
+          "note": "User confirmed. covered requires Rust trait equivalent, backend implementation, and tests for key TS semantics; missing means no Rust entry/implementation; semantic-drift means equivalent surface exists but semantics differ; deferred means Page/storage but depends on later slice; out-of-scope means upper-layer flow rather than Page/storage contract."
+        },
+        {
+          "q": "How should audit follow-up classifications be constrained?",
+          "answer": "Do not commit implementation inside the audit document. Use constrained follow-up classifications only: none, sub-node candidate, issue candidate, implementation slice candidate, defer to node 1-2-2, defer to node 1-2-3, or defer to upper-layer roadmap node.",
+          "note": "User confirmed. The audit document should provide evidence and classification, not secretly become an implementation plan; concrete work is split after the audit."
+        }
+      ],
+      "notes": "Canonical audit written to docs/plans/2026-06-24-page-contract-parity-audit.md. Follow-up candidates split into sub-nodes under 1-2-1."
+    },
+    "1-2-1-2": {
+      "id": "1-2-1-2",
+      "label": "Align getPage no-source lookup semantics",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-2-1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-2-1-3": {
+      "id": "1-2-1-3",
+      "label": "Decide findDuplicatePage return shape parity",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-2-1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-2-1-4": {
+      "id": "1-2-1-4",
+      "label": "Align getPageTimestamps deleted-row visibility",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-2-1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-2-1-5": {
+      "id": "1-2-1-5",
+      "label": "Align getEffectiveDates effective_date fallback",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-2-1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-2-1-6": {
+      "id": "1-2-1-6",
+      "label": "Add Rust file storage contract parity",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-2-1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-2-1-7": {
+      "id": "1-2-1-7",
+      "label": "Implement resolveSlugs source and fuzzy parity",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-2-1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    }
+  },
+  "metadata": {
+    "created": "2026-06-23 18:09:00",
+    "updated": "2026-06-24 14:24:11",
+    "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_ROADMAP.md"
+  }
+}

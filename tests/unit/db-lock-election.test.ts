@@ -26,7 +26,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await engine.executeRaw(`DELETE FROM gbrain_cycle_locks WHERE id LIKE 'test-election-%'`);
+  await engine.executeRaw(`DELETE FROM zbrain_cycle_locks WHERE id LIKE 'test-election-%'`);
 });
 
 describe('tryWithDbElection', () => {

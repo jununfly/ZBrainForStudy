@@ -2473,10 +2473,10 @@ export interface ToolHandler {
 
 /**
  * State the caller carries in from a prior crashed run. The reconciler keys
- * by zbrain-owned `gbrainToolUseId` (D11), NOT provider-supplied IDs.
+ * by zbrain-owned `zbrainToolUseId` (D11), NOT provider-supplied IDs.
  * `priorMessages` is the chat history up to the assistant's last turn;
- * `priorTools` maps gbrainToolUseId → outcome. The D5 read-time shim
- * synthesizes gbrainToolUseIds for legacy v1 rows so this Map sees both
+ * `priorTools` maps zbrainToolUseId → outcome. The D5 read-time shim
+ * synthesizes zbrainToolUseIds for legacy v1 rows so this Map sees both
  * shapes uniformly.
  */
 export interface ToolLoopReplayState {
@@ -2525,7 +2525,7 @@ export interface ToolLoopOpts {
   onAssistantTurn?: (turnIdx: number, messageIdx: number, blocks: ChatBlock[], usage: ChatResult['usage'], model: string) => Promise<void>;
   /**
    * Persist a pending tool execution. The caller assigns ordinal + uuid v7 and
-   * returns them so the loop can key replay by gbrainToolUseId. The provider
+   * returns them so the loop can key replay by zbrainToolUseId. The provider
    * supplies its own `providerToolCallId` (kept as a debug-only side channel).
    */
   onToolCallStart?: (
@@ -2535,9 +2535,9 @@ export interface ToolLoopOpts {
     toolName: string,
     input: unknown,
     providerToolCallId: string,
-  ) => Promise<{ gbrainToolUseId: string }>;
-  onToolCallComplete?: (gbrainToolUseId: string, output: unknown) => Promise<void>;
-  onToolCallFailed?: (gbrainToolUseId: string, error: string) => Promise<void>;
+  ) => Promise<{ zbrainToolUseId: string }>;
+  onToolCallComplete?: (zbrainToolUseId: string, output: unknown) => Promise<void>;
+  onToolCallFailed?: (zbrainToolUseId: string, error: string) => Promise<void>;
 
   /** Optional per-call heartbeat for observability. */
   onHeartbeat?: (event: string, data: Record<string, unknown>) => void;
@@ -2559,7 +2559,7 @@ export interface ToolLoopResult {
  *   - assistant→tool-dispatch→tool-result cycle
  *   - zbrain-stable IDs (D11) at first observation
  *   - write-ordering invariant (persist before side effect)
- *   - crash-replay reconciliation via gbrainToolUseId
+ *   - crash-replay reconciliation via zbrainToolUseId
  *   - capability-driven cache_control (Anthropic only)
  *
  * This replaces the direct `new Anthropic()` + `client.create()` path in
@@ -2676,20 +2676,20 @@ export async function toolLoop(opts: ToolLoopOpts): Promise<ToolLoopResult> {
         continue;
       }
 
-      // Step 2: persist pending row + claim gbrainToolUseId. The caller's
+      // Step 2: persist pending row + claim zbrainToolUseId. The caller's
       // callback handles uniqueness contention via ON CONFLICT DO NOTHING +
       // re-read pattern (see persistToolExecPending in subagent.ts).
-      const { gbrainToolUseId } = (await opts.onToolCallStart?.(
+      const { zbrainToolUseId } = (await opts.onToolCallStart?.(
         turnIdx,
         assistantMessageIdx,
         callIdx,
         call.toolName,
         call.input,
         call.toolCallId,
-      )) ?? { gbrainToolUseId: `inline-${turnIdx}-${callIdx}` };
+      )) ?? { zbrainToolUseId: `inline-${turnIdx}-${callIdx}` };
 
       // Replay short-circuit: prior outcome wins, idempotent re-execute allowed.
-      const prior = opts.replayState?.priorTools.get(gbrainToolUseId);
+      const prior = opts.replayState?.priorTools.get(zbrainToolUseId);
       if (prior?.status === 'complete') {
         toolResultBlocks.push({
           type: 'tool-result',
@@ -2715,7 +2715,7 @@ export async function toolLoop(opts: ToolLoopOpts): Promise<ToolLoopResult> {
         // Non-idempotent crash-mid-execute. Surface as unrecoverable.
         stopReason = 'unrecoverable';
         throw new Error(
-          `non-idempotent tool "${call.toolName}" pending on resume; gbrainToolUseId=${gbrainToolUseId} — cannot safely re-run`,
+          `non-idempotent tool "${call.toolName}" pending on resume; zbrainToolUseId=${zbrainToolUseId} — cannot safely re-run`,
         );
       }
 
@@ -2724,7 +2724,7 @@ export async function toolLoop(opts: ToolLoopOpts): Promise<ToolLoopResult> {
       try {
         const output = await handler.execute(call.input, opts.abortSignal ?? new AbortController().signal);
         // Step 4: settle complete.
-        await opts.onToolCallComplete?.(gbrainToolUseId, output);
+        await opts.onToolCallComplete?.(zbrainToolUseId, output);
         toolResultBlocks.push({
           type: 'tool-result',
           toolCallId: call.toolCallId,
@@ -2734,7 +2734,7 @@ export async function toolLoop(opts: ToolLoopOpts): Promise<ToolLoopResult> {
         opts.onHeartbeat?.('tool_result', { turn_idx: turnIdx, tool_name: call.toolName });
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
-        await opts.onToolCallFailed?.(gbrainToolUseId, errMsg);
+        await opts.onToolCallFailed?.(zbrainToolUseId, errMsg);
         toolResultBlocks.push({
           type: 'tool-result',
           toolCallId: call.toolCallId,

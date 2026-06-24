@@ -16,15 +16,10 @@ const SCAN_ROOTS = [
 
 const FORBIDDEN = /GBRAIN|GBrain|\.gbrain|gbrain\.yml|\bgbrain\b|gbrain[-_]/g;
 
-const GLOBAL_ALLOWLIST = [
-  /gbrain_cycle_locks/,
-  /gbrain_tool_use_id/,
-] as const;
+const GLOBAL_ALLOWLIST: readonly RegExp[] = [];
 
 const ALLOWLIST: Record<string, RegExp[]> = {
   'src/schema.sql': [
-    /gbrain_tool_use_id/,
-    /gbrain_cycle_locks/,
     /gbrain-owned stable IDs/,
     /Legacy rows/,
     /gbrain extract links/,
@@ -37,9 +32,12 @@ const ALLOWLIST: Record<string, RegExp[]> = {
     /used by gbrain via pooler/,
     /ZBrain Postgres \+ pgvector schema/,
   ],
-  'src/eval/longmemeval/harness.ts': [/gbrain_cycle_locks/],
+  'src/core/migrate.ts': [/gbrain_cycle_locks/, /gbrain_tool_use_id/],
+  'src/commands/migrations/v0_18_1.ts': [/gbrain_cycle_locks/],
   'src/eval/longmemeval/extract.ts': [/gbrain-allow-direct-insert/],
   'src/core/artifact/index.ts': [/\.zbrain-/, /gbrain-.*-v1/],
+  'tests/unit/db-legacy-identifier-rename.test.ts': [/gbrain_cycle_locks/, /gbrain_tool_use_id/],
+  'tests/unit/migrate.test.ts': [/gbrain_cycle_locks/],
   'scripts/test-weights.json': [/gbrain-home-isolation\.test\.ts/, /zbrain-base-equivalence\.test\.ts/],
 };
 

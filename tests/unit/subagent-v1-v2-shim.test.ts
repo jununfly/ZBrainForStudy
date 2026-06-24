@@ -9,7 +9,7 @@ const { adaptContentBlocksToChatBlocks, loadPriorToolsV2 } = __testing as any;
  * v0.38 Slice 1 — D5 read-time content_blocks shim.
  *
  * The crash-replay reconciliation key in v0.38+ is a zbrain-owned UUID v7
- * (ordinal + gbrain_tool_use_id columns added in migration v81). Pre-v0.38
+ * (ordinal + zbrain_tool_use_id columns added in migration v81). Pre-v0.38
  * rows used Anthropic's provider-supplied tool_use_id as the key and stored
  * Anthropic-shaped content blocks ({type:'tool_use', id, ...}). The shim is
  * what lets crash-replay reconcile across the binary upgrade boundary —
@@ -18,7 +18,7 @@ const { adaptContentBlocksToChatBlocks, loadPriorToolsV2 } = __testing as any;
  *
  * Tests pin both shim functions:
  *   - adaptContentBlocksToChatBlocks: v1 Anthropic blocks → v2 ChatBlocks
- *   - loadPriorToolsV2: v1 rows (ordinal=NULL, gbrain_tool_use_id=NULL)
+ *   - loadPriorToolsV2: v1 rows (ordinal=NULL, zbrain_tool_use_id=NULL)
  *     synthesize a stable key from (jobId, msgIdx, tool_use_id, tool_name)
  *     so the gateway-loop reconciler sees them keyed alongside v2 rows.
  */
@@ -129,7 +129,7 @@ describe('adaptContentBlocksToChatBlocks (D5 — v1 Anthropic → v2 ChatBlock s
     const blocks = [
       { type: 'text', text: 'thinking...' },
       { type: 'tool_use', id: 'toolu_a', name: 'search', input: { q: 'foo' } },
-      { type: 'tool-call', toolCallId: 'gb-b', toolName: 'get_page', input: { slug: 'x' } },
+      { type: 'tool-call', toolCallId: 'zb-b', toolName: 'get_page', input: { slug: 'x' } },
     ];
     const out = adaptContentBlocksToChatBlocks(blocks) as any[];
     expect(out.length).toBe(3);
@@ -137,7 +137,7 @@ describe('adaptContentBlocksToChatBlocks (D5 — v1 Anthropic → v2 ChatBlock s
     expect(out[1].type).toBe('tool-call');
     expect(out[1].toolCallId).toBe('toolu_a');
     expect(out[2].type).toBe('tool-call');
-    expect(out[2].toolCallId).toBe('gb-b');
+    expect(out[2].toolCallId).toBe('zb-b');
   });
 
   it('skips malformed blocks (defensive: null entries, missing fields)', () => {
@@ -159,7 +159,7 @@ describe('loadPriorToolsV2 (D5 — synthesizes stable keys for v1 rows)', () => 
     expect(rows).toEqual([]);
   });
 
-  it('uses gbrain_tool_use_id as stable key for v2 rows', async () => {
+  it('uses zbrain_tool_use_id as stable key for v2 rows', async () => {
     // Seed a minion_jobs row + v2 tool execution.
     const job = await engine.executeRaw<{ id: number }>(
       `INSERT INTO minion_jobs (name, status, data, queue, priority, created_at)
@@ -167,23 +167,23 @@ describe('loadPriorToolsV2 (D5 — synthesizes stable keys for v1 rows)', () => 
        RETURNING id`,
     );
     const jobId = job[0].id;
-    const gbrainId = '01987654-3210-7000-8000-000000000001';
+    const zbrainId = '01987654-3210-7000-8000-000000000001';
     await engine.executeRaw(
       `INSERT INTO subagent_tool_executions
          (job_id, message_idx, tool_use_id, tool_name, input, status,
-          schema_version, ordinal, gbrain_tool_use_id, output)
+          schema_version, ordinal, zbrain_tool_use_id, output)
        VALUES ($1, 0, 'toolu_provider', 'search', '{}'::jsonb, 'complete',
                2, 0, $2::uuid, '"results"'::jsonb)`,
-      [jobId, gbrainId],
+      [jobId, zbrainId],
     );
     const rows = await loadPriorToolsV2(engine, jobId);
     expect(rows.length).toBe(1);
-    expect(rows[0].stableKey).toBe(gbrainId);
+    expect(rows[0].stableKey).toBe(zbrainId);
     expect(rows[0].status).toBe('complete');
     expect(rows[0].output).toBe('results');
   });
 
-  it('synthesizes a legacy-prefixed stable key for v1 rows (ordinal NULL, gbrain_tool_use_id NULL)', async () => {
+  it('synthesizes a legacy-prefixed stable key for v1 rows (ordinal NULL, zbrain_tool_use_id NULL)', async () => {
     const job = await engine.executeRaw<{ id: number }>(
       `INSERT INTO minion_jobs (name, status, data, queue, priority, created_at)
        VALUES ('subagent', 'active', '{}'::jsonb, 'default', 0, now())
@@ -231,28 +231,28 @@ describe('loadPriorToolsV2 (D5 — synthesizes stable keys for v1 rows)', () => 
        RETURNING id`,
     );
     const jobId = job[0].id;
-    // v1 row: ordinal NULL, gbrain_tool_use_id NULL
+    // v1 row: ordinal NULL, zbrain_tool_use_id NULL
     await engine.executeRaw(
       `INSERT INTO subagent_tool_executions
          (job_id, message_idx, tool_use_id, tool_name, input, status, schema_version, output)
        VALUES ($1, 0, 'toolu_v1', 'search', '{}'::jsonb, 'complete', 1, '"v1 result"'::jsonb)`,
       [jobId],
     );
-    // v2 row: ordinal + gbrain_tool_use_id populated
-    const gbrainId = '01987654-3210-7000-8000-000000000002';
+    // v2 row: ordinal + zbrain_tool_use_id populated
+    const zbrainId = '01987654-3210-7000-8000-000000000002';
     await engine.executeRaw(
       `INSERT INTO subagent_tool_executions
          (job_id, message_idx, tool_use_id, tool_name, input, status,
-          schema_version, ordinal, gbrain_tool_use_id, output)
+          schema_version, ordinal, zbrain_tool_use_id, output)
        VALUES ($1, 2, 'toolu_v2', 'get_page', '{}'::jsonb, 'complete',
                2, 0, $2::uuid, '"v2 result"'::jsonb)`,
-      [jobId, gbrainId],
+      [jobId, zbrainId],
     );
     const rows = await loadPriorToolsV2(engine, jobId);
     expect(rows.length).toBe(2);
     const keys = (rows as Array<{ stableKey: string }>).map(r => r.stableKey);
     expect(keys).toContain(`legacy:${jobId}:0:toolu_v1:search`);
-    expect(keys).toContain(gbrainId);
+    expect(keys).toContain(zbrainId);
   });
 
   it('ordering: rows return ORDER BY message_idx, ordinal, id (stable for replay)', async () => {

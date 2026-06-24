@@ -36,7 +36,7 @@ afterAll(async () => {
 beforeEach(async () => {
   // Clean minion_jobs + lock rows. Preserve config (schema version + flags).
   await engine.executeRaw('DELETE FROM minion_jobs');
-  await engine.executeRaw(`DELETE FROM gbrain_cycle_locks WHERE id LIKE 'zbrain-embed-backfill:%'`);
+  await engine.executeRaw(`DELETE FROM zbrain_cycle_locks WHERE id LIKE 'zbrain-embed-backfill:%'`);
 });
 
 /** Build a minimal MinionJobContext for testing. */

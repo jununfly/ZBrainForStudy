@@ -368,7 +368,7 @@ python evaluate_qa.py /tmp/hypothesis.jsonl
 - Between questions: `TRUNCATE` over runtime-enumerated `pg_tables`, NOT a
   hardcoded list — schema migrations don't silently leak data across
   questions. Infrastructure tables (`sources`, `config`,
-  `gbrain_cycle_locks`, `subagent_rate_leases`) are preserved across resets.
+  `zbrain_cycle_locks`, `subagent_rate_leases`) are preserved across resets.
 - Sanitization parity: re-uses `INJECTION_PATTERNS` from
   `src/core/think/sanitize.ts` so adding a new injection pattern
   automatically covers takes AND benchmarks. One source of truth.

@@ -108,7 +108,7 @@ describe('runCycle last_full_cycle_at exit hook', () => {
     const lockId = 'zbrain-cycle:gamma';
     const pid = process.pid;
     await engine.executeRaw(
-      `INSERT INTO gbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at)
+      `INSERT INTO zbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at)
        VALUES ($1, $2, 'tests/unit', NOW(), NOW() + INTERVAL '30 minutes')`,
       [lockId, pid + 99999],
     );

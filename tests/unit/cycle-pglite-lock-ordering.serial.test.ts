@@ -49,7 +49,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await engine.executeRaw('DELETE FROM gbrain_cycle_locks').catch(() => {});
+  await engine.executeRaw('DELETE FROM zbrain_cycle_locks').catch(() => {});
   await engine.executeRaw(`DELETE FROM sources WHERE id <> 'default'`).catch(() => {});
   // Clean up any leftover file lock from prior test runs (planted-PID
   // tests leave state that the next test must not see).
@@ -135,7 +135,7 @@ describe('PGLite cycle: file lock + per-source DB lock ordering', () => {
     await seed('gamma');
     const lockId = 'zbrain-cycle:gamma';
     await engine.executeRaw(
-      `INSERT INTO gbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at)
+      `INSERT INTO zbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at)
        VALUES ($1, $2, 'fake-host', NOW(), NOW() + INTERVAL '30 minutes')`,
       [lockId, process.pid + 99999],
     );
@@ -171,7 +171,7 @@ describe('PGLite cycle: file lock + per-source DB lock ordering', () => {
       yieldBetweenPhases: async () => {
         if (dbLockRowSeen) return;
         const rows = await engine.executeRaw<{ id: string }>(
-          `SELECT id FROM gbrain_cycle_locks WHERE id LIKE 'zbrain-cycle%'`,
+          `SELECT id FROM zbrain_cycle_locks WHERE id LIKE 'zbrain-cycle%'`,
         );
         if (rows.length > 0) dbLockRowSeen = rows[0];
       },
@@ -190,7 +190,7 @@ describe('PGLite cycle: file lock + per-source DB lock ordering', () => {
     // Both locks released after second cycle too
     expect(existsSync(join(zbrainHome, '.zbrain', 'cycle.lock'))).toBe(false);
     const dbRows = await engine.executeRaw<{ id: string }>(
-      `SELECT id FROM gbrain_cycle_locks WHERE id = 'zbrain-cycle:zeta'`,
+      `SELECT id FROM zbrain_cycle_locks WHERE id = 'zbrain-cycle:zeta'`,
     );
     expect(dbRows.length).toBe(0);
   });

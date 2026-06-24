@@ -45,7 +45,7 @@ beforeEach(async () => {
   if (skip) return;
   await engine.executeRaw(`DELETE FROM sources WHERE id <> 'default'`);
   await engine.executeRaw(`DELETE FROM minion_jobs`);
-  await engine.executeRaw(`DELETE FROM gbrain_cycle_locks`);
+  await engine.executeRaw(`DELETE FROM zbrain_cycle_locks`);
 });
 
 async function seedSource(id: string, opts: { local_path?: string } = {}): Promise<void> {

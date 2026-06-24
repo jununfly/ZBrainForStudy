@@ -65,7 +65,7 @@ beforeEach(async () => {
 
   // Clean up any leftover lock rows from prior runs.
   const eng = getEngine();
-  try { await (eng as any).sql`DELETE FROM gbrain_cycle_locks WHERE id LIKE 'zbrain-sync:%'`; } catch { /* */ }
+  try { await (eng as any).sql`DELETE FROM zbrain_cycle_locks WHERE id LIKE 'zbrain-sync:%'`; } catch { /* */ }
 });
 
 function runCli(args: string[], env: Record<string, string | undefined> = {}): { code: number; stdout: string; stderr: string } {
@@ -122,7 +122,7 @@ describeE2E('v0.41.6.0 — sync lock recovery scenarios', () => {
     const eng = getEngine();
     // Insert a TTL-expired row with a fake PID on this host.
     await (eng as any).sql`
-      INSERT INTO gbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at)
+      INSERT INTO zbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at)
       VALUES ('zbrain-sync:default', 99999, ${hostname()}, NOW() - INTERVAL '1 hour', NOW() - INTERVAL '30 minutes')
     `;
 
@@ -139,7 +139,7 @@ describeE2E('v0.41.6.0 — sync lock recovery scenarios', () => {
     const eng = getEngine();
     // Use OUR pid → guaranteed alive on this host.
     await (eng as any).sql`
-      INSERT INTO gbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at)
+      INSERT INTO zbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at)
       VALUES ('zbrain-sync:default', ${process.pid}, ${hostname()}, NOW(), NOW() + INTERVAL '30 minutes')
     `;
 
@@ -153,13 +153,13 @@ describeE2E('v0.41.6.0 — sync lock recovery scenarios', () => {
     expect(snap).not.toBeNull();
 
     // Cleanup.
-    await (eng as any).sql`DELETE FROM gbrain_cycle_locks WHERE id = 'zbrain-sync:default'`;
+    await (eng as any).sql`DELETE FROM zbrain_cycle_locks WHERE id = 'zbrain-sync:default'`;
   });
 
   test('--force-break-lock clears even when holder PID is alive (with warning)', async () => {
     const eng = getEngine();
     await (eng as any).sql`
-      INSERT INTO gbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at)
+      INSERT INTO zbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at)
       VALUES ('zbrain-sync:default', ${process.pid}, ${hostname()}, NOW(), NOW() + INTERVAL '30 minutes')
     `;
 

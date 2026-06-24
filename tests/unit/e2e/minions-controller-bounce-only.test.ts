@@ -37,7 +37,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await engine.executeRaw('DELETE FROM minion_lease_pressure_log');
   await engine.executeRaw('DELETE FROM minion_jobs');
-  await engine.executeRaw(`DELETE FROM gbrain_cycle_locks WHERE id = 'minions-lease-cap-controller'`);
+  await engine.executeRaw(`DELETE FROM zbrain_cycle_locks WHERE id = 'minions-lease-cap-controller'`);
   await engine.executeRaw(`DELETE FROM config WHERE key = 'minions.lease_cap_current'`);
 }, 30_000);
 

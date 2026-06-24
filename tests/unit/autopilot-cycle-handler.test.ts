@@ -31,7 +31,7 @@ beforeEach(async () => {
   // MinionQueue.ensureSchema requires (full resetPgliteState wipes it).
   // Same pattern as tests/unit/minions.test.ts.
   await engine.executeRaw('DELETE FROM minion_jobs').catch(() => {});
-  await engine.executeRaw('DELETE FROM gbrain_cycle_locks').catch(() => {});
+  await engine.executeRaw('DELETE FROM zbrain_cycle_locks').catch(() => {});
   await engine.executeRaw(`DELETE FROM sources WHERE id <> 'default'`).catch(() => {});
   brainDir = mkdtempSync(join(tmpdir(), 'zbrain-autopilot-handler-'));
 });

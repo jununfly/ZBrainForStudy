@@ -29,7 +29,7 @@
  *
  * COORDINATION:
  *
- * Postgres: a row in gbrain_cycle_locks with a TTL (30 min). Refreshed
+ * Postgres: a row in zbrain_cycle_locks with a TTL (30 min). Refreshed
  * between phases via yieldBetweenPhases. Works through PgBouncer
  * transaction pooling (session-scoped pg_try_advisory_lock does not).
  *
@@ -419,7 +419,7 @@ export interface CycleOpts {
  * Default cycle lock ID, kept for back-compat: pre-v0.38 callers that
  * pass no `sourceId` continue to use this exact string. Autopilot's
  * existing dispatch + every existing minion job in flight at upgrade
- * time use this row in `gbrain_cycle_locks`.
+ * time use this row in `zbrain_cycle_locks`.
  */
 const LEGACY_CYCLE_LOCK_ID = 'zbrain-cycle';
 const LOCK_TTL_MS = 30 * 60 * 1000;       // 30 minutes
@@ -443,7 +443,7 @@ interface LockHandle {
  *   that becomes part of a DB lock ID AND, on PGLite, a filesystem path
  *   component; callers cannot be trusted to pre-validate).
  * - Valid IDs return `'zbrain-cycle:<source_id>'` so per-source cycles
- *   acquire distinct rows in `gbrain_cycle_locks` and don't serialize
+ *   acquire distinct rows in `zbrain_cycle_locks` and don't serialize
  *   through one global lock.
  *
  * @throws if `sourceId` is provided but invalid per `source-id.ts`.

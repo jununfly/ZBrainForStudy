@@ -4559,6 +4559,53 @@ export const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    version: 98,
+    name: 'db_legacy_identifier_rename',
+    idempotent: true,
+    sql: `
+      DO $$
+      BEGIN
+        IF to_regclass('public.gbrain_cycle_locks') IS NOT NULL
+           AND to_regclass('public.zbrain_cycle_locks') IS NULL THEN
+          ALTER TABLE IF EXISTS gbrain_cycle_locks RENAME TO zbrain_cycle_locks;
+        ELSIF to_regclass('public.gbrain_cycle_locks') IS NOT NULL
+           AND to_regclass('public.zbrain_cycle_locks') IS NOT NULL THEN
+          DROP TABLE gbrain_cycle_locks;
+        END IF;
+
+        IF EXISTS (
+          SELECT 1
+            FROM information_schema.columns
+           WHERE table_schema = 'public'
+             AND table_name = 'subagent_tool_executions'
+             AND column_name = 'gbrain_tool_use_id'
+        ) AND NOT EXISTS (
+          SELECT 1
+            FROM information_schema.columns
+           WHERE table_schema = 'public'
+             AND table_name = 'subagent_tool_executions'
+             AND column_name = 'zbrain_tool_use_id'
+        ) THEN
+          ALTER TABLE subagent_tool_executions RENAME COLUMN gbrain_tool_use_id TO zbrain_tool_use_id;
+        ELSIF EXISTS (
+          SELECT 1
+            FROM information_schema.columns
+           WHERE table_schema = 'public'
+             AND table_name = 'subagent_tool_executions'
+             AND column_name = 'gbrain_tool_use_id'
+        ) AND EXISTS (
+          SELECT 1
+            FROM information_schema.columns
+           WHERE table_schema = 'public'
+             AND table_name = 'subagent_tool_executions'
+             AND column_name = 'zbrain_tool_use_id'
+        ) THEN
+          ALTER TABLE subagent_tool_executions DROP COLUMN gbrain_tool_use_id;
+        END IF;
+      END $$;
+    `,
+  },
 ];
 
 export const LATEST_VERSION = MIGRATIONS.length > 0

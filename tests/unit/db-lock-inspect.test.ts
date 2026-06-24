@@ -65,7 +65,7 @@ describe('inspectLock', () => {
   test('ttl_expired=true after the TTL has elapsed', async () => {
     // Use a 0-minute TTL via raw INSERT to simulate an expired lock.
     await (engine as any).db.query(
-      `INSERT INTO gbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at)
+      `INSERT INTO zbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at)
        VALUES ($1, $2, $3, NOW() - INTERVAL '1 hour', NOW() - INTERVAL '30 minutes')`,
       ['zbrain-sync:stale', 99999, 'old-host'],
     );
@@ -90,12 +90,12 @@ describe('listStaleLocks', () => {
     const handle = await tryAcquireDbLock(engine, 'zbrain-sync:still-live');
     expect(handle).not.toBeNull();
     await (engine as any).db.query(
-      `INSERT INTO gbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at)
+      `INSERT INTO zbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at)
        VALUES ($1, $2, $3, NOW() - INTERVAL '1 hour', NOW() - INTERVAL '30 minutes')`,
       ['zbrain-sync:stale-A', 11111, 'host-A'],
     );
     await (engine as any).db.query(
-      `INSERT INTO gbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at)
+      `INSERT INTO zbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at)
        VALUES ($1, $2, $3, NOW() - INTERVAL '2 hours', NOW() - INTERVAL '1 hour')`,
       ['zbrain-sync:stale-B', 22222, 'host-B'],
     );
@@ -109,12 +109,12 @@ describe('listStaleLocks', () => {
 
   test('orders by acquired_at ascending', async () => {
     await (engine as any).db.query(
-      `INSERT INTO gbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at)
+      `INSERT INTO zbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at)
        VALUES ($1, $2, $3, NOW() - INTERVAL '1 hour', NOW() - INTERVAL '30 minutes')`,
       ['zbrain-sync:newer-stale', 11111, 'h1'],
     );
     await (engine as any).db.query(
-      `INSERT INTO gbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at)
+      `INSERT INTO zbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at)
        VALUES ($1, $2, $3, NOW() - INTERVAL '5 hours', NOW() - INTERVAL '4 hours')`,
       ['zbrain-sync:older-stale', 22222, 'h2'],
     );
@@ -142,12 +142,12 @@ describe('deleteLockRow', () => {
   test('returns deleted=false when row was already cleared (race)', async () => {
     // Insert a row, then delete it directly, then call deleteLockRow.
     await (engine as any).db.query(
-      `INSERT INTO gbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at)
+      `INSERT INTO zbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at)
        VALUES ($1, $2, $3, NOW(), NOW() + INTERVAL '30 minutes')`,
       ['zbrain-sync:race-target', 11111, 'h1'],
     );
     await (engine as any).db.query(
-      `DELETE FROM gbrain_cycle_locks WHERE id = $1`,
+      `DELETE FROM zbrain_cycle_locks WHERE id = $1`,
       ['zbrain-sync:race-target'],
     );
     const result = await deleteLockRow(engine, 'zbrain-sync:race-target', 11111);
@@ -156,7 +156,7 @@ describe('deleteLockRow', () => {
 
   test('refuses to delete when pid does not match (preserves cross-host safety)', async () => {
     await (engine as any).db.query(
-      `INSERT INTO gbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at)
+      `INSERT INTO zbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at)
        VALUES ($1, $2, $3, NOW(), NOW() + INTERVAL '30 minutes')`,
       ['zbrain-sync:wrong-pid', 11111, 'h1'],
     );

@@ -85,7 +85,7 @@ the repo. The architectural rule still holds — these aren't
 | `minion_jobs` / `minion_inbox` / `minion_attachments` | Job queue. Restarts re-enqueue or drop. |
 | `eval_candidates` / `eval_capture_failures` | Contributor-mode dev loop; opt-in capture. |
 | `dream_verdicts` | Cheap verdict cache. Rebuildable by re-running Haiku. |
-| `gbrain_cycle_locks` / migration ledger | Infrastructure. |
+| `zbrain_cycle_locks` / migration ledger | Infrastructure. |
 | `config` (some keys) | Site-local routing config (e.g. `sync.repo_path`). |
 
 A new derived table that holds user-knowledge MUST land FS-first.

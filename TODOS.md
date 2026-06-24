@@ -2015,7 +2015,7 @@ real-time) and between slugs in the per-slug loop.
 
 **Why:** Embed phase ignores `signal.aborted` between batches today. Job
 wall-clock timeout fires → handler keeps running → cycle's finally block
-unreachable → `gbrain_cycle_locks` row stays held indefinitely. Every
+unreachable → `zbrain_cycle_locks` row stays held indefinitely. Every
 subsequent autopilot cron cycle sees `cycle_already_running` → skips. Lock
 TTL is 30 min; new cycles give up before that. Doctor reports UNHEALTHY.
 
@@ -2049,7 +2049,7 @@ duplicative.
 1. embedBatch checks signal between OpenAI calls; aborts within one batch (~2s)
 2. Per-slug loop in `embed.ts` checks signal between slugs
 3. End-to-end: cycle handler with embed phase + signal aborted mid-flight →
-   finally runs → `gbrain_cycle_locks` row deleted
+   finally runs → `zbrain_cycle_locks` row deleted
 4. Regression: 1K+ chunks scenario — embed does NOT block lock release when
    timeout fires
 

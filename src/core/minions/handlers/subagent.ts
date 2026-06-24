@@ -729,10 +729,10 @@ interface GatewayRunArgs {
  * Adapts the existing brain-tool registry (anthropic-shaped ToolDef) to the
  * gateway's provider-neutral `ChatToolDef` + `ToolHandler` shapes, wires
  * persistence callbacks that use the v0.38 stable-ID columns (ordinal +
- * gbrain_tool_use_id from migration v81), and invokes the gateway loop.
+ * zbrain_tool_use_id from migration v81), and invokes the gateway loop.
  *
  * Replay semantics: loads prior `subagent_messages` + `subagent_tool_executions`,
- * builds a `ToolLoopReplayState` keyed by `gbrain_tool_use_id`. For pre-v81
+ * builds a `ToolLoopReplayState` keyed by `zbrain_tool_use_id`. For pre-v81
  * legacy rows (ordinal NULL), the D5 read-time shim synthesizes a stable key
  * from `(job_id, message_idx, content_blocks index, tool_name)` so the
  * reconciler sees both shapes uniformly.
@@ -865,7 +865,7 @@ async function runSubagentViaGateway(args: GatewayRunArgs): Promise<SubagentResu
       heartbeat('llm_call_completed', { turn_idx: turnIdx, tokens: usage });
     },
     onToolCallStart: async (turnIdx, messageIdx, ordinal, toolName, input, providerToolCallId) => {
-      // CRITICAL — read back the canonical gbrain_tool_use_id from RETURNING,
+      // CRITICAL — read back the canonical zbrain_tool_use_id from RETURNING,
       // NOT the locally-generated UUID. On crash-replay the (job_id,
       // message_idx, ordinal) row already exists with the ORIGINAL UUID from
       // the pre-crash run; the ON CONFLICT DO UPDATE keeps it. If we
@@ -875,33 +875,33 @@ async function runSubagentViaGateway(args: GatewayRunArgs): Promise<SubagentResu
       // circuit silently breaks and the tool re-executes. Pinned by
       // tests/unit/e2e/subagent-crash-replay-multi-provider.test.ts.
       const candidateId = randomUUIDv7();
-      const rows = await engine.executeRaw<{ gbrain_tool_use_id: string }>(
+      const rows = await engine.executeRaw<{ zbrain_tool_use_id: string }>(
         `INSERT INTO subagent_tool_executions
-           (job_id, message_idx, tool_use_id, tool_name, input, status, schema_version, ordinal, gbrain_tool_use_id, provider_id)
+           (job_id, message_idx, tool_use_id, tool_name, input, status, schema_version, ordinal, zbrain_tool_use_id, provider_id)
          VALUES ($1, $2, $3, $4, $5::jsonb, 'pending', 2, $6, $7, $8)
          ON CONFLICT (job_id, message_idx, ordinal) DO UPDATE
            SET status = subagent_tool_executions.status
-         RETURNING gbrain_tool_use_id::text AS gbrain_tool_use_id`,
+         RETURNING zbrain_tool_use_id::text AS zbrain_tool_use_id`,
         [ctx.id, messageIdx, providerToolCallId, toolName, JSON.stringify(input ?? null), ordinal, candidateId, recipeIdFromModel(model)],
       );
-      const gbrainToolUseId = rows[0]?.gbrain_tool_use_id ?? candidateId;
+      const zbrainToolUseId = rows[0]?.zbrain_tool_use_id ?? candidateId;
       heartbeat('tool_called', { turn_idx: turnIdx, tool_name: toolName });
-      return { gbrainToolUseId };
+      return { zbrainToolUseId };
     },
-    onToolCallComplete: async (gbrainToolUseId, output) => {
+    onToolCallComplete: async (zbrainToolUseId, output) => {
       await engine.executeRaw(
         `UPDATE subagent_tool_executions
            SET status = 'complete', output = $1::jsonb, ended_at = now()
-         WHERE gbrain_tool_use_id::text = $2`,
-        [JSON.stringify(output ?? null), gbrainToolUseId],
+         WHERE zbrain_tool_use_id::text = $2`,
+        [JSON.stringify(output ?? null), zbrainToolUseId],
       );
     },
-    onToolCallFailed: async (gbrainToolUseId, errorMsg) => {
+    onToolCallFailed: async (zbrainToolUseId, errorMsg) => {
       await engine.executeRaw(
         `UPDATE subagent_tool_executions
            SET status = 'failed', error = $1, ended_at = now()
-         WHERE gbrain_tool_use_id::text = $2`,
-        [errorMsg, gbrainToolUseId],
+         WHERE zbrain_tool_use_id::text = $2`,
+        [errorMsg, zbrainToolUseId],
       );
     },
     onHeartbeat: heartbeat,
@@ -1024,7 +1024,7 @@ interface PriorToolV2Row {
 /**
  * Load prior tool executions keyed by a stable key.
  *
- *   - v2 rows: gbrain_tool_use_id is the stable key (set at first observation
+ *   - v2 rows: zbrain_tool_use_id is the stable key (set at first observation
  *     by onToolCallStart).
  *   - v1 legacy rows: D5 shim synthesizes a stable key from
  *     (job_id, message_idx, ordinal-position-by-array-index, tool_name).
@@ -1034,7 +1034,7 @@ interface PriorToolV2Row {
  */
 async function loadPriorToolsV2(engine: BrainEngine, jobId: number): Promise<PriorToolV2Row[]> {
   const rows = await engine.executeRaw<Record<string, unknown>>(
-    `SELECT message_idx, tool_use_id, tool_name, ordinal, gbrain_tool_use_id::text AS gbrain_tool_use_id,
+    `SELECT message_idx, tool_use_id, tool_name, ordinal, zbrain_tool_use_id::text AS zbrain_tool_use_id,
             status, output, error
        FROM subagent_tool_executions
       WHERE job_id = $1
@@ -1042,9 +1042,9 @@ async function loadPriorToolsV2(engine: BrainEngine, jobId: number): Promise<Pri
     [jobId],
   );
   return rows.map(r => {
-    const gbrainId = r.zbrain_tool_use_id as string | null;
-    const stableKey = gbrainId
-      ? gbrainId
+    const zbrainId = r.zbrain_tool_use_id as string | null;
+    const stableKey = zbrainId
+      ? zbrainId
       // D5 legacy shim: derive a stable key from (job, msg_idx, tool_name, tool_use_id).
       // Pre-v81 rows don't have ordinal; the provider tool_use_id is stable
       // within a single Anthropic turn so it's safe as a fallback hash input.

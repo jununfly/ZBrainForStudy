@@ -1641,7 +1641,7 @@ export function checkAutopilotLockScope(): Check {
 /**
  * v0.41.6.0 D3 — stale_locks doctor check.
  *
- * Surfaces every row in `gbrain_cycle_locks` whose `ttl_expires_at < NOW()`.
+ * Surfaces every row in `zbrain_cycle_locks` whose `ttl_expires_at < NOW()`.
  * The TTL is the canonical staleness signal already trusted by
  * tryAcquireDbLock's UPDATE-on-conflict SQL — when TTL is in the past,
  * the next acquire attempt will sweep the row anyway. Doctor's job is to
@@ -1682,9 +1682,9 @@ export async function checkStaleLocks(engine: BrainEngine): Promise<Check> {
     };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    // Pre-v0.30 brains may not have the gbrain_cycle_locks table yet.
+    // Pre-v0.30 brains may not have the zbrain_cycle_locks table yet.
     if (/relation .* does not exist|no such table/i.test(msg)) {
-      return { name: 'stale_locks', status: 'ok', message: 'gbrain_cycle_locks table not yet provisioned (skipping)' };
+      return { name: 'stale_locks', status: 'ok', message: 'zbrain_cycle_locks table not yet provisioned (skipping)' };
     }
     return { name: 'stale_locks', status: 'warn', message: `Check failed: ${msg}` };
   }
@@ -5086,7 +5086,7 @@ export async function buildChecks(
     // 5M — autopilot_lock_scope (PID-safe hint per codex CF11)
     progress.heartbeat('autopilot_lock_scope');
     checks.push(checkAutopilotLockScope());
-    // v0.41.6.0 D3 — stale_locks (gbrain_cycle_locks rows with ttl_expires_at < NOW())
+    // v0.41.6.0 D3 — stale_locks (zbrain_cycle_locks rows with ttl_expires_at < NOW())
     progress.heartbeat('stale_locks');
     checks.push(await checkStaleLocks(engine));
     // v0.38 — cycle_phase_scope (informational; no DB cost)

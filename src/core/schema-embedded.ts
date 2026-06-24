@@ -823,13 +823,13 @@ CREATE TABLE IF NOT EXISTS subagent_tool_executions (
   schema_version      INTEGER     NOT NULL DEFAULT 1,
   provider_id         TEXT,
   -- v0.38 D11: zbrain-owned stable IDs (ordinal assigned at first
-  -- observation of a tool call; gbrain_tool_use_id is uuid v7). Reconciliation
+  -- observation of a tool call; zbrain_tool_use_id is uuid v7). Reconciliation
   -- on crash-replay uses (job_id, message_idx, ordinal) as the unique key.
-  -- Legacy rows (pre-v82) have ordinal=NULL + gbrain_tool_use_id=NULL and
+  -- Legacy rows (pre-v82) have ordinal=NULL + zbrain_tool_use_id=NULL and
   -- are resolved by the read-time D5 shim that recomputes the key from
   -- (job_id, message_idx, content_blocks index, tool_name).
   ordinal             INTEGER,
-  gbrain_tool_use_id  UUID,
+  zbrain_tool_use_id  UUID,
   started_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
   ended_at            TIMESTAMPTZ,
   CONSTRAINT uniq_subagent_tools_use_id UNIQUE (job_id, tool_use_id),
@@ -876,14 +876,14 @@ CREATE TABLE IF NOT EXISTS dream_verdicts (
 -- between phases; crashed holders auto-release once TTL expires.
 -- Works through PgBouncer transaction pooling, unlike session-scoped
 -- pg_try_advisory_lock.
-CREATE TABLE IF NOT EXISTS gbrain_cycle_locks (
+CREATE TABLE IF NOT EXISTS zbrain_cycle_locks (
   id              TEXT        PRIMARY KEY,
   holder_pid      INT         NOT NULL,
   holder_host     TEXT,
   acquired_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   ttl_expires_at  TIMESTAMPTZ NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_cycle_locks_ttl ON gbrain_cycle_locks(ttl_expires_at);
+CREATE INDEX IF NOT EXISTS idx_cycle_locks_ttl ON zbrain_cycle_locks(ttl_expires_at);
 
 -- ============================================================
 -- Eval capture (v0.25.0 — BrainBench-Real substrate)
@@ -1187,7 +1187,7 @@ BEGIN
     ALTER TABLE subagent_messages ENABLE ROW LEVEL SECURITY;
     ALTER TABLE subagent_tool_executions ENABLE ROW LEVEL SECURITY;
     ALTER TABLE subagent_rate_leases ENABLE ROW LEVEL SECURITY;
-    ALTER TABLE gbrain_cycle_locks ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE zbrain_cycle_locks ENABLE ROW LEVEL SECURITY;
     ALTER TABLE dream_verdicts ENABLE ROW LEVEL SECURITY;
     ALTER TABLE eval_candidates ENABLE ROW LEVEL SECURITY;
     ALTER TABLE eval_capture_failures ENABLE ROW LEVEL SECURITY;

@@ -122,7 +122,7 @@ const { PGLiteEngine } = await import('../../../src/core/pglite-engine.ts');
 // beforeAll/afterAll (below). `truncateCycleLocks` clears the cycle
 // lock row between tests so state doesn't leak across assertions.
 async function truncateCycleLocks(engine: InstanceType<typeof PGLiteEngine>) {
-  await (sharedEngine as any).db.query('DELETE FROM gbrain_cycle_locks');
+  await (sharedEngine as any).db.query('DELETE FROM zbrain_cycle_locks');
 }
 
 // One shared PGLite engine for the whole file. Creating a fresh engine
@@ -230,20 +230,20 @@ describe('runCycle — cycle lock acquire/release semantics', () => {
     // the run would also work, but a simpler assertion: no rows ever
     // existed for a read-only-only selection.
     await runCycle(sharedEngine,{ brainDir: '/tmp/brain', phases: ['orphans'] });
-    const { rows } = await (sharedEngine as any).db.query('SELECT COUNT(*)::int AS n FROM gbrain_cycle_locks');
+    const { rows } = await (sharedEngine as any).db.query('SELECT COUNT(*)::int AS n FROM zbrain_cycle_locks');
     expect(rows[0].n).toBe(0);
   });
 
   test('phases including lint DOES acquire + release (table empty after run)', async () => {
     await runCycle(sharedEngine,{ brainDir: '/tmp/brain', phases: ['lint'] });
     // Lock is released in finally, so no rows survive the run.
-    const { rows } = await (sharedEngine as any).db.query('SELECT COUNT(*)::int AS n FROM gbrain_cycle_locks');
+    const { rows } = await (sharedEngine as any).db.query('SELECT COUNT(*)::int AS n FROM zbrain_cycle_locks');
     expect(rows[0].n).toBe(0);
   });
 
   test('phases including sync DOES acquire + release the lock', async () => {
     await runCycle(sharedEngine,{ brainDir: '/tmp/brain', phases: ['sync'] });
-    const { rows } = await (sharedEngine as any).db.query('SELECT COUNT(*)::int AS n FROM gbrain_cycle_locks');
+    const { rows } = await (sharedEngine as any).db.query('SELECT COUNT(*)::int AS n FROM zbrain_cycle_locks');
     expect(rows[0].n).toBe(0);
   });
 });
@@ -258,7 +258,7 @@ describe('runCycle — cycle_already_running skip', () => {
   test('returns status=skipped when lock is held by live pid in the future', async () => {
     // Seed a lock row that looks live (far-future TTL, different PID).
     await (sharedEngine as any).db.query(
-      `INSERT INTO gbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at)
+      `INSERT INTO zbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at)
        VALUES ('zbrain-cycle', 99999, 'other-host', NOW(), NOW() + INTERVAL '1 hour')`
     );
 
@@ -275,7 +275,7 @@ describe('runCycle — cycle_already_running skip', () => {
   test('TTL-expired lock is auto-claimed (crashed holder)', async () => {
     // Seed a lock row that looks stale (TTL already past).
     await (sharedEngine as any).db.query(
-      `INSERT INTO gbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at)
+      `INSERT INTO zbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at)
        VALUES ('zbrain-cycle', 99999, 'crashed-host', NOW() - INTERVAL '2 hours', NOW() - INTERVAL '1 hour')`
     );
 

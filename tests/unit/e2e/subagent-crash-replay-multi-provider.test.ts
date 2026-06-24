@@ -9,9 +9,9 @@
  *     1. Tool executions marked status='complete' (or 'failed') in the DB
  *        before the crash MUST NOT be re-executed.
  *     2. The reconciliation key MUST work across provider response shapes
- *        — the zbrain-owned stable key (ordinal + gbrain_tool_use_id from
+ *        — the zbrain-owned stable key (ordinal + zbrain_tool_use_id from
  *        migration v81) is the canonical key, not the provider tool_use_id.
- *     3. Legacy v1 rows (pre-v0.38, ordinal=NULL, gbrain_tool_use_id=NULL)
+ *     3. Legacy v1 rows (pre-v0.38, ordinal=NULL, zbrain_tool_use_id=NULL)
  *        get a synthesized stable key via the D5 read-time shim and replay
  *        the same way.
  *
@@ -197,13 +197,13 @@ function buildHandler(toolRegistry: ToolDef[]) {
  *     the crashed worker had ALREADY written before SIGKILL
  *
  * `shape` controls whether the rows are v1 (pre-v0.38: Anthropic content
- * blocks, ordinal=NULL, gbrain_tool_use_id=NULL) or v2 (post-v0.38:
- * ChatBlock content, ordinal+gbrain_tool_use_id populated).
+ * blocks, ordinal=NULL, zbrain_tool_use_id=NULL) or v2 (post-v0.38:
+ * ChatBlock content, ordinal+zbrain_tool_use_id populated).
  */
 async function seedCrashedState(
   prompt: string,
   shape: 'v1' | 'v2',
-): Promise<{ jobId: number; toolUseId: string; gbrainId: string | null }> {
+): Promise<{ jobId: number; toolUseId: string; zbrainId: string | null }> {
   const jobRows = await engine.executeRaw<{ id: number }>(
     `INSERT INTO minion_jobs (name, status, data, queue, priority, created_at)
      VALUES ('subagent', 'active', $1::jsonb, 'default', 0, now())
@@ -244,19 +244,19 @@ async function seedCrashedState(
   // and persisted the result, but crashed before persisting the next
   // user message (the tool_result wrapper). Replay must see this as done.
   const priorOutput = JSON.stringify({ results: ['prior'] });
-  let gbrainId: string | null = null;
+  let zbrainId: string | null = null;
   if (shape === 'v2') {
-    gbrainId = '01987654-3210-7000-8000-aaaaaaaaaaaa';
+    zbrainId = '01987654-3210-7000-8000-aaaaaaaaaaaa';
     await engine.executeRaw(
       `INSERT INTO subagent_tool_executions
          (job_id, message_idx, tool_use_id, tool_name, input, status,
-          schema_version, ordinal, gbrain_tool_use_id, output)
+          schema_version, ordinal, zbrain_tool_use_id, output)
        VALUES ($1, 1, $2, 'search', '{}'::jsonb, 'complete',
                2, 0, $3::uuid, $4::jsonb)`,
-      [jobId, toolUseId, gbrainId, priorOutput],
+      [jobId, toolUseId, zbrainId, priorOutput],
     );
   } else {
-    // v1 row: no ordinal, no gbrain_tool_use_id.
+    // v1 row: no ordinal, no zbrain_tool_use_id.
     await engine.executeRaw(
       `INSERT INTO subagent_tool_executions
          (job_id, message_idx, tool_use_id, tool_name, input, status,
@@ -267,7 +267,7 @@ async function seedCrashedState(
     );
   }
 
-  return { jobId, toolUseId, gbrainId };
+  return { jobId, toolUseId, zbrainId };
 }
 
 async function makeCrashedCtx(jobId: number, prompt: string, modelId: string): Promise<MinionJobContext> {
@@ -292,7 +292,7 @@ async function makeCrashedCtx(jobId: number, prompt: string, modelId: string): P
 
 describe('SIGKILL crash-replay reconciliation across provider matrix (v0.38 LOAD-BEARING)', () => {
   describe.each(PROVIDER_MATRIX)('provider $providerId', (provider) => {
-    it('replay short-circuits the prior complete tool (v2 shape, gbrain_tool_use_id key)', async () => {
+    it('replay short-circuits the prior complete tool (v2 shape, zbrain_tool_use_id key)', async () => {
       // Stub the SECOND turn — replay should NOT call gateway.chat() for
       // turn 1 (the tool dispatch already happened pre-crash). It should
       // immediately re-feed the tool_result and ask the LLM for the final
@@ -338,7 +338,7 @@ describe('SIGKILL crash-replay reconciliation across provider matrix (v0.38 LOAD
 
       // LOAD-BEARING: v1 legacy rows reconcile via D5 synthesized stable
       // key — the prior tool MUST NOT re-execute even though it predates
-      // the gbrain_tool_use_id column.
+      // the zbrain_tool_use_id column.
       expect(executions.length).toBe(0);
 
       expect(result.result).toBe(provider.finalResponse.text);
@@ -385,7 +385,7 @@ describe('SIGKILL crash-replay reconciliation across provider matrix (v0.38 LOAD
          RETURNING id`,
       );
       const jobId = jobRows[0].id;
-      const gbrainId = '01987654-3210-7000-8000-bbbbbbbbbbbb';
+      const zbrainId = '01987654-3210-7000-8000-bbbbbbbbbbbb';
 
       // Just the user prompt — no prior assistant turn, so the resume
       // generates the first assistant turn fresh at message_idx=1, and
@@ -399,10 +399,10 @@ describe('SIGKILL crash-replay reconciliation across provider matrix (v0.38 LOAD
       await engine.executeRaw(
         `INSERT INTO subagent_tool_executions
            (job_id, message_idx, tool_use_id, tool_name, input, status,
-            schema_version, ordinal, gbrain_tool_use_id)
+            schema_version, ordinal, zbrain_tool_use_id)
          VALUES ($1, 1, 'tc-pending', 'put_page', '{}'::jsonb, 'pending',
                  2, 0, $2::uuid)`,
-        [jobId, gbrainId],
+        [jobId, zbrainId],
       );
 
       const ctx = await makeCrashedCtx(jobId, 'do it', 'anthropic:claude-sonnet-4-6');
@@ -426,7 +426,7 @@ describe('SIGKILL crash-replay reconciliation across provider matrix (v0.38 LOAD
          RETURNING id`,
       );
       const jobId = jobRows[0].id;
-      const gbrainId = '01987654-3210-7000-8000-cccccccccccc';
+      const zbrainId = '01987654-3210-7000-8000-cccccccccccc';
 
       // User msg + assistant turn with tool_use + failed tool row.
       await engine.executeRaw(
@@ -442,10 +442,10 @@ describe('SIGKILL crash-replay reconciliation across provider matrix (v0.38 LOAD
       await engine.executeRaw(
         `INSERT INTO subagent_tool_executions
            (job_id, message_idx, tool_use_id, tool_name, input, status, error,
-            schema_version, ordinal, gbrain_tool_use_id)
+            schema_version, ordinal, zbrain_tool_use_id)
          VALUES ($1, 1, 'tc-failed', 'search', '{}'::jsonb, 'failed', 'rate limited',
                  2, 0, $2::uuid)`,
-        [jobId, gbrainId],
+        [jobId, zbrainId],
       );
 
       // Second turn: LLM acknowledges the failure and ends.

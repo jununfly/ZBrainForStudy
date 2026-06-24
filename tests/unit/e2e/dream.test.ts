@@ -117,7 +117,7 @@ describeE2E('E2E: zbrain dream CLI against real Postgres', () => {
   test('dream --phase orphans only reports orphans + no cycle-lock footprint', async () => {
     const conn = getConn();
     const before = await conn.unsafe(
-      `SELECT COUNT(*)::int AS n FROM gbrain_cycle_locks`,
+      `SELECT COUNT(*)::int AS n FROM zbrain_cycle_locks`,
     );
 
     const { result } = await captureLog(() =>
@@ -131,7 +131,7 @@ describeE2E('E2E: zbrain dream CLI against real Postgres', () => {
     }
 
     const after = await conn.unsafe(
-      `SELECT COUNT(*)::int AS n FROM gbrain_cycle_locks`,
+      `SELECT COUNT(*)::int AS n FROM zbrain_cycle_locks`,
     );
     // Read-only phase selection doesn't touch the lock table.
     expect(after[0].n).toBe(before[0].n);

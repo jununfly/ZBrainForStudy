@@ -134,10 +134,10 @@ describe('gateway.toolLoop (v0.38 D11 — provider-agnostic loop control)', () =
       },
       onToolCallStart: async (turnIdx, _msgIdx, ordinal, toolName, _input, providerToolCallId) => {
         events.push(`onToolCallStart(turn=${turnIdx}, ordinal=${ordinal}, name=${toolName}, providerCallId=${providerToolCallId})`);
-        return { gbrainToolUseId: `gb-${turnIdx}-${ordinal}` };
+        return { zbrainToolUseId: `zb-${turnIdx}-${ordinal}` };
       },
-      onToolCallComplete: async (gbrainToolUseId, _output) => {
-        events.push(`onToolCallComplete(${gbrainToolUseId})`);
+      onToolCallComplete: async (zbrainToolUseId, _output) => {
+        events.push(`onToolCallComplete(${zbrainToolUseId})`);
       },
     });
 
@@ -146,7 +146,7 @@ describe('gateway.toolLoop (v0.38 D11 — provider-agnostic loop control)', () =
     expect(events[0]).toBe('onAssistantTurn(0)');
     expect(events[1]).toMatch(/onToolCallStart\(turn=0, ordinal=0, name=echo/);
     expect(events[2]).toMatch(/execute/);
-    expect(events[3]).toMatch(/onToolCallComplete\(gb-0-0\)/);
+    expect(events[3]).toMatch(/onToolCallComplete\(zb-0-0\)/);
     expect(events[4]).toBe('onAssistantTurn(1)'); // final assistant turn
   });
 
@@ -185,10 +185,10 @@ describe('gateway.toolLoop (v0.38 D11 — provider-agnostic loop control)', () =
         idempotent: false,
         async execute() { executed = true; return 'fresh'; },
       }]]),
-      onToolCallStart: async () => ({ gbrainToolUseId: 'gb-replay-key' }),
+      onToolCallStart: async () => ({ zbrainToolUseId: 'zb-replay-key' }),
       replayState: {
         priorMessages: [],
-        priorTools: new Map([['gb-replay-key', {
+        priorTools: new Map([['zb-replay-key', {
           status: 'complete' as const,
           output: 'from-prior-run',
         }]]),
@@ -219,10 +219,10 @@ describe('gateway.toolLoop (v0.38 D11 — provider-agnostic loop control)', () =
         initialMessages: [{ role: 'user', content: 'go' }],
         tools: [{ name: 'mutate', description: 'm', inputSchema: { type: 'object' } }],
         toolHandlers: new Map([['mutate', { idempotent: false, async execute() { return null; } }]]),
-        onToolCallStart: async () => ({ gbrainToolUseId: 'gb-pending-key' }),
+        onToolCallStart: async () => ({ zbrainToolUseId: 'zb-pending-key' }),
         replayState: {
           priorMessages: [],
-          priorTools: new Map([['gb-pending-key', { status: 'pending' as const }]]),
+          priorTools: new Map([['zb-pending-key', { status: 'pending' as const }]]),
           nextTurnIdx: 0,
           nextMessageIdx: 0,
         },

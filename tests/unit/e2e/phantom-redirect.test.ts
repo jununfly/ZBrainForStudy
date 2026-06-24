@@ -43,7 +43,7 @@ beforeEach(async () => {
   await engine.executeRaw('TRUNCATE TABLE facts RESTART IDENTITY CASCADE');
   await engine.executeRaw('DELETE FROM pages');
   // v0.40: phantom redirect now uses per-source lock id (zbrain-sync:<source>).
-  await engine.executeRaw(`DELETE FROM gbrain_cycle_locks WHERE id='zbrain-sync:default'`);
+  await engine.executeRaw(`DELETE FROM zbrain_cycle_locks WHERE id='zbrain-sync:default'`);
 });
 
 function tempBrain(): string {
@@ -158,7 +158,7 @@ describeMaybe('phantom-redirect E2E (Postgres)', () => {
       // by inserting a row with a different pid + future TTL.
       // v0.40 D16: phantom acquires per-source lock; default source = zbrain-sync:default.
       await engine.executeRaw(
-        `INSERT INTO gbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at)
+        `INSERT INTO zbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at)
          VALUES ('zbrain-sync:default', 9999, 'simulated-other-host', now(), now() + interval '1 hour')
          ON CONFLICT (id) DO UPDATE SET holder_pid=9999, ttl_expires_at=now() + interval '1 hour'`,
       );
@@ -184,7 +184,7 @@ describeMaybe('phantom-redirect E2E (Postgres)', () => {
 
       // Cleanup
       // v0.40: phantom redirect now uses per-source lock id (zbrain-sync:<source>).
-  await engine.executeRaw(`DELETE FROM gbrain_cycle_locks WHERE id='zbrain-sync:default'`);
+  await engine.executeRaw(`DELETE FROM zbrain_cycle_locks WHERE id='zbrain-sync:default'`);
     } finally {
       rmSync(brainDir, { recursive: true, force: true });
     }
