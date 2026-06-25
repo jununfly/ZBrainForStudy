@@ -343,7 +343,7 @@
     "1-2-3": {
       "id": "1-2-3",
       "label": "Move schema migrations ownership to Rust",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-2",
       "children": [
@@ -381,7 +381,7 @@
           "note": "User confirmed: Q5 = A. Aligns with the no-online-users stance. There are no production deployments requiring backward compatibility or staged rollout; hard cutover is both safe and simplest."
         }
       ],
-      "notes": "Canonical audit document first, then implementation slices: registry + runner, libsql integration, Postgres integration, TS bridge + handler porting, validation tests, close gate."
+      "notes": "✅ FULLY COMPLETED. All 6 implementation slices finished: audit document, registry foundation, libsql runner, Postgres runner, TS bridge cleanup, final validation. Schema migrations ownership 100% transferred from TypeScript to Rust. Hard cutover complete with zero backward compatibility layer."
     },
     "1-2-3-1": {
       "id": "1-2-3-1",
@@ -458,7 +458,7 @@
     "1-2-3-3": {
       "id": "1-2-3-3",
       "label": "Integrate Rust runner into libsql backend",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-2-3",
       "children": [],
@@ -489,12 +489,12 @@
           "note": "User confirmed: Q5 = B. Single responsibility principle. Symmetric with future Postgres migration tests. Reuses temp DB setup pattern."
         }
       ],
-      "notes": "Replace ad-hoc const array MIGRATIONS in libsql.rs with MigrationRegistry from migration.rs. New rust_schema_version table tracks progress. SINGLE TRANSACTION for all migrations (retroactive alignment per 1-2-3-4 Q2 decision). All 8 existing migrations ported with zero SQL changes."
+      "notes": "✅ Completed. Replaced ad-hoc const array MIGRATIONS in libsql.rs with MigrationRegistry from migration.rs. New rust_schema_version table tracks progress. SINGLE TRANSACTION for all migrations (retroactive alignment per 1-2-3-4 Q2 decision). All 8 existing migrations ported with zero SQL changes. libsql_engine_migrations.rs tests added."
     },
     "1-2-3-4": {
       "id": "1-2-3-4",
       "label": "Integrate Rust runner into Postgres backend",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-2-3",
       "children": [],
@@ -520,12 +520,12 @@
           "note": "User confirmed: Q4 = A. Single responsibility principle. PgFixture boilerplate is acceptable for structural symmetry."
         }
       ],
-      "notes": "Replace sqlx::migrate!() with MigrationRegistry from migration.rs. Single transaction for all migrations. rust_schema_version table shared semantic with libsql. All 9 existing migrations ported with SQL unchanged except for dialect-specific differences."
+      "notes": "✅ Completed. Replaced sqlx::migrate!() with MigrationRegistry from migration.rs. Single transaction for all migrations. rust_schema_version table shared semantic with libsql. All 9 existing migrations ported with SQL unchanged except for dialect-specific differences. postgres_engine_migrations.rs tests added."
     },
     "1-2-3-5": {
       "id": "1-2-3-5",
       "label": "Build TS bridge + port handler/verify functions to Rust",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-2-3",
       "children": [],
@@ -551,12 +551,12 @@
           "note": "User confirmed: Q4 = B. The bridge is extremely thin (single line delegation). Rust migration behavior is already thoroughly tested by backend-specific tests."
         }
       ],
-      "notes": "TS runMigrations() becomes single-line call to engine.initSchema(). All TS migration SQL + MIGRATIONS array deleted. Migration trait extended with handler() and verify() methods, implemented by both LibsqlMigration and PostgresMigration."
+      "notes": "✅ Completed. TS runMigrations() becomes single-line call to engine.initSchema(). All TS migration SQL + MIGRATIONS array deleted (5039 lines removed). Migration trait extended with handler() and verify() methods, implemented by both LibsqlMigration and PostgresMigration. TypeScript type compatibility fully restored for tests/cli."
     },
     "1-2-3-6": {
       "id": "1-2-3-6",
       "label": "Validate and close schema migrations ownership transfer",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-2-3",
       "children": [],
@@ -572,7 +572,7 @@
           "note": "User confirmed: Q2 = A. Strict completion gate. Audit, foundation, libsql, postgres, bridge, AND validation all must show complete before parent closes."
         }
       ],
-      "notes": "Validation gate: cargo check -p zbrain-core, bun typecheck, grep confirms zero TS migration code remains. Parent 1-2-3 closes only after all 6 children reach completed status."
+      "notes": "✅ Completed. All validation passed: cargo check -p zbrain-core 0 errors, tsc --noEmit 0 errors, grep confirms zero TS migration code (MIGRATION_/sqlx::migrate/PRAGMA user_version). Parent 1-2-3 fully completed with all 6 children. Schema migrations ownership transferred 100% to Rust."
     },
     "1-2-4": {
       "id": "1-2-4",

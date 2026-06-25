@@ -32,11 +32,11 @@ class FakeDeadlock extends Error {
 
 describe('isDeadlockError', () => {
   test('matches SQLSTATE 40P01 in `.code`', () => {
-    expect(isDeadlockError({ code: '40P01', message: 'whatever' })).toBe(true);
+    expect(isDeadlockError({ code: '40P01', message: 'whatever' } as unknown as Error)).toBe(true);
   });
 
   test('matches SQLSTATE 40P01 in `.sqlState`', () => {
-    expect(isDeadlockError({ sqlState: '40P01', message: 'whatever' })).toBe(true);
+    expect(isDeadlockError({ sqlState: '40P01', message: 'whatever' } as unknown as Error)).toBe(true);
   });
 
   test('matches "deadlock detected" in message text (driver-shape independent)', () => {
@@ -49,7 +49,7 @@ describe('isDeadlockError', () => {
 
   test('returns false for non-deadlock errors', () => {
     expect(isDeadlockError(new Error('connection refused'))).toBe(false);
-    expect(isDeadlockError({ code: '23505', message: 'duplicate key' })).toBe(false);
+    expect(isDeadlockError({ code: '23505', message: 'duplicate key' } as unknown as Error)).toBe(false);
   });
 
   test('returns false for null/undefined', () => {

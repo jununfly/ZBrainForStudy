@@ -265,7 +265,7 @@ impl LibsqlEngine {
     /// Update `rust_schema_version` to the given version number after a
     /// successful migration run.
     async fn set_rust_schema_version(conn: &::libsql::Connection, ver: i64) -> Result<()> {
-        conn.execute("UPDATE rust_schema_version SET version = ?", (ver,))
+        conn.execute("UPDATE rust_schema_version SET version = ?", ::libsql::params![ver])
             .await
             .map_err(|e| Error::engine(format!("set rust_schema_version = {ver} failed: {e}")))?;
         Ok(())

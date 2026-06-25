@@ -1720,7 +1720,7 @@ async function connectEngine(opts?: { probeOnly?: boolean }): Promise<BrainEngin
     } else if (result.status === 'error') {
       // Non-deadlock error during initSchema. Surface the message and continue;
       // subsequent operations will resurface the real schema error in context.
-      console.warn(`  Schema probe failed: ${result.error.message}`);
+      console.warn(`  Schema probe failed: ${result.error?.message ?? 'unknown error'}`);
       console.warn('  Re-run: `zbrain apply-migrations --yes`');
     }
     // 'ok', 'not_needed', 'race_resolved' → silent (the common-case outcomes).

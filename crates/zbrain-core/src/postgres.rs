@@ -30,7 +30,7 @@
 //! `resolve_slugs` is still exact-match only; fuzzy `ILIKE` matching is
 //! deferred to slice 6.5c so this slice stays reviewable.
 
-use std::sync::OnceLock;
+use std::sync::{LazyLock, OnceLock};
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -79,13 +79,13 @@ impl Migration for PostgresMigration {
 /// Embedded SQL migrations, baked into the binary at compile time.
 /// Rust is now single source of truth for Postgres migrations.
 const MIGRATION_0001: &str = include_str!("../migrations/0001_init.sql");
-const MIGRATION_0002: &str = include_str!("../migrations/0002_pages_full_columns.sql");
-const MIGRATION_0003: &str = include_str!("../migrations/0003_salience_and_full_generation_trigger.sql");
-const MIGRATION_0004: &str = include_str!("../migrations/0004_page_tags.sql");
-const MIGRATION_0005: &str = include_str!("../migrations/0005_takes_min.sql");
+const MIGRATION_0002: &str = include_str!("../migrations/0002_pages_deleted_at.sql");
+const MIGRATION_0003: &str = include_str!("../migrations/0003_pages_full_columns.sql");
+const MIGRATION_0004: &str = include_str!("../migrations/0004_pages_pg_align_ts.sql");
+const MIGRATION_0005: &str = include_str!("../migrations/0005_page_tags.sql");
 const MIGRATION_0006: &str = include_str!("../migrations/0006_links.sql");
-const MIGRATION_0007: &str = include_str!("../migrations/0007_files.sql");
-const MIGRATION_0008: &str = include_str!("../migrations/0008_raw_data_and_page_versions.sql");
+const MIGRATION_0007: &str = include_str!("../migrations/0007_takes_min.sql");
+const MIGRATION_0008: &str = include_str!("../migrations/0008_files.sql");
 const MIGRATION_0009: &str = include_str!("../migrations/0009_raw_data_and_page_versions.sql");
 
 /// Global migration registry for Postgres backend. Built once at runtime first use.
@@ -181,6 +181,26 @@ impl PostgresEngine {
         self.pool
             .get()
             .ok_or_else(|| Error::engine("PostgresEngine is not connected"))
+    }
+
+    /// Read current migration version from rust_schema_version table.
+    async fn read_rust_schema_version(pool: &PgPool) -> Result<i64> {
+        let row = sqlx::query("SELECT version FROM rust_schema_version LIMIT 1")
+            .fetch_one(pool)
+            .await
+            .map_err(|e| Error::engine(format!("read rust_schema_version failed: {e}")))?;
+        row.try_get(0)
+            .map_err(|e| Error::engine(format!("decode rust_schema_version failed: {e}")))
+    }
+
+    /// Update rust_schema_version table to the given version number.
+    async fn set_rust_schema_version(pool: &PgPool, ver: i64) -> Result<()> {
+        sqlx::query("UPDATE rust_schema_version SET version = $1")
+            .bind(ver)
+            .execute(pool)
+            .await
+            .map_err(|e| Error::engine(format!("set rust_schema_version = {ver} failed: {e}")))?;
+        Ok(())
     }
 }
 
@@ -320,26 +340,6 @@ impl BrainEngine for PostgresEngine {
         if let Some(pool) = self.pool.get() {
             pool.close().await;
         }
-        Ok(())
-    }
-
-    /// Read current migration version from rust_schema_version table.
-    async fn read_rust_schema_version(pool: &PgPool) -> Result<i64> {
-        let row = sqlx::query("SELECT version FROM rust_schema_version LIMIT 1")
-            .fetch_one(pool)
-            .await
-            .map_err(|e| Error::engine(format!("read rust_schema_version failed: {e}")))?;
-        row.try_get(0)
-            .map_err(|e| Error::engine(format!("decode rust_schema_version failed: {e}")))
-    }
-
-    /// Update rust_schema_version table to the given version number.
-    async fn set_rust_schema_version(pool: &PgPool, ver: i64) -> Result<()> {
-        sqlx::query("UPDATE rust_schema_version SET version = $1")
-            .bind(ver)
-            .execute(pool)
-            .await
-            .map_err(|e| Error::engine(format!("set rust_schema_version = {ver} failed: {e}")))?;
         Ok(())
     }
 

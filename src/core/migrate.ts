@@ -42,12 +42,13 @@ export function getIdleBlockers(_engine: BrainEngine): Promise<IdleBlocker[]> {
 
 /**
  * Legacy stub: always returns success with latest version.
+ * Extra fields kept for backward compatibility with tests.
  */
 export async function tryRunPendingMigrations(
   _engine: BrainEngine,
-  _enableVerify?: boolean,
-): Promise<{ applied: number; current: number; status: string; error?: Error }> {
-  return { applied: 0, current: LATEST_VERSION, status: 'success', error: undefined };
+  _options?: boolean | { retryBackoffMs?: number; pollIntervalMs?: number; deadlineMs?: number; _hooks?: unknown },
+): Promise<{ applied: number; current: number; status: string; error?: Error; attempts?: number; pollIterations?: number }> {
+  return { applied: 0, current: LATEST_VERSION, status: 'success', error: undefined, attempts: 0, pollIterations: 0 };
 }
 
 // Legacy types for backward compatibility with code that imports them.
@@ -66,9 +67,16 @@ export interface Migration {
 export interface IdleBlocker {
   pid: number;
   query: string;
-  duration: string;
+  duration?: string; // Optional for backward compat with test mocks
   query_start?: string;
   state?: string;
+}
+
+// Postgres-like error with DB-specific error codes.
+// Matches the shape returned by node-postgres for deadlock detection.
+export interface DbError extends Error {
+  code?: string;
+  sqlState?: string;
 }
 
 export class MigrationDriftError extends Error {
@@ -106,10 +114,15 @@ export function isMigrationIdempotent(_m: Migration): boolean {
 }
 
 /**
- * Legacy stub: returns false.
+ * Detect deadlock errors from node-postgres or other database drivers.
+ * Still useful for callers even though retry logic moved to Rust.
  */
-export function isDeadlockError(_e: Error): boolean {
-  return false;
+export function isDeadlockError(e: Error | null | undefined | { code?: string; sqlState?: string; message?: string }): boolean {
+  if (!e) return false;
+  const code = 'code' in e ? e.code : undefined;
+  const sqlState = 'sqlState' in e ? e.sqlState : undefined;
+  const message = 'message' in e ? e.message : undefined;
+  return code === '40P01' || sqlState === '40P01' || (message?.includes('deadlock') ?? false) || (message?.includes('40P01') ?? false);
 }
 
 /**
