@@ -343,12 +343,157 @@
     "1-2-3": {
       "id": "1-2-3",
       "label": "Move schema migrations ownership to Rust",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "exploit",
       "parent": "1-2",
+      "children": [
+        "1-2-3-1",
+        "1-2-3-2",
+        "1-2-3-3",
+        "1-2-3-4",
+        "1-2-3-5",
+        "1-2-3-6"
+      ],
+      "decisions": [
+        {
+          "q": "Does 1-2-3 start with audit/decision only, or does it include full implementation?",
+          "answer": "Audit + decision only. First write a canonical schema migrations audit document, define the TS→Rust ownership transfer contract and slice plan; actual implementation moves to child nodes.",
+          "note": "User confirmed: Q1 = A. Follows the same slice pattern as advanced Page writes: audit document first, then split into focused implementation slices."
+        },
+        {
+          "q": "What is the parity target for Rust migration capabilities?",
+          "answer": "100% parity. Rust must support all TS migration features: handler functions, verify hooks, sqlFor engine specialization, transaction control, idempotent marking, and drift detection.",
+          "note": "User confirmed: Q2 = A. Migration parity means no feature regression. The Rust zbrain-core crate must become the single source of truth for all schema migration logic, not a simplified subset."
+        },
+        {
+          "q": "Where do migration files live after ownership transfer?",
+          "answer": "All in crates/zbrain-core/migrations/ and migrations-sqlite/. Rust directories become the single source of truth; TS retains no .sql files, only a calling bridge.",
+          "note": "User confirmed: Q3 = A. Currently libsql uses migrations-sqlite/ and postgres uses migrations/. These are already the canonical locations for Rust-added tables (files, raw_data, page_versions). This decision extends them to own the entire schema."
+        },
+        {
+          "q": "How to handle migration version numbering after transfer?",
+          "answer": "Reset to Rust-specific versioning. Rust starts fresh at v1, uses a separate rust_schema_version table to track progress, completely avoiding collision with the existing TS user_version.",
+          "note": "User confirmed: Q4 = B. TS highest version freezes at its current value (~42). Rust migrations run independently, tracked by their own table. Eliminates version-space collision and dual-runner coordination complexity."
+        },
+        {
+          "q": "What is the transition plan for existing production brains?",
+          "answer": "Hard cutover. The next release switches directly to the Rust migration system. TS runMigrations becomes a thin wrapper that only calls Rust init_schema(). No dual-runner transition period.",
+          "note": "User confirmed: Q5 = A. Aligns with the no-online-users stance. There are no production deployments requiring backward compatibility or staged rollout; hard cutover is both safe and simplest."
+        }
+      ],
+      "notes": "Canonical audit document first, then implementation slices: registry + runner, libsql integration, Postgres integration, TS bridge + handler porting, validation tests, close gate."
+    },
+    "1-2-3-1": {
+      "id": "1-2-3-1",
+      "label": "Write schema migrations ownership audit plan",
+      "status": "completed",
+      "mode": "explore",
+      "parent": "1-2-3",
+      "children": [],
+      "decisions": [
+        {
+          "q": "Does the audit include a full inventory of ALL existing TS migrations (v1 to v42+), or only the interface/runner contract?",
+          "answer": "Full inventory. Audit every TS migration's concrete content (SQL, handler bodies, verify hooks, sqlFor overrides, transaction flags), listing and classifying each one.",
+          "note": "User confirmed: Q1 = A. Complete migration inventory ensures no TS feature slips through the porting net; avoids post-port surprises when a rarely-exercised migration fails."
+        },
+        {
+          "q": "Should the audit define the exact boundary of what gets ported vs what gets discarded?",
+          "answer": "Yes, explicit boundary. Audit document must clearly enumerate: which features port at 100% parity, which semantics are simplified, and which TS code is deleted outright.",
+          "note": "User confirmed: Q2 = A. Boundary clarity is critical for a clean cutover. No ambiguous 'maybe-port' items enter the implementation phase."
+        },
+        {
+          "q": "Does the audit include a Rust migration registry/runner concrete design proposal?",
+          "answer": "No design. Audit describes the gap only; concrete Rust implementation design defers to node 1-2-3-2.",
+          "note": "User confirmed: Q3 = C. Keeps audit focused on inventory and gap analysis, not forward-looking design. Design work belongs in the implementation slice where code context is available."
+        },
+        {
+          "q": "Does the audit include handler/verify porting complexity assessment?",
+          "answer": "Skip entirely. Handler/verify detailed assessment defers to implementation node 1-2-3-5.",
+          "note": "User confirmed: Q4 = C. Audit focuses on SQL inventory and runner contract gap analysis. Application-level handler complexity is best assessed during implementation when porting actually happens."
+        },
+        {
+          "q": "Does the audit include a TDD slice plan for the implementation nodes?",
+          "answer": "High-level slices only. Confirm that the 6-child split (registry → libsql → postgres → bridge → validate) is sound; do not write detailed acceptance criteria.",
+          "note": "User confirmed: Q5 = B. Slicing sanity-checked here; detailed test plans move to implementation nodes where test harnesses and edge cases emerge naturally."
+        }
+      ],
+      "notes": "Canonical audit document at docs/plans/2026-06-25-schema-migrations-audit.md. Content: full TS migration inventory (v1–v42+) with SQL/handler/verify/sqlFor/transaction flags; explicit port/discard boundary; Rust current migration state; parity gap analysis. No Rust design; no handler complexity assessment; only high-level slicing sanity check."
+    },
+    "1-2-3-2": {
+      "id": "1-2-3-2",
+      "label": "Add Rust Migration registry + runner foundation",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-2-3",
+      "children": [],
+      "decisions": [
+        {
+          "q": "Where should the core Migration type live in crates/zbrain-core?",
+          "answer": "New dedicated module migration.rs. Standalone module containing only Migration type, registry, and runner foundation.",
+          "note": "User confirmed: Q1 = A. Follows modular pattern: types.rs for domain types, engine.rs for backend trait, migration.rs for migration-specific abstractions. Shared by both libsql and postgres backends without circular dependency."
+        },
+        {
+          "q": "Migration dispatch pattern: trait object vs enum?",
+          "answer": "trait Migration + dyn object-safe. Each backend implements its own Migration type; unified dispatch via trait object.",
+          "note": "User confirmed: Q2 = A. Aligns with existing BrainEngine trait pattern. Backend-specific implementations remain in their own modules; shared migration interface in migration.rs. Object-safety is a design constraint the slice explicitly tests."
+        },
+        {
+          "q": "What Rust type for migration version numbers?",
+          "answer": "i64. Directly aligns with SQLite PRAGMA user_version return type; zero conversion overhead.",
+          "note": "User confirmed: Q3 = B. Pragmatic tradeoff: semantically version numbers should be unsigned, but SQLite PRAGMA returns signed integers. Matching that type eliminates casting at the FFI boundary. Acceptable compromise for lower-level infrastructure code."
+        },
+        {
+          "q": "How to represent handler/verify signatures in this compile-only slice?",
+          "answer": "Stub as unimplemented!() only; defer exact signature definition to node 1-2-3-5.",
+          "note": "User confirmed: Q4 = B. This slice is compile-only foundation. Handler and verify function signatures depend on BrainEngine trait method availability, which is best finalized during libsql/postgres integration when the calling pattern is concrete."
+        },
+        {
+          "q": "What object-safety tests belong in this slice?",
+          "answer": "Full Migration registry + Migration trait object-safety test. New dedicated test file: engine_object_safety_migration.rs.",
+          "note": "User confirmed: Q5 = A. Follows the same pattern as advanced Page writes: explicit compile-only slice with object-safety test as the acceptance gate. Object-safety is a critical design constraint worth its own test file."
+        }
+      ],
+      "notes": "Compile-only foundation slice. New crates/zbrain-core/src/migration.rs module. Object-safe Migration trait (handler/verify signatures deferred). i64 version numbers. Dedicated object-safety test file. No runner implementation behavior yet."
+    },
+    "1-2-3-3": {
+      "id": "1-2-3-3",
+      "label": "Integrate Rust runner into libsql backend",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-2-3",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "Replace the current ad-hoc MIGRATION_000x constant array + SCHEMA_VERSION pattern in libsql.rs with the shared Rust migration registry. Add sqlite-specific sqlFor support. Port existing 0001-0008 into the new registry."
+    },
+    "1-2-3-4": {
+      "id": "1-2-3-4",
+      "label": "Integrate Rust runner into Postgres backend",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-2-3",
+      "children": [],
+      "decisions": [],
+      "notes": "Replace sqlx::migrate!() in postgres.rs with the shared Rust migration registry. Add postgres-specific sqlFor support and transaction=false passthrough for CONCURRENTLY. Port existing 0001-0009 into the new registry."
+    },
+    "1-2-3-5": {
+      "id": "1-2-3-5",
+      "label": "Build TS bridge + port handler/verify functions to Rust",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-2-3",
+      "children": [],
+      "decisions": [],
+      "notes": "Make TS src/core/migrate.ts a thin bridge that calls into Rust init_schema(). Port all TS handler() and verify() functions to Rust. Remove all .sql files and MIGRATIONS array from TS."
+    },
+    "1-2-3-6": {
+      "id": "1-2-3-6",
+      "label": "Validate and close schema migrations ownership transfer",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-2-3",
+      "children": [],
+      "decisions": [],
+      "notes": "Final validation gate: end-to-end migration tests across both backends, verify idempotency by running twice, confirm TS bridge delegates fully, delete all unused TS migration code. Close node 1-2-3."
     },
     "1-2-4": {
       "id": "1-2-4",

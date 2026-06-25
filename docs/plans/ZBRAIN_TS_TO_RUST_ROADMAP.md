@@ -73,10 +73,48 @@ GitHub issue #20 closed (commit 4fdc8b8). InMemoryEngine full behavior for 7 met
 
 GitHub issue #21 closed (commit 2306b9a). SQL migration 0008 + 7 real SQL implementations in libsql backend. 14 focused tests.
 
-### 当前施工：1-2-2-5. Implement Postgres advanced Page writes behavior
+### ✅ 已完成：1-2-2-5. Implement Postgres advanced Page writes behavior
 
 GitHub issue #22 closed (commit 5abee58). SQL migration 0009 + 7 real sqlx implementations in Postgres backend. 14 focused PG tests.
 
 ### ✅ 已完成：1-2-2-6. Validate and close advanced Page writes parity
 
 GitHub issue #23 closed. All 5 child issues (#19–#23) delivered across 5 commits. All 3 backends (InMemory, libsql, Postgres) have working implementations + focused tests. 1-2-2 subtree complete. Next: 1-2-3 schema migrations ownership.
+
+### ✅ 已完成：1-2-3-1. Write schema migrations ownership audit plan
+
+Canonical audit document at docs/plans/2026-06-25-schema-migrations-audit.md. Completed full inventory of TS migration system and parity gap analysis.
+
+**审计内容：**
+- TS Migration interface + runner behavior full spec
+- Current libsql/postgres Rust migration patterns
+- Feature matrix parity gap analysis (8 capabilities)
+- Explicit port/simplify/discard boundary
+- 6-slice architecture sanity check: verified layered and properly scoped
+
+**决策：**
+- Full TS migration inventory (v1–v42+)
+- Explicit port/discard boundary, no ambiguous items
+- No Rust design in audit (deferred to 1-2-3-2)
+- Handler/verify complexity deferred to 1-2-3-5
+- High-level slicing only, no detailed TDD criteria here
+
+Next: 1-2-3-2 Add Rust Migration registry + runner foundation.
+
+### ✅ 已完成：1-2-3-2. Add Rust Migration registry + runner foundation
+
+Compile-only foundation slice complete. Object-safe Migration trait + registry + dedicated object-safety tests.
+
+**交付：**
+- `crates/zbrain-core/src/migration.rs`: 240 lines, Migration trait + registry + InMemoryMigration
+- `crates/zbrain-core/src/lib.rs`: added `pub mod migration`
+- `crates/zbrain-core/tests/engine_object_safety_migration.rs`: 8 tests covering trait object-safety, registry sorting, version tracking, default overrides
+
+**决策已执行：**
+- Q: Module location? → New dedicated `migration.rs` module ✅
+- Q: Dispatch pattern? → Trait object (`dyn Migration`) ✅
+- Q: Version number type? → `i64` (align with SQLite PRAGMA) ✅
+- Q: Handler/verify signatures in this slice? → Stub `unimplemented!()`, deferred to 1-2-3-5 ✅
+- Q: Object-safety test? → Full dedicated test file ✅
+
+Next: 1-2-3-3 Integrate Rust runner into libsql backend.
