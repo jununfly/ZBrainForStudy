@@ -685,12 +685,18 @@
     "1-4-1": {
       "id": "1-4-1",
       "label": "Port operation definitions schemas and context",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "exploit",
       "parent": "1-4",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "Slice #40 implementation strategy",
+          "answer": "Separate OperationError type, full 1:1 context field port, object-safe Operation trait",
+          "note": "Decision confirmed via Node 1-4 canonical audit. Dual error system maintains layer separation."
+        }
+      ],
+      "notes": "Slice #40 COMPLETED. Rust operation foundation implemented: ErrorCode enum, OperationError struct with exact TS serialization, dual error bridge, AuthInfo, CliOpts, Logger trait, OperationContext with full trust boundary fields, Operation object-safe trait. 14/14 tests passing. Commit 206adee."
     },
     "1-4-2": {
       "id": "1-4-2",
