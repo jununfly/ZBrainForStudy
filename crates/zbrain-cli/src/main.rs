@@ -1,8 +1,13 @@
 //! Binary entry point for the `zbrain` CLI.
 //!
-//! Slice 1 prints the banner and exits successfully. Real subcommands arrive
-//! in slice 8 via clap.
+//! Slice 1-3-1: clap CLI framework with 4 command stubs.
 
-fn main() {
-    println!("{}", zbrain_cli::banner());
+use clap::Parser;
+use zbrain_cli::{run, Cli};
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+    run(cli).await?;
+    Ok(())
 }
