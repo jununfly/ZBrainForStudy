@@ -458,12 +458,38 @@
     "1-2-3-3": {
       "id": "1-2-3-3",
       "label": "Integrate Rust runner into libsql backend",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "exploit",
       "parent": "1-2-3",
       "children": [],
-      "decisions": [],
-      "notes": "Replace the current ad-hoc MIGRATION_000x constant array + SCHEMA_VERSION pattern in libsql.rs with the shared Rust migration registry. Add sqlite-specific sqlFor support. Port existing 0001-0008 into the new registry."
+      "decisions": [
+        {
+          "q": "libsql version tracking mechanism?",
+          "answer": "Switch to standalone rust_schema_version table. Completely separate from TS PRAGMA user_version per 1-2-3 Q4 decision.",
+          "note": "User confirmed: Q1 = B. Hard cutover aligned. Table allows future extension with applied_at timestamp, checksum, etc. Postgres will use same pattern."
+        },
+        {
+          "q": "Transaction boundary per migration run?",
+          "answer": "One transaction per migration. Each migration runs in its own transaction; failure rolls back only the current migration.",
+          "note": "User confirmed: Q2 = A. Aligns with existing libsql migration behavior and TS default. The transaction flag is deferred to future slice if needed."
+        },
+        {
+          "q": "sqlFor SQLite specialization representation?",
+          "answer": "sql always contains SQLite variant. No specialization override needed for libsql backend; each backend maintains its own migration list.",
+          "note": "User confirmed: Q3 = B. Backends are fully decoupled. Migration trait has both sqlite_sql() and postgres_sql() methods, but libsql only uses sql()."
+        },
+        {
+          "q": "Porting existing 0001-0008 libsql migrations?",
+          "answer": "Keep SQL exactly as-is, only wrap in new Migration trait. No refactoring, no style changes, zero behavior drift.",
+          "note": "User confirmed: Q4 = A. Migration code is most sensitive; 'if it ain't broke, don't fix it' applies doubly. Future schema changes use incremental migrations."
+        },
+        {
+          "q": "Test strategy for libsql migration integration?",
+          "answer": "New dedicated test file libsql_engine_migrations.rs. Isolated migration testing for version tracking, idempotency, and order correctness.",
+          "note": "User confirmed: Q5 = B. Single responsibility principle. Symmetric with future Postgres migration tests. Reuses temp DB setup pattern."
+        }
+      ],
+      "notes": "Replace ad-hoc const array MIGRATIONS in libsql.rs with MigrationRegistry from migration.rs. New rust_schema_version table tracks progress. All 8 existing migrations ported with zero SQL changes."
     },
     "1-2-3-4": {
       "id": "1-2-3-4",

@@ -24,12 +24,36 @@ use crate::engine::{
     PageInput, PageSort, ResolveSlugsOpts,
 };
 use crate::error::{Error, Result};
+use crate::migration::{Migration, MigrationRegistry};
 use crate::time::current_utc_iso8601;
 use crate::types::{
     CRMode, DuplicatePage, EffectiveDateSource, FileRow, FileSpec, FindDuplicatePageOpts,
     OrphanPage, PageKind, PageRef, PageVersion, PurgeResult, RawData, RefreshPageBodyArgs,
     UpsertFileResult,
 };
+
+/// libsql-specific migration implementation. Wraps raw SQL from
+/// migrations-sqlite/ files and implements the Migration trait.
+#[derive(Debug, Clone)]
+struct LibsqlMigration {
+    version: i64,
+    name: &'static str,
+    sql: &'static str,
+}
+
+impl Migration for LibsqlMigration {
+    fn version(&self) -> i64 {
+        self.version
+    }
+
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn sql(&self) -> &str {
+        self.sql
+    }
+}
 
 /// Embedded `SQLite` schema. Mirrors the PG migration semantics:
 /// `sources` (with seeded 'default' row), `pages` with `UNIQUE (source_id,
@@ -70,8 +94,9 @@ const MIGRATION_0007: &str = include_str!("../migrations-sqlite/0007_files.sql")
 const MIGRATION_0008: &str =
     include_str!("../migrations-sqlite/0008_raw_data_and_page_versions.sql");
 
-/// Ordered list of migrations. Index `i` is applied when `user_version <= i`,
-/// then `user_version` is set to `i + 1`. Append-only — never reorder.
+/// Legacy string array — REMOVED in favor of MigrationRegistry.
+/// Use LIBQL_MIGRATIONS instead.
+#[deprecated(note = "Use LIBQL_MIGRATIONS instead")]
 const MIGRATIONS: &[&str] = &[
     MIGRATION_0001,
     MIGRATION_0002,
@@ -83,11 +108,73 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_0008,
 ];
 
-/// Highest schema version we know how to produce. Equals `MIGRATIONS.len()`.
-/// Guarded via `PRAGMA user_version`. Hand-kept in sync with `MIGRATIONS`
-/// because `len() as i64` is not const-evaluable in stable Rust and casting
-/// `usize → i64` trips `clippy::cast_possible_wrap`.
+/// Legacy version constant — REMOVED in favor of MigrationRegistry.
+/// Use LIBQL_MIGRATIONS.latest_version() instead.
+#[deprecated(note = "Use LIBQL_MIGRATIONS.latest_version() instead")]
 const SCHEMA_VERSION: i64 = 8;
+
+/// Global migration registry for libsql backend. Built once at runtime first use.
+/// All 8 existing migrations ported with zero SQL changes per 1-2-3-3 Q4 decision.
+pub static LIBQL_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
+    let mut registry = MigrationRegistry::new();
+
+    // Wrap each raw SQL file in LibsqlMigration. Version numbers start at 1,
+    // matching the original TS-era numbering. Names are descriptive for
+    // debugging and audit trail purposes only; not used for execution logic.
+    registry.add(Box::new(LibsqlMigration {
+        version: 1,
+        name: "init",
+        sql: MIGRATION_0001,
+    }));
+    registry.add(Box::new(LibsqlMigration {
+        version: 2,
+        name: "pages_full_columns",
+        sql: MIGRATION_0002,
+    }));
+    registry.add(Box::new(LibsqlMigration {
+        version: 3,
+        name: "salience_and_full_generation_trigger",
+        sql: MIGRATION_0003,
+    }));
+    registry.add(Box::new(LibsqlMigration {
+        version: 4,
+        name: "page_tags",
+        sql: MIGRATION_0004,
+    }));
+    registry.add(Box::new(LibsqlMigration {
+        version: 5,
+        name: "takes_min",
+        sql: MIGRATION_0005,
+    }));
+    registry.add(Box::new(LibsqlMigration {
+        version: 6,
+        name: "links",
+        sql: MIGRATION_0006,
+    }));
+    registry.add(Box::new(LibsqlMigration {
+        version: 7,
+        name: "files",
+        sql: MIGRATION_0007,
+    }));
+    registry.add(Box::new(LibsqlMigration {
+        version: 8,
+        name: "raw_data_and_page_versions",
+        sql: MIGRATION_0008,
+    }));
+
+    registry
+});
+
+/// Bootstrap migration 0: creates `rust_schema_version` table for tracking
+/// migration progress. Version 0 means no migrations have run yet.
+/// Hard cutover from TS-era `PRAGMA user_version` per 1-2-3 Q4 decision.
+const RUST_SCHEMA_VERSION_BOOTSTRAP: &str = r#"
+CREATE TABLE IF NOT EXISTS rust_schema_version (
+    version INTEGER PRIMARY KEY NOT NULL DEFAULT 0,
+    applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+INSERT OR IGNORE INTO rust_schema_version (version) VALUES (0);
+"#;
 
 /// Process-wide gate that serializes the *entire* `init_schema` flow
 /// — including the very first `connect()` + `PRAGMA foreign_keys = ON`
@@ -158,21 +245,30 @@ impl LibsqlEngine {
         Ok(conn)
     }
 
-    /// Read `PRAGMA user_version` on the given connection. Extracted so
-    /// `init_schema` can call it both lock-free (fast-path) and under the
-    /// migration gate (double-checked) without duplicating the decode
-    /// error mapping.
-    async fn read_user_version(conn: &::libsql::Connection) -> Result<i64> {
+    /// Read current migration version from `rust_schema_version` table.
+    /// Always returns 0 for fresh databases (guaranteed by bootstrap migration).
+    async fn read_rust_schema_version(conn: &::libsql::Connection) -> Result<i64> {
         let mut rows = conn
-            .query("PRAGMA user_version", ())
+            .query("SELECT version FROM rust_schema_version LIMIT 1", ())
             .await
-            .map_err(|e| Error::engine(format!("read user_version failed: {e}")))?;
+            .map_err(|e| Error::engine(format!("read rust_schema_version failed: {e}")))?;
         rows.next()
             .await
-            .map_err(|e| Error::engine(format!("user_version row fetch failed: {e}")))?
-            .ok_or_else(|| Error::engine("PRAGMA user_version returned no row"))?
+            .map_err(|e| Error::engine(format!("rust_schema_version row fetch failed: {e}")))?
+            .ok_or_else(|| {
+                Error::engine("rust_schema_version returned no row - run bootstrap first")
+            })?
             .get(0)
-            .map_err(|e| Error::engine(format!("user_version decode failed: {e}")))
+            .map_err(|e| Error::engine(format!("rust_schema_version decode failed: {e}")))
+    }
+
+    /// Update `rust_schema_version` to the given version number after a
+    /// successful migration run.
+    async fn set_rust_schema_version(conn: &::libsql::Connection, ver: i64) -> Result<()> {
+        conn.execute("UPDATE rust_schema_version SET version = ?", (ver,))
+            .await
+            .map_err(|e| Error::engine(format!("set rust_schema_version = {ver} failed: {e}")))?;
+        Ok(())
     }
 }
 
@@ -285,38 +381,50 @@ impl BrainEngine for LibsqlEngine {
         // Guarding only the migration loop leaves that earlier FFI
         // sequence unprotected, so the lock must wrap the very first
         // `self.conn().await?` as well.
-        //
-        // The added cost is the `PRAGMA user_version` round-trip per
-        // `init_schema` call, which only matters once per engine /
-        // process anyway — the steady-state fast-path was an
-        // optimization that masked the real bug.
         let _guard = SCHEMA_INIT_LOCK.lock().await;
 
         let conn = self.conn().await?;
-        let current = Self::read_user_version(&conn).await?;
-        if current >= SCHEMA_VERSION {
+
+        // Step 1: Bootstrap the version tracking table. Hard cutover from
+        // TS-era PRAGMA user_version per 1-2-3 Q4 decision.
+        conn.execute_batch(RUST_SCHEMA_VERSION_BOOTSTRAP)
+            .await
+            .map_err(|e| Error::engine(format!("rust_schema_version bootstrap failed: {e}")))?;
+
+        // Step 2: Read current version from the table
+        let current = Self::read_rust_schema_version(&conn).await?;
+        let latest = LIBQL_MIGRATIONS.latest_version();
+        if current >= latest {
             return Ok(());
         }
 
-        // Apply each migration whose 1-based version > current user_version.
-        // Migrations are `execute_batch`-compatible (multiple `;`-separated
-        // statements). After each one, bump `user_version` so a crash
-        // mid-way resumes from the right slot on the next `init_schema`.
-        for (idx, sql) in MIGRATIONS.iter().enumerate() {
-            // `idx + 1` is the schema version this migration produces.
-            // `usize → i64` via `try_from` keeps clippy happy and guards
-            // the (impossible-in-practice) overflow case explicitly.
-            let ver = i64::try_from(idx + 1)
-                .map_err(|_| Error::engine("MIGRATIONS length overflows i64"))?;
+        // Step 3: Apply each migration whose version > current_version.
+        // One transaction per migration per 1-2-3-3 Q2 decision.
+        // Version number is updated after each successful migration so
+        // crash mid-way resumes from the right slot on the next init_schema.
+        for migration in LIBQL_MIGRATIONS.iter() {
+            let ver = migration.version();
             if ver <= current {
                 continue;
             }
-            conn.execute_batch(sql)
+
+            // Wrap each migration in its own transaction
+            conn.execute_batch("BEGIN TRANSACTION")
                 .await
-                .map_err(|e| Error::engine(format!("migration {ver} failed: {e}")))?;
-            conn.execute_batch(&format!("PRAGMA user_version = {ver}"))
-                .await
-                .map_err(|e| Error::engine(format!("set user_version = {ver} failed: {e}")))?;
+                .map_err(|e| Error::engine(format!("migration {ver} BEGIN failed: {e}")))?;
+
+            match conn.execute_batch(migration.sql()).await {
+                Ok(_) => {
+                    conn.execute_batch("COMMIT").await.map_err(|e| {
+                        Error::engine(format!("migration {ver} COMMIT failed: {e}"))
+                    })?;
+                    Self::set_rust_schema_version(&conn, ver).await?;
+                }
+                Err(e) => {
+                    let _ = conn.execute_batch("ROLLBACK").await;
+                    return Err(Error::engine(format!("migration {ver} failed: {e}")));
+                }
+            }
         }
 
         Ok(())
