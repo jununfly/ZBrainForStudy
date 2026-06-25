@@ -853,17 +853,17 @@
     "1-2-2-3": {
       "id": "1-2-2-3",
       "label": "Implement InMemory advanced Page writes behavior",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-2-2",
       "children": [],
       "decisions": [],
-      "notes": "GitHub issue #20: Implement InMemory advanced Page writes behavior. Covers raw data, page versions, and slug/link rewrite in-memory implementations."
+      "notes": "GitHub issue #20 closed (commit 4fdc8b8). InMemoryEngine full behavior for 7 methods + 12 focused tests."
     },
     "1-2-2-4": {
       "id": "1-2-2-4",
       "label": "Implement libsql advanced Page writes behavior",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "exploit",
       "parent": "1-2-2",
       "children": [],

@@ -67,6 +67,8 @@ const MIGRATION_0006: &str = include_str!("../migrations-sqlite/0006_links.sql")
 
 /// File metadata rows for TS BrainEngine file-storage parity.
 const MIGRATION_0007: &str = include_str!("../migrations-sqlite/0007_files.sql");
+const MIGRATION_0008: &str =
+    include_str!("../migrations-sqlite/0008_raw_data_and_page_versions.sql");
 
 /// Ordered list of migrations. Index `i` is applied when `user_version <= i`,
 /// then `user_version` is set to `i + 1`. Append-only — never reorder.
@@ -78,13 +80,14 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_0005,
     MIGRATION_0006,
     MIGRATION_0007,
+    MIGRATION_0008,
 ];
 
 /// Highest schema version we know how to produce. Equals `MIGRATIONS.len()`.
 /// Guarded via `PRAGMA user_version`. Hand-kept in sync with `MIGRATIONS`
 /// because `len() as i64` is not const-evaluable in stable Rust and casting
 /// `usize → i64` trips `clippy::cast_possible_wrap`.
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 
 /// Process-wide gate that serializes the *entire* `init_schema` flow
 /// — including the very first `connect()` + `PRAGMA foreign_keys = ON`
@@ -1176,55 +1179,359 @@ impl BrainEngine for LibsqlEngine {
 
     async fn put_raw_data(
         &self,
-        _slug: &str,
-        _source: &str,
-        _data: &Value,
-        _source_id: Option<&str>,
+        slug: &str,
+        source: &str,
+        data: &Value,
+        source_id: Option<&str>,
     ) -> Result<()> {
-        unimplemented!()
+        let conn = self.conn().await?;
+        let source_id = source_id.unwrap_or("default");
+        let data_text = serde_json::to_string(data)
+            .map_err(|e| Error::engine(format!("put_raw_data encode: {e}")))?;
+
+        // Resolve page_id for the (slug, source_id) pair, matching TS putRawData.
+        let mut rows = conn
+            .query(
+                "SELECT id FROM pages WHERE slug = ?1 AND source_id = ?2 AND deleted_at IS NULL",
+                ::libsql::params![slug.to_string(), source_id.to_string()],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("put_raw_data page lookup failed: {e}")))?;
+        let page_row = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("put_raw_data page fetch failed: {e}")))?;
+        let Some(page_row) = page_row else {
+            return Err(Error::page_not_found(slug, Some(source_id)));
+        };
+        let page_id: i64 = page_row
+            .get(0)
+            .map_err(|e| Error::engine(format!("put_raw_data decode page_id: {e}")))?;
+
+        conn.execute(
+            "INSERT INTO raw_data (page_id, source, data) \
+             VALUES (?1, ?2, ?3) \
+             ON CONFLICT(page_id, source) DO UPDATE SET \
+               data = excluded.data, \
+               fetched_at = CURRENT_TIMESTAMP",
+            ::libsql::params![page_id, source.to_string(), data_text],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("put_raw_data upsert failed: {e}")))?;
+
+        Ok(())
     }
 
     async fn get_raw_data(
         &self,
-        _slug: &str,
-        _source: Option<&str>,
-        _source_id: Option<&str>,
+        slug: &str,
+        source: Option<&str>,
+        source_id: Option<&str>,
     ) -> Result<Vec<RawData>> {
-        unimplemented!()
+        let conn = self.conn().await?;
+        let source_id = source_id.unwrap_or("default");
+
+        // Resolve page_id first.
+        let mut rows = conn
+            .query(
+                "SELECT id FROM pages WHERE slug = ?1 AND source_id = ?2",
+                ::libsql::params![slug.to_string(), source_id.to_string()],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("get_raw_data page lookup failed: {e}")))?;
+        let page_row = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("get_raw_data page fetch failed: {e}")))?;
+        let Some(page_row) = page_row else {
+            return Ok(vec![]); // missing page → empty
+        };
+        let page_id: i64 = page_row
+            .get(0)
+            .map_err(|e| Error::engine(format!("get_raw_data decode page_id: {e}")))?;
+
+        let sql = if source.is_some() {
+            "SELECT source, data, fetched_at FROM raw_data WHERE page_id = ?1 AND source = ?2"
+        } else {
+            "SELECT source, data, fetched_at FROM raw_data WHERE page_id = ?1"
+        };
+        let mut params_vec: Vec<::libsql::Value> = vec![page_id.into()];
+        if let Some(s) = source {
+            params_vec.push(s.to_string().into());
+        }
+        let mut rows = conn
+            .query(sql, ::libsql::params_from_iter(params_vec))
+            .await
+            .map_err(|e| Error::engine(format!("get_raw_data query failed: {e}")))?;
+
+        let mut results = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("get_raw_data fetch failed: {e}")))?
+        {
+            let src: String = row
+                .get(0)
+                .map_err(|e| Error::engine(format!("get_raw_data decode source: {e}")))?;
+            let data_text: String = row
+                .get(1)
+                .map_err(|e| Error::engine(format!("get_raw_data decode data: {e}")))?;
+            let fetched_at: String = row
+                .get(2)
+                .map_err(|e| Error::engine(format!("get_raw_data decode fetched_at: {e}")))?;
+            let data: Value = serde_json::from_str(&data_text)
+                .map_err(|e| Error::engine(format!("get_raw_data parse data: {e}")))?;
+            results.push(RawData {
+                source: src,
+                data,
+                fetched_at,
+            });
+        }
+        Ok(results)
     }
 
-    async fn create_version(&self, _slug: &str, _source_id: Option<&str>) -> Result<PageVersion> {
-        unimplemented!()
+    async fn create_version(&self, slug: &str, source_id: Option<&str>) -> Result<PageVersion> {
+        let conn = self.conn().await?;
+        let source_id = source_id.unwrap_or("default");
+
+        // Snapshot current page state.
+        let mut rows = conn
+            .query(
+                "SELECT id, compiled_truth, frontmatter \
+                 FROM pages \
+                 WHERE slug = ?1 AND source_id = ?2 AND deleted_at IS NULL",
+                ::libsql::params![slug.to_string(), source_id.to_string()],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("create_version page lookup failed: {e}")))?;
+        let page_row = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("create_version page fetch failed: {e}")))?
+            .ok_or_else(|| Error::page_not_found(slug, Some(source_id)))?;
+        let page_id: i64 = page_row
+            .get(0)
+            .map_err(|e| Error::engine(format!("create_version decode page_id: {e}")))?;
+        let compiled_truth: String = page_row
+            .get(1)
+            .map_err(|e| Error::engine(format!("create_version decode compiled_truth: {e}")))?;
+        let frontmatter_text: String = page_row
+            .get(2)
+            .map_err(|e| Error::engine(format!("create_version decode frontmatter: {e}")))?;
+
+        let mut rows = conn
+            .query(
+                "INSERT INTO page_versions (page_id, compiled_truth, frontmatter) \
+                 VALUES (?1, ?2, ?3) RETURNING id, page_id, compiled_truth, frontmatter, snapshot_at",
+                ::libsql::params![page_id, compiled_truth, frontmatter_text],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("create_version insert failed: {e}")))?;
+        let row = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("create_version return fetch failed: {e}")))?
+            .ok_or_else(|| Error::engine("create_version RETURNING produced no row"))?;
+        let id: i64 = row
+            .get(0)
+            .map_err(|e| Error::engine(format!("create_version decode id: {e}")))?;
+        let returned_page_id: i64 = row
+            .get(1)
+            .map_err(|e| Error::engine(format!("create_version decode page_id: {e}")))?;
+        let returned_truth: String = row
+            .get(2)
+            .map_err(|e| Error::engine(format!("create_version decode truth: {e}")))?;
+        let returned_fm_text: String = row
+            .get(3)
+            .map_err(|e| Error::engine(format!("create_version decode frontmatter: {e}")))?;
+        let snapshot_at: String = row
+            .get(4)
+            .map_err(|e| Error::engine(format!("create_version decode snapshot_at: {e}")))?;
+        let frontmatter: Value = serde_json::from_str(&returned_fm_text)
+            .map_err(|e| Error::engine(format!("create_version parse frontmatter: {e}")))?;
+
+        Ok(PageVersion {
+            id: id as u64,
+            page_id: returned_page_id as u64,
+            compiled_truth: returned_truth,
+            frontmatter,
+            snapshot_at,
+        })
     }
 
-    async fn get_versions(
-        &self,
-        _slug: &str,
-        _source_id: Option<&str>,
-    ) -> Result<Vec<PageVersion>> {
-        unimplemented!()
+    async fn get_versions(&self, slug: &str, source_id: Option<&str>) -> Result<Vec<PageVersion>> {
+        let conn = self.conn().await?;
+        let source_id = source_id.unwrap_or("default");
+
+        // Resolve page_id.
+        let mut rows = conn
+            .query(
+                "SELECT id FROM pages WHERE slug = ?1 AND source_id = ?2",
+                ::libsql::params![slug.to_string(), source_id.to_string()],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("get_versions page lookup failed: {e}")))?;
+        let page_row = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("get_versions page fetch failed: {e}")))?;
+        let Some(page_row) = page_row else {
+            return Ok(vec![]);
+        };
+        let page_id: i64 = page_row
+            .get(0)
+            .map_err(|e| Error::engine(format!("get_versions decode page_id: {e}")))?;
+
+        let mut rows = conn
+            .query(
+                "SELECT id, page_id, compiled_truth, frontmatter, snapshot_at \
+                 FROM page_versions \
+                 WHERE page_id = ?1 \
+                 ORDER BY snapshot_at DESC, id DESC",
+                ::libsql::params![page_id],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("get_versions query failed: {e}")))?;
+
+        let mut results = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("get_versions fetch failed: {e}")))?
+        {
+            let id: i64 = row
+                .get(0)
+                .map_err(|e| Error::engine(format!("get_versions decode id: {e}")))?;
+            let v_page_id: i64 = row
+                .get(1)
+                .map_err(|e| Error::engine(format!("get_versions decode page_id: {e}")))?;
+            let compiled_truth: String = row
+                .get(2)
+                .map_err(|e| Error::engine(format!("get_versions decode truth: {e}")))?;
+            let fm_text: String = row
+                .get(3)
+                .map_err(|e| Error::engine(format!("get_versions decode frontmatter: {e}")))?;
+            let snapshot_at: String = row
+                .get(4)
+                .map_err(|e| Error::engine(format!("get_versions decode snapshot_at: {e}")))?;
+            let frontmatter: Value = serde_json::from_str(&fm_text)
+                .map_err(|e| Error::engine(format!("get_versions parse frontmatter: {e}")))?;
+            results.push(PageVersion {
+                id: id as u64,
+                page_id: v_page_id as u64,
+                compiled_truth,
+                frontmatter,
+                snapshot_at,
+            });
+        }
+        Ok(results)
     }
 
     async fn revert_to_version(
         &self,
-        _slug: &str,
-        _version_id: u64,
-        _source_id: Option<&str>,
+        slug: &str,
+        version_id: u64,
+        source_id: Option<&str>,
     ) -> Result<()> {
-        unimplemented!()
+        let conn = self.conn().await?;
+        let source_id = source_id.unwrap_or("default");
+
+        // Read the version snapshot.
+        let mut rows = conn
+            .query(
+                "SELECT compiled_truth, frontmatter FROM page_versions WHERE id = ?1",
+                ::libsql::params![version_id as i64],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("revert_to_version lookup failed: {e}")))?;
+        let ver_row = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("revert_to_version fetch failed: {e}")))?;
+        let Some(ver_row) = ver_row else {
+            return Err(Error::engine(format!("version {version_id} not found")));
+        };
+        let compiled_truth: String = ver_row
+            .get(0)
+            .map_err(|e| Error::engine(format!("revert_to_version decode truth: {e}")))?;
+        let frontmatter_text: String = ver_row
+            .get(1)
+            .map_err(|e| Error::engine(format!("revert_to_version decode frontmatter: {e}")))?;
+
+        // Apply to the live page. generation trigger handles cache invalidation.
+        let affected = conn
+            .execute(
+                "UPDATE pages SET compiled_truth = ?1, frontmatter = ?2, updated_at = ?3 \
+                 WHERE slug = ?4 AND source_id = ?5 AND deleted_at IS NULL",
+                ::libsql::params![
+                    compiled_truth,
+                    frontmatter_text,
+                    current_utc_iso8601(),
+                    slug.to_string(),
+                    source_id.to_string(),
+                ],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("revert_to_version update failed: {e}")))?;
+
+        if affected == 0 {
+            return Err(Error::page_not_found(slug, Some(source_id)));
+        }
+        Ok(())
     }
 
     async fn update_slug(
         &self,
-        _old_slug: &str,
-        _new_slug: &str,
-        _source_id: Option<&str>,
+        old_slug: &str,
+        new_slug: &str,
+        source_id: Option<&str>,
     ) -> Result<()> {
-        unimplemented!()
+        let conn = self.conn().await?;
+        let source_id = source_id.unwrap_or("default");
+
+        // Conflict check: new_slug must not already exist in this source.
+        let mut rows = conn
+            .query(
+                "SELECT 1 FROM pages WHERE slug = ?1 AND source_id = ?2",
+                ::libsql::params![new_slug.to_string(), source_id.to_string()],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("update_slug conflict check failed: {e}")))?;
+        if rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("update_slug conflict fetch failed: {e}")))?
+            .is_some()
+        {
+            return Err(Error::engine(format!(
+                "slug '{new_slug}' already exists in source '{source_id}'"
+            )));
+        }
+
+        let affected = conn
+            .execute(
+                "UPDATE pages SET slug = ?1, updated_at = ?2 \
+                 WHERE slug = ?3 AND source_id = ?4 AND deleted_at IS NULL",
+                ::libsql::params![
+                    new_slug.to_string(),
+                    current_utc_iso8601(),
+                    old_slug.to_string(),
+                    source_id.to_string(),
+                ],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("update_slug failed: {e}")))?;
+
+        if affected == 0 {
+            return Err(Error::page_not_found(old_slug, Some(source_id)));
+        }
+        Ok(())
     }
 
+    /// Explicit no-op — libsql page rows use integer `page_id` foreign keys
+    /// so there are no embedded slug strings to rewrite. Returns `Ok(())`.
     async fn rewrite_links(&self, _old_slug: &str, _new_slug: &str) -> Result<()> {
-        unimplemented!()
+        Ok(())
     }
 
     async fn find_orphan_pages(&self) -> Result<Vec<OrphanPage>> {

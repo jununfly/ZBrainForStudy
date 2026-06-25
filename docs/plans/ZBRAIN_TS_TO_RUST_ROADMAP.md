@@ -65,6 +65,10 @@ GitHub issue #19 closed (commit 6b4e7e2). Compile-only slice: RawData/PageVersio
 - Q: How to represent sourceId options? → Keep Option<&str> for all sourceId parameters. No separate options structs (RawDataOpts, PageVersionOpts, UpdateSlugOpts) in this parity slice. (Consistent with existing get_file/upsert_file style. Upgrade to structs only when field count grows to 3+.)
 - Q: How to stub backend implementations? → Stub all 7 methods with unimplemented!() in InMemory, libsql, and Postgres backends. (This slice is compile-only. Actual behavior moves to 1-2-2-3 (InMemory), 1-2-2-4 (libsql), and 1-2-2-5 (Postgres). No-op rewriteLinks stays unimplemented until that behavior slice.)
 
-### 当前施工：1-2-2-3. Implement InMemory advanced Page writes behavior
+### ✅ 已完成：1-2-2-3. Implement InMemory advanced Page writes behavior
 
-GitHub issue #20. InMemoryEngine full behavior for 7 methods: put_raw_data / get_raw_data / create_version / get_versions / revert_to_version / update_slug / rewrite_links. raw_data_store keyed by (page_id, source); version_store monotonic ids newest-first; rewrite_links explicit no-op.
+GitHub issue #20 closed (commit 4fdc8b8). InMemoryEngine full behavior for 7 methods: put_raw_data / get_raw_data / create_version / get_versions / revert_to_version / update_slug / rewrite_links. raw_data_store keyed by (page_id, source); version_store monotonic ids newest-first; rewrite_links explicit no-op.
+
+### 当前施工：1-2-2-4. Implement libsql advanced Page writes behavior
+
+GitHub issue #21. Adds SQL migration 0008_raw_data_and_page_versions (SQLite + PG), wires 7 real SQL implementations in libsql backend. 14 focused libsql tests.
