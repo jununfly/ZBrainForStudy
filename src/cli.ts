@@ -35,13 +35,13 @@ for (const op of operations) {
 }
 
 // CLI-only commands that bypass the operation layer
-const CLI_ONLY = new Set(['init', 'reinit-pglite', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'serve', 'call', 'config', 'doctor', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'features', 'autopilot', 'graph-query', 'jobs', 'agent', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'sources', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'repos', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'frontmatter', 'auth', 'friction', 'claw-test', 'book-mirror', 'takes', 'think', 'salience', 'anomalies', 'transcripts', 'models', 'remote', 'recall', 'forget', 'edges-backfill', 'cache', 'ze-switch', 'founder', 'brainstorm', 'lsd', 'schema', 'capture']);
+const CLI_ONLY = new Set(['reinit-pglite', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'serve', 'call', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'features', 'autopilot', 'graph-query', 'jobs', 'agent', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'sources', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'repos', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'frontmatter', 'auth', 'friction', 'claw-test', 'book-mirror', 'takes', 'think', 'salience', 'anomalies', 'transcripts', 'models', 'remote', 'recall', 'forget', 'edges-backfill', 'cache', 'ze-switch', 'founder', 'brainstorm', 'lsd', 'capture']);
 // CLI-only commands whose handlers print their own --help text. These are
 // excluded from the generic short-circuit so detailed per-command and
 // per-subcommand usage stays reachable.
 const CLI_ONLY_SELF_HELP = new Set([
   'upgrade', 'post-upgrade', 'check-update',
-  'embed', 'config',
+  'embed',
   'skillpack', 'skillpack-check',
   'integrations', 'friction',
   'frontmatter', 'check-resolvable',
@@ -64,10 +64,7 @@ const CLI_ONLY_SELF_HELP = new Set([
   // the generic short-circuit so the destructive-action warning text
   // reaches the user.
   'reinit-pglite',
-  // v0.40.6.0 Schema Cathedral v3 — `zbrain schema --help` should hit
-  // schema.ts printHelp() with the full 22+ verb taxonomy, not the
-  // generic short-circuit's one-line stub.
-  'schema',
+  // NOTE: schema is now implemented in Rust - see crates/zbrain-cli/src/lib.rs
   // v0.41.11.0 — extract-conversation-facts ships its own detailed HELP
   // describing segment splitting + checkpointing + budget caps + the
   // unified types config story. Route around the generic short-circuit.
@@ -825,15 +822,13 @@ async function handleCliOnly(command: string, args: string[]) {
   }
 
   // Commands that don't need a database connection
-  if (command === 'schema') {
-    const { runSchema } = await import('./commands/schema.ts');
-    await runSchema(args);
-    return;
-  }
-  if (command === 'init') {
-    const { runInit } = await import('./commands/init.ts');
-    await runInit(args);
-    return;
+  // NOTE: init and schema are now implemented in Rust
+  // See crates/zbrain-cli/src/lib.rs
+  // These commands are routed to the Rust binary via npm bin entry
+  if (command === 'schema' || command === 'init') {
+    console.error(`\`zbrain ${command}\` is now implemented in Rust.`);
+    console.error('Please run the Rust CLI directly or ensure your npm bin links are updated.');
+    process.exit(1);
   }
   // v0.37 fix wave (deferred TODO, shipped): one-command wipe-and-reinit.
   // Spawns its own engine internally so no pre-bound engine needed.
@@ -987,53 +982,12 @@ async function handleCliOnly(command: string, args: string[]) {
     await runSkillpackCheck(args);
     return;
   }
+  // NOTE: doctor is now implemented in Rust
+  // See crates/zbrain-cli/src/lib.rs
   if (command === 'doctor') {
-    // Multi-topology v1: thin-client doctor. When `~/.zbrain/config.json`
-    // has remote_mcp set, every DB-bound check is irrelevant. Route to the
-    // outbound-HTTP probe set in `src/core/doctor-remote.ts` and return
-    // before any local-engine work.
-    const cfgForDoctor = loadConfig();
-    if (isThinClient(cfgForDoctor)) {
-      const { runRemoteDoctor } = await import('./core/doctor-remote.ts');
-      await runRemoteDoctor(cfgForDoctor!, args);
-      return;
-    }
-
-    // v0.36+ brain-health-100: --remediation-plan and --remediate go
-    // through dedicated functions that compute from engine.getHealth()
-    // (cheap path D7), NOT the full doctor walk.
-    if (args.includes('--remediation-plan')) {
-      const { runRemediationPlan } = await import('./commands/doctor.ts');
-      const eng = await connectEngine();
-      try { await runRemediationPlan(eng, args); } finally { await eng.disconnect(); }
-      return;
-    }
-    if (args.includes('--remediate')) {
-      const { runRemediate } = await import('./commands/doctor.ts');
-      const eng = await connectEngine();
-      try { await runRemediate(eng, args); } finally { await eng.disconnect(); }
-      return;
-    }
-
-    // Doctor runs filesystem checks first (no DB needed), then DB checks.
-    // --fast skips DB checks entirely.
-    const { runDoctor } = await import('./commands/doctor.ts');
-    const { getDbUrlSource } = await import('./core/config.ts');
-    if (args.includes('--fast')) {
-      // Pass the DB URL source so doctor can tell "no config at all" from
-      // "user chose --fast while config is present".
-      await runDoctor(null, args, getDbUrlSource());
-    } else {
-      try {
-        const eng = await connectEngine();
-        await runDoctor(eng, args);
-        await eng.disconnect();
-      } catch {
-        // DB unavailable — still run filesystem checks
-        await runDoctor(null, args, getDbUrlSource());
-      }
-    }
-    return;
+    console.error(`\`zbrain doctor\` is now implemented in Rust.`);
+    console.error('Please run the Rust CLI directly or ensure your npm bin links are updated.');
+    process.exit(1);
   }
 
   if (command === 'ze-switch') {
@@ -1262,12 +1216,13 @@ async function handleCliOnly(command: string, args: string[]) {
         await runCall(engine, args);
         break;
       }
+      // NOTE: config is now implemented in Rust - see crates/zbrain-cli/src/lib.rs
       case 'config': {
-        const { runConfig } = await import('./commands/config.ts');
-        await runConfig(engine, args);
-        break;
+        console.error(`\`zbrain config\` is now implemented in Rust.`);
+        console.error('Please run the Rust CLI directly or ensure your npm bin links are updated.');
+        process.exit(1);
       }
-      // doctor is handled before connectEngine() above
+      // doctor is handled before connectEngine() above - now implemented in Rust
       case 'migrate': {
         const { runMigrateEngine } = await import('./commands/migrate-engine.ts');
         await runMigrateEngine(engine, args);

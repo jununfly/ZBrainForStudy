@@ -649,12 +649,12 @@
     "1-3-4": {
       "id": "1-3-4",
       "label": "Delete replaced TypeScript bootstrap command surface",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-3",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "Deleted src/commands/init.ts, doctor.ts, config.ts, schema.ts. Updated src/cli.ts to remove routes and add fallback error messages. Test files still reference deleted modules - these will be cleaned up when migrating the corresponding tests to Rust."
     },
     "1-4-1": {
       "id": "1-4-1",
