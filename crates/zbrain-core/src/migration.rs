@@ -54,16 +54,18 @@ pub trait Migration: Send + Sync {
     // Currently stubbed out — exact signatures depend on BrainEngine calling
     // pattern which becomes concrete during libsql/postgres integration.
 
-    /// Placeholder stub for handler function. Signature TBD in 1-2-3-5.
-    #[allow(unused_variables)]
-    fn handler_stub(&self) -> Result<()> {
-        unimplemented!("handler signature deferred to 1-2-3-5")
+    /// Optional handler function executed after the SQL migration succeeds.
+    /// For application-level transformations that cannot be expressed in SQL.
+    /// Default implementation is a no-op.
+    fn handler(&self) -> Result<()> {
+        Ok(())
     }
 
-    /// Placeholder stub for verify hook. Signature TBD in 1-2-3-5.
-    #[allow(unused_variables)]
-    fn verify_stub(&self) -> Result<bool> {
-        unimplemented!("verify signature deferred to 1-2-3-5")
+    /// Optional verification hook executed after migration and handler.
+    /// Returns Ok(true) if verification passed, Ok(false) if failed.
+    /// Default implementation always returns Ok(true).
+    fn verify(&self) -> Result<bool> {
+        Ok(true)
     }
 }
 

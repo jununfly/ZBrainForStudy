@@ -489,37 +489,90 @@
           "note": "User confirmed: Q5 = B. Single responsibility principle. Symmetric with future Postgres migration tests. Reuses temp DB setup pattern."
         }
       ],
-      "notes": "Replace ad-hoc const array MIGRATIONS in libsql.rs with MigrationRegistry from migration.rs. New rust_schema_version table tracks progress. All 8 existing migrations ported with zero SQL changes."
+      "notes": "Replace ad-hoc const array MIGRATIONS in libsql.rs with MigrationRegistry from migration.rs. New rust_schema_version table tracks progress. SINGLE TRANSACTION for all migrations (retroactive alignment per 1-2-3-4 Q2 decision). All 8 existing migrations ported with zero SQL changes."
     },
     "1-2-3-4": {
       "id": "1-2-3-4",
       "label": "Integrate Rust runner into Postgres backend",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "exploit",
       "parent": "1-2-3",
       "children": [],
-      "decisions": [],
-      "notes": "Replace sqlx::migrate!() in postgres.rs with the shared Rust migration registry. Add postgres-specific sqlFor support and transaction=false passthrough for CONCURRENTLY. Port existing 0001-0009 into the new registry."
+      "decisions": [
+        {
+          "q": "Postgres version tracking mechanism?",
+          "answer": "Align with libsql: use rust_schema_version standalone table. Ignore legacy _sqlx_migrations table - no real users yet.",
+          "note": "User confirmed: Q1 = B. Hard cutover aligned with libsql. Single version table across backends."
+        },
+        {
+          "q": "Transaction boundary strategy?",
+          "answer": "Single transaction for ALL migrations (all-or-nothing atomicity). libsql will be retroactively aligned to the same pattern.",
+          "note": "User confirmed: Q2 = C. Both backends use the same single-transaction mode. Atomic upgrade is safer for stateful systems."
+        },
+        {
+          "q": "PostgresMigration implementation pattern?",
+          "answer": "Symmetric with libsql: PostgresMigration struct impl Migration trait. Two backends maintain structural symmetry.",
+          "note": "User confirmed: Q3 = A. Code structure parallel with libsql.rs: PostgresMigration struct + POSTGRES_MIGRATIONS registry static."
+        },
+        {
+          "q": "Postgres-specific test strategy?",
+          "answer": "New dedicated test file postgres_engine_migrations.rs. Symmetric with libsql migration tests, using PgFixture.",
+          "note": "User confirmed: Q4 = A. Single responsibility principle. PgFixture boilerplate is acceptable for structural symmetry."
+        }
+      ],
+      "notes": "Replace sqlx::migrate!() with MigrationRegistry from migration.rs. Single transaction for all migrations. rust_schema_version table shared semantic with libsql. All 9 existing migrations ported with SQL unchanged except for dialect-specific differences."
     },
     "1-2-3-5": {
       "id": "1-2-3-5",
       "label": "Build TS bridge + port handler/verify functions to Rust",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "exploit",
       "parent": "1-2-3",
       "children": [],
-      "decisions": [],
-      "notes": "Make TS src/core/migrate.ts a thin bridge that calls into Rust init_schema(). Port all TS handler() and verify() functions to Rust. Remove all .sql files and MIGRATIONS array from TS."
+      "decisions": [
+        {
+          "q": "TS bridge calling pattern to Rust init_schema?",
+          "answer": "Through BrainEngine trait: engine.init_schema(). Reuse existing engine abstraction, no new FFI boundary.",
+          "note": "User confirmed: Q1 = A. TS runMigrations already receives engine: BrainEngine parameter; direct call is natural and zero overhead."
+        },
+        {
+          "q": "TS side cleanup scope?",
+          "answer": "Full delete: MIGRATIONS array + all embedded .sql files. Rust is single source of truth. No fallback, no dual runner period.",
+          "note": "User confirmed: Q2 = A. No production users = no migration history to preserve. Clean and complete cutover is both safe and simplest."
+        },
+        {
+          "q": "Handler/Verify migration porting strategy?",
+          "answer": "Each handler and verify becomes distinct methods on the Migration trait. Type-safe compiler-enforced: all backends must implement all methods.",
+          "note": "User confirmed: Q3 = A. Aligns with existing BrainEngine trait pattern. No optional implementations; no orphan behavior gaps across backends."
+        },
+        {
+          "q": "Testing strategy for TS bridge?",
+          "answer": "Compile-level verification only: ensure TS runMigrations exists and only calls engine.initSchema(). No full integration test runtime needed.",
+          "note": "User confirmed: Q4 = B. The bridge is extremely thin (single line delegation). Rust migration behavior is already thoroughly tested by backend-specific tests."
+        }
+      ],
+      "notes": "TS runMigrations() becomes single-line call to engine.initSchema(). All TS migration SQL + MIGRATIONS array deleted. Migration trait extended with handler() and verify() methods, implemented by both LibsqlMigration and PostgresMigration."
     },
     "1-2-3-6": {
       "id": "1-2-3-6",
       "label": "Validate and close schema migrations ownership transfer",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "exploit",
       "parent": "1-2-3",
       "children": [],
-      "decisions": [],
-      "notes": "Final validation gate: end-to-end migration tests across both backends, verify idempotency by running twice, confirm TS bridge delegates fully, delete all unused TS migration code. Close node 1-2-3."
+      "decisions": [
+        {
+          "q": "Validation scope and depth?",
+          "answer": "Compile verification + code structure verification only. No end-to-end integration tests required. Verify: cargo check passes, bun typecheck passes, no TS migration code remains.",
+          "note": "User confirmed: Q1 = A. Fast, no runtime dependencies. Individual backend tests already cover migration behavior thoroughly; gate just needs to confirm integration compiles."
+        },
+        {
+          "q": "Parent node 1-2-3 completion criteria?",
+          "answer": "All 6 children must be status = completed before marking node 1-2-3 as complete. No early closure.",
+          "note": "User confirmed: Q2 = A. Strict completion gate. Audit, foundation, libsql, postgres, bridge, AND validation all must show complete before parent closes."
+        }
+      ],
+      "notes": "Validation gate: cargo check -p zbrain-core, bun typecheck, grep confirms zero TS migration code remains. Parent 1-2-3 closes only after all 6 children reach completed status."
     },
     "1-2-4": {
       "id": "1-2-4",

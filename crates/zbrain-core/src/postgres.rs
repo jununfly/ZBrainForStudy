@@ -42,6 +42,7 @@ use crate::engine::{
     PageInput, PageSort, ResolveSlugsOpts,
 };
 use crate::error::{Error, Result};
+use crate::migration::{Migration, MigrationRegistry};
 use crate::types::FindDuplicatePageOpts;
 use crate::types::OrphanPage;
 use crate::types::PageRef;
@@ -52,9 +53,94 @@ use crate::types::{
     UpsertFileResult,
 };
 
-/// Embedded SQL migrations, baked into the binary at compile time. Driven by
-/// `init_schema`. Future migrations are append-only files under `migrations/`.
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+/// Postgres-specific migration implementation. Wraps raw SQL from
+/// migrations/ files and implements the Migration trait.
+#[derive(Debug, Clone)]
+pub struct PostgresMigration {
+    version: i64,
+    name: &'static str,
+    sql: &'static str,
+}
+
+impl Migration for PostgresMigration {
+    fn version(&self) -> i64 {
+        self.version
+    }
+
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn sql(&self) -> &str {
+        self.sql
+    }
+}
+
+/// Embedded SQL migrations, baked into the binary at compile time.
+/// Rust is now single source of truth for Postgres migrations.
+const MIGRATION_0001: &str = include_str!("../migrations/0001_init.sql");
+const MIGRATION_0002: &str = include_str!("../migrations/0002_pages_full_columns.sql");
+const MIGRATION_0003: &str = include_str!("../migrations/0003_salience_and_full_generation_trigger.sql");
+const MIGRATION_0004: &str = include_str!("../migrations/0004_page_tags.sql");
+const MIGRATION_0005: &str = include_str!("../migrations/0005_takes_min.sql");
+const MIGRATION_0006: &str = include_str!("../migrations/0006_links.sql");
+const MIGRATION_0007: &str = include_str!("../migrations/0007_files.sql");
+const MIGRATION_0008: &str = include_str!("../migrations/0008_raw_data_and_page_versions.sql");
+const MIGRATION_0009: &str = include_str!("../migrations/0009_raw_data_and_page_versions.sql");
+
+/// Global migration registry for Postgres backend. Built once at runtime first use.
+/// All 9 existing migrations ported with zero SQL changes.
+pub static POSTGRES_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
+    let mut registry = MigrationRegistry::new();
+
+    registry.add(Box::new(PostgresMigration {
+        version: 1,
+        name: "init",
+        sql: MIGRATION_0001,
+    }));
+    registry.add(Box::new(PostgresMigration {
+        version: 2,
+        name: "pages_full_columns",
+        sql: MIGRATION_0002,
+    }));
+    registry.add(Box::new(PostgresMigration {
+        version: 3,
+        name: "salience_and_full_generation_trigger",
+        sql: MIGRATION_0003,
+    }));
+    registry.add(Box::new(PostgresMigration {
+        version: 4,
+        name: "page_tags",
+        sql: MIGRATION_0004,
+    }));
+    registry.add(Box::new(PostgresMigration {
+        version: 5,
+        name: "takes_min",
+        sql: MIGRATION_0005,
+    }));
+    registry.add(Box::new(PostgresMigration {
+        version: 6,
+        name: "links",
+        sql: MIGRATION_0006,
+    }));
+    registry.add(Box::new(PostgresMigration {
+        version: 7,
+        name: "files",
+        sql: MIGRATION_0007,
+    }));
+    registry.add(Box::new(PostgresMigration {
+        version: 8,
+        name: "raw_data_and_page_versions",
+        sql: MIGRATION_0008,
+    }));
+    registry.add(Box::new(PostgresMigration {
+        version: 9,
+        name: "raw_data_and_page_versions_pg",
+        sql: MIGRATION_0009,
+    }));
+
+    registry
+});
 
 /// Full 28-column projection used by every read path (`get_page`,
 /// `list_pages`, and the `RETURNING` clause of `put_page`). Centralised so
@@ -237,12 +323,87 @@ impl BrainEngine for PostgresEngine {
         Ok(())
     }
 
+    /// Read current migration version from rust_schema_version table.
+    async fn read_rust_schema_version(pool: &PgPool) -> Result<i64> {
+        let row = sqlx::query("SELECT version FROM rust_schema_version LIMIT 1")
+            .fetch_one(pool)
+            .await
+            .map_err(|e| Error::engine(format!("read rust_schema_version failed: {e}")))?;
+        row.try_get(0)
+            .map_err(|e| Error::engine(format!("decode rust_schema_version failed: {e}")))
+    }
+
+    /// Update rust_schema_version table to the given version number.
+    async fn set_rust_schema_version(pool: &PgPool, ver: i64) -> Result<()> {
+        sqlx::query("UPDATE rust_schema_version SET version = $1")
+            .bind(ver)
+            .execute(pool)
+            .await
+            .map_err(|e| Error::engine(format!("set rust_schema_version = {ver} failed: {e}")))?;
+        Ok(())
+    }
+
     async fn init_schema(&self) -> Result<()> {
         let pool = self.pool()?;
-        MIGRATOR
-            .run(pool)
+
+        // Step 1: Bootstrap the version tracking table. Hard cutover from
+        // sqlx::migrate!() era; no backward compatibility with _sqlx_migrations.
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS rust_schema_version (
+                version INTEGER PRIMARY KEY NOT NULL DEFAULT 0,
+                applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO rust_schema_version (version)
+            VALUES (0)
+            ON CONFLICT DO NOTHING;
+            "#,
+        )
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("rust_schema_version bootstrap failed: {e}")))?;
+
+        // Step 2: Read current version from the table
+        let current = Self::read_rust_schema_version(pool).await?;
+        let latest = POSTGRES_MIGRATIONS.latest_version();
+        if current >= latest {
+            return Ok(());
+        }
+
+        // Step 3: Apply all migrations in a SINGLE transaction (all-or-nothing).
+        // Same pattern as libsql for symmetry per 1-2-3-4 Q2 decision.
+        let mut tx = pool
+            .begin()
             .await
-            .map_err(|e| Error::engine(format!("migration failed: {e}")))?;
+            .map_err(|e| Error::engine(format!("migration tx BEGIN failed: {e}")))?;
+
+        let mut applied_any = false;
+        for migration in POSTGRES_MIGRATIONS.iter() {
+            let ver = migration.version();
+            if ver <= current {
+                continue;
+            }
+
+            applied_any = true;
+            sqlx::query(migration.sql())
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| {
+                    // ROLLBACK is automatic on Drop if we return before commit
+                    Error::engine(format!("migration {ver} failed: {e}"))
+                })?;
+        }
+
+        // Version number updated once at the end (single transaction mode)
+        if applied_any {
+            let latest = POSTGRES_MIGRATIONS.latest_version();
+            Self::set_rust_schema_version(pool, latest).await?;
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| Error::engine(format!("migration tx COMMIT failed: {e}")))?;
+
         Ok(())
     }
 

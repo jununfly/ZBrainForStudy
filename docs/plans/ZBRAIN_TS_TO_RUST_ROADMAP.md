@@ -117,4 +117,15 @@ Compile-only foundation slice complete. Object-safe Migration trait + registry +
 - Q: Handler/verify signatures in this slice? → Stub `unimplemented!()`, deferred to 1-2-3-5 ✅
 - Q: Object-safety test? → Full dedicated test file ✅
 
-Next: 1-2-3-3 Integrate Rust runner into libsql backend.
+Next: 1-2-3-4 Integrate Rust runner into Postgres backend.
+
+### ✅ 已完成：1-2-3-3. Integrate Rust runner into libsql backend
+
+**Commit:** `5700464`
+
+**Deliverables:**
+  - LibsqlMigration struct implementing Migration trait
+  - LIBQL_MIGRATIONS: LazyLock<MigrationRegistry> (8 migrations)
+  - RUST_SCHEMA_VERSION_BOOTSTRAP + rust_schema_version table
+  - init_schema rewritten with one-transaction-per-migration
+  - 6 tests in libsql_engine_migrations.rs

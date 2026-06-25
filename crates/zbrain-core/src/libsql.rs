@@ -398,34 +398,39 @@ impl BrainEngine for LibsqlEngine {
             return Ok(());
         }
 
-        // Step 3: Apply each migration whose version > current_version.
-        // One transaction per migration per 1-2-3-3 Q2 decision.
-        // Version number is updated after each successful migration so
-        // crash mid-way resumes from the right slot on the next init_schema.
+        // Step 3: Apply all migrations in a single transaction (Q2 = C).
+        // All-or-nothing atomicity: either all migrations apply successfully
+        // or nothing changes. Version number is set once at the end.
+        conn.execute_batch("BEGIN TRANSACTION")
+            .await
+            .map_err(|e| Error::engine(format!("migration batch BEGIN failed: {e}")))?;
+
+        let mut applied_any = false;
         for migration in LIBQL_MIGRATIONS.iter() {
             let ver = migration.version();
             if ver <= current {
                 continue;
             }
 
-            // Wrap each migration in its own transaction
-            conn.execute_batch("BEGIN TRANSACTION")
-                .await
-                .map_err(|e| Error::engine(format!("migration {ver} BEGIN failed: {e}")))?;
-
+            applied_any = true;
             match conn.execute_batch(migration.sql()).await {
-                Ok(_) => {
-                    conn.execute_batch("COMMIT").await.map_err(|e| {
-                        Error::engine(format!("migration {ver} COMMIT failed: {e}"))
-                    })?;
-                    Self::set_rust_schema_version(&conn, ver).await?;
-                }
+                Ok(_) => {}
                 Err(e) => {
                     let _ = conn.execute_batch("ROLLBACK").await;
                     return Err(Error::engine(format!("migration {ver} failed: {e}")));
                 }
             }
         }
+
+        // Version number updated once at the end (single transaction mode)
+        if applied_any {
+            let latest = LIBQL_MIGRATIONS.latest_version();
+            Self::set_rust_schema_version(&conn, latest).await?;
+        }
+
+        conn.execute_batch("COMMIT")
+            .await
+            .map_err(|e| Error::engine(format!("migration batch COMMIT failed: {e}")))?;
 
         Ok(())
     }
