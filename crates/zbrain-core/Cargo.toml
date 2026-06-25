@@ -24,6 +24,10 @@ libsql = { workspace = true }
 # are pulled into the library, so callers stay free to pick any runtime.
 tokio = { workspace = true }
 tracing = { workspace = true }
+# Slice #41: Params validation. Lightweight trait-based validation with derive support.
+garde = { workspace = true }
+# Slice #41: Cross-platform path diffing for upload validation.
+pathdiff = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

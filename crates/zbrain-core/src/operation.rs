@@ -457,6 +457,336 @@ pub struct SourceScopeOpts {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// Validation infrastructure (Slice #41)
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Validatable operation params. Mirrors the implicit validation contract
+/// in TypeScript where each operation validates its params at handler entry.
+pub trait ValidateParams {
+    /// Validate params against the schema rules. Returns OperationError with
+    /// `invalid_params` code on validation failure.
+    fn validate(&self) -> OperationResult<()>;
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Trust boundary enforcement guards (Slice #42, Security-critical)
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Enforce `localOnly` operation constraint.
+///
+/// **Security-critical:** Operations marked `local_only = true` MUST NOT be
+/// callable from remote/MCP contexts. This guard is called at dispatch layer
+/// BEFORE any handler code runs.
+///
+/// # Errors
+///
+/// Returns `permission_denied` with exact TS-parity error message when:
+/// - `local_only = true` AND `ctx.remote = true`
+pub fn enforce_local_only(
+    operation_name: &str,
+    local_only: bool,
+    ctx: &OperationContext,
+) -> OperationResult<()> {
+    if local_only && ctx.remote {
+        return Err(OperationError::permission_denied(format!(
+            "Operation '{operation_name}' is only available locally (MCP/remote callers cannot use it)"
+        )));
+    }
+    Ok(())
+}
+
+/// D18 Security Constraint: Remote callers cannot pass `image_path`.
+///
+/// **Why:** `image_path` reads from the local filesystem. Remote/MCP callers
+/// must use `image_url` (fetch from network) or `image_data` (base64 upload).
+///
+/// # Errors
+///
+/// Returns `permission_denied` with exact TS-parity error message when:
+/// - `ctx.remote = true` AND `image_path.is_some()`
+pub fn enforce_d18_image_path_constraint(
+    ctx: &OperationContext,
+    image_path: Option<&str>,
+) -> OperationResult<()> {
+    if ctx.remote && image_path.is_some() {
+        return Err(OperationError::permission_denied(
+            "image_path is not permitted for remote callers (D18). Use image_url or image_data instead."
+        ));
+    }
+    Ok(())
+}
+
+/// Check if a slug matches an allow-list prefix pattern.
+///
+/// Glob form: `<prefix>/*` matches any slug starting with `<prefix>/` and
+/// having at least one more segment. Bare `<prefix>` (no trailing `/*`)
+/// matches that exact slug only.
+///
+/// **Important:** `prefix/*` does NOT match the bare `prefix` itself.
+/// Mirrors TS `matchesSlugAllowList` function 1:1.
+pub fn matches_slug_prefix(slug: &str, prefix: &str) -> bool {
+    if let Some(base) = prefix.strip_suffix("/*") {
+        // Wildcard prefix: must start with base/ and have at least one more segment
+        // Base itself does NOT match; we'd "continue" to next prefix in TS
+        slug.starts_with(&format!("{base}/"))
+    } else {
+        // Exact match only
+        slug == prefix
+    }
+}
+
+/// Enforce subagent put_page prefix white-list (v0.23 dream cycle).
+///
+/// **Security-critical:** Subagents cannot write to arbitrary pages. They are
+/// confined to `allowed_slug_prefixes` passed through the context from the
+/// synthesizer/patterns phase.
+///
+/// # Rules
+/// 1. If NOT in subagent context → always allowed
+/// 2. If `allowed_slug_prefixes` is set → check against every prefix in list
+/// 3. If `allowed_slug_prefixes` not set → fall back to legacy subagent namespace
+/// 4. No match → reject with `permission_denied`
+///
+/// # Errors
+///
+/// Returns `permission_denied` when subagent context and slug not in allow-list.
+pub fn enforce_subagent_put_page_prefix(
+    ctx: &OperationContext,
+    slug: &str,
+) -> OperationResult<()> {
+    // Not a subagent context → allowed
+    if ctx.via_subagent != Some(true) && ctx.subagent_id.is_none() {
+        return Ok(());
+    }
+
+    // Rule 2: Check allow-list if set
+    if let Some(prefixes) = &ctx.allowed_slug_prefixes {
+        if !prefixes.is_empty() {
+            for prefix in prefixes {
+                if matches_slug_prefix(slug, prefix) {
+                    return Ok(());
+                }
+            }
+            // No prefix matched
+            let prefix_list = prefixes.join(", ");
+            return Err(OperationError::permission_denied(format!(
+                "Subagent cannot write to page '{slug}'. Allowed prefixes: {prefix_list}"
+            )));
+        }
+    }
+
+    // Rule 3: Fall back to legacy subagent namespace
+    // wiki/agents/{id}/% pattern
+    if let Some(subagent_id) = ctx.subagent_id {
+        let legacy_prefix = format!("wiki/agents/{subagent_id}/");
+        if slug.starts_with(&legacy_prefix) {
+            return Ok(());
+        }
+    }
+
+    // Fail-closed: no matching rule found
+    Err(OperationError::permission_denied(format!(
+        "Subagent cannot write to page '{slug}'. No matching prefix in allow-list and subagent_id not present for legacy namespace check."
+    )))
+}
+
+// ── CJK character support (v0.32.7) ───────────────────────────────────────
+
+/// Returns true if the char is in CJK ranges allowed in slugs/filenames:
+/// Han (U+4E00-U+9FFF), Hiragana (U+3040-U+309F), Katakana (U+30A0-U+30FF),
+/// Hangul Syllables (U+AC00-U+D7AF).
+fn is_cjk_slug_char(c: char) -> bool {
+    matches!(c,
+        '\u{4E00}'..='\u{9FFF}' |   // CJK Unified Ideographs (Han)
+        '\u{3040}'..='\u{309F}' |   // Hiragana
+        '\u{30A0}'..='\u{30FF}' |   // Katakana
+        '\u{AC00}'..='\u{D7AF}'     // Hangul Syllables
+    )
+}
+
+// ── Upload path validator (1:1 TS parity, operations.ts:110-145) ─────────
+
+/// Validate an upload path. Two modes:
+///   - strict (remote=true): confines the resolved path to `root` and rejects symlinks.
+///     Used when the caller is untrusted (MCP over stdio/HTTP, agent-facing).
+///   - loose (remote=false): only verifies the file exists and is not a symlink whose
+///     target escapes the filesystem (no path traversal protection). Used for local CLI
+///     where the user owns the filesystem.
+///
+/// Either way: symlinks in the final component are always rejected (prevents
+/// transparent redirection to a different file than the user typed).
+///
+/// # Errors
+///
+/// Returns `OperationError` with `invalid_params` code on symlink escape,
+/// traversal, or missing file.
+pub fn validate_upload_path(
+    file_path: &str,
+    root: &str,
+    strict: bool,
+) -> OperationResult<String> {
+    use std::path::Path;
+
+    // Step 1: Resolve and realpath the file
+    let path = Path::new(file_path);
+    let real = path.canonicalize().map_err(|e| {
+        if e.to_string().contains("No such file or directory")
+            || e.to_string().contains("The system cannot find the file specified")
+        {
+            OperationError::file_not_found(file_path)
+        } else {
+            OperationError::invalid_params(format!("Cannot resolve path: {file_path}"))
+        }
+    })?;
+
+    // Step 2: Always reject final-component symlinks (basic safety for both modes)
+    // lstat race tolerance: pass if realpath succeeded (means the target exists)
+    if let Ok(meta) = path.symlink_metadata() {
+        if meta.file_type().is_symlink() {
+            return Err(OperationError::symlink_not_allowed(file_path));
+        }
+    }
+
+    if !strict {
+        return Ok(real.to_string_lossy().into_owned());
+    }
+
+    // Step 3: Strict mode — confine to root via realpath + path.relative
+    // (catches parent-dir symlinks per B5)
+    let root_path = Path::new(root);
+    let real_root = root_path.canonicalize().map_err(|_| {
+        OperationError::invalid_params(format!("Confinement root not accessible: {root}"))
+    })?;
+
+    let rel = pathdiff::diff_paths(&real, &real_root).unwrap_or_else(|| "..".into());
+    let rel_str = rel.to_string_lossy();
+
+    if rel_str.is_empty()
+        || rel_str.starts_with("..")
+        || rel_str.starts_with("../")
+        || rel_str.starts_with("..\\")
+    {
+        return Err(OperationError::path_outside_root(file_path));
+    }
+
+    // Double-check: round-trip resolve must equal original real
+    let round_trip = real_root.join(&rel);
+    if round_trip.canonicalize().ok().as_ref() != Some(&real) {
+        return Err(OperationError::path_outside_root(file_path));
+    }
+
+    Ok(real.to_string_lossy().into_owned())
+}
+
+// ── Page slug validator (1:1 TS parity, operations.ts:152-165) ───────────
+
+/// Allowlist validator for page slugs. Rejects URL-encoded traversal, backslashes,
+/// control chars, RTL overrides, Unicode lookalikes — anything outside the allowlist.
+/// Format: lowercase alphanumeric + hyphen segments separated by single forward slashes.
+///
+/// # Errors
+///
+/// Returns `OperationError` with `invalid_params` code on validation failure.
+pub fn validate_page_slug(slug: &str) -> OperationResult<()> {
+    if slug.is_empty() {
+        return Err(OperationError::invalid_params(
+            "page_slug must be a non-empty string",
+        ));
+    }
+    if slug.len() > 255 {
+        return Err(OperationError::invalid_params(
+            "page_slug exceeds 255 characters",
+        ));
+    }
+
+    // Validate each segment: alphanumeric (or CJK) + hyphens, no leading/trailing
+    // hyphens, no empty segments.
+    for segment in slug.split('/') {
+        if segment.is_empty() {
+            return Err(OperationError::invalid_params(format!(
+                "Invalid page_slug: {slug} (allowed: alphanumeric, CJK, hyphens, forward-slash separated segments)"
+            )));
+        }
+
+        let mut chars = segment.chars().peekable();
+        let first = chars.next().unwrap();
+
+        // First char must be alphanumeric or CJK
+        if !first.is_ascii_alphanumeric() && !is_cjk_slug_char(first) {
+            return Err(OperationError::invalid_params(format!(
+                "Invalid page_slug: {slug} (allowed: alphanumeric, CJK, hyphens, forward-slash separated segments)"
+            )));
+        }
+
+        // Remaining chars: alphanumeric, CJK, or hyphen
+        for c in chars {
+            if !c.is_ascii_alphanumeric() && !is_cjk_slug_char(c) && c != '-' {
+                return Err(OperationError::invalid_params(format!(
+                    "Invalid page_slug: {slug} (allowed: alphanumeric, CJK, hyphens, forward-slash separated segments)"
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// ── Filename validator (1:1 TS parity, operations.ts:197-210) ─────────────
+
+/// Allowlist validator for uploaded file basenames. Rejects control chars, backslashes,
+/// RTL overrides (\u202E), leading dot (hidden files) and leading dash (CLI flag confusion).
+/// Allows extension dots and underscores. Max 255 chars.
+///
+/// # Errors
+///
+/// Returns `OperationError` with `invalid_params` code on validation failure.
+pub fn validate_filename(name: &str) -> OperationResult<()> {
+    if name.is_empty() {
+        return Err(OperationError::invalid_params(
+            "Filename must be a non-empty string",
+        ));
+    }
+    if name.len() > 255 {
+        return Err(OperationError::invalid_params(
+            "Filename exceeds 255 characters",
+        ));
+    }
+
+    let mut chars = name.chars().peekable();
+    let first = chars.next().unwrap();
+
+    // Leading char rejection: no leading dot (hidden), no leading dash (CLI flag)
+    if first == '.' || first == '-' {
+        return Err(OperationError::invalid_params(format!(
+            "Invalid filename: {name} (allowed: alphanumeric, CJK, dot, underscore, hyphen — no leading dot/dash, no control chars or backslash)"
+        )));
+    }
+
+    // First char must be alphanumeric or CJK
+    if !first.is_ascii_alphanumeric() && !is_cjk_slug_char(first) {
+        return Err(OperationError::invalid_params(format!(
+            "Invalid filename: {name} (allowed: alphanumeric, CJK, dot, underscore, hyphen — no leading dot/dash, no control chars or backslash)"
+        )));
+    }
+
+    // Remaining chars: alphanumeric, CJK, dot, underscore, hyphen
+    for c in chars {
+        if !c.is_ascii_alphanumeric()
+            && !is_cjk_slug_char(c)
+            && c != '.'
+            && c != '_'
+            && c != '-'
+        {
+            return Err(OperationError::invalid_params(format!(
+                "Invalid filename: {name} (allowed: alphanumeric, CJK, dot, underscore, hyphen — no leading dot/dash, no control chars or backslash)"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // Operation trait (1:1 TS parity)
 // ──────────────────────────────────────────────────────────────────────────
 
@@ -683,6 +1013,293 @@ mod tests {
         logger.info("info");
         logger.warn("warn");
         logger.error("error");
+    }
+
+    // ── CJK char tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn is_cjk_slug_char_recognizes_cjk() {
+        // Han (Chinese)
+        assert!(super::is_cjk_slug_char('中'));
+        assert!(super::is_cjk_slug_char('文'));
+        // Hiragana
+        assert!(super::is_cjk_slug_char('ひ'));
+        assert!(super::is_cjk_slug_char('ら'));
+        // Katakana
+        assert!(super::is_cjk_slug_char('カ'));
+        assert!(super::is_cjk_slug_char('タ'));
+        // Hangul
+        assert!(super::is_cjk_slug_char('한'));
+        assert!(super::is_cjk_slug_char('글'));
+        // Non-CJK should be false
+        assert!(!super::is_cjk_slug_char('a'));
+        assert!(!super::is_cjk_slug_char('1'));
+        assert!(!super::is_cjk_slug_char('-'));
+        assert!(!super::is_cjk_slug_char('.'));
+    }
+
+    // ── validate_page_slug tests ───────────────────────────────────────────
+
+    #[test]
+    fn validate_page_slug_empty_rejected() {
+        let err = validate_page_slug("").unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidParams);
+        assert_eq!(err.message, "page_slug must be a non-empty string");
+    }
+
+    #[test]
+    fn validate_page_slug_too_long_rejected() {
+        let slug: String = "a".repeat(256);
+        let err = validate_page_slug(&slug).unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidParams);
+        assert_eq!(err.message, "page_slug exceeds 255 characters");
+    }
+
+    #[test]
+    fn validate_page_slug_valid_ascii_passes() {
+        assert!(validate_page_slug("hello").is_ok());
+        assert!(validate_page_slug("hello/world-123").is_ok());
+        assert!(validate_page_slug("a/b/c/d/e").is_ok());
+        assert!(validate_page_slug("my-great-page-v2").is_ok());
+    }
+
+    #[test]
+    fn validate_page_slug_valid_cjk_passes() {
+        assert!(validate_page_slug("中文-标题").is_ok());
+        assert!(validate_page_slug("wiki/中文/子页面").is_ok());
+        assert!(validate_page_slug("ひらがな-カタカナ").is_ok());
+        assert!(validate_page_slug("한글-제목").is_ok());
+    }
+
+    #[test]
+    fn validate_page_slug_leading_slash_rejected() {
+        let err = validate_page_slug("/hello").unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidParams);
+        assert!(err.message.contains("Invalid page_slug"));
+    }
+
+    #[test]
+    fn validate_page_slug_trailing_slash_rejected() {
+        let err = validate_page_slug("hello/").unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidParams);
+        assert!(err.message.contains("Invalid page_slug"));
+    }
+
+    #[test]
+    fn validate_page_slug_double_slash_rejected() {
+        let err = validate_page_slug("hello//world").unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidParams);
+        assert!(err.message.contains("Invalid page_slug"));
+    }
+
+    #[test]
+    fn validate_page_slug_backslash_rejected() {
+        let err = validate_page_slug("hello\\world").unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidParams);
+        assert!(err.message.contains("Invalid page_slug"));
+    }
+
+    // ── validate_filename tests ────────────────────────────────────────────
+
+    #[test]
+    fn validate_filename_empty_rejected() {
+        let err = validate_filename("").unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidParams);
+        assert_eq!(err.message, "Filename must be a non-empty string");
+    }
+
+    #[test]
+    fn validate_filename_too_long_rejected() {
+        let name: String = "a".repeat(256);
+        let err = validate_filename(&name).unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidParams);
+        assert_eq!(err.message, "Filename exceeds 255 characters");
+    }
+
+    #[test]
+    fn validate_filename_valid_ascii_passes() {
+        assert!(validate_filename("document.pdf").is_ok());
+        assert!(validate_filename("my-file-v1.0_final.docx").is_ok());
+        assert!(validate_filename("data_2026.json").is_ok());
+    }
+
+    #[test]
+    fn validate_filename_valid_cjk_passes() {
+        assert!(validate_filename("会议纪要_2026.docx").is_ok());
+        assert!(validate_filename("レポート.pdf").is_ok());
+        assert!(validate_filename("보고서.xlsx").is_ok());
+    }
+
+    #[test]
+    fn validate_filename_leading_dot_rejected() {
+        let err = validate_filename(".hidden").unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidParams);
+        assert!(err.message.contains("Invalid filename"));
+        assert!(err.message.contains("no leading dot/dash"));
+    }
+
+    #[test]
+    fn validate_filename_leading_dash_rejected() {
+        let err = validate_filename("-flag-confusion").unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidParams);
+        assert!(err.message.contains("Invalid filename"));
+        assert!(err.message.contains("no leading dot/dash"));
+    }
+
+    #[test]
+    fn validate_filename_backslash_rejected() {
+        let err = validate_filename("path\\traversal").unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidParams);
+        assert!(err.message.contains("Invalid filename"));
+    }
+
+    // ── Error message EXACT TS parity tests ────────────────────────────────
+
+    #[test]
+    fn error_messages_match_ts_byte_for_byte() {
+        // These strings must match TypeScript operations.ts EXACTLY
+        assert_eq!(
+            OperationError::file_not_found("foo.txt").message,
+            "File not found: foo.txt"
+        );
+        assert_eq!(
+            OperationError::symlink_not_allowed("/tmp/link").message,
+            "Symlinks are not allowed for upload: /tmp/link"
+        );
+        assert_eq!(
+            OperationError::path_outside_root("../secret.txt").message,
+            "Upload path must be within the working directory: ../secret.txt"
+        );
+        assert_eq!(
+            validate_page_slug("").unwrap_err().message,
+            "page_slug must be a non-empty string"
+        );
+        assert_eq!(
+            validate_filename("").unwrap_err().message,
+            "Filename must be a non-empty string"
+        );
+    }
+
+    // ── Trust boundary enforcement tests (Slice #42) ─────────────────────
+
+    #[test]
+    fn enforce_local_only_blocks_remote_caller() {
+        let ctx_remote = OperationContext::remote_mcp("public");
+        let result = enforce_local_only("import_file", true, &ctx_remote);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, ErrorCode::PermissionDenied);
+        assert_eq!(
+            err.message,
+            "Operation 'import_file' is only available locally (MCP/remote callers cannot use it)"
+        );
+    }
+
+    #[test]
+    fn enforce_local_only_allows_local_caller() {
+        let ctx_local = OperationContext::local_cli();
+        let result = enforce_local_only("import_file", true, &ctx_local);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn enforce_local_only_allows_remote_non_local_only_op() {
+        let ctx_remote = OperationContext::remote_mcp("public");
+        let result = enforce_local_only("get_page", false, &ctx_remote);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn enforce_d18_blocks_image_path_for_remote() {
+        let ctx_remote = OperationContext::remote_mcp("public");
+        let result = enforce_d18_image_path_constraint(&ctx_remote, Some("/local/file.png"));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, ErrorCode::PermissionDenied);
+        assert_eq!(
+            err.message,
+            "image_path is not permitted for remote callers (D18). Use image_url or image_data instead."
+        );
+    }
+
+    #[test]
+    fn enforce_d18_allows_no_image_path_for_remote() {
+        let ctx_remote = OperationContext::remote_mcp("public");
+        let result = enforce_d18_image_path_constraint(&ctx_remote, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn enforce_d18_allows_image_path_for_local() {
+        let ctx_local = OperationContext::local_cli();
+        let result = enforce_d18_image_path_constraint(&ctx_local, Some("/local/file.png"));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn matches_slug_prefix_exact_match() {
+        assert!(matches_slug_prefix("wiki/agents/123", "wiki/agents/123"));
+        assert!(!matches_slug_prefix("wiki/agents/123", "wiki/agents/456"));
+    }
+
+    #[test]
+    fn matches_slug_prefix_wildcard_match() {
+        assert!(matches_slug_prefix("wiki/agents/123/page", "wiki/agents/123/*"));
+        assert!(matches_slug_prefix("wiki/agents/123/nested/deep", "wiki/agents/123/*"));
+        assert!(!matches_slug_prefix("wiki/agents/456/page", "wiki/agents/123/*"));
+    }
+
+    #[test]
+    fn matches_slug_prefix_wildcard_excludes_base_itself() {
+        // "prefix/*" should NOT match "prefix" (no trailing slash)
+        // Actually let's check the TS behavior...
+        // TS code: if (slug === base) continue; - so base itself does NOT match prefix/*
+        // This matches exactly the TS behavior
+        assert!(!matches_slug_prefix("wiki/agents/123", "wiki/agents/123/*"));
+    }
+
+    #[test]
+    fn enforce_subagent_prefix_allows_non_subagent_context() {
+        let ctx = OperationContext::local_cli();
+        let result = enforce_subagent_put_page_prefix(&ctx, "any/slug");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn enforce_subagent_prefix_allows_matching_prefix() {
+        let mut ctx = OperationContext::local_cli();
+        ctx.via_subagent = Some(true);
+        ctx.subagent_id = Some(42);
+        ctx.allowed_slug_prefixes = Some(vec!["wiki/agents/42/*".to_string()]);
+
+        let result = enforce_subagent_put_page_prefix(&ctx, "wiki/agents/42/draft");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn enforce_subagent_prefix_blocks_non_matching_prefix() {
+        let mut ctx = OperationContext::local_cli();
+        ctx.via_subagent = Some(true);
+        ctx.allowed_slug_prefixes = Some(vec!["wiki/agents/42/*".to_string()]);
+
+        let result = enforce_subagent_put_page_prefix(&ctx, "wiki/agents/999/attack");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, ErrorCode::PermissionDenied);
+        assert!(err.message.contains("Subagent cannot write"));
+        assert!(err.message.contains("wiki/agents/42/*"));
+    }
+
+    #[test]
+    fn enforce_subagent_prefix_fallback_to_legacy_namespace() {
+        let mut ctx = OperationContext::local_cli();
+        ctx.via_subagent = Some(true);
+        ctx.subagent_id = Some(42);
+        ctx.allowed_slug_prefixes = None;
+
+        // Legacy namespace: wiki/agents/42/%
+        let result = enforce_subagent_put_page_prefix(&ctx, "wiki/agents/42/draft");
+        assert!(result.is_ok());
     }
 }
 

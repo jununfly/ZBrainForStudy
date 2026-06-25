@@ -57,6 +57,11 @@ tempfile = "3"
 # helpers on top of `rt_tokio`. Inherited by member crates as a dev-dep via
 # `pg-embed = { workspace = true }` under their `[dev-dependencies]`.
 pg-embed = { version = "1.0", features = ["rt_tokio_migrate"] }
+# Slice #41: Params validation. `garde` is a lightweight, trait-based validation
+# library with derive support. Zero extra dependencies beyond serde.
+garde = { version = "0.21", features = ["derive"] }
+# Slice #41: Cross-platform path diffing for upload validation.
+pathdiff = "0.2"
 
 [profile.release]
 lto = "thin"
