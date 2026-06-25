@@ -517,6 +517,16 @@ pub trait BrainEngine: Send + Sync {
 
 // ─── InMemoryEngine ──────────────────────────────────────────────────────────
 
+/// Internal raw-data entry used by `InMemoryEngine`.
+/// Keyed by `(page_id, source)` for upsert semantics.
+#[derive(Debug, Clone)]
+struct InternalRawData {
+    page_id: u64,
+    source: String,
+    data: Value,
+    fetched_at: String,
+}
+
 /// In-process engine backed by a `Vec<Page>`. Not persistent, not
 /// transactional — its only job is to validate the trait contract in unit
 /// tests and integration harnesses.
@@ -526,6 +536,11 @@ pub struct InMemoryEngine {
     next_id: Mutex<u64>,
     file_store: Mutex<Vec<FileRow>>,
     next_file_id: Mutex<u64>,
+    /// Raw sidecar data, keyed by `(page_id, source)`.
+    raw_data_store: Mutex<Vec<InternalRawData>>,
+    /// Page version snapshots, newest-first within each page.
+    version_store: Mutex<Vec<PageVersion>>,
+    next_version_id: Mutex<u64>,
 }
 
 // ─── Tag helpers ─────────────────────────────────────────────────────────────
@@ -1036,65 +1051,232 @@ impl BrainEngine for InMemoryEngine {
         Ok(())
     }
 
-    // ─── Raw data / versions / slug rewrite stubs (7) ────────────────────────
-    // All implementations stub to unimplemented!() for compile-only slice #19.
-    // Actual behavior moves to #20 InMemory slice.
+    // ─── Raw data / versions / slug rewrite (7) ─────────────────────────────
+    // Slice #20: full InMemory behavior replacing the #19 unimplemented!() stubs.
 
     async fn put_raw_data(
         &self,
-        _slug: &str,
-        _source: &str,
-        _data: &Value,
-        _source_id: Option<&str>,
+        slug: &str,
+        source: &str,
+        data: &Value,
+        source_id: Option<&str>,
     ) -> crate::Result<()> {
-        unimplemented!()
+        // Resolve the page_id for this (slug, source_id).
+        let page_id = {
+            let store = self
+                .store
+                .lock()
+                .expect("InMemoryEngine store mutex poisoned");
+            let source_id_norm = source_id.unwrap_or("default");
+            store
+                .iter()
+                .find(|p| p.slug == slug && p.source_id == source_id_norm)
+                .map(|p| p.id)
+            // Silent no-op for missing pages mirrors TS putRawData (no
+            // explicit page existence check in the TS impl).
+        };
+        let Some(page_id) = page_id else {
+            // Page not found — return an error to surface mis-wired callers.
+            return Err(Error::page_not_found(slug, source_id));
+        };
+        let mut rd_store = self
+            .raw_data_store
+            .lock()
+            .expect("InMemoryEngine raw_data_store mutex poisoned");
+        if let Some(existing) = rd_store
+            .iter_mut()
+            .find(|r| r.page_id == page_id && r.source == source)
+        {
+            // Upsert: overwrite data + refresh fetched_at.
+            existing.data = data.clone();
+            existing.fetched_at = current_utc_iso8601();
+        } else {
+            rd_store.push(InternalRawData {
+                page_id,
+                source: source.to_string(),
+                data: data.clone(),
+                fetched_at: current_utc_iso8601(),
+            });
+        }
+        Ok(())
     }
 
     async fn get_raw_data(
         &self,
-        _slug: &str,
-        _source: Option<&str>,
-        _source_id: Option<&str>,
+        slug: &str,
+        source: Option<&str>,
+        source_id: Option<&str>,
     ) -> crate::Result<Vec<RawData>> {
-        unimplemented!()
+        // Resolve page_id.
+        let page_id = {
+            let store = self
+                .store
+                .lock()
+                .expect("InMemoryEngine store mutex poisoned");
+            let source_id_norm = source_id.unwrap_or("default");
+            store
+                .iter()
+                .find(|p| p.slug == slug && p.source_id == source_id_norm)
+                .map(|p| p.id)
+        };
+        let Some(page_id) = page_id else {
+            // Missing page → empty result (mirrors TS getRawData returning []).
+            return Ok(vec![]);
+        };
+        let rd_store = self
+            .raw_data_store
+            .lock()
+            .expect("InMemoryEngine raw_data_store mutex poisoned");
+        Ok(rd_store
+            .iter()
+            .filter(|r| r.page_id == page_id && source.is_none_or(|s| r.source == s))
+            .map(|r| RawData {
+                source: r.source.clone(),
+                data: r.data.clone(),
+                fetched_at: r.fetched_at.clone(),
+            })
+            .collect())
     }
 
     async fn create_version(
         &self,
-        _slug: &str,
-        _source_id: Option<&str>,
+        slug: &str,
+        source_id: Option<&str>,
     ) -> crate::Result<PageVersion> {
-        unimplemented!()
+        let source_id_norm = source_id.unwrap_or("default");
+        // Snapshot the current page state.
+        let (page_id, compiled_truth, frontmatter) = {
+            let store = self
+                .store
+                .lock()
+                .expect("InMemoryEngine store mutex poisoned");
+            store
+                .iter()
+                .find(|p| p.slug == slug && p.source_id == source_id_norm && p.deleted_at.is_none())
+                .map(|p| (p.id, p.compiled_truth.clone(), p.frontmatter.clone()))
+                .ok_or_else(|| Error::page_not_found(slug, source_id))?
+        };
+        let mut vid_guard = self
+            .next_version_id
+            .lock()
+            .expect("InMemoryEngine next_version_id mutex poisoned");
+        *vid_guard += 1;
+        let version = PageVersion {
+            id: *vid_guard,
+            page_id,
+            compiled_truth,
+            frontmatter,
+            snapshot_at: current_utc_iso8601(),
+        };
+        self.version_store
+            .lock()
+            .expect("InMemoryEngine version_store mutex poisoned")
+            .push(version.clone());
+        Ok(version)
     }
 
     async fn get_versions(
         &self,
-        _slug: &str,
-        _source_id: Option<&str>,
+        slug: &str,
+        source_id: Option<&str>,
     ) -> crate::Result<Vec<PageVersion>> {
-        unimplemented!()
+        let source_id_norm = source_id.unwrap_or("default");
+        let page_id = {
+            let store = self
+                .store
+                .lock()
+                .expect("InMemoryEngine store mutex poisoned");
+            store
+                .iter()
+                .find(|p| p.slug == slug && p.source_id == source_id_norm)
+                .map(|p| p.id)
+        };
+        let Some(page_id) = page_id else {
+            return Ok(vec![]);
+        };
+        let vs = self
+            .version_store
+            .lock()
+            .expect("InMemoryEngine version_store mutex poisoned");
+        // Newest-first: sort by id DESC (InMemory ids are monotonically
+        // increasing, so id order == insertion order == snapshot_at order).
+        let mut versions: Vec<PageVersion> = vs
+            .iter()
+            .filter(|v| v.page_id == page_id)
+            .cloned()
+            .collect();
+        versions.sort_by(|a, b| b.id.cmp(&a.id));
+        Ok(versions)
     }
 
     async fn revert_to_version(
         &self,
-        _slug: &str,
-        _version_id: u64,
-        _source_id: Option<&str>,
+        slug: &str,
+        version_id: u64,
+        source_id: Option<&str>,
     ) -> crate::Result<()> {
-        unimplemented!()
+        let source_id_norm = source_id.unwrap_or("default");
+        // Find the version snapshot.
+        let (compiled_truth, frontmatter) = {
+            let vs = self
+                .version_store
+                .lock()
+                .expect("InMemoryEngine version_store mutex poisoned");
+            vs.iter()
+                .find(|v| v.id == version_id)
+                .map(|v| (v.compiled_truth.clone(), v.frontmatter.clone()))
+                .ok_or_else(|| {
+                    Error::engine(format!("version {version_id} not found for page '{slug}'"))
+                })?
+        };
+        // Apply the snapshot to the live page.
+        let mut store = self
+            .store
+            .lock()
+            .expect("InMemoryEngine store mutex poisoned");
+        let page = store
+            .iter_mut()
+            .find(|p| p.slug == slug && p.source_id == source_id_norm && p.deleted_at.is_none())
+            .ok_or_else(|| Error::page_not_found(slug, source_id))?;
+        page.compiled_truth = compiled_truth;
+        page.frontmatter = frontmatter;
+        page.updated_at = current_utc_iso8601();
+        Ok(())
     }
 
     async fn update_slug(
         &self,
-        _old_slug: &str,
-        _new_slug: &str,
-        _source_id: Option<&str>,
+        old_slug: &str,
+        new_slug: &str,
+        source_id: Option<&str>,
     ) -> crate::Result<()> {
-        unimplemented!()
+        let source_id_norm = source_id.unwrap_or("default");
+        let mut store = self
+            .store
+            .lock()
+            .expect("InMemoryEngine store mutex poisoned");
+        // Conflict check: new_slug must not already exist in this source.
+        if store
+            .iter()
+            .any(|p| p.slug == new_slug && p.source_id == source_id_norm)
+        {
+            return Err(Error::engine(format!(
+                "slug '{new_slug}' already exists in source '{source_id_norm}'"
+            )));
+        }
+        let page = store
+            .iter_mut()
+            .find(|p| p.slug == old_slug && p.source_id == source_id_norm)
+            .ok_or_else(|| Error::page_not_found(old_slug, source_id))?;
+        page.slug = new_slug.to_string();
+        page.updated_at = current_utc_iso8601();
+        Ok(())
     }
 
+    /// Explicit no-op — `InMemoryEngine` uses integer `page_id` foreign keys
+    /// so there are no embedded slug strings to rewrite. Returns `Ok(())`.
     async fn rewrite_links(&self, _old_slug: &str, _new_slug: &str) -> crate::Result<()> {
-        unimplemented!()
+        Ok(())
     }
 
     // ─── Advanced-read overrides (C1 Task 4) ────────────────────────────────

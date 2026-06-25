@@ -822,7 +822,7 @@
     "1-2-2-2": {
       "id": "1-2-2-2",
       "label": "Add Rust advanced Page writes contract surface",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-2-2",
       "children": [],
@@ -848,12 +848,12 @@
           "note": "This slice is compile-only. Actual behavior moves to 1-2-2-3 (InMemory), 1-2-2-4 (libsql), and 1-2-2-5 (Postgres). No-op rewriteLinks stays unimplemented until that behavior slice."
         }
       ],
-      "notes": "GitHub issue #19: Add Rust advanced Page writes contract surface. Compile-only slice: RawData/PageVersion types + 7 trait method signatures + 3 backend unimplemented!() stubs + object-safety test."
+      "notes": "GitHub issue #19 closed. Commit 6b4e7e2. Compile-only slice: RawData/PageVersion types + 7 trait method signatures + 3 backend unimplemented!() stubs + object-safety test."
     },
     "1-2-2-3": {
       "id": "1-2-2-3",
       "label": "Implement InMemory advanced Page writes behavior",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "exploit",
       "parent": "1-2-2",
       "children": [],
@@ -893,7 +893,7 @@
   },
   "metadata": {
     "created": "2026-06-23 18:09:00",
-    "updated": "2026-06-25 11:31:44",
+    "updated": "2026-06-25 11:49:37",
     "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_ROADMAP.md"
   }
 }
