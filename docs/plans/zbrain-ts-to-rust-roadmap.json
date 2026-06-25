@@ -97,7 +97,7 @@
     "1-4": {
       "id": "1-4",
       "label": "Operations layer and trust boundary migration",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "exploit",
       "parent": "1",
       "children": [
@@ -105,8 +105,34 @@
         "1-4-2",
         "1-4-3"
       ],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "Overall strategy for 1-4 migration?",
+          "answer": "Audit first, then implement. Full canonical audit document before any Rust code.",
+          "note": "Proven successful pattern from 1-2 / 1-3. Full visibility before writing code minimizes rework, especially critical for security-sensitive trust boundary code."
+        },
+        {
+          "q": "Audit depth for 1-4?",
+          "answer": "Full coverage audit in single document. Covers all 3 child nodes (1-4-1 to 1-4-3).",
+          "note": "Trust boundary code requires extra diligence; full upfront planning prevents security regressions."
+        },
+        {
+          "q": "Should audit include TDD slicing?",
+          "answer": "Audit + full TDD slicing. Complete acceptance criteria and slicing plan included in audit document.",
+          "note": "Complete slicing means audit → implementation is single handoff; no intermediate grill session needed."
+        },
+        {
+          "q": "Rust Operation architecture design?",
+          "answer": "Trait-based Operation system",
+          "note": "Best fits Rust idioms: type safety, zero-cost abstraction, each operation can have its own state and type parameters."
+        },
+        {
+          "q": "Trust boundary migration strategy?",
+          "answer": "Full 1:1 parity with TypeScript",
+          "note": "Security critical path - behavior must exactly match TS implementation: localOnly checks, subagent path prefix restrictions, image_path remote caller ban (D18)."
+        }
+      ],
+      "notes": "Canonical audit document complete: docs/plans/2026-06-25-operations-layer-trust-boundary-audit.md. 16 implementation slices planned (GitHub issues #40-#55). ~50+ operations to port. This is the single largest node by code volume (4,243 lines TS)."
     },
     "1-5": {
       "id": "1-5",
