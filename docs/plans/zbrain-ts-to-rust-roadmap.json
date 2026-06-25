@@ -863,12 +863,12 @@
     "1-2-2-4": {
       "id": "1-2-2-4",
       "label": "Implement libsql advanced Page writes behavior",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-2-2",
       "children": [],
       "decisions": [],
-      "notes": "GitHub issue #21: Implement libsql advanced Page writes behavior. Adds libsql migrations for raw_data and page_versions tables and implements all 7 methods."
+      "notes": "GitHub issue #21 closed (commit 2306b9a). SQL migration 0008 + 7 real libsql implementations + 14 tests."
     },
     "1-2-2-5": {
       "id": "1-2-2-5",

@@ -912,61 +912,317 @@ impl BrainEngine for PostgresEngine {
         Ok(())
     }
 
-    // ─── Raw data / versions / slug rewrite stubs (7) ─────────────────────────
-    // All implementations stub to unimplemented!() for compile-only slice #19.
-    // Actual behavior moves to #22 Postgres slice.
+    // ─── Raw data / versions / slug rewrite (7) ─────────────────────────────
+    // Slice #22: full Postgres behavior replacing the #19 unimplemented!() stubs.
+    // Migration 0009_raw_data_and_page_versions.sql is applied by sqlx::migrate!.
 
     async fn put_raw_data(
         &self,
-        _slug: &str,
-        _source: &str,
-        _data: &Value,
-        _source_id: Option<&str>,
+        slug: &str,
+        source: &str,
+        data: &Value,
+        source_id: Option<&str>,
     ) -> Result<()> {
-        unimplemented!()
+        let pool = self.pool()?;
+        let source_id = source_id.unwrap_or("default");
+
+        // Resolve page_id first.
+        let page_row = sqlx::query(
+            "SELECT id FROM pages WHERE slug = $1 AND source_id = $2 AND deleted_at IS NULL",
+        )
+        .bind(slug)
+        .bind(source_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::engine(format!("put_raw_data page lookup failed: {e}")))?;
+        let Some(page_row) = page_row else {
+            return Err(Error::page_not_found(slug, Some(source_id)));
+        };
+        let page_id: i32 = page_row
+            .try_get("id")
+            .map_err(|e| Error::engine(format!("put_raw_data decode page_id: {e}")))?;
+
+        sqlx::query(
+            "INSERT INTO raw_data (page_id, source, data) \
+             VALUES ($1, $2, $3) \
+             ON CONFLICT(page_id, source) DO UPDATE SET \
+               data = EXCLUDED.data, \
+               fetched_at = now()",
+        )
+        .bind(page_id)
+        .bind(source)
+        .bind(data)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("put_raw_data upsert failed: {e}")))?;
+
+        Ok(())
     }
 
     async fn get_raw_data(
         &self,
-        _slug: &str,
-        _source: Option<&str>,
-        _source_id: Option<&str>,
+        slug: &str,
+        source: Option<&str>,
+        source_id: Option<&str>,
     ) -> Result<Vec<RawData>> {
-        unimplemented!()
+        let pool = self.pool()?;
+        let source_id = source_id.unwrap_or("default");
+
+        // Resolve page_id.
+        let page_row = sqlx::query("SELECT id FROM pages WHERE slug = $1 AND source_id = $2")
+            .bind(slug)
+            .bind(source_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| Error::engine(format!("get_raw_data page lookup failed: {e}")))?;
+        let Some(page_row) = page_row else {
+            return Ok(vec![]);
+        };
+        let page_id: i32 = page_row
+            .try_get("id")
+            .map_err(|e| Error::engine(format!("get_raw_data decode page_id: {e}")))?;
+
+        let rows = match source {
+            Some(s) => {
+                sqlx::query(
+                    "SELECT source, data, fetched_at \
+                     FROM raw_data \
+                     WHERE page_id = $1 AND source = $2",
+                )
+                .bind(page_id)
+                .bind(s)
+                .fetch_all(pool)
+                .await
+            }
+            None => {
+                sqlx::query(
+                    "SELECT source, data, fetched_at \
+                     FROM raw_data \
+                     WHERE page_id = $1",
+                )
+                .bind(page_id)
+                .fetch_all(pool)
+                .await
+            }
+        }
+        .map_err(|e| Error::engine(format!("get_raw_data query failed: {e}")))?;
+
+        let mut results = Vec::new();
+        for row in &rows {
+            let src: String = row
+                .try_get("source")
+                .map_err(|e| Error::engine(format!("get_raw_data decode source: {e}")))?;
+            let data: Value = row
+                .try_get("data")
+                .map_err(|e| Error::engine(format!("get_raw_data decode data: {e}")))?;
+            let fetched_at: sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc> = row
+                .try_get("fetched_at")
+                .map_err(|e| Error::engine(format!("get_raw_data decode fetched_at: {e}")))?;
+            results.push(RawData {
+                source: src,
+                data,
+                fetched_at: fetched_at.to_rfc3339(),
+            });
+        }
+        Ok(results)
     }
 
-    async fn create_version(&self, _slug: &str, _source_id: Option<&str>) -> Result<PageVersion> {
-        unimplemented!()
+    async fn create_version(&self, slug: &str, source_id: Option<&str>) -> Result<PageVersion> {
+        let pool = self.pool()?;
+        let source_id = source_id.unwrap_or("default");
+
+        // Snapshot current page state.
+        let page_row = sqlx::query(
+            "SELECT id, compiled_truth, frontmatter \
+             FROM pages \
+             WHERE slug = $1 AND source_id = $2 AND deleted_at IS NULL",
+        )
+        .bind(slug)
+        .bind(source_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::engine(format!("create_version page lookup failed: {e}")))?
+        .ok_or_else(|| Error::page_not_found(slug, Some(source_id)))?;
+        let page_id: i32 = page_row
+            .try_get("id")
+            .map_err(|e| Error::engine(format!("create_version decode page_id: {e}")))?;
+        let compiled_truth: String = page_row
+            .try_get("compiled_truth")
+            .map_err(|e| Error::engine(format!("create_version decode compiled_truth: {e}")))?;
+        let frontmatter: Value = page_row
+            .try_get("frontmatter")
+            .map_err(|e| Error::engine(format!("create_version decode frontmatter: {e}")))?;
+
+        let row = sqlx::query(
+            "INSERT INTO page_versions (page_id, compiled_truth, frontmatter) \
+             VALUES ($1, $2, $3) \
+             RETURNING id, page_id, compiled_truth, frontmatter, snapshot_at",
+        )
+        .bind(page_id)
+        .bind(&compiled_truth)
+        .bind(&frontmatter)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| Error::engine(format!("create_version insert failed: {e}")))?;
+
+        let id: i64 = row
+            .try_get("id")
+            .map_err(|e| Error::engine(format!("create_version decode id: {e}")))?;
+        let returned_page_id: i32 = row
+            .try_get("page_id")
+            .map_err(|e| Error::engine(format!("create_version decode page_id: {e}")))?;
+        let returned_truth: String = row
+            .try_get("compiled_truth")
+            .map_err(|e| Error::engine(format!("create_version decode truth: {e}")))?;
+        let returned_fm: Value = row
+            .try_get("frontmatter")
+            .map_err(|e| Error::engine(format!("create_version decode frontmatter: {e}")))?;
+        let snapshot_at: sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc> = row
+            .try_get("snapshot_at")
+            .map_err(|e| Error::engine(format!("create_version decode snapshot_at: {e}")))?;
+
+        Ok(PageVersion {
+            id: id as u64,
+            page_id: returned_page_id as u64,
+            compiled_truth: returned_truth,
+            frontmatter: returned_fm,
+            snapshot_at: snapshot_at.to_rfc3339(),
+        })
     }
 
-    async fn get_versions(
-        &self,
-        _slug: &str,
-        _source_id: Option<&str>,
-    ) -> Result<Vec<PageVersion>> {
-        unimplemented!()
+    async fn get_versions(&self, slug: &str, source_id: Option<&str>) -> Result<Vec<PageVersion>> {
+        let pool = self.pool()?;
+        let source_id = source_id.unwrap_or("default");
+
+        // Resolve page_id via subquery.
+        let rows = sqlx::query(
+            "SELECT pv.id, pv.page_id, pv.compiled_truth, pv.frontmatter, pv.snapshot_at \
+             FROM page_versions pv \
+             JOIN pages p ON p.id = pv.page_id \
+             WHERE p.slug = $1 AND p.source_id = $2 \
+             ORDER BY pv.snapshot_at DESC, pv.id DESC",
+        )
+        .bind(slug)
+        .bind(source_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_versions query failed: {e}")))?;
+
+        let mut results = Vec::new();
+        for row in &rows {
+            let id: i64 = row
+                .try_get("id")
+                .map_err(|e| Error::engine(format!("get_versions decode id: {e}")))?;
+            let page_id: i32 = row
+                .try_get("page_id")
+                .map_err(|e| Error::engine(format!("get_versions decode page_id: {e}")))?;
+            let compiled_truth: String = row
+                .try_get("compiled_truth")
+                .map_err(|e| Error::engine(format!("get_versions decode truth: {e}")))?;
+            let frontmatter: Value = row
+                .try_get("frontmatter")
+                .map_err(|e| Error::engine(format!("get_versions decode frontmatter: {e}")))?;
+            let snapshot_at: sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc> = row
+                .try_get("snapshot_at")
+                .map_err(|e| Error::engine(format!("get_versions decode snapshot_at: {e}")))?;
+            results.push(PageVersion {
+                id: id as u64,
+                page_id: page_id as u64,
+                compiled_truth,
+                frontmatter,
+                snapshot_at: snapshot_at.to_rfc3339(),
+            });
+        }
+        Ok(results)
     }
 
     async fn revert_to_version(
         &self,
-        _slug: &str,
-        _version_id: u64,
-        _source_id: Option<&str>,
+        slug: &str,
+        version_id: u64,
+        source_id: Option<&str>,
     ) -> Result<()> {
-        unimplemented!()
+        let pool = self.pool()?;
+        let source_id = source_id.unwrap_or("default");
+
+        // Read the version snapshot.
+        let ver_row =
+            sqlx::query("SELECT compiled_truth, frontmatter FROM page_versions WHERE id = $1")
+                .bind(version_id as i64)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| Error::engine(format!("revert_to_version lookup failed: {e}")))?;
+        let Some(ver_row) = ver_row else {
+            return Err(Error::engine(format!("version {version_id} not found")));
+        };
+        let compiled_truth: String = ver_row
+            .try_get("compiled_truth")
+            .map_err(|e| Error::engine(format!("revert_to_version decode truth: {e}")))?;
+        let frontmatter: Value = ver_row
+            .try_get("frontmatter")
+            .map_err(|e| Error::engine(format!("revert_to_version decode frontmatter: {e}")))?;
+
+        let affected = sqlx::query(
+            "UPDATE pages SET compiled_truth = $1, frontmatter = $2, updated_at = now() \
+             WHERE slug = $3 AND source_id = $4 AND deleted_at IS NULL",
+        )
+        .bind(&compiled_truth)
+        .bind(&frontmatter)
+        .bind(slug)
+        .bind(source_id)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("revert_to_version update failed: {e}")))?;
+
+        if affected.rows_affected() == 0 {
+            return Err(Error::page_not_found(slug, Some(source_id)));
+        }
+        Ok(())
     }
 
     async fn update_slug(
         &self,
-        _old_slug: &str,
-        _new_slug: &str,
-        _source_id: Option<&str>,
+        old_slug: &str,
+        new_slug: &str,
+        source_id: Option<&str>,
     ) -> Result<()> {
-        unimplemented!()
+        let pool = self.pool()?;
+        let source_id = source_id.unwrap_or("default");
+
+        // Conflict check.
+        let conflict = sqlx::query("SELECT 1 FROM pages WHERE slug = $1 AND source_id = $2")
+            .bind(new_slug)
+            .bind(source_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| Error::engine(format!("update_slug conflict check failed: {e}")))?;
+        if conflict.is_some() {
+            return Err(Error::engine(format!(
+                "slug '{new_slug}' already exists in source '{source_id}'"
+            )));
+        }
+
+        let affected = sqlx::query(
+            "UPDATE pages SET slug = $1, updated_at = now() \
+             WHERE slug = $2 AND source_id = $3 AND deleted_at IS NULL",
+        )
+        .bind(new_slug)
+        .bind(old_slug)
+        .bind(source_id)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("update_slug failed: {e}")))?;
+
+        if affected.rows_affected() == 0 {
+            return Err(Error::page_not_found(old_slug, Some(source_id)));
+        }
+        Ok(())
     }
 
+    /// Explicit no-op — Postgres page rows use integer `page_id` foreign keys
+    /// so there are no embedded slug strings to rewrite. Returns `Ok(())`.
     async fn rewrite_links(&self, _old_slug: &str, _new_slug: &str) -> Result<()> {
-        unimplemented!()
+        Ok(())
     }
 
     // ─── Advanced reads overrides (PG parity) ────────────────────────────────

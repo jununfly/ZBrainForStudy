@@ -69,6 +69,10 @@ GitHub issue #19 closed (commit 6b4e7e2). Compile-only slice: RawData/PageVersio
 
 GitHub issue #20 closed (commit 4fdc8b8). InMemoryEngine full behavior for 7 methods: put_raw_data / get_raw_data / create_version / get_versions / revert_to_version / update_slug / rewrite_links. raw_data_store keyed by (page_id, source); version_store monotonic ids newest-first; rewrite_links explicit no-op.
 
-### 当前施工：1-2-2-4. Implement libsql advanced Page writes behavior
+### ✅ 已完成：1-2-2-4. Implement libsql advanced Page writes behavior
 
-GitHub issue #21. Adds SQL migration 0008_raw_data_and_page_versions (SQLite + PG), wires 7 real SQL implementations in libsql backend. 14 focused libsql tests.
+GitHub issue #21 closed (commit 2306b9a). SQL migration 0008 + 7 real SQL implementations in libsql backend. 14 focused tests.
+
+### 当前施工：1-2-2-5. Implement Postgres advanced Page writes behavior
+
+GitHub issue #22. SQL migration 0009 + 7 real sqlx implementations in Postgres backend. 14 focused PG tests (PgFixture ephemeral instances).
