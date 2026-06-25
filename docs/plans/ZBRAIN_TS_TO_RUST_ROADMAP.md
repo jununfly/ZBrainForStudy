@@ -1,7 +1,7 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust-roadmap.json` | 最后更新: 2026-06-25 11:31:44
+> 数据文件: `zbrain-ts-to-rust-roadmap.json` | 最后更新: 2026-06-25 12:09:22
 
 [~][X+] 1. ZBrain TS to Rust Migration
 ├── [x][Y+] 1-1. Roadmap and TypeScript runtime inventory
@@ -11,7 +11,7 @@
 │   └── [x][Y+] 1-1-4. Define per-slice deletion checklist and verification gates
 ├── [ ][Y+] 1-2. Core storage parity closure
 │   ├── [x][Y+] 1-2-1. Finish Page contract parity across storage backends
-│   ├── [~][Y+] 1-2-2. Port missing advanced Page writes to Rust
+│   ├── [x][Y+] 1-2-2. Port missing advanced Page writes to Rust
 │   ├── [ ][Y+] 1-2-3. Move schema migrations ownership to Rust
 │   ├── [x][X+] 1-2-4. Decide internal DB legacy identifier migration
 │   └── [x][Y+] 1-2-5. Implement DB legacy identifier rename migration
@@ -75,4 +75,8 @@ GitHub issue #21 closed (commit 2306b9a). SQL migration 0008 + 7 real SQL implem
 
 ### 当前施工：1-2-2-5. Implement Postgres advanced Page writes behavior
 
-GitHub issue #22. SQL migration 0009 + 7 real sqlx implementations in Postgres backend. 14 focused PG tests (PgFixture ephemeral instances).
+GitHub issue #22 closed (commit 5abee58). SQL migration 0009 + 7 real sqlx implementations in Postgres backend. 14 focused PG tests.
+
+### ✅ 已完成：1-2-2-6. Validate and close advanced Page writes parity
+
+GitHub issue #23 closed. All 5 child issues (#19–#23) delivered across 5 commits. All 3 backends (InMemory, libsql, Postgres) have working implementations + focused tests. 1-2-2 subtree complete. Next: 1-2-3 schema migrations ownership.
