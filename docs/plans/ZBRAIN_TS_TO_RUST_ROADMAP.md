@@ -1,7 +1,7 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust-roadmap.json` | 最后更新: 2026-06-24 19:38:41
+> 数据文件: `zbrain-ts-to-rust-roadmap.json` | 最后更新: 2026-06-25 11:31:44
 
 [~][X+] 1. ZBrain TS to Rust Migration
 ├── [x][Y+] 1-1. Roadmap and TypeScript runtime inventory
@@ -11,7 +11,7 @@
 │   └── [x][Y+] 1-1-4. Define per-slice deletion checklist and verification gates
 ├── [ ][Y+] 1-2. Core storage parity closure
 │   ├── [x][Y+] 1-2-1. Finish Page contract parity across storage backends
-│   ├── [ ][Y+] 1-2-2. Port missing advanced Page writes to Rust
+│   ├── [~][Y+] 1-2-2. Port missing advanced Page writes to Rust
 │   ├── [ ][Y+] 1-2-3. Move schema migrations ownership to Rust
 │   ├── [x][X+] 1-2-4. Decide internal DB legacy identifier migration
 │   └── [x][Y+] 1-2-5. Implement DB legacy identifier rename migration
@@ -54,3 +54,17 @@
     ├── [ ][Y+] 1-12-3. Verify final Rust workspace and retained TypeScript surfaces
     └── [ ][Y+] 1-12-4. Update docs examples and release baseline for Rust first ZBrain
 <!-- ROADMAP_SECTION_END -->
+
+### 当前施工：1-2-2-2. Add Rust advanced Page writes contract surface
+
+GitHub issue #19: Add Rust advanced Page writes contract surface. Compile-only slice: RawData/PageVersion types + 7 trait method signatures + 3 backend unimplemented!() stubs + object-safety test.
+
+**决策：**
+- Q: Does 1-2-2-2 add only compile-only contract surface? → Yes. Add only RawData/PageVersion types and 7 trait method signatures; no backend behavior implementation yet. (Follows the same slice pattern as file-storage parity: contract compile slice first, then InMemory, then libsql, then Postgres. Object safety and focused tests run in this slice; actual behavior ships in follow-up slices.)
+- Q: What Rust type for timestamp fields? → String, String. Align with existing FileRow.created_at pattern. Keep as_string, no time/chrono date-time upgrade deferred to later unified serialization pass.
+- Q: How to represent sourceId options? → Keep Option<&str> for all sourceId parameters. No separate options structs (RawDataOpts, PageVersionOpts, UpdateSlugOpts) in this parity slice. (Consistent with existing get_file/upsert_file style. Upgrade to structs only when field count grows to 3+.)
+- Q: How to stub backend implementations? → Stub all 7 methods with unimplemented!() in InMemory, libsql, and Postgres backends. (This slice is compile-only. Actual behavior moves to 1-2-2-3 (InMemory), 1-2-2-4 (libsql), and 1-2-2-5 (Postgres). No-op rewriteLinks stays unimplemented until that behavior slice.)
+
+### 当前施工：1-2-2-2. Add Rust advanced Page writes contract surface
+
+Next implementation slice after audit: add Rust RawData/PageVersion public types and BrainEngine trait methods for raw data, page versions, and slug/link rewrite. Start with compile/object-safety tests before backend behavior.

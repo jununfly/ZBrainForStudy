@@ -295,12 +295,50 @@
     "1-2-2": {
       "id": "1-2-2",
       "label": "Port missing advanced Page writes to Rust",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "exploit",
       "parent": "1-2",
-      "children": [],
-      "decisions": [],
-      "notes": ""
+      "children": [
+        "1-2-2-1",
+        "1-2-2-2",
+        "1-2-2-3",
+        "1-2-2-4",
+        "1-2-2-5",
+        "1-2-2-6"
+      ],
+      "decisions": [
+        {
+          "q": "What is the next plan after completing Page/storage contract parity?",
+          "answer": "Execute 1-2-2 next: port missing advanced Page writes to Rust before moving to schema migration ownership.",
+          "note": "User confirmed. Rationale: 1-2-2 naturally follows the completed Page/storage contract parity subtree; 1-2-3 should wait until the Rust Page write surface is more complete to avoid migration ownership rework."
+        },
+        {
+          "q": "Should 1-2-2 start with audit or implementation?",
+          "answer": "Start with a narrow advanced Page writes audit only; do not implement yet.",
+          "note": "User confirmed. Audit should compare TS BrainEngine Page-write contract/backend semantics with Rust zbrain-core trait/backends/tests, then split only confirmed gaps into implementation slices."
+        },
+        {
+          "q": "Which advanced Page-owned capabilities should the 1-2-2 audit focus on?",
+          "answer": "Only focus on three confirmed-missing groups: raw data, page versions, and slug/link rewrite.",
+          "note": "User confirmed. Raw data covers putRawData/getRawData; page versions covers createVersion/getVersions/revertToVersion; slug/link rewrite covers updateSlug/rewriteLinks. Already-covered soft-delete/tag/refresh/CR-state methods stay out of this plan unless the audit discovers a specific semantic drift."
+        },
+        {
+          "q": "Should the 1-2-2 audit include Rust schema/migration proposals?",
+          "answer": "Yes. Include schema/migration proposals as audit conclusions only; do not implement them in the audit step.",
+          "note": "User confirmed. Raw data likely needs raw_data migrations; page versions likely needs page_versions migrations; slug rewrite reuses pages; rewriteLinks may remain no-op parity if TS semantics are no-op. These are planning conclusions for later slices, not immediate implementation."
+        },
+        {
+          "q": "How complete should Rust public shapes be for raw data and page versions?",
+          "answer": "Public shapes should fully align with the TS contract; implementation slices should only cover the three confirmed 1-2-2 behavior groups.",
+          "note": "User confirmed. RawData/PageVersion shapes should be complete enough for TS-to-Rust migration parity, while actual implementation/testing remains scoped to raw data, page versions, and slug/link rewrite only; do not expand into upper-layer ingestion/search/facts flows."
+        },
+        {
+          "q": "Where should the 1-2-2 audit conclusions live?",
+          "answer": "Create a short canonical audit document at docs/plans/2026-06-24-advanced-page-writes-audit.md.",
+          "note": "User confirmed. Keep it narrow: scope/non-scope, TS contract facts, TS schema/backend semantics, Rust current gap, Rust public shape proposal, schema/migration proposal, TDD slice proposal, and validation commands. Do not implement Rust in the audit step."
+        }
+      ],
+      "notes": "Audit complete in docs/plans/2026-06-24-advanced-page-writes-audit.md. Remaining work is split into pending implementation slices: contract surface, InMemory behavior, libsql behavior, Postgres behavior, and final validation."
     },
     "1-2-3": {
       "id": "1-2-3",
@@ -770,11 +808,92 @@
       "children": [],
       "decisions": [],
       "notes": "GitHub #12 closed: resolve_slugs now supports ResolveSlugsOpts with source_id/source_ids precedence, exact-first lookup, fuzzy fallback, soft-deleted row hiding, LIMIT 5, and [] no-match behavior across InMemory/libsql/Postgres. Focused validation passed on 2026-06-24."
+    },
+    "1-2-2-1": {
+      "id": "1-2-2-1",
+      "label": "Write advanced Page writes audit plan",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-2-2",
+      "children": [],
+      "decisions": [],
+      "notes": "Canonical audit written: docs/plans/2026-06-24-advanced-page-writes-audit.md. Scope covers raw data, page versions, and slug/link rewrite only; implementation deferred to follow-up TDD slices."
+    },
+    "1-2-2-2": {
+      "id": "1-2-2-2",
+      "label": "Add Rust advanced Page writes contract surface",
+      "status": "in_progress",
+      "mode": "exploit",
+      "parent": "1-2-2",
+      "children": [],
+      "decisions": [
+        {
+          "q": "Does 1-2-2-2 add only compile-only contract surface?",
+          "answer": "Yes. Add only RawData/PageVersion types and 7 trait method signatures; no backend behavior implementation yet.",
+          "note": "Follows the same slice pattern as file-storage parity: contract compile slice first, then InMemory, then libsql, then Postgres. Object safety and focused tests run in this slice; actual behavior ships in follow-up slices."
+        },
+        {
+          "q": "What Rust type for timestamp fields?",
+          "answer": "String, String. Align with existing FileRow.created_at pattern. Keep as_string, no time/chrono date-time upgrade deferred to later unified serialization pass.",
+          "note": ""
+        },
+        {
+          "q": "How to represent sourceId options?",
+          "answer": "Keep Option<&str> for all sourceId parameters. No separate options structs (RawDataOpts, PageVersionOpts, UpdateSlugOpts) in this parity slice.",
+          "note": "Consistent with existing get_file/upsert_file style. Upgrade to structs only when field count grows to 3+."
+        },
+        {
+          "q": "How to stub backend implementations?",
+          "answer": "Stub all 7 methods with unimplemented!() in InMemory, libsql, and Postgres backends.",
+          "note": "This slice is compile-only. Actual behavior moves to 1-2-2-3 (InMemory), 1-2-2-4 (libsql), and 1-2-2-5 (Postgres). No-op rewriteLinks stays unimplemented until that behavior slice."
+        }
+      ],
+      "notes": "GitHub issue #19: Add Rust advanced Page writes contract surface. Compile-only slice: RawData/PageVersion types + 7 trait method signatures + 3 backend unimplemented!() stubs + object-safety test."
+    },
+    "1-2-2-3": {
+      "id": "1-2-2-3",
+      "label": "Implement InMemory advanced Page writes behavior",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-2-2",
+      "children": [],
+      "decisions": [],
+      "notes": "GitHub issue #20: Implement InMemory advanced Page writes behavior. Covers raw data, page versions, and slug/link rewrite in-memory implementations."
+    },
+    "1-2-2-4": {
+      "id": "1-2-2-4",
+      "label": "Implement libsql advanced Page writes behavior",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-2-2",
+      "children": [],
+      "decisions": [],
+      "notes": "GitHub issue #21: Implement libsql advanced Page writes behavior. Adds libsql migrations for raw_data and page_versions tables and implements all 7 methods."
+    },
+    "1-2-2-5": {
+      "id": "1-2-2-5",
+      "label": "Implement Postgres advanced Page writes behavior",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-2-2",
+      "children": [],
+      "decisions": [],
+      "notes": "GitHub issue #22: Implement Postgres advanced Page writes behavior. Adds Postgres migrations and backend implementations."
+    },
+    "1-2-2-6": {
+      "id": "1-2-2-6",
+      "label": "Validate and close advanced Page writes parity",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-2-2",
+      "children": [],
+      "decisions": [],
+      "notes": "GitHub issue #23: Validate and close advanced Page writes parity. Final validation and roadmap node completion."
     }
   },
   "metadata": {
     "created": "2026-06-23 18:09:00",
-    "updated": "2026-06-24 19:38:41",
+    "updated": "2026-06-25 11:31:44",
     "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_ROADMAP.md"
   }
 }

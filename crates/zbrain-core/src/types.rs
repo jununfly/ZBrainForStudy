@@ -229,6 +229,27 @@ pub struct UpsertFileResult {
     pub created: bool,
 }
 
+/// Raw sidecar data returned by [`BrainEngine::get_raw_data`]. Mirrors TS
+/// `RawData` in `src/core/engine.ts`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RawData {
+    pub source: String,
+    pub data: Value,
+    pub fetched_at: String,
+}
+
+/// Page version snapshot returned by [`BrainEngine::get_versions`] and
+/// [`BrainEngine::create_version`]. Mirrors TS `PageVersion` in
+/// `src/core/engine.ts`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PageVersion {
+    pub id: u64,
+    pub page_id: u64,
+    pub compiled_truth: String,
+    pub frontmatter: Value,
+    pub snapshot_at: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

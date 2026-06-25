@@ -14,9 +14,9 @@ use async_trait::async_trait;
 use serde_json::{json, Map, Value};
 
 use crate::{
-    time::current_utc_iso8601, CRMode, DuplicatePage, EffectiveDateSource, Error, FileRow,
-    FileSpec, FindDuplicatePageOpts, OrphanPage, PageKind, PageRef, PageType, PurgeResult,
-    RefreshPageBodyArgs, UpsertFileResult,
+    time::current_utc_iso8601, types::PageVersion, types::RawData, CRMode, DuplicatePage,
+    EffectiveDateSource, Error, FileRow, FileSpec, FindDuplicatePageOpts, OrphanPage, PageKind,
+    PageRef, PageType, PurgeResult, RefreshPageBodyArgs, UpsertFileResult,
 };
 
 // ─── Value types ─────────────────────────────────────────────────────────────
@@ -398,6 +398,58 @@ pub trait BrainEngine: Send + Sync {
         mode: &str,
         corpus_generation: Option<&str>,
     ) -> crate::Result<()>;
+
+    // — Raw data / versions / slug rewrite (7) —
+    /// Upsert raw sidecar data for a page. Mirrors TS `putRawData`.
+    async fn put_raw_data(
+        &self,
+        slug: &str,
+        source: &str,
+        data: &Value,
+        source_id: Option<&str>,
+    ) -> crate::Result<()>;
+
+    /// Get raw sidecar data for a page. Mirrors TS `getRawData`.
+    async fn get_raw_data(
+        &self,
+        slug: &str,
+        source: Option<&str>,
+        source_id: Option<&str>,
+    ) -> crate::Result<Vec<RawData>>;
+
+    /// Create a version snapshot for a page. Mirrors TS `createVersion`.
+    async fn create_version(
+        &self,
+        slug: &str,
+        source_id: Option<&str>,
+    ) -> crate::Result<PageVersion>;
+
+    /// Get all versions for a page, newest-first. Mirrors TS `getVersions`.
+    async fn get_versions(
+        &self,
+        slug: &str,
+        source_id: Option<&str>,
+    ) -> crate::Result<Vec<PageVersion>>;
+
+    /// Revert a page to a previous version. Mirrors TS `revertToVersion`.
+    async fn revert_to_version(
+        &self,
+        slug: &str,
+        version_id: u64,
+        source_id: Option<&str>,
+    ) -> crate::Result<()>;
+
+    /// Update a page's slug. Mirrors TS `updateSlug`.
+    async fn update_slug(
+        &self,
+        old_slug: &str,
+        new_slug: &str,
+        source_id: Option<&str>,
+    ) -> crate::Result<()>;
+
+    /// Rewrite links after a slug change. Mirrors TS `rewriteLinks`.
+    /// Explicit no-op; links use integer page_id foreign keys.
+    async fn rewrite_links(&self, _old_slug: &str, _new_slug: &str) -> crate::Result<()>;
 
     // — Bulk slug / ref enumeration (3) —
     /// Return the set of all live (non-soft-deleted) slugs, optionally
@@ -982,6 +1034,67 @@ impl BrainEngine for InMemoryEngine {
         // Silent Ok for missing or soft-deleted rows — mirrors
         // postgres.rs:718 / libsql.rs:926 WHERE deleted_at IS NULL.
         Ok(())
+    }
+
+    // ─── Raw data / versions / slug rewrite stubs (7) ────────────────────────
+    // All implementations stub to unimplemented!() for compile-only slice #19.
+    // Actual behavior moves to #20 InMemory slice.
+
+    async fn put_raw_data(
+        &self,
+        _slug: &str,
+        _source: &str,
+        _data: &Value,
+        _source_id: Option<&str>,
+    ) -> crate::Result<()> {
+        unimplemented!()
+    }
+
+    async fn get_raw_data(
+        &self,
+        _slug: &str,
+        _source: Option<&str>,
+        _source_id: Option<&str>,
+    ) -> crate::Result<Vec<RawData>> {
+        unimplemented!()
+    }
+
+    async fn create_version(
+        &self,
+        _slug: &str,
+        _source_id: Option<&str>,
+    ) -> crate::Result<PageVersion> {
+        unimplemented!()
+    }
+
+    async fn get_versions(
+        &self,
+        _slug: &str,
+        _source_id: Option<&str>,
+    ) -> crate::Result<Vec<PageVersion>> {
+        unimplemented!()
+    }
+
+    async fn revert_to_version(
+        &self,
+        _slug: &str,
+        _version_id: u64,
+        _source_id: Option<&str>,
+    ) -> crate::Result<()> {
+        unimplemented!()
+    }
+
+    async fn update_slug(
+        &self,
+        _old_slug: &str,
+        _new_slug: &str,
+        _source_id: Option<&str>,
+    ) -> crate::Result<()> {
+        unimplemented!()
+    }
+
+    async fn rewrite_links(&self, _old_slug: &str, _new_slug: &str) -> crate::Result<()> {
+        unimplemented!()
     }
 
     // ─── Advanced-read overrides (C1 Task 4) ────────────────────────────────

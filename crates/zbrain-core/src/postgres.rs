@@ -48,7 +48,8 @@ use crate::types::PageRef;
 use crate::types::PurgeResult;
 use crate::types::RefreshPageBodyArgs;
 use crate::types::{
-    CRMode, DuplicatePage, EffectiveDateSource, FileRow, FileSpec, PageKind, UpsertFileResult,
+    CRMode, DuplicatePage, EffectiveDateSource, FileRow, FileSpec, PageKind, PageVersion, RawData,
+    UpsertFileResult,
 };
 
 /// Embedded SQL migrations, baked into the binary at compile time. Driven by
@@ -909,6 +910,63 @@ impl BrainEngine for PostgresEngine {
         })?;
 
         Ok(())
+    }
+
+    // ─── Raw data / versions / slug rewrite stubs (7) ─────────────────────────
+    // All implementations stub to unimplemented!() for compile-only slice #19.
+    // Actual behavior moves to #22 Postgres slice.
+
+    async fn put_raw_data(
+        &self,
+        _slug: &str,
+        _source: &str,
+        _data: &Value,
+        _source_id: Option<&str>,
+    ) -> Result<()> {
+        unimplemented!()
+    }
+
+    async fn get_raw_data(
+        &self,
+        _slug: &str,
+        _source: Option<&str>,
+        _source_id: Option<&str>,
+    ) -> Result<Vec<RawData>> {
+        unimplemented!()
+    }
+
+    async fn create_version(&self, _slug: &str, _source_id: Option<&str>) -> Result<PageVersion> {
+        unimplemented!()
+    }
+
+    async fn get_versions(
+        &self,
+        _slug: &str,
+        _source_id: Option<&str>,
+    ) -> Result<Vec<PageVersion>> {
+        unimplemented!()
+    }
+
+    async fn revert_to_version(
+        &self,
+        _slug: &str,
+        _version_id: u64,
+        _source_id: Option<&str>,
+    ) -> Result<()> {
+        unimplemented!()
+    }
+
+    async fn update_slug(
+        &self,
+        _old_slug: &str,
+        _new_slug: &str,
+        _source_id: Option<&str>,
+    ) -> Result<()> {
+        unimplemented!()
+    }
+
+    async fn rewrite_links(&self, _old_slug: &str, _new_slug: &str) -> Result<()> {
+        unimplemented!()
     }
 
     // ─── Advanced reads overrides (PG parity) ────────────────────────────────

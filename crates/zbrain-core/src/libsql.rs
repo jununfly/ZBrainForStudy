@@ -17,7 +17,7 @@
 use std::sync::{LazyLock, OnceLock};
 
 use async_trait::async_trait;
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::engine::{
     page_sort_sql, BrainEngine, EngineConfig, EngineKind, GetPageOpts, Page, PageFilters,
@@ -27,7 +27,8 @@ use crate::error::{Error, Result};
 use crate::time::current_utc_iso8601;
 use crate::types::{
     CRMode, DuplicatePage, EffectiveDateSource, FileRow, FileSpec, FindDuplicatePageOpts,
-    OrphanPage, PageKind, PageRef, PurgeResult, RefreshPageBodyArgs, UpsertFileResult,
+    OrphanPage, PageKind, PageRef, PageVersion, PurgeResult, RawData, RefreshPageBodyArgs,
+    UpsertFileResult,
 };
 
 /// Embedded `SQLite` schema. Mirrors the PG migration semantics:
@@ -1171,6 +1172,59 @@ impl BrainEngine for LibsqlEngine {
         })?;
 
         Ok(())
+    }
+
+    async fn put_raw_data(
+        &self,
+        _slug: &str,
+        _source: &str,
+        _data: &Value,
+        _source_id: Option<&str>,
+    ) -> Result<()> {
+        unimplemented!()
+    }
+
+    async fn get_raw_data(
+        &self,
+        _slug: &str,
+        _source: Option<&str>,
+        _source_id: Option<&str>,
+    ) -> Result<Vec<RawData>> {
+        unimplemented!()
+    }
+
+    async fn create_version(&self, _slug: &str, _source_id: Option<&str>) -> Result<PageVersion> {
+        unimplemented!()
+    }
+
+    async fn get_versions(
+        &self,
+        _slug: &str,
+        _source_id: Option<&str>,
+    ) -> Result<Vec<PageVersion>> {
+        unimplemented!()
+    }
+
+    async fn revert_to_version(
+        &self,
+        _slug: &str,
+        _version_id: u64,
+        _source_id: Option<&str>,
+    ) -> Result<()> {
+        unimplemented!()
+    }
+
+    async fn update_slug(
+        &self,
+        _old_slug: &str,
+        _new_slug: &str,
+        _source_id: Option<&str>,
+    ) -> Result<()> {
+        unimplemented!()
+    }
+
+    async fn rewrite_links(&self, _old_slug: &str, _new_slug: &str) -> Result<()> {
+        unimplemented!()
     }
 
     async fn find_orphan_pages(&self) -> Result<Vec<OrphanPage>> {
