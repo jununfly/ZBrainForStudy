@@ -629,12 +629,12 @@
     "1-3-2": {
       "id": "1-3-2",
       "label": "Port init doctor config storage and schema commands",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "exploit",
       "parent": "1-3",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "GitHub issues #32-#39 created. #32 (CLI framework) completed. #33 (Config load/save) completed. #34 (config show/get/set/unset) completed. #35 (init command) in progress - core implementation complete, pending Windows C toolchain verification."
     },
     "1-3-3": {
       "id": "1-3-3",
