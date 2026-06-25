@@ -6,8 +6,9 @@
 
 pub mod config;
 
+use anyhow::Context;
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Static crate name.
 #[must_use]
@@ -117,10 +118,7 @@ pub struct SchemaArgs {
 /// Execute the parsed CLI command.
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
-        Commands::Init(_args) => {
-            // TODO: Implement in slice 1-3-2-2
-            println!("init command stub - implementation coming soon");
-        }
+        Commands::Init(args) => run_init_command(args, cli.config.as_deref()).await?,
         Commands::Doctor(_args) => {
             // TODO: Implement in slice 1-3-2-3
             println!("doctor command stub - implementation coming soon");
@@ -131,6 +129,90 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             println!("schema command stub - implementation coming soon");
         }
     }
+    Ok(())
+}
+
+/// Execute `zbrain init` command.
+///
+/// Initializes a new ZBrain instance with the specified configuration.
+/// Supports two modes:
+/// - PGLite (embedded, zero-config, default)
+/// - Postgres (Supabase or custom connection string)
+///
+/// Key behaviors:
+/// - Creates `~/.zbrain/` directory if needed
+/// - Generates default config if none exists
+/// - Applies schema migrations
+/// - Handles `--force` to overwrite existing config
+async fn run_init_command(args: InitArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+    println!("Setting up ZBrain...");
+
+    // 1. Determine config location and ensure directory exists
+    let config_file = config_path
+        .map(PathBuf::from)
+        .or_else(|| config::user_config_path())
+        .unwrap_or_else(|| {
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(".zbrain")
+                .join("config")
+        });
+
+    if let Some(parent) = config_file.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create config directory: {}", parent.display()))?;
+    }
+
+    // 2. Check for existing config and --force flag
+    if config_file.exists() && !args.force {
+        println!("Config already exists at: {}", config_file.display());
+        println!("Use --force to overwrite, or `zbrain init --migrate-only` to apply schema changes");
+        return Ok(());
+    }
+
+    // 3. Load or create default config
+    let mut config = if config_file.exists() {
+        config::load_config_from_path(&config_file)?
+    } else {
+        config::Config::default()
+    };
+
+    // 4. Default to PGLite for now (Postgres/Supabase wizard coming later)
+    let default_db_path = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".zbrain")
+        .join("brain.pglite");
+
+    // 5. Initialize database and apply schema migrations
+    println!("Initializing database...");
+
+    // Create engine (Libsql for now, matches PGLite behavior)
+    let engine_config = zbrain_core::engine::EngineConfig {
+        database_path: Some(default_db_path.to_string_lossy().to_string()),
+        database_url: None,
+    };
+
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+
+    // Apply schema migrations
+    println!("Applying schema migrations...");
+    engine.init_schema().await?;
+
+    // 6. Save config to disk
+    config.database_url = format!("sqlite://{}", default_db_path.display());
+    config::write_config(&config, &config_file)?;
+
+    // 7. Print success message
+    println!("\n✅ ZBrain initialized successfully!");
+    println!("   Config: {}", config_file.display());
+    println!("   Database: {}", default_db_path.display());
+    println!("\nNext steps:");
+    println!("  zbrain config show           View current configuration");
+    println!("  zbrain import <dir>          Import markdown files");
+    println!("  zbrain doctor                 Verify installation");
+
+    engine.disconnect().await?;
     Ok(())
 }
 
