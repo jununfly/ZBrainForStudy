@@ -11,6 +11,7 @@ pub mod engine;
 pub mod error;
 pub mod libsql;
 pub mod migration;
+pub mod operation;
 pub mod postgres;
 pub mod time;
 pub mod types;

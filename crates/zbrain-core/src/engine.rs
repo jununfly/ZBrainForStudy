@@ -239,7 +239,7 @@ pub struct ResolveSlugsOpts {
 /// Slices 4-8 will extend this trait with additional method groups (chunks,
 /// links, takes, facts, …) following the same append-only pattern.
 #[async_trait]
-pub trait BrainEngine: Send + Sync {
+pub trait BrainEngine: Send + Sync + std::fmt::Debug {
     // ── Identity ──────────────────────────────────────────────────────────
 
     /// Returns the backend discriminator. Used for conditional logic in
