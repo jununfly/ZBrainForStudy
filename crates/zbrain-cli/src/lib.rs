@@ -11,6 +11,43 @@ use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use zbrain_core::engine::BrainEngine;
 
+/// Doctor check status
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckStatus {
+    Ok,
+    Warn,
+    Fail,
+}
+
+/// A single doctor check result
+struct DoctorCheck {
+    name: String,
+    status: CheckStatus,
+    message: String,
+}
+
+impl DoctorCheck {
+    fn new(name: &str, status: CheckStatus, message: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            status,
+            message: message.to_string(),
+        }
+    }
+
+    fn ok(name: &str, message: &str) -> Self {
+        Self::new(name, CheckStatus::Ok, message)
+    }
+
+    fn warn(name: &str, message: &str) -> Self {
+        Self::new(name, CheckStatus::Warn, message)
+    }
+
+    fn fail(name: &str, message: &str) -> Self {
+        Self::new(name, CheckStatus::Fail, message)
+    }
+}
+
 /// Static crate name.
 #[must_use]
 pub const fn crate_name() -> &'static str {
@@ -120,15 +157,9 @@ pub struct SchemaArgs {
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Commands::Init(args) => run_init_command(args, cli.config.as_deref()).await?,
-        Commands::Doctor(_args) => {
-            // TODO: Implement in slice 1-3-2-3
-            println!("doctor command stub - implementation coming soon");
-        }
+        Commands::Doctor(args) => run_doctor_command(args, cli.config.as_deref()).await?,
         Commands::Config(args) => run_config_command(args, cli.config.as_deref()).await?,
-        Commands::Schema(_args) => {
-            // TODO: Implement in slice 1-3-2-4
-            println!("schema command stub - implementation coming soon");
-        }
+        Commands::Schema(args) => run_schema_command(args)?,
     }
     Ok(())
 }
@@ -214,6 +245,151 @@ async fn run_init_command(args: InitArgs, config_path: Option<&Path>) -> anyhow:
     println!("  zbrain doctor                 Verify installation");
 
     engine.disconnect().await?;
+    Ok(())
+}
+
+/// Execute `zbrain doctor` command.
+///
+/// Validates the ZBrain installation and connectivity:
+/// - Config file validation (exists, valid YAML)
+/// - Database connectivity check
+/// - Migration status verification
+/// - Network connectivity check (for providers)
+///
+/// Returns exit code 0 if all checks pass, non-zero otherwise.
+async fn run_doctor_command(_args: DoctorArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+    println!("Running ZBrain doctor...");
+    println!();
+
+    let mut checks: Vec<DoctorCheck> = Vec::new();
+
+    // 1. Config file validation
+    match config::load_config(config_path) {
+        Ok(config) => {
+            checks.push(DoctorCheck::ok("config", &format!("Loaded config with database: {}", config.database_url)));
+        }
+        Err(e) => {
+            checks.push(DoctorCheck::fail("config", &format!("Failed to load config: {}", e)));
+        }
+    }
+
+    // 2. Database connectivity check
+    let db_path = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".zbrain")
+        .join("brain.pglite");
+
+    if db_path.exists() {
+        let engine_config = zbrain_core::engine::EngineConfig {
+            database_path: Some(db_path.to_string_lossy().to_string()),
+            database_url: None,
+        };
+
+        let engine = zbrain_core::libsql::LibsqlEngine::new();
+        match engine.connect(&engine_config).await {
+            Ok(_) => {
+                checks.push(DoctorCheck::ok("database", "Database connection successful"));
+
+                // 3. Migration status verification
+                match engine.list_pages(&Default::default()).await {
+                    Ok(pages) => {
+                        checks.push(DoctorCheck::ok("schema", &format!("Schema verified: {} pages found", pages.len())));
+                    }
+                    Err(e) => {
+                        checks.push(DoctorCheck::warn("schema", &format!("Schema check failed: {}", e)));
+                    }
+                }
+
+                engine.disconnect().await?;
+            }
+            Err(e) => {
+                checks.push(DoctorCheck::fail("database", &format!("Connection failed: {}", e)));
+                checks.push(DoctorCheck::warn("schema", "Skipped (no database connection)"));
+            }
+        }
+    } else {
+        checks.push(DoctorCheck::warn("database", "Database file not found - run `zbrain init` first"));
+        checks.push(DoctorCheck::warn("schema", "Skipped (no database file)"));
+    }
+
+    // 4. Network connectivity check (simple DNS lookup via std::net)
+    match std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([8, 8, 8, 8], 53)),
+        std::time::Duration::from_secs(3),
+    ) {
+        Ok(_) => {
+            checks.push(DoctorCheck::ok("network", "Network connectivity verified"));
+        }
+        Err(_) => {
+            checks.push(DoctorCheck::warn("network", "Network check failed - offline or DNS issue"));
+        }
+    }
+
+    // Print results
+    let mut pass_count = 0;
+    let mut warn_count = 0;
+    let mut fail_count = 0;
+
+    for check in &checks {
+        let (status_icon, status_label) = match check.status {
+            CheckStatus::Ok => ("✅", "PASS"),
+            CheckStatus::Warn => ("⚠️", "WARN"),
+            CheckStatus::Fail => ("❌", "FAIL"),
+        };
+
+        println!("{} {}: {}", status_icon, check.name, check.message);
+
+        match check.status {
+            CheckStatus::Ok => pass_count += 1,
+            CheckStatus::Warn => warn_count += 1,
+            CheckStatus::Fail => fail_count += 1,
+        }
+    }
+
+    println!();
+    println!("--- Summary ---");
+    println!("Pass: {}, Warn: {}, Fail: {}", pass_count, warn_count, fail_count);
+
+    if fail_count > 0 {
+        std::process::exit(1);
+    }
+
+    Ok(())
+}
+
+/// Execute `zbrain schema` command.
+///
+/// Prints the database schema SQL for the specified backend.
+/// Supports: libsql (default), postgres
+fn run_schema_command(args: SchemaArgs) -> anyhow::Result<()> {
+    let backend = args.backend.to_lowercase();
+
+    match backend.as_str() {
+        "libsql" | "sqlite" | "pglite" => {
+            println!("-- ZBrain libsql/SQLite Schema");
+            println!();
+            for migration in zbrain_core::libsql::LIBQL_MIGRATIONS.iter() {
+                println!("-- Migration {}: {}", migration.version(), migration.name());
+                println!("{}", migration.sql());
+                println!();
+            }
+        }
+        "postgres" | "pg" => {
+            println!("-- ZBrain Postgres Schema");
+            println!();
+            for migration in zbrain_core::postgres::POSTGRES_MIGRATIONS.iter() {
+                println!("-- Migration {}: {}", migration.version(), migration.name());
+                println!("{}", migration.sql());
+                println!();
+            }
+        }
+        _ => {
+            eprintln!("Unknown backend: {}", args.backend);
+            eprintln!("Supported backends: libsql, postgres");
+            std::process::exit(1);
+        }
+    }
+
     Ok(())
 }
 

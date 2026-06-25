@@ -5,7 +5,8 @@
   "type": "module",
   "main": "src/core/index.ts",
   "bin": {
-    "zbrain": "src/cli.ts"
+    "zbrain": "src/cli.ts",
+    "zbrain-rs": "bin/zbrain-rs.js"
   },
   "exports": {
     ".": "./src/core/index.ts",
