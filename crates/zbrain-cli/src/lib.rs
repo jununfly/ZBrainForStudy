@@ -9,6 +9,7 @@ pub mod config;
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
+use zbrain_core::engine::BrainEngine;
 
 /// Static crate name.
 #[must_use]
@@ -237,7 +238,8 @@ async fn run_config_command(args: ConfigArgs, config_path: Option<&Path>) -> any
             set_config_value(&mut config, &key, value)?;
             // Default to user config directory if no explicit path
             let output_path = config_path
-                .or_else(|| config::user_config_path().as_deref().map(PathBuf::from))
+                .map(PathBuf::from)
+                .or_else(config::user_config_path)
                 .unwrap_or_else(|| PathBuf::from("zbrain.yml"));
             config::write_config(&config, &output_path)?;
             println!("Set config key: {}", key);
@@ -247,7 +249,8 @@ async fn run_config_command(args: ConfigArgs, config_path: Option<&Path>) -> any
             let mut config = config::load_config(config_path)?;
             let count = unset_config_by_pattern(&mut config, &pattern)?;
             let output_path = config_path
-                .or_else(|| config::user_config_path().as_deref().map(PathBuf::from))
+                .map(PathBuf::from)
+                .or_else(config::user_config_path)
                 .unwrap_or_else(|| PathBuf::from("zbrain.yml"));
             config::write_config(&config, &output_path)?;
             println!("Unset {} key(s) matching pattern: {}", count, pattern);
@@ -257,7 +260,8 @@ async fn run_config_command(args: ConfigArgs, config_path: Option<&Path>) -> any
             let mut config = config::load_config(config_path)?;
             if unset_config_value(&mut config, &key)? {
                 let output_path = config_path
-                    .or_else(|| config::user_config_path().as_deref().map(PathBuf::from))
+                    .map(PathBuf::from)
+                    .or_else(config::user_config_path)
                     .unwrap_or_else(|| PathBuf::from("zbrain.yml"));
                 config::write_config(&config, &output_path)?;
                 println!("Unset config key: {}", key);
@@ -328,7 +332,8 @@ fn get_config_value(key: &str, config: &serde_yaml::Value) -> Option<String> {
 /// Set a nested config value by dot-separated key path.
 fn set_config_value(config: &mut config::Config, key: &str, value: String) -> anyhow::Result<()> {
     // Convert to value representation, then apply change
-    let mut cfg_value = serde_yaml::to_value(config)?;
+    // Use &* to reborrow and avoid "value used after move"
+    let mut cfg_value = serde_yaml::to_value(&*config)?;
     {
         let parts: Vec<&str> = key.split('.').collect();
         let mut current = &mut cfg_value;
@@ -339,7 +344,7 @@ fn set_config_value(config: &mut config::Config, key: &str, value: String) -> an
                 if let serde_yaml::Value::Mapping(map) = current {
                     map.insert(
                         serde_yaml::Value::String(part.to_string()),
-                        serde_yaml::Value::String(value),
+                        serde_yaml::Value::String(value.clone()),
                     );
                 }
             } else {
@@ -361,7 +366,7 @@ fn set_config_value(config: &mut config::Config, key: &str, value: String) -> an
 
 /// Unset a specific config key. Returns true if the key existed.
 fn unset_config_value(config: &mut config::Config, key: &str) -> anyhow::Result<bool> {
-    let mut cfg_value = serde_yaml::to_value(config)?;
+    let mut cfg_value = serde_yaml::to_value(&*config)?;
     let parts: Vec<&str> = key.split('.').collect();
 
     let result = if parts.len() == 1 {
@@ -397,7 +402,7 @@ fn unset_config_value(config: &mut config::Config, key: &str) -> anyhow::Result<
 
 /// Unset all keys matching a prefix pattern. Returns count of removed keys.
 fn unset_config_by_pattern(config: &mut config::Config, prefix: &str) -> anyhow::Result<usize> {
-    let mut cfg_value = serde_yaml::to_value(config)?;
+    let mut cfg_value = serde_yaml::to_value(&*config)?;
     let mut count = 0;
 
     if let serde_yaml::Value::Mapping(map) = &mut cfg_value {

@@ -50,7 +50,7 @@ pub struct Config {
 }
 
 /// Provider-specific API configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct ProviderConfig {
     pub api_key: Option<String>,
     pub base_url: Option<String>,
@@ -470,4 +470,11 @@ mod tests {
     fn config_defaults() {
         let config = Config::default();
         assert_eq!(config.database_url, "sqlite://~/.zbrain/zbrain.db");
-        assert_eq!(config.embedding
+        assert_eq!(config.embedding.model, "all-minilm-l6-v2");
+        assert_eq!(config.embedding.chunk_size, 512);
+        assert_eq!(config.embedding.chunk_overlap, 64);
+        assert_eq!(config.search.top_k, 10);
+        assert_eq!(config.agents.max_concurrent, 4);
+        assert_eq!(config.logging.level, "info");
+    }
+}

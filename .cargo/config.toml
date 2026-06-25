@@ -1,2 +1,4 @@
 [build]
-target = "x86_64-pc-windows-gnullvm"
+# Use MSVC toolchain for better Windows compatibility
+# target = "x86_64-pc-windows-gnullvm"
+target = "x86_64-pc-windows-msvc"
