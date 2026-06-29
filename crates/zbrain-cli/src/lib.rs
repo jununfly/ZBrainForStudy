@@ -8,6 +8,7 @@ pub mod config;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use zbrain_core::engine::BrainEngine;
 use zbrain_core::operation::{OperationContext, OperationRegistry};
@@ -108,6 +109,21 @@ pub enum Commands {
     Think(ThinkArgs),
     /// Search pages by keyword query
     Query(QueryArgs),
+
+    /// Create or update a page
+    PutPage(PutPageArgs),
+
+    /// Delete a page by slug (soft delete)
+    DeletePage(DeletePageArgs),
+
+    /// Restore a deleted page
+    RestorePage(RestorePageArgs),
+
+    /// Permanently remove all soft-deleted pages
+    PurgeDeletedPages(PurgeDeletedPagesArgs),
+
+    /// List pages with optional filtering
+    ListPages(ListPagesArgs),
 }
 
 /// Arguments for `zbrain get-page` command.
@@ -225,6 +241,71 @@ pub struct SchemaArgs {
     pub backend: String,
 }
 
+/// Arguments for `zbrain put-page` command.
+#[derive(Debug, Parser)]
+pub struct PutPageArgs {
+    /// Page slug to create or update
+    pub slug: String,
+
+    /// Page type (default: note)
+    #[arg(long)]
+    pub page_type: Option<String>,
+
+    /// Page title (defaults to slug)
+    #[arg(long)]
+    pub title: Option<String>,
+
+    /// Page content (markdown)
+    #[arg(long)]
+    pub content: Option<String>,
+}
+
+/// Arguments for `zbrain delete-page` command.
+#[derive(Debug, Parser)]
+pub struct DeletePageArgs {
+    /// Page slug to delete
+    pub slug: String,
+}
+
+/// Arguments for `zbrain restore-page` command.
+#[derive(Debug, Parser)]
+pub struct RestorePageArgs {
+    /// Page slug to restore
+    pub slug: String,
+}
+
+/// Arguments for `zbrain purge-deleted-pages` command.
+#[derive(Debug, Parser)]
+pub struct PurgeDeletedPagesArgs {
+    /// Confirm permanent deletion
+    #[arg(long)]
+    pub force: bool,
+}
+
+/// Arguments for `zbrain list-pages` command.
+#[derive(Debug, Parser)]
+pub struct ListPagesArgs {
+    /// Filter by page type
+    #[arg(long)]
+    pub page_type: Option<String>,
+
+    /// Filter by tag
+    #[arg(long)]
+    pub tag: Option<String>,
+
+    /// Maximum number of results (default: 50)
+    #[arg(long)]
+    pub limit: Option<usize>,
+
+    /// Pagination offset (default: 0)
+    #[arg(long)]
+    pub offset: Option<usize>,
+
+    /// Include soft-deleted pages
+    #[arg(long)]
+    pub include_deleted: bool,
+}
+
 /// Execute the parsed CLI command.
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
@@ -235,6 +316,11 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::GetPage(args) => run_get_page_command(args, cli.config.as_deref()).await?,
         Commands::Think(args) => run_think_command(args, cli.config.as_deref()).await?,
         Commands::Query(args) => run_query_command(args, cli.config.as_deref()).await?,
+        Commands::PutPage(args) => run_put_page_command(args, cli.config.as_deref()).await?,
+        Commands::DeletePage(args) => run_delete_page_command(args, cli.config.as_deref()).await?,
+        Commands::RestorePage(args) => run_restore_page_command(args, cli.config.as_deref()).await?,
+        Commands::PurgeDeletedPages(args) => run_purge_deleted_pages_command(args, cli.config.as_deref()).await?,
+        Commands::ListPages(args) => run_list_pages_command(args, cli.config.as_deref()).await?,
     }
     Ok(())
 }
@@ -285,6 +371,89 @@ async fn run_query_command(args: QueryArgs, config_path: Option<&Path>) -> anyho
     Ok(())
 }
 
+/// Execute `zbrain put-page` command.
+async fn run_put_page_command(args: PutPageArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+    // Get content from --content flag or stdin
+    let content = match args.content {
+        Some(c) => c,
+        None => {
+            let mut buffer = String::new();
+            std::io::stdin().read_to_string(&mut buffer)?;
+            buffer
+        }
+    };
+
+    let params = serde_json::json!({
+        "slug": args.slug,
+        "page_type": args.page_type,
+        "title": args.title,
+        "compiled_truth": content,
+    });
+
+    let output = run_operation("put_page", params, config_path).await?;
+
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+/// Execute `zbrain delete-page` command.
+async fn run_delete_page_command(args: DeletePageArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+    let params = serde_json::json!({
+        "slug": args.slug,
+    });
+
+    let output = run_operation("delete_page", params, config_path).await?;
+
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+/// Execute `zbrain restore-page` command.
+async fn run_restore_page_command(args: RestorePageArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+    let params = serde_json::json!({
+        "slug": args.slug,
+    });
+
+    let output = run_operation("restore_page", params, config_path).await?;
+
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+/// Execute `zbrain purge-deleted-pages` command.
+async fn run_purge_deleted_pages_command(args: PurgeDeletedPagesArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+    // --force is required as a safety measure
+    if !args.force {
+        eprintln!("Error: --force flag is required to permanently purge deleted pages");
+        std::process::exit(1);
+    }
+
+    let params = serde_json::json!({
+        "older_than_days": null,
+    });
+
+    let output = run_operation("purge_deleted_pages", params, config_path).await?;
+
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+/// Execute `zbrain list-pages` command.
+async fn run_list_pages_command(args: ListPagesArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+    let params = serde_json::json!({
+        "kind": args.page_type,
+        "tag": args.tag,
+        "limit": args.limit.map(|l| l as u32),
+        "offset": args.offset.map(|o| o as u32),
+        "include_deleted": args.include_deleted,
+    });
+
+    let output = run_operation("list_pages", params, config_path).await?;
+
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
 /// Execute an operation by name with JSON params.
 async fn run_operation(
     name: &str,
@@ -311,6 +480,11 @@ async fn run_operation(
     registry.register(zbrain_core::operation::GetPageOperation);
     registry.register(zbrain_core::operation::ThinkOperation);
     registry.register(zbrain_core::operation::QueryOperation);
+    registry.register(zbrain_core::operation::PutPageOperation);
+    registry.register(zbrain_core::operation::DeletePageOperation);
+    registry.register(zbrain_core::operation::RestorePageOperation);
+    registry.register(zbrain_core::operation::PurgeDeletedPagesOperation);
+    registry.register(zbrain_core::operation::ListPagesOperation);
 
     let ctx = OperationContext::local_cli().with_engine(std::sync::Arc::new(engine));
 

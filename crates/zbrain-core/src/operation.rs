@@ -1650,6 +1650,363 @@ fn extract_keywords(query: &str) -> Vec<String> {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// Pages CRUD Operations
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Create or update a page by slug.
+#[derive(Debug, Clone)]
+pub struct PutPageOperation;
+
+/// Parameters for put_page operation.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct PutPageParams {
+    pub slug: String,
+    pub page_type: Option<String>,
+    pub title: Option<String>,
+    pub compiled_truth: Option<String>,
+}
+
+impl ValidateParams for PutPageParams {
+    fn validate(&self) -> OperationResult<()> {
+        validate_page_slug(&self.slug)?;
+        Ok(())
+    }
+}
+
+/// Output for put_page operation.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PutPageOutput {
+    pub page: crate::engine::Page,
+    pub created: bool,
+}
+
+#[async_trait]
+impl TypedOperation for PutPageOperation {
+    type Params = PutPageParams;
+    type Output = PutPageOutput;
+
+    fn name(&self) -> &'static str {
+        "put_page"
+    }
+
+    fn description(&self) -> &'static str {
+        "Create or update a page by slug. Creates a new page if the slug does not exist, or updates an existing page."
+    }
+
+    fn local_only(&self) -> bool {
+        true
+    }
+
+    fn mutating(&self) -> bool {
+        true
+    }
+
+    async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
+        use crate::engine::PageInput;
+
+        let engine = ctx.engine()?;
+
+        // Check if page exists for created flag
+        let get_opts = crate::engine::GetPageOpts {
+            source_id: Some(ctx.source_id.clone()),
+            include_deleted: true,
+        };
+        let existing = engine.get_page(&params.slug, &get_opts).await?;
+        let created = existing.is_none();
+
+        let page_type = params.page_type.unwrap_or_else(|| "note".to_string());
+        let title = params.title.unwrap_or_else(|| params.slug.clone());
+        let compiled_truth = params.compiled_truth.unwrap_or_default();
+
+        let input = PageInput {
+            page_type,
+            title,
+            compiled_truth,
+            ..Default::default()
+        };
+
+        let page = engine.put_page(&params.slug, Some(&ctx.source_id), &input).await?;
+
+        Ok(PutPageOutput { page, created })
+    }
+}
+
+/// Soft delete a page by slug.
+#[derive(Debug, Clone)]
+pub struct DeletePageOperation;
+
+/// Parameters for delete_page operation.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct DeletePageParams {
+    pub slug: String,
+}
+
+impl ValidateParams for DeletePageParams {
+    fn validate(&self) -> OperationResult<()> {
+        validate_page_slug(&self.slug)?;
+        Ok(())
+    }
+}
+
+/// Output for delete_page operation.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeletePageOutput {
+    pub deleted: bool,
+}
+
+#[async_trait]
+impl TypedOperation for DeletePageOperation {
+    type Params = DeletePageParams;
+    type Output = DeletePageOutput;
+
+    fn name(&self) -> &'static str {
+        "delete_page"
+    }
+
+    fn description(&self) -> &'static str {
+        "Soft delete a page by slug. The page remains in storage with deleted_at timestamp set."
+    }
+
+    fn local_only(&self) -> bool {
+        true
+    }
+
+    fn mutating(&self) -> bool {
+        true
+    }
+
+    async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+
+        // Check if page exists
+        let get_opts = crate::engine::GetPageOpts {
+            source_id: Some(ctx.source_id.clone()),
+            include_deleted: true,
+        };
+        let existing = engine.get_page(&params.slug, &get_opts).await?;
+        if existing.is_none() {
+            return Err(OperationError::new(
+                ErrorCode::PageNotFound,
+                format!("Page not found: {}", params.slug),
+            ));
+        }
+
+        engine.delete_page(&params.slug, Some(&ctx.source_id)).await?;
+        Ok(DeletePageOutput { deleted: true })
+    }
+}
+
+/// Restore a soft-deleted page by slug.
+#[derive(Debug, Clone)]
+pub struct RestorePageOperation;
+
+/// Parameters for restore_page operation.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RestorePageParams {
+    pub slug: String,
+}
+
+impl ValidateParams for RestorePageParams {
+    fn validate(&self) -> OperationResult<()> {
+        validate_page_slug(&self.slug)?;
+        Ok(())
+    }
+}
+
+/// Output for restore_page operation.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestorePageOutput {
+    pub restored: bool,
+}
+
+#[async_trait]
+impl TypedOperation for RestorePageOperation {
+    type Params = RestorePageParams;
+    type Output = RestorePageOutput;
+
+    fn name(&self) -> &'static str {
+        "restore_page"
+    }
+
+    fn description(&self) -> &'static str {
+        "Restore a soft-deleted page by slug. Clears the deleted_at timestamp."
+    }
+
+    fn local_only(&self) -> bool {
+        true
+    }
+
+    fn mutating(&self) -> bool {
+        true
+    }
+
+    async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+
+        // Check if page exists and is deleted
+        let get_opts = crate::engine::GetPageOpts {
+            source_id: Some(ctx.source_id.clone()),
+            include_deleted: true,
+        };
+        let existing = engine.get_page(&params.slug, &get_opts).await?;
+        match existing {
+            None => {
+                return Err(OperationError::new(
+                    ErrorCode::PageNotFound,
+                    format!("Page not found: {}", params.slug),
+                ));
+            }
+            Some(page) if page.deleted_at.is_none() => {
+                return Err(OperationError::new(
+                    ErrorCode::InvalidParams,
+                    format!("Page is not deleted: {}", params.slug),
+                ));
+            }
+            _ => {}
+        }
+
+        engine.restore_page(&params.slug, Some(&ctx.source_id)).await?;
+        Ok(RestorePageOutput { restored: true })
+    }
+}
+
+/// Permanently purge soft-deleted pages.
+#[derive(Debug, Clone)]
+pub struct PurgeDeletedPagesOperation;
+
+/// Parameters for purge_deleted_pages operation.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct PurgeDeletedPagesParams {
+    pub older_than_days: Option<i64>,
+}
+
+impl ValidateParams for PurgeDeletedPagesParams {
+    fn validate(&self) -> OperationResult<()> {
+        if let Some(days) = self.older_than_days {
+            if days < 0 {
+                return Err(OperationError::invalid_params(
+                    "older_than_days must be non-negative",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Output for purge_deleted_pages operation.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PurgeDeletedPagesOutput {
+    pub purged: u64,
+}
+
+#[async_trait]
+impl TypedOperation for PurgeDeletedPagesOperation {
+    type Params = PurgeDeletedPagesParams;
+    type Output = PurgeDeletedPagesOutput;
+
+    fn name(&self) -> &'static str {
+        "purge_deleted_pages"
+    }
+
+    fn description(&self) -> &'static str {
+        "Permanently purge soft-deleted pages. If older_than_days is specified, only purge pages deleted before that threshold."
+    }
+
+    fn local_only(&self) -> bool {
+        true
+    }
+
+    fn mutating(&self) -> bool {
+        true
+    }
+
+    async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        // Convert days to hours, default to 0 (purge all deleted)
+        let older_than_hours = params.older_than_days.map_or(0, |d| (d * 24) as u32);
+        let result = engine.purge_deleted_pages(older_than_hours).await?;
+        Ok(PurgeDeletedPagesOutput { purged: result.count })
+    }
+}
+
+/// List pages with optional filtering.
+#[derive(Debug, Clone)]
+pub struct ListPagesOperation;
+
+/// Parameters for list_pages operation.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ListPagesParams {
+    pub kind: Option<String>,
+    pub tag: Option<String>,
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
+    pub include_deleted: Option<bool>,
+}
+
+impl ValidateParams for ListPagesParams {
+    fn validate(&self) -> OperationResult<()> {
+        if let Some(limit) = self.limit {
+            if limit > 1000 {
+                return Err(OperationError::invalid_params(
+                    "limit cannot exceed 1000",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Output for list_pages operation.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListPagesOutput {
+    pub pages: Vec<crate::engine::Page>,
+    pub total: u64,
+}
+
+#[async_trait]
+impl TypedOperation for ListPagesOperation {
+    type Params = ListPagesParams;
+    type Output = ListPagesOutput;
+
+    fn name(&self) -> &'static str {
+        "list_pages"
+    }
+
+    fn description(&self) -> &'static str {
+        "List pages with optional filtering by kind, tag, and pagination. Returns pages and total count."
+    }
+
+    async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
+        use crate::engine::PageFilters;
+
+        let engine = ctx.engine()?;
+
+        let mut filters = PageFilters::default();
+        filters.source_id = Some(ctx.source_id.clone());
+        filters.page_type = params.kind;
+        filters.tag = params.tag;
+        filters.limit = params.limit.map(|l| l as usize);
+        filters.offset = params.offset.map(|o| o as usize);
+        filters.include_deleted = params.include_deleted.unwrap_or(false);
+
+        let pages = engine.list_pages(&filters).await?;
+        let total = pages.len() as u64;
+
+        Ok(ListPagesOutput { pages, total })
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // Tests
 // ──────────────────────────────────────────────────────────────────────────
 
@@ -2559,85 +2916,6 @@ mod tests {
         assert_eq!(output2["page"]["slug"], "deleted/page");
     }
 
-    // ── PutPage Operation (Slice #45) ───────────────────────────────────────
-
-    #[derive(Debug, Clone)]
-    struct PutPageOperation;
-
-    #[derive(Debug, serde::Deserialize)]
-    #[serde(rename_all = "snake_case")]
-    struct PutPageParams {
-        slug: String,
-        page_type: Option<String>,
-        title: Option<String>,
-        compiled_truth: Option<String>,
-    }
-
-    impl ValidateParams for PutPageParams {
-        fn validate(&self) -> OperationResult<()> {
-            validate_page_slug(&self.slug)?;
-            Ok(())
-        }
-    }
-
-    #[derive(Debug, serde::Serialize)]
-    #[serde(rename_all = "camelCase")]
-    struct PutPageOutput {
-        page: crate::engine::Page,
-        created: bool,
-    }
-
-    #[async_trait]
-    impl TypedOperation for PutPageOperation {
-        type Params = PutPageParams;
-        type Output = PutPageOutput;
-
-        fn name(&self) -> &'static str {
-            "put_page"
-        }
-
-        fn description(&self) -> &'static str {
-            "Create or update a page by slug. Creates a new page if the slug does not exist, or updates an existing page."
-        }
-
-        fn local_only(&self) -> bool {
-            true
-        }
-
-        fn mutating(&self) -> bool {
-            true
-        }
-
-        async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
-            use crate::engine::PageInput;
-
-            let engine = ctx.engine()?;
-
-            // Check if page exists for created flag
-            let get_opts = crate::engine::GetPageOpts {
-                source_id: Some(ctx.source_id.clone()),
-                include_deleted: true,
-            };
-            let existing = engine.get_page(&params.slug, &get_opts).await?;
-            let created = existing.is_none();
-
-            let page_type = params.page_type.unwrap_or_else(|| "note".to_string());
-            let title = params.title.unwrap_or_else(|| params.slug.clone());
-            let compiled_truth = params.compiled_truth.unwrap_or_default();
-
-            let input = PageInput {
-                page_type,
-                title,
-                compiled_truth,
-                ..Default::default()
-            };
-
-            let page = engine.put_page(&params.slug, Some(&ctx.source_id), &input).await?;
-
-            Ok(PutPageOutput { page, created })
-        }
-    }
-
     #[test]
     fn registry_register_put_page() {
         let mut registry = OperationRegistry::new();
@@ -2730,72 +3008,6 @@ mod tests {
         assert_eq!(output["created"], false);
     }
 
-    // ── DeletePage Operation (Slice #45) ───────────────────────────────────
-
-    #[derive(Debug, Clone)]
-    struct DeletePageOperation;
-
-    #[derive(Debug, serde::Deserialize)]
-    #[serde(rename_all = "snake_case")]
-    struct DeletePageParams {
-        slug: String,
-    }
-
-    impl ValidateParams for DeletePageParams {
-        fn validate(&self) -> OperationResult<()> {
-            validate_page_slug(&self.slug)?;
-            Ok(())
-        }
-    }
-
-    #[derive(Debug, serde::Serialize)]
-    #[serde(rename_all = "camelCase")]
-    struct DeletePageOutput {
-        deleted: bool,
-    }
-
-    #[async_trait]
-    impl TypedOperation for DeletePageOperation {
-        type Params = DeletePageParams;
-        type Output = DeletePageOutput;
-
-        fn name(&self) -> &'static str {
-            "delete_page"
-        }
-
-        fn description(&self) -> &'static str {
-            "Soft delete a page by slug. The page remains in storage with deleted_at timestamp set."
-        }
-
-        fn local_only(&self) -> bool {
-            true
-        }
-
-        fn mutating(&self) -> bool {
-            true
-        }
-
-        async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
-            let engine = ctx.engine()?;
-
-            // Check if page exists
-            let get_opts = crate::engine::GetPageOpts {
-                source_id: Some(ctx.source_id.clone()),
-                include_deleted: true,
-            };
-            let existing = engine.get_page(&params.slug, &get_opts).await?;
-            if existing.is_none() {
-                return Err(OperationError::new(
-                    ErrorCode::PageNotFound,
-                    format!("Page not found: {}", params.slug),
-                ));
-            }
-
-            engine.delete_page(&params.slug, Some(&ctx.source_id)).await?;
-            Ok(DeletePageOutput { deleted: true })
-        }
-    }
-
     #[test]
     fn registry_register_delete_page() {
         let mut registry = OperationRegistry::new();
@@ -2851,79 +3063,6 @@ mod tests {
     }
 
     // ── RestorePage Operation (Slice #45) ──────────────────────────────────
-
-    #[derive(Debug, Clone)]
-    struct RestorePageOperation;
-
-    #[derive(Debug, serde::Deserialize)]
-    #[serde(rename_all = "snake_case")]
-    struct RestorePageParams {
-        slug: String,
-    }
-
-    impl ValidateParams for RestorePageParams {
-        fn validate(&self) -> OperationResult<()> {
-            validate_page_slug(&self.slug)?;
-            Ok(())
-        }
-    }
-
-    #[derive(Debug, serde::Serialize)]
-    #[serde(rename_all = "camelCase")]
-    struct RestorePageOutput {
-        restored: bool,
-    }
-
-    #[async_trait]
-    impl TypedOperation for RestorePageOperation {
-        type Params = RestorePageParams;
-        type Output = RestorePageOutput;
-
-        fn name(&self) -> &'static str {
-            "restore_page"
-        }
-
-        fn description(&self) -> &'static str {
-            "Restore a soft-deleted page by slug. Clears the deleted_at timestamp."
-        }
-
-        fn local_only(&self) -> bool {
-            true
-        }
-
-        fn mutating(&self) -> bool {
-            true
-        }
-
-        async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
-            let engine = ctx.engine()?;
-
-            // Check if page exists and is deleted
-            let get_opts = crate::engine::GetPageOpts {
-                source_id: Some(ctx.source_id.clone()),
-                include_deleted: true,
-            };
-            let existing = engine.get_page(&params.slug, &get_opts).await?;
-            match existing {
-                None => {
-                    return Err(OperationError::new(
-                        ErrorCode::PageNotFound,
-                        format!("Page not found: {}", params.slug),
-                    ));
-                }
-                Some(page) if page.deleted_at.is_none() => {
-                    return Err(OperationError::new(
-                        ErrorCode::InvalidParams,
-                        format!("Page is not deleted: {}", params.slug),
-                    ));
-                }
-                _ => {}
-            }
-
-            engine.restore_page(&params.slug, Some(&ctx.source_id)).await?;
-            Ok(RestorePageOutput { restored: true })
-        }
-    }
 
     #[test]
     fn registry_register_restore_page() {
@@ -2989,66 +3128,6 @@ mod tests {
         assert!(err.message.contains("not deleted"));
     }
 
-    // ── PurgeDeletedPages Operation (Slice #45) ────────────────────────────
-
-    #[derive(Debug, Clone)]
-    struct PurgeDeletedPagesOperation;
-
-    #[derive(Debug, serde::Deserialize)]
-    #[serde(rename_all = "snake_case")]
-    struct PurgeDeletedPagesParams {
-        older_than_days: Option<i64>,
-    }
-
-    impl ValidateParams for PurgeDeletedPagesParams {
-        fn validate(&self) -> OperationResult<()> {
-            if let Some(days) = self.older_than_days {
-                if days < 0 {
-                    return Err(OperationError::invalid_params(
-                        "older_than_days must be non-negative",
-                    ));
-                }
-            }
-            Ok(())
-        }
-    }
-
-    #[derive(Debug, serde::Serialize)]
-    #[serde(rename_all = "camelCase")]
-    struct PurgeDeletedPagesOutput {
-        purged: u64,
-    }
-
-    #[async_trait]
-    impl TypedOperation for PurgeDeletedPagesOperation {
-        type Params = PurgeDeletedPagesParams;
-        type Output = PurgeDeletedPagesOutput;
-
-        fn name(&self) -> &'static str {
-            "purge_deleted_pages"
-        }
-
-        fn description(&self) -> &'static str {
-            "Permanently purge soft-deleted pages. If older_than_days is specified, only purge pages deleted before that threshold."
-        }
-
-        fn local_only(&self) -> bool {
-            true
-        }
-
-        fn mutating(&self) -> bool {
-            true
-        }
-
-        async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
-            let engine = ctx.engine()?;
-            // Convert days to hours, default to 0 (purge all deleted)
-            let older_than_hours = params.older_than_days.map_or(0, |d| (d * 24) as u32);
-            let result = engine.purge_deleted_pages(older_than_hours).await?;
-            Ok(PurgeDeletedPagesOutput { purged: result.count })
-        }
-    }
-
     #[test]
     fn registry_register_purge_deleted_pages() {
         let mut registry = OperationRegistry::new();
@@ -3104,74 +3183,6 @@ mod tests {
 
         let params = PurgeDeletedPagesParams { older_than_days: None };
         assert!(params.validate().is_ok());
-    }
-
-    // ── ListPages Operation (Slice #46) ────────────────────────────────────
-
-    #[derive(Debug, Clone)]
-    struct ListPagesOperation;
-
-    #[derive(Debug, serde::Deserialize)]
-    #[serde(rename_all = "snake_case")]
-    struct ListPagesParams {
-        kind: Option<String>,
-        tag: Option<String>,
-        limit: Option<u32>,
-        offset: Option<u32>,
-        include_deleted: Option<bool>,
-    }
-
-    impl ValidateParams for ListPagesParams {
-        fn validate(&self) -> OperationResult<()> {
-            if let Some(limit) = self.limit {
-                if limit > 1000 {
-                    return Err(OperationError::invalid_params(
-                        "limit cannot exceed 1000",
-                    ));
-                }
-            }
-            Ok(())
-        }
-    }
-
-    #[derive(Debug, serde::Serialize)]
-    #[serde(rename_all = "camelCase")]
-    struct ListPagesOutput {
-        pages: Vec<crate::engine::Page>,
-        total: u64,
-    }
-
-    #[async_trait]
-    impl TypedOperation for ListPagesOperation {
-        type Params = ListPagesParams;
-        type Output = ListPagesOutput;
-
-        fn name(&self) -> &'static str {
-            "list_pages"
-        }
-
-        fn description(&self) -> &'static str {
-            "List pages with optional filtering by kind, tag, and pagination. Returns pages and total count."
-        }
-
-        async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
-            use crate::engine::PageFilters;
-
-            let engine = ctx.engine()?;
-
-            let mut filters = PageFilters::default();
-            filters.source_id = Some(ctx.source_id.clone());
-            filters.page_type = params.kind;
-            filters.tag = params.tag;
-            filters.limit = params.limit.map(|l| l as usize);
-            filters.offset = params.offset.map(|o| o as usize);
-            filters.include_deleted = params.include_deleted.unwrap_or(false);
-
-            let pages = engine.list_pages(&filters).await?;
-            let total = pages.len() as u64;
-
-            Ok(ListPagesOutput { pages, total })
-        }
     }
 
     #[test]
