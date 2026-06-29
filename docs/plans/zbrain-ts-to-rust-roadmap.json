@@ -704,12 +704,28 @@
     "1-4-2": {
       "id": "1-4-2",
       "label": "Port local and remote trust boundary enforcement",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-4",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "Trust boundary flag strategy",
+          "answer": "Option B - Separate local_only() and mutating() flags",
+          "note": "Two independent flags per operation. local_only() for MCP permission control, mutating() for audit logging and dry-run support."
+        },
+        {
+          "q": "Enforcement location strategy",
+          "answer": "Option C - Blanket impl in Operation super trait",
+          "note": "Security check lives in impl<T: TypedOperation> Operation for T. Zero per-operation boilerplate, cannot be bypassed, consistent with object safety pattern."
+        },
+        {
+          "q": "ThinkOperation local_only flag",
+          "answer": "Option A - local_only=false, mutating=false",
+          "note": "Think is a read-only computation operation with optional save/take side effects. Remote MCP callers can execute think but save/take are silently ignored and reported via remotePersistedBlocked field. Internal security check has // SECURITY: comment."
+        }
+      ],
+      "notes": "COMPLETED. Trust boundary enforcement implemented in blanket Operation impl. 114/114 operation tests passing. Issue #52. All write operations marked local_only=true; ThinkOperation handles save/take internally."
     },
     "1-4-3": {
       "id": "1-4-3",

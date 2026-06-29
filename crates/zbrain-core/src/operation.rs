@@ -894,6 +894,12 @@ pub trait TypedOperation: fmt::Debug + Send + Sync {
         false
     }
 
+    /// Whether this operation modifies persisted state (pages, tags, files,
+    /// etc.). Used for audit logging and dry-run support.
+    fn mutating(&self) -> bool {
+        false
+    }
+
     /// Execute the operation with validated params.
     ///
     /// Trust boundary enforcement happens BEFORE this method is called
@@ -922,6 +928,14 @@ impl<T: TypedOperation + Sync> Operation for T {
         ctx: &OperationContext,
         params: serde_json::Value,
     ) -> OperationResult<serde_json::Value> {
+        // Step 0: Trust boundary enforcement
+        if ctx.remote && <Self as TypedOperation>::local_only(self) {
+            return Err(OperationError::permission_denied(format!(
+                "Operation '{}' is only available locally (not via MCP)",
+                <Self as TypedOperation>::name(self)
+            )));
+        }
+
         // Step 1: Deserialize JSON to typed params
         let params: T::Params = serde_json::from_value(params).map_err(|e| {
             OperationError::invalid_params(format!("Params deserialization failed: {}", e))
@@ -2081,6 +2095,14 @@ mod tests {
             "Create or update a page by slug. Creates a new page if the slug does not exist, or updates an existing page."
         }
 
+        fn local_only(&self) -> bool {
+            true
+        }
+
+        fn mutating(&self) -> bool {
+            true
+        }
+
         async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
             use crate::engine::PageInput;
 
@@ -2240,6 +2262,14 @@ mod tests {
             "Soft delete a page by slug. The page remains in storage with deleted_at timestamp set."
         }
 
+        fn local_only(&self) -> bool {
+            true
+        }
+
+        fn mutating(&self) -> bool {
+            true
+        }
+
         async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
             let engine = ctx.engine()?;
 
@@ -2350,6 +2380,14 @@ mod tests {
 
         fn description(&self) -> &'static str {
             "Restore a soft-deleted page by slug. Clears the deleted_at timestamp."
+        }
+
+        fn local_only(&self) -> bool {
+            true
+        }
+
+        fn mutating(&self) -> bool {
+            true
         }
 
         async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
@@ -2487,6 +2525,14 @@ mod tests {
 
         fn description(&self) -> &'static str {
             "Permanently purge soft-deleted pages. If older_than_days is specified, only purge pages deleted before that threshold."
+        }
+
+        fn local_only(&self) -> bool {
+            true
+        }
+
+        fn mutating(&self) -> bool {
+            true
         }
 
         async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
@@ -2720,6 +2766,14 @@ mod tests {
             "Add a tag to a page. Idempotent - if tag already exists, returns success."
         }
 
+        fn local_only(&self) -> bool {
+            true
+        }
+
+        fn mutating(&self) -> bool {
+            true
+        }
+
         async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
             let engine = ctx.engine()?;
             engine
@@ -2817,6 +2871,14 @@ mod tests {
 
         fn description(&self) -> &'static str {
             "Remove a tag from a page. Idempotent - if tag doesn't exist, returns success."
+        }
+
+        fn local_only(&self) -> bool {
+            true
+        }
+
+        fn mutating(&self) -> bool {
+            true
         }
 
         async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
@@ -3657,6 +3719,14 @@ mod tests {
             "Store raw data attached to a page (e.g., scraped content, API responses)."
         }
 
+        fn local_only(&self) -> bool {
+            true
+        }
+
+        fn mutating(&self) -> bool {
+            true
+        }
+
         async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
             // STUB IMPLEMENTATION - Full integration requires page to exist first
             // Engine layer: put_raw_data requires an existing page_id
@@ -3746,8 +3816,17 @@ mod tests {
             "Multi-hop synthesis across pages + takes + graph. Pulls relevant evidence and produces a cited answer."
         }
 
+        fn local_only(&self) -> bool {
+            false
+        }
+
+        fn mutating(&self) -> bool {
+            false
+        }
+
         async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
-            // Trust boundary: remote callers cannot persist
+            // SECURITY: Trust boundary - remote MCP callers cannot persist
+            // See test dispatch_json_think_remote_blocks_persistence
             let remote = ctx.remote;
             let safe_save = !remote && params.save.unwrap_or(false);
             let safe_take = !remote && params.take.unwrap_or(false);
@@ -3831,6 +3910,30 @@ mod tests {
         let err = result.unwrap_err();
         assert_eq!(err.code, ErrorCode::InvalidParams);
         assert!(err.message.contains("question cannot be empty"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_json_put_raw_data_remote_blocked() {
+        use crate::engine::InMemoryEngine;
+
+        let engine = InMemoryEngine::default();
+        let mut registry = OperationRegistry::new();
+        registry.register(PutRawDataOperation);
+
+        // Remote context should be blocked
+        let ctx = OperationContext::remote_mcp("public").with_engine(engine.into_arc());
+        let params = serde_json::json!({
+            "slug": "test/page",
+            "source": "scraper",
+            "data": { "title": "Test" }
+        });
+
+        let result = registry.dispatch_json("put_raw_data", &ctx, params).await;
+        assert!(result.is_err(), "Expected permission denied for remote call");
+
+        let err = result.unwrap_err();
+        assert_eq!(err.code, ErrorCode::PermissionDenied);
+        assert!(err.message.contains("only available locally"));
     }
 
     // ── Upload path traversal security tests (Slice #42c) ─────────────────
