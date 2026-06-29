@@ -4806,6 +4806,109 @@ mod tests {
                 output_str
             );
         }
+
+        // ──────────────────────────────────────────────────────────────────────
+        // Trust Boundary Tests
+        // ──────────────────────────────────────────────────────────────────────
+
+        #[tokio::test]
+        async fn trust_boundary_local_only_operation_remote_call_rejected() {
+            // Setup: create a local-only operation and call it with remote=true
+            use crate::engine::InMemoryEngine;
+
+            #[derive(Debug, Clone)]
+            struct LocalOnlyOperation;
+
+            #[derive(Debug, serde::Deserialize)]
+            #[serde(rename_all = "snake_case")]
+            struct LocalOnlyParams {
+                value: String,
+            }
+
+            impl ValidateParams for LocalOnlyParams {
+                fn validate(&self) -> OperationResult<()> {
+                    Ok(())
+                }
+            }
+
+            #[derive(Debug, serde::Serialize)]
+            struct LocalOnlyOutput {
+                result: String,
+            }
+
+            #[async_trait]
+            impl TypedOperation for LocalOnlyOperation {
+                type Params = LocalOnlyParams;
+                type Output = LocalOnlyOutput;
+
+                fn name(&self) -> &'static str {
+                    "local_only_test"
+                }
+
+                fn description(&self) -> &'static str {
+                    "Test operation that is local-only"
+                }
+
+                fn local_only(&self) -> bool {
+                    true // Mark as local-only
+                }
+
+                async fn execute(&self, _ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
+                    Ok(LocalOnlyOutput { result: params.value })
+                }
+            }
+
+            // Test 1: Local call (remote=false) should succeed
+            let engine_local = InMemoryEngine::default();
+            let mut registry = OperationRegistry::new();
+            registry.register(LocalOnlyOperation);
+
+            let ctx_local = OperationContext::local_cli().with_engine(Arc::new(engine_local));
+            let params = serde_json::json!({ "value": "hello" });
+            let result = registry.dispatch_json("local_only_test", &ctx_local, params).await;
+            assert!(result.is_ok(), "Local call should succeed");
+
+            // Test 2: Remote call (remote=true) should be rejected
+            let engine_remote = InMemoryEngine::default();
+            let mut ctx_remote = OperationContext::local_cli();
+            ctx_remote.remote = true; // Simulate remote MCP call
+            let ctx_remote = ctx_remote.with_engine(Arc::new(engine_remote));
+            let params = serde_json::json!({ "value": "hello" });
+            let result = registry.dispatch_json("local_only_test", &ctx_remote, params).await;
+
+            assert!(result.is_err(), "Remote call to local-only operation should fail");
+            let err = result.err().unwrap();
+            assert_eq!(err.code, ErrorCode::PermissionDenied);
+            assert!(err.message.contains("only available locally"));
+        }
+
+        #[tokio::test]
+        async fn trust_boundary_non_local_only_operation_remote_call_allowed() {
+            // Setup: default operation (not local-only) should work remotely
+            use crate::engine::InMemoryEngine;
+
+            let engine = InMemoryEngine::default();
+            let mut registry = OperationRegistry::new();
+            registry.register(QueryOperation);
+
+            // Create a page to search
+            let input = PageInput {
+                page_type: "note".to_string(),
+                title: "Test Page".to_string(),
+                compiled_truth: "Content with searchable keyword.".to_string(),
+                ..Default::default()
+            };
+            engine.put_page("test/page", None, &input).await.unwrap();
+
+            // Remote call to query operation (not local-only) should succeed
+            let mut ctx_remote = OperationContext::local_cli();
+            ctx_remote.remote = true; // Simulate remote MCP call
+            let ctx_remote = ctx_remote.with_engine(Arc::new(engine));
+            let params = serde_json::json!({ "query": "searchable" });
+
+            let result = registry.dispatch_json("query", &ctx_remote, params).await;
+            assert!(result.is_ok(), "Remote call to non-local-only operation should succeed");
+        }
     }
 }
 
