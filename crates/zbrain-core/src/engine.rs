@@ -52,7 +52,8 @@ pub struct EngineConfig {
 ///
 /// `Eq` is intentionally dropped because `emotional_weight: Option<f64>` and
 /// `frontmatter: Value` do not implement `Eq`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Page {
     // ── identity (always present) ────────────────────────────────────────
     pub id: u64,
@@ -699,7 +700,12 @@ impl BrainEngine for InMemoryEngine {
             .store
             .lock()
             .expect("InMemoryEngine store mutex poisoned");
-        store.retain(|p| !(p.slug == slug && p.source_id == source_id));
+        // Soft delete: set deleted_at instead of removing
+        for p in store.iter_mut() {
+            if p.slug == slug && p.source_id == source_id {
+                p.deleted_at = Some("2026-01-01T00:00:00Z".to_string());
+            }
+        }
         Ok(())
     }
 

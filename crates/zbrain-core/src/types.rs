@@ -139,7 +139,8 @@ pub struct DuplicatePage {
 /// Equivalent to the TS shape `{ slug: string; sourceId: string }` returned
 /// by `pglite-engine.ts:2577`. Ordering convention: `(source_id, slug)`
 /// ascending, matching the TS `ORDER BY` clause.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PageRef {
     pub slug: String,
     pub source_id: String,
@@ -180,7 +181,8 @@ pub struct RefreshPageBodyArgs {
 /// Mirrors the TS return at `pglite-engine.ts:2619`: `{ slug, title, domain }`
 /// where `title` falls back to `slug` via `COALESCE` and `domain` is
 /// extracted from `frontmatter->>'domain'` (so it can be `NULL`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OrphanPage {
     pub slug: String,
     pub title: String,
@@ -231,17 +233,19 @@ pub struct UpsertFileResult {
 
 /// Raw sidecar data returned by [`BrainEngine::get_raw_data`]. Mirrors TS
 /// `RawData` in `src/core/engine.ts`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RawData {
     pub source: String,
-    pub data: Value,
+    pub data: serde_json::Value,
     pub fetched_at: String,
 }
 
 /// Page version snapshot returned by [`BrainEngine::get_versions`] and
 /// [`BrainEngine::create_version`]. Mirrors TS `PageVersion` in
 /// `src/core/engine.ts`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PageVersion {
     pub id: u64,
     pub page_id: u64,

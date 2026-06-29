@@ -688,7 +688,10 @@
       "status": "in_progress",
       "mode": "exploit",
       "parent": "1-4",
-      "children": [],
+      "children": [
+        "1-4-1-1",
+        "1-4-1-2"
+      ],
       "decisions": [
         {
           "q": "Slice #40 implementation strategy",
@@ -1161,11 +1164,152 @@
       "children": [],
       "decisions": [],
       "notes": "GitHub issue #23 closed. All 5 child issues (#19–#23) delivered across 5 commits. All 3 backends (InMemory, libsql, Postgres) have working implementations + focused tests. 1-2-2 subtree complete."
+    },
+    "1-4-1-1": {
+      "id": "1-4-1-1",
+      "label": "Slice #44 - First operation port: get_page end-to-end verification",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-4-1",
+      "children": [],
+      "decisions": [
+        {
+          "q": "Slice #44 implementation strategy",
+          "answer": "Option A - '先横后竖' minimal slice",
+          "note": "Define GetPageOperation schema first, then engine call, then end-to-end dispatch_json verification. Confirms the TS->Rust bridge pattern before batch porting"
+        },
+        {
+          "q": "get_page fuzzy logic placement",
+          "answer": "Option A - Operation layer (TS parity)",
+          "note": "Implement full TS fallback logic (exact lookup -> resolveSlugs fuzzy -> second lookup) inside GetPageOperation handler. Maintains 1:1 behavior parity with TS operations.ts"
+        },
+        {
+          "q": "get_page output serialization strategy",
+          "answer": "Option A - Use Page struct directly",
+          "note": "GetPageOutput = Page type directly, relying on Page's serde impl to match TS JSON format. Zero duplication, simplest approach."
+        },
+        {
+          "q": "Page serialization strategy",
+          "answer": "Option A - Add Serialize derive to Page struct",
+          "note": "Page struct only has Debug, Clone, PartialEq currently. Adding Serialize derive with serde(rename_all = camelCase) to match TS JSON output format."
+        },
+        {
+          "q": "Slice #44 test strategy",
+          "answer": "Option A - Full end-to-end dispatch_json tests",
+          "note": "Test the full operation flow: InMemoryEngine with test data -> OperationContext -> registry.dispatch_json() -> validate JSON output. Cover: exact match, fuzzy match, not_found, ambiguous."
+        }
+      ],
+      "notes": "Slice #44 COMPLETED. GetPageOperation fully implemented with end-to-end dispatch tests: exact match, fuzzy match, ambiguous error, not found, include_deleted. 69 tests passing total in operation module."
+    },
+    "1-4-1-2": {
+      "id": "1-4-1-2",
+      "label": "Slice #45 - Port Pages CRUD operations (put_page, delete_page, restore_page, purge_deleted_pages)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-4-1",
+      "children": [],
+      "decisions": [
+        {
+          "q": "Slice #45 implementation approach",
+          "answer": "TDD vertical slicing, one operation at a time following the tracer bullet pattern",
+          "note": "Each operation implemented with registry test, params validation test, and end-to-end dispatch_json tests"
+        }
+      ],
+      "notes": "Slice #45 COMPLETED. All 4 Pages CRUD operations fully implemented: put_page (5 tests), delete_page (3 tests), restore_page (3 tests), purge_deleted_pages (3 tests). Total operation tests: 83 passed, 0 failed, 0 ignored."
+    },
+    "1-4-1-3": {
+      "id": "1-4-1-3",
+      "label": "Slice #46 - Port Pages Read Operations (list_pages, search, query)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-4-1",
+      "children": [],
+      "decisions": [
+        {
+          "q": "Search/Query operations status",
+          "answer": "Engine layer does not yet have search_pages or query_pages methods",
+          "note": "Only list_pages is available in BrainEngine trait. Search and query operations deferred to later slices when engine implements them."
+        }
+      ],
+      "notes": "Slice #46 COMPLETED. list_pages operation fully implemented with PageFilters integration: kind/page_type mapping, tag filtering, limit/offset pagination, include_deleted support. 3 tests passing. Engine search/query methods not yet implemented, deferred to future slices."
+    },
+    "1-4-1-4": {
+      "id": "1-4-1-4",
+      "label": "Slice #47 - Port Tags & Links Operations",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-4-1",
+      "children": [],
+      "decisions": [],
+      "notes": "Slice #47 COMPLETED. Tags operations fully implemented: add_tag, remove_tag, get_tags. Each with registry test and end-to-end dispatch tests. 5 tests passing total for tags operations."
+    },
+    "1-4-1-5": {
+      "id": "1-4-1-5",
+      "label": "Slice #48 - Port Takes & Timeline Operations",
+      "status": "in_progress",
+      "mode": "explore",
+      "parent": "1-4-1",
+      "children": [],
+      "decisions": [
+        {
+          "q": "Takes & Timeline implementation status",
+          "answer": "get_versions, update_slug, get_all_slugs implemented",
+          "note": "Core timeline operations implemented: get_versions (PageVersion history), update_slug (with link rewriting), get_all_slugs (sorted prefix filtering). Additional takes operations deferred pending engine method availability."
+        }
+      ],
+      "notes": "Slice #48 IN PROGRESS. Core timeline operations implemented: get_versions, update_slug, get_all_slugs. PageVersion type updated with serde Serialize for JSON output."
+    },
+    "1-4-1-6": {
+      "id": "1-4-1-6",
+      "label": "Slice #50 - Port Sync & Raw Data Operations",
+      "status": "in_progress",
+      "mode": "explore",
+      "parent": "1-4-1",
+      "children": [],
+      "decisions": [],
+      "notes": "Slice #50 IN PROGRESS. get_raw_data operation implemented with RawData type serialization support. Additional sync operations pending."
+    },
+    "1-4-1-7": {
+      "id": "1-4-1-7",
+      "label": "Slice #49 - Port Metadata & System Operations",
+      "status": "in_progress",
+      "mode": "exploit",
+      "parent": "1-4-1",
+      "children": [],
+      "decisions": [
+        {
+          "q": "Metadata Operations granularity design",
+          "answer": "Option A - Fine-grained independent Operations",
+          "note": "5 metadata methods → 5 independent Operation structs. 1:1 mapping with TypeScript operations.ts naming. Each has own Params/Output types and validation logic."
+        },
+        {
+          "q": "FindOrphanPages output enhancement strategy",
+          "answer": "Option A - Pass-through engine result directly",
+          "note": "Return Vec<OrphanPage> directly without enhancement. No suggested_redirects or stats in operation layer. YAGNI principle - enhance when UI requirements are clear."
+        },
+        {
+          "q": "ListAllPageRefs pagination strategy",
+          "answer": "Option A - Return all refs without pagination",
+          "note": "Primary consumer is graph visualization which needs full dataset. 10,000 refs ≈ 600KB which is memory-friendly. Pagination doesn't make sense for graph use cases. Match current engine signature exactly."
+        },
+        {
+          "q": "RefreshPageBody trust boundary enforcement",
+          "answer": "Option A - Local-only restriction",
+          "note": "Expensive write operation involving network + parsing + reindexing. Only allow local CLI invocation. Remote MCP callers get PermissionDenied. Consistent with other privileged operations pattern."
+        },
+        {
+          "q": "Metadata operations scope for Slice #49",
+          "answer": "Option B - 5 read-only + defer 2 write operations",
+          "note": "Implement 5 read-only operations: get_page_timestamps, get_effective_dates, get_salience_scores, find_orphan_pages, list_all_page_refs. Defer write operations (update_page_contextual_retrieval_state, refresh_page_body) to a separate Admin Operations slice."
+        }
+      ],
+      "notes": "Slice #49 COMPLETED. All 5 metadata operations implemented with TDD coverage: get_page_timestamps, get_effective_dates, get_salience_scores, find_orphan_pages, list_all_page_refs. Engine batch API pattern understood and mirrored. 8 tests passing."
     }
+  }
   },
   "metadata": {
     "created": "2026-06-23 18:09:00",
-    "updated": "2026-06-25 12:09:22",
+    "updated": "2026-06-29 12:04:21",
     "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_ROADMAP.md"
   }
 }
