@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS files (
     source_id    TEXT NOT NULL DEFAULT 'default'
                  REFERENCES sources(id) ON DELETE CASCADE,
     page_slug    TEXT,
-    page_id      INTEGER REFERENCES pages(id) ON DELETE SET NULL,
+    page_id      BIGINT REFERENCES pages(id) ON DELETE SET NULL,
     filename     TEXT NOT NULL,
     storage_path TEXT NOT NULL,
     mime_type    TEXT,

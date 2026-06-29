@@ -41,6 +41,121 @@ use crate::engine::{
     page_sort_sql, BrainEngine, EngineConfig, EngineKind, GetPageOpts, Page, PageFilters,
     PageInput, PageSort, ResolveSlugsOpts,
 };
+
+/// Split migration SQL into individual statements for Postgres.
+///
+/// Postgres sqlx::query doesn't support multiple semicolon-separated statements
+/// in a single query. This function splits SQL into individual statements,
+/// correctly handling Postgres dollar-quoted string literals (e.g., $func$ ... $func$).
+fn split_migration_sql(sql: &str) -> Vec<String> {
+    let mut statements = Vec::new();
+    let mut current = String::new();
+    let mut in_dollar_quote: Option<String> = None;
+    let mut in_single_quote = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    
+    let mut chars = sql.chars().peekable();
+    while let Some(c) = chars.next() {
+        current.push(c);
+        
+        // Handle dollar-quoted strings: $tag$ ... $tag$
+        if c == '$' && !in_single_quote && !in_line_comment && !in_block_comment {
+            // Collect the tag between $ signs
+            let mut tag = String::new();
+            while let Some(&next_c) = chars.peek() {
+                if next_c == '$' {
+                    chars.next();
+                    current.push('$');
+                    
+                    // Check if we're entering or exiting a dollar quote
+                    match &in_dollar_quote {
+                        None => {
+                            // Entering dollar quote with this tag
+                            in_dollar_quote = Some(tag.clone());
+                        }
+                        Some(current_tag) if current_tag == &tag => {
+                            // Exiting dollar quote - tag matches
+                            in_dollar_quote = None;
+                        }
+                        _ => {
+                            // Nested dollar quote with a different tag - do nothing
+                        }
+                    }
+                    break;
+                } else if next_c.is_alphanumeric() || next_c == '_' {
+                    tag.push(next_c);
+                    current.push(next_c);
+                    chars.next();
+                } else {
+                    // Not a dollar quote start/end (e.g., just a single $ in the text)
+                    break;
+                }
+            }
+            continue;
+        }
+        
+        // Handle single quotes (but not inside dollar quotes)
+        if c == '\'' && in_dollar_quote.is_none() && !in_line_comment && !in_block_comment {
+            in_single_quote = !in_single_quote;
+            continue;
+        }
+        
+        // Handle line comments --
+        if c == '-' && !in_single_quote && in_dollar_quote.is_none() && !in_block_comment {
+            if let Some(&next_c) = chars.peek() {
+                if next_c == '-' {
+                    in_line_comment = true;
+                }
+            }
+        }
+        if c == '\n' {
+            in_line_comment = false;
+        }
+        
+        // Handle block comments /* ... */
+        if c == '/' && !in_single_quote && in_dollar_quote.is_none() && !in_line_comment {
+            if let Some(&next_c) = chars.peek() {
+                if next_c == '*' {
+                    in_block_comment = true;
+                    current.push(next_c);
+                    chars.next();
+                }
+            }
+        }
+        if c == '*' && in_block_comment {
+            if let Some(&next_c) = chars.peek() {
+                if next_c == '/' {
+                    in_block_comment = false;
+                    current.push(next_c);
+                    chars.next();
+                }
+            }
+        }
+        
+        // Only split on semicolon if we're NOT inside any quote or comment
+        if c == ';'
+            && in_dollar_quote.is_none()
+            && !in_single_quote
+            && !in_line_comment
+            && !in_block_comment
+        {
+            let stmt = current.trim().to_string();
+            if !stmt.is_empty() {
+                statements.push(stmt);
+            }
+            current.clear();
+        }
+    }
+    
+    // Add any remaining content (last statement without trailing semicolon)
+    let remaining = current.trim();
+    if !remaining.is_empty() {
+        statements.push(remaining.to_string());
+    }
+    
+    statements
+}
 use crate::error::{Error, Result};
 use crate::migration::{Migration, MigrationRegistry};
 use crate::types::FindDuplicatePageOpts;
@@ -348,20 +463,30 @@ impl BrainEngine for PostgresEngine {
 
         // Step 1: Bootstrap the version tracking table. Hard cutover from
         // sqlx::migrate!() era; no backward compatibility with _sqlx_migrations.
+        // Split CREATE TABLE and INSERT into separate queries for Postgres compatibility
+        // (Postgres doesn't support multiple semicolon-separated statements in a single query).
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS rust_schema_version (
-                version INTEGER PRIMARY KEY NOT NULL DEFAULT 0,
+                version BIGINT PRIMARY KEY NOT NULL DEFAULT 0,
                 applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
-            INSERT INTO rust_schema_version (version)
-            VALUES (0)
-            ON CONFLICT DO NOTHING;
             "#,
         )
         .execute(pool)
         .await
-        .map_err(|e| Error::engine(format!("rust_schema_version bootstrap failed: {e}")))?;
+        .map_err(|e| Error::engine(format!("rust_schema_version table create failed: {e}")))?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO rust_schema_version (version)
+            VALUES (0)
+            ON CONFLICT (version) DO NOTHING;
+            "#,
+        )
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("rust_schema_version insert failed: {e}")))?;
 
         // Step 2: Read current version from the table
         let current = Self::read_rust_schema_version(pool).await?;
@@ -385,13 +510,21 @@ impl BrainEngine for PostgresEngine {
             }
 
             applied_any = true;
-            sqlx::query(migration.sql())
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| {
-                    // ROLLBACK is automatic on Drop if we return before commit
-                    Error::engine(format!("migration {ver} failed: {e}"))
-                })?;
+            // Postgres sqlx::query doesn't support multiple semicolon-separated statements
+            // in a single query. Split migration SQL into individual statements.
+            for stmt in split_migration_sql(migration.sql()) {
+                let stmt = stmt.trim();
+                if stmt.is_empty() {
+                    continue;
+                }
+                sqlx::query(stmt)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| {
+                        // ROLLBACK is automatic on Drop if we return before commit
+                        Error::engine(format!("migration {ver} failed at statement: {e}"))
+                    })?;
+            }
         }
 
         // Version number updated once at the end (single transaction mode)
@@ -561,7 +694,7 @@ impl BrainEngine for PostgresEngine {
         let pool = self.pool()?;
         let source_id = spec.source_id.as_deref().unwrap_or("default");
         let metadata = spec.metadata.clone().unwrap_or_else(|| json!({}));
-        let page_id = spec.page_id.map(|id| id as i32);
+        let page_id = spec.page_id.map(|id| id as i64);
         let row = sqlx::query(
             "WITH existing AS ( \
                  SELECT id FROM files WHERE storage_path = $5 \
@@ -630,7 +763,7 @@ impl BrainEngine for PostgresEngine {
              WHERE page_id = $1 \
              ORDER BY id ASC",
         )
-        .bind(page_id as i32)
+        .bind(page_id as i64)
         .fetch_all(pool)
         .await
         .map_err(|e| Error::engine(format!("list_files_for_page query failed: {e}")))?;
@@ -1099,7 +1232,7 @@ impl BrainEngine for PostgresEngine {
         let Some(page_row) = page_row else {
             return Err(Error::page_not_found(slug, Some(source_id)));
         };
-        let page_id: i32 = page_row
+        let page_id: i64 = page_row
             .try_get("id")
             .map_err(|e| Error::engine(format!("put_raw_data decode page_id: {e}")))?;
 
@@ -1139,7 +1272,7 @@ impl BrainEngine for PostgresEngine {
         let Some(page_row) = page_row else {
             return Ok(vec![]);
         };
-        let page_id: i32 = page_row
+        let page_id: i64 = page_row
             .try_get("id")
             .map_err(|e| Error::engine(format!("get_raw_data decode page_id: {e}")))?;
 
@@ -1204,7 +1337,7 @@ impl BrainEngine for PostgresEngine {
         .await
         .map_err(|e| Error::engine(format!("create_version page lookup failed: {e}")))?
         .ok_or_else(|| Error::page_not_found(slug, Some(source_id)))?;
-        let page_id: i32 = page_row
+        let page_id: i64 = page_row
             .try_get("id")
             .map_err(|e| Error::engine(format!("create_version decode page_id: {e}")))?;
         let compiled_truth: String = page_row
@@ -1229,7 +1362,7 @@ impl BrainEngine for PostgresEngine {
         let id: i64 = row
             .try_get("id")
             .map_err(|e| Error::engine(format!("create_version decode id: {e}")))?;
-        let returned_page_id: i32 = row
+        let returned_page_id: i64 = row
             .try_get("page_id")
             .map_err(|e| Error::engine(format!("create_version decode page_id: {e}")))?;
         let returned_truth: String = row
@@ -1274,7 +1407,7 @@ impl BrainEngine for PostgresEngine {
             let id: i64 = row
                 .try_get("id")
                 .map_err(|e| Error::engine(format!("get_versions decode id: {e}")))?;
-            let page_id: i32 = row
+            let page_id: i64 = row
                 .try_get("page_id")
                 .map_err(|e| Error::engine(format!("get_versions decode page_id: {e}")))?;
             let compiled_truth: String = row
@@ -1622,7 +1755,7 @@ fn pg_row_to_file(row: &sqlx::postgres::PgRow) -> Result<FileRow> {
     let id: i64 = row
         .try_get("id")
         .map_err(|e| Error::engine(format!("file row decode id: {e}")))?;
-    let page_id: Option<i32> = row
+    let page_id: Option<i64> = row
         .try_get("page_id")
         .map_err(|e| Error::engine(format!("file row decode page_id: {e}")))?;
     Ok(FileRow {

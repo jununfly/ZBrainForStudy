@@ -3,8 +3,8 @@
 -- Mirrors TS pglite-schema.ts:260-330 verbatim.
 
 CREATE TABLE IF NOT EXISTS raw_data (
-    id         SERIAL PRIMARY KEY,
-    page_id    INTEGER NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+    id         BIGSERIAL PRIMARY KEY,
+    page_id    BIGINT NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
     source     TEXT    NOT NULL,
     data       JSONB   NOT NULL,
     fetched_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -14,8 +14,8 @@ CREATE TABLE IF NOT EXISTS raw_data (
 CREATE INDEX IF NOT EXISTS idx_raw_data_page ON raw_data(page_id);
 
 CREATE TABLE IF NOT EXISTS page_versions (
-    id             SERIAL PRIMARY KEY,
-    page_id        INTEGER NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+    id             BIGSERIAL PRIMARY KEY,
+    page_id        BIGINT NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
     compiled_truth TEXT    NOT NULL,
     frontmatter    JSONB   NOT NULL DEFAULT '{}',
     snapshot_at    TIMESTAMPTZ NOT NULL DEFAULT now()
