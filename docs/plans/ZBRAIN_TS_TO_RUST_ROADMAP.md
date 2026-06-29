@@ -18,7 +18,7 @@
 ├── [ ][Y+] 1-3. Config bootstrap and package entrypoint cutover
 │   ├── [ ][Y+] 1-3-1. Port config discovery loading and writing to Rust
 │   ├── [ ][Y+] 1-3-2. Port init doctor config storage and schema commands
-│   ├── [ ][Y+] 1-3-3. Cut package bin and install flow to Rust binary
+│   ├── [x][Y+] 1-3-3. Cut package bin and install flow to Rust binary
 │   └── [ ][Y+] 1-3-4. Delete replaced TypeScript bootstrap command surface
 ├── [ ][Y+] 1-4. Operations layer and trust boundary migration
 │   ├── [ ][Y+] 1-4-1. Port operation definitions schemas and context
