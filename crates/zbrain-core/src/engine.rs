@@ -179,6 +179,32 @@ pub enum PageSort {
     Slug,
 }
 
+/// A single search result from `search_pages`.
+///
+/// Contains the matched page and a relevance score (0..1, higher = more relevant).
+#[derive(Debug, Clone)]
+pub struct SearchResult {
+    /// The matched page
+    pub page: Page,
+    /// Relevance score (0..1)
+    pub score: f64,
+    /// Keyword snippet extracted from content (for UI display)
+    pub snippet: Option<String>,
+}
+
+/// Options for `search_pages`.
+#[derive(Debug, Default, Clone)]
+pub struct SearchOpts {
+    /// Keywords to search for (case-insensitive substring match)
+    pub keywords: Vec<String>,
+    /// Maximum number of results to return
+    pub limit: Option<usize>,
+    /// Minimum score threshold (0..1)
+    pub min_score: Option<f64>,
+    /// Source scope (None = all sources)
+    pub source_id: Option<String>,
+}
+
 /// Returns the whitelisted SQL `ORDER BY` fragment for the given sort mode.
 /// Mirrors `PAGE_SORT_SQL` at `types.ts:332`. Engines splice this literal
 /// into prepared statements — no SQL-injection risk because the enum is closed.
@@ -381,6 +407,19 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
     /// tag ascending. Mirrors TS `getTags` which returns `[]` for missing
     /// pages.
     async fn get_tags(&self, slug: &str, source_id: Option<&str>) -> crate::Result<Vec<String>>;
+
+    // — Search (1) —
+    /// Keyword-based page search.
+    ///
+    /// Simple single-pass keyword matching against title, compiled_truth, and
+    /// frontmatter. No vector search yet — that's for a later slice. Results
+    /// are ordered by relevance score (descending).
+    ///
+    /// Default implementation returns an empty Vec — override with actual
+    /// implementation per backend.
+    async fn search_pages(&self, _opts: &SearchOpts) -> crate::Result<Vec<SearchResult>> {
+        Ok(Vec::new())
+    }
 
     // — Content refresh (2) —
     /// Update `compiled_truth`, `timeline`, `content_hash` for an existing
@@ -1005,6 +1044,90 @@ impl BrainEngine for InMemoryEngine {
             .unwrap_or_default())
     }
 
+    async fn search_pages(&self, opts: &SearchOpts) -> crate::Result<Vec<SearchResult>> {
+        let store = self
+            .store
+            .lock()
+            .expect("InMemoryEngine store mutex poisoned");
+
+        let mut results = Vec::new();
+        let keywords_lower: Vec<String> = opts.keywords.iter()
+            .map(|k| k.to_lowercase())
+            .collect();
+
+        for page in store.iter() {
+            // Skip deleted pages
+            if page.deleted_at.is_some() {
+                continue;
+            }
+            // Source filtering
+            if let Some(source_id) = &opts.source_id {
+                if page.source_id != *source_id {
+                    continue;
+                }
+            }
+
+            let mut score: f64 = 0.0;
+            let mut match_count = 0;
+
+            // Count keyword matches in title, compiled_truth, frontmatter
+            let title_lower = page.title.to_lowercase();
+            let content_lower = page.compiled_truth.to_lowercase();
+            let frontmatter_lower = page.frontmatter.to_string().to_lowercase();
+
+            for keyword in &keywords_lower {
+                if title_lower.contains(keyword) {
+                    score += 0.4; // Title matches count more
+                    match_count += 1;
+                }
+                if content_lower.contains(keyword) {
+                    score += 0.4; // Content matches
+                    match_count += 1;
+                }
+                if frontmatter_lower.contains(keyword) {
+                    score += 0.2; // Frontmatter matches
+                    match_count += 1;
+                }
+            }
+
+            if match_count > 0 {
+                // Cap score at 1.0
+                score = score.min(1.0);
+
+                // Extract snippet (first 150 chars of content around first match)
+                let snippet = if !content_lower.is_empty() {
+                    let first_match = keywords_lower.iter()
+                        .find_map(|k| content_lower.find(k))
+                        .unwrap_or(0);
+                    let start = first_match.saturating_sub(50);
+                    let end = (start + 150).min(content_lower.len());
+                    Some(page.compiled_truth[start..end].to_string())
+                } else {
+                    None
+                };
+
+                // Filter by min_score if set
+                if opts.min_score.map_or(true, |min| score >= min) {
+                    results.push(SearchResult {
+                        page: page.clone(),
+                        score,
+                        snippet,
+                    });
+                }
+            }
+        }
+
+        // Sort by score descending
+        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Apply limit if set
+        if let Some(limit) = opts.limit {
+            results.truncate(limit);
+        }
+
+        Ok(results)
+    }
+
     async fn refresh_page_body(&self, args: &RefreshPageBodyArgs) -> crate::Result<()> {
         let mut store = self
             .store
@@ -1434,5 +1557,333 @@ impl BrainEngine for InMemoryEngine {
             }
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::PageKind;
+
+    fn test_page(slug: &str, title: &str, content: &str) -> Page {
+        Page {
+            id: 0,
+            slug: slug.to_string(),
+            page_type: "note".to_string(),
+            page_kind: PageKind::Markdown,
+            title: title.to_string(),
+            compiled_truth: content.to_string(),
+            timeline: "[]".to_string(),
+            frontmatter: serde_json::json!({}),
+            content_hash: None,
+            emotional_weight: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+            deleted_at: None,
+            last_retrieved_at: None,
+            effective_date: None,
+            effective_date_source: None,
+            import_filename: None,
+            salience_touched_at: None,
+            salience_score: None,
+            generation: 1,
+            embedding: None,
+            chunker_version: 1,
+            source_path: None,
+            source_id: "default".to_string(),
+            source_kind: None,
+            source_uri: None,
+            ingested_via: None,
+            ingested_at: None,
+            contextual_retrieval_mode: Some(CRMode::None),
+            corpus_generation: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn search_pages_finds_keyword_in_title() {
+        let engine = InMemoryEngine::default();
+        // Put a page with known content
+        engine.put_page(
+            "rust-guide",
+            Some("default"),
+            &PageInput {
+                page_type: "guide".to_string(),
+                title: "Rust Programming Guide".to_string(),
+                compiled_truth: "Learn Rust with examples.".to_string(),
+                timeline: None,
+                frontmatter: None,
+                content_hash: None,
+                page_kind: None,
+                effective_date: None,
+                effective_date_source: None,
+                import_filename: None,
+                chunker_version: None,
+                source_path: None,
+                source_kind: None,
+                source_uri: None,
+                ingested_via: None,
+                ingested_at: None,
+                last_retrieved_at: None,
+                embedding: None,
+            },
+        ).await.unwrap();
+
+        let results = engine.search_pages(&SearchOpts {
+            keywords: vec!["rust".to_string()],
+            limit: None,
+            min_score: None,
+            source_id: None,
+        }).await.unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].page.slug, "rust-guide");
+        assert!(results[0].score > 0.0);
+    }
+
+    #[tokio::test]
+    async fn search_pages_finds_keyword_in_content() {
+        let engine = InMemoryEngine::default();
+        engine.put_page(
+            "ai-notes",
+            Some("default"),
+            &PageInput {
+                page_type: "note".to_string(),
+                title: "Random Notes".to_string(),
+                compiled_truth: "Contains discussion about machine learning and AI.".to_string(),
+                timeline: None,
+                frontmatter: None,
+                content_hash: None,
+                page_kind: None,
+                effective_date: None,
+                effective_date_source: None,
+                import_filename: None,
+                chunker_version: None,
+                source_path: None,
+                source_kind: None,
+                source_uri: None,
+                ingested_via: None,
+                ingested_at: None,
+                last_retrieved_at: None,
+                embedding: None,
+            },
+        ).await.unwrap();
+
+        let results = engine.search_pages(&SearchOpts {
+            keywords: vec!["machine learning".to_string()],
+            limit: None,
+            min_score: None,
+            source_id: None,
+        }).await.unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].page.slug, "ai-notes");
+    }
+
+    #[tokio::test]
+    async fn search_pages_returns_empty_for_no_match() {
+        let engine = InMemoryEngine::default();
+        engine.put_page(
+            "page1",
+            Some("default"),
+            &PageInput {
+                page_type: "note".to_string(),
+                title: "Test Page".to_string(),
+                compiled_truth: "Some content here.".to_string(),
+                timeline: None,
+                frontmatter: None,
+                content_hash: None,
+                page_kind: None,
+                effective_date: None,
+                effective_date_source: None,
+                import_filename: None,
+                chunker_version: None,
+                source_path: None,
+                source_kind: None,
+                source_uri: None,
+                ingested_via: None,
+                ingested_at: None,
+                last_retrieved_at: None,
+                embedding: None,
+            },
+        ).await.unwrap();
+
+        let results = engine.search_pages(&SearchOpts {
+            keywords: vec!["xyznotfound".to_string()],
+            limit: None,
+            min_score: None,
+            source_id: None,
+        }).await.unwrap();
+
+        assert_eq!(results.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn search_pages_respects_limit() {
+        let engine = InMemoryEngine::default();
+        for i in 1..=5 {
+            engine.put_page(
+                &format!("page-{i}"),
+                Some("default"),
+                &PageInput {
+                    page_type: "note".to_string(),
+                    title: format!("Rust Page {i}").to_string(),
+                    compiled_truth: format!("Content about Rust {i}").to_string(),
+                    timeline: None,
+                    frontmatter: None,
+                    content_hash: None,
+                    page_kind: None,
+                    effective_date: None,
+                    effective_date_source: None,
+                    import_filename: None,
+                    chunker_version: None,
+                    source_path: None,
+                    source_kind: None,
+                    source_uri: None,
+                    ingested_via: None,
+                    ingested_at: None,
+                    last_retrieved_at: None,
+                    embedding: None,
+                },
+            ).await.unwrap();
+        }
+
+        let results = engine.search_pages(&SearchOpts {
+            keywords: vec!["rust".to_string()],
+            limit: Some(2),
+            min_score: None,
+            source_id: None,
+        }).await.unwrap();
+
+        assert_eq!(results.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn search_pages_filters_by_source() {
+        let engine = InMemoryEngine::default();
+        engine.put_page(
+            "page-1",
+            Some("source-a"),
+            &PageInput {
+                page_type: "note".to_string(),
+                title: "Rust in Source A".to_string(),
+                compiled_truth: "Content".to_string(),
+                timeline: None,
+                frontmatter: None,
+                content_hash: None,
+                page_kind: None,
+                effective_date: None,
+                effective_date_source: None,
+                import_filename: None,
+                chunker_version: None,
+                source_path: None,
+                source_kind: None,
+                source_uri: None,
+                ingested_via: None,
+                ingested_at: None,
+                last_retrieved_at: None,
+                embedding: None,
+            },
+        ).await.unwrap();
+        engine.put_page(
+            "page-2",
+            Some("source-b"),
+            &PageInput {
+                page_type: "note".to_string(),
+                title: "Rust in Source B".to_string(),
+                compiled_truth: "Content".to_string(),
+                timeline: None,
+                frontmatter: None,
+                content_hash: None,
+                page_kind: None,
+                effective_date: None,
+                effective_date_source: None,
+                import_filename: None,
+                chunker_version: None,
+                source_path: None,
+                source_kind: None,
+                source_uri: None,
+                ingested_via: None,
+                ingested_at: None,
+                last_retrieved_at: None,
+                embedding: None,
+            },
+        ).await.unwrap();
+
+        let results = engine.search_pages(&SearchOpts {
+            keywords: vec!["rust".to_string()],
+            limit: None,
+            min_score: None,
+            source_id: Some("source-a".to_string()),
+        }).await.unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].page.source_id, "source-a");
+    }
+
+    #[tokio::test]
+    async fn search_pages_sorts_by_score() {
+        let engine = InMemoryEngine::default();
+        // Page 1: Rust in title AND content (higher score)
+        engine.put_page(
+            "high-score",
+            Some("default"),
+            &PageInput {
+                page_type: "note".to_string(),
+                title: "Rust Guide".to_string(),  // title match
+                compiled_truth: "Rust is a systems language.".to_string(), // content match
+                timeline: None,
+                frontmatter: None,
+                content_hash: None,
+                page_kind: None,
+                effective_date: None,
+                effective_date_source: None,
+                import_filename: None,
+                chunker_version: None,
+                source_path: None,
+                source_kind: None,
+                source_uri: None,
+                ingested_via: None,
+                ingested_at: None,
+                last_retrieved_at: None,
+                embedding: None,
+            },
+        ).await.unwrap();
+        // Page 2: Rust in content only (lower score)
+        engine.put_page(
+            "low-score",
+            Some("default"),
+            &PageInput {
+                page_type: "note".to_string(),
+                title: "Other Title".to_string(),
+                compiled_truth: "Has Rust content.".to_string(), // content match only
+                timeline: None,
+                frontmatter: None,
+                content_hash: None,
+                page_kind: None,
+                effective_date: None,
+                effective_date_source: None,
+                import_filename: None,
+                chunker_version: None,
+                source_path: None,
+                source_kind: None,
+                source_uri: None,
+                ingested_via: None,
+                ingested_at: None,
+                last_retrieved_at: None,
+                embedding: None,
+            },
+        ).await.unwrap();
+
+        let results = engine.search_pages(&SearchOpts {
+            keywords: vec!["rust".to_string()],
+            limit: None,
+            min_score: None,
+            source_id: None,
+        }).await.unwrap();
+
+        assert_eq!(results.len(), 2);
+        // Higher score page should come first
+        assert!(results[0].score > results[1].score);
     }
 }

@@ -62,6 +62,8 @@ pg-embed = { version = "1.0", features = ["rt_tokio_migrate"] }
 garde = { version = "0.21", features = ["derive"] }
 # Slice #41: Cross-platform path diffing for upload validation.
 pathdiff = "0.2"
+# Slice #58: Real LLM client for Think operation
+reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls-native-roots"] }
 
 [profile.release]
 lto = "thin"

@@ -28,6 +28,12 @@ tracing = { workspace = true }
 garde = { workspace = true }
 # Slice #41: Cross-platform path diffing for upload validation.
 pathdiff = { workspace = true }
+# Slice #58: Real LLM client for Think operation
+reqwest = { workspace = true, optional = true }
+
+[features]
+default = []
+openai = ["dep:reqwest"]
 
 [dev-dependencies]
 tokio = { workspace = true }

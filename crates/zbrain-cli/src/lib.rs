@@ -10,6 +10,7 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use zbrain_core::engine::BrainEngine;
+use zbrain_core::operation::{OperationContext, OperationRegistry};
 
 /// Doctor check status
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,6 +100,54 @@ pub enum Commands {
 
     /// Print database schema SQL
     Schema(SchemaArgs),
+
+    /// Read a page by slug
+    GetPage(GetPageArgs),
+
+    /// Synthesize answers across the knowledge base
+    Think(ThinkArgs),
+}
+
+/// Arguments for `zbrain get-page` command.
+#[derive(Debug, Parser)]
+pub struct GetPageArgs {
+    /// Page slug to retrieve
+    pub slug: String,
+
+    /// Enable fuzzy slug matching
+    #[arg(long)]
+    pub fuzzy: bool,
+
+    /// Include soft-deleted pages
+    #[arg(long)]
+    pub include_deleted: bool,
+}
+
+/// Arguments for `zbrain think` command.
+#[derive(Debug, Parser)]
+pub struct ThinkArgs {
+    /// Question to answer
+    pub question: String,
+
+    /// Optional anchor page for context focus
+    #[arg(long)]
+    pub anchor: Option<String>,
+
+    /// Number of reasoning rounds (default: 1)
+    #[arg(long)]
+    pub rounds: Option<u32>,
+
+    /// Model override
+    #[arg(long)]
+    pub model: Option<String>,
+
+    /// Time range start (ISO 8601)
+    #[arg(long)]
+    pub since: Option<String>,
+
+    /// Time range end (ISO 8601)
+    #[arg(long)]
+    pub until: Option<String>,
 }
 
 /// Arguments for `zbrain init` command.
@@ -160,8 +209,84 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Doctor(args) => run_doctor_command(args, cli.config.as_deref()).await?,
         Commands::Config(args) => run_config_command(args, cli.config.as_deref()).await?,
         Commands::Schema(args) => run_schema_command(args)?,
+        Commands::GetPage(args) => run_get_page_command(args, cli.config.as_deref()).await?,
+        Commands::Think(args) => run_think_command(args, cli.config.as_deref()).await?,
     }
     Ok(())
+}
+
+/// Execute `zbrain think` command.
+async fn run_think_command(args: ThinkArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+    let params = serde_json::json!({
+        "question": args.question,
+        "anchor": args.anchor,
+        "rounds": args.rounds,
+        "model": args.model,
+        "since": args.since,
+        "until": args.until,
+    });
+
+    let output = run_operation("think", params, config_path).await?;
+
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+/// Execute `zbrain get-page` command.
+async fn run_get_page_command(args: GetPageArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+    let params = serde_json::json!({
+        "slug": args.slug,
+        "fuzzy": args.fuzzy,
+        "include_deleted": args.include_deleted,
+    });
+
+    let output = run_operation("get_page", params, config_path).await?;
+
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+/// Execute an operation by name with JSON params.
+async fn run_operation(
+    name: &str,
+    params: serde_json::Value,
+    config_path: Option<&Path>,
+) -> anyhow::Result<serde_json::Value> {
+    // Load config and create engine
+    let config_file = config_path
+        .map(PathBuf::from)
+        .or_else(|| config::user_config_path())
+        .ok_or_else(|| anyhow::anyhow!("Could not determine config path"))?;
+
+    let config = config::load_config_from_path(&config_file)?;
+    let engine_config = zbrain_core::engine::EngineConfig {
+        database_path: None,
+        database_url: Some(config.database_url),
+    };
+
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+
+    // Setup registry and context
+    let mut registry = OperationRegistry::new();
+    registry.register(zbrain_core::operation::GetPageOperation);
+    registry.register(zbrain_core::operation::ThinkOperation);
+
+    let ctx = OperationContext::local_cli().with_engine(std::sync::Arc::new(engine));
+
+    // Execute
+    let result = registry
+        .dispatch_json(name, &ctx, params)
+        .await
+        .map_err(|e| {
+            // Use proper exit codes based on error type
+            let exit_code = e.exit_code();
+            eprintln!("{}", e);
+            std::process::exit(exit_code);
+        })
+        .unwrap();
+
+    Ok(result)
 }
 
 /// Execute `zbrain init` command.
