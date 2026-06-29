@@ -537,6 +537,23 @@ impl BrainEngine for PostgresEngine {
             .await
             .map_err(|e| Error::engine(format!("migration tx COMMIT failed: {e}")))?;
 
+        // Step 4: Run handler and verify hooks for all migrations that were just applied
+        // Hooks run OUTSIDE the transaction (application-level logic may need to query DB)
+        if applied_any {
+            for migration in POSTGRES_MIGRATIONS.iter() {
+                let ver = migration.version();
+                if ver <= current {
+                    continue;
+                }
+                migration.handler(self)?;
+                if !migration.verify(self)? {
+                    return Err(Error::engine(format!(
+                        "migration {ver} verify failed: verification returned false"
+                    )));
+                }
+            }
+        }
+
         Ok(())
     }
 

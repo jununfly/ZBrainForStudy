@@ -6,6 +6,7 @@
 //! deferred to the bridge/porting slice (1-2-3-5).
 
 use crate::error::Result;
+use crate::engine::BrainEngine;
 
 /// A single migration with versioned SQL and optional engine-specific overrides.
 ///
@@ -57,14 +58,14 @@ pub trait Migration: Send + Sync {
     /// Optional handler function executed after the SQL migration succeeds.
     /// For application-level transformations that cannot be expressed in SQL.
     /// Default implementation is a no-op.
-    fn handler(&self) -> Result<()> {
+    fn handler(&self, _engine: &dyn BrainEngine) -> Result<()> {
         Ok(())
     }
 
     /// Optional verification hook executed after migration and handler.
     /// Returns Ok(true) if verification passed, Ok(false) if failed.
     /// Default implementation always returns Ok(true).
-    fn verify(&self) -> Result<bool> {
+    fn verify(&self, _engine: &dyn BrainEngine) -> Result<bool> {
         Ok(true)
     }
 }
