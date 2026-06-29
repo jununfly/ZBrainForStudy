@@ -12,7 +12,7 @@
 ├── [ ][Y+] 1-2. Core storage parity closure
 │   ├── [x][Y+] 1-2-1. Finish Page contract parity across storage backends
 │   ├── [x][Y+] 1-2-2. Port missing advanced Page writes to Rust
-│   ├── [ ][Y+] 1-2-3. Move schema migrations ownership to Rust
+│   ├── [x][Y+] 1-2-3. Move schema migrations ownership to Rust
 │   ├── [x][X+] 1-2-4. Decide internal DB legacy identifier migration
 │   └── [x][Y+] 1-2-5. Implement DB legacy identifier rename migration
 ├── [ ][Y+] 1-3. Config bootstrap and package entrypoint cutover
