@@ -1438,6 +1438,164 @@ impl TypedOperation for ThinkOperation {
     }
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// Query Operation (Semantic Search - MVP)
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Semantic search across pages using keywords.
+///
+/// v1 MVP: keyword-based substring matching.
+/// v2: vector embeddings + hybrid search.
+///
+/// This is a strictly read-only operation. Results are sorted by relevance.
+#[derive(Debug, Clone)]
+pub struct QueryOperation;
+
+/// Parameters for query operation.
+///
+/// MVP: core search parameters only.
+/// v2 will add vector/image search, expansion, recency/salience.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct QueryParams {
+    /// Search query text. Required for text search.
+    pub query: Option<String>,
+    /// Maximum number of results to return (default: 20)
+    #[serde(default)]
+    pub limit: Option<usize>,
+    /// Offset for pagination (default: 0)
+    #[serde(default)]
+    pub offset: Option<usize>,
+    /// Scope search to a single source (None = all sources)
+    #[serde(default)]
+    pub source_id: Option<String>,
+}
+
+impl ValidateParams for QueryParams {
+    fn validate(&self) -> OperationResult<()> {
+        // MVP: require text query (image search deferred to v2)
+        if self.query.as_ref().map_or(true, |q| q.is_empty()) {
+            return Err(OperationError::invalid_params(
+                "query cannot be empty",
+            ));
+        }
+        if let Some(limit) = self.limit {
+            if limit > 100 {
+                return Err(OperationError::invalid_params(
+                    "limit cannot exceed 100",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Output for query operation.
+///
+/// Flat array of results matching TS output shape.
+/// Sorted by relevance score descending.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryOutput {
+    /// Search results sorted by relevance
+    pub results: Vec<QueryResultItem>,
+    /// Total matching results (for pagination)
+    pub total: usize,
+    /// Effective limit applied
+    pub limit: usize,
+    /// Effective offset applied
+    pub offset: usize,
+}
+
+/// Single query result item matching TS SearchResult shape.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryResultItem {
+    /// The matched page
+    pub page: crate::engine::Page,
+    /// Relevance score (0..1)
+    pub score: f64,
+    /// Keyword snippet extracted from content (for UI display)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
+}
+
+#[async_trait]
+impl TypedOperation for QueryOperation {
+    type Params = QueryParams;
+    type Output = QueryOutput;
+
+    fn name(&self) -> &'static str {
+        "query"
+    }
+
+    fn description(&self) -> &'static str {
+        "Semantic search across pages using keywords. Returns ranked results with relevance scores and snippets."
+    }
+
+    fn local_only(&self) -> bool {
+        false
+    }
+
+    fn mutating(&self) -> bool {
+        false
+    }
+
+    fn cli_hints(&self) -> Option<CliHints> {
+        Some(CliHints::new("query").with_positional(&["query"]))
+    }
+
+    async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
+        let engine = ctx.engine.as_ref().ok_or_else(|| {
+            OperationError::new(ErrorCode::StorageError, "query operation requires an engine")
+        })?;
+
+        // MVP: split query into keywords (simple whitespace split)
+        // v2 will use proper tokenization + vector search
+        let keywords: Vec<String> = params
+            .query
+            .as_deref()
+            .unwrap_or_default()
+            .split_whitespace()
+            .map(|s| s.to_lowercase())
+            .filter(|s| s.len() >= 2)
+            .collect();
+
+        let limit = params.limit.unwrap_or(20);
+        let offset = params.offset.unwrap_or(0);
+
+        let results = engine
+            .search_pages(&crate::engine::SearchOpts {
+                keywords,
+                limit: Some(limit),
+                min_score: Some(0.01),
+                source_id: params.source_id.clone(),
+            })
+            .await?;
+
+        let total = results.len();
+
+        // Apply offset/limit pagination (in-memory for MVP; engine level in v2)
+        let paginated: Vec<QueryResultItem> = results
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .map(|r| QueryResultItem {
+                page: r.page,
+                score: r.score,
+                snippet: r.snippet,
+            })
+            .collect();
+
+        Ok(QueryOutput {
+            results: paginated,
+            total,
+            limit,
+            offset,
+        })
+    }
+}
+
 /// Extract keywords from a query string.
 ///
 /// v1.0 Simple rule-based approach:
@@ -4466,6 +4624,176 @@ mod tests {
             // Should pass with no issues
             let result = validate_upload_path(file_path.to_str().unwrap(), root.to_str().unwrap(), true);
             assert!(result.is_ok());
+        }
+    }
+
+    mod query_operation_tests {
+        use super::*;
+        use crate::engine::{InMemoryEngine, PageInput};
+        use std::sync::Arc;
+
+        #[test]
+        fn query_operation_lookup_works() {
+            let mut registry = OperationRegistry::new();
+            registry.register(QueryOperation);
+
+            let op = registry.lookup("query");
+            assert!(op.is_some());
+            assert_eq!(op.unwrap().name(), "query");
+        }
+
+        #[test]
+        fn query_params_deserialization() {
+            let params: QueryParams = serde_json::from_value(serde_json::json!({
+                "query": "test search query",
+                "limit": 10,
+                "offset": 0,
+                "source_id": "default"
+            }))
+            .unwrap();
+
+            assert_eq!(params.query.unwrap(), "test search query");
+            assert_eq!(params.limit, Some(10));
+            assert_eq!(params.offset, Some(0));
+            assert_eq!(params.source_id, Some("default".to_string()));
+        }
+
+        #[test]
+        fn query_params_validation_rejects_empty_query() {
+            let params = QueryParams {
+                query: Some("".to_string()),
+                limit: None,
+                offset: None,
+                source_id: None,
+            };
+
+            let result = params.validate();
+            assert!(result.is_err());
+            assert_eq!(result.unwrap_err().code, ErrorCode::InvalidParams);
+        }
+
+        #[test]
+        fn query_params_validation_rejects_limit_over_100() {
+            let params = QueryParams {
+                query: Some("test".to_string()),
+                limit: Some(101),
+                offset: None,
+                source_id: None,
+            };
+
+            let result = params.validate();
+            assert!(result.is_err());
+            assert_eq!(result.unwrap_err().code, ErrorCode::InvalidParams);
+        }
+
+        #[test]
+        fn query_params_accepts_limit_100() {
+            let params = QueryParams {
+                query: Some("test".to_string()),
+                limit: Some(100),
+                offset: None,
+                source_id: None,
+            };
+
+            let result = params.validate();
+            assert!(result.is_ok());
+        }
+
+        #[tokio::test]
+        async fn dispatch_json_query_success() {
+            // Setup engine with pages
+            let engine = InMemoryEngine::default();
+
+            // Create page with content to search
+            let input = PageInput {
+                page_type: "note".to_string(),
+                title: "Search Target Page".to_string(),
+                compiled_truth: "This is some searchable content about coding and development.".to_string(),
+                ..Default::default()
+            };
+            engine.put_page("test/search-result", None, &input).await.unwrap();
+
+            let mut registry = OperationRegistry::new();
+            registry.register(QueryOperation);
+
+            let ctx = OperationContext::local_cli().with_engine(Arc::new(engine));
+            let params = serde_json::json!({ "query": "content" });
+
+            let result = registry.dispatch_json("query", &ctx, params).await;
+            assert!(result.is_ok(), "Expected ok, got: {:?}", result);
+
+            let output = result.unwrap();
+            assert!(output["results"].is_array());
+            assert!(output["total"].is_number());
+            assert!(output["limit"].is_number());
+            assert!(output["offset"].is_number());
+        }
+
+        #[tokio::test]
+        async fn query_with_source_id_scope() {
+            // Setup engine with pages
+            let engine = InMemoryEngine::default();
+
+            // Create page with content to search
+            let input = PageInput {
+                page_type: "note".to_string(),
+                title: "Search Target Page".to_string(),
+                compiled_truth: "This is some searchable content about coding and development.".to_string(),
+                ..Default::default()
+            };
+            engine.put_page("test/search-result", None, &input).await.unwrap();
+
+            let mut registry = OperationRegistry::new();
+            registry.register(QueryOperation);
+
+            let ctx = OperationContext::local_cli().with_engine(Arc::new(engine));
+
+            // Use the same source as the page
+            let params = serde_json::json!({ "query": "content", "source_id": "default" });
+
+            let result = registry.dispatch_json("query", &ctx, params).await;
+            assert!(result.is_ok(), "Expected ok, got: {:?}", result);
+
+            let output = result.unwrap();
+            assert_eq!(output["results"].as_array().unwrap().len(), 1);
+        }
+
+        #[tokio::test]
+        async fn query_output_serialization_uses_camel_case() {
+            // Setup engine with pages
+            let engine = InMemoryEngine::default();
+            let input = PageInput {
+                page_type: "note".to_string(),
+                title: "Camel Case Page".to_string(),
+                compiled_truth: "Content for camelCase testing with keyword matching.".to_string(),
+                ..Default::default()
+            };
+            engine.put_page("test/camel-case", None, &input).await.unwrap();
+
+            let mut registry = OperationRegistry::new();
+            registry.register(QueryOperation);
+
+            let ctx = OperationContext::local_cli().with_engine(Arc::new(engine));
+            let params = serde_json::json!({ "query": "keyword" });
+
+            let result = registry.dispatch_json("query", &ctx, params).await;
+            assert!(result.is_ok(), "Expected ok, got: {:?}", result);
+
+            let output = result.unwrap();
+            let output_str = serde_json::to_string(&output).unwrap();
+
+            // Verify camelCase keys - no underscores in top-level keys
+            assert!(output_str.contains("\"results\""));
+            assert!(output_str.contains("\"total\""));
+            assert!(output_str.contains("\"limit\""));
+            assert!(output_str.contains("\"offset\""));
+
+            // Verify nested page uses camelCase (page_type -> pageType)
+            assert!(
+                output_str.contains("\"pageType\""),
+                "Expected camelCase field names, got: {}",
+                output_str
+            );
         }
     }
 }

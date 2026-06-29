@@ -106,6 +106,8 @@ pub enum Commands {
 
     /// Synthesize answers across the knowledge base
     Think(ThinkArgs),
+    /// Search pages by keyword query
+    Query(QueryArgs),
 }
 
 /// Arguments for `zbrain get-page` command.
@@ -148,6 +150,25 @@ pub struct ThinkArgs {
     /// Time range end (ISO 8601)
     #[arg(long)]
     pub until: Option<String>,
+}
+
+/// Arguments for `zbrain query` command.
+#[derive(Debug, Parser)]
+pub struct QueryArgs {
+    /// Search query text
+    pub query: String,
+
+    /// Maximum number of results (default: 20)
+    #[arg(long)]
+    pub limit: Option<usize>,
+
+    /// Pagination offset (default: 0)
+    #[arg(long)]
+    pub offset: Option<usize>,
+
+    /// Scope search to a specific source
+    #[arg(long)]
+    pub source_id: Option<String>,
 }
 
 /// Arguments for `zbrain init` command.
@@ -211,6 +232,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Schema(args) => run_schema_command(args)?,
         Commands::GetPage(args) => run_get_page_command(args, cli.config.as_deref()).await?,
         Commands::Think(args) => run_think_command(args, cli.config.as_deref()).await?,
+        Commands::Query(args) => run_query_command(args, cli.config.as_deref()).await?,
     }
     Ok(())
 }
@@ -246,6 +268,21 @@ async fn run_get_page_command(args: GetPageArgs, config_path: Option<&Path>) -> 
     Ok(())
 }
 
+/// Execute `zbrain query` command.
+async fn run_query_command(args: QueryArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+    let params = serde_json::json!({
+        "query": args.query,
+        "limit": args.limit,
+        "offset": args.offset,
+        "source_id": args.source_id,
+    });
+
+    let output = run_operation("query", params, config_path).await?;
+
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
 /// Execute an operation by name with JSON params.
 async fn run_operation(
     name: &str,
@@ -271,6 +308,7 @@ async fn run_operation(
     let mut registry = OperationRegistry::new();
     registry.register(zbrain_core::operation::GetPageOperation);
     registry.register(zbrain_core::operation::ThinkOperation);
+    registry.register(zbrain_core::operation::QueryOperation);
 
     let ctx = OperationContext::local_cli().with_engine(std::sync::Arc::new(engine));
 
@@ -796,7 +834,7 @@ mod tests {
         let result = Cli::try_parse_from(["zbrain", "config", "get", "database.url"]);
         assert!(result.is_ok());
         let cli = result.unwrap();
-        assert!(matches!(cli.command, Commands::Config(args) if matches!(args.action, ConfigAction::Get { key } if key == "database.url")));
+        assert!(matches!(cli.command, Commands::Config(args) if matches!(&args.action, ConfigAction::Get { key } if key == "database.url")));
     }
 
     #[test]
@@ -807,7 +845,7 @@ mod tests {
         assert!(matches!(
             cli.command,
             Commands::Config(args)
-            if matches!(args.action, ConfigAction::Set { key, value }
+            if matches!(&args.action, ConfigAction::Set { key, value }
                         if key == "database.url" && value == "sqlite://db")
         ));
     }
@@ -820,7 +858,7 @@ mod tests {
         assert!(matches!(
             cli.command,
             Commands::Config(args)
-            if matches!(args.action, ConfigAction::Unset { key, pattern: None }
+            if matches!(&args.action, ConfigAction::Unset { key, pattern: None }
                         if key == "old.key")
         ));
     }
