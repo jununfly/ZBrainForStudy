@@ -5,6 +5,7 @@
 //! Next slices add command implementations.
 
 pub mod config;
+pub mod mcp_client;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -455,6 +456,13 @@ async fn run_list_pages_command(args: ListPagesArgs, config_path: Option<&Path>)
 }
 
 /// Execute an operation by name with JSON params.
+///
+/// Supports two execution modes:
+/// 1. Local: executes directly against the local database engine (default)
+/// 2. Thin-client: routes the call through a remote MCP server (when remote_mcp is configured)
+///
+/// Local-only operations are refused on thin-client installs with a helpful message,
+/// matching the TypeScript behavior in `refuseThinClient`.
 async fn run_operation(
     name: &str,
     params: serde_json::Value,
@@ -467,6 +475,39 @@ async fn run_operation(
         .ok_or_else(|| anyhow::anyhow!("Could not determine config path"))?;
 
     let config = config::load_config_from_path(&config_file)?;
+
+    // Check for thin-client mode (v0.31.1 Issue #734)
+    if config::is_thin_client(&config) {
+        let remote_mcp = config.remote_mcp.as_ref().expect("is_thin_client guarantees this");
+
+        // Build operation lookup to check local_only status
+        // This avoids needing to instantiate the engine just for the check
+        let is_local_only = match name {
+            "put_page" | "delete_page" | "restore_page" | "purge_deleted_pages" => true,
+            _ => false,
+        };
+
+        if is_local_only {
+            eprintln!(
+                "zbrain {name}: this operation requires a local engine. This install is a thin client of {}.",
+                remote_mcp.mcp_url
+            );
+            eprintln!();
+            eprintln!("Thin-client routing for {name} is planned for a future release.");
+            eprintln!("Run on the host instead, or re-init with `zbrain init` to use local mode.");
+            std::process::exit(1);
+        }
+
+        // Non-local-only operations: route through remote MCP
+        let mcp_client = mcp_client::McpClient::new(config);
+        let result = mcp_client.call_tool(name, params).await.map_err(|e| {
+            eprintln!("Remote MCP call failed: {}", e);
+            std::process::exit(1);
+        }).unwrap();
+        return Ok(result);
+    }
+
+    // Local mode: execute against local engine
     let engine_config = zbrain_core::engine::EngineConfig {
         database_path: None,
         database_url: Some(config.database_url),

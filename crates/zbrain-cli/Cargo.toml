@@ -29,6 +29,7 @@ serde_yaml = "0.9"
 anyhow = { workspace = true }
 dirs = "5.0"
 regex = "1"
+reqwest = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

@@ -44,9 +44,33 @@ pub struct Config {
     #[serde(default)]
     pub logging: LoggingConfig,
 
+    /// Remote MCP configuration for thin-client mode (multi-topology v1)
+    /// When set, this install routes all DB operations through a remote
+    /// `zbrain serve --http` server instead of using a local DB.
+    #[serde(default)]
+    pub remote_mcp: Option<RemoteMcpConfig>,
+
     /// Arbitrary extra config keys (forward compatibility)
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_yaml::Value>,
+}
+
+/// Remote MCP configuration for thin-client mode.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct RemoteMcpConfig {
+    /// OAuth issuer URL for authentication
+    pub issuer_url: String,
+    /// MCP tool dispatch endpoint URL
+    pub mcp_url: String,
+    /// OAuth client ID for this brain
+    pub oauth_client_id: String,
+    /// OAuth client secret (can also be set via ZBRAIN_REMOTE_CLIENT_SECRET env)
+    pub oauth_client_secret: Option<String>,
+}
+
+/// Returns true if the config has remote_mcp configured (thin-client mode)
+pub fn is_thin_client(config: &Config) -> bool {
+    config.remote_mcp.is_some()
 }
 
 /// Provider-specific API configuration.
@@ -190,6 +214,7 @@ impl Default for Config {
             search: SearchConfig::default(),
             agents: AgentsConfig::default(),
             logging: LoggingConfig::default(),
+            remote_mcp: None,
             extra: BTreeMap::new(),
         }
     }
