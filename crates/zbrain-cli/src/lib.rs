@@ -208,7 +208,9 @@ pub enum ConfigAction {
 
     /// Unset a config value
     Unset {
-        key: String,
+        /// Config key to unset (optional, use --pattern for bulk unset)
+        #[arg(required_unless_present = "pattern")]
+        key: Option<String>,
         /// Bulk unset by key prefix pattern
         #[arg(long)]
         pattern: Option<String>,
@@ -583,10 +585,10 @@ async fn run_config_command(args: ConfigArgs, config_path: Option<&Path>) -> any
             config::write_config(&config, &output_path)?;
             println!("Set config key: {}", key);
         }
-        ConfigAction::Unset { key, pattern: Some(pattern) } => {
+        ConfigAction::Unset { ref key, pattern: Some(ref pattern) } => {
             // Bulk unset by prefix pattern
             let mut config = config::load_config(config_path)?;
-            let count = unset_config_by_pattern(&mut config, &pattern)?;
+            let count = unset_config_by_pattern(&mut config, pattern)?;
             let output_path = config_path
                 .map(PathBuf::from)
                 .or_else(config::user_config_path)
@@ -594,18 +596,20 @@ async fn run_config_command(args: ConfigArgs, config_path: Option<&Path>) -> any
             config::write_config(&config, &output_path)?;
             println!("Unset {} key(s) matching pattern: {}", count, pattern);
         }
-        ConfigAction::Unset { key, pattern: None } => {
+        ConfigAction::Unset { ref key, pattern: None } => {
             // Single key unset
             let mut config = config::load_config(config_path)?;
-            if unset_config_value(&mut config, &key)? {
-                let output_path = config_path
-                    .map(PathBuf::from)
-                    .or_else(config::user_config_path)
-                    .unwrap_or_else(|| PathBuf::from("zbrain.yml"));
-                config::write_config(&config, &output_path)?;
-                println!("Unset config key: {}", key);
-            } else {
-                eprintln!("Config key not found: {}", key);
+            if let Some(ref k) = key {
+                if unset_config_value(&mut config, k)? {
+                    let output_path = config_path
+                        .map(PathBuf::from)
+                        .or_else(config::user_config_path)
+                        .unwrap_or_else(|| PathBuf::from("zbrain.yml"));
+                    config::write_config(&config, &output_path)?;
+                    println!("Unset config key: {}", k);
+                } else {
+                    eprintln!("Config key not found: {}", k);
+                }
             }
         }
     }
@@ -858,8 +862,8 @@ mod tests {
         assert!(matches!(
             cli.command,
             Commands::Config(args)
-            if matches!(&args.action, ConfigAction::Unset { key, pattern: None }
-                        if key == "old.key")
+            if matches!(&args.action, ConfigAction::Unset { key: Some(ref k), pattern: None }
+                        if k == "old.key")
         ));
     }
 

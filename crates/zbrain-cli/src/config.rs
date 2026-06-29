@@ -278,7 +278,7 @@ pub fn is_sensitive_key(key: &str) -> bool {
 pub fn redact_value(key: &str, value: &str) -> String {
     // Redact database URLs with embedded passwords
     if value.contains("postgresql://") || value.contains("postgres://") {
-        return regex::Regex::new(r"(postgresql?://[^:]+:)([^@]+)(@)")
+        return regex::Regex::new(r"(postgres(?:ql)?://[^:]+:)([^@]+)(@)")
             .map(|re| re.replace_all(value, "${1}***${3}").to_string())
             .unwrap_or_else(|_| "***".to_string());
     }

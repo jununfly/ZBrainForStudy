@@ -1321,7 +1321,6 @@
       ],
       "notes": "Slice #49 COMPLETED. All 5 metadata operations implemented with TDD coverage: get_page_timestamps, get_effective_dates, get_salience_scores, find_orphan_pages, list_all_page_refs. Engine batch API pattern understood and mirrored. 8 tests passing."
     }
-  }
   },
   "metadata": {
     "created": "2026-06-23 18:09:00",
