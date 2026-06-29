@@ -9,7 +9,7 @@
 │   ├── [x][Y+] 1-1-2. Expand complete TS to Rust PRD from codebase facts
 │   ├── [x][Y+] 1-1-3. Classify TypeScript runtime and frontend retention surfaces
 │   └── [x][Y+] 1-1-4. Define per-slice deletion checklist and verification gates
-├── [ ][Y+] 1-2. Core storage parity closure
+├── [x][Y+] 1-2. Core storage parity closure
 │   ├── [x][Y+] 1-2-1. Finish Page contract parity across storage backends
 │   ├── [x][Y+] 1-2-2. Port missing advanced Page writes to Rust
 │   ├── [x][Y+] 1-2-3. Move schema migrations ownership to Rust
