@@ -1132,6 +1132,109 @@ impl OperationRegistry {
     pub fn operations(&self) -> Vec<Arc<dyn Operation>> {
         self.ops.values().cloned().collect()
     }
+
+    /// Dispatch a tool call and return an MCP-compatible `ToolResult`.
+    ///
+    /// This is the shared dispatch path for both the CLI and MCP server transports.
+    /// Both transports must use this method to ensure identical error formatting,
+    /// trust boundary enforcement, and result serialization.
+    ///
+    /// Mirrors `dispatchToolCall()` in TS `src/mcp/dispatch.ts`.
+    ///
+    /// # Returns
+    ///
+    /// Always returns `Ok(ToolResult)` — errors are represented as
+    /// `ToolResult { is_error: true, ... }` rather than `Err(...)`.
+    /// This matches the MCP spec which returns tool errors in the result body,
+    /// not as JSON-RPC errors.
+    pub async fn dispatch_tool_call(
+        &self,
+        name: &str,
+        ctx: &OperationContext,
+        params: serde_json::Value,
+    ) -> ToolResult {
+        match self.dispatch_json(name, ctx, params).await {
+            Ok(value) => ToolResult {
+                content: vec![ToolContent {
+                    content_type: "text".into(),
+                    text: serde_json::to_string_pretty(&value)
+                        .unwrap_or_else(|_| value.to_string()),
+                }],
+                is_error: false,
+                meta: None,
+            },
+            Err(e) => ToolResult {
+                content: vec![ToolContent {
+                    content_type: "text".into(),
+                    text: serde_json::to_string_pretty(&e)
+                        .unwrap_or_else(|_| format!("{{\"error\":\"{}\"}}", e.code)),
+                }],
+                is_error: true,
+                meta: None,
+            },
+        }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// ToolResult — MCP tool call response shape
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Single content block in a `ToolResult`.
+///
+/// Mirrors `{ type: 'text'; text: string }` in TS dispatch.ts.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct ToolContent {
+    /// Content type — always "text" for now.
+    #[serde(rename = "type")]
+    pub content_type: String,
+    /// The text payload (JSON-formatted operation result or error).
+    pub text: String,
+}
+
+/// MCP tool call response.
+///
+/// Both the CLI and MCP server transports produce this shape.
+/// Mirrors `ToolResult` in TS `src/mcp/dispatch.ts`.
+///
+/// # Shape
+///
+/// ```json
+/// {
+///   "content": [{ "type": "text", "text": "<json result>" }],
+///   "isError": true,
+///   "_meta": { "brain_hot_memory": { ... } }
+/// }
+/// ```
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct ToolResult {
+    /// Content blocks (always contains exactly one text block).
+    pub content: Vec<ToolContent>,
+    /// Whether the tool call resulted in an error.
+    ///
+    /// MCP spec: errors are in the result body, not as JSON-RPC errors.
+    #[serde(rename = "isError", skip_serializing_if = "std::ops::Not::not")]
+    pub is_error: bool,
+    /// Optional metadata from the server.
+    ///
+    /// v0.31 (eD3): MCP spec-blessed metadata slot. The dispatcher may inject
+    /// `brain_hot_memory` here after a successful op. Best-effort: errors in
+    /// the meta hook degrade to no `_meta` rather than flipping the tool call
+    /// to error.
+    #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<serde_json::Value>,
+}
+
+impl ToolResult {
+    /// Extract the text content from the first content block.
+    pub fn text(&self) -> Option<&str> {
+        self.content.first().map(|c| c.text.as_str())
+    }
+
+    /// Parse the text content as JSON.
+    pub fn parse_json(&self) -> Option<serde_json::Value> {
+        self.text().and_then(|t| serde_json::from_str(t).ok())
+    }
 }
 
 /// Operation result type.
@@ -4908,6 +5011,175 @@ mod tests {
 
             let result = registry.dispatch_json("query", &ctx_remote, params).await;
             assert!(result.is_ok(), "Remote call to non-local-only operation should succeed");
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // dispatch_tool_call() tests — shared MCP dispatch path
+    // ──────────────────────────────────────────────────────────────────────
+    #[cfg(test)]
+    mod dispatch_tool_call_tests {
+        use super::*;
+        use crate::engine::InMemoryEngine;
+
+        /// Helper: build a local-CLI context with an InMemoryEngine.
+        async fn local_ctx() -> OperationContext {
+            let engine = InMemoryEngine::default();
+            OperationContext::local_cli().with_engine(Arc::new(engine))
+        }
+
+        /// Helper: build a registry with the standard echo + read_local_file operations.
+        fn test_registry() -> OperationRegistry {
+            let mut registry = OperationRegistry::new();
+            // EchoOperation is defined in the dispatch_json tests above
+            #[derive(Debug, Clone)]
+            struct EchoOp;
+            #[derive(Debug, serde::Deserialize)]
+            struct EchoParams { msg: String }
+            impl ValidateParams for EchoParams {
+                fn validate(&self) -> OperationResult<()> { Ok(()) }
+            }
+            #[derive(Debug, serde::Serialize)]
+            struct EchoOutput { echo: String }
+            #[async_trait]
+            impl TypedOperation for EchoOp {
+                type Params = EchoParams;
+                type Output = EchoOutput;
+                fn name(&self) -> &'static str { "echo_tool" }
+                fn description(&self) -> &'static str { "Echo a message" }
+                async fn execute(&self, _ctx: &OperationContext, params: EchoParams) -> OperationResult<EchoOutput> {
+                    Ok(EchoOutput { echo: params.msg })
+                }
+            }
+            registry.register(EchoOp);
+
+            // Local-only operation for trust boundary tests
+            #[derive(Debug, Clone)]
+            struct LocalOp;
+            #[derive(Debug, serde::Deserialize)]
+            struct LocalParams { v: String }
+            impl ValidateParams for LocalParams {
+                fn validate(&self) -> OperationResult<()> { Ok(()) }
+            }
+            #[derive(Debug, serde::Serialize)]
+            struct LocalOutput { v: String }
+            #[async_trait]
+            impl TypedOperation for LocalOp {
+                type Params = LocalParams;
+                type Output = LocalOutput;
+                fn name(&self) -> &'static str { "local_tool" }
+                fn description(&self) -> &'static str { "Local-only op" }
+                fn local_only(&self) -> bool { true }
+                async fn execute(&self, _ctx: &OperationContext, params: LocalParams) -> OperationResult<LocalOutput> {
+                    Ok(LocalOutput { v: params.v })
+                }
+            }
+            registry.register(LocalOp);
+            registry
+        }
+
+        // ── TEST 1: successful dispatch returns ToolResult with isError=false ──
+        #[tokio::test]
+        async fn dispatch_tool_call_success_returns_tool_result() {
+            let registry = test_registry();
+            let ctx = local_ctx().await;
+            let params = serde_json::json!({ "msg": "hello world" });
+
+            let result = registry.dispatch_tool_call("echo_tool", &ctx, params).await;
+
+            // isError must be false on success
+            assert!(!result.is_error, "Successful dispatch must not have isError=true");
+            // content[0].type == "text"
+            assert_eq!(result.content.len(), 1);
+            assert_eq!(result.content[0].content_type, "text");
+            // text must be valid JSON containing the echo field
+            let json: serde_json::Value = serde_json::from_str(&result.content[0].text)
+                .expect("text content must be valid JSON");
+            assert_eq!(json["echo"], "hello world");
+        }
+
+        // ── TEST 2: unknown op returns isError=true with structured JSON ──
+        #[tokio::test]
+        async fn dispatch_tool_call_unknown_op_returns_tool_error() {
+            let registry = test_registry();
+            let ctx = local_ctx().await;
+            let params = serde_json::json!({});
+
+            let result = registry.dispatch_tool_call("no_such_tool", &ctx, params).await;
+
+            assert!(result.is_error, "Unknown op must return isError=true");
+            // content[0].text must be JSON-parseable
+            let json: serde_json::Value = serde_json::from_str(&result.content[0].text)
+                .expect("error text must be valid JSON");
+            // TS shape: { error: 'invalid_params', message: '...' }
+            assert_eq!(json["error"], "invalid_params");
+            assert!(
+                json["message"].as_str().unwrap_or("").contains("Unknown operation"),
+                "message should mention Unknown operation, got: {}",
+                json["message"]
+            );
+        }
+
+        // ── TEST 3: invalid params returns isError=true ──
+        #[tokio::test]
+        async fn dispatch_tool_call_invalid_params_returns_tool_error() {
+            let registry = test_registry();
+            let ctx = local_ctx().await;
+            // Missing required "msg" field
+            let params = serde_json::json!({ "wrong_field": 42 });
+
+            let result = registry.dispatch_tool_call("echo_tool", &ctx, params).await;
+
+            assert!(result.is_error, "Invalid params must return isError=true");
+            let json: serde_json::Value = serde_json::from_str(&result.content[0].text)
+                .expect("error text must be valid JSON");
+            assert_eq!(json["error"], "invalid_params");
+        }
+
+        // ── TEST 4: local-only op called from remote → isError=true, permission_denied ──
+        #[tokio::test]
+        async fn dispatch_tool_call_local_only_from_remote_returns_permission_denied() {
+            let registry = test_registry();
+            let engine = InMemoryEngine::default();
+            let mut ctx = OperationContext::local_cli();
+            ctx.remote = true; // simulate remote caller
+            let ctx = ctx.with_engine(Arc::new(engine));
+            let params = serde_json::json!({ "v": "test" });
+
+            let result = registry.dispatch_tool_call("local_tool", &ctx, params).await;
+
+            assert!(result.is_error, "local-only op from remote must return isError=true");
+            let json: serde_json::Value = serde_json::from_str(&result.content[0].text)
+                .expect("error text must be valid JSON");
+            assert_eq!(json["error"], "permission_denied");
+        }
+
+        // ── TEST 5: result serialized as pretty JSON (matches TS dispatchToolCall) ──
+        #[tokio::test]
+        async fn dispatch_tool_call_result_is_pretty_printed_json() {
+            let registry = test_registry();
+            let ctx = local_ctx().await;
+            let params = serde_json::json!({ "msg": "pretty" });
+
+            let result = registry.dispatch_tool_call("echo_tool", &ctx, params).await;
+
+            // Pretty-printed JSON contains newlines
+            assert!(
+                result.content[0].text.contains('\n'),
+                "result text should be pretty-printed JSON"
+            );
+        }
+
+        // ── TEST 6: ToolResult has no _meta by default ──
+        #[tokio::test]
+        async fn dispatch_tool_call_no_meta_by_default() {
+            let registry = test_registry();
+            let ctx = local_ctx().await;
+            let params = serde_json::json!({ "msg": "no meta" });
+
+            let result = registry.dispatch_tool_call("echo_tool", &ctx, params).await;
+
+            assert!(result.meta.is_none(), "_meta should be None by default");
         }
     }
 }

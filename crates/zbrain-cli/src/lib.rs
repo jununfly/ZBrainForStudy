@@ -529,19 +529,34 @@ async fn run_operation(
 
     let ctx = OperationContext::local_cli().with_engine(std::sync::Arc::new(engine));
 
-    // Execute
-    let result = registry
-        .dispatch_json(name, &ctx, params)
-        .await
-        .map_err(|e| {
-            // Use proper exit codes based on error type
-            let exit_code = e.exit_code();
-            eprintln!("{}", e);
-            std::process::exit(exit_code);
-        })
-        .unwrap();
+    // Use shared MCP dispatch path (dispatch_tool_call) so CLI and future MCP server
+    // produce identical result formatting and error handling.
+    // Mirrors TS `dispatchToolCall()` in src/mcp/dispatch.ts.
+    let tool_result = registry.dispatch_tool_call(name, &ctx, params).await;
 
-    Ok(result)
+    if tool_result.is_error {
+        // Parse error JSON to get exit code from OperationError shape
+        let exit_code = tool_result
+            .parse_json()
+            .and_then(|j| {
+                let code = j["error"].as_str()?;
+                // permission_denied → exit 126 (matches TS + OperationError::exit_code)
+                Some(if code == "permission_denied" { 126i32 } else { 1i32 })
+            })
+            .unwrap_or(1);
+        // Print error text to stderr
+        if let Some(text) = tool_result.text() {
+            eprintln!("{}", text);
+        }
+        std::process::exit(exit_code);
+    }
+
+    // Success: return the parsed JSON value
+    let value = tool_result
+        .parse_json()
+        .ok_or_else(|| anyhow::anyhow!("Operation returned non-JSON output"))?;
+
+    Ok(value)
 }
 
 /// Execute `zbrain init` command.
