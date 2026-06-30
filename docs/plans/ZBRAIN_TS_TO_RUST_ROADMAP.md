@@ -39,13 +39,13 @@
 │   │   [x][Y+] 1-3-2. Port init doctor config storage and schema commands
 │   │   [x][Y+] 1-3-3. Cut package bin and install flow to Rust binary
 │       [x][Y+] 1-3-4. Delete replaced TypeScript bootstrap command surface
-│   [~][Y+] 1-4. Operations layer and trust boundary migration
-│   │   [~][Y+] 1-4-1. Port operation definitions schemas and context
+│   [x][Y+] 1-4. Operations layer and trust boundary migration
+│   │   [x][Y+] 1-4-1. Port operation definitions schemas and context
 │   │   │   [x][Y+] 1-4-1-1. Slice #44 - First operation port: get_page end-to-end verification
 │   │       [x][Y+] 1-4-1-2. Slice #45 - Port Pages CRUD operations (put_page, delete_page, restore_page, purge_deleted_pages)
 │   │   [x][Y+] 1-4-2. Port local and remote trust boundary enforcement
-│       [ ][Y+] 1-4-3. Move shared CLI MCP dispatch to Rust operations
-│   [ ][Y+] 1-5. MCP server migration
+│       [x][Y+] 1-4-3. Move shared CLI MCP dispatch to Rust operations
+│   [~][Y+] 1-5. MCP server migration
 │   │   [ ][Y+] 1-5-1. Implement Rust MCP tool definitions and parameter validation
 │   │   [ ][Y+] 1-5-2. Implement Rust MCP transports rate limiting and audit hooks
 │       [ ][Y+] 1-5-3. Delete TypeScript MCP implementation after parity

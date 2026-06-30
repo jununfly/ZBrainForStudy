@@ -942,6 +942,14 @@ pub trait Operation: fmt::Debug + Send + Sync {
         false
     }
 
+    /// JSON Schema for input params (`inputSchema` in MCP `tools/list`).
+    ///
+    /// Implementations should return an object schema. The default is an
+    /// empty object schema; concrete ops override this via `TypedOperation`.
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({ "type": "object", "properties": {} })
+    }
+
     /// JSON-based execution entry point (object-safe).
     ///
     /// Deserializes params, validates them, enforces trust boundaries,
@@ -994,6 +1002,18 @@ pub trait TypedOperation: fmt::Debug + Send + Sync {
         None
     }
 
+    /// JSON Schema for the input params (`inputSchema` in MCP tool defs).
+    ///
+    /// Used by `build_tool_defs()` in `zbrain-mcp` to generate MCP
+    /// `tools/list` responses. The schema is an object with `properties`
+    /// and `required` keys, matching JSON Schema draft-07 subset.
+    ///
+    /// Default: returns an empty object schema `{ "type": "object", "properties": {} }`.
+    /// Override to provide a meaningful schema for MCP clients.
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({ "type": "object", "properties": {} })
+    }
+
     /// Execute the operation with validated params.
     ///
     /// Trust boundary enforcement happens BEFORE this method is called
@@ -1015,6 +1035,10 @@ impl<T: TypedOperation + Sync> Operation for T {
 
     fn local_only(&self) -> bool {
         <Self as TypedOperation>::local_only(self)
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        <Self as TypedOperation>::input_schema(self)
     }
 
     async fn execute_json(
@@ -1301,6 +1325,18 @@ impl TypedOperation for GetPageOperation {
             .with_flags(&["fuzzy", "include_deleted"]))
     }
 
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "slug": { "type": "string", "description": "Page slug to retrieve" },
+                "fuzzy": { "type": "boolean", "description": "Enable fuzzy matching if exact slug not found" },
+                "include_deleted": { "type": "boolean", "description": "Include soft-deleted pages in results" }
+            },
+            "required": ["slug"]
+        })
+    }
+
     async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
         let engine = ctx.engine()?;
 
@@ -1448,6 +1484,21 @@ impl TypedOperation for ThinkOperation {
 
     fn cli_hints(&self) -> Option<CliHints> {
         Some(CliHints::new("think").with_positional(&["question"]))
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "question": { "type": "string", "description": "Question to answer using multi-hop reasoning" },
+                "anchor": { "type": "string", "description": "Optional anchor page slug for context focus" },
+                "rounds": { "type": "integer", "description": "Number of reasoning rounds (1-10, default: 1)" },
+                "model": { "type": "string", "description": "Optional model override" },
+                "since": { "type": "string", "description": "Optional time range start (ISO 8601)" },
+                "until": { "type": "string", "description": "Optional time range end (ISO 8601)" }
+            },
+            "required": ["question"]
+        })
     }
 
     async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
@@ -1648,6 +1699,19 @@ impl TypedOperation for QueryOperation {
         Some(CliHints::new("query").with_positional(&["query"]))
     }
 
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string", "description": "Search query text" },
+                "limit": { "type": "integer", "description": "Maximum number of results (default: 20)" },
+                "offset": { "type": "integer", "description": "Pagination offset (default: 0)" },
+                "source_id": { "type": "string", "description": "Scope search to a single source" }
+            },
+            "required": []
+        })
+    }
+
     async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
         let engine = ctx.engine.as_ref().ok_or_else(|| {
             OperationError::new(ErrorCode::StorageError, "query operation requires an engine")
@@ -1806,6 +1870,19 @@ impl TypedOperation for PutPageOperation {
         true
     }
 
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "slug": { "type": "string", "description": "Page slug (URL-safe identifier)" },
+                "page_type": { "type": "string", "description": "Page type (e.g. note, doc, source). Default: note" },
+                "title": { "type": "string", "description": "Page title. Defaults to slug if not provided" },
+                "compiled_truth": { "type": "string", "description": "Page content (markdown or plain text)" }
+            },
+            "required": ["slug"]
+        })
+    }
+
     async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
         use crate::engine::PageInput;
 
@@ -1882,6 +1959,16 @@ impl TypedOperation for DeletePageOperation {
         true
     }
 
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "slug": { "type": "string", "description": "Slug of the page to soft-delete" }
+            },
+            "required": ["slug"]
+        })
+    }
+
     async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
         let engine = ctx.engine()?;
 
@@ -1947,6 +2034,16 @@ impl TypedOperation for RestorePageOperation {
 
     fn mutating(&self) -> bool {
         true
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "slug": { "type": "string", "description": "Slug of the soft-deleted page to restore" }
+            },
+            "required": ["slug"]
+        })
     }
 
     async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
@@ -2031,6 +2128,19 @@ impl TypedOperation for PurgeDeletedPagesOperation {
         true
     }
 
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "older_than_days": {
+                    "type": "integer",
+                    "description": "Only purge pages deleted more than this many days ago. Omit to purge all deleted pages."
+                }
+            },
+            "required": []
+        })
+    }
+
     async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
         let engine = ctx.engine()?;
         // Convert days to hours, default to 0 (purge all deleted)
@@ -2087,6 +2197,20 @@ impl TypedOperation for ListPagesOperation {
 
     fn description(&self) -> &'static str {
         "List pages with optional filtering by kind, tag, and pagination. Returns pages and total count."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "kind": { "type": "string", "description": "Filter by page type (e.g. note, doc, source)" },
+                "tag": { "type": "string", "description": "Filter by tag" },
+                "limit": { "type": "integer", "description": "Maximum number of results (max: 1000, default: 20)" },
+                "offset": { "type": "integer", "description": "Pagination offset (default: 0)" },
+                "include_deleted": { "type": "boolean", "description": "Include soft-deleted pages (default: false)" }
+            },
+            "required": []
+        })
     }
 
     async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {

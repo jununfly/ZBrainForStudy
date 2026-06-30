@@ -125,6 +125,9 @@ pub enum Commands {
 
     /// List pages with optional filtering
     ListPages(ListPagesArgs),
+
+    /// Start the MCP stdio server (Model Context Protocol)
+    ServeMcp(ServeMcpArgs),
 }
 
 /// Arguments for `zbrain get-page` command.
@@ -307,6 +310,14 @@ pub struct ListPagesArgs {
     pub include_deleted: bool,
 }
 
+/// Arguments for `zbrain serve-mcp` command.
+#[derive(Debug, Parser)]
+pub struct ServeMcpArgs {
+    /// Source ID to scope operations to (default: $ZBRAIN_SOURCE or "default")
+    #[arg(long)]
+    pub source: Option<String>,
+}
+
 /// Execute the parsed CLI command.
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
@@ -322,6 +333,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::RestorePage(args) => run_restore_page_command(args, cli.config.as_deref()).await?,
         Commands::PurgeDeletedPages(args) => run_purge_deleted_pages_command(args, cli.config.as_deref()).await?,
         Commands::ListPages(args) => run_list_pages_command(args, cli.config.as_deref()).await?,
+        Commands::ServeMcp(args) => run_serve_mcp_command(args, cli.config.as_deref()).await?,
     }
     Ok(())
 }
@@ -452,6 +464,48 @@ async fn run_list_pages_command(args: ListPagesArgs, config_path: Option<&Path>)
     let output = run_operation("list_pages", params, config_path).await?;
 
     println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+/// Execute `zbrain serve-mcp` command.
+///
+/// Starts the MCP stdio server. Reads JSON-RPC 2.0 messages from stdin,
+/// writes responses to stdout. Suitable for use with Claude Desktop / Claude Code.
+///
+/// Mirrors `startMcpServer()` in TS `src/mcp/server.ts`.
+async fn run_serve_mcp_command(args: ServeMcpArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+    use zbrain_core::operation::{
+        GetPageOperation, ThinkOperation, QueryOperation,
+        PutPageOperation, DeletePageOperation, RestorePageOperation,
+        PurgeDeletedPagesOperation, ListPagesOperation,
+    };
+
+    // Set source_id env for the MCP server if provided via --source flag
+    if let Some(source) = &args.source {
+        std::env::set_var("ZBRAIN_SOURCE", source);
+    }
+
+    // Build registry
+    let mut registry = OperationRegistry::new();
+    registry.register(GetPageOperation);
+    registry.register(ThinkOperation);
+    registry.register(QueryOperation);
+    registry.register(PutPageOperation);
+    registry.register(DeletePageOperation);
+    registry.register(RestorePageOperation);
+    registry.register(PurgeDeletedPagesOperation);
+    registry.register(ListPagesOperation);
+
+    // Log startup to stderr (MCP protocol uses stdout for JSON-RPC)
+    let source_id = std::env::var("ZBRAIN_SOURCE").unwrap_or_else(|_| "default".to_string());
+    eprintln!("[zbrain-mcp] starting stdio MCP server (source: {})", source_id);
+
+    let version = env!("CARGO_PKG_VERSION");
+    let server = zbrain_mcp::StdioMcpServer::new(registry, "zbrain", version);
+
+    server.run().await.context("MCP stdio server error")?;
+
+    eprintln!("[zbrain-mcp] shutdown: stdin closed");
     Ok(())
 }
 

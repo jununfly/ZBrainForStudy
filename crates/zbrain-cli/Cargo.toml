@@ -21,6 +21,7 @@ path = "src/lib.rs"
 
 [dependencies]
 zbrain-core = { path = "../zbrain-core" }
+zbrain-mcp = { path = "../zbrain-mcp" }
 clap = { version = "4", features = ["derive", "color"] }
 tokio = { workspace = true }
 serde = { workspace = true }
