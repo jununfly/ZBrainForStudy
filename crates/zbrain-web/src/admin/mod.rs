@@ -7,6 +7,7 @@
 mod agents;
 mod api_keys;
 mod calibration;
+mod oauth;
 mod requests;
 mod session;
 mod spend;
@@ -27,6 +28,7 @@ pub fn build_admin_router(state: super::AppState) -> Router {
         .merge(spend::build_spend_router())
         .merge(watch::build_watch_router())
         .merge(calibration::build_calibration_router())
+        .merge(oauth::build_oauth_router())
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             super::auth::require_admin,

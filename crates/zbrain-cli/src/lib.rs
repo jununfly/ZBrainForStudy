@@ -605,11 +605,14 @@ async fn run_serve_http_command(
     engine.connect(&engine_config).await?;
     engine.init_schema().await?;
     let engine = std::sync::Arc::new(engine);
+    let (tx, _rx) = tokio::sync::broadcast::channel(64);
 
     let state = zbrain_web::AppState {
         admin_auth,
         admin_queries: engine.clone() as std::sync::Arc<dyn zbrain_core::AdminQueries>,
         calibration_queries: engine.clone() as std::sync::Arc<dyn zbrain_core::CalibrationQueries>,
+        oauth_queries: engine as std::sync::Arc<dyn zbrain_core::OAuthQueries>,
+        activity_tx: tx,
         spa_dir,
     };
 

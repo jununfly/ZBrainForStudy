@@ -66,6 +66,9 @@ garde = { version = "0.21", features = ["derive"] }
 pathdiff = "0.2"
 # Slice #58: Real LLM client for Think operation
 reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls-native-roots"] }
+# OAuth client management: UUID generation for client_id, SHA-256 for secret hashing.
+uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
 
 [profile.release]
 lto = "thin"

@@ -3874,6 +3874,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -4838,11 +4839,13 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "sqlx",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -4869,6 +4872,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "axum 0.8.9",
+ "futures",
  "rand 0.8.6",
  "reqwest 0.12.28",
  "serde",
@@ -4876,6 +4880,7 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "tokio",
+ "tokio-stream",
  "tower-http 0.6.11",
  "tracing",
  "uuid",

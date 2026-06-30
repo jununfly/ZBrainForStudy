@@ -6,8 +6,11 @@
  * - Custom client_credentials handler (SDK doesn't support CC grant)
  * - MCP tool calls at /mcp with bearer auth + scope enforcement
  * - Admin dashboard at /admin with cookie auth
- * - SSE live activity feed at /admin/events
  * - Health check at /health
+ *
+ * Migrated to Rust (zbrain-web):
+ * - OAuth client management: /admin/api/register-client, /update-client-ttl, /revoke-client
+ * - SSE live activity feed: /admin/events
  */
 
 import express from 'express';
@@ -25,9 +28,9 @@ import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middlew
 import type { BrainEngine } from '../core/engine.ts';
 import { operations, OperationError } from '../core/operations.ts';
 import type { OperationContext, AuthInfo } from '../core/operations.ts';
-import { ZBrainOAuthProvider, validateTokenEndpointAuthMethod } from '../core/oauth-provider.ts';
+import { ZBrainOAuthProvider } from '../core/oauth-provider.ts';
 import type { SqlQuery } from '../core/oauth-provider.ts';
-import { hasScope, ALLOWED_SCOPES_LIST, normalizeScopesInput } from '../core/scope.ts';
+import { hasScope, ALLOWED_SCOPES_LIST } from '../core/scope.ts';
 import { summarizeMcpParams, dispatchToolCall } from '../mcp/dispatch.ts';
 import { paramDefToSchema } from '../mcp/tool-defs.ts';
 import { getBrainHotMemoryMeta } from '../core/facts/meta-hook.ts';
@@ -1190,105 +1193,6 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
     } catch (e) {
       res.status(500).json({ error: e instanceof Error ? e.message : 'Revoke failed' });
     }
-  });
-
-  // Register client from admin dashboard
-  app.post('/admin/api/register-client', requireAdmin, express.json(), async (req: Request, res: Response) => {
-    try {
-      // v0.39.3.0 WARN-9 + CV12: accept BOTH `scopes` (admin SPA convention)
-      // AND `scope` (OAuth wire-format convention, singular). The pre-fix
-      // code destructured only `scopes` and used `scopes || 'read'` which:
-      //   - Silently ignored `scope` requests (always defaulted to 'read')
-      //   - Threw on array input because registerClientManual's parseScopeString
-      //     calls .split(' ') which arrays don't have
-      //   - Accepted `['read write']` (space-in-element bug shape codex flagged)
-      //     and other malformed inputs
-      // normalizeScopesInput handles all four valid shapes (string, string[],
-      // missing, empty) and rejects the rest with a structured 400.
-      const { name, tokenTtl, grantTypes, redirectUris, tokenEndpointAuthMethod } = req.body;
-      const rawScopes = (req.body as Record<string, unknown>).scopes ?? (req.body as Record<string, unknown>).scope;
-      if (!name) { res.status(400).json({ error: 'Name required' }); return; }
-      let scopeString: string;
-      try {
-        scopeString = normalizeScopesInput(rawScopes);
-      } catch (e) {
-        res.status(400).json({
-          error: 'invalid_scopes',
-          message: e instanceof Error ? e.message : String(e),
-        });
-        return;
-      }
-      const grants = Array.isArray(grantTypes) && grantTypes.length > 0 ? grantTypes : ['client_credentials'];
-      const uris = Array.isArray(redirectUris) ? redirectUris : [];
-      // v0.41.3 (T1+T4): validate token_endpoint_auth_method via shared
-      // ALLOWED_TOKEN_ENDPOINT_AUTH_METHODS before reaching the provider.
-      // Pre-v0.41.3 this endpoint did INSERT (confidential) → UPDATE (NULL
-      // out secret_hash) for the 'none' case, which left a confidential
-      // row stranded if the UPDATE failed (codex F4). Atomic now: pass the
-      // method to registerClientManual and let it INSERT the correct row
-      // in a single statement.
-      let validatedAuthMethod: string | undefined;
-      try {
-        validatedAuthMethod = validateTokenEndpointAuthMethod(tokenEndpointAuthMethod);
-      } catch (e) {
-        res.status(400).json({
-          error: 'invalid_token_endpoint_auth_method',
-          message: e instanceof Error ? e.message : String(e),
-        });
-        return;
-      }
-      const result = await oauthProvider.registerClientManual(
-        name, grants, scopeString, uris, 'default', undefined, validatedAuthMethod,
-      );
-      // Set per-client TTL if specified
-      if (tokenTtl && Number(tokenTtl) > 0) {
-        await sql`UPDATE oauth_clients SET token_ttl = ${Number(tokenTtl)} WHERE client_id = ${result.clientId}`;
-      }
-      res.json({ ...result, tokenTtl: tokenTtl ? Number(tokenTtl) : null });
-    } catch (e) {
-      res.status(500).json({ error: e instanceof Error ? e.message : 'Registration failed' });
-    }
-  });
-
-  // Update client TTL
-  app.post('/admin/api/update-client-ttl', requireAdmin, express.json(), async (req: Request, res: Response) => {
-    try {
-      const { clientId, tokenTtl } = req.body;
-      if (!clientId) { res.status(400).json({ error: 'clientId required' }); return; }
-      const ttl = tokenTtl === null || tokenTtl === 0 ? null : Number(tokenTtl);
-      await sql`UPDATE oauth_clients SET token_ttl = ${ttl} WHERE client_id = ${clientId}`;
-      res.json({ updated: true, tokenTtl: ttl });
-    } catch (e) {
-      res.status(500).json({ error: e instanceof Error ? e.message : 'Update failed' });
-    }
-  });
-
-  // Revoke OAuth client
-  app.post('/admin/api/revoke-client', requireAdmin, express.json(), async (req: Request, res: Response) => {
-    try {
-      const { clientId } = req.body;
-      if (!clientId) { res.status(400).json({ error: 'clientId required' }); return; }
-      // Soft-delete the client
-      await sql`UPDATE oauth_clients SET deleted_at = now() WHERE client_id = ${clientId} AND deleted_at IS NULL`;
-      // Revoke all active tokens for this client
-      await sql`DELETE FROM oauth_tokens WHERE client_id = ${clientId}`;
-      res.json({ revoked: true });
-    } catch (e) {
-      res.status(500).json({ error: e instanceof Error ? e.message : 'Revoke failed' });
-    }
-  });
-
-  // ---------------------------------------------------------------------------
-  // SSE live activity feed
-  // ---------------------------------------------------------------------------
-  app.get('/admin/events', requireAdmin, (req: Request, res: Response) => {
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.flushHeaders();
-
-    sseClients.add(res);
-    req.on('close', () => sseClients.delete(res));
   });
 
   // ---------------------------------------------------------------------------

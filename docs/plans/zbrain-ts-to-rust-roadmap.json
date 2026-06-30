@@ -962,11 +962,26 @@
     "1-6-3": {
       "id": "1-6-3",
       "label": "Retain React TypeScript admin frontend by explicit decision",
-      "status": "pending",
-      "mode": "explore",
+      "status": "completed",
+      "mode": "exploit",
       "parent": "1-6",
-      "children": [],
-      "decisions": [],
+      "children": [
+        "1-6-3-1",
+        "1-6-3-2",
+        "1-6-3-3"
+      ],
+      "decisions": [
+        {
+          "q": "保留还是删除 React admin SPA？",
+          "answer": "保留，补齐4个缺失端点+SSE",
+          "note": "~1900行，240K产物，只读视图有运营价值"
+        },
+        {
+          "q": "缺口如何拆分？",
+          "answer": "2个子节点：OAuth客户端管理（3端点）+ SSE实时事件流 + 清理残留文件",
+          "note": "按域拆分，共享schema归一组"
+        }
+      ],
       "notes": ""
     },
     "1-7-1": {
@@ -1610,11 +1625,50 @@
         75,
         76
       ]
+    },
+    "1-6-3-1": {
+      "id": "1-6-3-1",
+      "label": "Port OAuth client management endpoints (register, update-ttl, revoke)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-6-3",
+      "children": [],
+      "decisions": [],
+      "notes": "Implemented OAuthQueries trait + LibsqlEngine impl + InMemoryEngine stubs + migration 0009 + 4 handler tests.",
+      "issues": [
+        { "id": "80", "title": "Port OAuth client management endpoints (register, update-ttl, revoke)", "url": "https://github.com/jununfly/ZBrain/issues/80" }
+      ]
+    },
+    "1-6-3-2": {
+      "id": "1-6-3-2",
+      "label": "Port SSE live activity feed (/admin/events)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-6-3",
+      "children": [],
+      "decisions": [],
+      "notes": "Implemented broadcast channel + SSE endpoint + require_admin middleware. broadcastEvent/sseClients kept in TS for MCP dispatch (will be removed when MCP dispatch migrates).",
+      "issues": [
+        { "id": "81", "title": "Port SSE live activity feed (/admin/events)", "url": "https://github.com/jununfly/ZBrain/issues/81" }
+      ]
+    },
+    "1-6-3-3": {
+      "id": "1-6-3-3",
+      "label": "Clean up TS-backend-only admin artifacts",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-6-3",
+      "children": [],
+      "decisions": [],
+      "notes": "Deleted OAuth register/update-ttl/revoke + SSE events handlers from serve-http.ts. Removed unused imports (normalizeScopesInput, validateTokenEndpointAuthMethod). Kept broadcastEvent/sseClients (still referenced by TS MCP dispatch).",
+      "issues": [
+        { "id": "82", "title": "Clean up TS admin route handlers replaced by Rust", "url": "https://github.com/jununfly/ZBrain/issues/82" }
+      ]
     }
   },
   "metadata": {
     "created": "2026-06-23 18:09:00",
-    "updated": "2026-06-30 20:20:37",
+    "updated": "2026-06-30 20:43:00",
     "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_ROADMAP.md"
   }
 }

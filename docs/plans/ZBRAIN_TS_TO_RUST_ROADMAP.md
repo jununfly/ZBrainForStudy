@@ -1,7 +1,7 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust-roadmap.json` | 最后更新: 2026-06-30 20:20:37
+> 数据文件: `zbrain-ts-to-rust-roadmap.json` | 最后更新: 2026-06-30 20:35:48
 
 [~][X+] 1. ZBrain TS to Rust Migration
 ├── [x][Y+] 1-1. Roadmap and TypeScript runtime inventory
@@ -31,7 +31,7 @@
 ├── [~][Y+] 1-6. Web backend and admin API migration
 │   ├── [x][Y+] 1-6-1. Implement Axum skeleton with admin auth, health, and SPA serving
 │   ├── [x][Y+] 1-6-2. Port admin API business routes
-│   ├── [ ][X+] 1-6-3. Retain React TypeScript admin frontend by explicit decision
+│   ├── [~][Y+] 1-6-3. Retain React TypeScript admin frontend by explicit decision
 │   └── [ ][Y+] 1-6-4. MCP HTTP dispatch with OAuth 2.1 and webhooks
 ├── [ ][Y+] 1-7. Ingestion sources search and retrieval migration
 │   ├── [ ][Y+] 1-7-1. Port source management import capture extract and sync flows
@@ -55,17 +55,14 @@
     ├── [ ][Y+] 1-12-3. Verify final Rust workspace and retained TypeScript surfaces
     └── [ ][Y+] 1-12-4. Update docs examples and release baseline for Rust first ZBrain
 
-### 当前施工：1-6. Web backend and admin API migration
-
-Starting 2026-06-30. Rust has full MCP stdio parity; next step: HTTP MCP + admin API.
+### 当前施工：1-6-3. Retain React TypeScript admin frontend by explicit decision
 
 **决策：**
-- Q: Can TypeScript remain for admin/frontend? → Yes. React/Vite/browser TypeScript under admin/ is an explicit retention candidate. Backend API/runtime ownership still migrates to Rust zbrain-web. (Frontend retention must not justify keeping Express/backend runtime TypeScript.)
+- Q: 保留还是删除 React admin SPA？ → 保留，补齐4个缺失端点+SSE (~1900行，240K产物，只读视图有运营价值)
+- Q: 缺口如何拆分？ → 2个子节点：OAuth客户端管理（3端点）+ SSE实时事件流 + 清理残留文件 (按域拆分，共享schema归一组)
 
 **当前子树：**
-├── [x][Y+] 1-6-1. Implement Axum skeleton with admin auth, health, and SPA serving
-├── [x][Y+] 1-6-2. Port admin API business routes
-│   ... 2 more child nodes; run tree 1-6-2 --depth 2 for full view
-├── [ ][X+] 1-6-3. Retain React TypeScript admin frontend by explicit decision
-└── [ ][Y+] 1-6-4. MCP HTTP dispatch with OAuth 2.1 and webhooks
+├── [ ][Y+] 1-6-3-1. Port OAuth client management endpoints (register, update-ttl, revoke)
+├── [ ][Y+] 1-6-3-2. Port SSE live activity feed (/admin/events)
+└── [ ][Y+] 1-6-3-3. Clean up TS-backend-only admin artifacts
 <!-- ROADMAP_SECTION_END -->

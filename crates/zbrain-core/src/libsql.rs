@@ -28,6 +28,10 @@ use crate::calibration_queries::{
     CalibrationBucket, CalibrationProfileRow, CalibrationQueries, PatternDetail, TakeSummary,
     TakesScorecard,
 };
+use crate::oauth_queries::{
+    OAuthQueries, RegisterClientRequest, RegisterClientResponse, RevokeClientResponse,
+    UpdateClientTtlResponse,
+};
 use crate::engine::{
     page_sort_sql, BrainEngine, EngineConfig, EngineKind, GetPageOpts, Page, PageFilters,
     PageInput, PageSort, ResolveSlugsOpts,
@@ -102,6 +106,8 @@ const MIGRATION_0006: &str = include_str!("../migrations-sqlite/0006_links.sql")
 const MIGRATION_0007: &str = include_str!("../migrations-sqlite/0007_files.sql");
 const MIGRATION_0008: &str =
     include_str!("../migrations-sqlite/0008_raw_data_and_page_versions.sql");
+/// OAuth client, token, and authorization-code tables (PG→SQLite port).
+const MIGRATION_0009: &str = include_str!("../migrations-sqlite/0009_oauth_tables.sql");
 
 /// Legacy string array — REMOVED in favor of MigrationRegistry.
 /// Use LIBQL_MIGRATIONS instead.
@@ -115,12 +121,13 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_0006,
     MIGRATION_0007,
     MIGRATION_0008,
+    MIGRATION_0009,
 ];
 
 /// Legacy version constant — REMOVED in favor of MigrationRegistry.
 /// Use LIBQL_MIGRATIONS.latest_version() instead.
 #[deprecated(note = "Use LIBQL_MIGRATIONS.latest_version() instead")]
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 9;
 
 /// Global migration registry for libsql backend. Built once at runtime first use.
 /// All 8 existing migrations ported with zero SQL changes per 1-2-3-3 Q4 decision.
@@ -169,6 +176,11 @@ pub static LIBQL_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 8,
         name: "raw_data_and_page_versions",
         sql: MIGRATION_0008,
+    }));
+    registry.add(Box::new(LibsqlMigration {
+        version: 9,
+        name: "oauth_tables",
+        sql: MIGRATION_0009,
     }));
 
     registry
@@ -3143,5 +3155,105 @@ impl CalibrationQueries for LibsqlEngine {
             pattern_text,
             top_takes,
         }))
+    }
+}
+
+// ── OAuthQueries LibsqlEngine implementation ──────────────────────────
+
+#[async_trait]
+impl OAuthQueries for LibsqlEngine {
+    async fn register_client(
+        &self,
+        req: RegisterClientRequest,
+    ) -> Result<RegisterClientResponse> {
+        let client_id = uuid::Uuid::new_v4().to_string();
+        let client_secret = uuid::Uuid::new_v4().to_string();
+        let secret_hash = {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(client_secret.as_bytes());
+            format!("{:x}", hasher.finalize())
+        };
+
+        let conn = self.conn().await?;
+        let grant_types_json = serde_json::to_string(&req.grant_types)
+            .map_err(|e| Error::engine(format!("serialize grant_types: {e}")))?;
+        let redirect_uris_json = serde_json::to_string(&req.redirect_uris)
+            .map_err(|e| Error::engine(format!("serialize redirect_uris: {e}")))?;
+
+        conn.execute(
+            "INSERT INTO oauth_clients \
+             (client_id, client_secret_hash, client_name, redirect_uris, grant_types, scope, \
+              token_endpoint_auth_method, token_ttl, client_id_issued_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            ::libsql::params![
+                client_id.clone(),
+                secret_hash,
+                req.name,
+                redirect_uris_json,
+                grant_types_json,
+                req.scope,
+                req.token_endpoint_auth_method,
+                req.token_ttl,
+                // client_id_issued_at: seconds since epoch
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64,
+            ],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("register_client insert: {e}")))?;
+
+        Ok(RegisterClientResponse {
+            client_id,
+            client_secret,
+        })
+    }
+
+    async fn update_client_ttl(
+        &self,
+        client_id: &str,
+        ttl: Option<i64>,
+    ) -> Result<UpdateClientTtlResponse> {
+        let conn = self.conn().await?;
+
+        // normalize: 0 means "no TTL" (NULL in DB)
+        let db_ttl = ttl.filter(|&v| v > 0);
+
+        conn.execute(
+            "UPDATE oauth_clients SET token_ttl = ?1 WHERE client_id = ?2",
+            ::libsql::params![db_ttl, client_id],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("update_client_ttl: {e}")))?;
+
+        Ok(UpdateClientTtlResponse {
+            updated: true,
+            token_ttl: db_ttl,
+        })
+    }
+
+    async fn revoke_client(&self, client_id: &str) -> Result<RevokeClientResponse> {
+        let conn = self.conn().await?;
+
+        // Soft-delete the client (only if not already deleted)
+        conn.execute(
+            "UPDATE oauth_clients SET deleted_at = ?1 \
+             WHERE client_id = ?2 AND deleted_at IS NULL",
+            ::libsql::params![current_utc_iso8601(), client_id],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("revoke_client soft-delete: {e}")))?;
+
+        // Revoke all active tokens for this client
+        conn.execute(
+            "DELETE FROM oauth_tokens WHERE client_id = ?1",
+            ::libsql::params![client_id],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("revoke_client delete tokens: {e}")))?;
+
+        Ok(RevokeClientResponse { revoked: true })
     }
 }

@@ -30,6 +30,9 @@ garde = { workspace = true }
 pathdiff = { workspace = true }
 # Slice #58: Real LLM client for Think operation
 reqwest = { workspace = true, optional = true }
+# OAuth client management
+uuid = { workspace = true }
+sha2 = { workspace = true }
 
 [features]
 default = []

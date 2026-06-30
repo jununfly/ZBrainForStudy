@@ -9,6 +9,7 @@
 
 pub mod admin_queries;
 pub mod calibration_queries;
+pub mod oauth_queries;
 pub mod engine;
 pub mod error;
 pub mod libsql;
@@ -34,6 +35,10 @@ pub use admin_queries::{
 pub use calibration_queries::{
     CalibrationQueries, CalibrationBucket, CalibrationProfileRow, PatternDetail, TakeSummary,
     TakesScorecard,
+};
+pub use oauth_queries::{
+    OAuthQueries, RegisterClientRequest, RegisterClientResponse, RevokeClientResponse,
+    UpdateClientTtlResponse,
 };
 pub use llm::{LlmClient, LlmRequest, LlmResponse, LlmError, MockLlmClient, TokenUsage};
 #[cfg(feature = "openai")]

@@ -16,6 +16,8 @@ use serde_json::{json, Map, Value};
 use crate::{
     calibration_queries::{CalibrationBucket, CalibrationProfileRow, CalibrationQueries,
         PatternDetail, TakeSummary, TakesScorecard},
+    oauth_queries::{OAuthQueries, RegisterClientRequest, RegisterClientResponse,
+        RevokeClientResponse, UpdateClientTtlResponse},
     time::current_utc_iso8601, types::PageVersion, types::RawData, CRMode, DuplicatePage,
     EffectiveDateSource, Error, FileRow, FileSpec, FindDuplicatePageOpts, OrphanPage, PageKind,
     PageRef, PageType, PurgeResult, RefreshPageBodyArgs, UpsertFileResult,
@@ -2002,5 +2004,38 @@ impl CalibrationQueries for InMemoryEngine {
         _pattern_index: usize,
     ) -> crate::error::Result<Option<PatternDetail>> {
         Ok(None)
+    }
+}
+
+// ── OAuthQueries InMemory stubs ───────────────────────────────────────
+
+#[async_trait]
+impl OAuthQueries for InMemoryEngine {
+    async fn register_client(
+        &self,
+        _req: RegisterClientRequest,
+    ) -> crate::error::Result<RegisterClientResponse> {
+        Ok(RegisterClientResponse {
+            client_id: "test-client-id".into(),
+            client_secret: "test-client-secret".into(),
+        })
+    }
+
+    async fn update_client_ttl(
+        &self,
+        _client_id: &str,
+        ttl: Option<i64>,
+    ) -> crate::error::Result<UpdateClientTtlResponse> {
+        Ok(UpdateClientTtlResponse {
+            updated: true,
+            token_ttl: ttl,
+        })
+    }
+
+    async fn revoke_client(
+        &self,
+        _client_id: &str,
+    ) -> crate::error::Result<RevokeClientResponse> {
+        Ok(RevokeClientResponse { revoked: true })
     }
 }

@@ -2,6 +2,7 @@
 
 mod admin;
 mod auth;
+mod events;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -15,8 +16,10 @@ use axum::{
     Json, Router,
 };
 use serde::Serialize;
+use tokio::sync::broadcast;
 
 pub use auth::AdminAuth;
+pub use events::ActivityEvent;
 
 /// Application state shared across all request handlers.
 #[derive(Clone)]
@@ -27,6 +30,10 @@ pub struct AppState {
     pub admin_queries: Arc<dyn zbrain_core::AdminQueries>,
     /// Calibration data-access layer.
     pub calibration_queries: Arc<dyn zbrain_core::CalibrationQueries>,
+    /// OAuth client management data-access layer.
+    pub oauth_queries: Arc<dyn zbrain_core::OAuthQueries>,
+    /// SSE broadcast sender for live activity feed.
+    pub activity_tx: broadcast::Sender<ActivityEvent>,
     /// Path to the admin SPA static files directory.
     pub spa_dir: PathBuf,
 }
@@ -138,7 +145,8 @@ pub fn build_router(state: AppState) -> Router {
         .with_state(state.clone());
 
     main.merge(auth::admin_auth_routes(state.clone()))
-        .merge(admin::build_admin_router(state))
+        .merge(admin::build_admin_router(state.clone()))
+        .merge(events::build_events_router(state))
 }
 
 /// Start the HTTP server and block until shutdown signal.
@@ -190,10 +198,13 @@ mod tests {
         let auth = AdminAuth::new(None);
         let (dir, spa_dir) = make_spa_dir();
         let engine = std::sync::Arc::new(zbrain_core::InMemoryEngine::default());
+        let (tx, _rx) = broadcast::channel(64);
         let state = AppState {
             admin_auth: auth,
             admin_queries: engine.clone() as std::sync::Arc<dyn zbrain_core::AdminQueries>,
-            calibration_queries: engine as std::sync::Arc<dyn zbrain_core::CalibrationQueries>,
+            calibration_queries: engine.clone() as std::sync::Arc<dyn zbrain_core::CalibrationQueries>,
+            oauth_queries: engine as std::sync::Arc<dyn zbrain_core::OAuthQueries>,
+            activity_tx: tx,
             spa_dir,
         };
         (dir, state)
