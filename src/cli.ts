@@ -726,15 +726,12 @@ function formatResult(opName: string, result: unknown): string {
  * refuses them with a canonical error pointing at the remote host. The check
  * runs before per-command dispatch so the error message is consistent.
  *
- * `serve` is in this set because `zbrain serve` (stdio or http) requires a
- * local engine to expose. Thin clients don't have one to expose.
- *
  * `doctor` is intentionally NOT in this set — task 4 routes it to
  * `runRemoteDoctor` for thin-client installs.
  */
 const THIN_CLIENT_REFUSED_COMMANDS = new Set([
   'sync', 'embed', 'extract', 'extract-conversation-facts', 'migrate', 'apply-migrations',
-  'repair-jsonb', 'orphans', 'integrity', 'serve',
+  'repair-jsonb', 'orphans', 'integrity',
   // v0.31.1 (CDX-2 op coverage matrix): more local-only commands
   'dream', 'transcripts', 'storage',
   // v0.31.1 CDX-2 audit: takes/sources have multiple subcommands; some
@@ -772,7 +769,6 @@ const THIN_CLIENT_REFUSE_HINTS: Record<string, string> = {
   'apply-migrations': 'schema migrations run on the host. SSH and run there.',
   'repair-jsonb': 'repair-jsonb operates on the local DB only.',
   integrity: 'integrity scans local files. Run on the host machine.',
-  serve: 'serve starts a server. Run on the host, not the thin client.',
   dream: 'dream runs the autopilot cycle on the host. `zbrain remote ping` queues one. (Native `zbrain dream` thin-client routing planned for v0.31.2.)',
   orphans: "orphans needs the host's brain. Run on the host or use the `find_orphans` MCP tool from your agent.",
   transcripts: 'transcripts is server-private (raw chat exports stay on the host). Read transcripts on the host machine.',
@@ -1206,16 +1202,6 @@ async function handleCliOnly(command: string, args: string[]) {
         await runEmbed(engine, args);
         break;
       }
-      case 'serve': {
-        const { runServe } = await import('./commands/serve.ts');
-        await runServe(engine, args);
-        return; // serve doesn't disconnect
-      }
-      case 'call': {
-        const { runCall } = await import('./commands/call.ts');
-        await runCall(engine, args);
-        break;
-      }
       // NOTE: config is now implemented in Rust - see crates/zbrain-cli/src/lib.rs
       case 'config': {
         console.error(`\`zbrain config\` is now implemented in Rust.`);
@@ -1545,7 +1531,7 @@ async function handleCliOnly(command: string, args: string[]) {
       }
     }
   } finally {
-    if (command !== 'serve') await engine.disconnect();
+    await engine.disconnect();
   }
 }
 
@@ -1875,12 +1861,6 @@ ADMIN
   config [show|get|set] <key> [val]  Brain config
   storage status [--repo <path>]     Storage tier status and health
         [--json]                     (git-tracked vs supabase-only)
-  serve                              MCP server (stdio)
-  serve --http [--port N]            HTTP MCP server with OAuth 2.1
-    --token-ttl N                    Access token TTL in seconds (default: 3600)
-    --enable-dcr                     Enable Dynamic Client Registration
-    --public-url URL                 Public issuer URL (required behind proxy/tunnel)
-  call <tool> '<json>'               Raw tool invocation
   version                            Version info
   --tools-json                       Tool discovery (JSON)
 

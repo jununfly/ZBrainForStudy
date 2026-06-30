@@ -1,3 +1,6 @@
+// KEPT: only retained for src/commands/serve-http.ts.
+// Delete in 1-6 when Rust Axum HTTP MCP replaces it.
+
 import type { Operation, ParamDef } from '../core/operations.ts';
 
 export interface McpToolDef {
