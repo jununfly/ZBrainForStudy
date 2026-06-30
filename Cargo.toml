@@ -5,6 +5,7 @@ members = [
     "crates/zbrain-cli",
     "crates/zbrain-web",
     "crates/zbrain-mcp",
+    "crates/zbrain-svg",
 ]
 
 [workspace.package]

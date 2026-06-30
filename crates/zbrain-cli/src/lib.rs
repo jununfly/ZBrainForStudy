@@ -609,6 +609,7 @@ async fn run_serve_http_command(
     let state = zbrain_web::AppState {
         admin_auth,
         admin_queries: engine.clone() as std::sync::Arc<dyn zbrain_core::AdminQueries>,
+        calibration_queries: engine.clone() as std::sync::Arc<dyn zbrain_core::CalibrationQueries>,
         spa_dir,
     };
 

@@ -4860,6 +4860,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "zbrain-svg"
+version = "0.0.1"
+
+[[package]]
 name = "zbrain-web"
 version = "0.0.1"
 dependencies = [
@@ -4876,6 +4880,7 @@ dependencies = [
  "tracing",
  "uuid",
  "zbrain-core",
+ "zbrain-svg",
 ]
 
 [[package]]

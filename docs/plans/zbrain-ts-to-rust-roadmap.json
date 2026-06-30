@@ -1512,12 +1512,53 @@
     "1-6-2-1": {
       "id": "1-6-2-1",
       "label": "Port calibration subsystem (profiles, takes, SVG rendering)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6-2",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "一刀切范围",
+          "answer": "窄切：只 port 3个admin端点 + SVG renderer + calibration_profiles查询。不碰voice-gate/nudge/cross-brain/AB/undo-wave等深层逻辑",
+          "note": ""
+        },
+        {
+          "q": "SVG renderer 归放",
+          "answer": "独立crate crates/zbrain-svg/，零依赖纯函数",
+          "note": ""
+        },
+        {
+          "q": "查询文件组织",
+          "answer": "独立文件 calibration_queries.rs，与admin_queries.rs并列",
+          "note": ""
+        },
+        {
+          "q": "错误处理策略",
+          "answer": "graceful degradation：无profile返回null JSON，无效chart type返回400，内部错误500",
+          "note": ""
+        },
+        {
+          "q": "Engine trait 扩展",
+          "answer": "不扩展trait，直接用engine.execute_raw()原生SQL，模式同#75/#76",
+          "note": ""
+        },
+        {
+          "q": "calibration_profiles表",
+          "answer": "不做migration，表缺失时graceful degradation返回None/svgEmpty()",
+          "note": ""
+        },
+        {
+          "q": "SVG公开API",
+          "answer": "全部导出：4个chart函数 + escapeXml + svgEmpty + 所有类型",
+          "note": ""
+        },
+        {
+          "q": "Issue拆分",
+          "answer": "3个issue：A-SVG crate, B-calibration queries, C+D-3个API handler",
+          "note": ""
+        }
+      ],
+      "notes": "#77 zbrain-svg crate | #78 calibration_queries | #79 calibration API handlers"
     },
     "1-6-2-2": {
       "id": "1-6-2-2",
@@ -1573,7 +1614,7 @@
   },
   "metadata": {
     "created": "2026-06-23 18:09:00",
-    "updated": "2026-06-30 17:47:04",
+    "updated": "2026-06-30 20:20:37",
     "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_ROADMAP.md"
   }
 }

@@ -24,6 +24,10 @@ use crate::admin_queries::{
     FullStats, HealthIndicators, JobTypeSummary, Paginated, QueueHealth, RequestLogEntry,
     RequestLogFilters, Stats, WatchSnapshot,
 };
+use crate::calibration_queries::{
+    CalibrationBucket, CalibrationProfileRow, CalibrationQueries, PatternDetail, TakeSummary,
+    TakesScorecard,
+};
 use crate::engine::{
     page_sort_sql, BrainEngine, EngineConfig, EngineKind, GetPageOpts, Page, PageFilters,
     PageInput, PageSort, ResolveSlugsOpts,
@@ -853,7 +857,7 @@ impl BrainEngine for LibsqlEngine {
         }
 
         // ── Bind parameters positionally ────────────────────────────────
-        // libsql `params!` macro requires concrete types; we build a Vec of
+        // libsql `::libsql::params!` macro requires concrete types; we build a Vec of
         // `Value` for positional binding.
         //
         // ORDER CONTRACT: the push order below MUST match the `param_idx`
@@ -2891,5 +2895,253 @@ fn decode_cr_mode(value: &str) -> Result<CRMode> {
         other => Err(Error::engine(format!(
             "unknown contextual_retrieval_mode value {other:?}"
         ))),
+    }
+}
+
+// ─── CalibrationQueries impl for LibsqlEngine ───────────────────────────
+
+#[async_trait]
+impl CalibrationQueries for LibsqlEngine {
+    /// Aggregated scoring stats from resolved takes.
+    async fn get_scorecard(&self, holder: &str) -> Result<TakesScorecard> {
+        let conn = self.conn().await?;
+
+        // Graceful degradation: `takes` table may not exist in current Rust schema.
+        let result = conn
+            .query(
+                "SELECT \
+                        COUNT(*) as resolved, \
+                        AVG(brier) as brier, \
+                        AVG(CASE WHEN resolution = 'correct' THEN 1.0 ELSE 0.0 END) as accuracy, \
+                        SUM(CASE WHEN resolution = 'correct' THEN 1 ELSE 0 END) as correct, \
+                        SUM(CASE WHEN resolution = 'incorrect' THEN 1 ELSE 0 END) as incorrect, \
+                        AVG(CASE WHEN partial_resolution IS NOT NULL THEN 1.0 ELSE 0.0 END) as partial_rate \
+                 FROM takes \
+                 WHERE holder = ?1 AND resolved_at IS NOT NULL",
+                ::libsql::params![holder],
+            )
+            .await;
+
+        match result {
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("no such table") {
+                    return Ok(TakesScorecard {
+                        resolved: 0,
+                        brier: 0.0,
+                        accuracy: 0.0,
+                        correct: 0,
+                        incorrect: 0,
+                        partial_rate: 0.0,
+                    });
+                }
+                Err(Error::engine(format!("get_scorecard: {msg}")))
+            }
+            Ok(mut rows) => {
+                if let Some(row) = rows.next().await.map_err(|e| Error::engine(format!("get_scorecard row: {e}")))? {
+                    Ok(TakesScorecard {
+                        resolved: row.get::<i64>(0).unwrap_or(0),
+                        brier: row.get::<f64>(1).unwrap_or(0.0),
+                        accuracy: row.get::<f64>(2).unwrap_or(0.0),
+                        correct: row.get::<i64>(3).unwrap_or(0),
+                        incorrect: row.get::<i64>(4).unwrap_or(0),
+                        partial_rate: row.get::<f64>(5).unwrap_or(0.0),
+                    })
+                } else {
+                    Ok(TakesScorecard {
+                        resolved: 0,
+                        brier: 0.0,
+                        accuracy: 0.0,
+                        correct: 0,
+                        incorrect: 0,
+                        partial_rate: 0.0,
+                    })
+                }
+            }
+        }
+    }
+
+    /// Confidence-bucket accuracy curve.
+    async fn get_calibration_curve(&self, holder: &str) -> Result<Vec<CalibrationBucket>> {
+        let conn = self.conn().await?;
+
+        let result = conn
+            .query(
+                "SELECT \
+                        CAST(confidence * 10 AS INTEGER) / 10.0 || '-' || (CAST(confidence * 10 AS INTEGER) + 1) / 10.0 AS bucket_label, \
+                        COUNT(*) as n, \
+                        AVG(CASE WHEN resolution = 'correct' THEN 1.0 ELSE 0.0 END) as accuracy \
+                 FROM takes \
+                 WHERE holder = ?1 AND resolved_at IS NOT NULL AND confidence BETWEEN 0.0 AND 1.0 \
+                 GROUP BY CAST(confidence * 10 AS INTEGER) \
+                 ORDER BY CAST(confidence * 10 AS INTEGER)",
+                ::libsql::params![holder],
+            )
+            .await;
+
+        match result {
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("no such table") {
+                    return Ok(vec![]);
+                }
+                Err(Error::engine(format!("get_calibration_curve: {msg}")))
+            }
+            Ok(mut rows) => {
+                let mut buckets = Vec::new();
+                while let Some(row) = rows.next().await.map_err(|e| Error::engine(format!("get_calibration_curve row: {e}")))? {
+                    buckets.push(CalibrationBucket {
+                        bucket_label: row.get::<String>(0).unwrap_or_default(),
+                        n: row.get::<i64>(1).unwrap_or(0),
+                        accuracy: row.get::<f64>(2).unwrap_or(0.0),
+                    });
+                }
+                Ok(buckets)
+            }
+        }
+    }
+
+    /// Latest calibration profile for a holder.
+    async fn get_latest_profile(&self, holder: &str) -> Result<Option<CalibrationProfileRow>> {
+        let conn = self.conn().await?;
+
+        let result = conn
+            .query(
+                "SELECT \
+                        id, source_id, holder, generated_at, \
+                        brier, accuracy, \
+                        pattern_statements, active_bias_tags, \
+                        domain_scorecards \
+                 FROM calibration_profiles \
+                 WHERE holder = ?1 \
+                 ORDER BY generated_at DESC \
+                 LIMIT 1",
+                ::libsql::params![holder],
+            )
+            .await;
+
+        match result {
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("no such table") {
+                    return Ok(None);
+                }
+                Err(Error::engine(format!(
+                    "get_latest_profile: {msg}"
+                )))
+            }
+            Ok(mut rows) => {
+                if let Some(row) = rows.next().await.map_err(|e| Error::engine(format!("get_latest_profile row: {e}")))? {
+                    let pattern_json: Option<String> = row.get(6).unwrap_or(None);
+                    let bias_json: Option<String> = row.get(7).unwrap_or(None);
+                    let domain_json: Option<String> = row.get(8).unwrap_or(None);
+
+                    Ok(Some(CalibrationProfileRow {
+                        id: row.get::<String>(0).unwrap_or_default(),
+                        source_id: row.get::<String>(1).unwrap_or_default(),
+                        holder: row.get::<String>(2).unwrap_or_default(),
+                        generated_at: row.get::<String>(3).unwrap_or_default(),
+                        brier: row.get::<Option<f64>>(4).unwrap_or(None),
+                        accuracy: row.get::<Option<f64>>(5).unwrap_or(None),
+                        pattern_statements: pattern_json
+                            .and_then(|s| serde_json::from_str::<Vec<String>>(s.as_str()).ok()),
+                        active_bias_tags: bias_json
+                            .and_then(|s| serde_json::from_str::<Vec<String>>(s.as_str()).ok()),
+                        domain_scorecards: domain_json
+                            .and_then(|s| serde_json::from_str::<serde_json::Value>(s.as_str()).ok()),
+                    }))
+                } else {
+                    Ok(None)
+                }
+            }
+        }
+    }
+
+    /// Pattern text + top-25 resolved takes for drill-down.
+    async fn get_pattern_detail(
+        &self,
+        holder: &str,
+        pattern_index: usize,
+    ) -> Result<Option<PatternDetail>> {
+        let conn = self.conn().await?;
+
+        // 1) Get the pattern statement from the latest calibration profile.
+        let profile_result = conn
+            .query(
+                "SELECT pattern_statements FROM calibration_profiles \
+                 WHERE holder = ?1 ORDER BY generated_at DESC LIMIT 1",
+                ::libsql::params![holder],
+            )
+            .await;
+
+        let pattern_text = match profile_result {
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("no such table") {
+                    return Ok(None);
+                }
+                return Err(Error::engine(format!("get_pattern_detail profile: {msg}")));
+            }
+            Ok(mut rows) => {
+                if let Some(row) = rows
+                    .next()
+                    .await
+                    .map_err(|e| Error::engine(format!("get_pattern_detail row: {e}")))?
+                {
+                    let json_str: Option<String> = row.get(0).unwrap_or(None);
+                    json_str
+                        .and_then(|s| serde_json::from_str::<Vec<String>>(s.as_str()).ok())
+                        .and_then(|v| v.into_iter().nth(pattern_index.saturating_sub(1)))
+                        .unwrap_or_default()
+                } else {
+                    return Ok(None);
+                }
+            }
+        };
+        if pattern_text.is_empty() {
+            return Ok(None);
+        }
+
+        // 2) Get top-25 resolved takes (ordered by most recently resolved).
+        let takes_result = conn
+            .query(
+                "SELECT slug, claim, resolution, brier \
+                 FROM takes \
+                 WHERE holder = ?1 AND resolved_at IS NOT NULL \
+                 ORDER BY resolved_at DESC \
+                 LIMIT 25",
+                ::libsql::params![holder],
+            )
+            .await;
+
+        let top_takes: Vec<TakeSummary> = match takes_result {
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("no such table") {
+                    vec![]
+                } else {
+                    return Err(Error::engine(format!(
+                        "get_pattern_detail takes: {msg}"
+                    )));
+                }
+            }
+            Ok(mut rows) => {
+                let mut out = Vec::new();
+                while let Some(row) = rows.next().await.map_err(|e| Error::engine(format!("get_pattern_detail take row: {e}")))? {
+                    out.push(TakeSummary {
+                        slug: row.get::<String>(0).unwrap_or_default(),
+                        claim: row.get::<String>(1).unwrap_or_default(),
+                        resolution: row.get::<Option<String>>(2).unwrap_or(None),
+                        brier: row.get::<Option<f64>>(3).unwrap_or(None),
+                    });
+                }
+                out
+            }
+        };
+
+        Ok(Some(PatternDetail {
+            pattern_text,
+            top_takes,
+        }))
     }
 }

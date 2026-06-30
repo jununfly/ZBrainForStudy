@@ -48,10 +48,13 @@ mod tests {
         let token = auth.bootstrap_token().to_string();
         let (_dir, spa_path) = make_spa_dir();
 
+        let engine = std::sync::Arc::new(zbrain_core::InMemoryEngine::default());
         let state = super::super::super::AppState {
             admin_auth: auth.clone(),
-            admin_queries: std::sync::Arc::new(zbrain_core::InMemoryEngine::default())
+            admin_queries: engine.clone()
                 as std::sync::Arc<dyn zbrain_core::AdminQueries>,
+            calibration_queries: engine
+                as std::sync::Arc<dyn zbrain_core::CalibrationQueries>,
             spa_dir: spa_path,
         };
 

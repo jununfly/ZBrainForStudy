@@ -25,6 +25,8 @@ pub struct AppState {
     pub admin_auth: AdminAuth,
     /// Admin dashboard data-access layer.
     pub admin_queries: Arc<dyn zbrain_core::AdminQueries>,
+    /// Calibration data-access layer.
+    pub calibration_queries: Arc<dyn zbrain_core::CalibrationQueries>,
     /// Path to the admin SPA static files directory.
     pub spa_dir: PathBuf,
 }
@@ -190,7 +192,8 @@ mod tests {
         let engine = std::sync::Arc::new(zbrain_core::InMemoryEngine::default());
         let state = AppState {
             admin_auth: auth,
-            admin_queries: engine as std::sync::Arc<dyn zbrain_core::AdminQueries>,
+            admin_queries: engine.clone() as std::sync::Arc<dyn zbrain_core::AdminQueries>,
+            calibration_queries: engine as std::sync::Arc<dyn zbrain_core::CalibrationQueries>,
             spa_dir,
         };
         (dir, state)

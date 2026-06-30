@@ -14,6 +14,8 @@ use async_trait::async_trait;
 use serde_json::{json, Map, Value};
 
 use crate::{
+    calibration_queries::{CalibrationBucket, CalibrationProfileRow, CalibrationQueries,
+        PatternDetail, TakeSummary, TakesScorecard},
     time::current_utc_iso8601, types::PageVersion, types::RawData, CRMode, DuplicatePage,
     EffectiveDateSource, Error, FileRow, FileSpec, FindDuplicatePageOpts, OrphanPage, PageKind,
     PageRef, PageType, PurgeResult, RefreshPageBodyArgs, UpsertFileResult,
@@ -1963,5 +1965,42 @@ impl crate::admin_queries::AdminQueries for InMemoryEngine {
             top_errors: vec![],
             budget_owners: vec![],
         })
+    }
+}
+
+/// In-memory calibration query stubs — all return empty/defaults.
+#[async_trait]
+impl CalibrationQueries for InMemoryEngine {
+    async fn get_scorecard(&self, _holder: &str) -> crate::error::Result<TakesScorecard> {
+        Ok(TakesScorecard {
+            resolved: 0,
+            brier: 0.0,
+            accuracy: 0.0,
+            correct: 0,
+            incorrect: 0,
+            partial_rate: 0.0,
+        })
+    }
+
+    async fn get_calibration_curve(
+        &self,
+        _holder: &str,
+    ) -> crate::error::Result<Vec<CalibrationBucket>> {
+        Ok(vec![])
+    }
+
+    async fn get_latest_profile(
+        &self,
+        _holder: &str,
+    ) -> crate::error::Result<Option<CalibrationProfileRow>> {
+        Ok(None)
+    }
+
+    async fn get_pattern_detail(
+        &self,
+        _holder: &str,
+        _pattern_index: usize,
+    ) -> crate::error::Result<Option<PatternDetail>> {
+        Ok(None)
     }
 }

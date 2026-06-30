@@ -8,6 +8,7 @@
 //! `docs/plans/20260526/04-plan.md`.
 
 pub mod admin_queries;
+pub mod calibration_queries;
 pub mod engine;
 pub mod error;
 pub mod libsql;
@@ -29,6 +30,10 @@ pub use admin_queries::{
     AdminQueries, AgentClientSpend, AgentInfo, ApiKey, BudgetOwner, ErrorClusterCount, FullStats,
     HealthIndicators, JobTypeSummary, Paginated, QueueHealth, RequestLogEntry, RequestLogFilters,
     Stats, WatchSnapshot,
+};
+pub use calibration_queries::{
+    CalibrationQueries, CalibrationBucket, CalibrationProfileRow, PatternDetail, TakeSummary,
+    TakesScorecard,
 };
 pub use llm::{LlmClient, LlmRequest, LlmResponse, LlmError, MockLlmClient, TokenUsage};
 #[cfg(feature = "openai")]

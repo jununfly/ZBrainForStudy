@@ -230,9 +230,11 @@ mod tests {
         let index_path = spa_dir.path().join("index.html");
         std::fs::write(&index_path, b"<html></html>").unwrap();
 
+        let engine = std::sync::Arc::new(zbrain_core::InMemoryEngine::default());
         let state = super::super::AppState {
             admin_auth: auth.clone(),
-            admin_queries: std::sync::Arc::new(zbrain_core::InMemoryEngine::default()) as std::sync::Arc<dyn zbrain_core::AdminQueries>,
+            admin_queries: engine.clone() as std::sync::Arc<dyn zbrain_core::AdminQueries>,
+            calibration_queries: engine as std::sync::Arc<dyn zbrain_core::CalibrationQueries>,
             spa_dir: spa_dir.path().to_path_buf(),
         };
 
