@@ -7,6 +7,7 @@
 //! DB-backed engines (postgres / libsql) land in later slices per
 //! `docs/plans/20260526/04-plan.md`.
 
+pub mod admin_queries;
 pub mod engine;
 pub mod error;
 pub mod libsql;
@@ -24,6 +25,9 @@ pub use types::{
     RefreshPageBodyArgs, UpsertFileResult, ALL_PAGE_TYPES,
 };
 pub use engine::{BrainEngine, InMemoryEngine, Page, PageInput, PageFilters, SearchOpts, SearchResult, GetPageOpts, ResolveSlugsOpts};
+pub use admin_queries::{
+    AdminQueries, AgentInfo, ApiKey, FullStats, HealthIndicators, Paginated, RequestLogEntry, RequestLogFilters, Stats,
+};
 pub use llm::{LlmClient, LlmRequest, LlmResponse, LlmError, MockLlmClient, TokenUsage};
 #[cfg(feature = "openai")]
 pub use llm::OpenAiClient;

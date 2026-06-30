@@ -861,7 +861,7 @@
       "mode": "exploit",
       "parent": "1-6",
       "children": [],
-      "notes": "Issues #66-#69 resolved. zbrain-web crate with health endpoint, admin auth (bootstrap token + cookie sessions), admin SPA static file serving. zbrain-cli integrated via Commands::ServeHttp (zbrain serve --http). Server config in zbrain.yml (server.port, server.bind) with CLI flag overrides.",
+      "notes": "After HTTP MCP replaces serve-http.ts, ALSO delete: src/mcp/dispatch.ts, src/mcp/tool-defs.ts (retained in 1-5-3, per issue #63).",
       "decisions": [
         {
           "q": "1-6-1 vs 1-6-2 边界：按什么拆分？",
@@ -908,18 +908,56 @@
           "answer": "4 个 tracer-bullet issues #66-#69",
           "note": "#66: zbrain-web crate + health; #67: admin auth; #68: admin SPA; #69: server config + CLI integration"
         }
-      ],
-      "notes": "After HTTP MCP replaces serve-http.ts, ALSO delete: src/mcp/dispatch.ts, src/mcp/tool-defs.ts (retained in 1-5-3, per issue #63)."
+      ]
     },
     "1-6-2": {
       "id": "1-6-2",
       "label": "Port admin API business routes",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-6",
-      "children": [],
-      "decisions": [],
-      "notes": ""
+      "children": [
+        "1-6-2-1",
+        "1-6-2-2"
+      ],
+      "decisions": [
+        {
+          "q": "Q1: 1-6-2 范围边界如何划分？",
+          "answer": "四层拆分：A层(1-6-2本体) stats/health-indicators/full-stats/sign-out-everywhere/api-keys/agents/requests — 无阻塞直接port; B层(归入1-6-4) register-client/update-client-ttl/revoke-client/issue-magic-link/auth/:token/events — OAuth/MCP/SSE依赖; C层(新建1-6-2-1) calibration/* — 重型子系统; D层(新建1-6-2-2) jobs/watch+agents/spend — minion_jobs依赖",
+          "note": "18个TS端点→12个归入本节点+6个归入1-6-4+3个calibration+2个jobs/spend。layer A不需要新依赖，现有engine SQL查询能力已覆盖。"
+        },
+        {
+          "q": "Q2: 12 个端点如何组织到 Rust 模块？",
+          "answer": "方案A: 按领域分模块 — admin/stats.rs(3) + admin/api_keys.rs(3) + admin/agents.rs(1) + admin/requests.rs(1) + admin/session.rs(1)",
+          "note": "每个模块返回 Router，在 build_router() 中 .merge()。require_admin 中间件统一挂 /admin/api/* 层级。API keys 的 GET/POST/revoke 内聚在一个模块中。"
+        },
+        {
+          "q": "Q3: admin 端点数据访问层方案？",
+          "answer": "方案B: 在 zbrain-core 中新建 AdminQueries trait（6-8个查询方法），zbrain-web 依赖该 trait",
+          "note": "Admin 查询读的是 oauth_clients/access_tokens/mcp_request_log/api_keys 这些认证审计表，与 BrainEngine 的脑内容(pages/tags/files)是不同关注面。单独 trait 不膨胀 BrainEngine。方法签名如 list_agents() -> Vec<AgentInfo>, list_api_keys() -> Vec<ApiKey>, list_requests(opts) -> Paginated<RequestLog>, get_stats() -> Stats, get_full_stats() -> FullStats, check_health() -> HealthIndicators。"
+        },
+        {
+          "q": "Q4: 1-6-2 拆成几个 tracer-bullet？",
+          "answer": "方案A: 5个 tracer-bullet issue, 每个独立可测互不阻塞",
+          "note": "#1 AdminQueries trait + session.rs / #2 stats.rs(3) / #3 agents.rs(1) / #4 api_keys.rs(3) / #5 requests.rs(1)"
+        },
+        {
+          "q": "Q5: AdminQueries trait 如何注入 AppState？",
+          "answer": "方案A: AppState 加独立的 admin: Arc<dyn AdminQueries> 字段",
+          "note": "同一个 Arc<EngineImpl> cast 成 Arc<dyn BrainEngine> 和 Arc<dyn AdminQueries>，分别注入 engine 和 admin 字段。handler 按需取 app_state.admin.list_agents()。避免 nightly 的 dyn BrainEngine+AdminQueries 联合 trait object。"
+        },
+        {
+          "q": "Q6: Admin API 路径保持 /admin/api/* 还是简化？",
+          "answer": "方案A: 保持 /admin/api/*",
+          "note": "与 TS 一致，SPA 前端无需改 API base URL。避免给 1-6-3 制造额外工作量。路由前缀 /admin/api/* 与 /admin/login (auth)、/admin/{*path} (SPA) 泾渭分明。"
+        },
+        {
+          "q": "Q7: AdminQueries trait 需要几个方法？",
+          "answer": "8个方法: get_stats()/get_full_stats()/check_health_indicators()/list_agents()/list_api_keys()/create_api_key()/revoke_api_key()/list_requests()",
+          "note": "get_full_stats 由 AdminQueries 实现但内部分析 page_count/chunk_count 可委托 engine 已有逻辑。其余方法针对 oauth_clients/access_tokens/mcp_request_log 表独立实现。"
+        }
+      ],
+      "notes": "Layer A (12 endpoints) → 5 issues: #70 AdminQueries trait + session, #74 stats(3), #73 agents(1), #72 api_keys(3), #71 requests(1). 全部 enhancement + ready-for-agent。AdminQueries trait 8 方法注入 AppState.admin: Arc<dyn AdminQueries>。路由: /admin/api/*。模块: src/admin/{mod,stats,api_keys,agents,requests,session}.rs。 Core Layer A (12 endpoints, issues #70-#74) completed 2026-06-30. Sub-nodes 1-6-2-1 (calibration) and 1-6-2-2 (jobs/spend) remain pending."
     },
     "1-6-3": {
       "id": "1-6-3",
@@ -1469,12 +1507,32 @@
           "note": "删除清单：serve-http.ts, dispatch.ts, tool-defs.ts, oauth-provider.ts, scope.ts。serve-http.ts 在 1-6-4 前仍需处理 MCP HTTP。"
         }
       ],
+      "notes": "Layer B (6 endpoints from 1-6-2): POST register-client/update-client-ttl/revoke-client; POST issue-magic-link; GET auth/:token; GET events(SSE). 依赖 OAuth provider + MCP dispatch infra。本节点除 MCP HTTP dispatch 外还需实现这些 admin OAuth 管理端点。"
+    },
+    "1-6-2-1": {
+      "id": "1-6-2-1",
+      "label": "Port calibration subsystem (profiles, takes, SVG rendering)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-6-2",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-2-2": {
+      "id": "1-6-2-2",
+      "label": "Port jobs/watch and agents/spend endpoints",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-6-2",
+      "children": [],
+      "decisions": [],
       "notes": ""
     }
   },
   "metadata": {
     "created": "2026-06-23 18:09:00",
-    "updated": "2026-06-30 16:39:45",
+    "updated": "2026-06-30 17:47:04",
     "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_ROADMAP.md"
   }
 }

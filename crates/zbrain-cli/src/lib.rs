@@ -595,8 +595,20 @@ async fn run_serve_http_command(
     let admin_token = std::env::var("ZBRAIN_ADMIN_BOOTSTRAP_TOKEN").ok();
     let admin_auth = zbrain_web::AdminAuth::new(admin_token);
 
+    // Initialize engine for admin queries
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = zbrain_core::engine::EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+    let engine = std::sync::Arc::new(engine);
+
     let state = zbrain_web::AppState {
         admin_auth,
+        admin_queries: engine.clone() as std::sync::Arc<dyn zbrain_core::AdminQueries>,
         spa_dir,
     };
 
@@ -1148,6 +1160,20 @@ fn unset_config_by_pattern(config: &mut config::Config, prefix: &str) -> anyhow:
     Ok(count)
 }
 
+/// Resolve a `sqlite://path` database URL to a filesystem path,
+/// expanding `~` to the home directory.
+fn resolve_database_path(database_url: &str) -> String {
+    let path = database_url
+        .strip_prefix("sqlite://")
+        .unwrap_or(database_url);
+    if path.starts_with('~') {
+        if let Some(home) = dirs::home_dir() {
+            return format!("{}{}", home.display(), &path[1..]);
+        }
+    }
+    path.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1401,6 +1427,10 @@ mod tests {
         let spa_dir = tmp.path().to_path_buf();
         std::fs::write(spa_dir.join("index.html"), "<!DOCTYPE html><html><body>INTEGRATION_TEST_SPA</body></html>").unwrap();
 
+        // Use a temp database so the engine can connect
+        let db_path = tmp.path().join("test.db");
+        std::env::set_var("ZBRAIN_DATABASE_URL", format!("sqlite://{}", db_path.display()));
+
         // Use a high port unlikely to conflict
         let test_port: u16 = 19876;
 
@@ -1413,12 +1443,11 @@ mod tests {
 
         // Spawn the server in background
         let server_handle = tokio::spawn(async move {
-            // No config file needed — defaults will be used
             let _ = run_serve_http_command(args, None).await;
         });
 
-        // Give the server a moment to bind
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        // Give the server a moment to bind and init schema
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
 
         // Test /health
         let health_url = format!("http://127.0.0.1:{test_port}/health");

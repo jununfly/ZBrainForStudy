@@ -1887,3 +1887,62 @@ mod tests {
         assert!(results[0].score > results[1].score);
     }
 }
+
+#[async_trait]
+impl crate::admin_queries::AdminQueries for InMemoryEngine {
+    async fn get_stats(&self) -> crate::error::Result<crate::admin_queries::Stats> {
+        use crate::admin_queries::Stats;
+        Ok(Stats {
+            connected_agents: 0,
+            active_tokens: 0,
+            active_api_keys: 0,
+            requests_today: 0,
+        })
+    }
+
+    async fn get_full_stats(&self) -> crate::error::Result<crate::admin_queries::FullStats> {
+        use crate::admin_queries::FullStats;
+        Ok(FullStats {
+            page_count: 0,
+            chunk_count: 0,
+            engine_ok: true,
+        })
+    }
+
+    async fn check_health_indicators(&self) -> crate::error::Result<crate::admin_queries::HealthIndicators> {
+        use crate::admin_queries::HealthIndicators;
+        Ok(HealthIndicators {
+            expiring_soon: 0,
+            error_rate: 0.0,
+        })
+    }
+
+    async fn list_agents(&self) -> crate::error::Result<Vec<crate::admin_queries::AgentInfo>> {
+        Ok(vec![])
+    }
+
+    async fn list_api_keys(&self) -> crate::error::Result<Vec<crate::admin_queries::ApiKey>> {
+        Ok(vec![])
+    }
+
+    async fn create_api_key(&self, _name: &str) -> crate::error::Result<crate::admin_queries::ApiKey> {
+        Err(crate::error::Error::engine("not implemented"))
+    }
+
+    async fn revoke_api_key(&self, _name: &str) -> crate::error::Result<()> {
+        Err(crate::error::Error::engine("not implemented"))
+    }
+
+    async fn list_requests(
+        &self,
+        _filters: &crate::admin_queries::RequestLogFilters,
+    ) -> crate::error::Result<crate::admin_queries::Paginated<crate::admin_queries::RequestLogEntry>> {
+        use crate::admin_queries::{Paginated, RequestLogEntry};
+        Ok(Paginated {
+            items: vec![],
+            total: 0,
+            page: 1,
+            limit: 50,
+        })
+    }
+}

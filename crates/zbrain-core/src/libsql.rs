@@ -19,6 +19,10 @@ use std::sync::{LazyLock, OnceLock};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
+use crate::admin_queries::{
+    AdminQueries, AgentInfo, ApiKey, FullStats, HealthIndicators, Paginated, RequestLogEntry,
+    RequestLogFilters, Stats,
+};
 use crate::engine::{
     page_sort_sql, BrainEngine, EngineConfig, EngineKind, GetPageOpts, Page, PageFilters,
     PageInput, PageSort, ResolveSlugsOpts,
@@ -208,6 +212,7 @@ static SCHEMA_INIT_LOCK: LazyLock<tokio::sync::Mutex<()>> =
 /// TODO：单例中单线程，借助线程的消息循环序列化所有对数据库的读写操作，避免竞态问题。
 pub struct LibsqlEngine {
     db: OnceLock<::libsql::Database>,
+    db_path: OnceLock<String>,
 }
 
 impl LibsqlEngine {
@@ -216,6 +221,7 @@ impl LibsqlEngine {
     pub fn new() -> Self {
         Self {
             db: OnceLock::new(),
+            db_path: OnceLock::new(),
         }
     }
 
@@ -245,9 +251,30 @@ impl LibsqlEngine {
         Ok(conn)
     }
 
-    /// Read current migration version from `rust_schema_version` table.
-    /// Always returns 0 for fresh databases (guaranteed by bootstrap migration).
-    async fn read_rust_schema_version(conn: &::libsql::Connection) -> Result<i64> {
+    /// Read current migration version from a FRESH connection to the database
+    /// file. This bypasses the cached `Database` handle and its connection pool
+    /// to avoid libsql local-mode WAL visibility edge cases where new
+    /// connections via `Database::connect()` may not see committed WAL entries
+    /// from a previous `init_schema()` call on the same `Database`.
+    async fn read_rust_schema_version_fresh(&self) -> Result<i64> {
+        let path = self
+            .db_path
+            .get()
+            .ok_or_else(|| Error::engine("LibsqlEngine is not connected"))?;
+        let db = ::libsql::Builder::new_local(path)
+            .build()
+            .await
+            .map_err(|e| Error::engine(format!("fresh version read open failed: {e}")))?;
+        let conn = db
+            .connect()
+            .map_err(|e| Error::engine(format!("fresh version read connect failed: {e}")))?;
+        Self::read_rust_schema_version_from_conn(&conn).await
+    }
+
+    /// Read current migration version from `rust_schema_version` table via
+    /// a specific connection. Always returns 0 for fresh databases
+    /// (guaranteed by bootstrap migration).
+    async fn read_rust_schema_version_from_conn(conn: &::libsql::Connection) -> Result<i64> {
         let mut rows = conn
             .query("SELECT version FROM rust_schema_version LIMIT 1", ())
             .await
@@ -358,6 +385,9 @@ impl BrainEngine for LibsqlEngine {
             .await
             .map_err(|e| Error::engine(format!("libsql open failed: {e}")))?;
 
+        self.db_path
+            .set(path.to_string())
+            .map_err(|_| Error::engine("LibsqlEngine is already connected"))?;
         self.db
             .set(db)
             .map_err(|_| Error::engine("LibsqlEngine is already connected"))?;
@@ -383,25 +413,42 @@ impl BrainEngine for LibsqlEngine {
         // `self.conn().await?` as well.
         let _guard = SCHEMA_INIT_LOCK.lock().await;
 
-        let conn = self.conn().await?;
+        // Step 1: Try reading the version table using a completely fresh
+        // connection. If the table exists, we get the version directly.
+        // If it doesn't exist (or we can't read it), we fall through to
+        // bootstrap + migrate.
+        //
+        // Using a fresh Builder::new_local() connection avoids the libsql
+        // local-mode WAL visibility problem where connections from a cached
+        // Database::connect() may not see WAL entries committed by a
+        // previous init_schema() call on the same Database instance.
+        let current = self.read_rust_schema_version_fresh().await.map_or_else(
+            |_| Err(()),
+            Ok,
+        );
 
-        // Step 1: Bootstrap the version tracking table. Hard cutover from
-        // TS-era PRAGMA user_version per 1-2-3 Q4 decision.
+        let latest = LIBQL_MIGRATIONS.latest_version();
+        let current: i64 = match current {
+            Ok(v) if v >= latest => return Ok(()),
+            Ok(v) => v,
+            Err(()) => 0, // fresh DB — no version table exists yet
+        };
+
+        // Step 2: Bootstrap the version tracking table and get a connection
+        // for migration work.
+        let conn = self.conn().await?;
         conn.execute_batch(RUST_SCHEMA_VERSION_BOOTSTRAP)
             .await
             .map_err(|e| Error::engine(format!("rust_schema_version bootstrap failed: {e}")))?;
 
-        // Step 2: Read current version from the table
-        let current = Self::read_rust_schema_version(&conn).await?;
-        let latest = LIBQL_MIGRATIONS.latest_version();
-        if current >= latest {
-            return Ok(());
-        }
-
         // Step 3: Apply all migrations in a single transaction (Q2 = C).
         // All-or-nothing atomicity: either all migrations apply successfully
         // or nothing changes. Version number is set once at the end.
-        conn.execute_batch("BEGIN TRANSACTION")
+        // Use conn.execute() (not execute_batch) for transaction control
+        // to ensure BEGIN/COMMIT are issued on the same connection handle
+        // that executes the migration DDL, avoiding libsql connection-pool
+        // edge cases where execute_batch grabs a different handle.
+        conn.execute("BEGIN TRANSACTION", ())
             .await
             .map_err(|e| Error::engine(format!("migration batch BEGIN failed: {e}")))?;
 
@@ -416,7 +463,7 @@ impl BrainEngine for LibsqlEngine {
             match conn.execute_batch(migration.sql()).await {
                 Ok(_) => {}
                 Err(e) => {
-                    let _ = conn.execute_batch("ROLLBACK").await;
+                    let _ = conn.execute("ROLLBACK", ()).await;
                     return Err(Error::engine(format!("migration {ver} failed: {e}")));
                 }
             }
@@ -428,7 +475,7 @@ impl BrainEngine for LibsqlEngine {
             Self::set_rust_schema_version(&conn, latest).await?;
         }
 
-        conn.execute_batch("COMMIT")
+        conn.execute("COMMIT", ())
             .await
             .map_err(|e| Error::engine(format!("migration batch COMMIT failed: {e}")))?;
 
@@ -1946,6 +1993,433 @@ impl BrainEngine for LibsqlEngine {
         }
         Ok(out)
     }
+}
+
+// ─── AdminQueries impl ────────────────────────────────────────────────────
+
+/// Current Unix timestamp (seconds).
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+#[async_trait]
+impl AdminQueries for LibsqlEngine {
+    async fn get_stats(&self) -> Result<Stats> {
+        let conn = self.conn().await?;
+        let today = current_utc_iso8601().chars().take(10).collect::<String>();
+
+        // connected_agents: active oauth clients with registered tokens
+        let connected_agents: i64 = conn
+            .query(
+                "SELECT COUNT(DISTINCT c.client_id) FROM oauth_clients c
+                 JOIN oauth_tokens t ON t.client_id = c.client_id
+                 WHERE c.deleted_at IS NULL AND t.expires_at > ?1",
+                ::libsql::params![now_unix() as i64],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("get_stats connected_agents: {e}")))?
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("get_stats connected_agents row: {e}")))?
+            .map(|r| r.get::<i64>(0))
+            .transpose()
+            .map_err(|e| Error::engine(format!("get_stats connected_agents decode: {e}")))?
+            .unwrap_or(0);
+
+        // active_tokens: active oauth tokens
+        let active_tokens: i64 = conn
+            .query(
+                "SELECT COUNT(*) FROM oauth_tokens WHERE expires_at > ?1",
+                ::libsql::params![now_unix() as i64],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("get_stats active_tokens: {e}")))?
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("get_stats active_tokens row: {e}")))?
+            .map(|r| r.get::<i64>(0))
+            .transpose()
+            .map_err(|e| Error::engine(format!("get_stats active_tokens decode: {e}")))?
+            .unwrap_or(0);
+
+        // active_api_keys: non-revoked access_tokens
+        let active_api_keys: i64 = conn
+            .query(
+                "SELECT COUNT(*) FROM access_tokens WHERE revoked_at IS NULL",
+                (),
+            )
+            .await
+            .map_err(|e| Error::engine(format!("get_stats active_api_keys: {e}")))?
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("get_stats active_api_keys row: {e}")))?
+            .map(|r| r.get::<i64>(0))
+            .transpose()
+            .map_err(|e| Error::engine(format!("get_stats active_api_keys decode: {e}")))?
+            .unwrap_or(0);
+
+        // requests_today: count of mcp_request_log today
+        let requests_today: i64 = conn
+            .query(
+                "SELECT COUNT(*) FROM mcp_request_log WHERE created_at >= ?1",
+                ::libsql::params![format!("{today}T00:00:00")],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("get_stats requests_today: {e}")))?
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("get_stats requests_today row: {e}")))?
+            .map(|r| r.get::<i64>(0))
+            .transpose()
+            .map_err(|e| Error::engine(format!("get_stats requests_today decode: {e}")))?
+            .unwrap_or(0);
+
+        Ok(Stats {
+            connected_agents,
+            active_tokens,
+            active_api_keys,
+            requests_today,
+        })
+    }
+
+    async fn get_full_stats(&self) -> Result<FullStats> {
+        let conn = self.conn().await?;
+
+        let page_count: i64 = conn
+            .query(
+                "SELECT COUNT(*) FROM pages WHERE deleted_at IS NULL",
+                (),
+            )
+            .await
+            .map_err(|e| Error::engine(format!("get_full_stats page_count: {e}")))?
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("get_full_stats page_count row: {e}")))?
+            .map(|r| r.get::<i64>(0))
+            .transpose()
+            .map_err(|e| Error::engine(format!("get_full_stats page_count decode: {e}")))?
+            .unwrap_or(0);
+
+        // chunk_count: rough estimate — pages with non-trivial compiled_truth
+        let chunk_count: i64 = conn
+            .query(
+                "SELECT COUNT(*) FROM pages WHERE compiled_truth IS NOT NULL AND compiled_truth != '' AND deleted_at IS NULL",
+                (),
+            )
+            .await
+            .map_err(|e| Error::engine(format!("get_full_stats chunk_count: {e}")))?
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("get_full_stats chunk_count row: {e}")))?
+            .map(|r| r.get::<i64>(0))
+            .transpose()
+            .map_err(|e| Error::engine(format!("get_full_stats chunk_count decode: {e}")))?
+            .unwrap_or(0);
+
+        Ok(FullStats {
+            page_count,
+            chunk_count,
+            engine_ok: true,
+        })
+    }
+
+    async fn check_health_indicators(&self) -> Result<HealthIndicators> {
+        let conn = self.conn().await?;
+        let now = now_unix() as i64;
+        // Warnings start 72h before expiry
+        let warning_cutoff = now + 72 * 3600;
+
+        let expiring_soon: i64 = conn
+            .query(
+                "SELECT COUNT(*) FROM oauth_tokens WHERE expires_at > ?1 AND expires_at < ?2",
+                ::libsql::params![now, warning_cutoff],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("health_indicators expiring: {e}")))?
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("health_indicators expiring row: {e}")))?
+            .map(|r| r.get::<i64>(0))
+            .transpose()
+            .map_err(|e| Error::engine(format!("health_indicators expiring decode: {e}")))?
+            .unwrap_or(0);
+
+        // error_rate: ratio of error requests in past 24h
+        let total_24h: i64 = conn
+            .query(
+                "SELECT COUNT(*) FROM mcp_request_log WHERE created_at >= datetime('now', '-1 day')",
+                (),
+            )
+            .await
+            .map_err(|e| Error::engine(format!("health_indicators total: {e}")))?
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("health_indicators total row: {e}")))?
+            .map(|r| r.get::<i64>(0))
+            .transpose()
+            .map_err(|e| Error::engine(format!("health_indicators total decode: {e}")))?
+            .unwrap_or(0);
+
+        let error_count: i64 = if total_24h > 0 {
+            conn.query(
+                "SELECT COUNT(*) FROM mcp_request_log WHERE created_at >= datetime('now', '-1 day') AND status = 'error'",
+                (),
+            )
+            .await
+            .map_err(|e| Error::engine(format!("health_indicators errors: {e}")))?
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("health_indicators errors row: {e}")))?
+            .map(|r| r.get::<i64>(0))
+            .transpose()
+            .map_err(|e| Error::engine(format!("health_indicators errors decode: {e}")))?
+            .unwrap_or(0)
+        } else {
+            0
+        };
+
+        #[allow(clippy::cast_precision_loss)]
+        let error_rate = if total_24h > 0 {
+            error_count as f64 / total_24h as f64
+        } else {
+            0.0
+        };
+
+        Ok(HealthIndicators {
+            expiring_soon,
+            error_rate,
+        })
+    }
+
+    async fn list_agents(&self) -> Result<Vec<AgentInfo>> {
+        let conn = self.conn().await?;
+
+        // Union: OAuth clients with active tokens + legacy API keys
+        let mut rows = conn
+            .query(
+                "SELECT c.client_id, c.client_name, 'oauth' as auth_type,
+                        MAX(t.created_at) as last_used_at,
+                        NULL as method
+                 FROM oauth_clients c
+                 LEFT JOIN oauth_tokens t ON t.client_id = c.client_id
+                 WHERE c.deleted_at IS NULL
+                 GROUP BY c.client_id, c.client_name
+                 UNION ALL
+                 SELECT a.id::text, a.name, 'api_key' as auth_type,
+                        a.last_used_at,
+                        NULL as method
+                 FROM access_tokens a
+                 WHERE a.revoked_at IS NULL
+                 ORDER BY auth_type, client_name",
+                (),
+            )
+            .await
+            .map_err(|e| Error::engine(format!("list_agents: {e}")))?;
+
+        let mut agents = Vec::new();
+        loop {
+            let next = rows.next().await
+                .map_err(|e| Error::engine(format!("list_agents row: {e}")))?;
+            match next {
+                Some(row) => {
+                    agents.push(AgentInfo {
+                        id: row.get::<String>(0)
+                            .map_err(|e| Error::engine(format!("list_agents id: {e}")))?,
+                        name: row.get::<String>(1)
+                            .map_err(|e| Error::engine(format!("list_agents name: {e}")))?,
+                        auth_type: row.get::<String>(2)
+                            .map_err(|e| Error::engine(format!("list_agents auth_type: {e}")))?,
+                        last_used_at: row.get::<Option<String>>(3)
+                            .map_err(|e| Error::engine(format!("list_agents last_used_at: {e}")))?,
+                        method: row.get::<Option<String>>(4)
+                            .map_err(|e| Error::engine(format!("list_agents method: {e}")))?,
+                    });
+                }
+                None => break,
+            }
+        }
+        Ok(agents)
+    }
+
+    async fn list_api_keys(&self) -> Result<Vec<ApiKey>> {
+        let conn = self.conn().await?;
+        let mut rows = conn
+            .query(
+                "SELECT id::text, name, created_at, last_used_at, revoked_at
+                 FROM access_tokens
+                 WHERE revoked_at IS NULL
+                 ORDER BY created_at DESC",
+                (),
+            )
+            .await
+            .map_err(|e| Error::engine(format!("list_api_keys: {e}")))?;
+
+        let mut keys = Vec::new();
+        loop {
+            let next = rows.next().await
+                .map_err(|e| Error::engine(format!("list_api_keys row: {e}")))?;
+            match next {
+                Some(row) => {
+                    keys.push(ApiKey {
+                        id: row.get::<String>(0)
+                            .map_err(|e| Error::engine(format!("list_api_keys id: {e}")))?,
+                        name: row.get::<String>(1)
+                            .map_err(|e| Error::engine(format!("list_api_keys name: {e}")))?,
+                        created_at: row.get::<String>(2)
+                            .map_err(|e| Error::engine(format!("list_api_keys created_at: {e}")))?,
+                        last_used_at: row.get::<Option<String>>(3)
+                            .map_err(|e| Error::engine(format!("list_api_keys last_used_at: {e}")))?,
+                        revoked_at: row.get::<Option<String>>(4)
+                            .map_err(|e| Error::engine(format!("list_api_keys revoked_at: {e}")))?,
+                    });
+                }
+                None => break,
+            }
+        }
+        Ok(keys)
+    }
+
+    async fn create_api_key(&self, name: &str) -> Result<ApiKey> {
+        let conn = self.conn().await?;
+        let now = current_utc_iso8601();
+        // Generate a UUID-like id via SQLite's randomblob + hex
+        let mut rows = conn
+            .query("SELECT hex(randomblob(16))", ())
+            .await
+            .map_err(|e| Error::engine(format!("create_api_key random id: {e}")))?;
+        let id: String = rows.next().await
+            .map_err(|e| Error::engine(format!("create_api_key random id row: {e}")))?
+            .and_then(|r| r.get::<String>(0).ok())
+            .unwrap_or_else(|| format!("{:x}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()));
+
+        conn.execute(
+            "INSERT INTO access_tokens (id, name, token_hash, created_at) VALUES (?1, ?2, ?3, ?4)",
+            ::libsql::params![id.clone(), name, "pending", now.clone()],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("create_api_key insert: {e}")))?;
+
+        Ok(ApiKey {
+            id,
+            name: name.to_string(),
+            created_at: now,
+            last_used_at: None,
+            revoked_at: None,
+        })
+    }
+
+    async fn revoke_api_key(&self, name: &str) -> Result<()> {
+        let conn = self.conn().await?;
+        let now = current_utc_iso8601();
+        conn.execute(
+            "UPDATE access_tokens SET revoked_at = ?1 WHERE name = ?2 AND revoked_at IS NULL",
+            ::libsql::params![now, name],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("revoke_api_key update: {e}")))?;
+        Ok(())
+    }
+
+    async fn list_requests(&self, filters: &RequestLogFilters) -> Result<Paginated<RequestLogEntry>> {
+        let conn = self.conn().await?;
+
+        // Count total with filters
+        let (where_clause, params) = build_request_filters_sql(filters);
+        let count_sql = format!("SELECT COUNT(*) FROM mcp_request_log {where_clause}");
+        let total: u64 = conn
+            .query(&count_sql, params.clone())
+            .await
+            .map_err(|e| Error::engine(format!("list_requests count: {e}")))?
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("list_requests count row: {e}")))?
+            .map(|r| {
+                let raw: i64 = r.get(0).unwrap_or(0);
+                raw as u64
+            })
+            .unwrap_or(0);
+
+        // Fetch page
+        let offset = filters.offset();
+        let limit_plus_one = filters.limit() as i64 + 1;
+        let data_sql = format!(
+            "SELECT id, token_name, agent_name, operation, latency_ms, status, error_message, created_at
+             FROM mcp_request_log {where_clause}
+             ORDER BY created_at DESC
+             LIMIT {limit_plus_one} OFFSET {offset}"
+        );
+
+        let mut rows = conn
+            .query(&data_sql, params)
+            .await
+            .map_err(|e| Error::engine(format!("list_requests query: {e}")))?;
+
+        let mut items = Vec::new();
+        loop {
+            let next = rows.next().await
+                .map_err(|e| Error::engine(format!("list_requests row: {e}")))?;
+            match next {
+                Some(row) => {
+                    items.push(RequestLogEntry {
+                        id: row.get::<i64>(0)
+                            .map_err(|e| Error::engine(format!("list_requests id: {e}")))?,
+                        token_name: row.get::<Option<String>>(1)
+                            .map_err(|e| Error::engine(format!("list_requests token_name: {e}")))?,
+                        agent_name: row.get::<Option<String>>(2)
+                            .map_err(|e| Error::engine(format!("list_requests agent_name: {e}")))?,
+                        operation: row.get::<String>(3)
+                            .map_err(|e| Error::engine(format!("list_requests operation: {e}")))?,
+                        latency_ms: row.get::<Option<i64>>(4)
+                            .map_err(|e| Error::engine(format!("list_requests latency_ms: {e}")))?,
+                        status: row.get::<String>(5)
+                            .map_err(|e| Error::engine(format!("list_requests status: {e}")))?,
+                        error_message: row.get::<Option<String>>(6)
+                            .map_err(|e| Error::engine(format!("list_requests error_message: {e}")))?,
+                        created_at: row.get::<String>(7)
+                            .map_err(|e| Error::engine(format!("list_requests created_at: {e}")))?,
+                    });
+                }
+                None => break,
+            }
+        }
+
+        Ok(Paginated {
+            items,
+            total,
+            page: filters.page(),
+            limit: filters.limit(),
+        })
+    }
+}
+
+/// Build WHERE clause and params for request log filters.
+fn build_request_filters_sql(filters: &RequestLogFilters) -> (String, Vec<::libsql::Value>) {
+    let mut clauses = Vec::new();
+    let mut params: Vec<::libsql::Value> = Vec::new();
+
+    if let Some(ref source) = filters.source {
+        clauses.push(format!("token_name = ?{}", params.len() + 1));
+        params.push(source.clone().into());
+    }
+    if let Some(ref method) = filters.method {
+        clauses.push(format!("operation = ?{}", params.len() + 1));
+        params.push(method.clone().into());
+    }
+    if let Some(ref status) = filters.status {
+        clauses.push(format!("status = ?{}", params.len() + 1));
+        params.push(status.clone().into());
+    }
+
+    let where_clause = if clauses.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", clauses.join(" AND "))
+    };
+
+    (where_clause, params)
 }
 
 async fn collect_slug_rows(rows: &mut ::libsql::Rows) -> Result<Vec<String>> {

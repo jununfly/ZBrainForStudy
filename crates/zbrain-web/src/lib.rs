@@ -1,9 +1,11 @@
 //! `zbrain-web` — axum-based HTTP API for zbrain.
 
+mod admin;
 mod auth;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use axum::{
     extract::Path,
@@ -21,6 +23,8 @@ pub use auth::AdminAuth;
 pub struct AppState {
     /// Admin authentication and session management.
     pub admin_auth: AdminAuth,
+    /// Admin dashboard data-access layer.
+    pub admin_queries: Arc<dyn zbrain_core::AdminQueries>,
     /// Path to the admin SPA static files directory.
     pub spa_dir: PathBuf,
 }
@@ -131,7 +135,8 @@ pub fn build_router(state: AppState) -> Router {
         })
         .with_state(state.clone());
 
-    main.merge(auth::admin_auth_routes(state))
+    main.merge(auth::admin_auth_routes(state.clone()))
+        .merge(admin::build_admin_router(state))
 }
 
 /// Start the HTTP server and block until shutdown signal.
@@ -182,8 +187,10 @@ mod tests {
     fn test_state() -> (tempfile::TempDir, AppState) {
         let auth = AdminAuth::new(None);
         let (dir, spa_dir) = make_spa_dir();
+        let engine = std::sync::Arc::new(zbrain_core::InMemoryEngine::default());
         let state = AppState {
             admin_auth: auth,
+            admin_queries: engine as std::sync::Arc<dyn zbrain_core::AdminQueries>,
             spa_dir,
         };
         (dir, state)

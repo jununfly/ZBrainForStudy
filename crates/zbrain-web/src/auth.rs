@@ -96,10 +96,12 @@ impl AdminAuth {
         session.expires_at > now_unix()
     }
 
-    /// Invalidate all sessions.
-    #[allow(dead_code)]
-    async fn invalidate_all(&self) {
-        self.sessions.write().await.clear();
+    /// Invalidate all sessions and return the count that were cleared.
+    pub(crate) async fn clear_all_sessions(&self) -> usize {
+        let mut sessions = self.sessions.write().await;
+        let count = sessions.len();
+        sessions.clear();
+        count
     }
 }
 
@@ -142,7 +144,7 @@ async fn login_handler(
 }
 
 /// Middleware: require a valid `zbrain_admin` session cookie.
-async fn require_admin(
+pub(crate) async fn require_admin(
     State(state): State<super::AppState>,
     headers: HeaderMap,
     request: axum::extract::Request,
@@ -230,6 +232,7 @@ mod tests {
 
         let state = super::super::AppState {
             admin_auth: auth.clone(),
+            admin_queries: std::sync::Arc::new(zbrain_core::InMemoryEngine::default()) as std::sync::Arc<dyn zbrain_core::AdminQueries>,
             spa_dir: spa_dir.path().to_path_buf(),
         };
 
