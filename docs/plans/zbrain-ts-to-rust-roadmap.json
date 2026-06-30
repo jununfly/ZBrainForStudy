@@ -777,7 +777,7 @@
     "1-5-2": {
       "id": "1-5-2",
       "label": "Implement Rust MCP server completion: engine wiring, rate limiting, and audit hooks",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-5",
       "children": [],

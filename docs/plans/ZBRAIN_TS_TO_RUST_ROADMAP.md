@@ -47,7 +47,7 @@
 │       [x][Y+] 1-4-3. Move shared CLI MCP dispatch to Rust operations
 │   [~][Y+] 1-5. MCP server migration
 │   │   [x][Y+] 1-5-1. Implement Rust MCP tool definitions and parameter validation (3 known gaps → 1-5-2)
-│   │   [ ][Y+] 1-5-2. Implement Rust MCP transports rate limiting and audit hooks
+│   │   [x][Y+] 1-5-2. Implement Rust MCP transports rate limiting and audit hooks
 │       [ ][Y+] 1-5-3. Delete TypeScript MCP implementation after parity
 │   [ ][Y+] 1-6. Web backend and admin API migration
 │   │   [ ][Y+] 1-6-1. Implement Axum admin backend API
