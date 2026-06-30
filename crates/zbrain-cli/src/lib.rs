@@ -128,6 +128,10 @@ pub enum Commands {
 
     /// Start the MCP stdio server (Model Context Protocol)
     ServeMcp(ServeMcpArgs),
+
+    /// Start the HTTP API and admin SPA server
+    #[command(name = "serve")]
+    ServeHttp(ServeHttpArgs),
 }
 
 /// Arguments for `zbrain get-page` command.
@@ -318,6 +322,26 @@ pub struct ServeMcpArgs {
     pub source: Option<String>,
 }
 
+/// Arguments for `zbrain serve --http` command.
+#[derive(Debug, Parser)]
+pub struct ServeHttpArgs {
+    /// Enable HTTP server mode
+    #[arg(long)]
+    pub http: bool,
+
+    /// Port to listen on (default: 3000, or zbrain.yml server.port)
+    #[arg(long)]
+    pub port: Option<u16>,
+
+    /// Address to bind to (default: 127.0.0.1, or zbrain.yml server.bind)
+    #[arg(long)]
+    pub bind: Option<String>,
+
+    /// Path to admin SPA static files directory
+    #[arg(long)]
+    pub spa_dir: Option<PathBuf>,
+}
+
 /// Execute the parsed CLI command.
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
@@ -334,6 +358,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::PurgeDeletedPages(args) => run_purge_deleted_pages_command(args, cli.config.as_deref()).await?,
         Commands::ListPages(args) => run_list_pages_command(args, cli.config.as_deref()).await?,
         Commands::ServeMcp(args) => run_serve_mcp_command(args, cli.config.as_deref()).await?,
+        Commands::ServeHttp(args) => run_serve_http_command(args, cli.config.as_deref()).await?,
     }
     Ok(())
 }
@@ -533,6 +558,50 @@ async fn run_serve_mcp_command(args: ServeMcpArgs, _config_path: Option<&Path>) 
 
     eprintln!("[zbrain-mcp] shutdown: stdin closed");
     Ok(())
+}
+
+/// Start the HTTP API and admin SPA server.
+///
+/// Loads server configuration from zbrain.yml (with CLI flag overrides),
+/// builds the axum router, and starts listening on the configured address.
+async fn run_serve_http_command(
+    args: ServeHttpArgs,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    let config = config::load_config(config_path)?;
+
+    let port = args.port.unwrap_or(config.server.port);
+    let bind_addr = args.bind.unwrap_or(config.server.bind);
+
+    let addr: std::net::SocketAddr = format!("{bind_addr}:{port}")
+        .parse()
+        .context("Invalid bind address")?;
+
+    // Determine admin SPA directory
+    let spa_dir = if let Some(ref dir) = args.spa_dir {
+        dir.clone()
+    } else {
+        // Default: look for admin/dist/ relative to CWD
+        let cwd_spa = std::env::current_dir()?.join("admin").join("dist");
+        if cwd_spa.exists() {
+            cwd_spa
+        } else {
+            // Fallback: use a temp dir (SPA won't be served, but server starts)
+            std::env::temp_dir().join("zbrain-admin-empty")
+        }
+    };
+
+    // Initialize admin auth with optional env token
+    let admin_token = std::env::var("ZBRAIN_ADMIN_BOOTSTRAP_TOKEN").ok();
+    let admin_auth = zbrain_web::AdminAuth::new(admin_token);
+
+    let state = zbrain_web::AppState {
+        admin_auth,
+        spa_dir,
+    };
+
+    eprintln!("[zbrain-web] starting HTTP server on {addr}");
+    zbrain_web::run(addr, state).await
 }
 
 /// Execute an operation by name with JSON params.
@@ -1270,5 +1339,104 @@ mod tests {
             .map(|op| op.local_only())
             .unwrap_or(false);
         assert!(!is_local, "unknown operation should default to not-local_only");
+    }
+
+    // --- ServeHttp arg tests (#69) ---
+
+    #[test]
+    fn serve_http_parses_with_no_flags() {
+        let cli = Cli::try_parse_from(["zbrain", "serve", "--http"]).unwrap();
+        match cli.command {
+            Commands::ServeHttp(args) => {
+                assert!(args.port.is_none());
+                assert!(args.bind.is_none());
+                assert!(args.spa_dir.is_none());
+            }
+            _ => panic!("expected ServeHttp"),
+        }
+    }
+
+    #[test]
+    fn serve_http_parses_with_port_flag() {
+        let cli = Cli::try_parse_from(["zbrain", "serve", "--http", "--port", "4000"]).unwrap();
+        match cli.command {
+            Commands::ServeHttp(args) => {
+                assert_eq!(args.port, Some(4000));
+            }
+            _ => panic!("expected ServeHttp"),
+        }
+    }
+
+    #[test]
+    fn serve_http_parses_with_bind_flag() {
+        let cli = Cli::try_parse_from(["zbrain", "serve", "--http", "--bind", "0.0.0.0"]).unwrap();
+        match cli.command {
+            Commands::ServeHttp(args) => {
+                assert_eq!(args.bind.as_deref(), Some("0.0.0.0"));
+            }
+            _ => panic!("expected ServeHttp"),
+        }
+    }
+
+    #[test]
+    fn serve_http_parses_all_flags_together() {
+        let cli = Cli::try_parse_from([
+            "zbrain", "serve", "--http", "--port", "8080", "--bind", "::1",
+            "--spa-dir", "/tmp/admin-dist",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::ServeHttp(args) => {
+                assert_eq!(args.port, Some(8080));
+                assert_eq!(args.bind.as_deref(), Some("::1"));
+                assert_eq!(args.spa_dir.as_deref(), Some(std::path::Path::new("/tmp/admin-dist")));
+            }
+            _ => panic!("expected ServeHttp"),
+        }
+    }
+
+    #[tokio::test]
+    async fn serve_http_integration_health_and_spa() {
+        let tmp = tempfile::tempdir().unwrap();
+        let spa_dir = tmp.path().to_path_buf();
+        std::fs::write(spa_dir.join("index.html"), "<!DOCTYPE html><html><body>INTEGRATION_TEST_SPA</body></html>").unwrap();
+
+        // Use a high port unlikely to conflict
+        let test_port: u16 = 19876;
+
+        let args = ServeHttpArgs {
+            http: true,
+            port: Some(test_port),
+            bind: Some("127.0.0.1".to_string()),
+            spa_dir: Some(spa_dir),
+        };
+
+        // Spawn the server in background
+        let server_handle = tokio::spawn(async move {
+            // No config file needed — defaults will be used
+            let _ = run_serve_http_command(args, None).await;
+        });
+
+        // Give the server a moment to bind
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        // Test /health
+        let health_url = format!("http://127.0.0.1:{test_port}/health");
+        let resp = reqwest::get(&health_url).await;
+        assert!(resp.is_ok(), "health endpoint should be reachable");
+        let resp = resp.unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["status"], "ok");
+
+        // Test /admin/ SPA
+        let admin_url = format!("http://127.0.0.1:{test_port}/admin/");
+        let resp = reqwest::get(&admin_url).await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = resp.text().await.unwrap();
+        assert!(body.contains("INTEGRATION_TEST_SPA"), "SPA content not found: {body}");
+
+        // Abort server task (don't wait for graceful shutdown)
+        server_handle.abort();
     }
 }

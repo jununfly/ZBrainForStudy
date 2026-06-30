@@ -50,6 +50,10 @@ pub struct Config {
     #[serde(default)]
     pub remote_mcp: Option<RemoteMcpConfig>,
 
+    /// HTTP server configuration (used when running `zbrain serve --http`).
+    #[serde(default)]
+    pub server: ServerConfig,
+
     /// MCP server configuration (only used when running `zbrain serve-mcp`).
     #[serde(default)]
     pub mcp: McpConfig,
@@ -66,6 +70,27 @@ pub struct McpConfig {
     /// `None` disables rate limiting entirely.
     #[serde(default)]
     pub rate_limit: Option<u64>,
+}
+
+/// HTTP server configuration (used by `zbrain serve --http`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ServerConfig {
+    /// Listen port (default: 3000).
+    #[serde(default = "default_server_port")]
+    pub port: u16,
+
+    /// Bind address (default: 127.0.0.1).
+    #[serde(default = "default_server_bind")]
+    pub bind: String,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            port: default_server_port(),
+            bind: default_server_bind(),
+        }
+    }
 }
 
 /// Remote MCP configuration for thin-client mode.
@@ -218,6 +243,14 @@ fn default_log_file() -> Option<String> {
     Some("~/.zbrain/zbrain.log".to_string())
 }
 
+fn default_server_port() -> u16 {
+    3000
+}
+
+fn default_server_bind() -> String {
+    "127.0.0.1".to_string()
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -228,6 +261,7 @@ impl Default for Config {
             agents: AgentsConfig::default(),
             logging: LoggingConfig::default(),
             remote_mcp: None,
+            server: ServerConfig::default(),
             mcp: McpConfig::default(),
             extra: BTreeMap::new(),
         }
@@ -515,5 +549,37 @@ mod tests {
         assert_eq!(config.search.top_k, 10);
         assert_eq!(config.agents.max_concurrent, 4);
         assert_eq!(config.logging.level, "info");
+    }
+
+    #[test]
+    fn server_config_defaults() {
+        let cfg = ServerConfig::default();
+        assert_eq!(cfg.port, 3000);
+        assert_eq!(cfg.bind, "127.0.0.1");
+    }
+
+    #[test]
+    fn server_config_from_yaml() {
+        let yaml = r#"
+server:
+  port: 8080
+  bind: "0.0.0.0"
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.server.port, 8080);
+        assert_eq!(config.server.bind, "0.0.0.0");
+    }
+
+    #[test]
+    fn config_with_server_defaults_in_full_yaml() {
+        let yaml = r#"
+database_url: "sqlite://test.db"
+server:
+  port: 4000
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.server.port, 4000);
+        assert_eq!(config.server.bind, "127.0.0.1"); // default
+        assert_eq!(config.database_url, "sqlite://test.db");
     }
 }
