@@ -818,12 +818,38 @@
     "1-5-3": {
       "id": "1-5-3",
       "label": "Delete TypeScript MCP implementation after parity",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "exploit",
       "parent": "1-5",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "1-5-3 deletion strategy?",
+          "answer": "Conservative-correspondence (Option B): delete only TS files whose Rust equivalents are complete AND have no remaining TS dependents. Retain dispatch.ts + tool-defs.ts until serve-http.ts is replaced in 1-6.",
+          "note": "User confirmed. src/mcp/server.ts, rate-limit.ts, http-transport.ts, scripts/smoke-test-mcp.ts deleted. src/commands/serve.ts, call.ts deleted with cli.ts cleanup. dispatch.ts + tool-defs.ts retained with deletion-reminder comments."
+        }
+      ],
+      "issues": [
+        {
+          "id": "63",
+          "title": "[1-5-3c] Mark retained dispatch.ts/tool-defs.ts and pre-embed 1-6 deletion point",
+          "status": "open",
+          "depends_on": []
+        },
+        {
+          "id": "64",
+          "title": "[1-5-3a] Delete TS MCP server core files after Rust parity",
+          "status": "open",
+          "depends_on": []
+        },
+        {
+          "id": "65",
+          "title": "[1-5-3b] Delete serve/call commands and clean cli.ts references",
+          "status": "open",
+          "depends_on": ["64"]
+        }
+      ],
+      "notes": "Split into 3 tracer-bullet issues: #63 (mark retained files, independent), #64 (delete core MCP files, blocks #65), #65 (delete serve/call + cli cleanup). Execution order: #63 can run in parallel with #64→#65."
     },
     "1-6-1": {
       "id": "1-6-1",
@@ -833,7 +859,7 @@
       "parent": "1-6",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "After HTTP MCP replaces serve-http.ts, ALSO delete: src/mcp/dispatch.ts, src/mcp/tool-defs.ts (retained in 1-5-3, per issue #63)."
     },
     "1-6-2": {
       "id": "1-6-2",
