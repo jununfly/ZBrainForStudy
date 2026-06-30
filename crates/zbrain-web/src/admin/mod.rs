@@ -8,7 +8,9 @@ mod agents;
 mod api_keys;
 mod requests;
 mod session;
+mod spend;
 mod stats;
+mod watch;
 
 use axum::{middleware, Router};
 
@@ -21,6 +23,8 @@ pub fn build_admin_router(state: super::AppState) -> Router {
         .merge(agents::build_agents_router())
         .merge(api_keys::build_api_keys_router())
         .merge(requests::build_requests_router())
+        .merge(spend::build_spend_router())
+        .merge(watch::build_watch_router())
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             super::auth::require_admin,

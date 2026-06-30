@@ -1945,4 +1945,23 @@ impl crate::admin_queries::AdminQueries for InMemoryEngine {
             limit: 50,
         })
     }
+
+    async fn list_agent_client_spend(&self) -> crate::error::Result<Vec<crate::admin_queries::AgentClientSpend>> {
+        Ok(vec![])
+    }
+
+    async fn get_watch_snapshot(&self) -> crate::error::Result<crate::admin_queries::WatchSnapshot> {
+        use crate::admin_queries::{QueueHealth, WatchSnapshot};
+        Ok(WatchSnapshot {
+            ts_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as i64,
+            by_type: vec![],
+            queue_health: QueueHealth { waiting: 0, active: 0, stalled: 0 },
+            lease_pressure_1h: 0,
+            top_errors: vec![],
+            budget_owners: vec![],
+        })
+    }
 }

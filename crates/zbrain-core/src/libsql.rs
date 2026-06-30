@@ -20,8 +20,9 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::admin_queries::{
-    AdminQueries, AgentInfo, ApiKey, FullStats, HealthIndicators, Paginated, RequestLogEntry,
-    RequestLogFilters, Stats,
+    AdminQueries, AgentClientSpend, AgentInfo, ApiKey, BudgetOwner, ErrorClusterCount,
+    FullStats, HealthIndicators, JobTypeSummary, Paginated, QueueHealth, RequestLogEntry,
+    RequestLogFilters, Stats, WatchSnapshot,
 };
 use crate::engine::{
     page_sort_sql, BrainEngine, EngineConfig, EngineKind, GetPageOpts, Page, PageFilters,
@@ -2005,6 +2006,12 @@ fn now_unix() -> u64 {
         .as_secs()
 }
 
+/// Midnight UTC today as a Unix timestamp (seconds since epoch).
+fn today_utc_unix() -> i64 {
+    let now = now_unix() as i64;
+    now - (now % 86400)
+}
+
 #[async_trait]
 impl AdminQueries for LibsqlEngine {
     async fn get_stats(&self) -> Result<Stats> {
@@ -2393,6 +2400,298 @@ impl AdminQueries for LibsqlEngine {
             limit: filters.limit(),
         })
     }
+
+    async fn list_agent_client_spend(&self) -> Result<Vec<AgentClientSpend>> {
+        let conn = self.conn().await?;
+
+        // Graceful degradation: if oauth_clients or mcp_spend_log tables
+        // don't exist yet (no Rust migration), return empty vec.
+        let result = conn
+            .query(
+                "SELECT c.client_id, c.client_name, c.metadata,
+                        COALESCE(SUM(sl.amount_cents) FILTER (WHERE sl.created_at >= ?1), 0) as spent_today,
+                        COALESCE(SUM(sr.amount_cents), 0) as pending_cents,
+                        COALESCE((SELECT COUNT(*) FROM minion_jobs mj
+                                  WHERE json_extract(mj.data, '$.__owner_client_id') = c.client_id
+                                  AND mj.status NOT IN ('completed','failed','dead','cancelled')
+                                  AND mj.deleted_at IS NULL), 0) as inflight_count
+                 FROM oauth_clients c
+                 LEFT JOIN mcp_spend_log sl ON sl.client_id = c.client_id
+                 LEFT JOIN mcp_spend_reservations sr ON sr.client_id = c.client_id
+                   AND sr.status = 'pending'
+                 WHERE c.deleted_at IS NULL
+                   AND ' ' || c.scope || ' ' LIKE '% agent %'
+                 GROUP BY c.client_id, c.client_name, c.metadata
+                 ORDER BY spent_today DESC",
+                ::libsql::params![today_utc_unix()],
+            )
+            .await;
+
+        match result {
+            Ok(mut rows) => {
+                let mut items = Vec::new();
+                loop {
+                    let next = rows.next().await
+                        .map_err(|e| Error::engine(format!("list_agent_client_spend row: {e}")))?;
+                    match next {
+                        Some(row) => {
+                            // Extract daily cap from metadata JSON if present.
+                            let metadata_str: Option<String> = row.get::<Option<String>>(2)
+                                .map_err(|e| Error::engine(format!("list_agent_client_spend metadata: {e}")))?;
+                            let cap_usd_per_day = metadata_str
+                                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                                .and_then(|v| v.get("daily_spend_cap_usd").cloned())
+                                .and_then(|v| v.as_f64());
+
+                            items.push(AgentClientSpend {
+                                client_id: row.get::<String>(0)
+                                    .map_err(|e| Error::engine(format!("list_agent_client_spend client_id: {e}")))?,
+                                client_name: row.get::<String>(1)
+                                    .map_err(|e| Error::engine(format!("list_agent_client_spend client_name: {e}")))?,
+                                cap_usd_per_day,
+                                spent_cents_today: row.get::<i64>(3)
+                                    .map_err(|e| Error::engine(format!("list_agent_client_spend spent_today: {e}")))?,
+                                pending_cents: row.get::<i64>(4)
+                                    .map_err(|e| Error::engine(format!("list_agent_client_spend pending: {e}")))?,
+                                inflight_count: row.get::<i64>(5)
+                                    .map_err(|e| Error::engine(format!("list_agent_client_spend inflight: {e}")))?,
+                            });
+                        }
+                        None => break,
+                    }
+                }
+                Ok(items)
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("no such table") {
+                    Ok(vec![])
+                } else {
+                    Err(Error::engine(format!("list_agent_client_spend: {msg}")))
+                }
+            }
+        }
+    }
+
+    async fn get_watch_snapshot(&self) -> Result<WatchSnapshot> {
+        let conn = self.conn().await?;
+        let now_sec = now_unix() as i64;
+        let day_ago = now_sec - 86400;
+        let hour_ago = now_sec - 3600;
+
+        // Each sub-query is independently tried; failures are logged and
+        // the field stays at its default (zero/empty).
+
+        // 1. Queue health: by_status counts + stalled count
+        let (waiting, active, stalled) = match conn.query(
+                "SELECT
+                   COALESCE(SUM(CASE WHEN status = 'waiting' THEN 1 ELSE 0 END), 0),
+                   COALESCE(SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END), 0),
+                   COALESCE(SUM(CASE WHEN status = 'active' AND lock_until < ?1 THEN 1 ELSE 0 END) +
+                            SUM(CASE WHEN status = 'stalled' THEN 1 ELSE 0 END), 0)
+                 FROM minion_jobs
+                 WHERE deleted_at IS NULL",
+                ::libsql::params![now_sec],
+            ).await {
+            Ok(mut rows) => {
+                match rows.next().await {
+                    Ok(Some(row)) => (
+                        row.get::<i64>(0).unwrap_or(0),
+                        row.get::<i64>(1).unwrap_or(0),
+                        row.get::<i64>(2).unwrap_or(0),
+                    ),
+                    _ => (0, 0, 0),
+                }
+            }
+            Err(_) => (0, 0, 0),
+        };
+
+        // 2. Per-type summary (last 24h)
+        let by_type: Vec<JobTypeSummary> = match conn.query(
+            "SELECT COALESCE(type, 'unknown'), COUNT(*) as total,
+                    COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN status = 'dead' THEN 1 ELSE 0 END), 0)
+             FROM minion_jobs
+             WHERE deleted_at IS NULL AND created_at >= ?1
+             GROUP BY type
+             ORDER BY total DESC",
+            ::libsql::params![day_ago],
+        ).await {
+            Ok(mut rows) => collect_job_type_summaries(&mut rows).await.unwrap_or_default(),
+            Err(_) => vec![],
+        };
+
+        // 3. Lease pressure (last 1h)
+        let lease_pressure_1h: i64 = match conn.query(
+            "SELECT COUNT(*) FROM minion_lease_pressure_log WHERE bounced_at > ?1",
+            ::libsql::params![hour_ago],
+        ).await {
+            Ok(mut rows) => rows.next().await.ok().flatten()
+                .and_then(|r| r.get::<i64>(0).ok()).unwrap_or(0),
+            Err(_) => 0,
+        };
+
+        // 4. Error clusters — fetch error texts then classify
+        let top_errors: Vec<ErrorClusterCount> = match conn.query(
+            "SELECT error_text FROM minion_jobs
+             WHERE error_text IS NOT NULL AND error_text != ''
+               AND status IN ('failed', 'dead')
+               AND created_at >= ?1
+               AND deleted_at IS NULL",
+            ::libsql::params![day_ago],
+        ).await {
+            Ok(mut rows) => {
+                let mut errors: Vec<String> = Vec::new();
+                loop {
+                    match rows.next().await {
+                        Ok(Some(row)) => {
+                            if let Ok(text) = row.get::<String>(0) {
+                                errors.push(text);
+                            }
+                        }
+                        _ => break,
+                    }
+                }
+                cluster_errors(&errors)
+            }
+            Err(_) => vec![],
+        };
+
+        // 5. Budget owners (active jobs with budgets)
+        let budget_owners: Vec<BudgetOwner> = match conn.query(
+            "SELECT mj.id, COALESCE(mj.budget_remaining_cents, 0),
+                    COALESCE((SELECT SUM(bl.amount_cents) FROM minion_budget_log bl
+                              WHERE bl.job_id = mj.id), 0) - COALESCE(mj.budget_remaining_cents, 0)
+             FROM minion_jobs mj
+             WHERE mj.budget_remaining_cents IS NOT NULL
+               AND mj.budget_owner_job_id = mj.id
+               AND mj.status NOT IN ('completed', 'failed', 'dead', 'cancelled')
+               AND mj.deleted_at IS NULL",
+            (),
+        ).await {
+            Ok(mut rows) => {
+                let mut owners = Vec::new();
+                loop {
+                    match rows.next().await {
+                        Ok(Some(row)) => {
+                            let _ = row.get::<i64>(0).map(|owner_id| {
+                                let remaining = row.get::<i64>(1).unwrap_or(0);
+                                let total_spent = row.get::<i64>(2).unwrap_or(0);
+                                owners.push(BudgetOwner { owner_id, remaining_cents: remaining, total_spent_cents: total_spent });
+                            });
+                        }
+                        _ => break,
+                    }
+                }
+                owners
+            }
+            Err(_) => vec![],
+        };
+
+        Ok(WatchSnapshot {
+            ts_ms: now_sec * 1000,
+            by_type,
+            queue_health: QueueHealth { waiting, active, stalled },
+            lease_pressure_1h,
+            top_errors,
+            budget_owners,
+        })
+    }
+}
+
+
+/// Collect JobTypeSummary rows from a query result.
+async fn collect_job_type_summaries(rows: &mut ::libsql::Rows) -> std::result::Result<Vec<JobTypeSummary>, Error> {
+    let mut out = Vec::new();
+    loop {
+        let next = rows.next().await
+            .map_err(|e| Error::engine(format!("job_type_summary row: {e}")))?;
+        match next {
+            Some(row) => {
+                out.push(JobTypeSummary {
+                    name: row.get::<String>(0)
+                        .map_err(|e| Error::engine(format!("job_type name: {e}")))?,
+                    total: row.get::<i64>(1)
+                        .map_err(|e| Error::engine(format!("job_type total: {e}")))?,
+                    completed: row.get::<i64>(2)
+                        .map_err(|e| Error::engine(format!("job_type completed: {e}")))?,
+                    failed: row.get::<i64>(3)
+                        .map_err(|e| Error::engine(format!("job_type failed: {e}")))?,
+                    dead: row.get::<i64>(4)
+                        .map_err(|e| Error::engine(format!("job_type dead: {e}")))?,
+                });
+            }
+            None => break,
+        }
+    }
+    Ok(out)
+}
+
+/// Cluster error texts into 13 named buckets.
+/// Ported from TS `error-classify.ts`.
+fn cluster_errors(errors: &[String]) -> Vec<ErrorClusterCount> {
+    use std::collections::BTreeMap;
+
+    let mut counts: BTreeMap<&str, i64> = BTreeMap::new();
+
+    for text in errors {
+        let lower = text.to_lowercase();
+        let cluster = if lower.contains("rate lease full") {
+            "rate_lease_full"
+        } else if lower.contains("tool not in registry") || lower.contains("tool not available") {
+            "tool_unavailable"
+        } else if lower.contains("tool permission") || lower.contains("not allowed") || lower.contains("forbidden") || lower.contains("denied") {
+            "tool_permission"
+        } else if lower.contains("tool") && (lower.contains("failed") || lower.contains("crashed") || lower.contains("threw") || lower.contains("tool.execute")) {
+            "tool_crash"
+        } else if lower.contains("invalid") || lower.contains("malformed") || lower.contains("missing input")
+            || lower.contains("missing argument") || lower.contains("missing param")
+            || lower.contains("schema") || lower.contains("tool_use validation")
+        {
+            "tool_schema_mismatch"
+        } else if lower.contains("parse") || lower.contains("invalid json") || lower.contains("malformed json")
+            || lower.contains("expected json") || lower.contains("unexpected token")
+        {
+            "malformed_json"
+        } else if lower.contains("prompt is too long") || lower.contains("context length") || lower.contains("context.*length") {
+            "prompt_too_long"
+        } else if lower.contains("timeout") || lower.contains("timed out") || lower.contains("aborted: timeout") {
+            "timeout"
+        } else if lower.contains("401") || lower.contains("unauthorized") || lower.contains("api key invalid") {
+            "auth"
+        } else if lower.contains("429") || lower.contains("rate limit") || lower.contains("too many requests") {
+            "rate_limit"
+        } else if lower.contains("50") && (lower.contains("bad gateway") || lower.contains("service unavailable") || lower.contains("overloaded")) {
+            "http_5xx"
+        } else if lower.contains("budget exceeded") || lower.contains("budget.*exceeded") {
+            "budget_exceeded"
+        } else if lower.contains("content filter") || lower.contains("content.*filter") {
+            "content_filter"
+        } else if lower.contains("context length exceeded") || lower.contains("context.*length.*exceeded") {
+            "context_length_exceeded"
+        } else if lower.contains("bad request") {
+            "bad_request"
+        } else if lower.contains("server error") || lower.contains("server.*error") {
+            "server_error"
+        } else if lower.contains("connection") || lower.contains("aborted: cancel") || lower.contains("signal aborted") || lower.contains("context canceled") {
+            "connection"
+        } else if lower.contains("unknown tool") {
+            "unknown_tool"
+        } else {
+            "other"
+        };
+
+        *counts.entry(cluster).or_insert(0) += 1;
+    }
+
+    counts
+        .into_iter()
+        .map(|(cluster, count)| ErrorClusterCount {
+            cluster: cluster.to_string(),
+            count,
+        })
+        .collect()
 }
 
 /// Build WHERE clause and params for request log filters.

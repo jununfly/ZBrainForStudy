@@ -94,6 +94,73 @@ impl RequestLogFilters {
     pub fn offset(&self) -> u32 { (self.page() - 1) * self.limit() }
 }
 
+/// Per-agent-client spending summary.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentClientSpend {
+    pub client_id: String,
+    pub client_name: String,
+    /// Daily spending cap in USD (null = uncapped).
+    pub cap_usd_per_day: Option<f64>,
+    /// Cents spent today (UTC).
+    pub spent_cents_today: i64,
+    /// Cents reserved but not yet confirmed.
+    pub pending_cents: i64,
+    /// Number of active sub-agent jobs for this client.
+    pub inflight_count: i64,
+}
+
+// ── watch snapshot types ───────────────────────────────────────────────────
+
+/// Real-time minion job queue snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WatchSnapshot {
+    pub ts_ms: i64,
+    pub by_type: Vec<JobTypeSummary>,
+    pub queue_health: QueueHealth,
+    pub lease_pressure_1h: i64,
+    pub top_errors: Vec<ErrorClusterCount>,
+    pub budget_owners: Vec<BudgetOwner>,
+}
+
+/// Per job-type summary (last 24h).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct JobTypeSummary {
+    pub name: String,
+    pub total: i64,
+    pub completed: i64,
+    pub failed: i64,
+    pub dead: i64,
+}
+
+/// Queue health: counts by status bucket.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueHealth {
+    pub waiting: i64,
+    pub active: i64,
+    pub stalled: i64,
+}
+
+/// A clustered error count.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ErrorClusterCount {
+    pub cluster: String,
+    pub count: i64,
+}
+
+/// An active budget owner with remaining and spent amounts.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BudgetOwner {
+    pub owner_id: i64,
+    pub remaining_cents: i64,
+    pub total_spent_cents: i64,
+}
+
 /// A single request log entry.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -139,4 +206,12 @@ pub trait AdminQueries: Debug + Send + Sync {
 
     /// Paginated request log with optional filters.
     async fn list_requests(&self, filters: &RequestLogFilters) -> Result<Paginated<RequestLogEntry>>;
+
+    /// Per-agent-client spend summary.
+    /// Returns empty vec when spend tables do not exist (graceful degradation).
+    async fn list_agent_client_spend(&self) -> Result<Vec<AgentClientSpend>>;
+
+    /// Real-time minion job queue snapshot.
+    /// Returns default-zero snapshot when minion_jobs tables do not exist.
+    async fn get_watch_snapshot(&self) -> Result<WatchSnapshot>;
 }

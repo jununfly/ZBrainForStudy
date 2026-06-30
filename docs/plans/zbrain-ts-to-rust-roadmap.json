@@ -1522,12 +1522,53 @@
     "1-6-2-2": {
       "id": "1-6-2-2",
       "label": "Port jobs/watch and agents/spend endpoints",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6-2",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "Q2: 1-6-2-2 两个端点一刀切？",
+          "answer": "yes — agents/spend + jobs/watch 合并实施，共享 AdminQueries trait 扩展"
+        },
+        {
+          "q": "Q3: SQL 放哪个 trait？",
+          "answer": "扩 AdminQueries 加 list_agent_client_spend() + get_watch_snapshot()，不新建 OpsQueries"
+        },
+        {
+          "q": "Q4: PG SQL 如何翻译到 SQLite？",
+          "answer": "手动翻译：date_trunc→strftime，scope ANY→LIKE，data->>→json_extract"
+        },
+        {
+          "q": "Q5: jobs/watch 5 个子查询如何组织？",
+          "answer": "独立子查询各自 graceful degradation，assembler 串行调用组装"
+        },
+        {
+          "q": "Q6: 如何处理不存在的表？",
+          "answer": "graceful degradation — 表不存在时返回空/默认值，不 500。不创建新 migration"
+        },
+        {
+          "q": "Q7: 文件组织？",
+          "answer": "admin/spend.rs + admin/watch.rs 两个独立文件，各自 build_xxx_router()"
+        },
+        {
+          "q": "Q8: 错误分类器放哪？",
+          "answer": "admin/watch.rs 内 private sub-module，纯函数 fn cluster_errors()"
+        },
+        {
+          "q": "Q9: 方法签名？",
+          "answer": "list_agent_client_spend()→Vec<AgentClientSpend>, get_watch_snapshot()→WatchSnapshot"
+        },
+        {
+          "q": "Q10: 实施顺序？",
+          "answer": "TDD: InMemory stub → libsql → handler → tests → refactor. #75 先做，#76 后做避免 trait merge conflict"
+        }
+      ],
+      "notes": " Completed 2026-06-30: #75 (agents/spend) + #76 (jobs/watch) both done via TDD.",
+      "issues": [
+        75,
+        76
+      ]
     }
   },
   "metadata": {

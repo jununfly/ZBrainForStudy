@@ -26,7 +26,9 @@ pub use types::{
 };
 pub use engine::{BrainEngine, InMemoryEngine, Page, PageInput, PageFilters, SearchOpts, SearchResult, GetPageOpts, ResolveSlugsOpts};
 pub use admin_queries::{
-    AdminQueries, AgentInfo, ApiKey, FullStats, HealthIndicators, Paginated, RequestLogEntry, RequestLogFilters, Stats,
+    AdminQueries, AgentClientSpend, AgentInfo, ApiKey, BudgetOwner, ErrorClusterCount, FullStats,
+    HealthIndicators, JobTypeSummary, Paginated, QueueHealth, RequestLogEntry, RequestLogFilters,
+    Stats, WatchSnapshot,
 };
 pub use llm::{LlmClient, LlmRequest, LlmResponse, LlmError, MockLlmClient, TokenUsage};
 #[cfg(feature = "openai")]
