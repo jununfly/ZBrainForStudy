@@ -50,7 +50,7 @@
     "1-2": {
       "id": "1-2",
       "label": "Core storage parity closure",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1",
       "children": [
@@ -97,7 +97,7 @@
     "1-4": {
       "id": "1-4",
       "label": "Operations layer and trust boundary migration",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1",
       "children": [
@@ -137,7 +137,7 @@
     "1-5": {
       "id": "1-5",
       "label": "MCP server migration",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "exploit",
       "parent": "1",
       "children": [
@@ -685,12 +685,17 @@
     "1-4-1": {
       "id": "1-4-1",
       "label": "Port operation definitions schemas and context",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-4",
       "children": [
         "1-4-1-1",
-        "1-4-1-2"
+        "1-4-1-2",
+        "1-4-1-3",
+        "1-4-1-4",
+        "1-4-1-5",
+        "1-4-1-6",
+        "1-4-1-7"
       ],
       "decisions": [
         {
@@ -730,32 +735,85 @@
     "1-4-3": {
       "id": "1-4-3",
       "label": "Move shared CLI MCP dispatch to Rust operations",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-4",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "Should local_only enforcement use trait or hardcoded match?",
+          "answer": "KNOWN GAP: run_operation() uses a hardcoded match list instead of querying TypedOperation::local_only(). If a new local_only operation is added, it must be manually synced to both trait impl and the match block. Should be unified in 1-5-2 refactoring.",
+          "note": "P1b - not blocking, but a DRY violation to fix when touching the dispatch path next."
+        }
+      ],
+      "notes": "COMPLETED (commit 9fc365b). ToolResult/ToolContent structs, dispatch_tool_call() shared path, CLI run_operation() migrated to use dispatch_tool_call(). 120/120 tests passing. KNOWN GAP: local_only list hardcoded in CLI match block instead of using trait fn."
     },
     "1-5-1": {
       "id": "1-5-1",
       "label": "Implement Rust MCP tool definitions and parameter validation",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-5",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "Should serve-mcp attach an engine automatically?",
+          "answer": "KNOWN GAP → defer to 1-5-2. StdioMcpServer creates OperationContext::remote_mcp() with engine=None. All engine-dependent operations (think/query/get_page/list_pages) return 'Operation context engine not configured' error. Only put_page/delete_page/restore_page/purge (no-engine-needed) would work if exposed.",
+          "note": "P0 - serve-mcp starts and tools/list works, but tools/call is effectively broken for most operations. Fix by either attaching InMemoryEngine or accepting engine via CLI arg."
+        },
+        {
+          "q": "Is it correct that MCP exposes engine-dependent operations?",
+          "answer": "KNOWN GAP → defer to 1-5-2. get_page/think/query/list_pages are NOT local_only, so build_tool_defs() exposes them. But they call ctx.engine()? and crash. Either: (a) mark them local_only until engine is configured, or (b) pass engine to serve-mcp.",
+          "note": "P1a - exposed but non-functional operations. Same root cause as P0."
+        },
+        {
+          "q": "Missing input_schema() implementations?",
+          "answer": "KNOWN GAP → defer to 1-5-2. 7 operations (AddTag, RemoveTag, GetTags, GetVersions, GetRawData, UpdateSlug, GetAllSlugs) fall back to empty object schema. Non-blocking for current MCP tool listing, but should be completed for correct parameter validation.",
+          "note": "P2a - low priority. Tool definitions work but lack accurate parameter schemas."
+        }
+      ],
+      "notes": "COMPLETED (commit 5539d31). McpToolDef struct, build_tool_defs() filtering local_only ops, StdioMcpServer JSON-RPC 2.0 over stdio, serve-mcp CLI command. 8/8 TDD tests passing. KNOWN GAPS: P0 engine crash (serve-mcp tools/call broken), P1a exposed non-functional ops, P2a missing input_schema for 7 ops. All deferred to 1-5-2."
     },
     "1-5-2": {
       "id": "1-5-2",
-      "label": "Implement Rust MCP transports rate limiting and audit hooks",
-      "status": "pending",
+      "label": "Implement Rust MCP server completion: engine wiring, rate limiting, and audit hooks",
+      "status": "in_progress",
       "mode": "exploit",
       "parent": "1-5",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "1-5-2 scope: expand to include known gaps or stay original?",
+          "answer": "A (expanded): engine wiring + rate limiting + audit hooks + input_schema fill — single completion slice",
+          "note": "All 1-5-1 known gaps (P0/P1a/P2a) folded in. P0 must be fixed before rate limiting anyway; code volume small (~110 lines). 1-5-3 deletion gate becomes clear binary check."
+        },
+        {
+          "q": "Q2: How does StdioMcpServer get engine?",
+          "answer": "A: Constructor injection — StdioMcpServer::new() accepts Box<dyn Engine>. CLI creates engine and passes in, same pattern as run_operation.",
+          "note": "Aligns with existing run_operation pattern. No hidden cost. Rate limiter can later hang off server struct alongside engine. B would rebuild engine per call (costly, rate limiter has nowhere to attach). C doesn't fix the bug. D is YAGNI overengineering."
+        },
+        {
+          "q": "Q3: Rate limiting strategy?",
+          "answer": "A: Global sliding window — single AtomicU64 counter + timestamp, max_requests_per_minute config. Simplest fit for stdio single-client scenario.",
+          "note": "Defense against runaway loops, not multi-tenant fairness. B (per-op bucket) overkill for Phase 1. C (token bucket) smoother but unnecessary complexity. D (defer) loses audit context."
+        },
+        {
+          "q": "Q4: Audit hooks design?",
+          "answer": "B: tracing crate — structured logging with span/event. Flexible output targets, standard Rust ecosystem.",
+          "note": "A (stderr JSON-lines) too primitive for future composability. C (dual-write) premature. D (error-only) loses observability."
+        },
+        {
+          "q": "Q5: Rate limiter config source?",
+          "answer": "B: zbrain.yml — mcp.rate_limit field. Consistent with project config convention.",
+          "note": "A (CLI arg) good for ad-hoc but no persistence. C (env var) doesn't match zbrain.yml config style. D (hardcoded) defers a trivial decision."
+        },
+        {
+          "q": "Q6: P1b hardcoded local_only match?",
+          "answer": "A: Fix in 1-5-2 — restructure run_operation to query registry.is_local_only() instead of hardcoded match.",
+          "note": "Removes single source-of-truth violation. ~15 line change. Eliminates the risk of adding a local_only operation and forgetting the CLI guard."
+        }
+      ],
+      "notes": "Issues published: #59 engine wiring, #60 input schema fill, #61 P1b dynamic local_only, #62 rate limiting + audit hooks. Dependency: #62 -> #59."
     },
     "1-5-3": {
       "id": "1-5-3",
@@ -1262,7 +1320,7 @@
     "1-4-1-5": {
       "id": "1-4-1-5",
       "label": "Slice #48 - Port Takes & Timeline Operations",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-4-1",
       "children": [],
@@ -1278,7 +1336,7 @@
     "1-4-1-6": {
       "id": "1-4-1-6",
       "label": "Slice #50 - Port Sync & Raw Data Operations",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-4-1",
       "children": [],
@@ -1288,7 +1346,7 @@
     "1-4-1-7": {
       "id": "1-4-1-7",
       "label": "Slice #49 - Port Metadata & System Operations",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-4-1",
       "children": [],
@@ -1324,7 +1382,7 @@
   },
   "metadata": {
     "created": "2026-06-23 18:09:00",
-    "updated": "2026-06-29 12:04:21",
+    "updated": "2026-06-30 14:26:22",
     "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_ROADMAP.md"
   }
 }

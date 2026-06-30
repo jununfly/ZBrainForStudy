@@ -31,6 +31,8 @@ anyhow = { workspace = true }
 dirs = "5.0"
 regex = "1"
 reqwest = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [dev-dependencies]
 tempfile = "3"

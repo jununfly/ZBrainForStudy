@@ -15,18 +15,20 @@ fn temp_db() -> NamedTempFile {
 }
 
 /// Create a fresh LibsqlEngine backed by a temp file.
-fn temp_engine() -> (NamedTempFile, LibsqlEngine) {
+async fn temp_engine() -> (NamedTempFile, LibsqlEngine) {
     let temp = temp_db();
-    let engine = LibsqlEngine::with_config(EngineConfig {
-        db_path: temp.path().to_string_lossy().to_string(),
-        ..Default::default()
-    })
-    .unwrap();
+    let path = temp.path().to_string_lossy().to_string();
+    let config = EngineConfig {
+        database_path: Some(path),
+        database_url: None,
+    };
+    let engine = LibsqlEngine::new();
+    engine.connect(&config).await.unwrap();
     (temp, engine)
 }
 
 /// Read current version from rust_schema_version table via a raw connection.
-async fn read_version_raw(path: &str) -> i64 {
+async fn read_version_raw(path: &std::path::Path) -> i64 {
     let conn = Builder::new_local(path)
         .build()
         .await
@@ -45,34 +47,34 @@ async fn read_version_raw(path: &str) -> i64 {
 
 #[tokio::test]
 async fn fresh_db_runs_all_eight_migrations_ends_at_version_8() {
-    let (_temp, engine) = temp_engine();
+    let (_temp, engine) = temp_engine().await;
     engine.init_schema().await.unwrap();
-    let version = read_version_raw(engine.db_path()).await;
+    let version = read_version_raw(_temp.path()).await;
     assert_eq!(version, 8);
 }
 
 #[tokio::test]
 async fn idempotent_init_schema_applies_zero_migrations_second_run() {
-    let (_temp, engine) = temp_engine();
+    let (_temp, engine) = temp_engine().await;
 
     // First run - should apply all 8 migrations
     engine.init_schema().await.unwrap();
-    let v1 = read_version_raw(engine.db_path()).await;
+    let v1 = read_version_raw(_temp.path()).await;
     assert_eq!(v1, 8);
 
     // Second run - should be idempotent (no migrations applied)
     engine.init_schema().await.unwrap();
-    let v2 = read_version_raw(engine.db_path()).await;
+    let v2 = read_version_raw(_temp.path()).await;
     assert_eq!(v2, 8);
 }
 
 #[tokio::test]
 async fn rust_schema_version_table_exists_after_init() {
-    let (_temp, engine) = temp_engine();
+    let (_temp, engine) = temp_engine().await;
     engine.init_schema().await.unwrap();
 
     // Verify the table exists via raw SQL
-    let conn = Builder::new_local(engine.db_path())
+    let conn = Builder::new_local(_temp.path())
         .build()
         .await
         .unwrap()
@@ -92,10 +94,10 @@ async fn rust_schema_version_table_exists_after_init() {
 
 #[tokio::test]
 async fn rust_schema_version_has_applied_at_timestamp() {
-    let (_temp, engine) = temp_engine();
+    let (_temp, engine) = temp_engine().await;
     engine.init_schema().await.unwrap();
 
-    let conn = Builder::new_local(engine.db_path())
+    let conn = Builder::new_local(_temp.path())
         .build()
         .await
         .unwrap()
@@ -115,13 +117,13 @@ async fn rust_schema_version_has_applied_at_timestamp() {
 
 #[tokio::test]
 async fn migrations_are_applied_in_ascending_version_order() {
-    let (_temp, engine) = temp_engine();
+    let (_temp, engine) = temp_engine().await;
     engine.init_schema().await.unwrap();
 
     // Indirect verification: check that pages table exists AND has all
     // expected columns from later migrations. pages from migration 1,
     // full_columns from migration 2.
-    let conn = Builder::new_local(engine.db_path())
+    let conn = Builder::new_local(_temp.path())
         .build()
         .await
         .unwrap()

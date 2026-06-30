@@ -3517,6 +3517,17 @@ mod tests {
             true
         }
 
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "slug": { "type": "string", "description": "Page slug" },
+                    "tag": { "type": "string", "description": "Tag to add" }
+                },
+                "required": ["slug", "tag"]
+            })
+        }
+
         async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
             let engine = ctx.engine()?;
             engine
@@ -3624,6 +3635,17 @@ mod tests {
             true
         }
 
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "slug": { "type": "string", "description": "Page slug" },
+                    "tag": { "type": "string", "description": "Tag to remove" }
+                },
+                "required": ["slug", "tag"]
+            })
+        }
+
         async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
             let engine = ctx.engine()?;
             engine
@@ -3705,6 +3727,16 @@ mod tests {
 
         fn description(&self) -> &'static str {
             "Get all tags for a page."
+        }
+
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "slug": { "type": "string", "description": "Page slug" }
+                },
+                "required": ["slug"]
+            })
         }
 
         async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
@@ -3792,6 +3824,17 @@ mod tests {
             "Get version history for a page."
         }
 
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "slug": { "type": "string", "description": "Page slug" },
+                    "limit": { "type": "integer", "description": "Maximum versions to return (optional)" }
+                },
+                "required": ["slug"]
+            })
+        }
+
         async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
             let engine = ctx.engine()?;
             let versions = engine
@@ -3847,6 +3890,17 @@ mod tests {
 
         fn description(&self) -> &'static str {
             "Get raw data attached to a page, optionally filtered by source."
+        }
+
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "slug": { "type": "string", "description": "Page slug" },
+                    "source": { "type": "string", "description": "Optional source filter" }
+                },
+                "required": ["slug"]
+            })
         }
 
         async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
@@ -3908,6 +3962,17 @@ mod tests {
             "Update a page's slug and rewrite all links pointing to it."
         }
 
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "old_slug": { "type": "string", "description": "Current page slug" },
+                    "new_slug": { "type": "string", "description": "New slug to assign" }
+                },
+                "required": ["old_slug", "new_slug"]
+            })
+        }
+
         async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
             let engine = ctx.engine()?;
             engine
@@ -3963,6 +4028,16 @@ mod tests {
             "Get all page slugs, optionally filtered by prefix."
         }
 
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "prefix": { "type": "string", "description": "Optional prefix filter" }
+                },
+                "required": []
+            })
+        }
+
         async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
             let engine = ctx.engine()?;
             let slugs_set = engine.get_all_slugs(Some(&ctx.source_id)).await?;
@@ -3983,6 +4058,48 @@ mod tests {
         let op = registry.lookup("get_all_slugs");
         assert!(op.is_some());
         assert_eq!(op.unwrap().name(), "get_all_slugs");
+    }
+
+    #[test]
+    fn all_seven_tag_version_slug_ops_have_non_empty_schemas() {
+        let mut registry = OperationRegistry::new();
+        registry.register(AddTagOperation);
+        registry.register(RemoveTagOperation);
+        registry.register(GetTagsOperation);
+        registry.register(GetVersionsOperation);
+        registry.register(GetRawDataOperation);
+        registry.register(UpdateSlugOperation);
+        registry.register(GetAllSlugsOperation);
+
+        let ops: &[(&str, &[&str])] = &[
+            ("add_tag", &["slug", "tag"]),
+            ("remove_tag", &["slug", "tag"]),
+            ("get_tags", &["slug"]),
+            ("get_versions", &["slug"]),
+            ("get_raw_data", &["slug"]),
+            ("update_slug", &["old_slug", "new_slug"]),
+            ("get_all_slugs", &[]),
+        ];
+
+        for (name, required_props) in ops {
+            let op = registry.lookup(name).expect("operation should be registered");
+            let schema = op.input_schema();
+            assert_eq!(schema["type"], "object", "{}: schema type should be object", name);
+
+            let required = schema["required"].as_array()
+                .expect(&format!("{}: required should be an array", name));
+            assert_eq!(required.len(), required_props.len(), "{}: wrong required count", name);
+            for rp in *required_props {
+                assert!(required.iter().any(|v| v.as_str() == Some(rp)),
+                    "{}: {} should be required", name, rp);
+            }
+
+            // Verify properties exist for all required fields
+            let props = &schema["properties"];
+            for rp in *required_props {
+                assert!(props[*rp].is_object(), "{}: property {} should exist", name, rp);
+            }
+        }
     }
 
     // ── GetPageTimestamps Operation (Slice #49) ───────────────────────────
@@ -4268,7 +4385,7 @@ mod tests {
         assert!(result.is_ok(), "Expected ok, got: {:?}", result);
 
         let output = result.unwrap();
-        assert!(output["totalCount"].as_u64().unwrap() >= 0);
+        assert_eq!(output["totalCount"].as_u64().unwrap(), 1);
     }
 
     // ── ListAllPageRefs Operation (Slice #49) ─────────────────────────────
@@ -4672,7 +4789,7 @@ mod tests {
     #[tokio::test]
     async fn dispatch_json_think_with_llm_client() {
         use crate::engine::InMemoryEngine;
-        use crate::llm::{MockLlmClient, ThinkPromptBuilder};
+        use crate::llm::MockLlmClient;
 
         // Setup engine with a page
         let engine = InMemoryEngine::default();

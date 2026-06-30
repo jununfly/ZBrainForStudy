@@ -9,7 +9,7 @@
 │   │   [x][Y+] 1-1-2. Expand complete TS to Rust PRD from codebase facts
 │   │   [x][Y+] 1-1-3. Classify TypeScript runtime and frontend retention surfaces
 │       [x][Y+] 1-1-4. Define per-slice deletion checklist and verification gates
-│   [ ][Y+] 1-2. Core storage parity closure
+│   [x][Y+] 1-2. Core storage parity closure
 │   │   [x][Y+] 1-2-1. Finish Page contract parity across storage backends
 │   │   │   [x][Y+] 1-2-1-1. Write Page contract parity audit plan
 │   │   │   [x][Y+] 1-2-1-2. Align getPage no-source lookup semantics
@@ -46,7 +46,7 @@
 │   │   [x][Y+] 1-4-2. Port local and remote trust boundary enforcement
 │       [x][Y+] 1-4-3. Move shared CLI MCP dispatch to Rust operations
 │   [~][Y+] 1-5. MCP server migration
-│   │   [ ][Y+] 1-5-1. Implement Rust MCP tool definitions and parameter validation
+│   │   [x][Y+] 1-5-1. Implement Rust MCP tool definitions and parameter validation (3 known gaps → 1-5-2)
 │   │   [ ][Y+] 1-5-2. Implement Rust MCP transports rate limiting and audit hooks
 │       [ ][Y+] 1-5-3. Delete TypeScript MCP implementation after parity
 │   [ ][Y+] 1-6. Web backend and admin API migration

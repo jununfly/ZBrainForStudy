@@ -473,11 +473,30 @@ async fn run_list_pages_command(args: ListPagesArgs, config_path: Option<&Path>)
 /// writes responses to stdout. Suitable for use with Claude Desktop / Claude Code.
 ///
 /// Mirrors `startMcpServer()` in TS `src/mcp/server.ts`.
-async fn run_serve_mcp_command(args: ServeMcpArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+async fn run_serve_mcp_command(args: ServeMcpArgs, _config_path: Option<&Path>) -> anyhow::Result<()> {
+    // Initialize tracing subscriber for audit logs (stderr output)
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env()
+            .add_directive("zbrain_mcp=info".parse().unwrap()))
+        .with_writer(std::io::stderr)
+        .try_init();
+
     use zbrain_core::operation::{
         GetPageOperation, ThinkOperation, QueryOperation,
         PutPageOperation, DeletePageOperation, RestorePageOperation,
         PurgeDeletedPagesOperation, ListPagesOperation,
+    };
+
+    // Load config for MCP settings (rate limit)
+    let config_file = _config_path
+        .map(PathBuf::from)
+        .or_else(|| config::user_config_path())
+        .ok_or_else(|| anyhow::anyhow!("Could not determine config path"))?;
+    let mcp_config = if config_file.exists() {
+        let cfg = config::load_config_from_path(&config_file)?;
+        cfg.mcp
+    } else {
+        Default::default()
     };
 
     // Set source_id env for the MCP server if provided via --source flag
@@ -501,7 +520,14 @@ async fn run_serve_mcp_command(args: ServeMcpArgs, config_path: Option<&Path>) -
     eprintln!("[zbrain-mcp] starting stdio MCP server (source: {})", source_id);
 
     let version = env!("CARGO_PKG_VERSION");
-    let server = zbrain_mcp::StdioMcpServer::new(registry, "zbrain", version);
+    let engine = std::sync::Arc::new(zbrain_core::InMemoryEngine::default());
+    let server = zbrain_mcp::StdioMcpServer::new(
+        registry,
+        engine,
+        "zbrain",
+        version,
+        mcp_config.rate_limit,
+    );
 
     server.run().await.context("MCP stdio server error")?;
 
@@ -530,16 +556,27 @@ async fn run_operation(
 
     let config = config::load_config_from_path(&config_file)?;
 
+    // Build operation registry early so thin-client check can query local_only status
+    // from the canonical TypedOperation trait (not a hardcoded list).
+    let mut registry = OperationRegistry::new();
+    registry.register(zbrain_core::operation::GetPageOperation);
+    registry.register(zbrain_core::operation::ThinkOperation);
+    registry.register(zbrain_core::operation::QueryOperation);
+    registry.register(zbrain_core::operation::PutPageOperation);
+    registry.register(zbrain_core::operation::DeletePageOperation);
+    registry.register(zbrain_core::operation::RestorePageOperation);
+    registry.register(zbrain_core::operation::PurgeDeletedPagesOperation);
+    registry.register(zbrain_core::operation::ListPagesOperation);
+
     // Check for thin-client mode (v0.31.1 Issue #734)
     if config::is_thin_client(&config) {
         let remote_mcp = config.remote_mcp.as_ref().expect("is_thin_client guarantees this");
 
-        // Build operation lookup to check local_only status
-        // This avoids needing to instantiate the engine just for the check
-        let is_local_only = match name {
-            "put_page" | "delete_page" | "restore_page" | "purge_deleted_pages" => true,
-            _ => false,
-        };
+        // Query registry for local_only status (avoids hardcoded match drift from trait)
+        let is_local_only = registry
+            .lookup(name)
+            .map(|op| op.local_only())
+            .unwrap_or(false);
 
         if is_local_only {
             eprintln!(
@@ -569,17 +606,6 @@ async fn run_operation(
 
     let engine = zbrain_core::libsql::LibsqlEngine::new();
     engine.connect(&engine_config).await?;
-
-    // Setup registry and context
-    let mut registry = OperationRegistry::new();
-    registry.register(zbrain_core::operation::GetPageOperation);
-    registry.register(zbrain_core::operation::ThinkOperation);
-    registry.register(zbrain_core::operation::QueryOperation);
-    registry.register(zbrain_core::operation::PutPageOperation);
-    registry.register(zbrain_core::operation::DeletePageOperation);
-    registry.register(zbrain_core::operation::RestorePageOperation);
-    registry.register(zbrain_core::operation::PurgeDeletedPagesOperation);
-    registry.register(zbrain_core::operation::ListPagesOperation);
 
     let ctx = OperationContext::local_cli().with_engine(std::sync::Arc::new(engine));
 
@@ -780,7 +806,7 @@ async fn run_doctor_command(_args: DoctorArgs, config_path: Option<&Path>) -> an
     let mut fail_count = 0;
 
     for check in &checks {
-        let (status_icon, status_label) = match check.status {
+        let (status_icon, _status_label) = match check.status {
             CheckStatus::Ok => ("✅", "PASS"),
             CheckStatus::Warn => ("⚠️", "WARN"),
             CheckStatus::Fail => ("❌", "FAIL"),
@@ -869,7 +895,7 @@ async fn run_config_command(args: ConfigArgs, config_path: Option<&Path>) -> any
             config::write_config(&config, &output_path)?;
             println!("Set config key: {}", key);
         }
-        ConfigAction::Unset { ref key, pattern: Some(ref pattern) } => {
+        ConfigAction::Unset { key: _, pattern: Some(ref pattern) } => {
             // Bulk unset by prefix pattern
             let mut config = config::load_config(config_path)?;
             let count = unset_config_by_pattern(&mut config, pattern)?;
@@ -1199,5 +1225,50 @@ mod tests {
         let cli = Cli::try_parse_from(["zbrain", "schema"]).unwrap();
         let result = run(cli).await;
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn registry_dynamic_local_only_consistent_with_trait() {
+        use zbrain_core::operation::{
+            GetPageOperation, ThinkOperation, QueryOperation,
+            PutPageOperation, DeletePageOperation, RestorePageOperation,
+            PurgeDeletedPagesOperation, ListPagesOperation,
+        };
+
+        let mut registry = OperationRegistry::new();
+        registry.register(GetPageOperation);
+        registry.register(ThinkOperation);
+        registry.register(QueryOperation);
+        registry.register(PutPageOperation);
+        registry.register(DeletePageOperation);
+        registry.register(RestorePageOperation);
+        registry.register(PurgeDeletedPagesOperation);
+        registry.register(ListPagesOperation);
+
+        // local_only ops: must return true from both trait AND registry lookup
+        for name in &["put_page", "delete_page", "restore_page", "purge_deleted_pages"] {
+            let op = registry.lookup(name).expect(&format!("{} should be registered", name));
+            assert!(op.local_only(), "{} should be local_only", name);
+        }
+
+        // non-local_only ops: must return false
+        for name in &["get_page", "think", "query", "list_pages"] {
+            let op = registry.lookup(name).expect(&format!("{} should be registered", name));
+            assert!(!op.local_only(), "{} should NOT be local_only", name);
+        }
+    }
+
+    #[test]
+    fn dynamic_local_only_unknown_operation_defaults_to_false() {
+        let registry = OperationRegistry::new();
+
+        // Unknown operations should NOT be treated as local_only.
+        // This ensures the thin-client guard does not block operations
+        // it has never registered — defaulting to permissive.
+        let is_local = registry
+            .lookup("nonexistent_op")
+            .map(|op| op.local_only())
+            .unwrap_or(false);
+        assert!(!is_local, "unknown operation should default to not-local_only");
     }
 }

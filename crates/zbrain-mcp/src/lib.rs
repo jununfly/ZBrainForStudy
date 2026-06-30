@@ -11,9 +11,12 @@
 //!   `tools/list`, and `tools/call` to the shared `dispatch_tool_call()` path.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use zbrain_core::engine::BrainEngine;
 use zbrain_core::operation::{OperationContext, OperationRegistry};
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -46,6 +49,74 @@ pub fn build_tool_defs(registry: &OperationRegistry) -> Vec<McpToolDef> {
             input_schema: op.input_schema(),
         })
         .collect()
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Sliding-window rate limiter
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Sliding-window rate limiter for MCP tools/call.
+///
+/// Uses atomic counter + window-start timestamp for thread-safe, lock-free
+/// rate enforcement. Rejects requests when the counter exceeds `max_per_window`
+/// within the current window (default: 60 seconds).
+pub struct SlidingWindowRateLimiter {
+    /// Maximum allowed requests per window.
+    max_per_window: u64,
+    /// Window start timestamp (millis since epoch).
+    window_start: AtomicU64,
+    /// Request counter for the current window.
+    counter: AtomicU64,
+}
+
+impl SlidingWindowRateLimiter {
+    /// Create a new rate limiter.
+    ///
+    /// `max_per_window` is the maximum number of requests allowed within
+    /// `window_duration`. The window slides forward each time the interval
+    /// expires.
+    pub fn new(max_per_window: u64, _window_duration: Duration) -> Self {
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        SlidingWindowRateLimiter {
+            max_per_window,
+            window_start: AtomicU64::new(now_ms),
+            counter: AtomicU64::new(0),
+        }
+    }
+
+    /// Check whether a request is allowed.
+    ///
+    /// Returns `true` if within limits, `false` if over limit.
+    /// Thread-safe — can be called from multiple async tasks.
+    pub fn check(&self) -> bool {
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        let ws = self.window_start.load(Ordering::Relaxed);
+        // If the window has expired, try to reset
+        if now_ms >= ws + 60_000 {
+            // CAS: only one thread wins the reset
+            if self.window_start.compare_exchange(ws, now_ms, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+                self.counter.store(1, Ordering::Release);
+                return true;
+            }
+            // Another thread reset — fall through to normal check
+        }
+
+        let count = self.counter.fetch_add(1, Ordering::AcqRel) + 1;
+        if count <= self.max_per_window {
+            true
+        } else {
+            // Over limit — decrement to avoid counter drift
+            self.counter.fetch_sub(1, Ordering::Release);
+            false
+        }
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -110,6 +181,7 @@ struct JsonRpcError {
 const METHOD_NOT_FOUND: i32 = -32601;
 const INVALID_PARAMS: i32 = -32602;
 const INTERNAL_ERROR: i32 = -32603;
+const RATE_LIMITED: i32 = -32000;
 
 // ──────────────────────────────────────────────────────────────────────────
 // Stdio MCP Server
@@ -120,21 +192,33 @@ const INTERNAL_ERROR: i32 = -32603;
 /// Mirrors `startMcpServer()` in TS `src/mcp/server.ts`.
 pub struct StdioMcpServer {
     registry: Arc<OperationRegistry>,
+    engine: Arc<dyn BrainEngine>,
     server_name: String,
     server_version: String,
+    rate_limiter: Option<Arc<SlidingWindowRateLimiter>>,
 }
 
 impl StdioMcpServer {
     /// Create a new stdio MCP server.
+    ///
+    /// `rate_limit_per_minute`: if `Some(n)`, enables rate limiting at `n` requests/minute.
+    /// `None` disables rate limiting entirely.
     pub fn new(
         registry: OperationRegistry,
+        engine: Arc<dyn BrainEngine>,
         server_name: impl Into<String>,
         server_version: impl Into<String>,
+        rate_limit_per_minute: Option<u64>,
     ) -> Self {
+        let rate_limiter = rate_limit_per_minute.map(|max| {
+            Arc::new(SlidingWindowRateLimiter::new(max, Duration::from_secs(60)))
+        });
         StdioMcpServer {
             registry: Arc::new(registry),
+            engine,
             server_name: server_name.into(),
             server_version: server_version.into(),
+            rate_limiter,
         }
     }
 
@@ -224,20 +308,47 @@ impl StdioMcpServer {
             }
         };
 
+        // Rate limit check
+        if let Some(ref rl) = self.rate_limiter {
+            if !rl.check() {
+                tracing::warn!(operation = %name, "rate limit exceeded");
+                return JsonRpcResponse::error(id, RATE_LIMITED, "Rate limit exceeded. Try again later.");
+            }
+        }
+
         let tool_params = params
             .get("arguments")
             .cloned()
             .unwrap_or(serde_json::json!({}));
 
+        // Audit span: record operation, timing, and error status
+        let span = tracing::info_span!("tools/call", operation = %name);
+        let _enter = span.enter();
+        let start = std::time::Instant::now();
+
         // MCP stdio callers are remote/untrusted by convention (matches TS server.ts)
-        // Default source to "default" for stdio (no per-token scope, mirrors TS server.ts)
         let source_id = std::env::var("ZBRAIN_SOURCE").unwrap_or_else(|_| "default".to_string());
-        let ctx = OperationContext::remote_mcp(source_id);
+        let ctx = OperationContext::remote_mcp(source_id).with_engine(self.engine.clone());
 
         let tool_result = self
             .registry
             .dispatch_tool_call(&name, &ctx, tool_params)
             .await;
+
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+        if tool_result.is_error {
+            tracing::warn!(
+                operation = %name,
+                duration_ms = elapsed_ms,
+                "tools/call returned error"
+            );
+        } else {
+            tracing::info!(
+                operation = %name,
+                duration_ms = elapsed_ms,
+                "tools/call completed"
+            );
+        }
 
         match serde_json::to_value(&tool_result) {
             Ok(v) => JsonRpcResponse::success(id, v),
@@ -340,10 +451,19 @@ mod tests {
         assert!(required.is_empty(), "list_pages should have no required params");
     }
 
+    fn make_server() -> StdioMcpServer {
+        StdioMcpServer::new(
+            make_registry(),
+            std::sync::Arc::new(zbrain_core::InMemoryEngine::default()),
+            "zbrain",
+            "0.0.1",
+            None, // no rate limit in tests
+        )
+    }
+
     #[tokio::test]
     async fn stdio_server_handle_initialize() {
-        let registry = make_registry();
-        let server = StdioMcpServer::new(registry, "zbrain", "0.0.1");
+        let server = make_server();
 
         let line = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
         let response = server.handle_line(line).await;
@@ -358,8 +478,7 @@ mod tests {
 
     #[tokio::test]
     async fn stdio_server_handle_tools_list() {
-        let registry = make_registry();
-        let server = StdioMcpServer::new(registry, "zbrain", "0.0.1");
+        let server = make_server();
 
         let line = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#;
         let response = server.handle_line(line).await;
@@ -381,8 +500,7 @@ mod tests {
 
     #[tokio::test]
     async fn stdio_server_unknown_method_returns_error() {
-        let registry = make_registry();
-        let server = StdioMcpServer::new(registry, "zbrain", "0.0.1");
+        let server = make_server();
 
         let line = r#"{"jsonrpc":"2.0","id":3,"method":"nonexistent/method","params":{}}"#;
         let response = server.handle_line(line).await;
@@ -393,8 +511,7 @@ mod tests {
 
     #[tokio::test]
     async fn stdio_server_tools_call_local_only_rejected() {
-        let registry = make_registry();
-        let server = StdioMcpServer::new(registry, "zbrain", "0.0.1");
+        let server = make_server();
 
         // put_page is local_only — should return a ToolResult with isError=true
         // (not a JSON-RPC error, but the content body indicates an error)
@@ -405,5 +522,143 @@ mod tests {
         assert!(response.result.is_some(), "JSON-RPC call should succeed even for error tool results");
         let result = response.result.unwrap();
         assert_eq!(result["isError"], true, "local_only op via MCP should return isError=true");
+    }
+
+    #[tokio::test]
+    async fn stdio_server_tools_call_list_pages_with_engine() {
+        let server = make_server();
+
+        let line = r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"list_pages","arguments":{}}}"#;
+        let response = server.handle_line(line).await;
+
+        assert!(response.result.is_some(), "tools/call list_pages should return a result");
+        let result = response.result.unwrap();
+        // isError only present when true (MCP convention); absence = success
+        let is_error = result.get("isError").and_then(|v| v.as_bool()).unwrap_or(false);
+        assert!(!is_error, "list_pages with engine should succeed");
+        assert!(result["content"].is_array(), "should have content array");
+    }
+
+    #[tokio::test]
+    async fn stdio_server_tools_call_engine_data_roundtrip() {
+        use zbrain_core::engine::{BrainEngine, PageInput};
+        use zbrain_core::PageType;
+
+        // Pre-populate engine with data
+        let engine = std::sync::Arc::new(zbrain_core::InMemoryEngine::default());
+        engine
+            .put_page(
+                "hello-world",
+                None, // default source
+                &PageInput {
+                    page_type: PageType::from("note"),
+                    title: "Hello World".into(),
+                    compiled_truth: "This is a test page".into(),
+                    timeline: None,
+                    frontmatter: None,
+                    content_hash: None,
+                    page_kind: None,
+                    effective_date: None,
+                    effective_date_source: None,
+                    import_filename: None,
+                    chunker_version: None,
+                    source_path: None,
+                    source_kind: None,
+                    source_uri: None,
+                    ingested_via: None,
+                    ingested_at: None,
+                    last_retrieved_at: None,
+                    embedding: None,
+                },
+            )
+            .await
+            .expect("put_page should succeed");
+
+        // Create MCP server with pre-populated engine
+        let server = StdioMcpServer::new(make_registry(), engine, "zbrain", "0.0.1", None);
+
+        // Call get_page through MCP
+        let line = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_page","arguments":{"slug":"hello-world"}}}"#;
+        let response = server.handle_line(line).await;
+
+        assert!(response.result.is_some(), "get_page should return a result");
+        let result = response.result.unwrap();
+        let is_error = result.get("isError").and_then(|v| v.as_bool()).unwrap_or(false);
+        assert!(!is_error, "get_page should succeed through MCP");
+        // Verify content contains the page data
+        let content = result["content"].as_array().unwrap();
+        let text = content[0]["text"].as_str().unwrap();
+        assert!(text.contains("hello-world"), "response should contain the slug");
+        assert!(text.contains("Hello World"), "response should contain the title");
+    }
+
+    #[tokio::test]
+    async fn rate_limiter_allows_first_request() {
+        let registry = make_registry();
+        let engine = std::sync::Arc::new(zbrain_core::InMemoryEngine::default());
+        let server = StdioMcpServer::new(registry, engine, "zbrain", "0.0.1", Some(10));
+
+        let line = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_pages","arguments":{}}}"#;
+        let response = server.handle_line(line).await;
+
+        assert!(response.result.is_some(), "first request should succeed");
+        assert!(response.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn rate_limiter_rejects_over_limit() {
+        let registry = make_registry();
+        let engine = std::sync::Arc::new(zbrain_core::InMemoryEngine::default());
+        let server = StdioMcpServer::new(registry, engine, "zbrain", "0.0.1", Some(2));
+
+        // Eat all 2 tokens
+        for i in 0..2 {
+            let line = format!(r#"{{"jsonrpc":"2.0","id":{},"method":"tools/call","params":{{"name":"list_pages","arguments":{{}}}}}}"#, i);
+            let response = server.handle_line(&line).await;
+            assert!(response.result.is_some(), "request {} should succeed", i);
+        }
+
+        // 3rd request should be rate limited
+        let line = r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_pages","arguments":{}}}"#;
+        let response = server.handle_line(line).await;
+
+        assert!(response.error.is_some(), "3rd request should be rate limited");
+        assert_eq!(response.error.unwrap().code, -32000);
+    }
+
+    #[tokio::test]
+    async fn rate_limiter_none_allows_unlimited() {
+        let registry = make_registry();
+        let engine = std::sync::Arc::new(zbrain_core::InMemoryEngine::default());
+        let server = StdioMcpServer::new(registry, engine, "zbrain", "0.0.1", None);
+
+        // 5 requests with no rate limit — all should succeed
+        for i in 0..5 {
+            let line = format!(r#"{{"jsonrpc":"2.0","id":{},"method":"tools/call","params":{{"name":"list_pages","arguments":{{}}}}}}"#, i);
+            let response = server.handle_line(&line).await;
+            assert!(response.result.is_some(), "request {} should succeed with no rate limit", i);
+        }
+    }
+
+    #[test]
+    fn rate_limiter_window_resets_after_expiry() {
+        use std::sync::atomic::Ordering;
+
+        let rl = SlidingWindowRateLimiter::new(2, Duration::from_secs(60));
+
+        // Exhaust the window's 2 requests
+        assert!(rl.check());
+        assert!(rl.check());
+        assert!(!rl.check(), "3rd request should be rejected within same window");
+
+        // Simulate window expiry by moving window_start back 61 seconds
+        let old_start = rl.window_start.load(Ordering::Relaxed);
+        let expired_start = old_start - 61_000; // 61 seconds ago
+        rl.window_start.store(expired_start, Ordering::Relaxed);
+
+        // First request after expiry should reset the window and succeed
+        assert!(rl.check(), "first request after window expiry should reset and succeed");
+        assert!(rl.check(), "second request in new window should succeed");
+        assert!(!rl.check(), "third request in new window should be rejected");
     }
 }

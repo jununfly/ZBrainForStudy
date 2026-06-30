@@ -50,9 +50,22 @@ pub struct Config {
     #[serde(default)]
     pub remote_mcp: Option<RemoteMcpConfig>,
 
+    /// MCP server configuration (only used when running `zbrain serve-mcp`).
+    #[serde(default)]
+    pub mcp: McpConfig,
+
     /// Arbitrary extra config keys (forward compatibility)
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_yaml::Value>,
+}
+
+/// MCP server configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct McpConfig {
+    /// Rate limit for tools/call requests (requests per minute).
+    /// `None` disables rate limiting entirely.
+    #[serde(default)]
+    pub rate_limit: Option<u64>,
 }
 
 /// Remote MCP configuration for thin-client mode.
@@ -215,6 +228,7 @@ impl Default for Config {
             agents: AgentsConfig::default(),
             logging: LoggingConfig::default(),
             remote_mcp: None,
+            mcp: McpConfig::default(),
             extra: BTreeMap::new(),
         }
     }
