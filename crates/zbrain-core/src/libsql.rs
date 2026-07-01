@@ -3181,11 +3181,21 @@ impl OAuthQueries for LibsqlEngine {
         let redirect_uris_json = serde_json::to_string(&req.redirect_uris)
             .map_err(|e| Error::engine(format!("serialize redirect_uris: {e}")))?;
 
+        // Normalise federated_read: default to [source_id] when empty.
+        let federated_read = if req.federated_read.is_empty() {
+            vec![req.source_id.clone()]
+        } else {
+            req.federated_read.clone()
+        };
+        let federated_read_json = serde_json::to_string(&federated_read)
+            .map_err(|e| Error::engine(format!("serialize federated_read: {e}")))?;
+
         conn.execute(
             "INSERT INTO oauth_clients \
              (client_id, client_secret_hash, client_name, redirect_uris, grant_types, scope, \
-              token_endpoint_auth_method, token_ttl, client_id_issued_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+              token_endpoint_auth_method, token_ttl, client_id_issued_at, \
+              source_id, federated_read) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             ::libsql::params![
                 client_id.clone(),
                 secret_hash,
@@ -3200,6 +3210,8 @@ impl OAuthQueries for LibsqlEngine {
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs() as i64,
+                req.source_id,
+                federated_read_json,
             ],
         )
         .await
@@ -3524,6 +3536,31 @@ impl OAuthQueries for LibsqlEngine {
         let scope_refs: Vec<&str> = token_scopes.iter().map(|s| s.as_str()).collect();
         self.issue_oauth_tokens(client_id, &scope_refs, true, None).await
     }
+
+    async fn sweep_expired_tokens(&self) -> Result<u64> {
+        let conn = self.conn().await?;
+        let now = unix_now_secs();
+
+        // Delete expired access + refresh tokens.
+        let tokens_deleted = conn
+            .execute(
+                "DELETE FROM oauth_tokens WHERE expires_at < ?1",
+                ::libsql::params![now],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("sweep_expired_tokens oauth_tokens: {e}")))?;
+
+        // Delete expired authorization codes.
+        let codes_deleted = conn
+            .execute(
+                "DELETE FROM oauth_codes WHERE expires_at < ?1",
+                ::libsql::params![now],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("sweep_expired_tokens oauth_codes: {e}")))?;
+
+        Ok(tokens_deleted + codes_deleted)
+    }
 }
 
 // ── Internal: OAuth token issuance helper ─────────────────────────────────────
@@ -3633,7 +3670,7 @@ impl crate::token_queries::TokenQueries for LibsqlEngine {
         let mut rows = conn
             .query(
                 "SELECT t.client_id, t.scopes, t.expires_at, \
-                        c.client_name, c.source_id \
+                        c.client_name, c.source_id, t.resource, c.federated_read \
                  FROM oauth_tokens t \
                  LEFT JOIN oauth_clients c ON c.client_id = t.client_id \
                  WHERE t.token_hash = ?1 AND t.token_type = 'access'",
@@ -3658,6 +3695,10 @@ impl crate::token_queries::TokenQueries for LibsqlEngine {
             let client_id: String = row.get::<String>(0).unwrap_or_default();
             let client_name: Option<String> = row.get::<String>(3).ok();
             let source_id: Option<String> = row.get::<String>(4).ok();
+            let resource: Option<String> = row.get::<String>(5).ok();
+            let federated_read_raw: Option<String> = row.get::<String>(6).ok();
+            let allowed_sources: Option<Vec<String>> = federated_read_raw
+                .and_then(|s| serde_json::from_str(&s).ok());
 
             return Ok(AuthInfo {
                 token: token.to_string(),
@@ -3666,6 +3707,8 @@ impl crate::token_queries::TokenQueries for LibsqlEngine {
                 scopes,
                 expires_at,
                 source_id,
+                resource,
+                allowed_sources,
             });
         }
 
@@ -3715,6 +3758,8 @@ impl crate::token_queries::TokenQueries for LibsqlEngine {
                 scopes: vec!["read".into(), "write".into(), "admin".into()],
                 expires_at: now_secs + 365 * 24 * 3600,
                 source_id: Some("default".into()),
+                resource: None,
+                allowed_sources: Some(vec!["default".into()]),
             });
         }
 

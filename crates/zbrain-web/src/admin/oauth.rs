@@ -56,6 +56,19 @@ async fn register_client_handler(
         .and_then(|v| v.as_i64())
         .filter(|&t| t > 0);
 
+    // Extract optional source_id / federated_read from request body.
+    let source_id = body
+        .get("sourceId")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .unwrap_or_else(|| "default".to_string());
+
+    let federated_read: Vec<String> = body
+        .get("federatedRead")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+
     let req = RegisterClientRequest {
         name,
         scope: scope_string,
@@ -63,6 +76,8 @@ async fn register_client_handler(
         redirect_uris,
         token_endpoint_auth_method,
         token_ttl,
+        source_id,
+        federated_read,
     };
 
     match state.oauth_queries.register_client(req).await {

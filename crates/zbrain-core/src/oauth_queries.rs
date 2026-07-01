@@ -22,6 +22,18 @@ pub struct RegisterClientRequest {
     pub redirect_uris: Vec<String>,
     pub token_endpoint_auth_method: Option<String>,
     pub token_ttl: Option<i64>,
+    /// Per-client source scope (default: "default").
+    /// Maps to `oauth_clients.source_id`.
+    #[serde(default = "default_source_id")]
+    pub source_id: String,
+    /// Federated read source IDs (default: [source_id]).
+    /// Maps to `oauth_clients.federated_read` as a JSON array.
+    #[serde(default)]
+    pub federated_read: Vec<String>,
+}
+
+fn default_source_id() -> String {
+    "default".to_string()
 }
 
 /// Returned after a client is registered.
@@ -150,4 +162,14 @@ pub trait OAuthQueries: Debug + Send + Sync {
         refresh_token: &str,
         requested_scopes: Option<&[String]>,
     ) -> Result<ExchangeTokens>;
+
+    // ── Maintenance ────────────────────────────────────────────────────
+
+    /// Sweep expired tokens and authorization codes.
+    ///
+    /// Deletes rows from `oauth_tokens` and `oauth_codes` whose `expires_at`
+    /// is in the past. Returns the total number of rows deleted.
+    /// Should be called periodically (e.g. every 5 minutes) to prevent
+    /// unbounded growth.
+    async fn sweep_expired_tokens(&self) -> Result<u64>;
 }

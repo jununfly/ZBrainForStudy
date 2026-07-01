@@ -2117,6 +2117,11 @@ impl OAuthQueries for InMemoryEngine {
             refresh_token: Some(format!("test_rt_{}", client_id)),
         })
     }
+
+    async fn sweep_expired_tokens(&self) -> crate::error::Result<u64> {
+        // InMemory is stateless for OAuth — no sweeping needed.
+        Ok(0)
+    }
 }
 
 // ── TokenQueries InMemory stub ────────────────────────────────────────────────
@@ -2137,6 +2142,8 @@ impl crate::token_queries::TokenQueries for InMemoryEngine {
             scopes: vec!["read".to_string(), "write".to_string()],
             expires_at: i64::MAX,
             source_id: None,
+            resource: None,
+            allowed_sources: None,
         })
     }
 }

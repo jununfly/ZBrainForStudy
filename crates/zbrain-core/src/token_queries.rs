@@ -29,6 +29,11 @@ pub struct AuthInfo {
     pub expires_at: i64,
     /// Per-client source scope from `oauth_clients.source_id`.
     pub source_id: Option<String>,
+    /// Resource URI associated with the token (from `oauth_tokens.resource`).
+    pub resource: Option<String>,
+    /// Federated read source IDs from `oauth_clients.federated_read`.
+    /// Corresponds to `allowedSources` in the TS `AuthInfo`.
+    pub allowed_sources: Option<Vec<String>>,
 }
 
 // ── Error ─────────────────────────────────────────────────────────────────────

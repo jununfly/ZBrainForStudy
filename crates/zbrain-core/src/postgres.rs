@@ -41,6 +41,12 @@ use crate::engine::{
     page_sort_sql, BrainEngine, EngineConfig, EngineKind, GetPageOpts, Page, PageFilters,
     PageInput, PageSort, ResolveSlugsOpts,
 };
+use crate::oauth_queries::{
+    ExchangeTokens, OAuthClientInfo, OAuthQueries, RegisterClientRequest,
+    RegisterClientResponse, RevokeClientResponse, UpdateClientTtlResponse,
+};
+use crate::scope::{has_scope, parse_scope_string};
+use crate::token_queries::{AuthInfo, TokenError, TokenQueries};
 
 /// Split migration SQL into individual statements for Postgres.
 ///
@@ -202,6 +208,7 @@ const MIGRATION_0006: &str = include_str!("../migrations/0006_links.sql");
 const MIGRATION_0007: &str = include_str!("../migrations/0007_takes_min.sql");
 const MIGRATION_0008: &str = include_str!("../migrations/0008_files.sql");
 const MIGRATION_0009: &str = include_str!("../migrations/0009_raw_data_and_page_versions.sql");
+const MIGRATION_0010: &str = include_str!("../migrations/0010_oauth_tables.sql");
 
 /// Global migration registry for Postgres backend. Built once at runtime first use.
 /// All 9 existing migrations ported with zero SQL changes.
@@ -252,6 +259,11 @@ pub static POSTGRES_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 9,
         name: "raw_data_and_page_versions_pg",
         sql: MIGRATION_0009,
+    }));
+    registry.add(Box::new(PostgresMigration {
+        version: 10,
+        name: "oauth_tables",
+        sql: MIGRATION_0010,
     }));
 
     registry
@@ -2057,5 +2069,542 @@ fn parse_rfc3339_opt(
         Some(s) => sqlx::types::chrono::DateTime::parse_from_rfc3339(s)
             .map(|dt| Some(dt.with_timezone(&sqlx::types::chrono::Utc)))
             .map_err(|e| Error::engine(format!("{field}: invalid RFC3339 {s:?}: {e}"))),
+    }
+}
+
+// ── OAuthQueries PostgresEngine implementation ─────────────────────────────
+
+/// SHA-256 hex digest of bytes — matches the libsql helper.
+fn sha256_hex(data: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(data);
+    format!("{:x}", h.finalize())
+}
+
+/// Current Unix timestamp in seconds (i64, compatible with BIGINT).
+fn unix_now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
+#[async_trait]
+impl OAuthQueries for PostgresEngine {
+    async fn register_client(
+        &self,
+        req: RegisterClientRequest,
+    ) -> Result<RegisterClientResponse> {
+        let pool = self.pool()?;
+        let client_id = uuid::Uuid::new_v4().to_string();
+        let client_secret = uuid::Uuid::new_v4().to_string();
+        let secret_hash = sha256_hex(client_secret.as_bytes());
+
+        let grant_types_json = serde_json::to_string(&req.grant_types)
+            .map_err(|e| Error::engine(format!("serialize grant_types: {e}")))?;
+        let redirect_uris_json = serde_json::to_string(&req.redirect_uris)
+            .map_err(|e| Error::engine(format!("serialize redirect_uris: {e}")))?;
+
+        let federated_read = if req.federated_read.is_empty() {
+            vec![req.source_id.clone()]
+        } else {
+            req.federated_read.clone()
+        };
+        let federated_read_json = serde_json::to_string(&federated_read)
+            .map_err(|e| Error::engine(format!("serialize federated_read: {e}")))?;
+
+        let now_secs = unix_now_secs();
+
+        sqlx::query(
+            "INSERT INTO oauth_clients \
+             (client_id, client_secret_hash, client_name, redirect_uris, grant_types, scope, \
+              token_endpoint_auth_method, token_ttl, client_id_issued_at, \
+              source_id, federated_read) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+        )
+        .bind(&client_id)
+        .bind(&secret_hash)
+        .bind(&req.name)
+        .bind(&redirect_uris_json)
+        .bind(&grant_types_json)
+        .bind(&req.scope)
+        .bind(&req.token_endpoint_auth_method)
+        .bind(req.token_ttl)
+        .bind(now_secs)
+        .bind(&req.source_id)
+        .bind(&federated_read_json)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("register_client insert: {e}")))?;
+
+        Ok(RegisterClientResponse {
+            client_id,
+            client_secret,
+        })
+    }
+
+    async fn update_client_ttl(
+        &self,
+        client_id: &str,
+        ttl: Option<i64>,
+    ) -> Result<UpdateClientTtlResponse> {
+        let pool = self.pool()?;
+        let db_ttl = ttl.filter(|&v| v > 0);
+
+        sqlx::query("UPDATE oauth_clients SET token_ttl = $1 WHERE client_id = $2")
+            .bind(db_ttl)
+            .bind(client_id)
+            .execute(pool)
+            .await
+            .map_err(|e| Error::engine(format!("update_client_ttl: {e}")))?;
+
+        Ok(UpdateClientTtlResponse {
+            updated: true,
+            token_ttl: db_ttl,
+        })
+    }
+
+    async fn revoke_client(&self, client_id: &str) -> Result<RevokeClientResponse> {
+        let pool = self.pool()?;
+
+        // Soft-delete the client (only if not already deleted)
+        sqlx::query(
+            "UPDATE oauth_clients SET deleted_at = NOW() \
+             WHERE client_id = $1 AND deleted_at IS NULL",
+        )
+        .bind(client_id)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("revoke_client soft-delete: {e}")))?;
+
+        // Revoke all active tokens for this client
+        sqlx::query("DELETE FROM oauth_tokens WHERE client_id = $1")
+            .bind(client_id)
+            .execute(pool)
+            .await
+            .map_err(|e| Error::engine(format!("revoke_client delete tokens: {e}")))?;
+
+        Ok(RevokeClientResponse { revoked: true })
+    }
+
+    async fn get_client(&self, client_id: &str) -> Result<Option<OAuthClientInfo>> {
+        let pool = self.pool()?;
+
+        let row = sqlx::query(
+            "SELECT client_id, client_secret_hash, client_name, redirect_uris, \
+             grant_types, scope, token_endpoint_auth_method, \
+             client_id_issued_at, client_secret_expires_at, token_ttl \
+             FROM oauth_clients WHERE client_id = $1",
+        )
+        .bind(client_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_client query: {e}")))?;
+
+        let row = match row {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+
+        let redirect_uris_json: String = row.try_get("redirect_uris").unwrap_or_default();
+        let grant_types_json: String = row.try_get("grant_types").unwrap_or_default();
+        let redirect_uris: Vec<String> =
+            serde_json::from_str(&redirect_uris_json).unwrap_or_default();
+        let grant_types: Vec<String> = serde_json::from_str(&grant_types_json)
+            .unwrap_or_else(|_| vec!["client_credentials".to_string()]);
+
+        Ok(Some(OAuthClientInfo {
+            client_id: row.try_get("client_id").unwrap_or_default(),
+            client_secret_hash: row.try_get("client_secret_hash").ok(),
+            client_name: row.try_get("client_name").unwrap_or_default(),
+            redirect_uris,
+            grant_types,
+            scope: row.try_get("scope").ok(),
+            token_endpoint_auth_method: row.try_get("token_endpoint_auth_method").ok(),
+            client_id_issued_at: row.try_get("client_id_issued_at").ok(),
+            client_secret_expires_at: row.try_get("client_secret_expires_at").ok(),
+            token_ttl: row.try_get("token_ttl").ok(),
+        }))
+    }
+
+    async fn exchange_client_credentials(
+        &self,
+        client_id: &str,
+        client_secret: &str,
+        requested_scope: Option<&str>,
+    ) -> Result<ExchangeTokens> {
+        let client = self
+            .get_client(client_id)
+            .await?
+            .ok_or_else(|| Error::engine("Client not found"))?;
+
+        // Check revoked (soft-deleted).
+        {
+            let pool = self.pool()?;
+            let row = sqlx::query(
+                "SELECT 1 FROM oauth_clients WHERE client_id = $1 AND deleted_at IS NOT NULL",
+            )
+            .bind(client_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| Error::engine(format!("check revoked: {e}")))?;
+            if row.is_some() {
+                return Err(Error::engine("Client has been revoked"));
+            }
+        }
+
+        // Check grant type.
+        if !client.grant_types.iter().any(|g| g == "client_credentials") {
+            return Err(Error::engine(
+                "Client credentials grant not authorized for this client",
+            ));
+        }
+
+        // Verify secret.
+        let presented_hash = sha256_hex(client_secret.as_bytes());
+        let stored_hash = client.client_secret_hash.as_deref().unwrap_or("");
+        if presented_hash != stored_hash {
+            return Err(Error::engine("Invalid client secret"));
+        }
+
+        // Determine scopes.
+        let allowed_scopes = parse_scope_string(client.scope.as_deref().unwrap_or("read"));
+        let requested_scopes = match requested_scope {
+            Some(s) if !s.is_empty() => parse_scope_string(s),
+            _ => allowed_scopes.clone(),
+        };
+        let granted_scopes: Vec<&str> = requested_scopes
+            .iter()
+            .filter(|s| has_scope(&allowed_scopes, s.as_ref()))
+            .map(|s| s.as_str())
+            .collect();
+
+        let ttl_override = client.token_ttl.filter(|&t| t > 0);
+
+        let tokens = self
+            .issue_oauth_tokens(client_id, &granted_scopes, false, ttl_override)
+            .await?;
+        Ok(tokens)
+    }
+
+    async fn verify_confidential_client_secret(
+        &self,
+        client_id: &str,
+        presented_secret: &str,
+    ) -> Result<OAuthClientInfo> {
+        let client = self
+            .get_client(client_id)
+            .await?
+            .ok_or_else(|| Error::engine("Invalid client"))?;
+
+        if client.client_secret_hash.is_none() {
+            return Err(Error::engine("Invalid client"));
+        }
+
+        let presented_hash = sha256_hex(presented_secret.as_bytes());
+        let stored_hash = client.client_secret_hash.as_deref().unwrap_or("");
+        if presented_hash != stored_hash {
+            return Err(Error::engine("Invalid client"));
+        }
+
+        // Soft-delete probe.
+        {
+            let pool = self.pool()?;
+            let row = sqlx::query(
+                "SELECT 1 FROM oauth_clients WHERE client_id = $1 AND deleted_at IS NOT NULL",
+            )
+            .bind(client_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| Error::engine(format!("check revoked: {e}")))?;
+            if row.is_some() {
+                return Err(Error::engine("Client has been revoked"));
+            }
+        }
+
+        Ok(client)
+    }
+
+    async fn exchange_authorization_code(
+        &self,
+        client_id: &str,
+        authorization_code: &str,
+        redirect_uri: Option<&str>,
+    ) -> Result<ExchangeTokens> {
+        let code_hash = sha256_hex(authorization_code.as_bytes());
+        let now = unix_now_secs();
+        let pool = self.pool()?;
+
+        let row = if let Some(redirect) = redirect_uri {
+            sqlx::query(
+                "DELETE FROM oauth_codes \
+                 WHERE code_hash = $1 AND client_id = $2 AND redirect_uri = $3 AND expires_at > $4 \
+                 RETURNING client_id, scopes, resource",
+            )
+            .bind(&code_hash)
+            .bind(client_id)
+            .bind(redirect)
+            .bind(now)
+            .fetch_optional(pool)
+            .await
+        } else {
+            sqlx::query(
+                "DELETE FROM oauth_codes \
+                 WHERE code_hash = $1 AND client_id = $2 AND expires_at > $3 \
+                 RETURNING client_id, scopes, resource",
+            )
+            .bind(&code_hash)
+            .bind(client_id)
+            .bind(now)
+            .fetch_optional(pool)
+            .await
+        }
+        .map_err(|e| Error::engine(format!("exchange_authorization_code delete: {e}")))?;
+
+        let row = row.ok_or_else(|| Error::engine("Authorization code not found or expired"))?;
+
+        let scopes_json: String = row.try_get("scopes").unwrap_or_default();
+        let scopes: Vec<String> = serde_json::from_str(&scopes_json).unwrap_or_default();
+        let granted: Vec<&str> = scopes.iter().map(|s| s.as_str()).collect();
+
+        self.issue_oauth_tokens(client_id, &granted, true, None).await
+    }
+
+    async fn exchange_refresh_token(
+        &self,
+        client_id: &str,
+        refresh_token: &str,
+        requested_scopes: Option<&[String]>,
+    ) -> Result<ExchangeTokens> {
+        let token_hash = sha256_hex(refresh_token.as_bytes());
+        let now = unix_now_secs();
+        let pool = self.pool()?;
+
+        let row = sqlx::query(
+            "DELETE FROM oauth_tokens \
+             WHERE token_hash = $1 AND token_type = 'refresh' AND client_id = $2 \
+             RETURNING client_id, scopes, expires_at",
+        )
+        .bind(&token_hash)
+        .bind(client_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::engine(format!("exchange_refresh_token delete: {e}")))?;
+
+        let row = row.ok_or_else(|| Error::engine("Refresh token not found"))?;
+
+        let expires_at: i64 = row.try_get("expires_at").unwrap_or(0);
+        if expires_at < now {
+            return Err(Error::engine("Refresh token expired"));
+        }
+
+        let scopes_json: String = row.try_get("scopes").unwrap_or_default();
+        let granted_scopes: Vec<String> = serde_json::from_str(&scopes_json).unwrap_or_default();
+
+        let token_scopes: Vec<String> = match requested_scopes {
+            Some(req) if !req.is_empty() => {
+                for s in req {
+                    if !has_scope(
+                        &granted_scopes
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>(),
+                        s.as_str(),
+                    ) {
+                        return Err(Error::engine(
+                            "Requested scope exceeds refresh token grant",
+                        ));
+                    }
+                }
+                req.to_vec()
+            }
+            _ => granted_scopes.clone(),
+        };
+
+        let scope_refs: Vec<&str> = token_scopes.iter().map(|s| s.as_str()).collect();
+        self.issue_oauth_tokens(client_id, &scope_refs, true, None).await
+    }
+
+    async fn sweep_expired_tokens(&self) -> Result<u64> {
+        let pool = self.pool()?;
+        let now = unix_now_secs();
+
+        let tokens_deleted = sqlx::query("DELETE FROM oauth_tokens WHERE expires_at < $1")
+            .bind(now)
+            .execute(pool)
+            .await
+            .map_err(|e| Error::engine(format!("sweep_expired_tokens oauth_tokens: {e}")))?;
+
+        let codes_deleted = sqlx::query("DELETE FROM oauth_codes WHERE expires_at < $1")
+            .bind(now)
+            .execute(pool)
+            .await
+            .map_err(|e| Error::engine(format!("sweep_expired_tokens oauth_codes: {e}")))?;
+
+        Ok(tokens_deleted.rows_affected() + codes_deleted.rows_affected())
+    }
+}
+
+// ── Internal: OAuth token issuance helper ─────────────────────────────────
+
+impl PostgresEngine {
+    async fn issue_oauth_tokens(
+        &self,
+        client_id: &str,
+        scopes: &[&str],
+        include_refresh: bool,
+        ttl_override: Option<i64>,
+    ) -> Result<ExchangeTokens> {
+        let pool = self.pool()?;
+        let access_token = format!("zbrain_at_{}", uuid::Uuid::new_v4().simple());
+        let access_hash = sha256_hex(access_token.as_bytes());
+        let now = unix_now_secs();
+        let effective_ttl = ttl_override.unwrap_or(3600);
+        let access_expiry = now + effective_ttl;
+        let scopes_json = serde_json::to_string(&scopes)
+            .map_err(|e| Error::engine(format!("serialize scopes: {e}")))?;
+        let scope_string = scopes.join(" ");
+
+        sqlx::query(
+            "INSERT INTO oauth_tokens (token_hash, token_type, client_id, scopes, expires_at) \
+             VALUES ($1, 'access', $2, $3, $4)",
+        )
+        .bind(&access_hash)
+        .bind(client_id)
+        .bind(&scopes_json)
+        .bind(access_expiry)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("issue_oauth_tokens insert access: {e}")))?;
+
+        let mut refresh_token: Option<String> = None;
+
+        if include_refresh {
+            let rt = format!("zbrain_rt_{}", uuid::Uuid::new_v4().simple());
+            let rt_hash = sha256_hex(rt.as_bytes());
+            let refresh_expiry = now + 30 * 24 * 3600;
+
+            sqlx::query(
+                "INSERT INTO oauth_tokens (token_hash, token_type, client_id, scopes, expires_at) \
+                 VALUES ($1, 'refresh', $2, $3, $4)",
+            )
+            .bind(&rt_hash)
+            .bind(client_id)
+            .bind(&scopes_json)
+            .bind(refresh_expiry)
+            .execute(pool)
+            .await
+            .map_err(|e| Error::engine(format!("issue_oauth_tokens insert refresh: {e}")))?;
+
+            refresh_token = Some(rt);
+        }
+
+        Ok(ExchangeTokens {
+            access_token,
+            token_type: "bearer".to_string(),
+            expires_in: effective_ttl,
+            scope: scope_string,
+            refresh_token,
+        })
+    }
+}
+
+// ── TokenQueries PostgresEngine implementation ────────────────────────────
+
+#[async_trait]
+impl TokenQueries for PostgresEngine {
+    async fn verify_access_token(
+        &self,
+        token: &str,
+    ) -> std::result::Result<AuthInfo, TokenError> {
+        let token_hash = sha256_hex(token.as_bytes());
+
+        let pool = self.pool().map_err(|e| TokenError::Storage(e.to_string()))?;
+
+        let now_secs = unix_now_secs();
+
+        let row = sqlx::query(
+            "SELECT t.client_id, t.scopes, t.expires_at, \
+                    c.client_name, c.source_id, t.resource, c.federated_read \
+             FROM oauth_tokens t \
+             LEFT JOIN oauth_clients c ON c.client_id = t.client_id \
+             WHERE t.token_hash = $1 AND t.token_type = 'access'",
+        )
+        .bind(&token_hash)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| TokenError::Storage(e.to_string()))?;
+
+        if let Some(row) = row {
+            let expires_at: i64 = row.try_get("expires_at").unwrap_or(0);
+            if expires_at == 0 || expires_at < now_secs {
+                return Err(TokenError::Expired);
+            }
+
+            let scopes_raw: String = row.try_get("scopes").unwrap_or_default();
+            let scopes: Vec<String> = serde_json::from_str(&scopes_raw).unwrap_or_default();
+
+            let client_id: String = row.try_get("client_id").unwrap_or_default();
+            let client_name: Option<String> = row.try_get("client_name").ok();
+            let source_id: Option<String> = row.try_get("source_id").ok();
+            let resource: Option<String> = row.try_get("resource").ok();
+            let federated_read_raw: Option<String> = row.try_get("federated_read").ok();
+            let allowed_sources: Option<Vec<String>> = federated_read_raw
+                .and_then(|s| serde_json::from_str(&s).ok());
+
+            return Ok(AuthInfo {
+                token: token.to_string(),
+                client_id,
+                client_name,
+                scopes,
+                expires_at,
+                source_id,
+                resource,
+                allowed_sources,
+            });
+        }
+
+        // Fallback: legacy access_tokens table.
+        let legacy = sqlx::query(
+            "SELECT name FROM access_tokens \
+             WHERE token_hash = $1 AND revoked_at IS NULL",
+        )
+        .bind(&token_hash)
+        .fetch_optional(pool)
+        .await;
+
+        match legacy {
+            Ok(Some(row)) => {
+                let name: String = row.try_get("name").unwrap_or_default();
+                // Update last_used_at (best-effort).
+                let _ = sqlx::query(
+                    "UPDATE access_tokens SET last_used_at = NOW() WHERE token_hash = $1",
+                )
+                .bind(&token_hash)
+                .execute(pool)
+                .await;
+
+                Ok(AuthInfo {
+                    token: token.to_string(),
+                    client_id: name.clone(),
+                    client_name: Some(name),
+                    scopes: vec!["read".into(), "write".into(), "admin".into()],
+                    expires_at: now_secs + 365 * 24 * 3600,
+                    source_id: Some("default".into()),
+                    resource: None,
+                    allowed_sources: Some(vec!["default".into()]),
+                })
+            }
+            Ok(None) => Err(TokenError::Invalid),
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("no such table") || msg.contains("does not exist") {
+                    Err(TokenError::Invalid)
+                } else {
+                    Err(TokenError::Storage(msg))
+                }
+            }
+        }
     }
 }

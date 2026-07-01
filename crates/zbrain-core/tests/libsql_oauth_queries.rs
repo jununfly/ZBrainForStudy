@@ -50,6 +50,8 @@ async fn register_client_persists_and_returns_id_and_secret() {
             redirect_uris: vec![],
             token_endpoint_auth_method: Some("client_secret_basic".into()),
             token_ttl: Some(3600),
+            source_id: "default".into(),
+            federated_read: vec![],
         })
         .await
         .expect("register_client should succeed");
@@ -74,6 +76,8 @@ async fn register_client_persists_row_in_oauth_clients_table() {
             redirect_uris: vec!["http://localhost/callback".into()],
             token_endpoint_auth_method: None,
             token_ttl: None,
+            source_id: "default".into(),
+            federated_read: vec![],
         })
         .await
         .expect("register_client should succeed");
@@ -112,6 +116,8 @@ async fn update_client_ttl_persists_and_returns() {
             redirect_uris: vec![],
             token_endpoint_auth_method: None,
             token_ttl: None,
+            source_id: "default".into(),
+            federated_read: vec![],
         })
         .await
         .unwrap();
@@ -151,6 +157,8 @@ async fn update_client_ttl_null_resets_to_null() {
             redirect_uris: vec![],
             token_endpoint_auth_method: None,
             token_ttl: Some(3600),
+            source_id: "default".into(),
+            federated_read: vec![],
         })
         .await
         .unwrap();
@@ -191,6 +199,8 @@ async fn revoke_client_soft_deletes_and_clears_tokens() {
             redirect_uris: vec![],
             token_endpoint_auth_method: None,
             token_ttl: None,
+            source_id: "default".into(),
+            federated_read: vec![],
         })
         .await
         .unwrap();
@@ -250,6 +260,8 @@ async fn revoked_client_cannot_be_revoked_again() {
             redirect_uris: vec![],
             token_endpoint_auth_method: None,
             token_ttl: None,
+            source_id: "default".into(),
+            federated_read: vec![],
         })
         .await
         .unwrap();

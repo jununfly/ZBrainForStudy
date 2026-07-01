@@ -1741,7 +1741,7 @@
       "parent": "1-6-4",
       "children": [],
       "decisions": [],
-      "notes": "Blocked by #83",
+      "notes": "DB-backed OAuthQueries/TokenQueries 已就绪（1-6-4-6 completed）。仍需 OAuth scope hierarchy (#83) 完成后才能实现 scope enforcement。",
       "issues": [
         {
           "id": "85",
@@ -1770,7 +1770,7 @@
     "1-6-4-5": {
       "id": "1-6-4-5",
       "label": "Port magic-link auth (POST issue-magic-link + GET auth/:token with nonce state machine)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-6-4",
       "children": [],
@@ -1796,7 +1796,7 @@
           "note": "https://github.com/jununfly/ZBrain/issues/86#issuecomment-breakdown"
         }
       ],
-      "notes": "Grilled + sliced into 5 sub-issues: #89 MagicLinkAuth core+rate limit, #90 create_session_with_ttl, #91 issue-magic-link handler, #92 auth/:token handler, #93 TS cleanup. Parent #86 updated with breakdown table. Architecture: independent MagicLinkAuth struct (not embedded in AdminAuth).",
+      "notes": "所有 5 个 sub-issues 已完成：magic_link.rs (9 单测), create_session_with_ttl (2 单测), issue-magic-link handler (3 集成测), auth/:token handler (4 集成测), serve-http.ts TS cleanup。共计 57 个 Rust 测试全部通过。提交: 076588a。",
       "issues": [
         {
           "id": "86",
@@ -1808,17 +1808,33 @@
     "1-6-4-6": {
       "id": "1-6-4-6",
       "label": "Implement DB-backed OAuthQueries and TokenQueries trait implementations (libsql + postgres)",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-6-4",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "缺失字段有哪些？",
+          "answer": "RegisterClientRequest 缺 source_id + federated_read；AuthInfo 缺 resource + allowed_sources；OAuthQueries trait 缺 sweep_expired_tokens() 方法",
+          "note": "3 项 gap 均已在本次修复中补齐。"
+        },
+        {
+          "q": "Postgres OAuth 表结构？",
+          "answer": "新建 migrations/0010_oauth_tables.sql，使用 PG 原生类型（BIGINT, TIMESTAMPTZ, NUMERIC(10,2)），与 SQLite schema 字段一致但类型适配",
+          "note": "三个表：oauth_clients, oauth_tokens, oauth_codes。含 source_id/federated_read/resource 等新字段的索引。"
+        },
+        {
+          "q": "sweep_expired_tokens 设计？",
+          "answer": "OAuthQueries trait 新增方法，LibsqlEngine 和 PostgresEngine 各自实现。删除 oauth_tokens 和 oauth_codes 中已过期的行，返回删除行数。",
+          "note": "未设置调度/定时器——先实现核心逻辑，调用方后续添加。"
+        }
+      ],
+      "notes": "全部完成。RegisterClientRequest 新增 source_id/federated_read；AuthInfo 新增 resource/allowed_sources；sweep_expired_tokens 加入 trait + 双引擎实现；PostgresEngine 新增完整 OAuthQueries + TokenQueries impl（~300 行 sqlx），含 migration 0010。所有测试套件零失败。对应 GitHub issues #92-#95（子任务）。"
     }
   },
   "metadata": {
     "created": "2026-06-23 18:09:00",
-    "updated": "2026-07-01 14:51:13",
+    "updated": "2026-07-01 11:50:00",
     "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_ROADMAP.md"
   }
 }

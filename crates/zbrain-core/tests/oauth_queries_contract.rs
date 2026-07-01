@@ -22,6 +22,8 @@ async fn register_client_returns_id_and_secret() {
             redirect_uris: vec![],
             token_endpoint_auth_method: Some("client_secret_basic".into()),
             token_ttl: Some(3600),
+            source_id: "default".into(),
+            federated_read: vec![],
         })
         .await;
     assert!(result.is_ok(), "register_client should not error");
