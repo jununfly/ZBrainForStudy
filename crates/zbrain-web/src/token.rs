@@ -93,7 +93,16 @@ async fn handle_client_credentials(
         }
     };
 
-    let client_secret = params.get("client_secret").map(|s| s.as_str()).unwrap_or("");
+    let client_secret = match params.get("client_secret") {
+        Some(s) if !s.is_empty() => s.as_str(),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "invalid_request", "error_description": "client_id and client_secret required"})),
+            ).into_response();
+        }
+    };
+
     let scope = params.get("scope").map(|s| s.as_str());
 
     match state.oauth_queries.exchange_client_credentials(client_id, client_secret, scope).await {
@@ -103,14 +112,17 @@ async fn handle_client_credentials(
             if msg.contains("not found") || msg.contains("secret") || msg.contains("revoked") {
                 (StatusCode::UNAUTHORIZED, Json(json!({
                     "error": "invalid_client",
+                    "error_description": msg,
                 }))).into_response()
             } else if msg.contains("not authorized") {
                 (StatusCode::BAD_REQUEST, Json(json!({
                     "error": "unauthorized_client",
+                    "error_description": msg,
                 }))).into_response()
             } else {
                 (StatusCode::BAD_REQUEST, Json(json!({
                     "error": "invalid_grant",
+                    "error_description": msg,
                 }))).into_response()
             }
         }
@@ -133,7 +145,7 @@ async fn handle_confidential_exchange(
         None => {
             return (
                 StatusCode::UNAUTHORIZED,
-                Json(json!({"error": "invalid_client"})),
+                Json(json!({"error": "invalid_client", "error_description": "client authentication required"})),
             ).into_response();
         }
     };
@@ -143,7 +155,7 @@ async fn handle_confidential_exchange(
         None => {
             return (
                 StatusCode::UNAUTHORIZED,
-                Json(json!({"error": "invalid_client"})),
+                Json(json!({"error": "invalid_client", "error_description": "client authentication required"})),
             ).into_response();
         }
     };
@@ -155,11 +167,16 @@ async fn handle_confidential_exchange(
         .await
     {
         Ok(c) => c,
-        Err(_) => {
+        Err(e) => {
+            let msg = e.to_string();
             return (
                 StatusCode::UNAUTHORIZED,
-                Json(json!({"error": "invalid_client"})),
-            ).into_response();
+                Json(json!({
+                    "error": "invalid_client",
+                    "error_description": msg,
+                })),
+            )
+                .into_response();
         }
     };
 
@@ -182,10 +199,20 @@ async fn handle_confidential_exchange(
                 .await
             {
                 Ok(tokens) => token_response(tokens),
-                Err(_) => (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({"error": "invalid_grant"})),
-                ).into_response(),
+                Err(e) => {
+                    let msg = e.to_string();
+                    if msg.contains("Invalid client") || msg.contains("revoked") {
+                        (StatusCode::UNAUTHORIZED, Json(json!({
+                            "error": "invalid_client",
+                            "error_description": msg,
+                        }))).into_response()
+                    } else {
+                        (StatusCode::BAD_REQUEST, Json(json!({
+                            "error": "invalid_grant",
+                            "error_description": msg,
+                        }))).into_response()
+                    }
+                }
             }
         }
         "refresh_token" => {
@@ -212,10 +239,20 @@ async fn handle_confidential_exchange(
                 .await
             {
                 Ok(tokens) => token_response(tokens),
-                Err(_) => (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({"error": "invalid_grant"})),
-                ).into_response(),
+                Err(e) => {
+                    let msg = e.to_string();
+                    if msg.contains("Invalid client") || msg.contains("revoked") {
+                        (StatusCode::UNAUTHORIZED, Json(json!({
+                            "error": "invalid_client",
+                            "error_description": msg,
+                        }))).into_response()
+                    } else {
+                        (StatusCode::BAD_REQUEST, Json(json!({
+                            "error": "invalid_grant",
+                            "error_description": msg,
+                        }))).into_response()
+                    }
+                }
             }
         }
         _ => unreachable!(),
@@ -502,5 +539,122 @@ mod tests {
     fn base64_encode(input: &str) -> String {
         use base64::Engine;
         base64::engine::general_purpose::STANDARD.encode(input.as_bytes())
+    }
+
+    // ── client_credentials missing client_secret ────────────────────────
+
+    #[tokio::test]
+    async fn client_credentials_missing_client_secret_returns_400() {
+        let (port, _state) = start_token_server().await;
+        let client = reqwest::Client::new();
+
+        let resp = client
+            .post(format!("http://127.0.0.1:{port}/token"))
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body("grant_type=client_credentials&client_id=test")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["error"], "invalid_request");
+        assert!(body["error_description"].as_str().unwrap().contains("client_secret"));
+    }
+
+    #[tokio::test]
+    async fn client_credentials_missing_client_secret_empty_returns_400() {
+        let (port, _state) = start_token_server().await;
+        let client = reqwest::Client::new();
+
+        let resp = client
+            .post(format!("http://127.0.0.1:{port}/token"))
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body("grant_type=client_credentials&client_id=test&client_secret=")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["error"], "invalid_request");
+    }
+
+    // ── error_description in error responses ────────────────────────────
+
+    #[tokio::test]
+    async fn authorization_code_missing_client_auth_returns_error_description() {
+        let (port, _state) = start_token_server().await;
+        let client = reqwest::Client::new();
+
+        let resp = client
+            .post(format!("http://127.0.0.1:{port}/token"))
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body("grant_type=authorization_code&code=abc123")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["error"], "invalid_client");
+        assert!(body.get("error_description").and_then(|v| v.as_str()).is_some());
+    }
+
+    #[tokio::test]
+    async fn authorization_code_missing_code_error_includes_description() {
+        let (port, _state) = start_token_server().await;
+        let client = reqwest::Client::new();
+
+        let resp = client
+            .post(format!("http://127.0.0.1:{port}/token"))
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body("grant_type=authorization_code&client_id=test&client_secret=secret")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["error"], "invalid_request");
+        assert!(body["error_description"].as_str().unwrap().contains("code"));
+    }
+
+    #[tokio::test]
+    async fn refresh_token_missing_token_error_includes_description() {
+        let (port, _state) = start_token_server().await;
+        let client = reqwest::Client::new();
+
+        let resp = client
+            .post(format!("http://127.0.0.1:{port}/token"))
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body("grant_type=refresh_token&client_id=test&client_secret=secret")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["error"], "invalid_request");
+        assert!(body["error_description"].as_str().unwrap().contains("refresh_token"));
+    }
+
+    #[tokio::test]
+    async fn unsupported_grant_type_includes_description() {
+        let (port, _state) = start_token_server().await;
+        let client = reqwest::Client::new();
+
+        let resp = client
+            .post(format!("http://127.0.0.1:{port}/token"))
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body("grant_type=password")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["error"], "unsupported_grant_type");
+        assert!(body.get("error_description").and_then(|v| v.as_str()).is_some());
     }
 }

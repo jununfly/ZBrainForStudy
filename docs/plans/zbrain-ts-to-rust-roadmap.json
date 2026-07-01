@@ -1758,7 +1758,7 @@
       "parent": "1-6-4",
       "children": [],
       "decisions": [],
-      "notes": "Handler 已在 crates/zbrain-web/src/token.rs 实现（client_credentials + authorization_code + refresh_token 三种 grant type）。缺失的是 DB-backed OAuthQueries/TokenQueries trait 实现（见新节点 1-6-4-6）。",
+      "notes": "Handler 已在 crates/zbrain-web/src/token.rs 实现（client_credentials + authorization_code + refresh_token 三种 grant type）。缺失的是 DB-backed OAuthQueries/TokenQueries trait 实现（见新节点 1-6-4-6）。2026-07-01 enhanced: added error_description to all error responses (RFC 6749 compliance), client_secret required validation in client_credentials, proper error mapping (invalid_client 401 / invalid_grant 400). 19 tests pass.",
       "issues": [
         {
           "id": "84",
