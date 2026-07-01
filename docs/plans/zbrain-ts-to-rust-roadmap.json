@@ -1511,7 +1511,7 @@
     "1-6-4": {
       "id": "1-6-4",
       "label": "MCP HTTP dispatch with OAuth 2.1 and webhooks",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-6",
       "children": [
@@ -1544,7 +1544,7 @@
           "note": "依赖分析：magic-link 不依赖任何 OAuth DB；MCP dispatch 需要 bearer auth → 依赖 OAuthQueries DB impl"
         }
       ],
-      "notes": "拆细粒度施工。TS 端仍有 ~28 条路由，其中 ~18 条已在 Rust 有等价物（1-6-2 产物），属重复代码待清理。真正待迁：/mcp 分发、/token 自定义处理、magic-link、webhook。最后统一删除 TS 残留。"
+      "notes": "Slice 1-6-4 COMPLETED. All 6 sub-nodes finished: magic-link (5) -> DB OAuthQueries (6) -> MCP dispatch (3) -> webhook (2) -> /token enhancements (4) -> TS cleanup (1). TS web-backend fully retired; Rust zbrain-web is the sole HTTP server."
     },
     "1-6-2-1": {
       "id": "1-6-2-1",
@@ -1702,12 +1702,18 @@
     "1-6-4-1": {
       "id": "1-6-4-1",
       "label": "Final TS cleanup: delete serve-http.ts and all remaining TS web-backend modules after Rust parity",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-6-4",
       "children": [],
-      "decisions": [],
-      "notes": "Blocked by #84, #85, #86, #87",
+      "decisions": [
+        {
+          "q": "删除范围？",
+          "answer": "4 源文件 + 2 构建脚本 + 12 测试文件 + 部分修改 3 引用文件",
+          "note": "源文件: serve-http.ts, timing-safe.ts, svg-renderer.ts, admin-embedded.ts。构建: build-admin-embedded.ts, check-admin-embedded.sh。测试: 11 serve-http 相关测试 + admin-embed-spawn。保留 oauth-provider.ts (auth.ts 仍用)、scope.ts (测试仍用)、ingestion/types.ts (capture.ts 仍用)。cli.ts 移除 'serve' from CLI_ONLY。package.json 移除 admin-embedded scripts。fix-wave-structural.test.ts 删除 admin-embed + admin PKCE describe blocks。"
+        }
+      ],
+      "notes": "All TS web-backend functionality fully ported to Rust (zbrain-web crate). Deleted 4 source files, 2 build scripts, 12 test files. Modified cli.ts, package.json, fix-wave-structural.test.ts. Full Rust workspace test suite passes with 0 regressions.",
       "issues": [
         {
           "id": "88",
