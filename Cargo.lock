@@ -4872,6 +4872,8 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "axum 0.8.9",
+ "base64 0.22.1",
+ "form_urlencoded",
  "futures",
  "rand 0.8.6",
  "reqwest 0.12.28",

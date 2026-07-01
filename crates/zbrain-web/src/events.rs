@@ -101,6 +101,7 @@ async fn sse_handler(
 mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use crate::MagicLinkAuth;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::broadcast;
 
@@ -126,9 +127,11 @@ use tokio::sync::broadcast;
 
         let state = AppState {
             admin_auth: auth.clone(),
+            magic_link: MagicLinkAuth::new(),
             admin_queries: engine.clone() as std::sync::Arc<dyn zbrain_core::AdminQueries>,
             calibration_queries: engine.clone() as std::sync::Arc<dyn zbrain_core::CalibrationQueries>,
-            oauth_queries: engine as std::sync::Arc<dyn zbrain_core::OAuthQueries>,
+            oauth_queries: engine.clone() as std::sync::Arc<dyn zbrain_core::OAuthQueries>,
+            token_queries: engine as std::sync::Arc<dyn zbrain_core::TokenQueries>,
             activity_tx: tx.clone(),
             spa_dir: spa_path,
         };

@@ -609,9 +609,11 @@ async fn run_serve_http_command(
 
     let state = zbrain_web::AppState {
         admin_auth,
+        magic_link: zbrain_web::MagicLinkAuth::new(),
         admin_queries: engine.clone() as std::sync::Arc<dyn zbrain_core::AdminQueries>,
         calibration_queries: engine.clone() as std::sync::Arc<dyn zbrain_core::CalibrationQueries>,
-        oauth_queries: engine as std::sync::Arc<dyn zbrain_core::OAuthQueries>,
+        oauth_queries: engine.clone() as std::sync::Arc<dyn zbrain_core::OAuthQueries>,
+        token_queries: engine as std::sync::Arc<dyn zbrain_core::TokenQueries>,
         activity_tx: tx,
         spa_dir,
     };

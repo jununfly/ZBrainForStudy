@@ -26,6 +26,8 @@ uuid = { version = "1", features = ["v4"] }
 rand = "0.8"
 futures = "0.3"
 tokio-stream = { version = "0.1", features = ["sync"] }
+base64 = "0.22"
+form_urlencoded = "1.2"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }

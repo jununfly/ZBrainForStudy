@@ -1511,18 +1511,40 @@
     "1-6-4": {
       "id": "1-6-4",
       "label": "MCP HTTP dispatch with OAuth 2.1 and webhooks",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "exploit",
       "parent": "1-6",
-      "children": [],
+      "children": [
+        "1-6-4-1",
+        "1-6-4-2",
+        "1-6-4-3",
+        "1-6-4-4",
+        "1-6-4-5",
+        "1-6-4-6"
+      ],
       "decisions": [
         {
           "q": "TS 文件删除时机？",
           "answer": "1-6-4 完成后批量删除",
           "note": "删除清单：serve-http.ts, dispatch.ts, tool-defs.ts, oauth-provider.ts, scope.ts。serve-http.ts 在 1-6-4 前仍需处理 MCP HTTP。"
+        },
+        {
+          "q": "1-6-4 拆解粒度？",
+          "answer": "5 个 sub-node",
+          "note": "施工顺序: /mcp(3) → /token(4) → magic-link(5) → webhook(2) → cleanup(1)。/mcp 与 /token 放最前因为它们是核心分发层，其余可独立。"
+        },
+        {
+          "q": "1-6-4-4 (/token handler) 已完成？",
+          "answer": "Handler 已存在于 crates/zbrain-web/src/token.rs，无需再 port。标记 completed，新建 1-6-4-6 跟踪真正的 gap：DB-backed OAuthQueries + TokenQueries 的 libsql/postgres trait 实现。",
+          "note": "探索发现 Rust 代码库已有完整 token handler。"
+        },
+        {
+          "q": "1-6-4 子节点执行顺序？",
+          "answer": "1) 1-6-4-5 magic-link → 2) 1-6-4-6 DB OAuthQueries → 3) 1-6-4-3 MCP dispatch → 4) 1-6-4-2 webhook → 5) 1-6-4-1 TS cleanup。magic-link 最独立最小优先；OAuthQueries 是 MCP dispatch 前提；TS cleanup 最后。",
+          "note": "依赖分析：magic-link 不依赖任何 OAuth DB；MCP dispatch 需要 bearer auth → 依赖 OAuthQueries DB impl"
         }
       ],
-      "notes": "Layer B (6 endpoints from 1-6-2): POST register-client/update-client-ttl/revoke-client; POST issue-magic-link; GET auth/:token; GET events(SSE). 依赖 OAuth provider + MCP dispatch infra。本节点除 MCP HTTP dispatch 外还需实现这些 admin OAuth 管理端点。"
+      "notes": "拆细粒度施工。TS 端仍有 ~28 条路由，其中 ~18 条已在 Rust 有等价物（1-6-2 产物），属重复代码待清理。真正待迁：/mcp 分发、/token 自定义处理、magic-link、webhook。最后统一删除 TS 残留。"
     },
     "1-6-2-1": {
       "id": "1-6-2-1",
@@ -1636,7 +1658,11 @@
       "decisions": [],
       "notes": "Implemented OAuthQueries trait + LibsqlEngine impl + InMemoryEngine stubs + migration 0009 + 4 handler tests.",
       "issues": [
-        { "id": "80", "title": "Port OAuth client management endpoints (register, update-ttl, revoke)", "url": "https://github.com/jununfly/ZBrain/issues/80" }
+        {
+          "id": "80",
+          "title": "Port OAuth client management endpoints (register, update-ttl, revoke)",
+          "url": "https://github.com/jununfly/ZBrain/issues/80"
+        }
       ]
     },
     "1-6-3-2": {
@@ -1649,7 +1675,11 @@
       "decisions": [],
       "notes": "Implemented broadcast channel + SSE endpoint + require_admin middleware. broadcastEvent/sseClients kept in TS for MCP dispatch (will be removed when MCP dispatch migrates).",
       "issues": [
-        { "id": "81", "title": "Port SSE live activity feed (/admin/events)", "url": "https://github.com/jununfly/ZBrain/issues/81" }
+        {
+          "id": "81",
+          "title": "Port SSE live activity feed (/admin/events)",
+          "url": "https://github.com/jununfly/ZBrain/issues/81"
+        }
       ]
     },
     "1-6-3-3": {
@@ -1662,13 +1692,133 @@
       "decisions": [],
       "notes": "Deleted OAuth register/update-ttl/revoke + SSE events handlers from serve-http.ts. Removed unused imports (normalizeScopesInput, validateTokenEndpointAuthMethod). Kept broadcastEvent/sseClients (still referenced by TS MCP dispatch).",
       "issues": [
-        { "id": "82", "title": "Clean up TS admin route handlers replaced by Rust", "url": "https://github.com/jununfly/ZBrain/issues/82" }
+        {
+          "id": "82",
+          "title": "Clean up TS admin route handlers replaced by Rust",
+          "url": "https://github.com/jununfly/ZBrain/issues/82"
+        }
       ]
+    },
+    "1-6-4-1": {
+      "id": "1-6-4-1",
+      "label": "Final TS cleanup: delete serve-http.ts and all remaining TS web-backend modules after Rust parity",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-6-4",
+      "children": [],
+      "decisions": [],
+      "notes": "Blocked by #84, #85, #86, #87",
+      "issues": [
+        {
+          "id": "88",
+          "title": "Final TS web-backend cleanup: delete serve-http.ts and remaining TS web modules",
+          "url": "https://github.com/jununfly/ZBrain/issues/88"
+        }
+      ]
+    },
+    "1-6-4-2": {
+      "id": "1-6-4-2",
+      "label": "Port webhook ingestion endpoints (POST /ingest + POST /webhooks/github with HMAC verification)",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-6-4",
+      "children": [],
+      "decisions": [],
+      "notes": "",
+      "issues": [
+        {
+          "id": "87",
+          "title": "Port webhook ingestion endpoints (POST /ingest + POST /webhooks/github)",
+          "url": "https://github.com/jununfly/ZBrain/issues/87"
+        }
+      ]
+    },
+    "1-6-4-3": {
+      "id": "1-6-4-3",
+      "label": "Port /mcp MCP HTTP tool dispatch with bearer auth, scope enforcement, and request logging",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-6-4",
+      "children": [],
+      "decisions": [],
+      "notes": "Blocked by #83",
+      "issues": [
+        {
+          "id": "85",
+          "title": "Port /mcp HTTP JSON-RPC dispatch with bearer auth, scope enforcement, and request logging",
+          "url": "https://github.com/jununfly/ZBrain/issues/85"
+        }
+      ]
+    },
+    "1-6-4-4": {
+      "id": "1-6-4-4",
+      "label": "Port /token custom OAuth handler for client_credentials and confidential client flows",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-6-4",
+      "children": [],
+      "decisions": [],
+      "notes": "Handler 已在 crates/zbrain-web/src/token.rs 实现（client_credentials + authorization_code + refresh_token 三种 grant type）。缺失的是 DB-backed OAuthQueries/TokenQueries trait 实现（见新节点 1-6-4-6）。",
+      "issues": [
+        {
+          "id": "84",
+          "title": "Port /token OAuth handler (client_credentials + confidential client flows)",
+          "url": "https://github.com/jununfly/ZBrain/issues/84"
+        }
+      ]
+    },
+    "1-6-4-5": {
+      "id": "1-6-4-5",
+      "label": "Port magic-link auth (POST issue-magic-link + GET auth/:token with nonce state machine)",
+      "status": "in_progress",
+      "mode": "exploit",
+      "parent": "1-6-4",
+      "children": [],
+      "decisions": [
+        {
+          "q": "MagicLinkAuth 集成方式？",
+          "answer": "方案B：独立 MagicLinkAuth struct（nonce 状态机 + LRU pruning），与 AdminAuth 分离。redeem 成功后跨 struct 调用 admin_auth.create_session()。AppState 新增 magic_link: MagicLinkAuth 字段。",
+          "note": "好处：单一职责、独立可测、将来可替换。坏处：多一层 struct + Arc<RwLock，跨 struct 协作。"
+        },
+        {
+          "q": "GET /admin/auth/:token 是否需要 rate limit？",
+          "answer": "需要，端口 TS 的 10 req/min/IP 限制。在 MagicLinkAuth 内部实现滑动窗口计数器 HashMap<IpAddr, Vec<Instant>>。",
+          "note": "不跳过，在 Rust 中实现等效限制。"
+        },
+        {
+          "q": "Session TTL 与 redirect 设计？",
+          "answer": "AdminAuth 新增 create_session_with_ttl(ttl_secs) 方法支持可变 TTL；magic-link redeem 调用 7 天 TTL。auth/:token 成功后 302 redirect 到 /admin/（Rust 已有 SPA 服务）。",
+          "note": ""
+        },
+        {
+          "q": "TDD slices 拆分结果？",
+          "answer": "5 个 tracer-bullet issues 发布到 GitHub。1)#89 MagicLinkAuth 核心+rate limit 2)#90 create_session_with_ttl 3)#91 issue-magic-link handler 4)#92 auth/:token handler 5)#93 TS cleanup。父 issue #86 已更新含 breakdown 表格。",
+          "note": "https://github.com/jununfly/ZBrain/issues/86#issuecomment-breakdown"
+        }
+      ],
+      "notes": "Grilled + sliced into 5 sub-issues: #89 MagicLinkAuth core+rate limit, #90 create_session_with_ttl, #91 issue-magic-link handler, #92 auth/:token handler, #93 TS cleanup. Parent #86 updated with breakdown table. Architecture: independent MagicLinkAuth struct (not embedded in AdminAuth).",
+      "issues": [
+        {
+          "id": "86",
+          "title": "Port magic-link admin auth (POST /admin/api/issue-magic-link + GET /admin/auth/:token)",
+          "url": "https://github.com/jununfly/ZBrain/issues/86"
+        }
+      ]
+    },
+    "1-6-4-6": {
+      "id": "1-6-4-6",
+      "label": "Implement DB-backed OAuthQueries and TokenQueries trait implementations (libsql + postgres)",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-6-4",
+      "children": [],
+      "decisions": [],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-06-23 18:09:00",
-    "updated": "2026-06-30 20:43:00",
+    "updated": "2026-07-01 14:51:13",
     "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_ROADMAP.md"
   }
 }

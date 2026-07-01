@@ -171,6 +171,7 @@ mod tests {
 
     use super::super::super::build_router;
     use super::super::super::auth::AdminAuth;
+    use crate::MagicLinkAuth;
 
     fn make_spa_dir() -> (tempfile::TempDir, std::path::PathBuf) {
         let dir = tempfile::tempdir().unwrap();
@@ -190,9 +191,11 @@ mod tests {
         let (tx, _rx) = tokio::sync::broadcast::channel(64);
         let state = super::super::super::AppState {
             admin_auth: auth.clone(),
+            magic_link: MagicLinkAuth::new(),
             admin_queries: engine.clone() as std::sync::Arc<dyn zbrain_core::AdminQueries>,
             calibration_queries: engine.clone() as std::sync::Arc<dyn zbrain_core::CalibrationQueries>,
-            oauth_queries: engine as std::sync::Arc<dyn zbrain_core::OAuthQueries>,
+            oauth_queries: engine.clone() as std::sync::Arc<dyn zbrain_core::OAuthQueries>,
+            token_queries: engine as std::sync::Arc<dyn zbrain_core::TokenQueries>,
             activity_tx: tx,
             spa_dir: spa_path,
         };

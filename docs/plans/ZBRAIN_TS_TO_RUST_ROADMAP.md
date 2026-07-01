@@ -1,7 +1,7 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust-roadmap.json` | 最后更新: 2026-06-30 20:35:48
+> 数据文件: `zbrain-ts-to-rust-roadmap.json` | 最后更新: 2026-07-01 14:51:13
 
 [~][X+] 1. ZBrain TS to Rust Migration
 ├── [x][Y+] 1-1. Roadmap and TypeScript runtime inventory
@@ -31,8 +31,8 @@
 ├── [~][Y+] 1-6. Web backend and admin API migration
 │   ├── [x][Y+] 1-6-1. Implement Axum skeleton with admin auth, health, and SPA serving
 │   ├── [x][Y+] 1-6-2. Port admin API business routes
-│   ├── [~][Y+] 1-6-3. Retain React TypeScript admin frontend by explicit decision
-│   └── [ ][Y+] 1-6-4. MCP HTTP dispatch with OAuth 2.1 and webhooks
+│   ├── [x][Y+] 1-6-3. Retain React TypeScript admin frontend by explicit decision
+│   └── [~][Y+] 1-6-4. MCP HTTP dispatch with OAuth 2.1 and webhooks
 ├── [ ][Y+] 1-7. Ingestion sources search and retrieval migration
 │   ├── [ ][Y+] 1-7-1. Port source management import capture extract and sync flows
 │   ├── [ ][Y+] 1-7-2. Port embeddings chunking hybrid search and reindex flows
@@ -55,14 +55,13 @@
     ├── [ ][Y+] 1-12-3. Verify final Rust workspace and retained TypeScript surfaces
     └── [ ][Y+] 1-12-4. Update docs examples and release baseline for Rust first ZBrain
 
-### 当前施工：1-6-3. Retain React TypeScript admin frontend by explicit decision
+### 当前施工：1-6-4-5. Port magic-link auth (POST issue-magic-link + GET auth/:token with nonce state machine)
+
+Grilled + sliced into 5 sub-issues: #89 MagicLinkAuth core+rate limit, #90 create_session_with_ttl, #91 issue-magic-link handler, #92 auth/:token handler, #93 TS cleanup. Parent #86 updated with breakdown table. Architecture: independent MagicLinkAuth struct (not embedded in AdminAuth).
 
 **决策：**
-- Q: 保留还是删除 React admin SPA？ → 保留，补齐4个缺失端点+SSE (~1900行，240K产物，只读视图有运营价值)
-- Q: 缺口如何拆分？ → 2个子节点：OAuth客户端管理（3端点）+ SSE实时事件流 + 清理残留文件 (按域拆分，共享schema归一组)
-
-**当前子树：**
-├── [ ][Y+] 1-6-3-1. Port OAuth client management endpoints (register, update-ttl, revoke)
-├── [ ][Y+] 1-6-3-2. Port SSE live activity feed (/admin/events)
-└── [ ][Y+] 1-6-3-3. Clean up TS-backend-only admin artifacts
+- Q: MagicLinkAuth 集成方式？ → 方案B：独立 MagicLinkAuth struct（nonce 状态机 + LRU pruning），与 AdminAuth 分离。redeem 成功后跨 struct 调用 admin_auth.create_session()。AppState 新增 magic_link: MagicLinkAuth 字段。 (好处：单一职责、独立可测、将来可替换。坏处：多一层 struct + Arc<RwLock，跨 struct 协作。)
+- Q: GET /admin/auth/:token 是否需要 rate limit？ → 需要，端口 TS 的 10 req/min/IP 限制。在 MagicLinkAuth 内部实现滑动窗口计数器 HashMap<IpAddr, Vec<Instant>>。 (不跳过，在 Rust 中实现等效限制。)
+- Q: Session TTL 与 redirect 设计？ → AdminAuth 新增 create_session_with_ttl(ttl_secs) 方法支持可变 TTL；magic-link redeem 调用 7 天 TTL。auth/:token 成功后 302 redirect 到 /admin/（Rust 已有 SPA 服务）。
+- Q: TDD slices 拆分结果？ → 5 个 tracer-bullet issues 发布到 GitHub。1)#89 MagicLinkAuth 核心+rate limit 2)#90 create_session_with_ttl 3)#91 issue-magic-link handler 4)#92 auth/:token handler 5)#93 TS cleanup。父 issue #86 已更新含 breakdown 表格。 (https://github.com/jununfly/ZBrain/issues/86#issuecomment-breakdown)
 <!-- ROADMAP_SECTION_END -->

@@ -3,6 +3,8 @@
 mod admin;
 mod auth;
 mod events;
+mod magic_link;
+mod token;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -20,18 +22,23 @@ use tokio::sync::broadcast;
 
 pub use auth::AdminAuth;
 pub use events::ActivityEvent;
+pub use magic_link::MagicLinkAuth;
 
 /// Application state shared across all request handlers.
 #[derive(Clone)]
 pub struct AppState {
     /// Admin authentication and session management.
     pub admin_auth: AdminAuth,
+    /// Magic-link nonce lifecycle and rate limiting.
+    pub magic_link: MagicLinkAuth,
     /// Admin dashboard data-access layer.
     pub admin_queries: Arc<dyn zbrain_core::AdminQueries>,
     /// Calibration data-access layer.
     pub calibration_queries: Arc<dyn zbrain_core::CalibrationQueries>,
     /// OAuth client management data-access layer.
     pub oauth_queries: Arc<dyn zbrain_core::OAuthQueries>,
+    /// OAuth access token verification (used by /mcp and /token).
+    pub token_queries: Arc<dyn zbrain_core::TokenQueries>,
     /// SSE broadcast sender for live activity feed.
     pub activity_tx: broadcast::Sender<ActivityEvent>,
     /// Path to the admin SPA static files directory.
@@ -146,7 +153,8 @@ pub fn build_router(state: AppState) -> Router {
 
     main.merge(auth::admin_auth_routes(state.clone()))
         .merge(admin::build_admin_router(state.clone()))
-        .merge(events::build_events_router(state))
+        .merge(events::build_events_router(state.clone()))
+        .merge(token::build_token_router(state))
 }
 
 /// Start the HTTP server and block until shutdown signal.
@@ -201,9 +209,11 @@ mod tests {
         let (tx, _rx) = broadcast::channel(64);
         let state = AppState {
             admin_auth: auth,
+            magic_link: MagicLinkAuth::new(),
             admin_queries: engine.clone() as std::sync::Arc<dyn zbrain_core::AdminQueries>,
             calibration_queries: engine.clone() as std::sync::Arc<dyn zbrain_core::CalibrationQueries>,
-            oauth_queries: engine as std::sync::Arc<dyn zbrain_core::OAuthQueries>,
+            oauth_queries: engine.clone() as std::sync::Arc<dyn zbrain_core::OAuthQueries>,
+            token_queries: engine as std::sync::Arc<dyn zbrain_core::TokenQueries>,
             activity_tx: tx,
             spa_dir,
         };

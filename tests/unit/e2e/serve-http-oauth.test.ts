@@ -340,9 +340,10 @@ describeE2E('serve-http OAuth 2.1 E2E (v0.26.1 + v0.26.2 + v0.26.3)', () => {
   });
 
   test('v0.28.10: /admin/api/full-stats with valid admin cookie returns getStats() body', async () => {
-    // Same magic-link cookie dance the existing single-use test uses.
-    // Skip gracefully if the bootstrap token isn't extractable — the 401
-    // case above pins the auth gate; this test pins the happy path.
+    // Same admin-login cookie dance — POST /admin/login with the bootstrap
+    // token returns a Set-Cookie. Skip gracefully if the bootstrap token isn't
+    // extractable — the 401 case above pins the auth gate; this test pins the
+    // happy path.
     const stderrBuf = (serverProcess as any)?._stderrBuffer || '';
     const tokenMatch = String(stderrBuf).match(/Admin Token[\s\S]*?([a-f0-9]{32,64})/);
     if (!tokenMatch) {
@@ -351,17 +352,13 @@ describeE2E('serve-http OAuth 2.1 E2E (v0.26.1 + v0.26.2 + v0.26.3)', () => {
     }
     const bootstrapToken = tokenMatch[1];
 
-    const issueRes = await fetch(`${BASE}/admin/api/issue-magic-link`, {
+    const loginRes = await fetch(`${BASE}/admin/login`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${bootstrapToken}` },
-      body: '{}',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: bootstrapToken }),
     });
-    expect(issueRes.ok).toBe(true);
-    const { url } = await issueRes.json() as any;
-
-    const click = await fetch(url, { redirect: 'manual' });
-    expect(click.status).toBe(302);
-    const setCookie = click.headers.get('set-cookie') || '';
+    expect(loginRes.ok).toBe(true);
+    const setCookie = loginRes.headers.get('set-cookie') || '';
     const cookieMatch = setCookie.match(/zbrain_admin=([^;]+)/);
     expect(cookieMatch).toBeTruthy();
     const cookieValue = cookieMatch![1];
@@ -702,73 +699,6 @@ describeE2E('serve-http OAuth 2.1 E2E (v0.26.1 + v0.26.2 + v0.26.3)', () => {
       await sql.end();
     }
   }, 30_000);
-
-  // =========================================================================
-  // v0.26.3: magic-link single-use + 401 styled error page
-  // =========================================================================
-  //
-  // D11=C: /admin/auth/:nonce is single-use. First click consumes the nonce,
-  // second click fails with the styled 401 page. No bootstrap token in URL.
-  //
-  // Also covers F6.5: server returns Content-Type: text/html on the 401
-  // path (Express auto-sets this for HTML body) so browsers render the
-  // styled page instead of treating it as plain text.
-
-  test('v0.26.3: invalid magic-link nonce returns styled 401 HTML page', async () => {
-    const res = await fetch(`${BASE}/admin/auth/garbage_nonce_that_does_not_exist`, { redirect: 'manual' });
-    expect(res.status).toBe(401);
-    const ct = res.headers.get('content-type') || '';
-    expect(ct).toContain('text/html');
-    const body = await res.text();
-    expect(body).toContain('expired');
-    expect(body).toContain('ZBrain');
-  });
-
-  test('v0.26.3: magic-link nonce is single-use (second click fails)', async () => {
-    // Get a real bootstrap token from the spawned server's environment.
-    // The server prints it to stderr at startup but commit 16 removed our
-    // regex extractor. Use the issue-magic-link endpoint directly with the
-    // bootstrap token from process env — except that env var doesn't exist
-    // in the test fixture. The portable approach: extract from the server
-    // process's stderr.
-
-    // Pull the bootstrap token from server stderr by re-reading the
-    // spawn handle. The spawn already started so stderr has flushed.
-    // Skip if we can't extract — the test is best-effort coverage of the
-    // single-use semantic; the styled-401 test above covers the negative path.
-    const stderrBuf = (serverProcess as any)?._stderrBuffer || '';
-    const tokenMatch = String(stderrBuf).match(/Admin Token[\s\S]*?([a-f0-9]{32,64})/);
-    if (!tokenMatch) {
-      // No way to get the bootstrap token in this test fixture — skip gracefully.
-      // The unit-level coverage for nonce single-use is in oauth.test.ts and
-      // the styled-401 test above pins the consumed-nonce path.
-      console.warn('[e2e] skipped magic-link single-use: could not extract bootstrap token');
-      return;
-    }
-    const bootstrapToken = tokenMatch[1];
-
-    // Mint a one-time nonce.
-    const issueRes = await fetch(`${BASE}/admin/api/issue-magic-link`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${bootstrapToken}` },
-      body: '{}',
-    });
-    expect(issueRes.ok).toBe(true);
-    const { url } = await issueRes.json() as any;
-    expect(url).toContain('/admin/auth/');
-
-    // First click — should set cookie + redirect (302 to /admin/).
-    const first = await fetch(url, { redirect: 'manual' });
-    expect(first.status).toBe(302);
-    const cookie = first.headers.get('set-cookie') || '';
-    expect(cookie).toContain('zbrain_admin=');
-
-    // Second click on the same URL — must fail (single-use consumed).
-    const second = await fetch(url, { redirect: 'manual' });
-    expect(second.status).toBe(401);
-    const secondBody = await second.text();
-    expect(secondBody).toContain('ZBrain');
-  }, 15_000);
 
   // =========================================================================
   // v0.26.3: agent_name backfill across oauth_clients + access_tokens

@@ -3256,4 +3256,468 @@ impl OAuthQueries for LibsqlEngine {
 
         Ok(RevokeClientResponse { revoked: true })
     }
+
+    async fn get_client(
+        &self,
+        client_id: &str,
+    ) -> Result<Option<crate::oauth_queries::OAuthClientInfo>> {
+        use crate::oauth_queries::OAuthClientInfo;
+
+        let conn = self.conn().await?;
+        let mut rows = conn
+            .query(
+                "SELECT client_id, client_secret_hash, client_name, redirect_uris, \
+                 grant_types, scope, token_endpoint_auth_method, \
+                 client_id_issued_at, client_secret_expires_at, token_ttl \
+                 FROM oauth_clients WHERE client_id = ?1",
+                ::libsql::params![client_id],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("get_client query: {e}")))?;
+
+        let row = match rows.next().await.map_err(|e| Error::engine(format!("get_client next: {e}")))? {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+
+        let redirect_uris_json = row.get::<String>(3).unwrap_or_default();
+        let grant_types_json = row.get::<String>(4)
+            .unwrap_or_else(|_| "[\"client_credentials\"]".to_string());
+        let redirect_uris: Vec<String> =
+            serde_json::from_str(&redirect_uris_json).unwrap_or_default();
+        let grant_types: Vec<String> = serde_json::from_str(&grant_types_json)
+            .unwrap_or_else(|_| vec!["client_credentials".to_string()]);
+
+        Ok(Some(OAuthClientInfo {
+            client_id: row.get::<String>(0).unwrap_or_default(),
+            client_secret_hash: row.get::<Option<String>>(1).unwrap_or_default(),
+            client_name: row.get::<String>(2).unwrap_or_default(),
+            redirect_uris,
+            grant_types,
+            scope: row.get::<Option<String>>(5).unwrap_or_default(),
+            token_endpoint_auth_method: row.get::<Option<String>>(6).unwrap_or_default(),
+            client_id_issued_at: row.get::<Option<i64>>(7).unwrap_or_default(),
+            client_secret_expires_at: row.get::<Option<i64>>(8).unwrap_or_default(),
+            token_ttl: row.get::<Option<i64>>(9).unwrap_or_default(),
+        }))
+    }
+
+    async fn exchange_client_credentials(
+        &self,
+        client_id: &str,
+        client_secret: &str,
+        requested_scope: Option<&str>,
+    ) -> Result<crate::oauth_queries::ExchangeTokens> {
+        use crate::oauth_queries::{ExchangeTokens, OAuthClientInfo};
+        use crate::scope::{has_scope, parse_scope_string};
+
+        // Look up the client.
+        let client = self
+            .get_client(client_id)
+            .await?
+            .ok_or_else(|| Error::engine("Client not found"))?;
+
+        // Check revoked (soft-deleted).
+        {
+            let conn = self.conn().await?;
+            let mut rows = conn
+                .query(
+                    "SELECT 1 FROM oauth_clients WHERE client_id = ?1 AND deleted_at IS NOT NULL",
+                    ::libsql::params![client_id],
+                )
+                .await
+                .map_err(|e| Error::engine(format!("check revoked: {e}")))?;
+            let deleted = rows.next().await.ok().flatten().is_some();
+            if deleted {
+                return Err(Error::engine("Client has been revoked"));
+            }
+        }
+
+        // Check grant type.
+        if !client.grant_types.iter().any(|g| g == "client_credentials") {
+            return Err(Error::engine(
+                "Client credentials grant not authorized for this client",
+            ));
+        }
+
+        // Verify secret.
+        let presented_hash = sha256_hex(client_secret.as_bytes());
+        let stored_hash = client.client_secret_hash.as_deref().unwrap_or("");
+        if presented_hash != stored_hash {
+            return Err(Error::engine("Invalid client secret"));
+        }
+
+        // Determine scopes — clamp against registered scope using has_scope.
+        let allowed_scopes = parse_scope_string(client.scope.as_deref().unwrap_or("read"));
+        let requested_scopes = match requested_scope {
+            Some(s) if !s.is_empty() => parse_scope_string(s),
+            _ => allowed_scopes.clone(),
+        };
+        let granted_scopes: Vec<&str> = requested_scopes
+            .iter()
+            .filter(|s| has_scope(&allowed_scopes, s.as_ref()))
+            .map(|s| s.as_str())
+            .collect();
+
+        // Per-client TTL override (graceful fallback if column missing).
+        let ttl_override = client.token_ttl.filter(|&t| t > 0);
+
+        // Issue access token only (no refresh for client_credentials per RFC 6749 §4.4.3).
+        let tokens = self
+            .issue_oauth_tokens(client_id, &granted_scopes, false, ttl_override)
+            .await?;
+        Ok(tokens)
+    }
+
+    async fn verify_confidential_client_secret(
+        &self,
+        client_id: &str,
+        presented_secret: &str,
+    ) -> Result<crate::oauth_queries::OAuthClientInfo> {
+        use crate::oauth_queries::OAuthClientInfo;
+
+        let client = self
+            .get_client(client_id)
+            .await?
+            .ok_or_else(|| Error::engine("Invalid client"))?;
+
+        // Public client — refuse hash-compare path.
+        if client.client_secret_hash.is_none() {
+            return Err(Error::engine("Invalid client"));
+        }
+
+        let presented_hash = sha256_hex(presented_secret.as_bytes());
+        let stored_hash = client.client_secret_hash.as_deref().unwrap_or("");
+        if presented_hash != stored_hash {
+            return Err(Error::engine("Invalid client"));
+        }
+
+        // Soft-delete probe.
+        {
+            let conn = self.conn().await?;
+            let mut rows = conn
+                .query(
+                    "SELECT 1 FROM oauth_clients WHERE client_id = ?1 AND deleted_at IS NOT NULL",
+                    ::libsql::params![client_id],
+                )
+                .await
+                .map_err(|e| Error::engine(format!("check revoked: {e}")))?;
+            let deleted = rows.next().await.ok().flatten().is_some();
+            if deleted {
+                return Err(Error::engine("Client has been revoked"));
+            }
+        }
+
+        Ok(client)
+    }
+
+    async fn exchange_authorization_code(
+        &self,
+        client_id: &str,
+        authorization_code: &str,
+        redirect_uri: Option<&str>,
+    ) -> Result<crate::oauth_queries::ExchangeTokens> {
+        use crate::oauth_queries::ExchangeTokens;
+        use crate::scope::parse_scope_string;
+
+        let code_hash = sha256_hex(authorization_code.as_bytes());
+        let now = unix_now_secs();
+        let conn = self.conn().await?;
+
+        // Atomically DELETE the code row (single-use), validate client_id + redirect_uri.
+        let rows = if let Some(redirect) = redirect_uri {
+            conn.query(
+                "DELETE FROM oauth_codes \
+                 WHERE code_hash = ?1 AND client_id = ?2 AND redirect_uri = ?3 AND expires_at > ?4 \
+                 RETURNING client_id, scopes, resource",
+                ::libsql::params![code_hash, client_id, redirect, now],
+            )
+            .await
+        } else {
+            conn.query(
+                "DELETE FROM oauth_codes \
+                 WHERE code_hash = ?1 AND client_id = ?2 AND expires_at > ?3 \
+                 RETURNING client_id, scopes, resource",
+                ::libsql::params![code_hash, client_id, now],
+            )
+            .await
+        }
+        .map_err(|e| Error::engine(format!("exchange_authorization_code delete: {e}")))?;
+
+        let mut rows = rows;
+        let row = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("exchange_authorization_code next: {e}")))?
+            .ok_or_else(|| Error::engine("Authorization code not found or expired"))?;
+
+        let scopes_json = row.get::<String>(1).unwrap_or_default();
+        let scopes: Vec<String> =
+            serde_json::from_str(&scopes_json).unwrap_or_default();
+
+        let granted: Vec<&str> = scopes.iter().map(|s| s.as_str()).collect();
+        self.issue_oauth_tokens(client_id, &granted, true, None).await
+    }
+
+    async fn exchange_refresh_token(
+        &self,
+        client_id: &str,
+        refresh_token: &str,
+        requested_scopes: Option<&[String]>,
+    ) -> Result<crate::oauth_queries::ExchangeTokens> {
+        use crate::oauth_queries::ExchangeTokens;
+        use crate::scope::has_scope;
+
+        let token_hash = sha256_hex(refresh_token.as_bytes());
+        let now = unix_now_secs();
+        let conn = self.conn().await?;
+
+        // Atomically DELETE the refresh token row (rotation).
+        let mut rows = conn
+            .query(
+                "DELETE FROM oauth_tokens \
+                 WHERE token_hash = ?1 AND token_type = 'refresh' AND client_id = ?2 \
+                 RETURNING client_id, scopes, expires_at",
+                ::libsql::params![token_hash, client_id],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("exchange_refresh_token delete: {e}")))?;
+
+        let row = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("exchange_refresh_token next: {e}")))?
+            .ok_or_else(|| Error::engine("Refresh token not found"))?;
+
+        // Check expiration.
+        let expires_at: i64 = row.get(2).unwrap_or(0);
+        if expires_at < now {
+            return Err(Error::engine("Refresh token expired"));
+        }
+
+        // Scope subset enforcement (RFC 6749 §6).
+        let scopes_json: String = row.get::<String>(1).unwrap_or_default();
+        let granted_scopes: Vec<String> =
+            serde_json::from_str(&scopes_json).unwrap_or_default();
+
+        let token_scopes: Vec<String> = match requested_scopes {
+            Some(req) if !req.is_empty() => {
+                // All requested scopes must be a subset of the granted scopes.
+                for s in req {
+                    if !has_scope(
+                        &granted_scopes
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>(),
+                        s.as_str(),
+                    ) {
+                        return Err(Error::engine(
+                            "Requested scope exceeds refresh token grant",
+                        ));
+                    }
+                }
+                req.to_vec()
+            }
+            _ => granted_scopes.clone(),
+        };
+
+        let scope_refs: Vec<&str> = token_scopes.iter().map(|s| s.as_str()).collect();
+        self.issue_oauth_tokens(client_id, &scope_refs, true, None).await
+    }
+}
+
+// ── Internal: OAuth token issuance helper ─────────────────────────────────────
+
+impl LibsqlEngine {
+    /// Issue access (and optionally refresh) tokens for a client.
+    /// Inserts rows into `oauth_tokens` and returns the wire-format response.
+    async fn issue_oauth_tokens(
+        &self,
+        client_id: &str,
+        scopes: &[&str],
+        include_refresh: bool,
+        ttl_override: Option<i64>,
+    ) -> Result<crate::oauth_queries::ExchangeTokens> {
+        use crate::oauth_queries::ExchangeTokens;
+
+        let access_token = format!("zbrain_at_{}", uuid::Uuid::new_v4().simple());
+        let access_hash = sha256_hex(access_token.as_bytes());
+        let now = unix_now_secs();
+        let effective_ttl = ttl_override.unwrap_or(3600);
+        let access_expiry = now + effective_ttl;
+        let scopes_json = serde_json::to_string(&scopes)
+            .map_err(|e| Error::engine(format!("serialize scopes: {e}")))?;
+        let scope_string = scopes.join(" ");
+
+        let conn = self.conn().await?;
+
+        conn.execute(
+            "INSERT INTO oauth_tokens (token_hash, token_type, client_id, scopes, expires_at) \
+             VALUES (?1, 'access', ?2, ?3, ?4)",
+            ::libsql::params![access_hash, client_id, scopes_json.clone(), access_expiry],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("issue_oauth_tokens insert access: {e}")))?;
+
+        let mut refresh_token: Option<String> = None;
+
+        if include_refresh {
+            let rt = format!("zbrain_rt_{}", uuid::Uuid::new_v4().simple());
+            let rt_hash = sha256_hex(rt.as_bytes());
+            let refresh_expiry = now + 30 * 24 * 3600; // 30 days
+
+            conn.execute(
+                "INSERT INTO oauth_tokens (token_hash, token_type, client_id, scopes, expires_at) \
+                 VALUES (?1, 'refresh', ?2, ?3, ?4)",
+                ::libsql::params![rt_hash, client_id, scopes_json, refresh_expiry],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("issue_oauth_tokens insert refresh: {e}")))?;
+
+            refresh_token = Some(rt);
+        }
+
+        Ok(ExchangeTokens {
+            access_token,
+            token_type: "bearer".to_string(),
+            expires_in: effective_ttl,
+            scope: scope_string,
+            refresh_token,
+        })
+    }
+}
+
+// ── Helper: SHA-256 hex ──────────────────────────────────────────────────────
+
+fn sha256_hex(data: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    format!("{:x}", hasher.finalize())
+}
+
+/// Current Unix timestamp in seconds (for token expiry calculations).
+fn unix_now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+// ── TokenQueries ──────────────────────────────────────────────────────────────
+
+#[async_trait]
+impl crate::token_queries::TokenQueries for LibsqlEngine {
+    async fn verify_access_token(
+        &self,
+        token: &str,
+    ) -> std::result::Result<crate::token_queries::AuthInfo, crate::token_queries::TokenError> {
+        use crate::token_queries::{AuthInfo, TokenError};
+
+        // SHA-256 hash the raw token.
+        let token_hash = {
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            h.update(token.as_bytes());
+            format!("{:x}", h.finalize())
+        };
+
+        let conn = self.conn().await.map_err(|e| TokenError::Storage(e.to_string()))?;
+
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        // ── Primary lookup: oauth_tokens JOIN oauth_clients ────────────────
+        let mut rows = conn
+            .query(
+                "SELECT t.client_id, t.scopes, t.expires_at, \
+                        c.client_name, c.source_id \
+                 FROM oauth_tokens t \
+                 LEFT JOIN oauth_clients c ON c.client_id = t.client_id \
+                 WHERE t.token_hash = ?1 AND t.token_type = 'access'",
+                ::libsql::params![token_hash.clone()],
+            )
+            .await
+            .map_err(|e| TokenError::Storage(e.to_string()))?;
+
+        if let Some(row) = rows.next().await.map_err(|e| TokenError::Storage(e.to_string()))? {
+            // expires_at is stored as INTEGER (unix seconds) or ISO-8601 TEXT.
+            // Try INTEGER first, fall back to 0 (expired) on parse failure.
+            let expires_at: i64 = row.get::<i64>(2).unwrap_or(0);
+
+            if expires_at == 0 || expires_at < now_secs {
+                return Err(TokenError::Expired);
+            }
+
+            // Scopes: stored as JSON array TEXT, e.g. '["read","write"]'
+            let scopes_raw: String = row.get::<String>(1).unwrap_or_default();
+            let scopes: Vec<String> = serde_json::from_str(&scopes_raw).unwrap_or_default();
+
+            let client_id: String = row.get::<String>(0).unwrap_or_default();
+            let client_name: Option<String> = row.get::<String>(3).ok();
+            let source_id: Option<String> = row.get::<String>(4).ok();
+
+            return Ok(AuthInfo {
+                token: token.to_string(),
+                client_id,
+                client_name,
+                scopes,
+                expires_at,
+                source_id,
+            });
+        }
+
+        // ── Fallback: legacy access_tokens table ──────────────────────────
+        // This table may not exist in newer schemas — treat that as "not found".
+        let legacy_result = conn
+            .query(
+                "SELECT name FROM access_tokens \
+                 WHERE token_hash = ?1 AND revoked_at IS NULL",
+                ::libsql::params![token_hash],
+            )
+            .await;
+
+        let mut legacy_rows = match legacy_result {
+            Ok(r) => r,
+            Err(e) => {
+                let msg = e.to_string();
+                // "no such table" means legacy table was never created — return Invalid.
+                if msg.contains("no such table") {
+                    return Err(TokenError::Invalid);
+                }
+                return Err(TokenError::Storage(msg));
+            }
+        };
+
+        if let Some(row) =
+            legacy_rows.next().await.map_err(|e| TokenError::Storage(e.to_string()))?
+        {
+            let name: String = row.get::<String>(0).unwrap_or_default();
+            // Update last_used_at on legacy tokens (best-effort, ignore errors).
+            let _ = conn
+                .execute(
+                    "UPDATE access_tokens SET last_used_at = ?1 WHERE token_hash = ?2",
+                    ::libsql::params![crate::time::current_utc_iso8601(), {
+                        use sha2::{Digest, Sha256};
+                        let mut h = Sha256::new();
+                        h.update(token.as_bytes());
+                        format!("{:x}", h.finalize())
+                    }],
+                )
+                .await;
+
+            return Ok(AuthInfo {
+                token: token.to_string(),
+                client_id: name.clone(),
+                client_name: Some(name),
+                scopes: vec!["read".into(), "write".into(), "admin".into()],
+                expires_at: now_secs + 365 * 24 * 3600,
+                source_id: Some("default".into()),
+            });
+        }
+
+        Err(TokenError::Invalid)
+    }
 }

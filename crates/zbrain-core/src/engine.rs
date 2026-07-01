@@ -16,8 +16,8 @@ use serde_json::{json, Map, Value};
 use crate::{
     calibration_queries::{CalibrationBucket, CalibrationProfileRow, CalibrationQueries,
         PatternDetail, TakeSummary, TakesScorecard},
-    oauth_queries::{OAuthQueries, RegisterClientRequest, RegisterClientResponse,
-        RevokeClientResponse, UpdateClientTtlResponse},
+    oauth_queries::{ExchangeTokens, OAuthClientInfo, OAuthQueries, RegisterClientRequest,
+        RegisterClientResponse, RevokeClientResponse, UpdateClientTtlResponse},
     time::current_utc_iso8601, types::PageVersion, types::RawData, CRMode, DuplicatePage,
     EffectiveDateSource, Error, FileRow, FileSpec, FindDuplicatePageOpts, OrphanPage, PageKind,
     PageRef, PageType, PurgeResult, RefreshPageBodyArgs, UpsertFileResult,
@@ -2037,5 +2037,106 @@ impl OAuthQueries for InMemoryEngine {
         _client_id: &str,
     ) -> crate::error::Result<RevokeClientResponse> {
         Ok(RevokeClientResponse { revoked: true })
+    }
+
+    async fn get_client(
+        &self,
+        client_id: &str,
+    ) -> crate::error::Result<Option<OAuthClientInfo>> {
+        // Stub: return a fixed client for any non-empty client_id.
+        if client_id.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(OAuthClientInfo {
+            client_id: client_id.to_string(),
+            client_secret_hash: Some(
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
+            ),
+            client_name: "Test Client".to_string(),
+            redirect_uris: vec![],
+            grant_types: vec!["client_credentials".to_string()],
+            scope: Some("read write".to_string()),
+            token_endpoint_auth_method: Some("client_secret_post".to_string()),
+            client_id_issued_at: Some(1_700_000_000),
+            client_secret_expires_at: None,
+            token_ttl: None,
+        }))
+    }
+
+    async fn exchange_client_credentials(
+        &self,
+        client_id: &str,
+        _client_secret: &str,
+        _requested_scope: Option<&str>,
+    ) -> crate::error::Result<ExchangeTokens> {
+        Ok(ExchangeTokens {
+            access_token: format!("test_at_{}", client_id),
+            token_type: "bearer".to_string(),
+            expires_in: 3600,
+            scope: "read write".to_string(),
+            refresh_token: None,
+        })
+    }
+
+    async fn verify_confidential_client_secret(
+        &self,
+        client_id: &str,
+        _presented_secret: &str,
+    ) -> crate::error::Result<OAuthClientInfo> {
+        self.get_client(client_id).await?.ok_or_else(|| {
+            crate::error::Error::engine("client not found")
+        })
+    }
+
+    async fn exchange_authorization_code(
+        &self,
+        client_id: &str,
+        _authorization_code: &str,
+        _redirect_uri: Option<&str>,
+    ) -> crate::error::Result<ExchangeTokens> {
+        Ok(ExchangeTokens {
+            access_token: format!("test_at_{}", client_id),
+            token_type: "bearer".to_string(),
+            expires_in: 3600,
+            scope: "read write".to_string(),
+            refresh_token: Some(format!("test_rt_{}", client_id)),
+        })
+    }
+
+    async fn exchange_refresh_token(
+        &self,
+        client_id: &str,
+        _refresh_token: &str,
+        _requested_scopes: Option<&[String]>,
+    ) -> crate::error::Result<ExchangeTokens> {
+        Ok(ExchangeTokens {
+            access_token: format!("test_at_{}", client_id),
+            token_type: "bearer".to_string(),
+            expires_in: 3600,
+            scope: "read write".to_string(),
+            refresh_token: Some(format!("test_rt_{}", client_id)),
+        })
+    }
+}
+
+// ── TokenQueries InMemory stub ────────────────────────────────────────────────
+
+#[async_trait]
+impl crate::token_queries::TokenQueries for InMemoryEngine {
+    async fn verify_access_token(
+        &self,
+        token: &str,
+    ) -> std::result::Result<crate::token_queries::AuthInfo, crate::token_queries::TokenError> {
+        if token.is_empty() {
+            return Err(crate::token_queries::TokenError::Invalid);
+        }
+        Ok(crate::token_queries::AuthInfo {
+            token: token.to_string(),
+            client_id: "test-client".to_string(),
+            client_name: Some("Test Client".to_string()),
+            scopes: vec!["read".to_string(), "write".to_string()],
+            expires_at: i64::MAX,
+            source_id: None,
+        })
     }
 }

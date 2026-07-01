@@ -8,6 +8,8 @@
 //! `docs/plans/20260526/04-plan.md`.
 
 pub mod admin_queries;
+pub mod scope;
+pub mod token_queries;
 pub mod calibration_queries;
 pub mod oauth_queries;
 pub mod engine;
@@ -20,6 +22,8 @@ pub mod postgres;
 pub mod time;
 pub mod types;
 
+pub use scope::{has_scope, parse_scope_string, ALLOWED_SCOPES};
+pub use token_queries::{AuthInfo, TokenError, TokenQueries};
 pub use error::{from_std_error, Error, Result, StructuredError};
 pub use types::{
     is_base_page_type, CRMode, DuplicatePage, EffectiveDateSource, FileRow, FileSpec,
@@ -37,8 +41,8 @@ pub use calibration_queries::{
     TakesScorecard,
 };
 pub use oauth_queries::{
-    OAuthQueries, RegisterClientRequest, RegisterClientResponse, RevokeClientResponse,
-    UpdateClientTtlResponse,
+    ExchangeTokens, OAuthClientInfo, OAuthQueries, RegisterClientRequest, RegisterClientResponse,
+    RevokeClientResponse, UpdateClientTtlResponse,
 };
 pub use llm::{LlmClient, LlmRequest, LlmResponse, LlmError, MockLlmClient, TokenUsage};
 #[cfg(feature = "openai")]

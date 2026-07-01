@@ -184,6 +184,7 @@ async fn get_pattern_handler(
 mod tests {
     use axum::http::StatusCode;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use crate::MagicLinkAuth;
 
     fn make_spa_dir() -> (tempfile::TempDir, std::path::PathBuf) {
         let dir = tempfile::tempdir().unwrap();
@@ -201,12 +202,15 @@ mod tests {
         let (tx, _rx) = tokio::sync::broadcast::channel(64);
         let state = super::super::super::AppState {
             admin_auth: auth.clone(),
+            magic_link: MagicLinkAuth::new(),
             admin_queries: engine.clone()
                 as std::sync::Arc<dyn zbrain_core::AdminQueries>,
             calibration_queries: engine.clone()
                 as std::sync::Arc<dyn zbrain_core::CalibrationQueries>,
-            oauth_queries: engine
+            oauth_queries: engine.clone()
                 as std::sync::Arc<dyn zbrain_core::OAuthQueries>,
+            token_queries: engine
+                as std::sync::Arc<dyn zbrain_core::TokenQueries>,
             activity_tx: tx,
             spa_dir: spa_path,
         };
