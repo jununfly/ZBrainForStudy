@@ -1719,12 +1719,12 @@
     "1-6-4-2": {
       "id": "1-6-4-2",
       "label": "Port webhook ingestion endpoints (POST /ingest + POST /webhooks/github with HMAC verification)",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-6-4",
       "children": [],
       "decisions": [],
-      "notes": "",
+      "notes": "Completed 2026-07-01. Created zbrain-core/src/ingestion.rs (IngestionEvent type, validation, content hash, content-type detection, allowlist; 27 tests). Created zbrain-web/src/webhook.rs (POST /ingest + POST /webhooks/github with HMAC-SHA256 verification, bearer auth, scope enforcement, source lookup; 13 integration tests). Added get_source_by_github_repo() to BrainEngine trait with impls for InMemoryEngine (config.github_repo), LibsqlEngine (json_extract), PostgresEngine (config->>). Added engine: Arc<dyn BrainEngine> to AppState. MinionQueue integration deferred (placeholder job_id + TODO).",
       "issues": [
         {
           "id": "87",

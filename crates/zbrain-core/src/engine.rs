@@ -259,6 +259,15 @@ pub struct ResolveSlugsOpts {
     pub source_ids: Option<Vec<String>>,
 }
 
+/// A row from the `sources` table. Used by webhook handlers to look up
+/// source configuration (webhook_secret, tracked_branch, github_repo).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SourceRow {
+    pub id: String,
+    pub name: String,
+    pub config: serde_json::Value,
+}
+
 // ─── Trait ───────────────────────────────────────────────────────────────────
 
 /// Core engine contract. Every storage backend (postgres, libsql, in-memory)
@@ -287,6 +296,16 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
 
     /// Apply schema migrations up to the current version.
     async fn init_schema(&self) -> crate::Result<()>;
+
+    // ── Source lookup ──────────────────────────────────────────────────────
+
+    /// Look up a source by its `config->>'github_repo'` value.
+    /// Used by POST /webhooks/github to find the matching source.
+    /// Returns `None` if no source is configured for this GitHub repo.
+    async fn get_source_by_github_repo(
+        &self,
+        github_repo: &str,
+    ) -> crate::Result<Option<SourceRow>>;
 
     // ── Page CRUD (slice 3 subset) ────────────────────────────────────────
 
@@ -587,6 +606,8 @@ pub struct InMemoryEngine {
     next_version_id: Mutex<u64>,
     /// Token-scope map for testing: access_token → scopes.
     token_scopes: Mutex<std::collections::HashMap<String, Vec<String>>>,
+    /// Source configuration rows for testing: source id → SourceRow.
+    sources: Mutex<Vec<SourceRow>>,
 }
 
 // ─── Tag helpers ─────────────────────────────────────────────────────────────
@@ -622,6 +643,14 @@ impl InMemoryEngine {
     pub fn into_arc(self) -> Arc<dyn BrainEngine> {
         Arc::new(self)
     }
+
+    /// Add a source row for testing webhook source lookups.
+    pub fn add_source(&self, source: SourceRow) {
+        self.sources
+            .lock()
+            .expect("InMemoryEngine sources mutex poisoned")
+            .push(source);
+    }
 }
 
 #[async_trait]
@@ -640,6 +669,25 @@ impl BrainEngine for InMemoryEngine {
 
     async fn init_schema(&self) -> crate::Result<()> {
         Ok(())
+    }
+
+    async fn get_source_by_github_repo(
+        &self,
+        github_repo: &str,
+    ) -> crate::Result<Option<SourceRow>> {
+        let sources = self
+            .sources
+            .lock()
+            .expect("InMemoryEngine sources mutex poisoned");
+        Ok(sources
+            .iter()
+            .find(|s| {
+                s.config
+                    .get("github_repo")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|repo| repo == github_repo)
+            })
+            .cloned())
     }
 
     async fn get_page(&self, slug: &str, opts: &GetPageOpts) -> crate::Result<Option<Page>> {

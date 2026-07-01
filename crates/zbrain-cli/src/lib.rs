@@ -11,6 +11,7 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use zbrain_core::engine::BrainEngine;
 use zbrain_core::operation::{OperationContext, OperationRegistry};
 
@@ -560,6 +561,25 @@ async fn run_serve_mcp_command(args: ServeMcpArgs, _config_path: Option<&Path>) 
     Ok(())
 }
 
+/// Build the standard operation registry with all registered operations.
+fn build_operation_registry() -> Arc<OperationRegistry> {
+    use zbrain_core::operation::{
+        GetPageOperation, ThinkOperation, QueryOperation, PutPageOperation,
+        DeletePageOperation, RestorePageOperation, PurgeDeletedPagesOperation,
+        ListPagesOperation,
+    };
+    let mut registry = OperationRegistry::new();
+    registry.register(GetPageOperation);
+    registry.register(ThinkOperation);
+    registry.register(QueryOperation);
+    registry.register(PutPageOperation);
+    registry.register(DeletePageOperation);
+    registry.register(RestorePageOperation);
+    registry.register(PurgeDeletedPagesOperation);
+    registry.register(ListPagesOperation);
+    Arc::new(registry)
+}
+
 /// Start the HTTP API and admin SPA server.
 ///
 /// Loads server configuration from zbrain.yml (with CLI flag overrides),
@@ -613,9 +633,11 @@ async fn run_serve_http_command(
         admin_queries: engine.clone() as std::sync::Arc<dyn zbrain_core::AdminQueries>,
         calibration_queries: engine.clone() as std::sync::Arc<dyn zbrain_core::CalibrationQueries>,
         oauth_queries: engine.clone() as std::sync::Arc<dyn zbrain_core::OAuthQueries>,
-        token_queries: engine as std::sync::Arc<dyn zbrain_core::TokenQueries>,
+        token_queries: engine.clone() as std::sync::Arc<dyn zbrain_core::TokenQueries>,
         activity_tx: tx,
         spa_dir,
+        operation_registry: build_operation_registry(),
+        engine: engine as std::sync::Arc<dyn zbrain_core::BrainEngine>,
     };
 
     eprintln!("[zbrain-web] starting HTTP server on {addr}");

@@ -24,6 +24,9 @@ tracing = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 sha2 = "0.10"
+hmac = { workspace = true }
+hex = { workspace = true }
+subtle = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
 rand = "0.8"
 futures = "0.3"
@@ -35,3 +38,4 @@ form_urlencoded = "1.2"
 tokio = { workspace = true, features = ["macros", "rt"] }
 reqwest = { workspace = true }
 tempfile = { workspace = true }
+tower = "0.5"

@@ -34,7 +34,7 @@ use crate::oauth_queries::{
 };
 use crate::engine::{
     page_sort_sql, BrainEngine, EngineConfig, EngineKind, GetPageOpts, Page, PageFilters,
-    PageInput, PageSort, ResolveSlugsOpts,
+    PageInput, PageSort, ResolveSlugsOpts, SourceRow,
 };
 use crate::error::{Error, Result};
 use crate::migration::{Migration, MigrationRegistry};
@@ -416,6 +416,38 @@ impl BrainEngine for LibsqlEngine {
         // disconnect is a contract-honoring no-op so callers can treat all
         // engines uniformly.
         Ok(())
+    }
+
+    async fn get_source_by_github_repo(
+        &self,
+        github_repo: &str,
+    ) -> Result<Option<SourceRow>> {
+        let conn = self.conn().await?;
+        let mut rows = conn
+            .query(
+                "SELECT id, name, config FROM sources WHERE json_extract(config, '$.github_repo') = ?1 LIMIT 1",
+                [github_repo],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("source lookup failed: {e}")))?;
+        match rows.next().await
+            .map_err(|e| Error::engine(format!("source row read failed: {e}")))?
+        {
+            Some(row) => {
+                let config_str: String = row.get::<String>(2)
+                    .map_err(|e| Error::engine(format!("config field read failed: {e}")))?;
+                let config: serde_json::Value =
+                    serde_json::from_str(&config_str).unwrap_or_default();
+                Ok(Some(SourceRow {
+                    id: row.get::<String>(0)
+                        .map_err(|e| Error::engine(format!("id field read failed: {e}")))?,
+                    name: row.get::<String>(1)
+                        .map_err(|e| Error::engine(format!("name field read failed: {e}")))?,
+                    config,
+                }))
+            }
+            None => Ok(None),
+        }
     }
 
     async fn init_schema(&self) -> Result<()> {

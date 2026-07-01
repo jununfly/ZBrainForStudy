@@ -39,7 +39,7 @@ use sqlx::{PgPool, Row};
 
 use crate::engine::{
     page_sort_sql, BrainEngine, EngineConfig, EngineKind, GetPageOpts, Page, PageFilters,
-    PageInput, PageSort, ResolveSlugsOpts,
+    PageInput, PageSort, ResolveSlugsOpts, SourceRow,
 };
 use crate::oauth_queries::{
     ExchangeTokens, OAuthClientInfo, OAuthQueries, RegisterClientRequest,
@@ -468,6 +468,21 @@ impl BrainEngine for PostgresEngine {
             pool.close().await;
         }
         Ok(())
+    }
+
+    async fn get_source_by_github_repo(
+        &self,
+        github_repo: &str,
+    ) -> Result<Option<SourceRow>> {
+        let pool = self.pool()?;
+        let row = sqlx::query_as::<_, (String, String, serde_json::Value)>(
+            "SELECT id, name, config FROM sources WHERE config->>'github_repo' = $1 LIMIT 1"
+        )
+        .bind(github_repo)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::engine(format!("source lookup failed: {e}")))?;
+        Ok(row.map(|(id, name, config)| SourceRow { id, name, config }))
     }
 
     async fn init_schema(&self) -> Result<()> {

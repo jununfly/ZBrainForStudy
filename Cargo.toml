@@ -69,6 +69,11 @@ reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls-native-r
 # OAuth client management: UUID generation for client_id, SHA-256 for secret hashing.
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
+# Webhook HMAC-SHA256 verification
+hmac = "0.12"
+hex = "0.4"
+# Constant-time comparison for HMAC verification
+subtle = "2.6"
 
 [profile.release]
 lto = "thin"

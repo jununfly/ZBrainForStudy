@@ -6,6 +6,7 @@ mod events;
 mod magic_link;
 mod mcp;
 mod token;
+mod webhook;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -25,6 +26,7 @@ use zbrain_core::operation::OperationRegistry;
 pub use auth::AdminAuth;
 pub use events::ActivityEvent;
 pub use magic_link::MagicLinkAuth;
+pub use webhook::WebhookState;
 
 /// Application state shared across all request handlers.
 #[derive(Clone)]
@@ -47,6 +49,8 @@ pub struct AppState {
     pub spa_dir: PathBuf,
     /// Operation registry for MCP tool dispatch.
     pub operation_registry: Arc<OperationRegistry>,
+    /// Engine for page storage (used by webhook ingestion).
+    pub engine: Arc<dyn zbrain_core::BrainEngine>,
 }
 
 /// Health-check response body.
@@ -160,6 +164,10 @@ pub fn build_router(state: AppState) -> Router {
         .merge(events::build_events_router(state.clone()))
         .merge(token::build_token_router(state.clone()))
         .merge(mcp::build_mcp_router(state.clone(), state.operation_registry.clone()))
+        .merge(webhook::build_webhook_router(WebhookState {
+            engine: state.engine.clone(),
+            token_queries: state.token_queries.clone(),
+        }))
 }
 
 /// Start the HTTP server and block until shutdown signal.
@@ -218,10 +226,11 @@ mod tests {
             admin_queries: engine.clone() as std::sync::Arc<dyn zbrain_core::AdminQueries>,
             calibration_queries: engine.clone() as std::sync::Arc<dyn zbrain_core::CalibrationQueries>,
             oauth_queries: engine.clone() as std::sync::Arc<dyn zbrain_core::OAuthQueries>,
-            token_queries: engine as std::sync::Arc<dyn zbrain_core::TokenQueries>,
+            token_queries: engine.clone() as std::sync::Arc<dyn zbrain_core::TokenQueries>,
             activity_tx: tx,
             spa_dir,
             operation_registry: Arc::new(OperationRegistry::new()),
+            engine: engine as std::sync::Arc<dyn zbrain_core::BrainEngine>,
         };
         (dir, state)
     }

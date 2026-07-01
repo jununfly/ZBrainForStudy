@@ -14,6 +14,7 @@ pub mod calibration_queries;
 pub mod oauth_queries;
 pub mod engine;
 pub mod error;
+pub mod ingestion;
 pub mod libsql;
 pub mod llm;
 pub mod migration;
@@ -30,7 +31,7 @@ pub use types::{
     FindDuplicatePageOpts, OrphanPage, PageKind, PageRef, PageType, PurgeResult,
     RefreshPageBodyArgs, UpsertFileResult, ALL_PAGE_TYPES,
 };
-pub use engine::{BrainEngine, InMemoryEngine, Page, PageInput, PageFilters, SearchOpts, SearchResult, GetPageOpts, ResolveSlugsOpts};
+pub use engine::{BrainEngine, InMemoryEngine, Page, PageInput, PageFilters, SearchOpts, SearchResult, GetPageOpts, ResolveSlugsOpts, SourceRow};
 pub use admin_queries::{
     AdminQueries, AgentClientSpend, AgentInfo, ApiKey, BudgetOwner, ErrorClusterCount, FullStats,
     HealthIndicators, JobTypeSummary, Paginated, QueueHealth, RequestLogEntry, RequestLogFilters,
@@ -43,6 +44,11 @@ pub use calibration_queries::{
 pub use oauth_queries::{
     ExchangeTokens, OAuthClientInfo, OAuthQueries, RegisterClientRequest, RegisterClientResponse,
     RevokeClientResponse, UpdateClientTtlResponse,
+};
+pub use ingestion::{
+    compute_content_hash, detect_content_type, is_allowed_ingest_content_type,
+    validate_ingestion_event, IngestionEvent, IngestionEventError, INGESTION_CONTENT_TYPES,
+    INGEST_ALLOWED_CONTENT_TYPES,
 };
 pub use llm::{LlmClient, LlmRequest, LlmResponse, LlmError, MockLlmClient, TokenUsage};
 #[cfg(feature = "openai")]

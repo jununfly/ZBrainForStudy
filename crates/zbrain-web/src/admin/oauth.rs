@@ -196,10 +196,11 @@ mod tests {
             admin_queries: engine.clone() as std::sync::Arc<dyn zbrain_core::AdminQueries>,
             calibration_queries: engine.clone() as std::sync::Arc<dyn zbrain_core::CalibrationQueries>,
             oauth_queries: engine.clone() as std::sync::Arc<dyn zbrain_core::OAuthQueries>,
-            token_queries: engine as std::sync::Arc<dyn zbrain_core::TokenQueries>,
+            token_queries: engine.clone() as std::sync::Arc<dyn zbrain_core::TokenQueries>,
             activity_tx: tx,
             spa_dir: spa_path,
             operation_registry: Arc::new(zbrain_core::operation::OperationRegistry::new()),
+            engine: engine as std::sync::Arc<dyn zbrain_core::BrainEngine>,
         };
 
         let app = build_router(state);

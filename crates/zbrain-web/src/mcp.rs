@@ -222,7 +222,7 @@ async fn handle_tools_call(
 // ── Helpers ───────────────────────────────────────────────────────────
 
 /// Extract the bearer token from the Authorization header.
-fn extract_bearer_token(headers: &axum::http::HeaderMap) -> Option<String> {
+pub(crate) fn extract_bearer_token(headers: &axum::http::HeaderMap) -> Option<String> {
     let auth = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
     let auth = auth.trim();
     if auth.len() <= 7 || !auth[..7].eq_ignore_ascii_case("Bearer ") {
@@ -337,10 +337,11 @@ mod tests {
             admin_queries: engine.clone() as Arc<dyn zbrain_core::AdminQueries>,
             calibration_queries: engine.clone() as Arc<dyn zbrain_core::CalibrationQueries>,
             oauth_queries: engine.clone() as Arc<dyn zbrain_core::OAuthQueries>,
-            token_queries: engine as Arc<dyn zbrain_core::TokenQueries>,
+            token_queries: engine.clone() as Arc<dyn zbrain_core::TokenQueries>,
             activity_tx: tx,
             spa_dir: spa_path,
             operation_registry: registry.clone(),
+            engine: engine as Arc<dyn zbrain_core::BrainEngine>,
         };
 
         let app = build_mcp_router(state.clone(), registry.clone());

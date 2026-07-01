@@ -33,6 +33,7 @@ reqwest = { workspace = true, optional = true }
 # OAuth client management
 uuid = { workspace = true }
 sha2 = { workspace = true }
+hex = { workspace = true }
 
 [features]
 default = []

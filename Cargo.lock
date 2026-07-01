@@ -4833,6 +4833,7 @@ version = "0.0.1"
 dependencies = [
  "async-trait",
  "garde",
+ "hex",
  "libsql",
  "pathdiff",
  "pg-embed",
@@ -4871,22 +4872,28 @@ name = "zbrain-web"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum 0.8.9",
  "base64 0.22.1",
  "form_urlencoded",
  "futures",
+ "hex",
+ "hmac 0.12.1",
  "rand 0.8.6",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "subtle",
  "tempfile",
  "tokio",
  "tokio-stream",
+ "tower 0.5.3",
  "tower-http 0.6.11",
  "tracing",
  "uuid",
  "zbrain-core",
+ "zbrain-mcp",
  "zbrain-svg",
 ]
 
