@@ -101,6 +101,7 @@ async fn sse_handler(
 mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::sync::Arc;
     use crate::MagicLinkAuth;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::broadcast;
@@ -134,6 +135,7 @@ use tokio::sync::broadcast;
             token_queries: engine as std::sync::Arc<dyn zbrain_core::TokenQueries>,
             activity_tx: tx.clone(),
             spa_dir: spa_path,
+            operation_registry: Arc::new(zbrain_core::operation::OperationRegistry::new()),
         };
 
         let app = build_router(state);

@@ -166,6 +166,7 @@ async fn revoke_client_handler(
 mod tests {
     use axum::http::StatusCode;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::sync::Arc;
 
     use zbrain_core::InMemoryEngine;
 
@@ -198,6 +199,7 @@ mod tests {
             token_queries: engine as std::sync::Arc<dyn zbrain_core::TokenQueries>,
             activity_tx: tx,
             spa_dir: spa_path,
+            operation_registry: Arc::new(zbrain_core::operation::OperationRegistry::new()),
         };
 
         let app = build_router(state);

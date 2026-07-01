@@ -4,6 +4,7 @@ mod admin;
 mod auth;
 mod events;
 mod magic_link;
+mod mcp;
 mod token;
 
 use std::net::SocketAddr;
@@ -19,6 +20,7 @@ use axum::{
 };
 use serde::Serialize;
 use tokio::sync::broadcast;
+use zbrain_core::operation::OperationRegistry;
 
 pub use auth::AdminAuth;
 pub use events::ActivityEvent;
@@ -43,6 +45,8 @@ pub struct AppState {
     pub activity_tx: broadcast::Sender<ActivityEvent>,
     /// Path to the admin SPA static files directory.
     pub spa_dir: PathBuf,
+    /// Operation registry for MCP tool dispatch.
+    pub operation_registry: Arc<OperationRegistry>,
 }
 
 /// Health-check response body.
@@ -154,7 +158,8 @@ pub fn build_router(state: AppState) -> Router {
     main.merge(auth::admin_auth_routes(state.clone()))
         .merge(admin::build_admin_router(state.clone()))
         .merge(events::build_events_router(state.clone()))
-        .merge(token::build_token_router(state))
+        .merge(token::build_token_router(state.clone()))
+        .merge(mcp::build_mcp_router(state.clone(), state.operation_registry.clone()))
 }
 
 /// Start the HTTP server and block until shutdown signal.
@@ -216,6 +221,7 @@ mod tests {
             token_queries: engine as std::sync::Arc<dyn zbrain_core::TokenQueries>,
             activity_tx: tx,
             spa_dir,
+            operation_registry: Arc::new(OperationRegistry::new()),
         };
         (dir, state)
     }

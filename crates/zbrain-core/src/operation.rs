@@ -598,6 +598,15 @@ pub trait ValidateParams {
     fn validate(&self) -> OperationResult<()>;
 }
 
+/// `serde_json::Value` is always valid as params — validation is deferred
+/// to the operation implementation. This blanket impl makes it easy to use
+/// `Value` as a params type in tests and dynamic dispatch scenarios.
+impl ValidateParams for serde_json::Value {
+    fn validate(&self) -> OperationResult<()> {
+        Ok(())
+    }
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Trust boundary enforcement guards (Slice #42, Security-critical)
 // ──────────────────────────────────────────────────────────────────────────
@@ -950,6 +959,13 @@ pub trait Operation: fmt::Debug + Send + Sync {
         serde_json::json!({ "type": "object", "properties": {} })
     }
 
+    /// OAuth scope required to invoke this operation over MCP.
+    ///
+    /// Defaults to `"read"`. Override via `TypedOperation::required_scope()`.
+    fn required_scope(&self) -> &'static str {
+        "read"
+    }
+
     /// JSON-based execution entry point (object-safe).
     ///
     /// Deserializes params, validates them, enforces trust boundaries,
@@ -1002,6 +1018,20 @@ pub trait TypedOperation: fmt::Debug + Send + Sync {
         None
     }
 
+    /// OAuth scope required to invoke this operation over MCP.
+    ///
+    /// Mirrors TS `op.scope || 'read'`. The returned scope string is
+    /// checked against the authenticated client's granted scopes using
+    /// `has_scope()` at MCP dispatch time.
+    ///
+    /// Valid values: `"read"`, `"write"`, `"admin"`, `"sources_admin"`,
+    /// `"users_admin"`, `"agent"`.
+    ///
+    /// Default: `"read"` (least privileged, safe default for read-only ops).
+    fn required_scope(&self) -> &'static str {
+        "read"
+    }
+
     /// JSON Schema for the input params (`inputSchema` in MCP tool defs).
     ///
     /// Used by `build_tool_defs()` in `zbrain-mcp` to generate MCP
@@ -1039,6 +1069,10 @@ impl<T: TypedOperation + Sync> Operation for T {
 
     fn input_schema(&self) -> serde_json::Value {
         <Self as TypedOperation>::input_schema(self)
+    }
+
+    fn required_scope(&self) -> &'static str {
+        <Self as TypedOperation>::required_scope(self)
     }
 
     async fn execute_json(

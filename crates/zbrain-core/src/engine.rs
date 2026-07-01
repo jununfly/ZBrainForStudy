@@ -585,6 +585,8 @@ pub struct InMemoryEngine {
     /// Page version snapshots, newest-first within each page.
     version_store: Mutex<Vec<PageVersion>>,
     next_version_id: Mutex<u64>,
+    /// Token-scope map for testing: access_token → scopes.
+    token_scopes: Mutex<std::collections::HashMap<String, Vec<String>>>,
 }
 
 // ─── Tag helpers ─────────────────────────────────────────────────────────────
@@ -2067,13 +2069,24 @@ impl OAuthQueries for InMemoryEngine {
         &self,
         client_id: &str,
         _client_secret: &str,
-        _requested_scope: Option<&str>,
+        requested_scope: Option<&str>,
     ) -> crate::error::Result<ExchangeTokens> {
+        let scope = requested_scope.unwrap_or("read").to_string();
+        let scopes: Vec<String> = scope
+            .split(' ')
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect();
+        let access_token = format!("test_at_{}", client_id);
+        self.token_scopes
+            .lock()
+            .unwrap()
+            .insert(access_token.clone(), scopes);
         Ok(ExchangeTokens {
-            access_token: format!("test_at_{}", client_id),
+            access_token,
             token_type: "bearer".to_string(),
             expires_in: 3600,
-            scope: "read write".to_string(),
+            scope,
             refresh_token: None,
         })
     }
@@ -2135,11 +2148,18 @@ impl crate::token_queries::TokenQueries for InMemoryEngine {
         if token.is_empty() {
             return Err(crate::token_queries::TokenError::Invalid);
         }
+        let scopes = self
+            .token_scopes
+            .lock()
+            .unwrap()
+            .get(token)
+            .cloned()
+            .unwrap_or_else(|| vec!["read".to_string(), "write".to_string()]);
         Ok(crate::token_queries::AuthInfo {
             token: token.to_string(),
             client_id: "test-client".to_string(),
             client_name: Some("Test Client".to_string()),
-            scopes: vec!["read".to_string(), "write".to_string()],
+            scopes,
             expires_at: i64::MAX,
             source_id: None,
             resource: None,

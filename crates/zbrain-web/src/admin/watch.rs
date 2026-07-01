@@ -35,6 +35,7 @@ async fn get_watch_handler(
 mod tests {
     use axum::http::StatusCode;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::sync::Arc;
     use crate::MagicLinkAuth;
 
     fn make_spa_dir() -> (tempfile::TempDir, std::path::PathBuf) {
@@ -64,6 +65,7 @@ mod tests {
                 as std::sync::Arc<dyn zbrain_core::TokenQueries>,
             activity_tx: tx,
             spa_dir: spa_path,
+            operation_registry: Arc::new(zbrain_core::operation::OperationRegistry::new()),
         };
 
         let app = super::super::super::build_router(state);

@@ -125,27 +125,27 @@ impl SlidingWindowRateLimiter {
 
 /// Incoming JSON-RPC 2.0 request.
 #[derive(Debug, Deserialize)]
-struct JsonRpcRequest {
+pub struct JsonRpcRequest {
     #[allow(dead_code)]
-    jsonrpc: String,
-    id: Option<Value>,
-    method: String,
-    params: Option<Value>,
+    pub jsonrpc: String,
+    pub id: Option<Value>,
+    pub method: String,
+    pub params: Option<Value>,
 }
 
 /// Outgoing JSON-RPC 2.0 response.
 #[derive(Debug, Serialize)]
-struct JsonRpcResponse {
-    jsonrpc: String,
-    id: Option<Value>,
+pub struct JsonRpcResponse {
+    pub jsonrpc: String,
+    pub id: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    result: Option<Value>,
+    pub result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<JsonRpcError>,
+    pub error: Option<JsonRpcError>,
 }
 
 impl JsonRpcResponse {
-    fn success(id: Option<Value>, result: Value) -> Self {
+    pub fn success(id: Option<Value>, result: Value) -> Self {
         JsonRpcResponse {
             jsonrpc: "2.0".into(),
             id,
@@ -154,7 +154,7 @@ impl JsonRpcResponse {
         }
     }
 
-    fn error(id: Option<Value>, code: i32, message: impl Into<String>) -> Self {
+    pub fn error(id: Option<Value>, code: i32, message: impl Into<String>) -> Self {
         JsonRpcResponse {
             jsonrpc: "2.0".into(),
             id,
@@ -169,9 +169,9 @@ impl JsonRpcResponse {
 
 /// JSON-RPC 2.0 error object.
 #[derive(Debug, Serialize)]
-struct JsonRpcError {
-    code: i32,
-    message: String,
+pub struct JsonRpcError {
+    pub code: i32,
+    pub message: String,
 }
 
 // ──────────────────────────────────────────────────────────────────────────
