@@ -22,7 +22,7 @@ pub mod postgres;
 pub mod time;
 pub mod types;
 
-pub use scope::{has_scope, parse_scope_string, ALLOWED_SCOPES};
+pub use scope::{has_scope, parse_scope_string, is_allowed_scope, assert_allowed_scopes, normalize_scopes_input, InvalidScopeError, ALLOWED_SCOPES};
 pub use token_queries::{AuthInfo, TokenError, TokenQueries};
 pub use error::{from_std_error, Error, Result, StructuredError};
 pub use types::{

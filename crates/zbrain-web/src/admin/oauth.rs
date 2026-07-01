@@ -8,7 +8,8 @@ use axum::{
 };
 
 use super::super::AppState;
-use zbrain_core::oauth_queries::{RegisterClientRequest};
+use zbrain_core::oauth_queries::RegisterClientRequest;
+use zbrain_core::normalize_scopes_input;
 
 /// Build the OAuth client management router.
 pub fn build_oauth_router() -> Router<AppState> {
@@ -31,8 +32,13 @@ async fn register_client_handler(
             .into_response(),
     };
 
-    // Normalize scopes: accept both "scopes" and "scope" keys
-    let scope_string = normalize_scopes_input(&body);
+    // Normalize scopes: accept both "scopes" and "scope" keys, validate against ALLOWED_SCOPES
+    let scope_string = match normalize_scopes_input(body.get("scopes").or_else(|| body.get("scope"))) {
+        Ok(s) => s,
+        Err(e) => return (axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"ok": false, "error": format!("Invalid scopes: {}", e)})))
+            .into_response(),
+    };
 
     let grant_types: Vec<String> = body
         .get("grantTypes")
@@ -151,27 +157,6 @@ async fn revoke_client_handler(
             Json(serde_json::json!({"ok": false, "error": e.to_string()})),
         )
             .into_response(),
-    }
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────
-
-/// Normalize scopes from the request body. Accepts:
-/// - `"scopes"` (string or array, admin SPA convention)
-/// - `"scope"` (string, OAuth wire-format convention)
-/// Returns a space-separated scope string.
-fn normalize_scopes_input(body: &serde_json::Value) -> String {
-    let raw = body.get("scopes").or_else(|| body.get("scope"));
-
-    match raw {
-        Some(serde_json::Value::String(s)) => s.clone(),
-        Some(serde_json::Value::Array(arr)) => {
-            arr.iter()
-                .filter_map(|v| v.as_str())
-                .collect::<Vec<&str>>()
-                .join(" ")
-        }
-        _ => "read".to_string(),
     }
 }
 
