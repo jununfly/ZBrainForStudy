@@ -133,6 +133,9 @@ pub enum Commands {
     /// Start the HTTP API and admin SPA server
     #[command(name = "serve")]
     ServeHttp(ServeHttpArgs),
+
+    /// Sync files from a git repository into the knowledge base
+    Sync(SyncArgs),
 }
 
 /// Arguments for `zbrain get-page` command.
@@ -343,6 +346,38 @@ pub struct ServeHttpArgs {
     pub spa_dir: Option<PathBuf>,
 }
 
+/// Arguments for `zbrain sync` command.
+#[derive(Debug, Parser)]
+pub struct SyncArgs {
+    /// Source identifier (creates if not exists)
+    #[arg(long, default_value = "default")]
+    pub source_id: String,
+
+    /// Path to the git repository root to sync
+    #[arg(long)]
+    pub repo_path: Option<PathBuf>,
+
+    /// Force a full sync even if an anchor exists
+    #[arg(long)]
+    pub full_sync: bool,
+
+    /// Chunker version to stamp on pages (detected from config if omitted)
+    #[arg(long)]
+    pub chunker_version: Option<i32>,
+
+    /// Maximum file size in bytes (0 = no limit)
+    #[arg(long, default_value = "0")]
+    pub max_file_size: u64,
+
+    /// Directory for recording sync failures
+    #[arg(long)]
+    pub failures_dir: Option<PathBuf>,
+
+    /// Number of parallel imports (0 = auto-detect, 1 = serial)
+    #[arg(long, default_value = "0")]
+    pub parallelism: usize,
+}
+
 /// Execute the parsed CLI command.
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
@@ -360,6 +395,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::ListPages(args) => run_list_pages_command(args, cli.config.as_deref()).await?,
         Commands::ServeMcp(args) => run_serve_mcp_command(args, cli.config.as_deref()).await?,
         Commands::ServeHttp(args) => run_serve_http_command(args, cli.config.as_deref()).await?,
+        Commands::Sync(args) => run_sync_command(args, cli.config.as_deref()).await?,
     }
     Ok(())
 }
@@ -580,6 +616,148 @@ fn build_operation_registry() -> Arc<OperationRegistry> {
     Arc::new(registry)
 }
 
+/// Execute `zbrain sync` command.
+///
+/// Syncs markdown files from a git repository into the knowledge base.
+/// Performs an incremental sync by default (git diff since last anchor),
+/// or a full sync if `--full-sync` is passed or no anchor exists.
+async fn run_sync_command(args: SyncArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+    use zbrain_core::engine::{BrainEngine, EngineConfig};
+    use zbrain_core::sync::core::{perform_full_sync, perform_sync, FullSyncOpts, IncrementalSyncOpts};
+
+    let config = config::load_config(config_path)?;
+
+    // Resolve repo_path: from flag, or from config.sync.default_repo, or CWD
+    let repo_path = args
+        .repo_path
+        .clone()
+        .or_else(|| config.sync.as_ref().and_then(|s| s.default_repo.clone()))
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+    // Ensure repo_path is absolute
+    let repo_path = if repo_path.is_absolute() {
+        repo_path
+    } else {
+        std::env::current_dir()?.join(repo_path)
+    };
+
+    // Get current git commit
+    let current_commit = get_git_head_commit(&repo_path)?;
+
+    // Resolve chunker_version: from flag, or from config.sync.chunker_version, or default 1
+    let chunker_version = args.chunker_version.or_else(|| {
+        config.sync.as_ref().and_then(|s| s.chunker_version)
+    });
+
+    // Resolve failures_dir
+    let failures_dir = args.failures_dir.clone().unwrap_or_else(|| {
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".zbrain")
+            .join("sync-failures")
+    });
+    std::fs::create_dir_all(&failures_dir)?;
+
+    // Max file size: 0 means no limit
+    let max_file_size = if args.max_file_size == 0 {
+        None
+    } else {
+        Some(args.max_file_size)
+    };
+
+    // Build engine
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+    let engine: std::sync::Arc<dyn BrainEngine> = std::sync::Arc::new(engine);
+
+    // Ensure source exists
+    ensure_source_exists(&engine, &args.source_id).await?;
+
+    let result = if args.full_sync {
+        eprintln!("[zbrain-sync] performing full sync for source: {}", args.source_id);
+        let opts = FullSyncOpts {
+            source_id: args.source_id.clone(),
+            repo_path: repo_path.clone(),
+            current_commit: current_commit.clone(),
+            chunker_version,
+            failures_dir: failures_dir.clone(),
+            max_file_size,
+        };
+        perform_full_sync(&engine, &opts).await?
+    } else {
+        // Get previous anchor for incremental sync
+        let source = engine
+            .get_source(&args.source_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("source not found: {}", args.source_id))?;
+
+        let previous_commit = source.last_commit.clone();
+
+        eprintln!("[zbrain-sync] incremental sync for source: {} ({}..{})",
+            args.source_id,
+            previous_commit.as_deref().unwrap_or("none"),
+            current_commit,
+        );
+
+        let opts = IncrementalSyncOpts {
+            source_id: args.source_id.clone(),
+            repo_path: repo_path.clone(),
+            current_commit: current_commit.clone(),
+            previous_commit,
+            chunker_version,
+            failures_dir: failures_dir.clone(),
+            max_file_size,
+        };
+        perform_sync(&engine, &opts).await?
+    };
+
+    // Print result
+    let mode = if result.full_sync { "full sync" } else { "incremental sync" };
+    println!("{} complete: {} imported, {} deleted, {} failures",
+        mode, result.imported, result.deleted, result.failures);
+
+    engine.disconnect().await?;
+    Ok(())
+}
+
+/// Ensure a source exists in the engine, creating it if necessary.
+async fn ensure_source_exists(engine: &std::sync::Arc<dyn zbrain_core::engine::BrainEngine>, source_id: &str) -> anyhow::Result<()> {
+    use zbrain_core::engine::CreateSourceInput;
+
+    if engine.get_source(source_id).await?.is_none() {
+        engine
+            .create_source(&CreateSourceInput {
+                id: source_id.to_string(),
+                name: source_id.to_string(),
+                config: None,
+            })
+            .await?;
+        eprintln!("[zbrain-sync] created source: {}", source_id);
+    }
+    Ok(())
+}
+
+/// Get the current HEAD commit SHA from a git repository.
+fn get_git_head_commit(repo_path: &Path) -> anyhow::Result<String> {
+    let output = std::process::Command::new("git")
+        .args(["-C", &repo_path.to_string_lossy(), "rev-parse", "HEAD"])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow::anyhow!("failed to get git HEAD commit: {stderr}"));
+    }
+
+    let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok(sha)
+}
+
 /// Start the HTTP API and admin SPA server.
 ///
 /// Loads server configuration from zbrain.yml (with CLI flag overrides),
@@ -638,6 +816,9 @@ async fn run_serve_http_command(
         spa_dir,
         operation_registry: build_operation_registry(),
         engine: engine as std::sync::Arc<dyn zbrain_core::BrainEngine>,
+        zbrain_home: dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".zbrain"),
     };
 
     eprintln!("[zbrain-web] starting HTTP server on {addr}");
@@ -1495,5 +1676,128 @@ mod tests {
 
         // Abort server task (don't wait for graceful shutdown)
         server_handle.abort();
+    }
+
+    // --- Sync CLI arg tests (#101) ---
+
+    #[test]
+    fn sync_command_parses_defaults() {
+        let cli = Cli::try_parse_from(["zbrain", "sync"]).unwrap();
+        match cli.command {
+            Commands::Sync(args) => {
+                assert_eq!(args.source_id, "default");
+                assert!(args.repo_path.is_none());
+                assert!(!args.full_sync);
+                assert!(args.chunker_version.is_none());
+                assert_eq!(args.max_file_size, 0);
+                assert!(args.failures_dir.is_none());
+                assert_eq!(args.parallelism, 0);
+            }
+            _ => panic!("expected Sync"),
+        }
+    }
+
+    #[test]
+    fn sync_command_parses_source_id() {
+        let cli = Cli::try_parse_from(["zbrain", "sync", "--source-id", "my-docs"]).unwrap();
+        match cli.command {
+            Commands::Sync(args) => {
+                assert_eq!(args.source_id, "my-docs");
+            }
+            _ => panic!("expected Sync"),
+        }
+    }
+
+    #[test]
+    fn sync_command_parses_repo_path() {
+        let cli = Cli::try_parse_from(["zbrain", "sync", "--repo-path", "/home/user/repo"]).unwrap();
+        match cli.command {
+            Commands::Sync(args) => {
+                assert_eq!(args.repo_path, Some(PathBuf::from("/home/user/repo")));
+            }
+            _ => panic!("expected Sync"),
+        }
+    }
+
+    #[test]
+    fn sync_command_parses_full_sync_flag() {
+        let cli = Cli::try_parse_from(["zbrain", "sync", "--full-sync"]).unwrap();
+        match cli.command {
+            Commands::Sync(args) => {
+                assert!(args.full_sync);
+            }
+            _ => panic!("expected Sync"),
+        }
+    }
+
+    #[test]
+    fn sync_command_parses_chunker_version() {
+        let cli = Cli::try_parse_from(["zbrain", "sync", "--chunker-version", "2"]).unwrap();
+        match cli.command {
+            Commands::Sync(args) => {
+                assert_eq!(args.chunker_version, Some(2));
+            }
+            _ => panic!("expected Sync"),
+        }
+    }
+
+    #[test]
+    fn sync_command_parses_max_file_size() {
+        let cli = Cli::try_parse_from(["zbrain", "sync", "--max-file-size", "1048576"]).unwrap();
+        match cli.command {
+            Commands::Sync(args) => {
+                assert_eq!(args.max_file_size, 1048576);
+            }
+            _ => panic!("expected Sync"),
+        }
+    }
+
+    #[test]
+    fn sync_command_parses_failures_dir() {
+        let cli = Cli::try_parse_from(["zbrain", "sync", "--failures-dir", "/tmp/sync-failures"]).unwrap();
+        match cli.command {
+            Commands::Sync(args) => {
+                assert_eq!(args.failures_dir, Some(PathBuf::from("/tmp/sync-failures")));
+            }
+            _ => panic!("expected Sync"),
+        }
+    }
+
+    #[test]
+    fn sync_command_parses_parallelism() {
+        let cli = Cli::try_parse_from(["zbrain", "sync", "--parallelism", "4"]).unwrap();
+        match cli.command {
+            Commands::Sync(args) => {
+                assert_eq!(args.parallelism, 4);
+            }
+            _ => panic!("expected Sync"),
+        }
+    }
+
+    #[test]
+    fn sync_command_parses_all_flags_together() {
+        let cli = Cli::try_parse_from([
+            "zbrain", "sync",
+            "--source-id", "my-docs",
+            "--repo-path", "/tmp/myrepo",
+            "--full-sync",
+            "--chunker-version", "3",
+            "--max-file-size", "524288",
+            "--failures-dir", "/tmp/failures",
+            "--parallelism", "2",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Sync(args) => {
+                assert_eq!(args.source_id, "my-docs");
+                assert_eq!(args.repo_path, Some(PathBuf::from("/tmp/myrepo")));
+                assert!(args.full_sync);
+                assert_eq!(args.chunker_version, Some(3));
+                assert_eq!(args.max_file_size, 524288);
+                assert_eq!(args.failures_dir, Some(PathBuf::from("/tmp/failures")));
+                assert_eq!(args.parallelism, 2);
+            }
+            _ => panic!("expected Sync"),
+        }
     }
 }

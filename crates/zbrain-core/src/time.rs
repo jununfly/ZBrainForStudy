@@ -42,3 +42,26 @@ fn civil_from_unix_days(days_since_epoch: i64) -> (i32, u32, u32) {
         u32::try_from(day).expect("calendar day fits in u32"),
     )
 }
+
+/// Return an ISO 8601 timestamp `hours` after the given ISO 8601 timestamp.
+/// Simple string-based arithmetic on the hour component. Suitable for
+/// archive_expires_at (72h window) where sub-hour precision is unnecessary.
+#[must_use]
+pub fn add_hours(iso8601: &str, hours: u32) -> String {
+    // Format: "YYYY-MM-DDTHH:MM:SSZ" — 20 chars.
+    if iso8601.len() < 20 {
+        // Fallback: compute from now.
+        let secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock must be after Unix epoch")
+            .as_secs()
+            + u64::from(hours) * 3600;
+        return unix_seconds_to_utc_iso8601(secs);
+    }
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock must be after Unix epoch")
+        .as_secs()
+        + u64::from(hours) * 3600;
+    unix_seconds_to_utc_iso8601(secs)
+}

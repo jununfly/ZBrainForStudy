@@ -358,6 +358,7 @@ mod tests {
             spa_dir: spa_path,
             operation_registry: Arc::new(zbrain_core::operation::OperationRegistry::new()),
             engine: engine as Arc<dyn zbrain_core::BrainEngine>,
+            zbrain_home: std::env::temp_dir().join("zbrain-test"),
         }
     }
 

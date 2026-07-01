@@ -547,11 +547,21 @@ mod tests {
         engine.add_source(SourceRow {
             id: "gh-source-1".into(),
             name: "test-repo".into(),
+            local_path: None,
+            last_commit: None,
+            last_sync_at: None,
             config: serde_json::json!({
                 "github_repo": "owner/test-repo",
                 "webhook_secret": "super-secret-key",
                 "tracked_branch": "main",
             }),
+            created_at: None,
+            chunker_version: None,
+            archived: false,
+            archived_at: None,
+            archive_expires_at: None,
+            contextual_retrieval_mode: None,
+            trust_frontmatter_overrides: false,
         });
         Arc::new(engine)
     }

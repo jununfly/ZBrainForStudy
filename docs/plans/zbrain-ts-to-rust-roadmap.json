@@ -151,7 +151,7 @@
     "1-6": {
       "id": "1-6",
       "label": "Web backend and admin API migration",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1",
       "children": [
@@ -171,17 +171,24 @@
     },
     "1-7": {
       "id": "1-7",
-      "label": "Ingestion sources search and retrieval migration",
-      "status": "pending",
+      "label": "Source CRUD import capture and ingestion pipeline migration",
+      "status": "in_progress",
       "mode": "exploit",
       "parent": "1",
       "children": [
         "1-7-1",
         "1-7-2",
-        "1-7-3"
+        "1-7-3",
+        "1-7-4"
       ],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "1-7 应聚焦 Source CRUD + Import/Capture Pipeline，还是包含 Embedding/向量搜索？",
+          "answer": "聚焦 Source CRUD + Import/Capture Pipeline。Embedding/向量搜索/Chunking 拆为独立子 slice (1-7-4)",
+          "note": "向量搜索引入大量新依赖(pgvector/qdrant/embedding models)，风险高；Source CRUD+Import 是用户直接可见的功能面；两者分治可缩短施工周期"
+        }
+      ],
+      "notes": "范围收窄：聚焦 Source CRUD + Import/Capture Pipeline。Embedding/向量搜索/Chunking/Reindex 已拆为独立子节点 1-7-4。"
     },
     "1-8": {
       "id": "1-8",
@@ -987,12 +994,132 @@
     "1-7-1": {
       "id": "1-7-1",
       "label": "Port source management import capture extract and sync flows",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "exploit",
       "parent": "1-7",
+      "children": [
+        "1-7-1-1",
+        "1-7-1-2",
+        "1-7-1-3",
+        "1-7-1-4",
+        "1-7-1-5",
+        "1-7-1-6",
+        "1-7-1-7"
+      ],
+      "decisions": [],
+      "notes": "Decomposed into 6 sub-nodes for incremental delivery: source CRUD API, source import/clone, capture pipeline, content extraction, sync engine, CLI commands."
+    },
+    "1-7-1-1": {
+      "id": "1-7-1-1",
+      "label": "Source CRUD API routes and DB schema: add/list/get/update/delete sources",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-7-1",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "Done: SourceRow(id,name,config) DB schema, migrations, CRUD API routes (POST/GET/PUT/DELETE /api/sources), InMemoryEngine full CRUD implementation, 12+ admin route tests passing."
+    },
+    "1-7-1-2": {
+      "id": "1-7-1-2",
+      "label": "Source import/clone: git clone, local path, URL import with atomic ops",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-7-1",
+      "children": [],
+      "decisions": [],
+      "notes": "Done: url_safety.rs (SSRF-safe URL parsing, 25 tests), git_remote.rs (async git clone/pull with SSRF flags, tokio::process::Command), sources_ops.rs (atomic clone-then-rename, add/remove/get/reclone, 7 tests), POST /sources/import admin route (depth/branch wired through), full workspace 426 tests passing."
+    },
+    "1-7-1-3": {
+      "id": "1-7-1-3",
+      "label": "Capture pipeline: content capture entry point, frontmatter merge, binary protection",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-7-1",
+      "children": [],
+      "decisions": [
+        {
+          "q": "Frontmatter 解析方案？",
+          "answer": "A: 引入 serde_yaml，解析 YAML frontmatter 为 serde_json::Value，做结构化 merge",
+          "note": "TS 侧 gray-matter + js-yaml 做结构化合并；Rust 侧 serde_yaml 生态成熟，可扩展。不做简单字符串拼接。"
+        },
+        {
+          "q": "Capture 入口 API 形态？",
+          "answer": "C: 核心库函数 capture_content() 放在 zbrain-core，webhook 和 CLI 后续接入",
+          "note": "1-7-1-3 输出 capture.rs 纯函数模块，不耦合 HTTP 层。webhook 重构留给后续节点。"
+        },
+        {
+          "q": "Binary protection 方案？",
+          "answer": "A: 照搬 TS 的 NUL-byte scan（前8KB）",
+          "note": "和 TS 行为一致。增强（magic bytes / MIME sniffing）留给 1-7-1-4 content extraction。"
+        },
+        {
+          "q": "content_hash 规范化放在哪里？",
+          "answer": "A: 修改 ingestion.rs 的 compute_content_hash，先 normalize 再 hash",
+          "note": "normalize 是 hash 计算的一部分，不是 capture 特有。修改后 webhook 路径也受益。TS 的 normalizeForHash: strip BOM → LF line endings → trim → NFKC Unicode normalization。"
+        },
+        {
+          "q": "Frontmatter 输出形态？",
+          "answer": "A: 输出 serde_json::Value（结构化），不重新序列化回 body",
+          "note": "Rust 侧 put_page 接收 body 和 frontmatter 分离的 PageInput，无需 YAML 序列化来回。capture 解析已有 frontmatter（YAML→Value），merge 后返回 Value，调用方直接组装 PageInput。"
+        }
+      ],
+      "notes": "Done: capture.rs (detect_binary, parse_frontmatter_from_body, merge_capture_frontmatter, capture_content — 38 tests), ingestion.rs (normalize_for_hash + compute_content_hash with NFKC normalization — 39 tests), new deps: serde_yaml + unicode-normalization. Full workspace 508 tests passing. Key decisions: serde_yaml for YAML parsing, core library function (no HTTP coupling), NUL-byte scan for binary protection, normalize inside compute_content_hash, frontmatter output as serde_json::Value (not re-serialized to body)."
+    },
+    "1-7-1-4": {
+      "id": "1-7-1-4",
+      "label": "Content extraction: text/markdown/html/pdf/json extractors",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-7-1",
+      "children": [],
+      "decisions": [
+        {
+          "q": "1-7-1-4 范围边界？",
+          "answer": "A: 纯 extraction — parseMarkdown（YAML frontmatter→body+frontmatter）、类型推断、文件类型路由（markdown/code/image）。不做 chunking/embedding/DB write",
+          "note": "chunking/embedding 拆成独立 1-7-1-6，CLI 命令后移到 1-7-1-7"
+        },
+        {
+          "q": "parseMarkdown 输出结构？",
+          "answer": "A: 分离字段 — ParsedMarkdown { frontmatter, compiled_truth, timeline, type_, title, slug, tags }，完成所有推断",
+          "note": "类型推断接受可选的 schema pack 配置（对应 TS activePack）。标题/slug/标签从 frontmatter 或文件路径推断。和 TS 行为对齐。"
+        },
+        {
+          "q": "文件类型路由在 1-7-1-4 中做到什么程度？",
+          "answer": "B: 做检测 + markdown 提取。parseMarkdown 完成 markdown 全量提取，code/image 只做 detect_code_language + detect_image_format 分类，深度提取留给 1-7-1-6",
+          "note": "code/image 的检测是小函数放这里合理（统一分类入口），tree-sitter parse / EXIF decode / OCR 留给后续。"
+        },
+        {
+          "q": "splitBody 需要实现吗？",
+          "answer": "B: 照搬 TS splitBody — 按 timeline 分隔符分割 body 为 compiled_truth + timeline",
+          "note": "splitBody 只有 ~40 行，属于 extraction 语义范畴（识别内容的语义结构）。3 种分隔标记：<!-- timeline -->、--- timeline ---、## Timeline。"
+        },
+        {
+          "q": "inferType 的 pack 参数形态？",
+          "answer": "A: Option<HashMap<String, String>> — 传入 path_prefix→type 映射表，extraction 层不关心 pack 是什么",
+          "note": "调用方从 pack 配置中提取映射后传入。extraction 层保持纯净，只接收一个简单的映射表。"
+        },
+        {
+          "q": "代码/图片检测覆盖多少？",
+          "answer": "A: 照搬 TS 全部 — 31 种语言 + 7 种图片格式",
+          "note": "纯数据映射表，零架构复杂度。1-7-1-6 chunking 需要具体语言信息选 tree-sitter parser。"
+        },
+        {
+          "q": "文件组织策略？",
+          "answer": "B: 双文件 — markdown.rs（parseMarkdown + infer* + splitBody）+ file_classify.rs（detectCodeLanguage + detectImageFormat + classifyFile）",
+          "note": "markdown 管道 vs 文件分类是两个独立关注点，双文件语义清晰。"
+        }
+      ],
+      "notes": "Done: markdown.rs (parse_markdown, split_body, infer_type/title/slug/tags — 50 tests), file_classify.rs (detect_code_language 31 langs, detect_image_format 7 formats, classify_file, FileType enum — 35 tests). Full workspace 593 tests passing. Key decisions: pure extraction scope (no chunking/embedding), ParsedMarkdown struct with all inferred fields, splitBody with 3 delimiters, inferType with Option<HashMap> pack mapping, full 31-language + 7-image-format coverage, dual-file organization."
+    },
+    "1-7-1-5": {
+      "id": "1-7-1-5",
+      "label": "Sync engine: git diff manifest, per-source locking, failure tracking, file-by-file import dispatch",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-7-1",
+      "children": [],
+      "decisions": [],
+      "notes": "去掉 'file import' 语义（import pipeline 归入新 1-7-1-6）。本节点聚焦 sync 特有逻辑：git diff 生成 SyncManifest、pathToSlug 映射、per-source DB 锁、failure tracking (JSONL)。Reference TS: src/core/sync.ts, src/core/sync-concurrency.ts。"
     },
     "1-7-2": {
       "id": "1-7-2",
@@ -1836,11 +1963,41 @@
         }
       ],
       "notes": "全部完成。RegisterClientRequest 新增 source_id/federated_read；AuthInfo 新增 resource/allowed_sources；sweep_expired_tokens 加入 trait + 双引擎实现；PostgresEngine 新增完整 OAuthQueries + TokenQueries impl（~300 行 sqlx），含 migration 0010。所有测试套件零失败。对应 GitHub issues #92-#95（子任务）。"
+    },
+    "1-7-4": {
+      "id": "1-7-4",
+      "label": "Port embedding generation vector search chunking and reindex flows",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-7",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-7-1-6": {
+      "id": "1-7-1-6",
+      "label": "Import pipeline: chunking (recursive text/code), embedding (embedBatch + CR wrapper), transaction write (putPage + upsertChunks + tags + links)",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-7-1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-7-1-7": {
+      "id": "1-7-1-7",
+      "label": "CLI commands: zbrain sources (add/list/remove/status), zbrain sync, zbrain capture",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-7-1",
+      "children": [],
+      "decisions": [],
+      "notes": "Reference TS: src/commands/sources.ts (~1189 lines: add/list/remove/rename/default/attach/detach/federate/archive/restore/purge/status/webhook), src/commands/sync.ts (~2485 lines: performSync/runSync/syncStatus). Wire up Rust CLI to use new source CRUD, sync engine, capture, and import pipeline modules."
     }
   },
   "metadata": {
     "created": "2026-06-23 18:09:00",
-    "updated": "2026-07-01 12:15:00",
+    "updated": "2026-07-01 20:27:02",
     "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_ROADMAP.md"
   }
 }

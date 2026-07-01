@@ -46,26 +46,26 @@ async fn read_version_raw(path: &std::path::Path) -> i64 {
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn fresh_db_runs_all_nine_migrations_ends_at_version_9() {
+async fn fresh_db_runs_all_ten_migrations_ends_at_version_10() {
     let (_temp, engine) = temp_engine().await;
     engine.init_schema().await.unwrap();
     let version = read_version_raw(_temp.path()).await;
-    assert_eq!(version, 9);
+    assert_eq!(version, 10);
 }
 
 #[tokio::test]
 async fn idempotent_init_schema_applies_zero_migrations_second_run() {
     let (_temp, engine) = temp_engine().await;
 
-    // First run - should apply all 9 migrations
+    // First run - should apply all 10 migrations
     engine.init_schema().await.unwrap();
     let v1 = read_version_raw(_temp.path()).await;
-    assert_eq!(v1, 9);
+    assert_eq!(v1, 10);
 
     // Second run - should be idempotent (no migrations applied)
     engine.init_schema().await.unwrap();
     let v2 = read_version_raw(_temp.path()).await;
-    assert_eq!(v2, 9);
+    assert_eq!(v2, 10);
 }
 
 #[tokio::test]

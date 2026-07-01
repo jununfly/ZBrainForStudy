@@ -342,6 +342,7 @@ mod tests {
             spa_dir: spa_path,
             operation_registry: registry.clone(),
             engine: engine as Arc<dyn zbrain_core::BrainEngine>,
+            zbrain_home: std::env::temp_dir().join("zbrain-test"),
         };
 
         let app = build_mcp_router(state.clone(), registry.clone());

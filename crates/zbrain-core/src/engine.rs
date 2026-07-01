@@ -222,6 +222,32 @@ pub fn page_sort_sql(sort: PageSort) -> &'static str {
     }
 }
 
+/// Validate a source id against the canonical regex from TS
+/// `src/core/source-id.ts`:
+/// `^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$`
+///
+/// Rules: 1-32 chars, lowercase alphanumeric, optional interior hyphens,
+/// must start and end with alphanumeric.
+#[must_use]
+pub fn is_valid_source_id(id: &str) -> bool {
+    if id.is_empty() || id.len() > 32 {
+        return false;
+    }
+    let bytes = id.as_bytes();
+    // First char must be alphanumeric lowercase
+    if !bytes[0].is_ascii_alphanumeric() {
+        return false;
+    }
+    // Last char must be alphanumeric lowercase
+    if !bytes[bytes.len() - 1].is_ascii_alphanumeric() {
+        return false;
+    }
+    // All chars must be [a-z0-9-]
+    bytes
+        .iter()
+        .all(|&b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
 /// Filter options for [`BrainEngine::list_pages`]. Mirrors `PageFilters`
 /// at `types.ts:277`.
 #[derive(Debug, Default, Clone)]
@@ -259,13 +285,50 @@ pub struct ResolveSlugsOpts {
     pub source_ids: Option<Vec<String>>,
 }
 
-/// A row from the `sources` table. Used by webhook handlers to look up
-/// source configuration (webhook_secret, tracked_branch, github_repo).
+/// A row from the `sources` table. Mirrors the full TypeScript `SourceRow`
+/// interface from `src/core/sources-load.ts` and the TS `src/schema.sql` DDL.
+///
+/// Fields beyond `id`/`name`/`config` are populated by the import/clone pipeline
+/// (1-7-1-2), sync engine (1-7-1-5), and archive lifecycle (v0.26.5).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SourceRow {
     pub id: String,
     pub name: String,
+    pub local_path: Option<String>,
+    pub last_commit: Option<String>,
+    pub last_sync_at: Option<String>,
     pub config: serde_json::Value,
+    pub created_at: Option<String>,
+    pub chunker_version: Option<String>,
+    pub archived: bool,
+    pub archived_at: Option<String>,
+    pub archive_expires_at: Option<String>,
+    pub contextual_retrieval_mode: Option<String>,
+    pub trust_frontmatter_overrides: bool,
+}
+
+/// Input for `BrainEngine::create_source`. Mirrors the TS source init flow.
+/// `id` must satisfy the source-id regex `^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$`.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct CreateSourceInput {
+    pub id: String,
+    pub name: String,
+    pub config: Option<serde_json::Value>,
+}
+
+/// Input for `BrainEngine::update_source`. All fields are optional — only
+/// `Some(_)` values are applied. Mirrors TS `updateSourceConfig` + sync
+/// field mutations.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct UpdateSourceInput {
+    pub name: Option<String>,
+    pub config: Option<serde_json::Value>,
+    pub local_path: Option<String>,
+    pub last_commit: Option<String>,
+    pub last_sync_at: Option<String>,
+    pub chunker_version: Option<String>,
+    pub contextual_retrieval_mode: Option<String>,
+    pub trust_frontmatter_overrides: Option<bool>,
 }
 
 // ─── Trait ───────────────────────────────────────────────────────────────────
@@ -306,6 +369,34 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
         &self,
         github_repo: &str,
     ) -> crate::Result<Option<SourceRow>>;
+
+    // ── Source CRUD (1-7-1-1) ──────────────────────────────────────────────
+
+    /// List all sources, optionally including archived ones.
+    /// Mirrors TS `loadAllSources({ includeArchived })` in `src/core/sources-load.ts`.
+    async fn list_sources(&self, include_archived: bool) -> crate::Result<Vec<SourceRow>>;
+
+    /// Fetch a single source by its `id`.
+    /// Mirrors TS `fetchSource(id)` in `src/core/sources-load.ts`.
+    async fn get_source(&self, id: &str) -> crate::Result<Option<SourceRow>>;
+
+    /// Create a new source row. The `id` must pass source-id validation
+    /// (`^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$`). Returns the created row
+    /// (with `created_at` populated). Mirrors TS `createSource` in the CLI
+    /// init flow.
+    async fn create_source(&self, input: &CreateSourceInput) -> crate::Result<SourceRow>;
+
+    /// Update mutable fields of an existing source (`name`, `config`,
+    /// `local_path`, `last_commit`, `last_sync_at`, `chunker_version`,
+    /// `contextual_retrieval_mode`, `trust_frontmatter_overrides`).
+    /// Returns the updated row. Mirrors TS `updateSourceConfig` and sync
+    /// field mutations.
+    async fn update_source(&self, id: &str, input: &UpdateSourceInput) -> crate::Result<SourceRow>;
+
+    /// Soft-delete (archive) a source: sets `archived = true`,
+    /// `archived_at = now()`, `archive_expires_at = now() + 72h`.
+    /// Returns `true` if a row was affected. Mirrors TS archive flow (v0.26.5).
+    async fn delete_source(&self, id: &str) -> crate::Result<bool>;
 
     // ── Page CRUD (slice 3 subset) ────────────────────────────────────────
 
@@ -688,6 +779,142 @@ impl BrainEngine for InMemoryEngine {
                     .is_some_and(|repo| repo == github_repo)
             })
             .cloned())
+    }
+
+    async fn list_sources(&self, include_archived: bool) -> crate::Result<Vec<SourceRow>> {
+        let sources = self
+            .sources
+            .lock()
+            .expect("InMemoryEngine sources mutex poisoned");
+        Ok(sources
+            .iter()
+            .filter(|s| include_archived || !s.archived)
+            .cloned()
+            .collect())
+    }
+
+    async fn get_source(&self, id: &str) -> crate::Result<Option<SourceRow>> {
+        let sources = self
+            .sources
+            .lock()
+            .expect("InMemoryEngine sources mutex poisoned");
+        Ok(sources.iter().find(|s| s.id == id).cloned())
+    }
+
+    async fn create_source(&self, input: &CreateSourceInput) -> crate::Result<SourceRow> {
+        // Validate source id format
+        if !is_valid_source_id(&input.id) {
+            return Err(Error::engine(format!(
+                "invalid source id: '{}' — must match ^[a-z0-9](?:[a-z0-9-]{{0,30}}[a-z0-9])?$",
+                input.id
+            )));
+        }
+
+        let mut sources = self
+            .sources
+            .lock()
+            .expect("InMemoryEngine sources mutex poisoned");
+
+        // Check uniqueness
+        if sources.iter().any(|s| s.id == input.id) {
+            return Err(Error::engine(format!(
+                "source id '{}' already exists",
+                input.id
+            )));
+        }
+        if sources.iter().any(|s| s.name == input.name) {
+            return Err(Error::engine(format!(
+                "source name '{}' already exists",
+                input.name
+            )));
+        }
+
+        let row = SourceRow {
+            id: input.id.clone(),
+            name: input.name.clone(),
+            local_path: None,
+            last_commit: None,
+            last_sync_at: None,
+            config: input.config.clone().unwrap_or_default(),
+            created_at: Some(current_utc_iso8601()),
+            chunker_version: None,
+            archived: false,
+            archived_at: None,
+            archive_expires_at: None,
+            contextual_retrieval_mode: None,
+            trust_frontmatter_overrides: false,
+        };
+        sources.push(row.clone());
+        Ok(row)
+    }
+
+    async fn update_source(
+        &self,
+        id: &str,
+        input: &UpdateSourceInput,
+    ) -> crate::Result<SourceRow> {
+        let mut sources = self
+            .sources
+            .lock()
+            .expect("InMemoryEngine sources mutex poisoned");
+        let idx = sources
+            .iter()
+            .position(|s| s.id == id)
+            .ok_or_else(|| Error::engine(format!("source '{}' not found", id)))?;
+
+        // Check name uniqueness before taking mutable borrow
+        if let Some(ref name) = input.name {
+            if sources.iter().any(|other| other.id != id && other.name == *name) {
+                return Err(Error::engine(format!(
+                    "source name '{}' already taken",
+                    name
+                )));
+            }
+        }
+
+        let s = &mut sources[idx];
+        if let Some(ref name) = input.name {
+            s.name = name.clone();
+        }
+        if let Some(ref config) = input.config {
+            s.config = config.clone();
+        }
+        if input.local_path.is_some() {
+            s.local_path = input.local_path.clone();
+        }
+        if input.last_commit.is_some() {
+            s.last_commit = input.last_commit.clone();
+        }
+        if input.last_sync_at.is_some() {
+            s.last_sync_at = input.last_sync_at.clone();
+        }
+        if input.chunker_version.is_some() {
+            s.chunker_version = input.chunker_version.clone();
+        }
+        if input.contextual_retrieval_mode.is_some() {
+            s.contextual_retrieval_mode = input.contextual_retrieval_mode.clone();
+        }
+        if let Some(trust) = input.trust_frontmatter_overrides {
+            s.trust_frontmatter_overrides = trust;
+        }
+        Ok(s.clone())
+    }
+
+    async fn delete_source(&self, id: &str) -> crate::Result<bool> {
+        let mut sources = self
+            .sources
+            .lock()
+            .expect("InMemoryEngine sources mutex poisoned");
+        if let Some(s) = sources.iter_mut().find(|s| s.id == id && !s.archived) {
+            let now = current_utc_iso8601();
+            s.archived = true;
+            s.archived_at = Some(now.clone());
+            // Archive expires in 72h (mirrors TS v0.26.5)
+            s.archive_expires_at = Some(crate::time::add_hours(&now, 72));
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 
     async fn get_page(&self, slug: &str, opts: &GetPageOpts) -> crate::Result<Option<Page>> {

@@ -33,8 +33,9 @@ use crate::oauth_queries::{
     UpdateClientTtlResponse,
 };
 use crate::engine::{
-    page_sort_sql, BrainEngine, EngineConfig, EngineKind, GetPageOpts, Page, PageFilters,
-    PageInput, PageSort, ResolveSlugsOpts, SourceRow,
+    page_sort_sql, BrainEngine, CreateSourceInput, EngineConfig, EngineKind, GetPageOpts, Page,
+    PageFilters, PageInput, PageSort, ResolveSlugsOpts, SourceRow, UpdateSourceInput,
+    is_valid_source_id,
 };
 use crate::error::{Error, Result};
 use crate::migration::{Migration, MigrationRegistry};
@@ -108,6 +109,8 @@ const MIGRATION_0008: &str =
     include_str!("../migrations-sqlite/0008_raw_data_and_page_versions.sql");
 /// OAuth client, token, and authorization-code tables (PG→SQLite port).
 const MIGRATION_0009: &str = include_str!("../migrations-sqlite/0009_oauth_tables.sql");
+/// Expand `sources` table to full TS schema (PG→SQLite port).
+const MIGRATION_0010: &str = include_str!("../migrations-sqlite/0010_sources_full_columns.sql");
 
 /// Legacy string array — REMOVED in favor of MigrationRegistry.
 /// Use LIBQL_MIGRATIONS instead.
@@ -122,12 +125,13 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_0007,
     MIGRATION_0008,
     MIGRATION_0009,
+    MIGRATION_0010,
 ];
 
 /// Legacy version constant — REMOVED in favor of MigrationRegistry.
 /// Use LIBQL_MIGRATIONS.latest_version() instead.
 #[deprecated(note = "Use LIBQL_MIGRATIONS.latest_version() instead")]
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 
 /// Global migration registry for libsql backend. Built once at runtime first use.
 /// All 8 existing migrations ported with zero SQL changes per 1-2-3-3 Q4 decision.
@@ -181,6 +185,12 @@ pub static LIBQL_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 9,
         name: "oauth_tables",
         sql: MIGRATION_0009,
+    }));
+
+    registry.add(Box::new(LibsqlMigration {
+        version: 10,
+        name: "sources_full_columns",
+        sql: MIGRATION_0010,
     }));
 
     registry
@@ -443,11 +453,191 @@ impl BrainEngine for LibsqlEngine {
                         .map_err(|e| Error::engine(format!("id field read failed: {e}")))?,
                     name: row.get::<String>(1)
                         .map_err(|e| Error::engine(format!("name field read failed: {e}")))?,
+                    local_path: None,
+                    last_commit: None,
+                    last_sync_at: None,
                     config,
+                    created_at: None,
+                    chunker_version: None,
+                    archived: false,
+                    archived_at: None,
+                    archive_expires_at: None,
+                    contextual_retrieval_mode: None,
+                    trust_frontmatter_overrides: false,
                 }))
             }
             None => Ok(None),
         }
+    }
+
+    async fn list_sources(&self, _include_archived: bool) -> Result<Vec<SourceRow>> {
+        let conn = self.conn().await?;
+        let mut rows = conn
+            .query("SELECT id, name, config FROM sources", ())
+            .await
+            .map_err(|e| Error::engine(format!("list_sources failed: {e}")))?;
+        let mut out = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("row read failed: {e}")))?
+        {
+            let config_str: String = row
+                .get::<String>(2)
+                .map_err(|e| Error::engine(format!("config field read failed: {e}")))?;
+            let config: serde_json::Value =
+                serde_json::from_str(&config_str).unwrap_or_default();
+            out.push(SourceRow {
+                id: row
+                    .get::<String>(0)
+                    .map_err(|e| Error::engine(format!("id field read failed: {e}")))?,
+                name: row
+                    .get::<String>(1)
+                    .map_err(|e| Error::engine(format!("name field read failed: {e}")))?,
+                local_path: None,
+                last_commit: None,
+                last_sync_at: None,
+                config,
+                created_at: None,
+                chunker_version: None,
+                archived: false,
+                archived_at: None,
+                archive_expires_at: None,
+                contextual_retrieval_mode: None,
+                trust_frontmatter_overrides: false,
+            });
+        }
+        Ok(out)
+    }
+
+    async fn get_source(&self, id: &str) -> Result<Option<SourceRow>> {
+        let conn = self.conn().await?;
+        let mut rows = conn
+            .query("SELECT id, name, config FROM sources WHERE id = ?1", [id])
+            .await
+            .map_err(|e| Error::engine(format!("get_source failed: {e}")))?;
+        match rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("row read failed: {e}")))?
+        {
+            Some(row) => {
+                let config_str: String = row
+                    .get::<String>(2)
+                    .map_err(|e| Error::engine(format!("config field read failed: {e}")))?;
+                let config: serde_json::Value =
+                    serde_json::from_str(&config_str).unwrap_or_default();
+                Ok(Some(SourceRow {
+                    id: row
+                        .get::<String>(0)
+                        .map_err(|e| Error::engine(format!("id field read failed: {e}")))?,
+                    name: row
+                        .get::<String>(1)
+                        .map_err(|e| Error::engine(format!("name field read failed: {e}")))?,
+                    local_path: None,
+                    last_commit: None,
+                    last_sync_at: None,
+                    config,
+                    created_at: None,
+                    chunker_version: None,
+                    archived: false,
+                    archived_at: None,
+                    archive_expires_at: None,
+                    contextual_retrieval_mode: None,
+                    trust_frontmatter_overrides: false,
+                }))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn create_source(&self, input: &CreateSourceInput) -> Result<SourceRow> {
+        if !is_valid_source_id(&input.id) {
+            return Err(Error::engine(format!(
+                "invalid source id: '{}'",
+                input.id
+            )));
+        }
+        let conn = self.conn().await?;
+        let config = input.config.clone().unwrap_or_default();
+        let config_str = serde_json::to_string(&config).unwrap_or_else(|_| "{}".into());
+        conn.execute(
+            "INSERT OR IGNORE INTO sources (id, name, config) VALUES (?1, ?2, ?3)",
+            libsql::params![input.id.clone(), input.name.clone(), config_str],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("create_source failed: {e}")))?;
+        // Read back to get created_at
+        self.get_source(&input.id)
+            .await?
+            .ok_or_else(|| Error::engine(format!("source id '{}' already exists", input.id)))
+    }
+
+    async fn update_source(&self, id: &str, input: &UpdateSourceInput) -> Result<SourceRow> {
+        let conn = self.conn().await?;
+        let mut sets: Vec<String> = Vec::new();
+        let mut params: Vec<libsql::Value> = Vec::new();
+        if let Some(ref name) = input.name {
+            sets.push("name = ?".into());
+            params.push(name.as_str().into());
+        }
+        if let Some(ref config) = input.config {
+            let s = serde_json::to_string(config).unwrap_or_else(|_| "{}".into());
+            sets.push("config = ?".into());
+            params.push(s.into());
+        }
+        if let Some(ref local_path) = input.local_path {
+            sets.push("local_path = ?".into());
+            params.push(local_path.as_str().into());
+        }
+        if let Some(ref last_commit) = input.last_commit {
+            sets.push("last_commit = ?".into());
+            params.push(last_commit.as_str().into());
+        }
+        if let Some(ref last_sync_at) = input.last_sync_at {
+            sets.push("last_sync_at = ?".into());
+            params.push(last_sync_at.as_str().into());
+        }
+        if let Some(ref chunker_version) = input.chunker_version {
+            sets.push("chunker_version = ?".into());
+            params.push(chunker_version.as_str().into());
+        }
+        if let Some(ref mode) = input.contextual_retrieval_mode {
+            sets.push("contextual_retrieval_mode = ?".into());
+            params.push(mode.as_str().into());
+        }
+        if let Some(trust) = input.trust_frontmatter_overrides {
+            sets.push("trust_frontmatter_overrides = ?".into());
+            params.push(libsql::Value::from(trust as i64));
+        }
+        if sets.is_empty() {
+            return self
+                .get_source(id)
+                .await?
+                .ok_or_else(|| Error::engine(format!("source '{}' not found", id)));
+        }
+        params.push(id.into());
+        let sql = format!("UPDATE sources SET {} WHERE id = ?", sets.join(", "));
+        conn.execute(&sql, params)
+            .await
+            .map_err(|e| Error::engine(format!("update_source failed: {e}")))?;
+        self.get_source(id)
+            .await?
+            .ok_or_else(|| Error::engine(format!("source '{}' not found", id)))
+    }
+
+    async fn delete_source(&self, id: &str) -> Result<bool> {
+        let conn = self.conn().await?;
+        let rows_affected = conn
+            .execute(
+                "UPDATE sources SET archived = 1, archived_at = datetime('now'), \
+                 archive_expires_at = datetime('now', '+72 hours') \
+                 WHERE id = ?1 AND archived = 0",
+                [id],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("delete_source failed: {e}")))?;
+        Ok(rows_affected > 0)
     }
 
     async fn init_schema(&self) -> Result<()> {

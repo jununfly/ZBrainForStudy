@@ -10,6 +10,7 @@ mod calibration;
 mod oauth;
 mod requests;
 mod session;
+mod sources;
 mod spend;
 mod stats;
 mod watch;
@@ -29,6 +30,7 @@ pub fn build_admin_router(state: super::AppState) -> Router {
         .merge(watch::build_watch_router())
         .merge(calibration::build_calibration_router())
         .merge(oauth::build_oauth_router())
+        .merge(sources::build_sources_router())
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             super::auth::require_admin,

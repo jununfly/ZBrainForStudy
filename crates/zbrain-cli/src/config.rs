@@ -58,6 +58,10 @@ pub struct Config {
     #[serde(default)]
     pub mcp: McpConfig,
 
+    /// Sync configuration (used by `zbrain sync`).
+    #[serde(default)]
+    pub sync: Option<SyncConfig>,
+
     /// Arbitrary extra config keys (forward compatibility)
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_yaml::Value>,
@@ -70,6 +74,16 @@ pub struct McpConfig {
     /// `None` disables rate limiting entirely.
     #[serde(default)]
     pub rate_limit: Option<u64>,
+}
+
+/// Sync configuration (used by `zbrain sync`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct SyncConfig {
+    /// Default git repository path to sync from.
+    pub default_repo: Option<PathBuf>,
+
+    /// Chunker version to use (defaults to 1 if not set).
+    pub chunker_version: Option<i32>,
 }
 
 /// HTTP server configuration (used by `zbrain serve --http`).
@@ -263,6 +277,7 @@ impl Default for Config {
             remote_mcp: None,
             server: ServerConfig::default(),
             mcp: McpConfig::default(),
+            sync: None,
             extra: BTreeMap::new(),
         }
     }

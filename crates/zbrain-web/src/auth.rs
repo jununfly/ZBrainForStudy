@@ -335,6 +335,7 @@ mod tests {
             spa_dir: spa_dir.path().to_path_buf(),
             operation_registry: Arc::new(zbrain_core::operation::OperationRegistry::new()),
             engine: engine as std::sync::Arc<dyn zbrain_core::BrainEngine>,
+            zbrain_home: std::env::temp_dir().join("zbrain-test"),
         };
 
         let app = super::super::build_router(state);

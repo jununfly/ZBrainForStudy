@@ -51,6 +51,9 @@ pub struct AppState {
     pub operation_registry: Arc<OperationRegistry>,
     /// Engine for page storage (used by webhook ingestion).
     pub engine: Arc<dyn zbrain_core::BrainEngine>,
+    /// zbrain home directory (typically `~/.zbrain/`).
+    /// Used for source clone storage (`<zbrain_home>/clones/`).
+    pub zbrain_home: PathBuf,
 }
 
 /// Health-check response body.
@@ -231,6 +234,7 @@ mod tests {
             spa_dir,
             operation_registry: Arc::new(OperationRegistry::new()),
             engine: engine as std::sync::Arc<dyn zbrain_core::BrainEngine>,
+            zbrain_home: std::env::temp_dir().join("zbrain-test"),
         };
         (dir, state)
     }

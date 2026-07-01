@@ -12,6 +12,7 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use unicode_normalization::UnicodeNormalization;
 
 /// Canonical taxonomy of content types the ingestion pipeline recognizes.
 /// Ported from TS `INGESTION_CONTENT_TYPES`.
@@ -63,11 +64,45 @@ pub struct IngestionEvent {
     pub metadata: Option<serde_json::Value>,
 }
 
-/// Compute SHA-256 hex digest of a string.
+/// Normalize content for deterministic hashing.
+/// Mirrors TS `normalizeForHash`:
+/// 1. Strip BOM (U+FEFF)
+/// 2. Normalize line endings to LF (\n)
+/// 3. Trim whitespace
+/// 4. Apply NFKC Unicode normalization
+///
+/// This ensures identical text produces identical hashes across platforms.
+pub fn normalize_for_hash(s: &str) -> String {
+    // 1. Strip BOM
+    let s = s.strip_prefix('\u{FEFF}').unwrap_or(s);
+
+    // 2. Normalize line endings: CRLF → LF, standalone CR → LF
+    let s = s.replace("\r\n", "\n").replace('\r', "\n");
+
+    // 3. Trim
+    let s = s.trim();
+
+    // 4. NFKC normalization
+    s.nfkc().collect::<String>()
+}
+
+/// Compute SHA-256 hex digest of a string, with content normalization.
 /// Ported from TS `computeContentHash`.
+///
+/// The input is first normalized via [`normalize_for_hash`] to ensure
+/// deterministic output across platforms and editors.
 pub fn compute_content_hash(content: &str) -> String {
+    let normalized = normalize_for_hash(content);
     let mut hasher = Sha256::new();
-    hasher.update(content.as_bytes());
+    hasher.update(normalized.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+/// Compute raw SHA-256 hex digest of a byte slice, without normalization.
+/// Used when the caller has already normalized the content (e.g., capture pipeline).
+pub fn compute_raw_hash(data: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
     hex::encode(hasher.finalize())
 }
 
@@ -226,6 +261,69 @@ pub fn detect_content_type(
 mod tests {
     use super::*;
 
+    // ─── normalize_for_hash ────────────────────────────────────────────
+
+    #[test]
+    fn normalize_strips_bom() {
+        let input = "\u{FEFF}# Hello";
+        let result = normalize_for_hash(input);
+        assert!(!result.starts_with('\u{FEFF}'));
+        assert_eq!(result, "# Hello"); // NFKC does not lowercase
+    }
+
+    #[test]
+    fn normalize_crlf_to_lf() {
+        let result = normalize_for_hash("line1\r\nline2");
+        assert!(!result.contains('\r'));
+        assert_eq!(result, "line1\nline2");
+    }
+
+    #[test]
+    fn normalize_standalone_cr_to_lf() {
+        let result = normalize_for_hash("line1\rline2");
+        assert!(!result.contains('\r'));
+        assert_eq!(result, "line1\nline2");
+    }
+
+    #[test]
+    fn normalize_trims_whitespace() {
+        let result = normalize_for_hash("  hello  \n");
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn normalize_nfkc() {
+        // Full-width Latin 'A' (U+FF21) → normal 'A' (U+0041)
+        let fullwidth_a = "\u{FF21}";
+        let result = normalize_for_hash(fullwidth_a);
+        assert_eq!(result, "A"); // NFKC normalizes fullwidth to ASCII, but does NOT lowercase
+    }
+
+    #[test]
+    fn normalize_empty_string() {
+        let result = normalize_for_hash("");
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn normalize_whitespace_only() {
+        let result = normalize_for_hash("   \n\r\n  ");
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn normalize_preserves_cjk() {
+        let result = normalize_for_hash("你好世界");
+        assert_eq!(result, "你好世界");
+    }
+
+    #[test]
+    fn normalize_idempotent() {
+        let once = normalize_for_hash("hello\nworld");
+        let twice = normalize_for_hash(&once);
+        assert_eq!(once, twice);
+    }
+
     // ─── compute_content_hash ───────────────────────────────────────────
 
     #[test]
@@ -250,13 +348,38 @@ mod tests {
     }
 
     #[test]
-    fn content_hash_matches_known_sha256() {
-        // SHA-256 of empty string
+    fn content_hash_normalizes_line_endings() {
+        // CRLF and LF versions of the same text should produce the same hash
+        let crlf_hash = compute_content_hash("hello\r\nworld");
+        let lf_hash = compute_content_hash("hello\nworld");
+        assert_eq!(crlf_hash, lf_hash);
+    }
+
+    #[test]
+    fn content_hash_normalizes_whitespace() {
+        // Trailing whitespace should not affect hash
+        let a = compute_content_hash("hello");
+        let b = compute_content_hash("  hello  \n");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn content_hash_matches_known_normalized_sha256() {
+        // SHA-256 of empty string after normalization (still empty)
         let hash = compute_content_hash("");
         assert_eq!(
             hash,
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
+    }
+
+    #[test]
+    fn compute_raw_hash_no_normalization() {
+        // Raw hash does NOT normalize — BOM and CRLF are preserved
+        let raw = compute_raw_hash(b"\xEF\xBB\xBFhello\r\n");
+        let normalized = compute_content_hash("\u{FEFF}hello\r\n");
+        // Should differ because raw preserves BOM/CRLF
+        assert_ne!(raw, normalized);
     }
 
     // ─── validate_ingestion_event ───────────────────────────────────────

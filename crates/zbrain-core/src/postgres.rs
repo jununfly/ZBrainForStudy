@@ -38,8 +38,9 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
 
 use crate::engine::{
-    page_sort_sql, BrainEngine, EngineConfig, EngineKind, GetPageOpts, Page, PageFilters,
-    PageInput, PageSort, ResolveSlugsOpts, SourceRow,
+    page_sort_sql, BrainEngine, CreateSourceInput, EngineConfig, EngineKind, GetPageOpts, Page,
+    PageFilters, PageInput, PageSort, ResolveSlugsOpts, SourceRow, UpdateSourceInput,
+    is_valid_source_id,
 };
 use crate::oauth_queries::{
     ExchangeTokens, OAuthClientInfo, OAuthQueries, RegisterClientRequest,
@@ -209,9 +210,9 @@ const MIGRATION_0007: &str = include_str!("../migrations/0007_takes_min.sql");
 const MIGRATION_0008: &str = include_str!("../migrations/0008_files.sql");
 const MIGRATION_0009: &str = include_str!("../migrations/0009_raw_data_and_page_versions.sql");
 const MIGRATION_0010: &str = include_str!("../migrations/0010_oauth_tables.sql");
+const MIGRATION_0011: &str = include_str!("../migrations/0011_sources_full_columns.sql");
 
 /// Global migration registry for Postgres backend. Built once at runtime first use.
-/// All 9 existing migrations ported with zero SQL changes.
 pub static POSTGRES_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
     let mut registry = MigrationRegistry::new();
 
@@ -264,6 +265,12 @@ pub static POSTGRES_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 10,
         name: "oauth_tables",
         sql: MIGRATION_0010,
+    }));
+
+    registry.add(Box::new(PostgresMigration {
+        version: 11,
+        name: "sources_full_columns",
+        sql: MIGRATION_0011,
     }));
 
     registry
@@ -482,7 +489,221 @@ impl BrainEngine for PostgresEngine {
         .fetch_optional(pool)
         .await
         .map_err(|e| Error::engine(format!("source lookup failed: {e}")))?;
-        Ok(row.map(|(id, name, config)| SourceRow { id, name, config }))
+        Ok(row.map(|(id, name, config)| SourceRow {
+            id,
+            name,
+            local_path: None,
+            last_commit: None,
+            last_sync_at: None,
+            config,
+            created_at: None,
+            chunker_version: None,
+            archived: false,
+            archived_at: None,
+            archive_expires_at: None,
+            contextual_retrieval_mode: None,
+            trust_frontmatter_overrides: false,
+        }))
+    }
+
+    async fn list_sources(&self, _include_archived: bool) -> Result<Vec<SourceRow>> {
+        let pool = self.pool()?;
+        let rows = sqlx::query_as::<_, (String, String, serde_json::Value)>(
+            "SELECT id, name, config FROM sources"
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("list_sources failed: {e}")))?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, name, config)| SourceRow {
+                id,
+                name,
+                local_path: None,
+                last_commit: None,
+                last_sync_at: None,
+                config,
+                created_at: None,
+                chunker_version: None,
+                archived: false,
+                archived_at: None,
+                archive_expires_at: None,
+                contextual_retrieval_mode: None,
+                trust_frontmatter_overrides: false,
+            })
+            .collect())
+    }
+
+    async fn get_source(&self, id: &str) -> Result<Option<SourceRow>> {
+        let pool = self.pool()?;
+        let row = sqlx::query_as::<_, (String, String, serde_json::Value)>(
+            "SELECT id, name, config FROM sources WHERE id = $1"
+        )
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_source failed: {e}")))?;
+        Ok(row.map(|(id, name, config)| SourceRow {
+            id,
+            name,
+            local_path: None,
+            last_commit: None,
+            last_sync_at: None,
+            config,
+            created_at: None,
+            chunker_version: None,
+            archived: false,
+            archived_at: None,
+            archive_expires_at: None,
+            contextual_retrieval_mode: None,
+            trust_frontmatter_overrides: false,
+        }))
+    }
+
+    async fn create_source(&self, input: &CreateSourceInput) -> Result<SourceRow> {
+        if !is_valid_source_id(&input.id) {
+            return Err(Error::engine(format!(
+                "invalid source id: '{}'",
+                input.id
+            )));
+        }
+        let pool = self.pool()?;
+        let config = input.config.clone().unwrap_or_default();
+        let row = sqlx::query_as::<_, (String, String, serde_json::Value, String)>(
+            "INSERT INTO sources (id, name, config) VALUES ($1, $2, $3) \
+             ON CONFLICT (id) DO NOTHING \
+             RETURNING id, name, config, created_at"
+        )
+        .bind(&input.id)
+        .bind(&input.name)
+        .bind(&config)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::engine(format!("create_source failed: {e}")))?
+        .ok_or_else(|| Error::engine(format!("source id '{}' already exists", input.id)))?;
+        Ok(SourceRow {
+            id: row.0,
+            name: row.1,
+            local_path: None,
+            last_commit: None,
+            last_sync_at: None,
+            config: row.2,
+            created_at: Some(row.3),
+            chunker_version: None,
+            archived: false,
+            archived_at: None,
+            archive_expires_at: None,
+            contextual_retrieval_mode: None,
+            trust_frontmatter_overrides: false,
+        })
+    }
+
+    async fn update_source(&self, id: &str, input: &UpdateSourceInput) -> Result<SourceRow> {
+        let pool = self.pool()?;
+        // Build dynamic UPDATE — only touch columns that are Some
+        let mut sets = Vec::new();
+        let mut idx: u32 = 0;
+        if input.name.is_some() {
+            idx += 1;
+            sets.push(format!("name = ${idx}"));
+        }
+        if input.config.is_some() {
+            idx += 1;
+            sets.push(format!("config = ${idx}"));
+        }
+        if input.local_path.is_some() {
+            idx += 1;
+            sets.push(format!("local_path = ${idx}"));
+        }
+        if input.last_commit.is_some() {
+            idx += 1;
+            sets.push(format!("last_commit = ${idx}"));
+        }
+        if input.last_sync_at.is_some() {
+            idx += 1;
+            sets.push(format!("last_sync_at = ${idx}"));
+        }
+        if input.chunker_version.is_some() {
+            idx += 1;
+            sets.push(format!("chunker_version = ${idx}"));
+        }
+        if input.contextual_retrieval_mode.is_some() {
+            idx += 1;
+            sets.push(format!("contextual_retrieval_mode = ${idx}"));
+        }
+        if input.trust_frontmatter_overrides.is_some() {
+            idx += 1;
+            sets.push(format!("trust_frontmatter_overrides = ${idx}"));
+        }
+        if sets.is_empty() {
+            // Nothing to update — just return current row
+            return self
+                .get_source(id)
+                .await?
+                .ok_or_else(|| Error::engine(format!("source '{}' not found", id)));
+        }
+        // WHERE clause parameter
+        idx += 1;
+        let where_clause = format!(" WHERE id = ${idx}");
+        let returning_sql = " RETURNING id, name, config, local_path, last_commit, last_sync_at, \
+                             created_at, chunker_version, archived, archived_at, \
+                             archive_expires_at, contextual_retrieval_mode, \
+                             trust_frontmatter_overrides";
+        let sql = format!("UPDATE sources SET {} {}{}", sets.join(", "), where_clause, returning_sql);
+
+        let mut query = sqlx::query_as::<_, (
+            String, String, serde_json::Value,
+            Option<String>, Option<String>, Option<String>,
+            Option<String>, Option<String>,
+            bool, Option<String>, Option<String>,
+            Option<String>, bool,
+        )>(&sql);
+
+        if let Some(ref name) = input.name { query = query.bind(name); }
+        if let Some(ref config) = input.config { query = query.bind(config); }
+        if let Some(ref local_path) = input.local_path { query = query.bind(local_path); }
+        if let Some(ref last_commit) = input.last_commit { query = query.bind(last_commit); }
+        if let Some(ref last_sync_at) = input.last_sync_at { query = query.bind(last_sync_at); }
+        if let Some(ref chunker_version) = input.chunker_version { query = query.bind(chunker_version); }
+        if let Some(ref mode) = input.contextual_retrieval_mode { query = query.bind(mode); }
+        if let Some(trust) = input.trust_frontmatter_overrides { query = query.bind(trust); }
+        query = query.bind(id);
+
+        let row = query
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| Error::engine(format!("update_source failed: {e}")))?
+            .ok_or_else(|| Error::engine(format!("source '{}' not found", id)))?;
+
+        Ok(SourceRow {
+            id: row.0,
+            name: row.1,
+            local_path: row.3,
+            last_commit: row.4,
+            last_sync_at: row.5,
+            config: row.2,
+            created_at: row.6,
+            chunker_version: row.7,
+            archived: row.8,
+            archived_at: row.9,
+            archive_expires_at: row.10,
+            contextual_retrieval_mode: row.11,
+            trust_frontmatter_overrides: row.12,
+        })
+    }
+
+    async fn delete_source(&self, id: &str) -> Result<bool> {
+        let pool = self.pool()?;
+        let result = sqlx::query(
+            "UPDATE sources SET archived = true, archived_at = now(), \
+             archive_expires_at = now() + INTERVAL '72 hours' \
+             WHERE id = $1 AND archived = false"
+        )
+        .bind(id)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("delete_source failed: {e}")))?;
+        Ok(result.rows_affected() > 0)
     }
 
     async fn init_schema(&self) -> Result<()> {

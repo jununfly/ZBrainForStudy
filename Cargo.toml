@@ -34,7 +34,8 @@ anyhow = "1"
 thiserror = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "process"] }
+url = { version = "2", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 async-trait = "0.1"
@@ -74,6 +75,10 @@ hmac = "0.12"
 hex = "0.4"
 # Constant-time comparison for HMAC verification
 subtle = "2.6"
+# YAML frontmatter parsing for capture pipeline
+serde_yaml = "0.9"
+# Unicode NFKC normalization for content hash
+unicode-normalization = "0.1"
 
 [profile.release]
 lto = "thin"

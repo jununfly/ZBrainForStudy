@@ -1,67 +1,33 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust-roadmap.json` | 最后更新: 2026-07-01 14:51:13
+> 数据文件: `zbrain-ts-to-rust.json` | 最后更新: 2026-07-01 21:05:34
 
-[~][X+] 1. ZBrain TS to Rust Migration
-├── [x][Y+] 1-1. Roadmap and TypeScript runtime inventory
-│   ├── [x][Y+] 1-1-1. Restore canonical roadmap files
-│   ├── [x][Y+] 1-1-2. Expand complete TS to Rust PRD from codebase facts
-│   ├── [x][Y+] 1-1-3. Classify TypeScript runtime and frontend retention surfaces
-│   └── [x][Y+] 1-1-4. Define per-slice deletion checklist and verification gates
-├── [x][Y+] 1-2. Core storage parity closure
-│   ├── [x][Y+] 1-2-1. Finish Page contract parity across storage backends
-│   ├── [x][Y+] 1-2-2. Port missing advanced Page writes to Rust
-│   ├── [x][Y+] 1-2-3. Move schema migrations ownership to Rust
-│   ├── [x][X+] 1-2-4. Decide internal DB legacy identifier migration
-│   └── [x][Y+] 1-2-5. Implement DB legacy identifier rename migration
-├── [x][Y+] 1-3. Config bootstrap and package entrypoint cutover
-│   ├── [x][Y+] 1-3-1. Port config discovery loading and writing to Rust
-│   ├── [x][Y+] 1-3-2. Port init doctor config storage and schema commands
-│   ├── [x][Y+] 1-3-3. Cut package bin and install flow to Rust binary
-│   └── [x][Y+] 1-3-4. Delete replaced TypeScript bootstrap command surface
-├── [x][Y+] 1-4. Operations layer and trust boundary migration
-│   ├── [x][Y+] 1-4-1. Port operation definitions schemas and context
-│   ├── [x][Y+] 1-4-2. Port local and remote trust boundary enforcement
-│   └── [x][Y+] 1-4-3. Move shared CLI MCP dispatch to Rust operations
-├── [x][Y+] 1-5. MCP server migration
-│   ├── [x][Y+] 1-5-1. Implement Rust MCP tool definitions and parameter validation
-│   ├── [x][Y+] 1-5-2. Implement Rust MCP server completion: engine wiring, rate limiting, and audit hooks
-│   └── [x][Y+] 1-5-3. Delete TypeScript MCP implementation after parity
-├── [~][Y+] 1-6. Web backend and admin API migration
-│   ├── [x][Y+] 1-6-1. Implement Axum skeleton with admin auth, health, and SPA serving
-│   ├── [x][Y+] 1-6-2. Port admin API business routes
-│   ├── [x][Y+] 1-6-3. Retain React TypeScript admin frontend by explicit decision
-│   └── [~][Y+] 1-6-4. MCP HTTP dispatch with OAuth 2.1 and webhooks
-├── [ ][Y+] 1-7. Ingestion sources search and retrieval migration
-│   ├── [ ][Y+] 1-7-1. Port source management import capture extract and sync flows
-│   ├── [ ][Y+] 1-7-2. Port embeddings chunking hybrid search and reindex flows
-│   └── [ ][Y+] 1-7-3. Delete replaced TypeScript ingestion search and source modules
-├── [ ][Y+] 1-8. Facts takes timeline salience and graph migration
-│   ├── [ ][Y+] 1-8-1. Port facts takes timeline salience backlinks orphans and graph behavior
-│   └── [ ][Y+] 1-8-2. Delete replaced TypeScript knowledge graph modules
-├── [ ][Y+] 1-9. AI gateway providers models and routing migration
-│   ├── [ ][Y+] 1-9-1. Port provider config model capabilities pricing and routed gateway
-│   └── [ ][Y+] 1-9-2. Preserve routed gateway and no direct provider guardrails
-├── [ ][Y+] 1-10. Jobs agents minions autopilot and remote execution migration
-│   ├── [ ][Y+] 1-10-1. Port jobs lifecycle agent logs minions autopilot fanout and remote execution
-│   └── [ ][Y+] 1-10-2. Preserve privacy PII and remote execution trust guardrails
-├── [ ][Y+] 1-11. Evals benchmarks and developer tooling migration
-│   ├── [ ][X+] 1-11-1. Decide product critical evals and benchmarks
-│   └── [ ][Y+] 1-11-2. Port or archive TypeScript eval and developer tooling
-└── [ ][Y+] 1-12. Final cutover and TypeScript runtime cleanup
-    ├── [ ][Y+] 1-12-1. Remove TypeScript runtime package exports and entrypoints
-    ├── [ ][Y+] 1-12-2. Add TypeScript runtime residue guard with frontend allowlist
-    ├── [ ][Y+] 1-12-3. Verify final Rust workspace and retained TypeScript surfaces
-    └── [ ][Y+] 1-12-4. Update docs examples and release baseline for Rust first ZBrain
+[~][X+] 1. ZBrain TS -> Rust 迁移路线图
+├── [x][Y+] 1-1. Phase 0: 路线图与清单 — 品牌迁移/目录规范/Plans清理
+├── [x][Y+] 1-2. Phase 1: Core Storage Parity — Page CRUD/InMemory/PostgreSQL/libsql 合约闭合
+├── [ ][X+] 1-3. Phase 2: Config/Bootstrap/Package Entrypoint — 配置发现/init/doctor/storage/schema 命令迁移
+└── [~][Y+] 1-4. Phase 6: Sources/Ingestion/Search/Retrieval — 源管理/导入/捕获/提取/同步/搜索/嵌入
+    └── [~][Y+] 1-4-1. Sources 管理: CRUD API + Import/Clone/Capture/Extraction
 
-### 当前施工：1-6-4-5. Port magic-link auth (POST issue-magic-link + GET auth/:token with nonce state machine)
-
-Grilled + sliced into 5 sub-issues: #89 MagicLinkAuth core+rate limit, #90 create_session_with_ttl, #91 issue-magic-link handler, #92 auth/:token handler, #93 TS cleanup. Parent #86 updated with breakdown table. Architecture: independent MagicLinkAuth struct (not embedded in AdminAuth).
+### 当前施工：1-4-1-5. Sync Engine — 文件系统同步/变更检测/reindex/reclone
 
 **决策：**
-- Q: MagicLinkAuth 集成方式？ → 方案B：独立 MagicLinkAuth struct（nonce 状态机 + LRU pruning），与 AdminAuth 分离。redeem 成功后跨 struct 调用 admin_auth.create_session()。AppState 新增 magic_link: MagicLinkAuth 字段。 (好处：单一职责、独立可测、将来可替换。坏处：多一层 struct + Arc<RwLock，跨 struct 协作。)
-- Q: GET /admin/auth/:token 是否需要 rate limit？ → 需要，端口 TS 的 10 req/min/IP 限制。在 MagicLinkAuth 内部实现滑动窗口计数器 HashMap<IpAddr, Vec<Instant>>。 (不跳过，在 Rust 中实现等效限制。)
-- Q: Session TTL 与 redirect 设计？ → AdminAuth 新增 create_session_with_ttl(ttl_secs) 方法支持可变 TTL；magic-link redeem 调用 7 天 TTL。auth/:token 成功后 302 redirect 到 /admin/（Rust 已有 SPA 服务）。
-- Q: TDD slices 拆分结果？ → 5 个 tracer-bullet issues 发布到 GitHub。1)#89 MagicLinkAuth 核心+rate limit 2)#90 create_session_with_ttl 3)#91 issue-magic-link handler 4)#92 auth/:token handler 5)#93 TS cleanup。父 issue #86 已更新含 breakdown 表格。 (https://github.com/jununfly/ZBrain/issues/86#issuecomment-breakdown)
+- Q: Q1: Sync Engine 范围边界 → 聚焦 sync 管道本身（git diff → 变更清单 → 文件遍历 → capture/markdown → putPage）。不包含 chunking/embedding（留到 1-4-1-6）。不包含 links/timeline extraction。content_hash 去重也暂跳过。目标是页面入库（body/frontmatter/type/tags）但无搜索。 (8项子任务：buildSyncManifest, isSyncable, performSyncInner, performFullSync, syncFailures, syncAnchor, concurrency, importOnePath)
+- Q: Q2: 模块位置 → zbrain-core/src/sync.rs（或 sync/ 模块目录）。拆分为 sync.rs（主入口）、sync_manifest.rs（diff解析+过滤）、sync_failures.rs（失败记录）。 (被 CLI 和将来 admin API 调用)
+- Q: Q3: 并发模型 → 方案B：运行时检测引擎类型。Postgres → 多 worker（tokio::spawn + Arc<AtomicUsize> 队列分派）。PGLite → 串行。 (和 TS 行为一致)
+- Q: Q4: Git diff 解析 → std::process::Command（非 git2 crate）。和已有 git_remote.rs 风格一致，复用 GIT_SSRF_FLAGS。 (git diff --name-status -M 输出是稳定的 machine-readable 格式)
+- Q: Q5: 文件遍历器 → walkdir crate + 自定义 filter_entry（跳过 .git/node_modules/.raw/ops）+ 手动 inode 循环检测。 (walkdir 默认不跟随符号链接)
+- Q: Q6: Sync Anchor 管理 → last_commit + chunker_version 通过 engine.update_source() 写入 sources 表。sync-failures.jsonl 放 <zbrain_home>/sync-failures.jsonl。 (和 TS 一致)
+- Q: Q7: import_one_path 实现深度 → 走到 putPage + addTag。不做 chunking/embedding（标记 TODO）、不做 content_hash 去重、不做 links/timeline extraction。 (可工作的中间态：页面入库但无搜索)
+
+**当前子树：**
+├── [ ][Y+] 1-4-1-5-1. sync_manifest: build_sync_manifest + is_syncable + unsyncable_reason
+├── [ ][Y+] 1-4-1-5-2. sync_walker: collect_syncable_files — walkdir + inode循环检测 + 策略过滤
+├── [ ][Y+] 1-4-1-5-3. sync_core: perform_sync + perform_full_sync — 主循环管道
+├── [ ][Y+] 1-4-1-5-4. import_one_path: 文件读取 → capture → parse_markdown → putPage + addTag
+├── [ ][Y+] 1-4-1-5-5. sync_failures: JSONL 失败记录 + acknowledge
+├── [ ][Y+] 1-4-1-5-6. sync_concurrency: 运行时检测引擎类型 → Postgres多worker / PGLite串行
+├── [ ][Y+] 1-4-1-5-7. sync_anchor: last_commit + chunker_version 写入 sources 表
+└── [ ][Y+] 1-4-1-5-8. sync_cli: CLI 命令  入口 + 参数解析
 <!-- ROADMAP_SECTION_END -->

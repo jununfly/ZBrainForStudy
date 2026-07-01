@@ -4182,6 +4182,7 @@ dependencies = [
  "idna",
  "percent-encoding",
  "serde",
+ "serde_derive",
 ]
 
 [[package]]
@@ -4837,16 +4838,21 @@ dependencies = [
  "libsql",
  "pathdiff",
  "pg-embed",
+ "rand 0.8.6",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "serde_yaml",
  "sha2 0.10.9",
  "sqlx",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+ "unicode-normalization",
+ "url",
  "uuid",
+ "walkdir",
 ]
 
 [[package]]
