@@ -1531,49 +1531,59 @@ async fn run_init_command(args: InitArgs, config_path: Option<&Path>) -> anyhow:
         return Ok(());
     }
 
-    // 3. Load or create default config
     let mut config = if config_file.exists() {
         config::load_config_from_path(&config_file)?
     } else {
         config::Config::default()
     };
 
-    // 4. Default to PGLite for now (Postgres/Supabase wizard coming later)
-    let default_db_path = dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".zbrain")
-        .join("brain.pglite");
+    if args.supabase {
+        anyhow::bail!("--supabase init is not implemented yet");
+    }
 
-    // 5. Initialize database and apply schema migrations
-    println!("Initializing database...");
+    if let Some(url) = args.url {
+        let engine_config = zbrain_core::engine::EngineConfig {
+            database_url: Some(url.clone()),
+            database_path: None,
+        };
+        let engine = zbrain_core::postgres::PostgresEngine::new();
+        engine.connect(&engine_config).await?;
+        engine.init_schema().await?;
+        config.database_url = url;
+        config::write_config(&config, &config_file)?;
+        engine.disconnect().await?;
+    } else {
+        let zbrain_home = if config_path.is_some() {
+            config_file
+                .parent()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("."))
+        } else {
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(".zbrain")
+        };
+        let db_path = zbrain_home.join("brain.pglite");
+        if let Some(parent) = db_path.parent() {
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("Failed to create database directory: {}", parent.display())
+            })?;
+        }
 
-    // Create engine (Libsql for now, matches PGLite behavior)
-    let engine_config = zbrain_core::engine::EngineConfig {
-        database_path: Some(default_db_path.to_string_lossy().to_string()),
-        database_url: None,
-    };
+        let database_url = format!("sqlite://{}", db_path.display());
+        let engine_config = zbrain_core::engine::EngineConfig {
+            database_url: None,
+            database_path: Some(db_path.to_string_lossy().to_string()),
+        };
+        let engine = zbrain_core::libsql::LibsqlEngine::new();
+        engine.connect(&engine_config).await?;
+        engine.init_schema().await?;
+        config.database_url = database_url;
+        config::write_config(&config, &config_file)?;
+        engine.disconnect().await?;
+    }
 
-    let engine = zbrain_core::libsql::LibsqlEngine::new();
-    engine.connect(&engine_config).await?;
-
-    // Apply schema migrations
-    println!("Applying schema migrations...");
-    engine.init_schema().await?;
-
-    // 6. Save config to disk
-    config.database_url = format!("sqlite://{}", default_db_path.display());
-    config::write_config(&config, &config_file)?;
-
-    // 7. Print success message
-    println!("\n✅ ZBrain initialized successfully!");
-    println!("   Config: {}", config_file.display());
-    println!("   Database: {}", default_db_path.display());
-    println!("\nNext steps:");
-    println!("  zbrain config show           View current configuration");
-    println!("  zbrain import <dir>          Import markdown files");
-    println!("  zbrain doctor                 Verify installation");
-
-    engine.disconnect().await?;
+    println!("ZBrain initialized: {}", config_file.display());
     Ok(())
 }
 
@@ -2158,6 +2168,115 @@ mod tests {
         let cli = Cli::try_parse_from(["zbrain", "init"]).unwrap();
         let result = run(cli).await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn init_url_fails_loud_when_connection_string_is_unreachable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("zbrain.yml");
+        let args = InitArgs {
+            pglite: false,
+            supabase: false,
+            url: Some("postgres://127.0.0.1:1/zbrain".to_string()),
+            force: true,
+            migrate_only: false,
+            mcp_only: false,
+            json: false,
+            non_interactive: true,
+            issuer_url: None,
+            mcp_url: None,
+            oauth_client_id: None,
+            oauth_client_secret: None,
+            embedding_model: None,
+            no_embedding: false,
+            embedding_dimensions: None,
+        };
+
+        let result = run_init_command(args, Some(&config_path)).await;
+
+        assert!(result.is_err());
+        assert!(
+            !config_path.exists(),
+            "failed postgres init must not write config before a verified connection"
+        );
+        let error = format!("{:#}", result.unwrap_err());
+        assert!(
+            error.contains("postgres connect failed"),
+            "expected postgres connection failure, got: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn init_supabase_fails_not_implemented_before_disk_writes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("zbrain.yml");
+        let args = InitArgs {
+            pglite: false,
+            supabase: true,
+            url: None,
+            force: true,
+            migrate_only: false,
+            mcp_only: false,
+            json: false,
+            non_interactive: true,
+            issuer_url: None,
+            mcp_url: None,
+            oauth_client_id: None,
+            oauth_client_secret: None,
+            embedding_model: None,
+            no_embedding: false,
+            embedding_dimensions: None,
+        };
+
+        let result = run_init_command(args, Some(&config_path)).await;
+
+        assert!(result.is_err());
+        assert!(
+            !config_path.exists(),
+            "supabase init must not write a local config"
+        );
+        let error = format!("{:#}", result.unwrap_err());
+        assert!(
+            error.contains("--supabase init is not implemented yet"),
+            "expected explicit --supabase not implemented failure, got: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn init_explicit_pglite_writes_local_database_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("zbrain.yml");
+        let args = InitArgs {
+            pglite: true,
+            supabase: false,
+            url: None,
+            force: true,
+            migrate_only: false,
+            mcp_only: false,
+            json: false,
+            non_interactive: true,
+            issuer_url: None,
+            mcp_url: None,
+            oauth_client_id: None,
+            oauth_client_secret: None,
+            embedding_model: None,
+            no_embedding: false,
+            embedding_dimensions: None,
+        };
+
+        run_init_command(args, Some(&config_path)).await.unwrap();
+
+        let written = config::load_config_from_path(&config_path).unwrap();
+        assert!(
+            written.database_url.starts_with("sqlite://"),
+            "pglite init should write local sqlite/libsql URL, got: {}",
+            written.database_url
+        );
+        assert!(
+            written.database_url.contains("brain.pglite"),
+            "pglite init should use the local brain.pglite path, got: {}",
+            written.database_url
+        );
     }
 
     #[tokio::test]

@@ -160,12 +160,23 @@
     "1-1-3": {
       "id": "1-1-3",
       "label": "Implement engine selection flags for init",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-1",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "Q1: init 引擎选择 flags 下一刀",
+          "answer": "A: 实现 --pglite/--supabase/--url 运行期行为边界",
+          "note": "先确保 pglite 默认/显式保持现有本地初始化；url/supabase 不再被静默忽略，先 fail-loud 或接入 Postgres。"
+        },
+        {
+          "q": "Q2: --supabase 运行期边界",
+          "answer": "C: 暂时禁用 --supabase，直接 fail-loud",
+          "note": "避免后续 agent 误解为已经支持 Supabase 向导；当前切片只实现 pglite 与 --url Postgres。"
+        }
+      ],
+      "notes": "Implemented complete run_init_command engine selection behavior: pglite/default initializes libsql and writes sqlite config; --url uses PostgresEngine and writes config only after successful connect+migrate; --supabase is explicitly not implemented and fails before disk writes. Verified with cargo test -p zbrain-cli --lib."
     },
     "1-1-4": {
       "id": "1-1-4",
@@ -210,7 +221,7 @@
   },
   "metadata": {
     "created": "2026-07-02 21:39:54",
-    "updated": "2026-07-03 00:16:08",
+    "updated": "2026-07-03 01:16:27",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART2_CONFIG_BOOTSTRAP.md"
   }
 }
