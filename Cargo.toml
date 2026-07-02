@@ -6,6 +6,7 @@ members = [
     "crates/zbrain-web",
     "crates/zbrain-mcp",
     "crates/zbrain-svg",
+    "crates/zbrain-chunking",
 ]
 
 [workspace.package]
@@ -79,6 +80,12 @@ subtle = "2.6"
 serde_yaml = "0.9"
 # Unicode NFKC normalization for content hash
 unicode-normalization = "0.1"
+# Tree-sitter for code semantic chunking
+tree-sitter = "0.26"
+tree-sitter-typescript = "0.23"
+tree-sitter-python = "0.25"
+tree-sitter-go = "0.25"
+tree-sitter-rust = "0.24"
 
 [profile.release]
 lto = "thin"

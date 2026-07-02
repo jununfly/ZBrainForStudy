@@ -31,3 +31,29 @@
 ├── [ ][Y+] 1-4-1-5-7. sync_anchor: last_commit + chunker_version 写入 sources 表
 └── [ ][Y+] 1-4-1-5-8. sync_cli: CLI 命令  入口 + 参数解析
 <!-- ROADMAP_SECTION_END -->
+
+<!-- ⚠️ ROADMAP_SECTION_START -->
+<!-- ⚠️ 此 section 由 roadmap_cli.py render 自动生成，请勿手动编辑 -->
+## ZBrain TS -> Rust 迁移路线图
+
+### 树形视图 (depth=2)
+
+```
+[~][X+] 1. ZBrain TS -> Rust 迁移路线图
+├── [x][Y+] 1-1. Phase 0: 路线图与清单 — 品牌迁移/目录规范/Plans清理
+├── [x][Y+] 1-2. Phase 1: Core Storage Parity — Page CRUD/InMemory/PostgreSQL/libsql 合约闭合
+├── [ ][X+] 1-3. Phase 2: Config/Bootstrap/Package Entrypoint — 配置发现/init/doctor/storage/schema 命令迁移
+└── [~][Y+] 1-4. Phase 6: Sources/Ingestion/Search/Retrieval — 源管理/导入/捕获/提取/同步/搜索/嵌入
+    └── [~][Y+] 1-4-1. Sources 管理: CRUD API + Import/Clone/Capture/Extraction
+```
+
+### 🔨 当前施工: 1-4-1-7. Chunking & Embedding Pipeline: CJK counting, recursive chunker, tree-sitter, edge extraction, transaction orchestration, embedding gateway — #107-#111
+**Status:** `in_progress` | **Mode:** `exploit`
+
+**子节点:**
+- [x] 1-4-1-7-1. #107: CJK word counting module + recursive text chunker
+- [x] 1-4-1-7-2. #108: Tree-sitter code semantic chunker
+- [x] 1-4-1-7-3. #109: Edge extraction + symbol resolution + qualified names
+- [ ] 1-4-1-7-4. #110: Transaction write orchestration
+- [ ] 1-4-1-7-5. #111: Embedding gateway + batch API + context retrieval
+<!-- ⚠️ ROADMAP_SECTION_END -->

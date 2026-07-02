@@ -1,0 +1,28 @@
+[package]
+name = "zbrain-chunking"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tree-sitter = { workspace = true }
+thiserror = { workspace = true }
+
+# Per-language grammar crates — each gated behind a feature flag
+tree-sitter-typescript = { workspace = true, optional = true }
+tree-sitter-python = { workspace = true, optional = true }
+tree-sitter-go = { workspace = true, optional = true }
+tree-sitter-rust = { workspace = true, optional = true }
+
+[features]
+default = ["ts", "python", "go", "rust"]
+ts = ["dep:tree-sitter-typescript"]
+python = ["dep:tree-sitter-python"]
+go = ["dep:tree-sitter-go"]
+rust = ["dep:tree-sitter-rust"]
+
+[lints]
+workspace = true

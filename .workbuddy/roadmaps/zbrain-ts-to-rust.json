@@ -71,7 +71,9 @@
         "1-4-1-2",
         "1-4-1-3",
         "1-4-1-4",
-        "1-4-1-5"
+        "1-4-1-5",
+        "1-4-1-6",
+        "1-4-1-7"
       ],
       "decisions": [],
       "notes": ""
@@ -119,7 +121,7 @@
     "1-4-1-5": {
       "id": "1-4-1-5",
       "label": "Sync Engine — 文件系统同步/变更检测/reindex/reclone",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-4-1",
       "children": [
@@ -169,12 +171,12 @@
           "note": "可工作的中间态：页面入库但无搜索"
         }
       ],
-      "notes": ""
+      "notes": "Sync engine #94-#101 all completed: sync_manifest, sync_walker, sync_core, import_one_path, sync_failures, sync_concurrency, sync_anchor, sync_cli. 48 module tests + 9 CLI tests = 57 sync tests, all green."
     },
     "1-4-1-5-1": {
       "id": "1-4-1-5-1",
       "label": "sync_manifest: build_sync_manifest + is_syncable + unsyncable_reason",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-4-1-5",
       "children": [],
@@ -184,7 +186,7 @@
     "1-4-1-5-2": {
       "id": "1-4-1-5-2",
       "label": "sync_walker: collect_syncable_files — walkdir + inode循环检测 + 策略过滤",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-4-1-5",
       "children": [],
@@ -194,7 +196,7 @@
     "1-4-1-5-3": {
       "id": "1-4-1-5-3",
       "label": "sync_core: perform_sync + perform_full_sync — 主循环管道",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-4-1-5",
       "children": [],
@@ -204,7 +206,7 @@
     "1-4-1-5-4": {
       "id": "1-4-1-5-4",
       "label": "import_one_path: 文件读取 → capture → parse_markdown → putPage + addTag",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-4-1-5",
       "children": [],
@@ -214,7 +216,7 @@
     "1-4-1-5-5": {
       "id": "1-4-1-5-5",
       "label": "sync_failures: JSONL 失败记录 + acknowledge",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-4-1-5",
       "children": [],
@@ -224,7 +226,7 @@
     "1-4-1-5-6": {
       "id": "1-4-1-5-6",
       "label": "sync_concurrency: 运行时检测引擎类型 → Postgres多worker / PGLite串行",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-4-1-5",
       "children": [],
@@ -234,7 +236,7 @@
     "1-4-1-5-7": {
       "id": "1-4-1-5-7",
       "label": "sync_anchor: last_commit + chunker_version 写入 sources 表",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-4-1-5",
       "children": [],
@@ -244,17 +246,120 @@
     "1-4-1-5-8": {
       "id": "1-4-1-5-8",
       "label": "sync_cli: CLI 命令  入口 + 参数解析",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-4-1-5",
       "children": [],
       "decisions": [],
       "notes": "GitHub: https://github.com/jununfly/ZBrain/issues/101 (blocked by #100)"
+    },
+    "1-4-1-6": {
+      "id": "1-4-1-6",
+      "label": "CLI Commands: sources add/list/remove/status + capture — #102-#106",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-4-1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-4-1-7": {
+      "id": "1-4-1-7",
+      "label": "Chunking & Embedding Pipeline: CJK counting, recursive chunker, tree-sitter, edge extraction, transaction orchestration, embedding gateway — #107-#111",
+      "status": "in_progress",
+      "mode": "exploit",
+      "parent": "1-4-1",
+      "children": [
+        "1-4-1-7-1",
+        "1-4-1-7-2",
+        "1-4-1-7-3",
+        "1-4-1-7-4",
+        "1-4-1-7-5"
+      ],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-4-1-7-1": {
+      "id": "1-4-1-7-1",
+      "label": "#107: CJK word counting module + recursive text chunker",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-4-1-7",
+      "children": [],
+      "decisions": [],
+      "notes": "#107 CJK word counting + recursive text chunker complete. 36 cjk tests + 30 chunkers tests = 66 new tests, all green. cjk.rs: is_cjk_char, has_cjk, count_cjk_aware_words, escape_like_pattern. chunkers.rs: chunk_text + cap_by_chars + recursive_split + split_at_delimiters + split_on_whitespace + greedy_merge + apply_overlap + extract_trailing_context."
+    },
+    "1-4-1-7-2": {
+      "id": "1-4-1-7-2",
+      "label": "#108: Tree-sitter code semantic chunker",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-4-1-7",
+      "children": [],
+      "decisions": [
+        {
+          "q": "Rust tree-sitter 方案？",
+          "answer": "方案A：原生 tree-sitter crate + feature flags 分组。grammar 静态编译进二进制，不用 WASM runtime。第一刀只支持 TS/JS、Python、Go、Rust 四种核心语言，后续按需扩展。",
+          "note": ""
+        },
+        {
+          "q": "新 crate + 语言配置策略？",
+          "answer": "新建 zbrain-chunking crate 放 tree-sitter 代码 chunker。语言配置（TOP_LEVEL_TYPES、NESTED_EMIT_CONFIG）运行时可变，支持 registerLanguage/unregisterLanguage 扩展。zbrain-core 已有的 chunkers.rs（recursive chunker）不动，保持位置。",
+          "note": ""
+        },
+        {
+          "q": "#108 与 #109 边界？",
+          "answer": "#108 只做 chunker 核心：parse + AST walk + emit chunks + mergeSiblings + detectCodeLanguage + chunkCodeText()。不含边。chunkCodeTextFull() 留到 #109 实现，在那引入 edge extraction + symbol resolution + qualified names。",
+          "note": ""
+        },
+        {
+          "q": "测试策略？",
+          "answer": "~50 个 inline 测试，无外部 fixture。覆盖：detectCodeLanguage、parser init、AST 顶层节点提取、嵌套子块、buildChunk 输出格式、mergeSmallSiblings、端到端 chunkCodeText（四种语言各一个完整文件）、parseWithTimeout、registerLanguage/deleteLanguage。",
+          "note": ""
+        },
+        {
+          "q": "Feature flags + 跳过项？",
+          "answer": "feature flag 直接用语言名: ts, python, go, rust。默认全开。parseWithTimeout 跳过（原生 tree-sitter 足够快），estimateTokens/tiktoken 跳过（token 计数在上层处理）。",
+          "note": ""
+        }
+      ],
+      "notes": "Sub-issues: #112 crate scaffold + detectCodeLanguage, #113 language manifest + parser init, #114 AST walk + chunk emission, #115 mergeSmallSiblings + chunkCodeText API. Dependency chain: #112 → #113 → #114 → #115. All enhancement + ready-for-agent."
+    },
+    "1-4-1-7-3": {
+      "id": "1-4-1-7-3",
+      "label": "#109: Edge extraction + symbol resolution + qualified names",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-4-1-7",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-4-1-7-4": {
+      "id": "1-4-1-7-4",
+      "label": "#110: Transaction write orchestration",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-4-1-7",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-4-1-7-5": {
+      "id": "1-4-1-7-5",
+      "label": "#111: Embedding gateway + batch API + context retrieval",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-4-1-7",
+      "children": [],
+      "decisions": [],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-01 20:28:48",
-    "updated": "2026-07-01 21:05:34",
+    "updated": "2026-07-02 16:12:56",
     "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_ROADMAP.md"
-  }
+  },
+  "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_ROADMAP.md"
 }
