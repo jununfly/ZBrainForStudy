@@ -348,7 +348,7 @@
     "1-4-1-7-5": {
       "id": "1-4-1-7-5",
       "label": "#111: Embedding gateway + batch API + context retrieval",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-4-1-7",
       "children": [],
@@ -358,7 +358,7 @@
   },
   "metadata": {
     "created": "2026-07-01 20:28:48",
-    "updated": "2026-07-02 16:12:56",
+    "updated": "2026-07-02 16:41:22",
     "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_ROADMAP.md"
   },
   "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_ROADMAP.md"

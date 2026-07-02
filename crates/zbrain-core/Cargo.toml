@@ -43,6 +43,7 @@ walkdir = "2"
 [features]
 default = []
 openai = ["dep:reqwest"]
+embedding = ["dep:reqwest"]
 
 [dev-dependencies]
 tokio = { workspace = true }

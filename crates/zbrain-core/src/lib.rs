@@ -8,6 +8,11 @@
 //! `docs/plans/20260526/04-plan.md`.
 
 pub mod admin_queries;
+pub mod chunkers;
+pub mod cjk;
+pub mod embedding;
+pub mod embedding_context;
+pub mod embedding_pricing;
 pub mod scope;
 pub mod token_queries;
 pub mod calibration_queries;
