@@ -325,9 +325,65 @@ pub struct QueryArgs {
 /// Arguments for `zbrain init` command.
 #[derive(Debug, Parser)]
 pub struct InitArgs {
+    /// Use local embedded PGLite/libsql storage
+    #[arg(long, conflicts_with_all = ["supabase", "url"])]
+    pub pglite: bool,
+
+    /// Use Supabase/Postgres storage
+    #[arg(long, conflicts_with_all = ["pglite", "url"])]
+    pub supabase: bool,
+
+    /// Initialize using a PostgreSQL connection URL
+    #[arg(long, conflicts_with_all = ["pglite", "supabase"])]
+    pub url: Option<String>,
+
     /// Overwrite existing config if present
     #[arg(short, long)]
     pub force: bool,
+
+    /// Apply schema migrations only without rewriting config
+    #[arg(long)]
+    pub migrate_only: bool,
+
+    /// Configure as a thin client for a remote MCP server
+    #[arg(long)]
+    pub mcp_only: bool,
+
+    /// Emit machine-readable JSON output
+    #[arg(long)]
+    pub json: bool,
+
+    /// Disable interactive prompts
+    #[arg(long)]
+    pub non_interactive: bool,
+
+    /// OAuth issuer URL for MCP-only setup
+    #[arg(long)]
+    pub issuer_url: Option<String>,
+
+    /// Remote MCP endpoint URL for MCP-only setup
+    #[arg(long)]
+    pub mcp_url: Option<String>,
+
+    /// OAuth client id for MCP-only setup
+    #[arg(long)]
+    pub oauth_client_id: Option<String>,
+
+    /// OAuth client secret for MCP-only setup
+    #[arg(long)]
+    pub oauth_client_secret: Option<String>,
+
+    /// Embedding model to configure during initialization
+    #[arg(long)]
+    pub embedding_model: Option<String>,
+
+    /// Defer embedding setup during initialization
+    #[arg(long)]
+    pub no_embedding: bool,
+
+    /// Embedding dimensions to configure during initialization
+    #[arg(long)]
+    pub embedding_dimensions: Option<u32>,
 }
 
 /// Arguments for `zbrain doctor` command.
@@ -1938,6 +1994,92 @@ mod tests {
         assert!(result.is_ok());
         let cli = result.unwrap();
         assert!(matches!(cli.command, Commands::Init(args) if args.force));
+    }
+
+    #[test]
+    fn init_ts_visible_flags_parse() {
+        let result = Cli::try_parse_from([
+            "zbrain",
+            "init",
+            "--pglite",
+            "--force",
+            "--json",
+            "--non-interactive",
+            "--embedding-model",
+            "openai:text-embedding-3-large",
+            "--embedding-dimensions",
+            "1024",
+            "--no-embedding",
+        ]);
+        assert!(result.is_ok());
+        let cli = result.unwrap();
+        assert!(matches!(cli.command, Commands::Init(args)
+            if args.pglite
+                && args.force
+                && args.json
+                && args.non_interactive
+                && args.embedding_model.as_deref() == Some("openai:text-embedding-3-large")
+                && args.embedding_dimensions == Some(1024)
+                && args.no_embedding
+        ));
+    }
+
+    #[test]
+    fn init_engine_selection_flags_conflict() {
+        let result = Cli::try_parse_from([
+            "zbrain",
+            "init",
+            "--pglite",
+            "--url",
+            "postgres://localhost/zbrain",
+        ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn init_url_engine_flag_parses() {
+        let result = Cli::try_parse_from(["zbrain", "init", "--url", "postgres://localhost/zbrain"]);
+        assert!(result.is_ok());
+        let cli = result.unwrap();
+        assert!(matches!(cli.command, Commands::Init(args)
+            if args.url.as_deref() == Some("postgres://localhost/zbrain")
+        ));
+    }
+
+    #[test]
+    fn init_ts_visible_migrate_and_supabase_flags_parse() {
+        let result = Cli::try_parse_from(["zbrain", "init", "--supabase", "--migrate-only"]);
+        assert!(result.is_ok());
+        let cli = result.unwrap();
+        assert!(matches!(cli.command, Commands::Init(args) if args.supabase && args.migrate_only));
+    }
+
+    #[test]
+    fn init_ts_visible_mcp_only_flags_parse() {
+        let result = Cli::try_parse_from([
+            "zbrain",
+            "init",
+            "--mcp-only",
+            "--json",
+            "--issuer-url",
+            "http://127.0.0.1:3000",
+            "--mcp-url",
+            "http://127.0.0.1:3000/mcp",
+            "--oauth-client-id",
+            "cid",
+            "--oauth-client-secret",
+            "secret",
+        ]);
+        assert!(result.is_ok());
+        let cli = result.unwrap();
+        assert!(matches!(cli.command, Commands::Init(args)
+            if args.mcp_only
+                && args.json
+                && args.issuer_url.as_deref() == Some("http://127.0.0.1:3000")
+                && args.mcp_url.as_deref() == Some("http://127.0.0.1:3000/mcp")
+                && args.oauth_client_id.as_deref() == Some("cid")
+                && args.oauth_client_secret.as_deref() == Some("secret")
+        ));
     }
 
     #[test]

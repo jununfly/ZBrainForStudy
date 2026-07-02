@@ -43,8 +43,22 @@
       "status": "in_progress",
       "mode": "exploit",
       "parent": "1",
-      "children": [],
-      "decisions": [],
+      "children": [
+        "1-1-1",
+        "1-1-2",
+        "1-1-3",
+        "1-1-4",
+        "1-1-5",
+        "1-1-6",
+        "1-1-7"
+      ],
+      "decisions": [
+        {
+          "q": "Q1: init strict TS flag parity 下一刀粒度",
+          "answer": "A: 先做 audit + 测试清单，不改生产逻辑",
+          "note": "先把 TS/Rust init flag、输出、配置写入、副作用差异整理成 Part2 子节点/issues，避免一刀过大。"
+        }
+      ],
       "notes": ""
     },
     "1-2": {
@@ -106,11 +120,97 @@
       "children": [],
       "decisions": [],
       "notes": ""
+    },
+    "1-1-1": {
+      "id": "1-1-1",
+      "label": "Write init strict parity audit and test matrix",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [
+        {
+          "q": "Q2: init strict parity audit 输出位置",
+          "answer": "A: 新建独立 plan 文档 docs/plans/2026-07-02-init-strict-parity-audit.md",
+          "note": "审计表、测试矩阵、后续子节点放在独立文档，避免污染 roadmap 轻量视图。"
+        },
+        {
+          "q": "Q3: init strict parity audit 对齐基准",
+          "answer": "A: 以 TS CLI 的历史用户可见行为为准",
+          "note": "包括 help 文案、旧文档引用、测试/命令中出现过的 flags；Rust 要么实现，要么明确记录偏差与替代路径。"
+        },
+        {
+          "q": "Q4: audit 文档是否直接拆出实现子节点",
+          "answer": "A: 拆出必须实现/必须测试的 Part2 子节点，暂不开 GitHub issue",
+          "note": "先在 Part2 roadmap 下新增 1-1-x 子节点，保证后续可按 TDD 施工；GitHub issue 等 audit 完成后再决定。"
+        }
+      ],
+      "notes": "Audit written to docs/plans/2026-07-02-init-strict-parity-audit.md. Child nodes 1-1-2..1-1-7 created for parser tests, engine flags, migrate-only, MCP-only, embedding flags, and existing-config/JSON validation."
+    },
+    "1-1-2": {
+      "id": "1-1-2",
+      "label": "Add init parser parity tests",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": "TDD complete: added Rust CLI parser parity tests for TS-visible init flags and minimal clap fields for --pglite/--supabase/--url/--migrate-only/--mcp-only/--json/--non-interactive/OAuth MCP flags/embedding flags/--no-embedding; focused init tests pass."
+    },
+    "1-1-3": {
+      "id": "1-1-3",
+      "label": "Implement engine selection flags for init",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-1-4": {
+      "id": "1-1-4",
+      "label": "Implement migrate-only init behavior",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-1-5": {
+      "id": "1-1-5",
+      "label": "Implement thin-client MCP-only init behavior",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-1-6": {
+      "id": "1-1-6",
+      "label": "Implement init embedding setup flags",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-1-7": {
+      "id": "1-1-7",
+      "label": "Validate init existing-config and JSON output behavior",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-02 21:39:54",
-    "updated": "2026-07-02 21:50:27",
+    "updated": "2026-07-03 00:16:08",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART2_CONFIG_BOOTSTRAP.md"
   }
 }
