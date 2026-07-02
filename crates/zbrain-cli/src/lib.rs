@@ -1493,6 +1493,32 @@ fn slugify(s: &str) -> String {
         .join("-")
 }
 
+fn validate_mcp_only_init_args(args: &InitArgs) -> anyhow::Result<()> {
+    let invalid_flag = if args.pglite {
+        Some("--pglite")
+    } else if args.supabase {
+        Some("--supabase")
+    } else if args.url.is_some() {
+        Some("--url")
+    } else if args.migrate_only {
+        Some("--migrate-only")
+    } else if args.embedding_model.is_some() {
+        Some("--embedding-model")
+    } else if args.embedding_dimensions.is_some() {
+        Some("--embedding-dimensions")
+    } else if args.no_embedding {
+        Some("--no-embedding")
+    } else {
+        None
+    };
+
+    if let Some(flag) = invalid_flag {
+        anyhow::bail!("--mcp-only cannot be combined with {flag}");
+    }
+
+    Ok(())
+}
+
 /// Execute `zbrain init` command.
 ///
 /// Initializes a new ZBrain instance with the specified configuration.
@@ -1524,6 +1550,10 @@ async fn run_init_command(args: InitArgs, config_path: Option<&Path>) -> anyhow:
             .with_context(|| format!("Failed to create config directory: {}", parent.display()))?;
     }
 
+    if args.mcp_only {
+        validate_mcp_only_init_args(&args)?;
+    }
+
     if args.migrate_only {
         return run_init_migrate_only(&args, &config_file).await;
     }
@@ -1540,6 +1570,29 @@ async fn run_init_command(args: InitArgs, config_path: Option<&Path>) -> anyhow:
     } else {
         config::Config::default()
     };
+
+    if args.mcp_only {
+        let issuer_url = args
+            .issuer_url
+            .ok_or_else(|| anyhow::anyhow!("--mcp-only requires --issuer-url"))?;
+        let mcp_url = args
+            .mcp_url
+            .ok_or_else(|| anyhow::anyhow!("--mcp-only requires --mcp-url"))?;
+        let oauth_client_id = args
+            .oauth_client_id
+            .ok_or_else(|| anyhow::anyhow!("--mcp-only requires --oauth-client-id"))?;
+
+        config.database_url = "remote-mcp://thin-client".to_string();
+        config.remote_mcp = Some(config::RemoteMcpConfig {
+            issuer_url,
+            mcp_url,
+            oauth_client_id,
+            oauth_client_secret: args.oauth_client_secret,
+        });
+        config::write_config(&config, &config_file)?;
+        println!("ZBrain initialized: {}", config_file.display());
+        return Ok(());
+    }
 
     if args.supabase {
         anyhow::bail!("--supabase init is not implemented yet");
@@ -2279,6 +2332,189 @@ mod tests {
             error.contains("--supabase init is not implemented yet"),
             "expected explicit --supabase not implemented failure, got: {error}"
         );
+    }
+
+    #[tokio::test]
+    async fn init_mcp_only_writes_thin_client_config_without_local_database() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("zbrain.yml");
+        let db_path = tmp.path().join("brain.pglite");
+        let args = InitArgs {
+            pglite: false,
+            supabase: false,
+            url: None,
+            force: true,
+            migrate_only: false,
+            mcp_only: true,
+            json: false,
+            non_interactive: true,
+            issuer_url: Some("https://issuer.example".to_string()),
+            mcp_url: Some("https://mcp.example/mcp".to_string()),
+            oauth_client_id: Some("client-id".to_string()),
+            oauth_client_secret: Some("secret".to_string()),
+            embedding_model: None,
+            no_embedding: false,
+            embedding_dimensions: None,
+        };
+
+        run_init_command(args, Some(&config_path)).await.unwrap();
+
+        let written = config::load_config_from_path(&config_path).unwrap();
+        assert_eq!(written.database_url, "remote-mcp://thin-client");
+        let remote_mcp = written
+            .remote_mcp
+            .expect("mcp-only init should write remote_mcp config");
+        assert_eq!(remote_mcp.issuer_url, "https://issuer.example");
+        assert_eq!(remote_mcp.mcp_url, "https://mcp.example/mcp");
+        assert_eq!(remote_mcp.oauth_client_id, "client-id");
+        assert_eq!(remote_mcp.oauth_client_secret.as_deref(), Some("secret"));
+        assert!(
+            !db_path.exists(),
+            "mcp-only init must not create local brain.pglite"
+        );
+    }
+
+    #[tokio::test]
+    async fn init_mcp_only_requires_remote_auth_arguments_without_writing_config() {
+        let required_args = ["--issuer-url", "--mcp-url", "--oauth-client-id"];
+
+        for missing_arg in required_args {
+            let tmp = tempfile::tempdir().unwrap();
+            let config_path = tmp.path().join("zbrain.yml");
+            let args = InitArgs {
+                pglite: false,
+                supabase: false,
+                url: None,
+                force: true,
+                migrate_only: false,
+                mcp_only: true,
+                json: false,
+                non_interactive: true,
+                issuer_url: (missing_arg != "--issuer-url")
+                    .then(|| "https://issuer.example".to_string()),
+                mcp_url: (missing_arg != "--mcp-url")
+                    .then(|| "https://mcp.example/mcp".to_string()),
+                oauth_client_id: (missing_arg != "--oauth-client-id")
+                    .then(|| "client-id".to_string()),
+                oauth_client_secret: None,
+                embedding_model: None,
+                no_embedding: false,
+                embedding_dimensions: None,
+            };
+
+            let result = run_init_command(args, Some(&config_path)).await;
+
+            assert!(result.is_err(), "missing {missing_arg} should fail");
+            let error = format!("{:#}", result.unwrap_err());
+            assert!(
+                error.contains(missing_arg),
+                "expected error to mention {missing_arg}, got: {error}"
+            );
+            assert!(
+                !config_path.exists(),
+                "missing {missing_arg} must not write config"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn init_mcp_only_rejects_db_migrate_and_embedding_flags_without_writing_config() {
+        for (
+            flag_name,
+            pglite,
+            supabase,
+            url,
+            migrate_only,
+            embedding_model,
+            no_embedding,
+            embedding_dimensions,
+        ) in [
+            ("--pglite", true, false, None, false, None, false, None),
+            ("--supabase", false, true, None, false, None, false, None),
+            (
+                "--url",
+                false,
+                false,
+                Some("postgres://127.0.0.1:1/zbrain".to_string()),
+                false,
+                None,
+                false,
+                None,
+            ),
+            (
+                "--migrate-only",
+                false,
+                false,
+                None,
+                true,
+                None,
+                false,
+                None,
+            ),
+            (
+                "--embedding-model",
+                false,
+                false,
+                None,
+                false,
+                Some("text-embedding-3-small".to_string()),
+                false,
+                None,
+            ),
+            (
+                "--no-embedding",
+                false,
+                false,
+                None,
+                false,
+                None,
+                true,
+                None,
+            ),
+            (
+                "--embedding-dimensions",
+                false,
+                false,
+                None,
+                false,
+                None,
+                false,
+                Some(1536),
+            ),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let config_path = tmp.path().join("zbrain.yml");
+            let args = InitArgs {
+                pglite,
+                supabase,
+                url,
+                force: true,
+                migrate_only,
+                mcp_only: true,
+                json: false,
+                non_interactive: true,
+                issuer_url: Some("https://issuer.example".to_string()),
+                mcp_url: Some("https://mcp.example/mcp".to_string()),
+                oauth_client_id: Some("client-id".to_string()),
+                oauth_client_secret: None,
+                embedding_model,
+                no_embedding,
+                embedding_dimensions,
+            };
+
+            let result = run_init_command(args, Some(&config_path)).await;
+
+            assert!(result.is_err(), "mcp-only with {flag_name} should fail");
+            let error = format!("{:#}", result.unwrap_err());
+            assert!(
+                error.contains("--mcp-only cannot be combined") && error.contains(flag_name),
+                "expected conflict with {flag_name}, got: {error}"
+            );
+            assert!(
+                !config_path.exists(),
+                "mcp-only with {flag_name} must not write config"
+            );
+        }
     }
 
     #[tokio::test]

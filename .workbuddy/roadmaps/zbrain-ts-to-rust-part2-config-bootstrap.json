@@ -207,12 +207,33 @@
     "1-1-5": {
       "id": "1-1-5",
       "label": "Implement thin-client MCP-only init behavior",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-1",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "Q2: --mcp-only 最小可行语义",
+          "answer": "A: 只写 thin-client config，不创建/迁移本地 DB",
+          "note": "写入 remote_mcp（issuer_url、mcp_url、oauth_client_id、oauth_client_secret 可选）；thin-client 所有 DB 操作走远端 MCP，init 不触碰本地 DB。"
+        },
+        {
+          "q": "Q3: --mcp-only 必填参数",
+          "answer": "A: issuer_url、mcp_url、oauth_client_id 必填，oauth_client_secret 可选",
+          "note": "支持 public client / PKCE-like 客户端；secret 不一定存在，但生成的 thin-client config 必须包含可用的 issuer、MCP endpoint 和 client id。"
+        },
+        {
+          "q": "Q4: --mcp-only 与其他 init flags 的关系",
+          "answer": "B: 只允许和 --force、--json、--non-interactive 混用，其他全部拒绝",
+          "note": "mcp-only 是独立 thin-client 拓扑，不接受本地 DB、migration 或 embedding 初始化意图；允许 --force 覆盖已有配置，--json/--non-interactive 只影响输出/交互方式。"
+        },
+        {
+          "q": "Q5: --mcp-only 写 config 时 database_url 处理",
+          "answer": "B: 写 sentinel remote-mcp://thin-client",
+          "note": "避免 thin-client config 被误解为本地 DB；未适配 thin-client 的旧命令应 fail-loud，而不是静默落到本地 sqlite。"
+        }
+      ],
+      "notes": "Implemented mcp-only thin-client init behavior: writes remote_mcp plus database_url sentinel remote-mcp://thin-client without local DB migration, requires issuer-url/mcp-url/oauth-client-id, allows oauth-client-secret, and rejects DB/migrate/embedding flags. Verified with cargo test -p zbrain-cli init_mcp_only --lib, init_ --lib, and --lib."
     },
     "1-1-6": {
       "id": "1-1-6",
@@ -237,7 +258,7 @@
   },
   "metadata": {
     "created": "2026-07-02 21:39:54",
-    "updated": "2026-07-03 01:44:20",
+    "updated": "2026-07-03 02:19:18",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART2_CONFIG_BOOTSTRAP.md"
   }
 }
