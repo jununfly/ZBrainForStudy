@@ -181,12 +181,28 @@
     "1-1-4": {
       "id": "1-1-4",
       "label": "Implement migrate-only init behavior",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-1",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "Q2: --migrate-only 目标语义",
+          "answer": "A: 只迁移已配置数据库，不重写 config",
+          "note": "必须能从现有 config 解析数据库；连接后执行 init_schema()；成功/失败只影响 DB，不改配置文件。"
+        },
+        {
+          "q": "Q3: --migrate-only 无可用 config 行为",
+          "answer": "A: fail-loud，提示需要已有 config 或显式 --config",
+          "note": "migrate-only 不创建新配置；无配置时提示 run zbrain init first or pass --config <path>。"
+        },
+        {
+          "q": "Q4: --migrate-only 是否允许 engine selection flags",
+          "answer": "B: 不允许 engine selection flags，只读 config.database_url",
+          "note": "migrate-only 语义保持纯粹：只对当前已配置数据库应用迁移；--pglite/--url/--supabase 在 migrate-only 下都 fail-loud，不写 config。"
+        }
+      ],
+      "notes": "Implemented migrate-only init behavior: reads existing config.database_url, applies sqlite/libsql or Postgres schema migrations without rewriting config, fails loudly when config is missing, and rejects --pglite/--url/--supabase mixed with --migrate-only. Verified with cargo test -p zbrain-cli init_ --lib and cargo test -p zbrain-cli --lib."
     },
     "1-1-5": {
       "id": "1-1-5",
@@ -221,7 +237,7 @@
   },
   "metadata": {
     "created": "2026-07-02 21:39:54",
-    "updated": "2026-07-03 01:16:27",
+    "updated": "2026-07-03 01:44:20",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART2_CONFIG_BOOTSTRAP.md"
   }
 }

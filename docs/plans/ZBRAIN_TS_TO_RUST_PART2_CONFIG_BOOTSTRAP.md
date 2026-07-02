@@ -1,14 +1,14 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust-part2-config-bootstrap.json` | 最后更新: 2026-07-03 01:16:27
+> 数据文件: `zbrain-ts-to-rust-part2-config-bootstrap.json` | 最后更新: 2026-07-03 01:44:20
 
 [~][Y+] 1. ZBrain TS->Rust Part2: Config/Bootstrap/Package Entrypoint strict parity
 ├── [~][Y+] 1-1. init command strict TS flag parity
 │   ├── [x][Y+] 1-1-1. Write init strict parity audit and test matrix
 │   ├── [x][Y+] 1-1-2. Add init parser parity tests
 │   ├── [x][Y+] 1-1-3. Implement engine selection flags for init
-│   ├── [ ][Y+] 1-1-4. Implement migrate-only init behavior
+│   ├── [x][Y+] 1-1-4. Implement migrate-only init behavior
 │   ├── [ ][Y+] 1-1-5. Implement thin-client MCP-only init behavior
 │   ├── [ ][Y+] 1-1-6. Implement init embedding setup flags
 │   └── [ ][Y+] 1-1-7. Validate init existing-config and JSON output behavior
@@ -28,7 +28,7 @@
 ├── [x][Y+] 1-1-1. Write init strict parity audit and test matrix
 ├── [x][Y+] 1-1-2. Add init parser parity tests
 ├── [x][Y+] 1-1-3. Implement engine selection flags for init
-├── [ ][Y+] 1-1-4. Implement migrate-only init behavior
+├── [x][Y+] 1-1-4. Implement migrate-only init behavior
 ├── [ ][Y+] 1-1-5. Implement thin-client MCP-only init behavior
 ├── [ ][Y+] 1-1-6. Implement init embedding setup flags
 └── [ ][Y+] 1-1-7. Validate init existing-config and JSON output behavior

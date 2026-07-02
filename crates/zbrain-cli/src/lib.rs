@@ -1524,6 +1524,10 @@ async fn run_init_command(args: InitArgs, config_path: Option<&Path>) -> anyhow:
             .with_context(|| format!("Failed to create config directory: {}", parent.display()))?;
     }
 
+    if args.migrate_only {
+        return run_init_migrate_only(&args, &config_file).await;
+    }
+
     // 2. Check for existing config and --force flag
     if config_file.exists() && !args.force {
         println!("Config already exists at: {}", config_file.display());
@@ -1584,6 +1588,41 @@ async fn run_init_command(args: InitArgs, config_path: Option<&Path>) -> anyhow:
     }
 
     println!("ZBrain initialized: {}", config_file.display());
+    Ok(())
+}
+
+async fn run_init_migrate_only(args: &InitArgs, config_file: &Path) -> anyhow::Result<()> {
+    if args.pglite || args.supabase || args.url.is_some() {
+        anyhow::bail!("--migrate-only cannot be combined with --pglite, --supabase, or --url");
+    }
+
+    if !config_file.exists() {
+        anyhow::bail!("--migrate-only requires an existing config; run zbrain init first or pass --config <path>");
+    }
+
+    let config = config::load_config_from_path(config_file)?;
+    if config.database_url.starts_with("postgres://") || config.database_url.starts_with("postgresql://") {
+        let engine_config = zbrain_core::engine::EngineConfig {
+            database_url: Some(config.database_url.clone()),
+            database_path: None,
+        };
+        let engine = zbrain_core::postgres::PostgresEngine::new();
+        engine.connect(&engine_config).await?;
+        engine.init_schema().await?;
+        engine.disconnect().await?;
+    } else {
+        let db_path = resolve_database_path(&config.database_url);
+        let engine_config = zbrain_core::engine::EngineConfig {
+            database_url: None,
+            database_path: Some(db_path),
+        };
+        let engine = zbrain_core::libsql::LibsqlEngine::new();
+        engine.connect(&engine_config).await?;
+        engine.init_schema().await?;
+        engine.disconnect().await?;
+    }
+
+    println!("ZBrain schema migrated: {}", config_file.display());
     Ok(())
 }
 
@@ -2240,6 +2279,114 @@ mod tests {
             error.contains("--supabase init is not implemented yet"),
             "expected explicit --supabase not implemented failure, got: {error}"
         );
+    }
+
+    #[tokio::test]
+    async fn init_migrate_only_sqlite_config_applies_schema_without_rewriting_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("zbrain.yml");
+        let db_path = tmp.path().join("brain.pglite");
+        let mut config = config::Config::default();
+        config.database_url = format!("sqlite://{}", db_path.display());
+        config::write_config(&config, &config_path).unwrap();
+        let before = std::fs::read_to_string(&config_path).unwrap();
+        let args = InitArgs {
+            pglite: false,
+            supabase: false,
+            url: None,
+            force: false,
+            migrate_only: true,
+            mcp_only: false,
+            json: false,
+            non_interactive: true,
+            issuer_url: None,
+            mcp_url: None,
+            oauth_client_id: None,
+            oauth_client_secret: None,
+            embedding_model: None,
+            no_embedding: false,
+            embedding_dimensions: None,
+        };
+
+        run_init_command(args, Some(&config_path)).await.unwrap();
+
+        let after = std::fs::read_to_string(&config_path).unwrap();
+        assert_eq!(after, before, "migrate-only must not rewrite config");
+        assert!(db_path.exists(), "migrate-only should create/migrate the configured database");
+    }
+
+    #[tokio::test]
+    async fn init_migrate_only_without_config_fails_loud() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("missing-zbrain.yml");
+        let args = InitArgs {
+            pglite: false,
+            supabase: false,
+            url: None,
+            force: false,
+            migrate_only: true,
+            mcp_only: false,
+            json: false,
+            non_interactive: true,
+            issuer_url: None,
+            mcp_url: None,
+            oauth_client_id: None,
+            oauth_client_secret: None,
+            embedding_model: None,
+            no_embedding: false,
+            embedding_dimensions: None,
+        };
+
+        let result = run_init_command(args, Some(&config_path)).await;
+
+        assert!(result.is_err());
+        let error = format!("{:#}", result.unwrap_err());
+        assert!(
+            error.contains("--migrate-only requires an existing config"),
+            "expected missing-config guidance, got: {error}"
+        );
+        assert!(!config_path.exists(), "migrate-only must not create config");
+    }
+
+    #[tokio::test]
+    async fn init_migrate_only_rejects_engine_selection_flags() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("zbrain.yml");
+        let mut config = config::Config::default();
+        config.database_url = format!("sqlite://{}", tmp.path().join("brain.pglite").display());
+        config::write_config(&config, &config_path).unwrap();
+
+        for (pglite, supabase, url) in [
+            (true, false, None),
+            (false, true, None),
+            (false, false, Some("postgres://127.0.0.1:1/zbrain".to_string())),
+        ] {
+            let args = InitArgs {
+                pglite,
+                supabase,
+                url,
+                force: false,
+                migrate_only: true,
+                mcp_only: false,
+                json: false,
+                non_interactive: true,
+                issuer_url: None,
+                mcp_url: None,
+                oauth_client_id: None,
+                oauth_client_secret: None,
+                embedding_model: None,
+                no_embedding: false,
+                embedding_dimensions: None,
+            };
+
+            let result = run_init_command(args, Some(&config_path)).await;
+            assert!(result.is_err());
+            let error = format!("{:#}", result.unwrap_err());
+            assert!(
+                error.contains("--migrate-only cannot be combined"),
+                "expected engine flag conflict, got: {error}"
+            );
+        }
     }
 
     #[tokio::test]
