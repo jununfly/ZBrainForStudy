@@ -6,7 +6,7 @@
 
 ## 当前状态
 
-切片进度：见 canonical 摘要 `docs/plans/20260526-rust-rewrite-plan.md` 与当前路线图 `docs/plans/ZBRAIN_TS_TO_RUST_ROADMAP.md`。
+切片进度：见 canonical 摘要 `docs/plans/2026-05-26-rust-rewrite-plan.md`、Part1 归档路线图 `docs/plans/ZBRAIN_TS_TO_RUST_PART1_COMPLETED.md` 与当前 Part2 路线图 `docs/plans/ZBRAIN_TS_TO_RUST_PART2_CONFIG_BOOTSTRAP.md`。
 
 | Slice | Scope                       | Tag             | Status |
 |-------|-----------------------------|-----------------|--------|
@@ -31,7 +31,7 @@ zbrain-rust/
 │   └── zbrain-mcp/             # MCP 服务（占位）
 ├── src/                        # ⚠️ 旧 TS 源码，对照参考用，slice 12 清理
 ├── admin/                      # 旧 React 前端，slice 9-10 复用
-└── docs/plans/20260526-rust-rewrite-plan.md  # 改写方案 canonical 摘要
+└── docs/plans/2026-05-26-rust-rewrite-plan.md  # 改写方案 canonical 摘要
 ```
 
 ## 本地命令

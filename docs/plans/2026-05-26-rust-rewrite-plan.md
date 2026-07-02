@@ -185,7 +185,7 @@ PG 测试必须明确区分：
 
 如果未来需要恢复更细历史，可从 git history 查找被删除的过程文档；当前工作上下文只保留：
 
-- 本文：`docs/plans/20260526-rust-rewrite-plan.md`
-- 当前路线图：`docs/plans/zbrain-ts-to-rust-roadmap.json`
-- 路线图视图：`docs/plans/ZBRAIN_TS_TO_RUST_ROADMAP.md`
+- 本文：`docs/plans/2026-05-26-rust-rewrite-plan.md`
+- Part1 归档路线图：`docs/plans/ZBRAIN_TS_TO_RUST_PART1_COMPLETED.md`
+- 当前 Part2 路线图：`docs/plans/ZBRAIN_TS_TO_RUST_PART2_CONFIG_BOOTSTRAP.md`
 - TS -> Rust PRD：`docs/prd/complete-ts-to-rust.md`

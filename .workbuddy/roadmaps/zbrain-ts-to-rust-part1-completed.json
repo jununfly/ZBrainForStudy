@@ -5,18 +5,17 @@
   "nodes": {
     "1": {
       "id": "1",
-      "label": "ZBrain TS -> Rust 迁移路线图",
-      "status": "in_progress",
-      "mode": "explore",
+      "label": "ZBrain TS->Rust Part1 completed archive",
+      "status": "completed",
+      "mode": "exploit",
       "parent": null,
       "children": [
         "1-1",
         "1-2",
-        "1-3",
         "1-4"
       ],
       "decisions": [],
-      "notes": ""
+      "notes": "Part1 archive contains completed TS->Rust migration work from the original roadmap. Phase 2 Config/Bootstrap/Package Entrypoint has moved to .workbuddy/roadmaps/zbrain-ts-to-rust-part2-config-bootstrap.json and docs/plans/ZBRAIN_TS_TO_RUST_PART2_CONFIG_BOOTSTRAP.md. Other unfinished TS->Rust work is parked for Part3."
     },
     "1-1": {
       "id": "1-1",
@@ -33,16 +32,6 @@
       "label": "Phase 1: Core Storage Parity — Page CRUD/InMemory/PostgreSQL/libsql 合约闭合",
       "status": "completed",
       "mode": "exploit",
-      "parent": "1",
-      "children": [],
-      "decisions": [],
-      "notes": ""
-    },
-    "1-3": {
-      "id": "1-3",
-      "label": "Phase 2: Config/Bootstrap/Package Entrypoint — 配置发现/init/doctor/storage/schema 命令迁移",
-      "status": "pending",
-      "mode": "explore",
       "parent": "1",
       "children": [],
       "decisions": [],
@@ -432,8 +421,8 @@
   },
   "metadata": {
     "created": "2026-07-01 20:28:48",
-    "updated": "2026-07-02 19:10:46",
-    "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_ROADMAP.md"
+    "updated": "2026-07-02 21:48:41",
+    "md_file": "c:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART1_COMPLETED.md"
   },
   "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_ROADMAP.md"
 }
