@@ -136,6 +136,129 @@ pub enum Commands {
 
     /// Sync files from a git repository into the knowledge base
     Sync(SyncArgs),
+
+    /// Manage knowledge base sources
+    #[command(subcommand)]
+    Sources(SourcesAction),
+
+    /// Capture content from files or stdin into the knowledge base
+    Capture(CaptureArgs),
+}
+
+/// Subcommands for `zbrain sources`.
+#[derive(Debug, Subcommand)]
+pub enum SourcesAction {
+    /// Register a new source (local path or remote git URL)
+    Add(SourcesAddArgs),
+
+    /// List all registered sources
+    List(SourcesListArgs),
+
+    /// Remove a source and optionally its local clone
+    Remove(SourcesRemoveArgs),
+
+    /// Show source health dashboard
+    Status(SourcesStatusArgs),
+}
+
+/// Arguments for `zbrain sources add`.
+#[derive(Debug, Parser)]
+pub struct SourcesAddArgs {
+    /// Source ID (1-32 lowercase alphanumeric chars with optional interior hyphens)
+    pub id: String,
+
+    /// Display name (defaults to id if omitted)
+    #[arg(long)]
+    pub name: Option<String>,
+
+    /// Local path to an existing repo directory
+    #[arg(long, conflicts_with = "url")]
+    pub path: Option<PathBuf>,
+
+    /// Remote git URL to clone
+    #[arg(long, conflicts_with = "path")]
+    pub url: Option<String>,
+
+    /// Mark as a federated source
+    #[arg(long)]
+    pub federated: bool,
+
+    /// Override clone destination (default: ~/.zbrain/clones/<id>/)
+    #[arg(long)]
+    pub clone_dir: Option<PathBuf>,
+
+    /// Clone depth (0 = full clone, default: 1)
+    #[arg(long, default_value = "1")]
+    pub depth: u32,
+
+    /// Branch to clone (default: repo default)
+    #[arg(long)]
+    pub branch: Option<String>,
+}
+
+/// Arguments for `zbrain sources list`.
+#[derive(Debug, Parser)]
+pub struct SourcesListArgs {
+    /// Output as JSON instead of table
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `zbrain sources remove`.
+#[derive(Debug, Parser)]
+pub struct SourcesRemoveArgs {
+    /// Source ID to remove
+    pub id: String,
+
+    /// Confirm removal even if source has pages
+    #[arg(long)]
+    pub confirm_destructive: bool,
+
+    /// Show what would happen without actually removing
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Keep local clone directory (don't delete it)
+    #[arg(long)]
+    pub keep_storage: bool,
+
+    /// Skip interactive confirmation prompt
+    #[arg(short = 'y', long)]
+    pub yes: bool,
+}
+
+/// Arguments for `zbrain sources status`.
+#[derive(Debug, Parser)]
+pub struct SourcesStatusArgs {
+    /// Source ID to inspect (omit for all sources)
+    pub source_id: Option<String>,
+
+    /// Output as JSON instead of table
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `zbrain capture` command.
+#[derive(Debug, Parser)]
+pub struct CaptureArgs {
+    /// Content source: path to file, or omit for stdin
+    pub content: Option<String>,
+
+    /// Content type (markdown, text)
+    #[arg(long, default_value = "markdown")]
+    pub r#type: String,
+
+    /// Source ID to associate with
+    #[arg(long)]
+    pub source: Option<String>,
+
+    /// Custom slug for the page
+    #[arg(long)]
+    pub slug: Option<String>,
+
+    /// Output as JSON instead of human-readable
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Arguments for `zbrain get-page` command.
@@ -396,6 +519,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::ServeMcp(args) => run_serve_mcp_command(args, cli.config.as_deref()).await?,
         Commands::ServeHttp(args) => run_serve_http_command(args, cli.config.as_deref()).await?,
         Commands::Sync(args) => run_sync_command(args, cli.config.as_deref()).await?,
+        Commands::Sources(action) => run_sources_command(action, cli.config.as_deref()).await?,
+        Commands::Capture(args) => run_capture_command(args, cli.config.as_deref()).await?,
     }
     Ok(())
 }
@@ -927,6 +1052,389 @@ async fn run_operation(
         .ok_or_else(|| anyhow::anyhow!("Operation returned non-JSON output"))?;
 
     Ok(value)
+}
+
+/// Execute `zbrain sources` subcommands.
+async fn run_sources_command(action: SourcesAction, config_path: Option<&Path>) -> anyhow::Result<()> {
+    match action {
+        SourcesAction::Add(args) => run_sources_add(args, config_path).await?,
+        SourcesAction::List(args) => run_sources_list(args, config_path).await?,
+        SourcesAction::Remove(args) => run_sources_remove(args, config_path).await?,
+        SourcesAction::Status(args) => run_sources_status(args, config_path).await?,
+    }
+    Ok(())
+}
+
+/// Execute `zbrain sources add` command.
+async fn run_sources_add(args: SourcesAddArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+    use zbrain_core::engine::{BrainEngine, EngineConfig};
+    use zbrain_core::sources_ops::{self, AddSourceOpts};
+
+    let config = config::load_config(config_path)?;
+
+    // Resolve zbrain_home (default: ~/.zbrain)
+    let zbrain_home = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".zbrain");
+
+    // Build engine
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    let opts = AddSourceOpts {
+        id: args.id.clone(),
+        name: args.name.clone(),
+        local_path: args.path.as_ref().map(|p| p.to_string_lossy().to_string()),
+        remote_url: args.url.clone(),
+        federated: if args.federated { Some(true) } else { None },
+        clone_dir: args.clone_dir.as_ref().map(|p| p.to_string_lossy().to_string()),
+        depth: args.depth,
+        branch: args.branch.clone(),
+    };
+
+    let source = sources_ops::add_source(&engine, opts, &zbrain_home)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    println!("Source added: {}", source.id);
+    println!("  name: {}", source.name);
+    if let Some(ref path) = source.local_path {
+        println!("  path: {path}");
+    }
+
+    engine.disconnect().await?;
+    Ok(())
+}
+
+/// Execute `zbrain sources list` command.
+async fn run_sources_list(args: SourcesListArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+    use zbrain_core::engine::{BrainEngine, EngineConfig};
+
+    let config = config::load_config(config_path)?;
+
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    let sources = engine.list_sources(false).await?;
+
+    if args.json {
+        let json = serde_json::to_string_pretty(&sources)?;
+        println!("{json}");
+    } else {
+        // Table header
+        println!("{:<20} {:<20} {:<12} {:<40}  LAST SYNC", "ID", "NAME", "ARCHIVED", "PATH",);
+        for src in &sources {
+            let path = src.local_path.as_deref().unwrap_or("-");
+            let last_sync = src.last_sync_at.as_deref().unwrap_or("-");
+            println!(
+                "{:<20} {:<20} {:<12} {:<40}  {}",
+                src.id, src.name, if src.archived { "yes" } else { "no" }, path, last_sync,
+            );
+        }
+        println!("\n{} source(s)", sources.len());
+    }
+
+    engine.disconnect().await?;
+    Ok(())
+}
+
+/// Execute `zbrain sources remove` command.
+async fn run_sources_remove(args: SourcesRemoveArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+    use zbrain_core::engine::{BrainEngine, EngineConfig};
+    use zbrain_core::sources_ops::{self, RemoveSourceOpts};
+
+    let config = config::load_config(config_path)?;
+
+    let zbrain_home = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".zbrain");
+
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    let opts = RemoveSourceOpts {
+        id: args.id.clone(),
+        confirm_destructive: args.confirm_destructive,
+        dry_run: args.dry_run,
+        keep_storage: args.keep_storage,
+    };
+
+    let result = sources_ops::remove_source(&engine, opts, &zbrain_home)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    if result.dry_run {
+        println!("[DRY RUN] Would remove source: {}", result.id);
+        println!("  pages to delete: {}", result.pages_deleted);
+        if let Some(ref path) = result.clone_path {
+            println!("  clone would be {}deleted: {path}",
+                if !args.keep_storage { "" } else { "kept — " });
+        }
+    } else {
+        println!("Source removed: {}", result.id);
+        println!("  pages deleted: {}", result.pages_deleted);
+        if result.clone_removed {
+            if let Some(ref path) = result.clone_path {
+                println!("  clone removed: {path}");
+            }
+        }
+    }
+
+    engine.disconnect().await?;
+    Ok(())
+}
+
+/// Execute `zbrain sources status` command.
+async fn run_sources_status(args: SourcesStatusArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+    use zbrain_core::engine::{BrainEngine, EngineConfig};
+    use zbrain_core::sources_ops;
+
+    let config = config::load_config(config_path)?;
+
+    let _zbrain_home = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".zbrain");
+
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    // Collect source IDs
+    let source_ids: Vec<String> = if let Some(ref sid) = args.source_id {
+        vec![sid.clone()]
+    } else {
+        engine.list_sources(false).await?.into_iter().map(|s| s.id).collect()
+    };
+
+    // Gather status for each source
+    let mut statuses: Vec<sources_ops::SourceStatus> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+    for sid in &source_ids {
+        match sources_ops::get_source_status(&engine, sid).await {
+            Ok(s) => statuses.push(s),
+            Err(e) => errors.push(format!("{sid}: {e}")),
+        }
+    }
+
+    if args.json {
+        let output = if statuses.is_empty() && !errors.is_empty() {
+            serde_json::json!({ "errors": errors })
+        } else {
+            serde_json::json!({ "sources": statuses, "errors": errors })
+        };
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        // Table header
+        println!(
+            "{:<20} {:<10} {:<8} {:<8} {:<8} {:<8} {:<20}",
+            "SOURCE", "LAG", "EMBED", "FAILS", "QUEUE", "PAGES", "LAST SYNC"
+        );
+
+        for s in &statuses {
+            let lag = compute_lag(&s);
+            let embed = "-";
+            let fails = "-";
+            let queue = "-";
+            let last_sync = s.last_sync_at.as_deref().unwrap_or("-");
+            println!(
+                "{:<20} {:<10} {:<8} {:<8} {:<8} {:<8} {:<20}",
+                s.name, lag, embed, fails, queue, s.page_count, last_sync
+            );
+        }
+
+        // Print errors after the table
+        for e in &errors {
+            eprintln!("error: {e}");
+        }
+    }
+
+    engine.disconnect().await?;
+    Ok(())
+}
+
+/// Compute git lag for a source: number of commits behind HEAD.
+fn compute_lag(status: &zbrain_core::sources_ops::SourceStatus) -> String {
+    let Some(ref local_path) = status.local_path else {
+        return "-".to_string();
+    };
+    let Some(ref last_commit) = status.last_commit else {
+        return "?".to_string();
+    };
+
+    let output = std::process::Command::new("git")
+        .args(["-C", local_path.as_str(), "rev-list", "--count", &format!("{last_commit}..HEAD")])
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let count = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if count.is_empty() { "0".to_string() } else { format!("{count}c") }
+        }
+        _ => "?".to_string(),
+    }
+}
+
+/// Execute `zbrain capture` command.
+async fn run_capture_command(args: CaptureArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+    use std::io::Read;
+    use zbrain_core::capture::{CaptureOpts, capture_content};
+    use zbrain_core::engine::{BrainEngine, EngineConfig, PageInput};
+    use zbrain_core::markdown::parse_markdown;
+    use zbrain_core::time::current_utc_iso8601;
+    use zbrain_core::types::PageKind;
+
+    // 1. Read content from file or stdin
+    let raw = match args.content {
+        Some(ref path_str) => {
+            let path = Path::new(path_str);
+            std::fs::read(path)
+                .with_context(|| format!("Failed to read file: {path_str}"))?
+        }
+        None => {
+            let mut buf = Vec::new();
+            std::io::stdin().read_to_end(&mut buf)?;
+            buf
+        }
+    };
+
+    // 2. Run capture pipeline
+    let captured_at = current_utc_iso8601();
+    let opts = CaptureOpts {
+        page_type: Some(args.r#type.clone()),
+        source: args.source.clone(),
+        captured_at: Some(captured_at.clone()),
+    };
+
+    let capture_result = capture_content(&raw, &opts)
+        .map_err(|e| anyhow::anyhow!("Capture failed: {e}"))?;
+
+    // 3. Parse markdown
+    let source_path = args.content.as_deref().unwrap_or("stdin");
+    let parsed = parse_markdown(
+        &capture_result.body,
+        source_path,
+        None,
+    );
+
+    // 4. Determine slug: explicit > frontmatter title > UUID fallback
+    let slug = args.slug.clone().unwrap_or_else(|| {
+        capture_result.frontmatter
+            .get("title")
+            .and_then(|v| v.as_str())
+            .map(|t| slugify(t))
+            .unwrap_or_else(|| format!("capture-{}", &capture_result.content_hash[..12]))
+    });
+
+    // 5. Determine title
+    let title = capture_result.frontmatter
+        .get("title")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or(parsed.title.clone());
+
+    // 6. Build PageInput
+    let page_type = if zbrain_core::types::is_base_page_type(&parsed.type_) {
+        parsed.type_.clone()
+    } else {
+        args.r#type.clone()
+    };
+
+    let page_input = PageInput {
+        page_type,
+        title: title.clone(),
+        compiled_truth: parsed.compiled_truth,
+        timeline: if parsed.timeline.is_empty() { None } else { Some(parsed.timeline) },
+        frontmatter: Some(capture_result.frontmatter),
+        content_hash: Some(capture_result.content_hash.clone()),
+        page_kind: Some(PageKind::Markdown),
+        effective_date: None,
+        effective_date_source: None,
+        import_filename: args.content.clone(),
+        chunker_version: None,
+        source_path: Some(source_path.to_string()),
+        source_kind: Some("capture".to_string()),
+        source_uri: None,
+        ingested_via: Some("zbrain capture CLI".to_string()),
+        ingested_at: Some(captured_at.clone()),
+        last_retrieved_at: None,
+        embedding: None,
+    };
+
+    // 7. Connect to engine and put_page
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    let source_id_ref = args.source.as_deref();
+    let page = engine.put_page(&slug, source_id_ref, &page_input).await?;
+
+    engine.disconnect().await?;
+
+    // 8. Output
+    if args.json {
+        let output = serde_json::json!({
+            "slug": page.slug,
+            "title": page.title,
+            "content_hash": page.content_hash,
+            "page_type": page.page_type,
+            "source": args.source,
+            "captured_at": captured_at,
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!("Captured page: {}", page.slug);
+        println!("  title: {}", page.title);
+        if let Some(ref hash) = page.content_hash {
+            println!("  hash: {hash}");
+        }
+        if let Some(ref source_id) = args.source {
+            println!("  source: {source_id}");
+        }
+    }
+
+    Ok(())
+}
+
+/// Convert a string to a URL-safe slug.
+fn slugify(s: &str) -> String {
+    s.to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
 /// Execute `zbrain init` command.
@@ -1798,6 +2306,399 @@ mod tests {
                 assert_eq!(args.parallelism, 2);
             }
             _ => panic!("expected Sync"),
+        }
+    }
+
+    // --- Sources CLI arg tests (#105 sources add) ---
+
+    #[test]
+    fn sources_add_parses_required_id() {
+        let cli = Cli::try_parse_from(["zbrain", "sources", "add", "my-source"]).unwrap();
+        match cli.command {
+            Commands::Sources(action) => match action {
+                SourcesAction::Add(args) => {
+                    assert_eq!(args.id, "my-source");
+                    assert!(args.name.is_none());
+                    assert!(args.path.is_none());
+                    assert!(args.url.is_none());
+                    assert!(!args.federated);
+                    assert_eq!(args.depth, 1);
+                    assert!(args.branch.is_none());
+                },
+                _ => panic!("unexpected SourcesAction"),
+            },
+            _ => panic!("expected Sources"),
+        }
+    }
+
+    #[test]
+    fn sources_add_parses_with_name() {
+        let cli = Cli::try_parse_from(["zbrain", "sources", "add", "my-source", "--name", "My Source"]).unwrap();
+        match cli.command {
+            Commands::Sources(action) => match action {
+                SourcesAction::Add(args) => assert_eq!(args.name.as_deref(), Some("My Source")),
+                _ => panic!("unexpected SourcesAction"),
+            },
+            _ => panic!("expected Sources"),
+        }
+    }
+
+    #[test]
+    fn sources_add_parses_with_path() {
+        let cli = Cli::try_parse_from(["zbrain", "sources", "add", "my-source", "--path", "/tmp/repo"]).unwrap();
+        match cli.command {
+            Commands::Sources(action) => match action {
+                SourcesAction::Add(args) => assert_eq!(args.path, Some(PathBuf::from("/tmp/repo"))),
+                _ => panic!("unexpected SourcesAction"),
+            },
+            _ => panic!("expected Sources"),
+        }
+    }
+
+    #[test]
+    fn sources_add_parses_with_url() {
+        let cli = Cli::try_parse_from(["zbrain", "sources", "add", "my-source", "--url", "https://github.com/foo/bar.git"]).unwrap();
+        match cli.command {
+            Commands::Sources(action) => match action {
+                SourcesAction::Add(args) => assert_eq!(args.url.as_deref(), Some("https://github.com/foo/bar.git")),
+                _ => panic!("unexpected SourcesAction"),
+            },
+            _ => panic!("expected Sources"),
+        }
+    }
+
+    #[test]
+    fn sources_add_path_url_conflict() {
+        let result = Cli::try_parse_from([
+            "zbrain", "sources", "add", "my-source",
+            "--path", "/tmp/repo",
+            "--url", "https://example.com/repo.git",
+        ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn sources_add_parses_federated() {
+        let cli = Cli::try_parse_from(["zbrain", "sources", "add", "my-source", "--federated"]).unwrap();
+        match cli.command {
+            Commands::Sources(action) => match action {
+                SourcesAction::Add(args) => assert!(args.federated),
+                _ => panic!("unexpected SourcesAction"),
+            },
+            _ => panic!("expected Sources"),
+        }
+    }
+
+    #[test]
+    fn sources_add_parses_clone_dir() {
+        let cli = Cli::try_parse_from([
+            "zbrain", "sources", "add", "my-source",
+            "--clone-dir", "/custom/clone",
+        ]).unwrap();
+        match cli.command {
+            Commands::Sources(action) => match action {
+                SourcesAction::Add(args) => assert_eq!(args.clone_dir, Some(PathBuf::from("/custom/clone"))),
+                _ => panic!("unexpected SourcesAction"),
+            },
+            _ => panic!("expected Sources"),
+        }
+    }
+
+    #[test]
+    fn sources_add_parses_depth_and_branch() {
+        let cli = Cli::try_parse_from([
+            "zbrain", "sources", "add", "my-source",
+            "--depth", "0",
+            "--branch", "main",
+        ]).unwrap();
+        match cli.command {
+            Commands::Sources(action) => match action {
+                SourcesAction::Add(args) => {
+                    assert_eq!(args.depth, 0);
+                    assert_eq!(args.branch.as_deref(), Some("main"));
+                },
+                _ => panic!("unexpected SourcesAction"),
+            },
+            _ => panic!("expected Sources"),
+        }
+    }
+
+    // --- Sources list CLI tests (#102) ---
+
+    #[test]
+    fn sources_list_parses_default() {
+        let cli = Cli::try_parse_from(["zbrain", "sources", "list"]).unwrap();
+        match cli.command {
+            Commands::Sources(action) => match action {
+                SourcesAction::List(args) => assert!(!args.json),
+                _ => panic!("expected List"),
+            },
+            _ => panic!("expected Sources"),
+        }
+    }
+
+    #[test]
+    fn sources_list_parses_json_flag() {
+        let cli = Cli::try_parse_from(["zbrain", "sources", "list", "--json"]).unwrap();
+        match cli.command {
+            Commands::Sources(action) => match action {
+                SourcesAction::List(args) => assert!(args.json),
+                _ => panic!("expected List"),
+            },
+            _ => panic!("expected Sources"),
+        }
+    }
+
+    // --- Sources remove CLI tests (#104) ---
+
+    #[test]
+    fn sources_remove_parses_required_id() {
+        let cli = Cli::try_parse_from(["zbrain", "sources", "remove", "my-source"]).unwrap();
+        match cli.command {
+            Commands::Sources(action) => match action {
+                SourcesAction::Remove(args) => {
+                    assert_eq!(args.id, "my-source");
+                    assert!(!args.confirm_destructive);
+                    assert!(!args.dry_run);
+                    assert!(!args.keep_storage);
+                    assert!(!args.yes);
+                },
+                _ => panic!("unexpected SourcesAction"),
+            },
+            _ => panic!("expected Sources"),
+        }
+    }
+
+    #[test]
+    fn sources_remove_parses_confirm_destructive() {
+        let cli = Cli::try_parse_from(["zbrain", "sources", "remove", "my-source", "--confirm-destructive"]).unwrap();
+        match cli.command {
+            Commands::Sources(action) => match action {
+                SourcesAction::Remove(args) => assert!(args.confirm_destructive),
+                _ => panic!("unexpected SourcesAction"),
+            },
+            _ => panic!("expected Sources"),
+        }
+    }
+
+    #[test]
+    fn sources_remove_parses_dry_run() {
+        let cli = Cli::try_parse_from(["zbrain", "sources", "remove", "my-source", "--dry-run"]).unwrap();
+        match cli.command {
+            Commands::Sources(action) => match action {
+                SourcesAction::Remove(args) => assert!(args.dry_run),
+                _ => panic!("unexpected SourcesAction"),
+            },
+            _ => panic!("expected Sources"),
+        }
+    }
+
+    #[test]
+    fn sources_remove_parses_keep_storage() {
+        let cli = Cli::try_parse_from(["zbrain", "sources", "remove", "my-source", "--keep-storage"]).unwrap();
+        match cli.command {
+            Commands::Sources(action) => match action {
+                SourcesAction::Remove(args) => assert!(args.keep_storage),
+                _ => panic!("unexpected SourcesAction"),
+            },
+            _ => panic!("expected Sources"),
+        }
+    }
+
+    #[test]
+    fn sources_remove_parses_yes_short() {
+        let cli = Cli::try_parse_from(["zbrain", "sources", "remove", "my-source", "-y"]).unwrap();
+        match cli.command {
+            Commands::Sources(action) => match action {
+                SourcesAction::Remove(args) => assert!(args.yes),
+                _ => panic!("unexpected SourcesAction"),
+            },
+            _ => panic!("expected Sources"),
+        }
+    }
+
+    #[test]
+    fn sources_remove_parses_yes_long() {
+        let cli = Cli::try_parse_from(["zbrain", "sources", "remove", "my-source", "--yes"]).unwrap();
+        match cli.command {
+            Commands::Sources(action) => match action {
+                SourcesAction::Remove(args) => assert!(args.yes),
+                _ => panic!("unexpected SourcesAction"),
+            },
+            _ => panic!("expected Sources"),
+        }
+    }
+
+    #[test]
+    fn sources_remove_parses_all_flags_together() {
+        let cli = Cli::try_parse_from([
+            "zbrain", "sources", "remove", "my-source",
+            "--confirm-destructive",
+            "--dry-run",
+            "--keep-storage",
+            "--yes",
+        ]).unwrap();
+        match cli.command {
+            Commands::Sources(action) => match action {
+                SourcesAction::Remove(args) => {
+                    assert_eq!(args.id, "my-source");
+                    assert!(args.confirm_destructive);
+                    assert!(args.dry_run);
+                    assert!(args.keep_storage);
+                    assert!(args.yes);
+                },
+                _ => panic!("unexpected SourcesAction"),
+            },
+            _ => panic!("expected Sources"),
+        }
+    }
+
+    // --- Sources status CLI tests (#106) ---
+
+    #[test]
+    fn sources_status_parses_all_sources_default() {
+        let cli = Cli::try_parse_from(["zbrain", "sources", "status"]).unwrap();
+        match cli.command {
+            Commands::Sources(action) => match action {
+                SourcesAction::Status(args) => {
+                    assert!(args.source_id.is_none());
+                    assert!(!args.json);
+                },
+                _ => panic!("unexpected SourcesAction"),
+            },
+            _ => panic!("expected Sources"),
+        }
+    }
+
+    #[test]
+    fn sources_status_parses_single_source() {
+        let cli = Cli::try_parse_from(["zbrain", "sources", "status", "my-source"]).unwrap();
+        match cli.command {
+            Commands::Sources(action) => match action {
+                SourcesAction::Status(args) => {
+                    assert_eq!(args.source_id.as_deref(), Some("my-source"));
+                },
+                _ => panic!("unexpected SourcesAction"),
+            },
+            _ => panic!("expected Sources"),
+        }
+    }
+
+    #[test]
+    fn sources_status_parses_json_flag() {
+        let cli = Cli::try_parse_from(["zbrain", "sources", "status", "--json"]).unwrap();
+        match cli.command {
+            Commands::Sources(action) => match action {
+                SourcesAction::Status(args) => {
+                    assert!(args.json);
+                },
+                _ => panic!("unexpected SourcesAction"),
+            },
+            _ => panic!("expected Sources"),
+        }
+    }
+
+    #[test]
+    fn sources_status_parses_source_with_json() {
+        let cli = Cli::try_parse_from(["zbrain", "sources", "status", "my-source", "--json"]).unwrap();
+        match cli.command {
+            Commands::Sources(action) => match action {
+                SourcesAction::Status(args) => {
+                    assert_eq!(args.source_id.as_deref(), Some("my-source"));
+                    assert!(args.json);
+                },
+                _ => panic!("unexpected SourcesAction"),
+            },
+            _ => panic!("expected Sources"),
+        }
+    }
+
+    // --- Capture CLI tests (#103) ---
+
+    #[test]
+    fn capture_parses_file_input() {
+        let cli = Cli::try_parse_from(["zbrain", "capture", "/path/to/note.md"]).unwrap();
+        match cli.command {
+            Commands::Capture(args) => {
+                assert_eq!(args.content.as_deref(), Some("/path/to/note.md"));
+                assert_eq!(args.r#type, "markdown");
+                assert!(args.source.is_none());
+                assert!(args.slug.is_none());
+                assert!(!args.json);
+            },
+            _ => panic!("expected Capture"),
+        }
+    }
+
+    #[test]
+    fn capture_parses_stdin_when_no_file() {
+        let cli = Cli::try_parse_from(["zbrain", "capture"]).unwrap();
+        match cli.command {
+            Commands::Capture(args) => {
+                assert!(args.content.is_none());
+            },
+            _ => panic!("expected Capture"),
+        }
+    }
+
+    #[test]
+    fn capture_parses_type_flag() {
+        let cli = Cli::try_parse_from(["zbrain", "capture", "--type", "text", "myfile.txt"]).unwrap();
+        match cli.command {
+            Commands::Capture(args) => {
+                assert_eq!(args.r#type, "text");
+            },
+            _ => panic!("expected Capture"),
+        }
+    }
+
+    #[test]
+    fn capture_parses_source_and_slug() {
+        let cli = Cli::try_parse_from([
+            "zbrain", "capture",
+            "--source", "my-docs",
+            "--slug", "custom-slug",
+            "file.md",
+        ]).unwrap();
+        match cli.command {
+            Commands::Capture(args) => {
+                assert_eq!(args.source.as_deref(), Some("my-docs"));
+                assert_eq!(args.slug.as_deref(), Some("custom-slug"));
+            },
+            _ => panic!("expected Capture"),
+        }
+    }
+
+    #[test]
+    fn capture_parses_json_flag() {
+        let cli = Cli::try_parse_from(["zbrain", "capture", "--json", "file.md"]).unwrap();
+        match cli.command {
+            Commands::Capture(args) => {
+                assert!(args.json);
+            },
+            _ => panic!("expected Capture"),
+        }
+    }
+
+    #[test]
+    fn capture_parses_all_flags() {
+        let cli = Cli::try_parse_from([
+            "zbrain", "capture",
+            "--type", "markdown",
+            "--source", "my-docs",
+            "--slug", "my-page",
+            "--json",
+            "path/to/file.md",
+        ]).unwrap();
+        match cli.command {
+            Commands::Capture(args) => {
+                assert_eq!(args.r#type, "markdown");
+                assert_eq!(args.source.as_deref(), Some("my-docs"));
+                assert_eq!(args.slug.as_deref(), Some("my-page"));
+                assert!(args.json);
+                assert_eq!(args.content.as_deref(), Some("path/to/file.md"));
+            },
+            _ => panic!("expected Capture"),
         }
     }
 }

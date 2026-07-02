@@ -1114,12 +1114,12 @@
     "1-7-1-5": {
       "id": "1-7-1-5",
       "label": "Sync engine: git diff manifest, per-source locking, failure tracking, file-by-file import dispatch",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-7-1",
       "children": [],
       "decisions": [],
-      "notes": "去掉 'file import' 语义（import pipeline 归入新 1-7-1-6）。本节点聚焦 sync 特有逻辑：git diff 生成 SyncManifest、pathToSlug 映射、per-source DB 锁、failure tracking (JSONL)。Reference TS: src/core/sync.ts, src/core/sync-concurrency.ts。"
+      "notes": "DONE: sync_failures, sync_anchor, sync_walker, sync_manifest, sync_concurrency, import_one_path, sync_core, sync_cli — 57 new tests, all green. zbrain sync subcommand live."
     },
     "1-7-2": {
       "id": "1-7-2",
@@ -1977,27 +1977,54 @@
     "1-7-1-6": {
       "id": "1-7-1-6",
       "label": "Import pipeline: chunking (recursive text/code), embedding (embedBatch + CR wrapper), transaction write (putPage + upsertChunks + tags + links)",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "exploit",
       "parent": "1-7-1",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "1-7-1-6 拆成几个子切片？",
+          "answer": "5个子切片，按依赖顺序",
+          "note": "①CJK+递归分块 → ②代码分块核心 → ③边提取+符号解析 → ④嵌入+网关 → ⑤事务写入编排。每片独立TDD，独立review，独立回滚。"
+        }
+      ],
       "notes": ""
     },
     "1-7-1-7": {
       "id": "1-7-1-7",
       "label": "CLI commands: zbrain sources (add/list/remove/status), zbrain sync, zbrain capture",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-7-1",
       "children": [],
-      "decisions": [],
-      "notes": "Reference TS: src/commands/sources.ts (~1189 lines: add/list/remove/rename/default/attach/detach/federate/archive/restore/purge/status/webhook), src/commands/sync.ts (~2485 lines: performSync/runSync/syncStatus). Wire up Rust CLI to use new source CRUD, sync engine, capture, and import pipeline modules."
+      "decisions": [
+        {
+          "q": "执行顺序：1-7-1-7 vs 1-7-1-6 哪个先做？",
+          "answer": "先做 1-7-1-7 (CLI commands)",
+          "note": "底层模块 (sources_ops, capture.rs) 已全部完成，CLI 是纯胶水层；1-7-1-6 需要新基础设施 (embedding/vector store)，适合单独一刀"
+        },
+        {
+          "q": "1-7-1-7 第一刀实现哪些子命令？",
+          "answer": "zbrain sources add/list/remove/status + zbrain capture（共 5 个）",
+          "note": "webhook/federate/archive/restore/purge/attach/detach 依赖更多基础设施，后续再加"
+        },
+        {
+          "q": "5个子命令各自对标 Rust 底层模块哪一层？",
+          "answer": "底层已就绪：sources_ops::add_source/remove_source/get_source_status + engine::list_sources/get_source + capture::capture_content。CLI 纯胶水层。",
+          "note": "各子命令对标：add→add_source, list→engine.list_sources, remove→remove_source, status→get_source_status, capture→capture_content"
+        },
+        {
+          "q": "status 仪表盘缺字段如何处理？",
+          "answer": "方案A：有字段展示，缺字段显示 '-' 并标注原因",
+          "note": "embed_coverage_pct / failed_jobs_24h / queue_depth 等缺基础设施的字段统一用 '-' 占位，不混淆 0 的语义"
+        }
+      ],
+      "notes": "ALL DONE: zbrain sources add/list/remove/status + zbrain capture. 5 CLI commands, 17 new parse tests. Total CLI tests: 68."
     }
   },
   "metadata": {
     "created": "2026-06-23 18:09:00",
-    "updated": "2026-07-01 20:27:02",
+    "updated": "2026-07-02 14:02:41",
     "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_ROADMAP.md"
   }
 }

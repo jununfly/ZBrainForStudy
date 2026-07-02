@@ -31,6 +31,7 @@
 
 use std::path::{Path, PathBuf};
 
+use serde::Serialize;
 use rand::Rng;
 
 use crate::engine::BrainEngine;
@@ -138,7 +139,7 @@ pub struct RemoveResult {
 }
 
 /// Source status info. Mirrors TS `SourceStatus`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SourceStatus {
     pub id: String,
     pub name: String,

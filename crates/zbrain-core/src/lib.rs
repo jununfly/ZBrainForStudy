@@ -13,6 +13,7 @@ pub mod cjk;
 pub mod embedding;
 pub mod embedding_context;
 pub mod embedding_pricing;
+pub mod import;
 pub mod scope;
 pub mod token_queries;
 pub mod calibration_queries;

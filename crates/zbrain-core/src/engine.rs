@@ -463,6 +463,62 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
     /// `listFilesForPage(pageId)`.
     async fn list_files_for_page(&self, page_id: u64) -> crate::Result<Vec<FileRow>>;
 
+    // ── Chunks & Code Edges (slice #110) ──────────────────────────
+
+    /// Upsert chunks for a page. Mirrors TS `upsertChunks`.
+    /// Default: returns `Err(`Unsupported`)`.
+    async fn upsert_chunks(
+        &self,
+        slug: &str,
+        chunks: &[crate::import::ChunkInput],
+    ) -> crate::Result<()> {
+        let _ = (slug, chunks);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "upsert_chunks not yet implemented for this engine",
+        ))
+    }
+
+    /// Delete all chunks for a page. Mirrors TS `deleteChunks`.
+    /// Default: returns `Err(`Unsupported`)`.
+    async fn delete_chunks(&self, slug: &str) -> crate::Result<()> {
+        let _ = slug;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "delete_chunks not yet implemented for this engine",
+        ))
+    }
+
+    /// Add code edges. Mirrors TS `addCodeEdges`.
+    /// Default: returns `Err(`Unsupported`)`.
+    async fn add_code_edges(
+        &self,
+        edges: &[crate::import::CodeEdgeInput],
+    ) -> crate::Result<()> {
+        let _ = edges;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "add_code_edges not yet implemented for this engine",
+        ))
+    }
+
+    /// Delete code edges for given chunk IDs. Mirrors TS `deleteCodeEdgesForChunks`.
+    /// Default: returns `Err(`Unsupported`)`.
+    async fn delete_code_edges_for_chunks(
+        &self,
+        chunk_ids: &[i64],
+    ) -> crate::Result<()> {
+        let _ = chunk_ids;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "delete_code_edges_for_chunks not yet implemented for this engine",
+        ))
+    }
+
     // ── Slice 6a S6 method group (15 required methods) ────────────────────
     //
     // Backends must implement the full Slice 6a S6 method group explicitly;
@@ -699,6 +755,8 @@ pub struct InMemoryEngine {
     token_scopes: Mutex<std::collections::HashMap<String, Vec<String>>>,
     /// Source configuration rows for testing: source id → SourceRow.
     sources: Mutex<Vec<SourceRow>>,
+    // #110: chunk storage (in-memory, for testing)
+    chunk_store: Mutex<std::collections::HashMap<String, Vec<crate::import::ChunkInput>>>,
 }
 
 // ─── Tag helpers ─────────────────────────────────────────────────────────────
@@ -729,6 +787,23 @@ fn set_page_tags(page: &mut Page, mut tags: Vec<String>) {
 }
 
 impl InMemoryEngine {
+    /// Create a new empty InMemoryEngine for testing.
+    pub fn new() -> Self {
+        Self {
+            store: Mutex::new(Vec::new()),
+            next_id: Mutex::new(1),
+            file_store: Mutex::new(Vec::new()),
+            next_file_id: Mutex::new(1),
+            raw_data_store: Mutex::new(Vec::new()),
+            version_store: Mutex::new(Vec::new()),
+            next_version_id: Mutex::new(1),
+            token_scopes: Mutex::new(std::collections::HashMap::new()),
+            sources: Mutex::new(Vec::new()),
+            // #110: chunk storage (in-memory, for testing)
+            chunk_store: Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+
     /// Wrap in an `Arc` for use as `Arc<dyn BrainEngine>`.
     #[must_use]
     pub fn into_arc(self) -> Arc<dyn BrainEngine> {
@@ -1838,6 +1913,47 @@ impl BrainEngine for InMemoryEngine {
             }
         }
         Ok(out)
+    }
+
+    // --- #110: Chunks & Code Edges (slice #110) ---
+
+    async fn upsert_chunks(
+        &self,
+        slug: &str,
+        chunks: &[crate::import::ChunkInput],
+    ) -> crate::Result<()> {
+        let mut store = self.chunk_store
+            .lock()
+            .expect("InMemoryEngine chunk_store mutex poisoned");
+        
+        // 直接存储 ChunkInput（InMemory 简化版，不转 ChunkOutput）
+        let chunk_inputs: Vec<crate::import::ChunkInput> = chunks.iter().cloned().collect();
+        store.insert(slug.to_string(), chunk_inputs);
+        Ok(())
+    }
+
+    async fn delete_chunks(&self, slug: &str) -> crate::Result<()> {
+        let mut store = self.chunk_store
+            .lock()
+            .expect("InMemoryEngine chunk_store mutex poisoned");
+        store.remove(slug);
+        Ok(())
+    }
+
+    async fn add_code_edges(
+        &self,
+        _edges: &[crate::import::CodeEdgeInput],
+    ) -> crate::Result<()> {
+        // TODO: implement code edge storage in InMemoryEngine
+        Ok(())
+    }
+
+    async fn delete_code_edges_for_chunks(
+        &self,
+        _chunk_ids: &[i64],
+    ) -> crate::Result<()> {
+        // TODO: implement code edge deletion in InMemoryEngine
+        Ok(())
     }
 }
 
