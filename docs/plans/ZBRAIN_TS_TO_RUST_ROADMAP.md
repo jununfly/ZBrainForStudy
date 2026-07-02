@@ -1,7 +1,7 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust.json` | 最后更新: 2026-07-01 21:05:34
+> 数据文件: `zbrain-ts-to-rust.json` | 最后更新: 2026-07-02 18:59:15
 
 [~][X+] 1. ZBrain TS -> Rust 迁移路线图
 ├── [x][Y+] 1-1. Phase 0: 路线图与清单 — 品牌迁移/目录规范/Plans清理
@@ -10,26 +10,18 @@
 └── [~][Y+] 1-4. Phase 6: Sources/Ingestion/Search/Retrieval — 源管理/导入/捕获/提取/同步/搜索/嵌入
     └── [~][Y+] 1-4-1. Sources 管理: CRUD API + Import/Clone/Capture/Extraction
 
-### 当前施工：1-4-1-5. Sync Engine — 文件系统同步/变更检测/reindex/reclone
+### 当前施工：1-4-1-8. 集成 Chunking & Embedding 到 Sync 管道：让 sync 产生的页面可被语义搜索
 
 **决策：**
-- Q: Q1: Sync Engine 范围边界 → 聚焦 sync 管道本身（git diff → 变更清单 → 文件遍历 → capture/markdown → putPage）。不包含 chunking/embedding（留到 1-4-1-6）。不包含 links/timeline extraction。content_hash 去重也暂跳过。目标是页面入库（body/frontmatter/type/tags）但无搜索。 (8项子任务：buildSyncManifest, isSyncable, performSyncInner, performFullSync, syncFailures, syncAnchor, concurrency, importOnePath)
-- Q: Q2: 模块位置 → zbrain-core/src/sync.rs（或 sync/ 模块目录）。拆分为 sync.rs（主入口）、sync_manifest.rs（diff解析+过滤）、sync_failures.rs（失败记录）。 (被 CLI 和将来 admin API 调用)
-- Q: Q3: 并发模型 → 方案B：运行时检测引擎类型。Postgres → 多 worker（tokio::spawn + Arc<AtomicUsize> 队列分派）。PGLite → 串行。 (和 TS 行为一致)
-- Q: Q4: Git diff 解析 → std::process::Command（非 git2 crate）。和已有 git_remote.rs 风格一致，复用 GIT_SSRF_FLAGS。 (git diff --name-status -M 输出是稳定的 machine-readable 格式)
-- Q: Q5: 文件遍历器 → walkdir crate + 自定义 filter_entry（跳过 .git/node_modules/.raw/ops）+ 手动 inode 循环检测。 (walkdir 默认不跟随符号链接)
-- Q: Q6: Sync Anchor 管理 → last_commit + chunker_version 通过 engine.update_source() 写入 sources 表。sync-failures.jsonl 放 <zbrain_home>/sync-failures.jsonl。 (和 TS 一致)
-- Q: Q7: import_one_path 实现深度 → 走到 putPage + addTag。不做 chunking/embedding（标记 TODO）、不做 content_hash 去重、不做 links/timeline extraction。 (可工作的中间态：页面入库但无搜索)
-
-**当前子树：**
-├── [ ][Y+] 1-4-1-5-1. sync_manifest: build_sync_manifest + is_syncable + unsyncable_reason
-├── [ ][Y+] 1-4-1-5-2. sync_walker: collect_syncable_files — walkdir + inode循环检测 + 策略过滤
-├── [ ][Y+] 1-4-1-5-3. sync_core: perform_sync + perform_full_sync — 主循环管道
-├── [ ][Y+] 1-4-1-5-4. import_one_path: 文件读取 → capture → parse_markdown → putPage + addTag
-├── [ ][Y+] 1-4-1-5-5. sync_failures: JSONL 失败记录 + acknowledge
-├── [ ][Y+] 1-4-1-5-6. sync_concurrency: 运行时检测引擎类型 → Postgres多worker / PGLite串行
-├── [ ][Y+] 1-4-1-5-7. sync_anchor: last_commit + chunker_version 写入 sources 表
-└── [ ][Y+] 1-4-1-5-8. sync_cli: CLI 命令  入口 + 参数解析
+- Q: 下一刀做 TS 清理还是继续功能开发？ → 选择选项2：继续功能开发，优先集成 Chunking & Embedding 到 Sync 管道 (理由：当前 sync 可写 page/tag，但还不能产生 searchable chunks；#110/#111 的基础设施需要接入 sync 才能释放语义搜索价值。)
+- Q: 下一刀最小闭环范围是什么？ → 先做 Markdown sync → chunk_text → upsert_chunks，不接真实 embedding (完成定义：import_one_path(markdown) 在 put_page 后对 compiled truth/body 做 chunking，转成 ChunkInput，并调用 engine.upsert_chunks(slug, chunks)。暂不接 HTTP embedding、CLI embedding 参数、code chunking、vector search 或 storage schema 深化。)
+- Q: chunk 的来源文本应该用哪一份？ → 用 parse_markdown 后写入 page 的正文/body 作为 chunk 源 (chunk 与最终 put_page 的内容保持一致：搜索命中的 chunk 应能回到页面中真实保存的内容。本刀暂不做 title/tags/source path 上下文包装。)
+- Q: 这一刀要不要新增可验证 chunk 写入的读接口？ → 新增 get_chunks_for_page(slug) trait 方法，并给 InMemoryEngine 实现 (用途：TDD 能断言 import_one_path() 后确实产生 chunks；后续 retrieval 也需要从 page 取 chunks。默认 trait 实现返回 Unsupported，先不设计复杂 query/vector API。)
+- Q: Markdown 第一刀 chunk metadata 写到什么程度？ → 只填稳定必需字段：chunk_index、chunk_text、chunk_source=CompiledTruth、token_count；其余字段留空 (chunk_index 来自 TextChunk.index；chunk_text 来自 TextChunk.text；token_count 用 CJK-aware word count；embedding=None；code metadata 不在 Markdown 第一刀中虚构。)
+- Q: 这一刀要不要新增可验证 chunk 写入的读接口？ → 新增 BrainEngine::get_chunks_for_page(slug)，并给 InMemoryEngine 实现 (用途：TDD 能断言 import_one_path 后确实写入 chunks；后续 retrieval 也需要该基础读接口。默认 trait 实现仍返回 Unsupported，避免提前承诺复杂 query/vector API。)
+- Q: import_one_path 返回值要不要暴露 chunks 数量？ → 新增 chunks_upserted: usize 到 ImportOnePathResult (sync 层可汇总 chunk 写入量；TDD 可断言 result.chunks_upserted 与 get_chunks_for_page()；暂不引入更复杂 ImportStats。)
+- Q: upsert_chunks 失败时 import_one_path 应该怎么处理？ → upsert_chunks() 失败则 import_one_path() 返回错误，不吞掉失败 (put_page 和 upsert_chunks 都是主链路；chunk 写入失败会导致页面不可搜索，应交给 sync failures 记录并重试。add_tag 保持 best-effort。暂不做 rollback，事务层后续单独设计。)
+- Q: grill 是否停止并进入 TDD 实施？ → 停止 grill，开始 TDD 实施 (先写 import_markdown_upserts_chunks_from_compiled_truth 红灯测试，然后补 get_chunks_for_page、chunk_text→ChunkInput→upsert_chunks、chunks_upserted。)
 <!-- ROADMAP_SECTION_END -->
 
 <!-- ⚠️ ROADMAP_SECTION_START -->
@@ -43,17 +35,16 @@
 ├── [x][Y+] 1-1. Phase 0: 路线图与清单 — 品牌迁移/目录规范/Plans清理
 ├── [x][Y+] 1-2. Phase 1: Core Storage Parity — Page CRUD/InMemory/PostgreSQL/libsql 合约闭合
 ├── [ ][X+] 1-3. Phase 2: Config/Bootstrap/Package Entrypoint — 配置发现/init/doctor/storage/schema 命令迁移
-└── [~][Y+] 1-4. Phase 6: Sources/Ingestion/Search/Retrieval — 源管理/导入/捕获/提取/同步/搜索/嵌入
-    └── [~][Y+] 1-4-1. Sources 管理: CRUD API + Import/Clone/Capture/Extraction
+└── [x][Y+] 1-4. Phase 6: Sources/Ingestion/Search/Retrieval — 源管理/导入/捕获/提取/同步/搜索/嵌入
+    └── [x][Y+] 1-4-1. Sources 管理: CRUD API + Import/Clone/Capture/Extraction
 ```
 
-### 🔨 当前施工: 1-4-1-7. Chunking & Embedding Pipeline: CJK counting, recursive chunker, tree-sitter, edge extraction, transaction orchestration, embedding gateway — #107-#111
-**Status:** `in_progress` | **Mode:** `exploit`
+### 🔨 当前施工: 1. ZBrain TS -> Rust 迁移路线图
+**Status:** `in_progress` | **Mode:** `explore`
 
 **子节点:**
-- [x] 1-4-1-7-1. #107: CJK word counting module + recursive text chunker
-- [x] 1-4-1-7-2. #108: Tree-sitter code semantic chunker
-- [x] 1-4-1-7-3. #109: Edge extraction + symbol resolution + qualified names
-- [ ] 1-4-1-7-4. #110: Transaction write orchestration
-- [ ] 1-4-1-7-5. #111: Embedding gateway + batch API + context retrieval
+- [x] 1-1. Phase 0: 路线图与清单 — 品牌迁移/目录规范/Plans清理
+- [x] 1-2. Phase 1: Core Storage Parity — Page CRUD/InMemory/PostgreSQL/libsql 合约闭合
+- [ ] 1-3. Phase 2: Config/Bootstrap/Package Entrypoint — 配置发现/init/doctor/storage/schema 命令迁移
+- [x] 1-4. Phase 6: Sources/Ingestion/Search/Retrieval — 源管理/导入/捕获/提取/同步/搜索/嵌入
 <!-- ⚠️ ROADMAP_SECTION_END -->

@@ -51,7 +51,7 @@
     "1-4": {
       "id": "1-4",
       "label": "Phase 6: Sources/Ingestion/Search/Retrieval — 源管理/导入/捕获/提取/同步/搜索/嵌入",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1",
       "children": [
@@ -63,7 +63,7 @@
     "1-4-1": {
       "id": "1-4-1",
       "label": "Sources 管理: CRUD API + Import/Clone/Capture/Extraction",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-4",
       "children": [
@@ -73,7 +73,8 @@
         "1-4-1-4",
         "1-4-1-5",
         "1-4-1-6",
-        "1-4-1-7"
+        "1-4-1-7",
+        "1-4-1-8"
       ],
       "decisions": [],
       "notes": ""
@@ -266,7 +267,7 @@
     "1-4-1-7": {
       "id": "1-4-1-7",
       "label": "Chunking & Embedding Pipeline: CJK counting, recursive chunker, tree-sitter, edge extraction, transaction orchestration, embedding gateway — #107-#111",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-4-1",
       "children": [
@@ -274,9 +275,16 @@
         "1-4-1-7-2",
         "1-4-1-7-3",
         "1-4-1-7-4",
-        "1-4-1-7-5"
+        "1-4-1-7-5",
+        "1-4-1-7-6"
       ],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "下一刀范围是什么？",
+          "answer": "只做 Markdown sync → parse_markdown compiled_truth → chunk_text → BrainEngine::upsert_chunks，并提供 get_chunks_for_page 读接口；ImportOnePathResult 返回 chunks_upserted；upsert_chunks 失败则 import_one_path 返回错误。",
+          "note": "来自 grill 后的确认范围；不引入 embedding provider，不处理代码文件，不做 TS cleanup。"
+        }
+      ],
       "notes": ""
     },
     "1-4-1-7-1": {
@@ -354,11 +362,77 @@
       "children": [],
       "decisions": [],
       "notes": ""
+    },
+    "1-4-1-8": {
+      "id": "1-4-1-8",
+      "label": "集成 Chunking & Embedding 到 Sync 管道：让 sync 产生的页面可被语义搜索",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-4-1",
+      "children": [],
+      "decisions": [
+        {
+          "q": "下一刀做 TS 清理还是继续功能开发？",
+          "answer": "选择选项2：继续功能开发，优先集成 Chunking & Embedding 到 Sync 管道",
+          "note": "理由：当前 sync 可写 page/tag，但还不能产生 searchable chunks；#110/#111 的基础设施需要接入 sync 才能释放语义搜索价值。"
+        },
+        {
+          "q": "下一刀最小闭环范围是什么？",
+          "answer": "先做 Markdown sync → chunk_text → upsert_chunks，不接真实 embedding",
+          "note": "完成定义：import_one_path(markdown) 在 put_page 后对 compiled truth/body 做 chunking，转成 ChunkInput，并调用 engine.upsert_chunks(slug, chunks)。暂不接 HTTP embedding、CLI embedding 参数、code chunking、vector search 或 storage schema 深化。"
+        },
+        {
+          "q": "chunk 的来源文本应该用哪一份？",
+          "answer": "用 parse_markdown 后写入 page 的正文/body 作为 chunk 源",
+          "note": "chunk 与最终 put_page 的内容保持一致：搜索命中的 chunk 应能回到页面中真实保存的内容。本刀暂不做 title/tags/source path 上下文包装。"
+        },
+        {
+          "q": "这一刀要不要新增可验证 chunk 写入的读接口？",
+          "answer": "新增 get_chunks_for_page(slug) trait 方法，并给 InMemoryEngine 实现",
+          "note": "用途：TDD 能断言 import_one_path() 后确实产生 chunks；后续 retrieval 也需要从 page 取 chunks。默认 trait 实现返回 Unsupported，先不设计复杂 query/vector API。"
+        },
+        {
+          "q": "Markdown 第一刀 chunk metadata 写到什么程度？",
+          "answer": "只填稳定必需字段：chunk_index、chunk_text、chunk_source=CompiledTruth、token_count；其余字段留空",
+          "note": "chunk_index 来自 TextChunk.index；chunk_text 来自 TextChunk.text；token_count 用 CJK-aware word count；embedding=None；code metadata 不在 Markdown 第一刀中虚构。"
+        },
+        {
+          "q": "这一刀要不要新增可验证 chunk 写入的读接口？",
+          "answer": "新增 BrainEngine::get_chunks_for_page(slug)，并给 InMemoryEngine 实现",
+          "note": "用途：TDD 能断言 import_one_path 后确实写入 chunks；后续 retrieval 也需要该基础读接口。默认 trait 实现仍返回 Unsupported，避免提前承诺复杂 query/vector API。"
+        },
+        {
+          "q": "import_one_path 返回值要不要暴露 chunks 数量？",
+          "answer": "新增 chunks_upserted: usize 到 ImportOnePathResult",
+          "note": "sync 层可汇总 chunk 写入量；TDD 可断言 result.chunks_upserted 与 get_chunks_for_page()；暂不引入更复杂 ImportStats。"
+        },
+        {
+          "q": "upsert_chunks 失败时 import_one_path 应该怎么处理？",
+          "answer": "upsert_chunks() 失败则 import_one_path() 返回错误，不吞掉失败",
+          "note": "put_page 和 upsert_chunks 都是主链路；chunk 写入失败会导致页面不可搜索，应交给 sync failures 记录并重试。add_tag 保持 best-effort。暂不做 rollback，事务层后续单独设计。"
+        },
+        {
+          "q": "grill 是否停止并进入 TDD 实施？",
+          "answer": "停止 grill，开始 TDD 实施",
+          "note": "先写 import_markdown_upserts_chunks_from_compiled_truth 红灯测试，然后补 get_chunks_for_page、chunk_text→ChunkInput→upsert_chunks、chunks_upserted。"
+        }
+      ],
+      "notes": "Markdown sync now chunks parse_markdown compiled_truth, calls upsert_chunks, exposes chunks_upserted, and adds get_chunks_for_page for verification. Targeted tests passed: cargo test -p zbrain-core sync::import --lib; cargo test -p zbrain-core upsert_chunks --lib."
+    },
+    "1-4-1-7-6": {
+      "id": "1-4-1-7-6",
+      "label": "Sync pipeline Markdown chunk upsert integration",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-4-1-7",
+      "children": [],
+      "decisions": [],
+      "notes": "Implemented Markdown sync chunk upsert integration: import_one_path now chunks parsed compiled_truth via chunk_text, upserts chunks with stable metadata/token_count, returns chunks_upserted, exposes BrainEngine::get_chunks_for_page for verification, and propagates upsert_chunks errors."
     }
   },
   "metadata": {
     "created": "2026-07-01 20:28:48",
-    "updated": "2026-07-02 16:45:00",
+    "updated": "2026-07-02 19:10:46",
     "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_ROADMAP.md"
   },
   "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_ROADMAP.md"

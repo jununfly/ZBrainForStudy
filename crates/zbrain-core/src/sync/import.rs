@@ -4,9 +4,11 @@
 //! one file from disk into the knowledge base via the engine.
 
 use crate::capture::{capture_content, CaptureOpts};
-use crate::engine::{BrainEngine, GetPageOpts, PageInput};
+use crate::chunkers::chunk_text;
+use crate::cjk::count_cjk_aware_words;
+use crate::engine::{BrainEngine, PageInput};
+use crate::import::{ChunkInput, ChunkSource};
 use crate::markdown::parse_markdown;
-use std::path::Path;
 use std::sync::Arc;
 
 /// Error type for import operations.
@@ -46,6 +48,8 @@ pub struct ImportOnePathResult {
     pub title: String,
     /// Whether the content hash changed (i.e., this was an actual update).
     pub content_changed: bool,
+    /// Number of markdown body chunks upserted for this page.
+    pub chunks_upserted: usize,
 }
 
 /// Import a single file into the knowledge base.
@@ -109,7 +113,7 @@ pub async fn import_one_path(
     let page_input = PageInput {
         page_type,
         title: title.clone(),
-        compiled_truth: parsed.compiled_truth,
+        compiled_truth: parsed.compiled_truth.clone(),
         timeline,
         frontmatter: Some(capture_result.frontmatter),
         content_hash: Some(capture_result.content_hash.clone()),
@@ -131,24 +135,49 @@ pub async fn import_one_path(
         .put_page(&parsed.slug, Some(&opts.source_id), &page_input)
         .await?;
 
+    let chunks = chunk_text(&parsed.compiled_truth, None);
+    let chunk_inputs: Vec<ChunkInput> = chunks
+        .into_iter()
+        .map(|chunk| ChunkInput {
+            chunk_index: chunk.index,
+            token_count: Some(count_cjk_aware_words(&chunk.text)),
+            chunk_text: chunk.text,
+            chunk_source: ChunkSource::CompiledTruth,
+            embedding: None,
+            language: None,
+            symbol_name: None,
+            symbol_type: None,
+            start_line: None,
+            end_line: None,
+            parent_symbol_path: vec![],
+            symbol_name_qualified: None,
+        })
+        .collect();
+    engine.upsert_chunks(&parsed.slug, &chunk_inputs).await?;
+    let chunks_upserted = chunk_inputs.len();
+
     // 5. Add tags
     for tag in &parsed.tags {
         // Best-effort: don't fail the import if add_tag fails
-        let _ = engine.add_tag(&parsed.slug, tag, Some(&opts.source_id)).await;
+        let _ = engine
+            .add_tag(&parsed.slug, tag, Some(&opts.source_id))
+            .await;
     }
 
     Ok(ImportOnePathResult {
         slug: parsed.slug,
         title,
         content_changed: true,
+        chunks_upserted,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::InMemoryEngine;
+    use crate::engine::{GetPageOpts, InMemoryEngine};
     use std::io::Write;
+    use std::path::Path;
 
     async fn setup() -> (Arc<dyn BrainEngine>, tempfile::TempDir) {
         let engine = Arc::new(InMemoryEngine::default()) as Arc<dyn BrainEngine>;
@@ -216,6 +245,78 @@ mod tests {
         assert_eq!(page.title, "Hello World");
         assert_eq!(page.source_id, "test-source");
         assert!(page.compiled_truth.contains("This is a test file"));
+    }
+
+    #[tokio::test]
+    async fn import_markdown_file_upserts_chunks_from_parsed_body() {
+        let (engine, dir) = setup().await;
+
+        write_file(
+            dir.path(),
+            "chunked.md",
+            "# Chunked Doc\n\nBody text should become a chunk.\n\n<!-- timeline -->\n\n2024: Timeline stays out of chunks.\n",
+        );
+
+        let opts = ImportOnePathOpts {
+            source_id: "test-source".to_string(),
+            abs_path: dir.path().join("chunked.md"),
+            rel_path: Path::new("chunked.md").to_path_buf(),
+            chunker_version: Some(1),
+            path_prefixes: None,
+        };
+
+        let result = import_one_path(&engine, &opts).await.unwrap();
+
+        assert_eq!(result.chunks_upserted, 1);
+
+        let chunks = engine.get_chunks_for_page(&result.slug).await.unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].chunk_index, 0);
+        assert!(matches!(
+            chunks[0].chunk_source,
+            crate::import::ChunkSource::CompiledTruth
+        ));
+        assert!(chunks[0]
+            .chunk_text
+            .contains("Body text should become a chunk"));
+        assert!(!chunks[0]
+            .chunk_text
+            .contains("Timeline stays out of chunks"));
+        assert!(chunks[0].token_count.unwrap_or_default() > 0);
+    }
+
+    #[tokio::test]
+    async fn import_fails_when_chunk_upsert_fails() {
+        let engine = InMemoryEngine::new();
+        engine.fail_chunk_upserts_for_tests(crate::error::StructuredError::engine(
+            "chunk write failed",
+        ));
+        let engine = Arc::new(engine) as Arc<dyn BrainEngine>;
+        let dir = tempfile::TempDir::new().unwrap();
+
+        engine
+            .create_source(&crate::engine::CreateSourceInput {
+                id: "test-source".to_string(),
+                name: "Test".to_string(),
+                config: None,
+            })
+            .await
+            .unwrap();
+
+        write_file(dir.path(), "fails.md", "# Fails\n\nBody text.\n");
+
+        let opts = ImportOnePathOpts {
+            source_id: "test-source".to_string(),
+            abs_path: dir.path().join("fails.md"),
+            rel_path: Path::new("fails.md").to_path_buf(),
+            chunker_version: Some(1),
+            path_prefixes: None,
+        };
+
+        let err = import_one_path(&engine, &opts).await.unwrap_err();
+
+        assert!(matches!(err, ImportError::Engine(_)));
+        assert!(err.to_string().contains("chunk write failed"));
     }
 
     #[tokio::test]

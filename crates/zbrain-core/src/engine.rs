@@ -491,6 +491,17 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
         ))
     }
 
+    /// Return all stored chunks for a page slug in chunk-index order.
+    /// Default: returns `Err(`Unsupported`)`.
+    async fn get_chunks_for_page(&self, slug: &str) -> crate::Result<Vec<crate::import::ChunkInput>> {
+        let _ = slug;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "get_chunks_for_page not yet implemented for this engine",
+        ))
+    }
+
     /// Add code edges. Mirrors TS `addCodeEdges`.
     /// Default: returns `Err(`Unsupported`)`.
     async fn add_code_edges(
@@ -757,6 +768,7 @@ pub struct InMemoryEngine {
     sources: Mutex<Vec<SourceRow>>,
     // #110: chunk storage (in-memory, for testing)
     chunk_store: Mutex<std::collections::HashMap<String, Vec<crate::import::ChunkInput>>>,
+    chunk_upsert_error: Mutex<Option<crate::error::StructuredError>>,
 }
 
 // ─── Tag helpers ─────────────────────────────────────────────────────────────
@@ -801,6 +813,7 @@ impl InMemoryEngine {
             sources: Mutex::new(Vec::new()),
             // #110: chunk storage (in-memory, for testing)
             chunk_store: Mutex::new(std::collections::HashMap::new()),
+            chunk_upsert_error: Mutex::new(None),
         }
     }
 
@@ -816,6 +829,14 @@ impl InMemoryEngine {
             .lock()
             .expect("InMemoryEngine sources mutex poisoned")
             .push(source);
+    }
+
+    /// Configure chunk upserts to fail in tests.
+    pub fn fail_chunk_upserts_for_tests(&self, error: crate::error::StructuredError) {
+        *self
+            .chunk_upsert_error
+            .lock()
+            .expect("InMemoryEngine chunk_upsert_error mutex poisoned") = Some(error);
     }
 }
 
@@ -1922,6 +1943,15 @@ impl BrainEngine for InMemoryEngine {
         slug: &str,
         chunks: &[crate::import::ChunkInput],
     ) -> crate::Result<()> {
+        if let Some(error) = self
+            .chunk_upsert_error
+            .lock()
+            .expect("InMemoryEngine chunk_upsert_error mutex poisoned")
+            .clone()
+        {
+            return Err(error);
+        }
+
         let mut store = self.chunk_store
             .lock()
             .expect("InMemoryEngine chunk_store mutex poisoned");
@@ -1938,6 +1968,15 @@ impl BrainEngine for InMemoryEngine {
             .expect("InMemoryEngine chunk_store mutex poisoned");
         store.remove(slug);
         Ok(())
+    }
+
+    async fn get_chunks_for_page(&self, slug: &str) -> crate::Result<Vec<crate::import::ChunkInput>> {
+        let store = self.chunk_store
+            .lock()
+            .expect("InMemoryEngine chunk_store mutex poisoned");
+        let mut chunks = store.get(slug).cloned().unwrap_or_default();
+        chunks.sort_by_key(|chunk| chunk.chunk_index);
+        Ok(chunks)
     }
 
     async fn add_code_edges(
