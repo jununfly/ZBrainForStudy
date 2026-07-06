@@ -411,7 +411,13 @@ pub enum ConfigAction {
     Get { key: String },
 
     /// Set a config value
-    Set { key: String, value: String },
+    Set {
+        key: String,
+        value: String,
+        /// Bypass the unknown-key check and write the value anyway
+        #[arg(long)]
+        force: bool,
+    },
 
     /// Unset a config value
     Unset {
@@ -1907,7 +1913,12 @@ async fn run_config_command(args: ConfigArgs, config_path: Option<&Path>) -> any
                 None => eprintln!("Config key not found: {}", key),
             }
         }
-        ConfigAction::Set { key, value } => {
+        ConfigAction::Set { key, value, force } => {
+            if !force && !is_known_config_key(&key) {
+                anyhow::bail!(
+                    "Unknown config key: {key}. Use --force to set it anyway."
+                );
+            }
             let mut config = config::load_config(config_path)?;
             set_config_value(&mut config, &key, value)?;
             // Default to user config directory if no explicit path
@@ -2003,6 +2014,38 @@ fn get_config_value(key: &str, config: &serde_yaml::Value) -> Option<String> {
         serde_yaml::Value::Bool(b) => Some(b.to_string()),
         _ => Some(format!("{:?}", current)),
     }
+}
+
+/// Whether a dot-separated key path corresponds to a known field in the
+/// strongly-typed `Config` schema. The default `Config` serialized to YAML is
+/// the authoritative whitelist: every typed path is materialized there.
+///
+/// `providers` is a free-form map keyed by provider name, so any
+/// `providers.<name>...` path is accepted.
+fn is_known_config_key(key: &str) -> bool {
+    let schema = match serde_yaml::to_value(config::Config::default()) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+
+    let mut current = &schema;
+    for (i, part) in key.split('.').enumerate() {
+        // First segment `providers` is a free-form provider map: accept any
+        // deeper path under it.
+        if i == 0 && part == "providers" {
+            return true;
+        }
+        match current {
+            serde_yaml::Value::Mapping(map) => {
+                match map.get(serde_yaml::Value::String(part.to_string())) {
+                    Some(next) => current = next,
+                    None => return false,
+                }
+            }
+            _ => return false,
+        }
+    }
+    true
 }
 
 /// Set a nested config value by dot-separated key path.
@@ -2282,9 +2325,91 @@ mod tests {
         assert!(matches!(
             cli.command,
             Commands::Config(args)
-            if matches!(&args.action, ConfigAction::Set { key, value }
+            if matches!(&args.action, ConfigAction::Set { key, value, .. }
                         if key == "database.url" && value == "sqlite://db")
         ));
+    }
+
+    #[tokio::test]
+    async fn config_set_known_key_succeeds_and_persists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("zbrain.yml");
+        config::write_config(&config::Config::default(), &config_path).unwrap();
+
+        let args = ConfigArgs {
+            action: ConfigAction::Set {
+                key: "database_url".to_string(),
+                value: "sqlite:///tmp/known.db".to_string(),
+                force: false,
+            },
+        };
+
+        run_config_command(args, Some(&config_path)).await.unwrap();
+
+        let written = config::load_config_from_path(&config_path).unwrap();
+        assert_eq!(written.database_url, "sqlite:///tmp/known.db");
+    }
+
+    #[tokio::test]
+    async fn config_set_unknown_key_with_force_writes_value() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("zbrain.yml");
+        config::write_config(&config::Config::default(), &config_path).unwrap();
+
+        let args = ConfigArgs {
+            action: ConfigAction::Set {
+                key: "custom_extra_key".to_string(),
+                value: "kept".to_string(),
+                force: true,
+            },
+        };
+
+        run_config_command(args, Some(&config_path)).await.unwrap();
+
+        let raw = std::fs::read_to_string(&config_path).unwrap();
+        assert!(
+            raw.contains("custom_extra_key"),
+            "--force must persist the forced key: {raw}"
+        );
+    }
+
+    #[tokio::test]
+    async fn config_set_unknown_key_without_force_is_rejected_without_writing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("zbrain.yml");
+        let seeded = config::Config::default();
+        config::write_config(&seeded, &config_path).unwrap();
+        let before = std::fs::read_to_string(&config_path).unwrap();
+
+        let args = ConfigArgs {
+            action: ConfigAction::Set {
+                key: "embeding.model".to_string(),
+                value: "oops".to_string(),
+                force: false,
+            },
+        };
+
+        let result = run_config_command(args, Some(&config_path)).await;
+        assert!(
+            result.is_err(),
+            "setting an unknown/typo key without --force must fail"
+        );
+        let after = std::fs::read_to_string(&config_path).unwrap();
+        assert_eq!(before, after, "rejected set must not modify the config file");
+    }
+
+    #[test]
+    fn is_known_config_key_accepts_schema_paths_and_rejects_typos() {
+        // Known scalar and nested schema paths.
+        assert!(is_known_config_key("database_url"));
+        assert!(is_known_config_key("embedding.model"));
+        assert!(is_known_config_key("embedding.enabled"));
+        // providers is a free-form map: any provider sub-key is allowed.
+        assert!(is_known_config_key("providers.openai.api_key"));
+        // Typos and stray fields are rejected.
+        assert!(!is_known_config_key("embeding.model"));
+        assert!(!is_known_config_key("database.url"));
+        assert!(!is_known_config_key("totally_unknown_key"));
     }
 
     #[test]

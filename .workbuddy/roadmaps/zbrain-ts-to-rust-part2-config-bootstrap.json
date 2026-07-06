@@ -345,12 +345,12 @@
     "1-2-2": {
       "id": "1-2-2",
       "label": "Enforce config set schema validation and unknown-key gating",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-2",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "Enforced config set schema validation. New is_known_config_key(key) uses the default Config serialized to YAML as the authoritative whitelist and walks the dot-path; providers.* is accepted as a free-form provider map. ConfigAction::Set gains a --force flag; unknown/typo keys are rejected with a non-zero result and the config file is left untouched, while --force bypasses the gate. Closes the silent stray-field bug (e.g. embeding.model). 4 new tests (is_known predicate, unknown reject no-write, --force writes, known key persists). Verified: cargo test -p zbrain-cli config_set --lib (4 passed), --lib (90 passed)."
     },
     "1-2-3": {
       "id": "1-2-3",
@@ -365,7 +365,7 @@
   },
   "metadata": {
     "created": "2026-07-02 21:39:54",
-    "updated": "2026-07-06 13:17:27",
+    "updated": "2026-07-06 13:28:55",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART2_CONFIG_BOOTSTRAP.md"
   }
 }

@@ -1,7 +1,7 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust-part2-config-bootstrap.json` | 最后更新: 2026-07-06 13:17:27
+> 数据文件: `zbrain-ts-to-rust-part2-config-bootstrap.json` | 最后更新: 2026-07-06 13:28:55
 
 [~][Y+] 1. ZBrain TS->Rust Part2: Config/Bootstrap/Package Entrypoint strict parity
 ├── [x][Y+] 1-1. init command strict TS flag parity
@@ -14,7 +14,7 @@
 │   └── [x][Y+] 1-1-7. Validate init existing-config and JSON output behavior
 ├── [~][Y+] 1-2. config command strict TS flag parity
 │   ├── [x][Y+] 1-2-1. Write config strict parity audit and test matrix
-│   ├── [ ][Y+] 1-2-2. Enforce config set schema validation and unknown-key gating
+│   ├── [x][Y+] 1-2-2. Enforce config set schema validation and unknown-key gating
 │   └── [ ][Y+] 1-2-3. Align config get not-found exit code and redaction semantics
 ├── [ ][Y+] 1-3. doctor command strict TS flag parity
 ├── [ ][Y+] 1-4. schema command strict TS flag parity
@@ -33,6 +33,6 @@
 
 **当前子树：**
 ├── [x][Y+] 1-2-1. Write config strict parity audit and test matrix
-├── [ ][Y+] 1-2-2. Enforce config set schema validation and unknown-key gating
+├── [x][Y+] 1-2-2. Enforce config set schema validation and unknown-key gating
 └── [ ][Y+] 1-2-3. Align config get not-found exit code and redaction semantics
 <!-- ROADMAP_SECTION_END -->
