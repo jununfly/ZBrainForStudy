@@ -1,13 +1,13 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust-part3-release-and-ts-retirement.json` | 最后更新: 2026-07-06 19:15:23
+> 数据文件: `zbrain-ts-to-rust-part3-release-and-ts-retirement.json` | 最后更新: 2026-07-06 20:09:49
 
 [~][X+] 1. ZBrain TS→Rust Part3: 发布链迁移 + 子系统补齐 + TS 入口退役
 ├── [ ][X+] 1-1. 发布基础设施迁移: 交叉编译多平台 Rust 二进制 + openclaw bundle-plugin 清单 serve/serve-mcp 语义对齐 + 二进制命名对齐
 ├── [ ][X+] 1-2. 子系统补齐(1-8 审计移交): MCP timeout (--timeout) + progress reporter (--quiet/--progress-json/--progress-interval)
 │   ├── [x][Y+] 1-2-1. MCP per-call timeout wiring (--timeout): 把 timeout 值接进 McpClient 的 http Client，消费已有 RemoteMcpError::Timeout 路由骨架
-│   ├── [ ][X+] 1-2-2. progress reporter (--quiet/--progress-json/--progress-interval): 迁 TS src/core/progress.ts 三态+interval 节流，横切 op 进度上报
+│   ├── [!][X+] 1-2-2. progress reporter (--quiet/--progress-json/--progress-interval): 迁 TS src/core/progress.ts 三态+interval 节流，横切 op 进度上报【BLOCKED: 需先有首个带 per-item tick 循环的消费者命令】
 │   └── [ ][X+] 1-2-3. local read-only wallclock timeout (--timeout 第二消费者): 迁 TS cli.ts:1125-1170 v0.41.6.0 特性——search 30s/sources-list 10s 的 connect+dispatch wallclock 超时 + exit 124；依赖 withTimeout/connectEngine-timeout 基础设施(Rust 未迁)
 ├── [ ][X+] 1-3. TS 入口整体退役: src/cli.ts + postinstall TS 兜底 + check-cli-executable.sh + src/commands 未迁命令(依赖发布链切 Rust 完成)
 └── [ ][X+] 1-4. search rerank + 分阶段归因子系统迁移(--explain): Rust query 现为硬编码关键字加权，需迁 rerank/boost/attribution stages (doctor reranker_health=UNMIGRATED_TS)

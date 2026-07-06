@@ -112,13 +112,29 @@
     },
     "1-2-2": {
       "id": "1-2-2",
-      "label": "progress reporter (--quiet/--progress-json/--progress-interval): 迁 TS src/core/progress.ts 三态+interval 节流，横切 op 进度上报",
-      "status": "pending",
+      "label": "progress reporter (--quiet/--progress-json/--progress-interval): 迁 TS src/core/progress.ts 三态+interval 节流，横切 op 进度上报【BLOCKED: 需先有首个带 per-item tick 循环的消费者命令】",
+      "status": "blocked",
       "mode": "explore",
       "parent": "1-2",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "Q1: Rust 侧 progress 消费者=0(explore坐实: operation.rs:339-354 CliOpts 预留但注释自陈无消费者;已迁 sync/capture/sources/doctor 均无 per-item tick 循环,只有阶段 eprintln+汇总 println;TS 20+消费者绝大多数未迁Rust)。1-2-2 本轮怎么走?",
+          "answer": "A: 本轮不独立迁 progress reporter,重框为'依赖首个真实消费者'的阻塞节点,不写代码。progress.ts 全部价值在 .tick()/.heartbeat() 被长跑循环调用时才兑现;现在迁=造3个死flag+490行无人调用渲染码,正是 operation.rs:339 注释亲自预警、1-3(--offline)/1-8(timeout)已踩的坑。等首个带 per-item 循环命令(sync逐条导入/embed/extract)落地时 progress reporter 同批垂直切片迁入,那时才有真实 tick 调用点驱动 TDD。",
+          "note": "B 现在迁完整490行+三flag违反YAGNI+fail-loud,三flag立即变--offline式哑flag,测试只能测渲染shape非真实行为(zj-tdd禁止horizontal slicing);C 迁最小骨架仍是死flag且给'已支持'错觉更糟"
+        },
+        {
+          "q": "Q2: 1-2-2 重框成阻塞节点具体怎么落盘?(父子状态同步:blocked/pending 都非completed都正确压住1-2和根为in_progress;区别在语义诚实度+focus是否选中)",
+          "answer": "A: 状态改 blocked + label 补阻塞条件 + notes 写清依赖对象,但现在不建消费者节点。progress reporter 真实消费者(sync逐条导入循环/embed迁移/extract迁移)目前 roadmap 里都无对应节点,属尚未展开的迁移工作;现在凭空建再 addBlockedBy 挂过去=投机式建模,违反'发现偏差才拆sub-node'就近原则。做法:1-2-2 标 blocked,label/notes 明确阻塞于首个带 per-item 循环命令迁移(sync per-item/embed/extract 择一先落地),等那消费者真要迁时再建其节点并 addBlockedBy 回连。focus 从此跳过 1-2-2,本轮焦点让给 1-2-3。",
+          "note": "B 现在建消费者节点(embed/extract/sync-per-item)再挂 addBlockedBy: 范围/优先级没grill过=explore空壳占位污染树,真迁时还得重grill;C 保持pending只记notes: focus仍当待施工叶子选中,掩盖被外部阻塞动不了的真相,不诚实"
+        },
+        {
+          "q": "Q3: operation.rs:339 FUTURE(progress-reporter) 注释要不要动?(注释已自陈三字段无消费者/指向progress.ts/点名加了是死flag/引用 global-flag-gap-audit.md roadmap 1-8)",
+          "answer": "A: 只更新引用指向,把(roadmap 1-8)改成(roadmap 1-2-2, blocked on first per-item consumer),其余不动。注释技术判断(无消费者/加了是死flag)依然完全正确,1-8只是当时做审计的节点,该缺口正式追踪节点现已是1-2-2。改一处引用让代码锚点指向当前canonical追踪点,读代码者能顺藤摸到blocked原因。纯文档一致性,零行为改动零测试影响。",
+          "note": "B 注释完全不动: (roadmap 1-8)过时引用,1-8是已关闭审计节点,顺着找到已完成审计而非缺口现归谁追踪,轻微误导;C 扩写把探查结论塞源码注释: 探查结论属roadmap notes职责,塞源码会随消费者迁入腐坏,违反就近最小原则"
+        }
+      ],
+      "notes": "BLOCKED(explore结论,本轮不写代码)。explore 坐实 Rust 侧 progress 真实消费者=0: operation.rs:339-354 已有预留 CliOpts{quiet,progress_json,progress_interval} 但注释自陈无消费者、加 flag=死flag;已迁 sync/capture/sources/doctor 均无 per-item tick 循环(仅阶段 eprintln+汇总 println);TS 20+消费者(sync逐条/embed/extract/reindex...)绝大多数未迁Rust。progress.ts(490行:auto/human/json/quiet四态+interval/items双闸节流+NDJSON schema+进程级信号协调+child+heartbeat+EPIPE防御)全部价值只在 .tick()/.heartbeat() 被长跑循环调用时兑现。决策(Q1-A):不独立迁,等首个带 per-item 循环命令(sync per-item导入/embed迁移/extract迁移 择一先落地)时 progress reporter 同批垂直切片迁入,那时才有真实 tick 调用点驱动 TDD。落盘(Q2-A):标 blocked 不建投机消费者节点,等消费者真要迁时再建其节点并 addBlockedBy 回连 1-2-2;focus 从此跳过。代码侧(Q3-A):operation.rs FUTURE(progress-reporter) 注释引用由 roadmap 1-8 改指 1-2-2。"
     },
     "1-2-3": {
       "id": "1-2-3",
@@ -133,7 +149,7 @@
   },
   "metadata": {
     "created": "2026-07-06 17:51:37",
-    "updated": "2026-07-06 19:15:23",
+    "updated": "2026-07-06 20:09:49",
     "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART3_RELEASE_AND_TS_RETIREMENT.md"
   }
 }

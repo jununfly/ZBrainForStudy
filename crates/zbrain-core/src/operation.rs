@@ -342,7 +342,10 @@ pub struct AuthInfo {
 /// reads them. Wiring the flags to clap is deferred until the progress-reporter
 /// subsystem (TS `src/core/progress.ts`: human/json/quiet three-state +
 /// interval throttle) is ported. Adding the flags now would create dead
-/// no-op flags. See docs/plans/2026-07-06-global-flag-gap-audit.md (roadmap 1-8).
+/// no-op flags. Tracked by roadmap 1-2-2 (blocked on the first per-item
+/// consumer: sync per-item import / embed / extract migration — whichever
+/// lands first ports the progress reporter with it). Original audit:
+/// docs/plans/2026-07-06-global-flag-gap-audit.md.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CliOpts {
     /// Suppress human-friendly progress output.
