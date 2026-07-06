@@ -104,11 +104,37 @@
     "1-3": {
       "id": "1-3",
       "label": "doctor command strict TS flag parity",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "Q1: doctor parity 尺度 - 复刻70+checks vs 行为契约parity",
+          "answer": "A: 行为契约 parity(退出码语义/--json schema/health_score), 检查项维持现有4类不硬凑; 且未复刻的 checks 必须显式标记(不静默省略), 避免后续 agent 误判 doctor 已完整迁移",
+          "note": "TS doctor 已删(5d5b404, 原6035行), 70+checks 多依赖未迁移子系统(embedding/reranker/federation/schema packs)复刻只能造假stub。真正 parity 是脚本/CI 消费契约: 退出码(warn不影响, 仅fail->exit1)、--json(schema_version+status+health_score+checks[])、扣分(fail-20/warn-5 clamp0)。用户追加约束: 未复刻 checks 要 fail/报错留痕。"
+        },
+        {
+          "q": "Q2: 未复刻 checks 留痕机制与状态",
+          "answer": "A: 新增 not-implemented 态显式列出未迁移 check + 代码侧常量 UNMIGRATED_TS_DOCTOR_CHECKS + 测试锚点; 不影响退出码/health_score",
+          "note": "留痕/防漏/可追踪 而非让 doctor 永久红。not-implemented 在输出可见, agent 一看便知；代码常量+测试是给后续 agent 最硬留痕——迁移子系统时把名字挪走, 测试强制它出现在真实 check, 漏迁则测试红。若报 fail 会污染退出码(warn不影响/fail->exit1), 使 CI 永久红无法区分真故障, 报错信号太吵等于没信号。"
+        },
+        {
+          "q": "Q3: UNMIGRATED_TS_DOCTOR_CHECKS 清单粒度",
+          "answer": "A: 按子系统聚合 ~8-12 条粗粒度条目, 每条标 covers N sub-checks; 完整 70+ 明细留 audit 文档",
+          "note": "子系统粒度与工作单元对齐(迁移embedding就挪embedding_health一条)；避免70行噪音, 输出可读；audit 附完整明细供追溯。候选: embedding_health, sync_freshness, reranker_health, search_mode, federation_health, schema_packs, resolver_health, skill_conformance, frontmatter_integrity, eval_drift, brain_score, takes_weight_grid。"
+        },
+        {
+          "q": "Q4: --offline flag 语义(死flag)",
+          "answer": "对齐TS: 移除 --offline。TS doctor 从无此 flag,是 Rust 自己发明的死 flag(声明但被 _args 忽略)。TS 网络检查始终运行、失败降级为 warn、非致命(CI/offline 保持绿色),无需 --offline 开关。移除 flag,网络检查维持 warn-on-failure 非致命语义即已对齐 TS。",
+          "note": "TS 真实 flag 集: --json/--fast/--fix/--dry-run/--locks/--content-audit/--index-audit/--remediation-plan/--remediate,无 --offline。src/commands/doctor.ts@5d5b404~1 line 3449/3496-3498 证据:network non-fatal,doctor stays green offline。此决策重构整刀重心 -> Rust doctor 真正缺的是 --json 契约,不是 --offline。"
+        },
+        {
+          "q": "Q5: --json check[] 逐字段对齐尺度",
+          "answer": "A: 信封逐字段对齐 TS(schema_version:2/status/health_score/checks[]); checks[] 每条用 {name,status,message} 三字段(TS 核心必填子集,details/issues/remediation 先不发); check 内容维持 Rust 现有4类 + 按 Q2 把 UNMIGRATED_TS_DOCTOR_CHECKS(~8-12条)以 not-implemented 态列入 checks[],可见留痕、不计入 health_score/退出码。",
+          "note": "CI/脚本消费的是信封契约+status 判别字段, 逐字段对齐这层即真 parity。status 映射: hasFail->unhealthy, hasWarn->warnings, else healthy。health_score: 100 - fail*20 - warn*5, clamp 0(not-implemented 不扣分)。TS 证据 computeDoctorReport/outputResults @5d5b404~1 line 80-92/5368-5385。"
+        }
+      ],
       "notes": ""
     },
     "1-4": {
@@ -365,7 +391,7 @@
   },
   "metadata": {
     "created": "2026-07-02 21:39:54",
-    "updated": "2026-07-06 14:40:58",
+    "updated": "2026-07-06 15:25:48",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART2_CONFIG_BOOTSTRAP.md"
   }
 }

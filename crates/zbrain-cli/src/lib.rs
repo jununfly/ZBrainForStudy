@@ -21,6 +21,23 @@ enum CheckStatus {
     Ok,
     Warn,
     Fail,
+    /// A TS doctor check not yet migrated to Rust. Surfaced for traceability
+    /// (Q2) but excluded from health_score / status / exit code so it neither
+    /// poisons CI nor lets a later agent mistake doctor for fully migrated.
+    NotImplemented,
+}
+
+impl CheckStatus {
+    /// Wire string used in the `--json` report, aligned with TS check statuses
+    /// (`ok` / `warn` / `fail`) plus the Rust-only `not-implemented` trace.
+    fn as_str(self) -> &'static str {
+        match self {
+            CheckStatus::Ok => "ok",
+            CheckStatus::Warn => "warn",
+            CheckStatus::Fail => "fail",
+            CheckStatus::NotImplemented => "not-implemented",
+        }
+    }
 }
 
 /// A single doctor check result
@@ -50,6 +67,80 @@ impl DoctorCheck {
     fn fail(name: &str, message: &str) -> Self {
         Self::new(name, CheckStatus::Fail, message)
     }
+
+    fn not_implemented(name: &str, message: &str) -> Self {
+        Self::new(name, CheckStatus::NotImplemented, message)
+    }
+}
+
+/// Subsystem-aggregated TS doctor checks not yet migrated to Rust (Q3).
+/// Each entry is `(name, covers)` where `covers` names the cluster of TS
+/// sub-checks it stands in for. Surfaced as `not-implemented` in the doctor
+/// report. The full 70+ sub-check detail lives in the parity audit doc.
+///
+/// Hard trace: migrating a subsystem means moving its entry OUT of here into a
+/// real check — the anchor test guards against silent removal.
+const UNMIGRATED_TS_DOCTOR_CHECKS: &[(&str, &str)] = &[
+    ("embedding_health", "embedding provider reachability, embedding column, coverage backfill"),
+    ("sync_freshness", "per-source lag, unacked parse failures, federated staleness"),
+    ("reranker_health", "reranker provider / recipe check"),
+    ("search_mode", "search modes overrides, mode drift"),
+    ("federation_health", "federated source sync, mount reachability"),
+    ("schema_packs", "schema pack presence / drift"),
+    ("resolver_health", "resolver conformance, check-resolvable mirror"),
+    ("skill_conformance", "skillpack-check, RESOLVER.md conformance"),
+    ("frontmatter_integrity", "bounded frontmatter scan, partial-state surfacing"),
+    ("eval_drift", "whoknows eval regression, calibration profile staleness"),
+    ("brain_score", "5-component brain-health composite"),
+    ("takes_weight_grid", "takes.weight 0.05 grid integrity"),
+];
+
+/// Composite health score (0-100), mirroring TS `outputResults`:
+/// `score = 100 - fail*20 - warn*5`, clamped to a `>= 0` floor.
+/// `Ok` checks contribute nothing; the score never drops below 0.
+fn doctor_health_score(checks: &[DoctorCheck]) -> i64 {
+    let mut score: i64 = 100;
+    for check in checks {
+        match check.status {
+            CheckStatus::Fail => score -= 20,
+            CheckStatus::Warn => score -= 5,
+            CheckStatus::Ok | CheckStatus::NotImplemented => {}
+        }
+    }
+    score.max(0)
+}
+
+/// Headline status, mirroring TS `computeDoctorReport`:
+/// any `Fail` -> "unhealthy"; else any `Warn` -> "warnings"; else "healthy".
+fn doctor_status(checks: &[DoctorCheck]) -> &'static str {
+    let has_fail = checks.iter().any(|c| c.status == CheckStatus::Fail);
+    let has_warn = checks.iter().any(|c| c.status == CheckStatus::Warn);
+    if has_fail {
+        "unhealthy"
+    } else if has_warn {
+        "warnings"
+    } else {
+        "healthy"
+    }
+}
+
+/// Build the structured `--json` doctor report, aligned field-for-field with
+/// TS `computeDoctorReport`: `{schema_version:2, status, health_score, checks[]}`,
+/// where each check entry is the TS mandatory core subset `{name, status, message}`.
+fn doctor_json_report(checks: &[DoctorCheck]) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 2,
+        "status": doctor_status(checks),
+        "health_score": doctor_health_score(checks),
+        "checks": checks
+            .iter()
+            .map(|c| serde_json::json!({
+                "name": c.name,
+                "status": c.status.as_str(),
+                "message": c.message,
+            }))
+            .collect::<Vec<_>>(),
+    })
 }
 
 /// Static crate name.
@@ -389,9 +480,9 @@ pub struct InitArgs {
 /// Arguments for `zbrain doctor` command.
 #[derive(Debug, Parser)]
 pub struct DoctorArgs {
-    /// Skip network connectivity checks
+    /// Emit a structured JSON report instead of human-readable output.
     #[arg(long)]
-    pub offline: bool,
+    pub json: bool,
 }
 
 /// Arguments for `zbrain config` command and its subcommands.
@@ -1761,9 +1852,11 @@ async fn run_init_migrate_only(args: &InitArgs, config_file: &Path) -> anyhow::R
 /// - Network connectivity check (for providers)
 ///
 /// Returns exit code 0 if all checks pass, non-zero otherwise.
-async fn run_doctor_command(_args: DoctorArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
-    println!("Running ZBrain doctor...");
-    println!();
+async fn run_doctor_command(args: DoctorArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+    if !args.json {
+        println!("Running ZBrain doctor...");
+        println!();
+    }
 
     let mut checks: Vec<DoctorCheck> = Vec::new();
 
@@ -1829,16 +1922,38 @@ async fn run_doctor_command(_args: DoctorArgs, config_path: Option<&Path>) -> an
         }
     }
 
-    // Print results
+    // 5. Traceability: surface TS doctor checks not yet migrated to Rust (Q2).
+    // These are `not-implemented` — visible but excluded from health_score /
+    // status / exit code, so a later agent cannot mistake doctor for complete.
+    for (name, covers) in UNMIGRATED_TS_DOCTOR_CHECKS {
+        checks.push(DoctorCheck::not_implemented(
+            name,
+            &format!("Not migrated from TS doctor (covers: {covers})"),
+        ));
+    }
+
+    // --json: emit the structured envelope and nothing else. Exit code is
+    // still driven by fail count (warn / not-implemented never exit 1).
+    if args.json {
+        println!("{}", serde_json::to_string(&doctor_json_report(&checks))?);
+        if checks.iter().any(|c| c.status == CheckStatus::Fail) {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
+    // Human-readable output.
     let mut pass_count = 0;
     let mut warn_count = 0;
     let mut fail_count = 0;
+    let mut na_count = 0;
 
     for check in &checks {
         let (status_icon, _status_label) = match check.status {
             CheckStatus::Ok => ("✅", "PASS"),
             CheckStatus::Warn => ("⚠️", "WARN"),
             CheckStatus::Fail => ("❌", "FAIL"),
+            CheckStatus::NotImplemented => ("🚧", "N/A"),
         };
 
         println!("{} {}: {}", status_icon, check.name, check.message);
@@ -1847,12 +1962,20 @@ async fn run_doctor_command(_args: DoctorArgs, config_path: Option<&Path>) -> an
             CheckStatus::Ok => pass_count += 1,
             CheckStatus::Warn => warn_count += 1,
             CheckStatus::Fail => fail_count += 1,
+            CheckStatus::NotImplemented => na_count += 1,
         }
     }
 
     println!();
     println!("--- Summary ---");
-    println!("Pass: {}, Warn: {}, Fail: {}", pass_count, warn_count, fail_count);
+    println!(
+        "Pass: {}, Warn: {}, Fail: {}, Not implemented: {} | Health score: {}/100",
+        pass_count,
+        warn_count,
+        fail_count,
+        na_count,
+        doctor_health_score(&checks),
+    );
 
     if fail_count > 0 {
         std::process::exit(1);
@@ -2302,6 +2425,113 @@ mod tests {
         let result = Cli::try_parse_from(["zbrain", "doctor"]);
         assert!(result.is_ok());
         assert!(matches!(result.unwrap().command, Commands::Doctor(_)));
+    }
+
+    #[test]
+    fn doctor_offline_flag_removed() {
+        // TS doctor never had --offline; the Rust `--offline` flag was a dead
+        // flag (declared but ignored). Removing it aligns with TS: parsing
+        // `--offline` must now be rejected.
+        let result = Cli::try_parse_from(["zbrain", "doctor", "--offline"]);
+        assert!(result.is_err(), "--offline should no longer be a valid doctor flag");
+    }
+
+    #[test]
+    fn doctor_json_flag_parses() {
+        let result = Cli::try_parse_from(["zbrain", "doctor", "--json"]);
+        assert!(result.is_ok());
+        assert!(matches!(result.unwrap().command, Commands::Doctor(args) if args.json));
+    }
+
+    #[test]
+    fn doctor_health_score_matches_ts_formula() {
+        // TS outputResults: score = 100 - fail*20 - warn*5, clamp to >= 0.
+        let clean = vec![DoctorCheck::ok("a", "m"), DoctorCheck::ok("b", "m")];
+        assert_eq!(doctor_health_score(&clean), 100);
+
+        let one_warn = vec![DoctorCheck::ok("a", "m"), DoctorCheck::warn("b", "m")];
+        assert_eq!(doctor_health_score(&one_warn), 95);
+
+        let one_fail = vec![DoctorCheck::fail("a", "m")];
+        assert_eq!(doctor_health_score(&one_fail), 80);
+
+        let mixed = vec![
+            DoctorCheck::fail("a", "m"),
+            DoctorCheck::warn("b", "m"),
+            DoctorCheck::warn("c", "m"),
+        ];
+        assert_eq!(doctor_health_score(&mixed), 70);
+
+        // clamp at 0: 6 fails would be -20 without clamp.
+        let many_fails: Vec<DoctorCheck> =
+            (0..6).map(|i| DoctorCheck::fail(&format!("f{i}"), "m")).collect();
+        assert_eq!(doctor_health_score(&many_fails), 0);
+    }
+
+    #[test]
+    fn doctor_status_matches_ts_mapping() {
+        // TS computeDoctorReport: hasFail -> unhealthy, hasWarn -> warnings,
+        // else healthy. Fail dominates warn.
+        let clean = vec![DoctorCheck::ok("a", "m")];
+        assert_eq!(doctor_status(&clean), "healthy");
+
+        let warned = vec![DoctorCheck::ok("a", "m"), DoctorCheck::warn("b", "m")];
+        assert_eq!(doctor_status(&warned), "warnings");
+
+        let failed = vec![DoctorCheck::warn("a", "m"), DoctorCheck::fail("b", "m")];
+        assert_eq!(doctor_status(&failed), "unhealthy");
+    }
+
+    #[test]
+    fn not_implemented_checks_do_not_affect_status_or_score() {
+        // Q2: unmigrated checks are surfaced as `not-implemented` for
+        // traceability, but must NOT poison exit code / health_score / status.
+        let checks = vec![
+            DoctorCheck::ok("config", "m"),
+            DoctorCheck::not_implemented("embedding_health", "covers N sub-checks"),
+            DoctorCheck::not_implemented("sync_freshness", "covers N sub-checks"),
+        ];
+        assert_eq!(doctor_status(&checks), "healthy");
+        assert_eq!(doctor_health_score(&checks), 100);
+    }
+
+    #[test]
+    fn unmigrated_ts_doctor_checks_are_anchored() {
+        // Hard trace for later agents: the constant must stay populated in the
+        // expected subsystem band so removals cannot happen silently. When a
+        // subsystem is migrated, its entry moves out into a real check.
+        let n = UNMIGRATED_TS_DOCTOR_CHECKS.len();
+        assert!(
+            (8..=12).contains(&n),
+            "expected 8-12 subsystem-aggregated entries, got {n}"
+        );
+    }
+
+    #[test]
+    fn doctor_json_report_matches_ts_envelope() {
+        // Q5: envelope aligned field-for-field with TS computeDoctorReport:
+        // {schema_version:2, status, health_score, checks[]}, each check entry
+        // is {name, status, message}.
+        let checks = vec![
+            DoctorCheck::ok("config", "loaded"),
+            DoctorCheck::warn("network", "offline"),
+            DoctorCheck::not_implemented("embedding_health", "covers N"),
+        ];
+        let report = doctor_json_report(&checks);
+
+        assert_eq!(report["schema_version"], 2);
+        assert_eq!(report["status"], "warnings");
+        assert_eq!(report["health_score"], 95);
+
+        let arr = report["checks"].as_array().unwrap();
+        assert_eq!(arr.len(), 3);
+        assert_eq!(arr[0]["name"], "config");
+        assert_eq!(arr[0]["status"], "ok");
+        assert_eq!(arr[0]["message"], "loaded");
+        assert_eq!(arr[1]["status"], "warn");
+        // not-implemented entries are surfaced with a distinct status string.
+        assert_eq!(arr[2]["name"], "embedding_health");
+        assert_eq!(arr[2]["status"], "not-implemented");
     }
 
     #[test]

@@ -1,7 +1,7 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust-part2-config-bootstrap.json` | 最后更新: 2026-07-06 14:40:58
+> 数据文件: `zbrain-ts-to-rust-part2-config-bootstrap.json` | 最后更新: 2026-07-06 15:25:48
 
 [~][Y+] 1. ZBrain TS->Rust Part2: Config/Bootstrap/Package Entrypoint strict parity
 ├── [x][Y+] 1-1. init command strict TS flag parity
@@ -16,7 +16,7 @@
 │   ├── [x][Y+] 1-2-1. Write config strict parity audit and test matrix
 │   ├── [x][Y+] 1-2-2. Enforce config set schema validation and unknown-key gating
 │   └── [x][Y+] 1-2-3. Align config get not-found exit code and redaction semantics
-├── [ ][Y+] 1-3. doctor command strict TS flag parity
+├── [x][Y+] 1-3. doctor command strict TS flag parity
 ├── [ ][Y+] 1-4. schema command strict TS flag parity
 ├── [ ][Y+] 1-5. package/bin entrypoint strict TS flag parity
 ├── [ ][Y+] 1-6. migration cleanup for TS remnants and documentation links
@@ -36,7 +36,7 @@ Part2 承接 Phase 2 Config/Bootstrap/Package Entrypoint strict TS flag parity�
 │   ... 7 more child nodes; run tree 1-1 --depth 2 for full view
 ├── [x][Y+] 1-2. config command strict TS flag parity
 │   ... 3 more child nodes; run tree 1-2 --depth 2 for full view
-├── [ ][Y+] 1-3. doctor command strict TS flag parity
+├── [x][Y+] 1-3. doctor command strict TS flag parity
 ├── [ ][Y+] 1-4. schema command strict TS flag parity
 ├── [ ][Y+] 1-5. package/bin entrypoint strict TS flag parity
 ├── [ ][Y+] 1-6. migration cleanup for TS remnants and documentation links
