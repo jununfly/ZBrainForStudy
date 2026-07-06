@@ -35,7 +35,11 @@
       "status": "pending",
       "mode": "explore",
       "parent": "1",
-      "children": [],
+      "children": [
+        "1-1-1",
+        "1-1-2",
+        "1-1-3"
+      ],
       "decisions": [],
       "notes": ""
     },
@@ -203,11 +207,58 @@
         }
       ],
       "notes": "闭环(不施工, 结论=Rust 对齐 TS 运行时不补 wallclock)。TS cli.ts:1136 'search->30s' 死代码=TS 本地 search 从未真有 wallclock, Rust 同样无=已对齐, 补 wallclock 属产品增强非迁移, 超 charter 不做。附带清理: 因用户明确 roadmap 是临时文件(做完清理), 代码注释禁止引用 roadmap 编号——本刀清理全仓 14 处 roadmap 引用(lib.rs 8 + mcp_client.rs 1 + timeout.rs 2 + operation.rs 1 等), 改为自解释(TS行号锚点/行为原因/技术路径)或指向持久的 docs/plans/。timeout.rs 模块 doc 顺带修正一处事实错误(原写 query+sources list 都有 timeout, 实际只 sources list)。在 run_operation 本地分支加显式 anti-fix 锚点注释(说明 query 无 wallclock 是刻意对齐 TS+死代码原因+将来若做用 timeout.rs 现成三件套怎么接)。零行为零测试影响: cli 124 + core 569 全绿, 编译通过。约定已记 .workbuddy/memory/MEMORY.md。"
+    },
+    "1-1-1": {
+      "id": "1-1-1",
+      "label": "openclaw manifest serve 语义对齐 + bin 路径修复: mcpServers command/args 指向存在的二进制且启动 stdio MCP(serve-mcp 而非 serve=HTTP)",
+      "status": "completed",
+      "mode": "explore",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [
+        {
+          "q": "失败测试放哪+断言强度",
+          "answer": "新建 tests/unit/openclaw-manifest-mcp.test.ts 读真实 manifest 断言 command=node/args 含 wrapper+serve-mcp/wrapper 文件 existsSync",
+          "note": "快速无 openclaw 依赖; 锁定语义修复(serve->serve-mcp)+路径存在不变量; 今日无任何测试覆盖真实 mcpServers"
+        }
+      ],
+      "notes": ""
+    },
+    "1-1-2": {
+      "id": "1-1-2",
+      "label": "二进制命名对齐: 决定 ./bin/zbrain 是创建实体 vs manifest 改指 bin/zbrain-rs.js; 统一 npm bin / openclaw / Rust crate 三方命名",
+      "status": "completed",
+      "mode": "explore",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [
+        {
+          "q": "./bin/zbrain 该解析为什么",
+          "answer": "openclaw command 指向已存在的 wrapper bin/zbrain-rs.js(经 node 调用), 复用其平台探测+cargo fallback, 不新建文件",
+          "note": "命令 './bin/zbrain' 不存在; 为跨平台安全用显式 command=node + args=[bin/zbrain-rs.js, ...] 而非依赖 shebang(Windows 无 .cmd 兜底会失败)"
+        },
+        {
+          "q": "package.json 的 zbrain-ts bin 条目怎么办",
+          "answer": "1-1-2 不动 zbrain-ts, 推迟到 1-3 TS 入口退役统一处理",
+          "note": "1-1 是发布基础设施命名(wrapper/manifest/crate 三方); zbrain-ts 是 TS 退役产物, 与 src/cli.ts + build:all TS 编译 + dev 脚本一起在 1-3 拆除, 避免半成品悬空引用"
+        }
+      ],
+      "notes": ""
+    },
+    "1-1-3": {
+      "id": "1-1-3",
+      "label": "Rust 交叉编译 + 发布管线: 解除 .cargo/config.toml host-target 硬编码, 多平台 cargo build, 退役 TS build:all/release.yml(gbrain 命名 + bun 编译 TS)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-06 17:51:37",
-    "updated": "2026-07-06 21:06:37",
+    "updated": "2026-07-06 21:30:44",
     "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART3_RELEASE_AND_TS_RETIREMENT.md"
   }
 }
