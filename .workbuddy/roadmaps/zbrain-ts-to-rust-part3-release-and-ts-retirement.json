@@ -48,7 +48,8 @@
       "children": [
         "1-2-1",
         "1-2-2",
-        "1-2-3"
+        "1-2-3",
+        "1-2-4"
       ],
       "decisions": [
         {
@@ -139,6 +140,52 @@
     "1-2-3": {
       "id": "1-2-3",
       "label": "local read-only wallclock timeout (--timeout 第二消费者): 迁 TS cli.ts:1125-1170 v0.41.6.0 特性——search 30s/sources-list 10s 的 connect+dispatch wallclock 超时 + exit 124；依赖 withTimeout/connectEngine-timeout 基础设施(Rust 未迁)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-2",
+      "children": [],
+      "decisions": [
+        {
+          "q": "Q1: explore 推翻'缺基础设施'前提(TS withTimeout=Promise.race手写封装,Rust tokio::time::timeout 原生等价更干净无需迁;命令结构对齐 run_query_command->run_operation本地分支 connect().await[lib.rs:1320]+dispatch_tool_call().await[1327], sources list 同样两段, 均async可直接包; --timeout已由1-2-1解析好 cli.timeout:Option<u64>ms + resolve_timeout_ms 模式现成; 1-2-1 埋的 local_timeout_warning 注释就写 roadmap 1-2-3 待办)。本轮定位怎么走?",
+          "answer": "A: 撤销'依赖未迁基础设施'旧判断,1-2-3 从 explore 升格 exploit,本轮 TDD 直接实现本地 wallclock 超时。tokio原生够用+结构对齐+解析现成,且有真实可测行为(超时->exit124/--timeout override/search 30s+sources-list 10s默认),满足TDD垂直切片条件(不像1-2-2无消费者死flag)。落地后 1-2-1 埋的 local_timeout_warning'本地不生效'对 search/sources-list 变真实生效,兑现承诺消除半截真相。",
+          "note": "B 保持explore只写调查: 探查已摸清范围可行性,再拆一轮空转,路径清晰就该施工;C 连 local_timeout_warning 一起推翻重做: 越界,那警告本身没错(当时本地确实不生效),这刀让它对特定命令生效即可,怎么调属后续问题"
+        },
+        {
+          "q": "Q2: 本地 wallclock 超时覆盖哪些命令?(TS cli.ts:1135-1138 只对 search->30s / sources list(或裸sources)->10s 设默认,其他 import/embed/doctor 无界)",
+          "answer": "A: 逐字对齐 TS——只给 query(=TS search) 默认30s + sources list 默认10s,其余命令不设本地默认超时。TS真实历史行为,设计意图明确:只读命令 hang 会100%CPU空转(TS注释点名'10-day zombie zbrain search'生产bug),而 import/embed 破坏性/长跑命令加默认kill switch危险。get_page/list_pages 虽只读但TS没给默认,不加(不擅自扩张TS未定义行为)。范围最小语义最清晰有据可查。",
+          "note": "B 扩大到所有只读命令都设默认: TS从没这么做,think本地是长跑合成加30s会误杀(thin-client已有180s),get_page/list_pages TS无默认,擅自扩张=发明TS没有的行为违反对齐;C 只做query留sources list以后: 无理由缩小,两命令接线机制一样(run_sources_list包一层),同刀做完才完整垂直切片,拆开留半截"
+        },
+        {
+          "q": "Q3: 超时包裹结构——放共享 helper 还是各点内联? TS 有单一真相源 core/timeout.ts(withTimeout+OperationTimeoutError); Rust 两条不同落点(query->run_operation本地分支 connect+dispatch; sources list->独立 run_sources_list connect+init_schema+list_sources,且当前根本没接收 cli_timeout_ms 要先穿参),都要'connect段+主体段'两段包裹+相同124/message格式化。",
+          "answer": "A: 在 zbrain-cli 内建小共享 helper(timeout.rs),暴露 with_read_only_timeout<T>(fut, timeout_ms, label)->Result<T,ReadOnlyTimeout> 内部用 tokio::time::timeout + 类型化超时错误(带label/ms),配统一'超时->格式化stderr+exit124'收尾。query 和 sources-list 共用,镜像 TS 单一真相源。helper 独立单测(超时触发/正常放行/message格式/exit映射),两命令各加集成测试验证接线。",
+          "note": "B 各点内联 tokio::time::timeout: 省一模块但两处复制 message/hint/exit-124 格式化,违反单一真相源,格式漂移风险;C 放 zbrain-core 镜像 TS src/core/: 目前只 CLI 消费本地 wallclock 超时,放 core 是投机通用化 YAGNI,等第二 crate 要用再上移。"
+        },
+        {
+          "q": "Q4: 超时后如何终止进程——helper 内 exit(124) 还是返回错误让 caller 决定? TS 里格式化+process.exit(124) 内联在 cli.ts catch 块, timeout.ts 只抛类型化异常不 exit。",
+          "answer": "A: helper 只返回类型化错误 Result<T,ReadOnlyTimeout>(ReadOnlyTimeout{label,ms,user_supplied}), 超时时 caller 调统一收尾 report_timeout_and_exit(&ReadOnlyTimeout)->! 负责格式化 stderr(带/不带 default hint)+exit124。逐字对齐 TS 分层: timeout helper 纯粹可单测(超时/放行不碰进程), exit 决策在命令层。格式化拆成纯函数 format_timeout_message(&ReadOnlyTimeout)->String 单测, exit 那步不测。",
+          "note": "B helper 内直接 exit(124): 少一层但 helper 不可单测(碰进程)不可复用, 与 TS 分层不符违反可测性; C helper 返 Result 但格式化 message 塞 caller 内联: 退回 Q3 想避免的复制, query+sources-list 两处手写同一 hint 格式化, 漂移风险。"
+        },
+        {
+          "q": "Q5: 超时包 connect+主体两段(各自独立 label)还是整条命令包一次? TS 明确两段 withTimeout: connectEngine()(label 'zbrain <cmd>: connect')超时先exit, 成功后包 dispatch body(label 'zbrain <cmd>')+finally disconnect, 共用同一 timeout 值各自独立计时/label。Rust: query 走 run_operation connect(1320)+dispatch(1327); sources-list 走 run_sources_list connect(1424)+init_schema+list_sources(1427)。",
+          "answer": "A: 逐字对齐 TS 两段独立包裹。connect 段 label 'zbrain <cmd>: connect', 主体段 label 'zbrain <cmd>', 各自 with_read_only_timeout 同一 timeout 值, 超时都走 report_timeout_and_exit。sources-list 主体段把 init_schema+list_sources 算一段。保留 TS 诊断粒度: 用户能从 message 分辨连接卡住 vs 查询卡住(生产 zombie bug 核心价值)。",
+          "note": "B 整条命令包一次(connect+dispatch 合成一 future): 更短但丢 connect/body 分段 label 看不出卡哪, 偏离 TS 降诊断; C 只包主体不包 connect: 直接违背 TS 设计意图, 生产 bug 恰是 connectEngine schema probe/PgBouncer 冻结, 不包 connect 漏掉主 hang 源。"
+        },
+        {
+          "q": "Q6: 1-2-1 埋的 local_timeout_warning 怎么处理(承诺兑现点)? 1-2-1 在 run_operation 本地分支开头: 传 --timeout 就打印 'warning: --timeout has no effect in local mode yet...pending'。1-2-3 落地后 query 本地 --timeout 真实生效, 这条对 query 变谎言; 但 think/import/get_page/list_pages 等仍走 run_operation 不设本地超时, 对它们警告仍真。",
+          "answer": "A: 精确化警告, 只对'本地+无 wallclock 超时'命令保留。query 现有本地超时->不再警告(兑现承诺); 其余走 run_operation 本地命令仍无超时->保留警告。实现: run_operation 里 query 分支进超时包裹前不打警告, 非 query 本地命令维持原警告。sources-list 不走 run_operation(独立函数)天然正确。措辞收窄成点名'本命令'而非笼统 local mode。",
+          "note": "B 落地即整条删 local_timeout_warning: think/import/get_page 仍不 honor --timeout, 删=对这些命令重新 --offline 式静默吞旗, 违反 fail-loud; C 警告原样不动: query 生效了还报'无效'=主动说谎, 正是这刀要消除的半截真相, 不可接受。"
+        },
+        {
+          "q": "Q2-修正(explore坐实推翻Q2前提): git 坐实 cli.ts:1136 'search?30000' 是 TS 死代码——它在 handleCliOnly(808)体内, 唯一调用点(122)被 if(CLI_ONLY.has(command))守卫; 但 search/query 是 shared op(operations.ts:1259 注册进 cliOps)不在 CLI_ONLY, 走 cli.ts:127 shared 路径永远进不了 handleCliOnly。search 真实本地路径(176-264)只有 drain+disconnect force-exit 兜底, 无 connect/dispatch wallclock 无 exit124, 且 force-exit 计时器在 connectEngine 成功后才 arm→hang在connect的search在TS里无限挂起。只有 sources(在 CLI_ONLY)的 sources-list 10s 真实可达生效。Q2 当时照字面读 1135-1138 假设两条都活是错的。发现后 query 要不要上 30s wallclock?",
+          "answer": "A: 对齐 TS 真实运行时——只给 sources list 上 10s wallclock, query 不设本地默认 wallclock。死代码=TS 从未真跑过的行为, '对齐TS目前的实现'以运行时为准(从git坐实/不凭字面拍脑袋/不擅自扩张TS未生效行为)。这刀缩成 'sources list 10s' 单命令垂直切片, helper 三件套(with_read_only_timeout/format_timeout_message/report_timeout_and_exit)基建仍完整落地可复用。TS死代码发现如实记进roadmap, 未来若要'修TS潜伏bug'(让search真拿到超时)另开节点。",
+          "note": "B query30s+sourceslist10s都上=实现TS设计意图顺带修潜伏bug: 但发明TS运行时从未有过的行为, 把移植偷变成移植+改行为, 违反对齐; C query上但标Rust-only增强: 同样偏离纯移植引入TS无对照行为面。撤销Q2'query默认30s'部分, 保留Q3/Q4/Q5 helper结构决策(仍适用sources list单条)+Q6(现在只需处理: query本地仍无wallclock→local_timeout_warning对query保持原样真实, 无需为query去警告)。"
+        }
+      ],
+      "notes": "DONE(commit pending): 迁移只做 sources-list 10s wallclock(TS cli.ts:1137 唯一活代码)。新增 crates/zbrain-cli/src/timeout.rs: ReadOnlyTimeout{label,ms,user_supplied} + with_read_only_timeout(tokio::time::timeout 包裹)+ format_timeout_message(纯函数,default带override hint/user-supplied不带)+ report_timeout_and_exit(stderr+exit124)。lib.rs: SOURCES_LIST_DEFAULT_TIMEOUT_MS=10_000 + resolve_sources_list_timeout(Option<u64>)->(ms,user_supplied); run_sources_list 两段包裹(connect label 'zbrain sources list: connect' + body[init_schema+list_sources] label 'zbrain sources list'), cli_timeout_ms 经 run_sources_command 穿参。测试: timeout.rs 4 单测(format x2 + with_timeout ok/err)+ lib resolve_sources_list x2, 全绿 124 passed。EXPLORE坐实: cli.ts:1136 'search?30000' 是TS死代码(search/query 是shared op不在CLI_ONLY, 永不进 handleCliOnly), search 在TS本地无wallclock兜底(force-exit计时器在connect成功后才arm)——推翻Q2'query默认30s', query在Rust保持无本地wallclock(对齐TS运行时)。local_timeout_warning/mcp_client.rs 注释同步更新。后续: 修TS潜伏bug(让search真拿到wallclock)另开 sub-node 1-2-4。"
+    },
+    "1-2-4": {
+      "id": "1-2-4",
+      "label": "1-2-4",
       "status": "pending",
       "mode": "explore",
       "parent": "1-2",
@@ -149,7 +196,7 @@
   },
   "metadata": {
     "created": "2026-07-06 17:51:37",
-    "updated": "2026-07-06 20:09:49",
+    "updated": "2026-07-06 20:48:06",
     "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART3_RELEASE_AND_TS_RETIREMENT.md"
   }
 }
