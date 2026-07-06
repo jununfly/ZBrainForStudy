@@ -238,12 +238,33 @@
     "1-1-6": {
       "id": "1-1-6",
       "label": "Implement init embedding setup flags",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-1",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "Q2: --embedding-model 运行期语义",
+          "answer": "A: 只写 config.embedding.model",
+          "note": "字段已存在且语义明确；本刀不做模型下载、provider 初始化或网络访问，只把 init 参数沉淀到配置。"
+        },
+        {
+          "q": "Q3: --embedding-dimensions 运行期语义",
+          "answer": "A: 新增 embedding.dimensions: Option<u32> 并由 init 写入",
+          "note": "flag 语义明确；None 表示使用模型默认维度。本刀只做 schema/config 层沉淀，不做向量表维度迁移或模型校验。"
+        },
+        {
+          "q": "Q4: --no-embedding 运行期语义",
+          "answer": "A: 新增 embedding.enabled: bool，默认 true；--no-embedding 写 false",
+          "note": "语义直接，避免污染 embedding.model；后续 import/sync 可统一读取 enabled 判断是否执行 embedding。"
+        },
+        {
+          "q": "Q5: embedding flags 与 --mcp-only 的关系",
+          "answer": "A: 保持拒绝混用",
+          "note": "沿用 1-1-5 决策：--mcp-only 是 thin-client 拓扑，embedding 配置归远端还是本地尚未定义；本刀不混用，避免重新打开职责边界。"
+        }
+      ],
+      "notes": "Implemented init embedding setup flags: embedding.enabled defaults true and --no-embedding writes false; embedding.dimensions is optional and --embedding-dimensions writes it; --embedding-model writes embedding.model. No model download, provider setup, vector dimension migration, or model validation. Verified with cargo test -p zbrain-cli config_defaults --lib, init_embedding_flags_write_config_without_model_setup --lib, init_ --lib, and --lib."
     },
     "1-1-7": {
       "id": "1-1-7",
@@ -258,7 +279,7 @@
   },
   "metadata": {
     "created": "2026-07-02 21:39:54",
-    "updated": "2026-07-03 02:19:18",
+    "updated": "2026-07-03 02:40:14",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART2_CONFIG_BOOTSTRAP.md"
   }
 }

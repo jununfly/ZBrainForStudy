@@ -142,9 +142,17 @@ pub struct ProviderConfig {
 /// Embedding model configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EmbeddingConfig {
+    /// Whether embedding generation is enabled (default: true)
+    #[serde(default = "default_embedding_enabled")]
+    pub enabled: bool,
+
     /// Which embedding model to use (default: all-minilm-l6-v2)
     #[serde(default = "default_embedding_model")]
     pub model: String,
+
+    /// Optional embedding vector dimensions. None means model default.
+    #[serde(default)]
+    pub dimensions: Option<u32>,
 
     /// Maximum chunk size for documents (default: 512)
     #[serde(default = "default_chunk_size")]
@@ -217,6 +225,10 @@ fn default_database_url() -> String {
     "sqlite://~/.zbrain/zbrain.db".to_string()
 }
 
+fn default_embedding_enabled() -> bool {
+    true
+}
+
 fn default_embedding_model() -> String {
     "all-minilm-l6-v2".to_string()
 }
@@ -286,7 +298,9 @@ impl Default for Config {
 impl Default for EmbeddingConfig {
     fn default() -> Self {
         Self {
+            enabled: default_embedding_enabled(),
             model: default_embedding_model(),
+            dimensions: None,
             chunk_size: default_chunk_size(),
             chunk_overlap: default_chunk_overlap(),
             batch_size: default_batch_size(),
@@ -558,7 +572,9 @@ mod tests {
     fn config_defaults() {
         let config = Config::default();
         assert_eq!(config.database_url, "sqlite://~/.zbrain/zbrain.db");
+        assert!(config.embedding.enabled);
         assert_eq!(config.embedding.model, "all-minilm-l6-v2");
+        assert_eq!(config.embedding.dimensions, None);
         assert_eq!(config.embedding.chunk_size, 512);
         assert_eq!(config.embedding.chunk_overlap, 64);
         assert_eq!(config.search.top_k, 10);

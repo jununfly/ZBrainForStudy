@@ -1493,6 +1493,18 @@ fn slugify(s: &str) -> String {
         .join("-")
 }
 
+fn apply_init_embedding_args(config: &mut config::Config, args: &InitArgs) {
+    if let Some(model) = &args.embedding_model {
+        config.embedding.model = model.clone();
+    }
+    if let Some(dimensions) = args.embedding_dimensions {
+        config.embedding.dimensions = Some(dimensions);
+    }
+    if args.no_embedding {
+        config.embedding.enabled = false;
+    }
+}
+
 fn validate_mcp_only_init_args(args: &InitArgs) -> anyhow::Result<()> {
     let invalid_flag = if args.pglite {
         Some("--pglite")
@@ -1570,6 +1582,8 @@ async fn run_init_command(args: InitArgs, config_path: Option<&Path>) -> anyhow:
     } else {
         config::Config::default()
     };
+
+    apply_init_embedding_args(&mut config, &args);
 
     if args.mcp_only {
         let issuer_url = args
@@ -2332,6 +2346,36 @@ mod tests {
             error.contains("--supabase init is not implemented yet"),
             "expected explicit --supabase not implemented failure, got: {error}"
         );
+    }
+
+    #[tokio::test]
+    async fn init_embedding_flags_write_config_without_model_setup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("zbrain.yml");
+        let args = InitArgs {
+            pglite: false,
+            supabase: false,
+            url: None,
+            force: true,
+            migrate_only: false,
+            mcp_only: false,
+            json: false,
+            non_interactive: true,
+            issuer_url: None,
+            mcp_url: None,
+            oauth_client_id: None,
+            oauth_client_secret: None,
+            embedding_model: Some("text-embedding-3-small".to_string()),
+            no_embedding: true,
+            embedding_dimensions: Some(1536),
+        };
+
+        run_init_command(args, Some(&config_path)).await.unwrap();
+
+        let written = config::load_config_from_path(&config_path).unwrap();
+        assert_eq!(written.embedding.model, "text-embedding-3-small");
+        assert_eq!(written.embedding.dimensions, Some(1536));
+        assert!(!written.embedding.enabled);
     }
 
     #[tokio::test]
