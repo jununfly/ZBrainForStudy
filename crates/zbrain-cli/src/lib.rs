@@ -1909,8 +1909,11 @@ async fn run_config_command(args: ConfigArgs, config_path: Option<&Path>) -> any
             let config = config::load_config(config_path)?;
             let value = get_config_value(&key, &serde_yaml::to_value(&config)?);
             match value {
-                Some(v) => println!("{}", config::redact_value(&key, &v)),
-                None => eprintln!("Config key not found: {}", key),
+                // `get` returns the raw value (no redaction): it is an explicit
+                // single-value read used by scripts to read back secrets.
+                // `show` still redacts to avoid scrollback leaks.
+                Some(v) => println!("{v}"),
+                None => anyhow::bail!("Config key not found: {key}"),
             }
         }
         ConfigAction::Set { key, value, force } => {
@@ -2328,6 +2331,48 @@ mod tests {
             if matches!(&args.action, ConfigAction::Set { key, value, .. }
                         if key == "database.url" && value == "sqlite://db")
         ));
+    }
+
+    #[test]
+    fn config_get_returns_raw_value_without_redaction() {
+        let mut config = config::Config::default();
+        let mut openai = config::ProviderConfig::default();
+        openai.api_key = Some("sk-secret-value".to_string());
+        config.providers.insert("openai".to_string(), openai);
+
+        let raw = get_config_value(
+            "providers.openai.api_key",
+            &serde_yaml::to_value(&config).unwrap(),
+        )
+        .expect("api_key should resolve");
+
+        // `get` must return the raw secret unchanged...
+        assert_eq!(raw, "sk-secret-value");
+        // ...even though the same key would be redacted by `show`.
+        assert_ne!(
+            config::redact_value("providers.openai.api_key", &raw),
+            raw,
+            "sanity: this key is redaction-sensitive, so get intentionally skips redaction"
+        );
+    }
+
+    #[tokio::test]
+    async fn config_get_missing_key_fails_loud() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("zbrain.yml");
+        config::write_config(&config::Config::default(), &config_path).unwrap();
+
+        let args = ConfigArgs {
+            action: ConfigAction::Get {
+                key: "no_such_key".to_string(),
+            },
+        };
+
+        let result = run_config_command(args, Some(&config_path)).await;
+        assert!(
+            result.is_err(),
+            "config get on a missing key must fail with a non-zero exit"
+        );
     }
 
     #[tokio::test]

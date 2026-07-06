@@ -64,7 +64,7 @@
     "1-2": {
       "id": "1-2",
       "label": "config command strict TS flag parity",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1",
       "children": [
@@ -355,17 +355,17 @@
     "1-2-3": {
       "id": "1-2-3",
       "label": "Align config get not-found exit code and redaction semantics",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-2",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "Aligned config get semantics with TS. Gap1: config get on a missing key now anyhow::bail! (non-zero exit) instead of eprintln+Ok. Gap2: config get returns the raw stored value without redaction (explicit single-value read used to read back secrets); config show still redacts via redact_value (scrollback-leak protection). 2 new tests: config_get_missing_key_fails_loud, config_get_returns_raw_value_without_redaction (asserts the key IS redaction-sensitive so get intentionally skips it). Verified: cargo test -p zbrain-cli config_ --lib (21 passed), --lib (92 passed)."
     }
   },
   "metadata": {
     "created": "2026-07-02 21:39:54",
-    "updated": "2026-07-06 13:28:55",
+    "updated": "2026-07-06 14:40:58",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART2_CONFIG_BOOTSTRAP.md"
   }
 }
