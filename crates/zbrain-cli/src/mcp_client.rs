@@ -212,6 +212,14 @@ impl McpClient {
     /// Call a remote MCP tool.
     /// Mirrors `callRemoteTool` in TypeScript.
     pub async fn call_tool(&self, tool_name: &str, args: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+        // FUTURE(mcp-timeout): the TS global flag `--timeout=<Ns|Nms|Nm>` set a
+        // per-call timeout for thin-client-routed MCP calls (TS
+        // src/core/cli-options.ts + mcp-client.ts). The Rust routing skeleton
+        // exists (this method + RemoteMcpError::Timeout variant) but `http_client`
+        // is built with `Client::new()` (no timeout) and nothing consumes a
+        // per-call timeout value, so `--timeout` is NOT wired to clap yet. Adding
+        // it would be a dead flag. See docs/plans/2026-07-06-global-flag-gap-audit.md
+        // (roadmap 1-8): wire reqwest timeout + thread the value here first.
         let remote_mcp = self
             .config
             .remote_mcp

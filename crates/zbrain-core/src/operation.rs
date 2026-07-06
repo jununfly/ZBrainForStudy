@@ -335,6 +335,14 @@ pub struct AuthInfo {
 /// Mirrors `ctx.cliOpts` in TS. Populated by CLI callers; MCP / library
 /// callers may leave it undefined — consumers default to quiet/no-progress
 /// for background work.
+///
+/// FUTURE(progress-reporter): these three fields are the landing site for the
+/// TS global flags `--quiet` / `--progress-json` / `--progress-interval`, but
+/// they currently have NO consumer — no CLI path populates them and nothing
+/// reads them. Wiring the flags to clap is deferred until the progress-reporter
+/// subsystem (TS `src/core/progress.ts`: human/json/quiet three-state +
+/// interval throttle) is ported. Adding the flags now would create dead
+/// no-op flags. See docs/plans/2026-07-06-global-flag-gap-audit.md (roadmap 1-8).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CliOpts {
     /// Suppress human-friendly progress output.

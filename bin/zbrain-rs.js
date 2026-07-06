@@ -17,9 +17,13 @@
  * parseGlobalFlags) exposed --quiet / --progress-json / --progress-interval /
  * --timeout / --explain as global flags. The Rust `Cli` struct
  * (crates/zbrain-cli/src/lib.rs) currently only has --config / --debug.
- * Migrating those 5 flags to Rust clap `global = true` is tracked as roadmap
- * node 1-8 (zbrain-ts-to-rust-part2-config-bootstrap). Do NOT re-implement
- * flag parsing in this wrapper.
+ * Investigation (roadmap 1-8) found NONE of the 5 flags have a working
+ * consumer in Rust yet — they are blocked on three unported subsystems:
+ * progress reporter, MCP per-call timeout, and search rerank/attribution.
+ * They are deliberately NOT added as dead no-op flags. See the authoritative
+ * flag -> subsystem -> code-anchor table in
+ * docs/plans/2026-07-06-global-flag-gap-audit.md. Do NOT re-implement flag
+ * parsing in this wrapper.
  */
 
 import { spawnSync } from 'child_process';

@@ -399,6 +399,16 @@ pub struct ThinkArgs {
 }
 
 /// Arguments for `zbrain query` command.
+///
+/// FUTURE(search-attribution): the TS global flag `--explain` switched
+/// `search`/`query` to a per-stage attribution view (base_score + each boost
+/// stage multiplier + reranker rank delta). Rust `query` scoring is currently a
+/// hardcoded keyword-hit weighting (title/content/frontmatter) in
+/// zbrain-core engine.rs with no rerank/boost/attribution stages, so there is
+/// nothing for `--explain` to show. The flag is NOT wired to clap until the
+/// rerank + per-stage attribution subsystem lands (doctor already marks
+/// `reranker_health` as UNMIGRATED_TS). See
+/// docs/plans/2026-07-06-global-flag-gap-audit.md (roadmap 1-8).
 #[derive(Debug, Parser)]
 pub struct QueryArgs {
     /// Search query text

@@ -1,7 +1,7 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust-part2-config-bootstrap.json` | 最后更新: 2026-07-06 16:58:53
+> 数据文件: `zbrain-ts-to-rust-part2-config-bootstrap.json` | 最后更新: 2026-07-06 17:23:04
 
 [~][Y+] 1. ZBrain TS->Rust Part2: Config/Bootstrap/Package Entrypoint strict parity
 ├── [x][Y+] 1-1. init command strict TS flag parity
@@ -21,7 +21,7 @@
 ├── [x][Y+] 1-5. bin wrapper transparent pass-through correctness (argv + exit-code/signal)
 ├── [ ][Y+] 1-6. migration cleanup for TS remnants and documentation links
 ├── [ ][Y+] 1-7. final validation for Part2 config/bootstrap migration
-└── [ ][Y+] 1-8. Rust CLI global flag parity (--quiet/--progress-json/--progress-interval/--timeout/--explain)
+└── [x][Y+] 1-8. global flag gap audit & subsystem hand-off (progress reporter / MCP timeout / search attribution)
 
 ### 当前施工：1. ZBrain TS->Rust Part2: Config/Bootstrap/Package Entrypoint strict parity
 
@@ -42,5 +42,5 @@ Part2 承接 Phase 2 Config/Bootstrap/Package Entrypoint strict TS flag parity�
 ├── [x][Y+] 1-5. bin wrapper transparent pass-through correctness (argv + exit-code/signal)
 ├── [ ][Y+] 1-6. migration cleanup for TS remnants and documentation links
 ├── [ ][Y+] 1-7. final validation for Part2 config/bootstrap migration
-└── [ ][Y+] 1-8. Rust CLI global flag parity (--quiet/--progress-json/--progress-interval/--timeout/--explain)
+└── [x][Y+] 1-8. global flag gap audit & subsystem hand-off (progress reporter / MCP timeout / search attribution)
 <!-- ROADMAP_SECTION_END -->
