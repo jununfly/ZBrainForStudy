@@ -185,18 +185,29 @@
     },
     "1-2-4": {
       "id": "1-2-4",
-      "label": "1-2-4",
-      "status": "pending",
+      "label": "[possible-bug-parity] TS search 本地 wallclock 潜伏 bug: cli.ts:1136 'search->30s' 是死代码(search 是 shared op 永不进 handleCliOnly), 本地 search/query 无 connect/dispatch wallclock, hang-in-connect 无限挂起。决定 Rust query 是否主动补 wallclock(修 TS 从未生效的意图) vs 保持纯移植不发明行为",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-2",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "Q1: 1-2-4 这刀到底做不做? 做的话什么性质? 背景(1-2-3 explore 坐实): TS cli.ts:1136 'search->30s' 是死代码, search/query 走 shared 路径永不进 handleCliOnly, TS 本地 search 至今无任何 connect/dispatch wallclock, hang-in-connect 无限挂起——真实但潜伏的 TS bug(作者想做没生效)。Rust 现在同样无=行为与 TS 运行时对齐。",
+          "answer": "A: 关掉 1-2-4, 标记'已知 TS 潜伏 bug, Rust 对齐现状不修', 不写代码。本 PRD 是 TS->Rust 迁移, charter='对齐 TS 目前的实现(运行时行为)'。TS 运行时 search 无 wallclock -> Rust 无 wallclock = 已对齐。给 query 补 wallclock=修 TS 从未真有过的行为=发明新行为, 超出迁移 charter(不擅自扩张 TS 未生效行为)。helper 三件套(timeout.rs)已就位, 将来真要修(作为 Rust 主动增强)接线成本极低, 但那是独立'产品增强'决策不混进迁移 PRD。节点闭环: status=completed(调查已闭环, 结论=不施工), decisions 记清为何不修+将来怎么修。",
+          "note": "B 这刀给 query 补 30s 本地 wallclock 顺手修 TS 潜伏 bug: helper 现成+run_operation 本地分支可接+'10-day zombie search'真实痛点, 但这是改行为/加功能非迁移, 违反 charter, 且让'Rust 与 TS 对齐'可验证锚点出现 Rust 单方面偏离=对拍噪音; C 保持 open 挪 Part3 后面/独立 Rust 增强清单: 承认有价值但非现在, 留 open explore 节点悬着 focus 反复选中, 不如 A 闭环干净。将来怎么修: query 的 run_operation 本地分支 connect(lib.rs)+dispatch 两段, 套用 timeout.rs 现成 with_read_only_timeout+report_timeout_and_exit, resolve 一个 query 默认(TS 意图 30s)即可, <30 行。"
+        },
+        {
+          "q": "Q2: 关闭 1-2-4 时要不要在 Rust 代码留'已知不修'锚点注释? query 本地路径(run_operation)无 wallclock 也无注释, 只记 roadmap 的话读代码的人看到 sources-list 有 wallclock 而 query 没有会以为遗漏顺手补上, 踩进'超出 charter'的坑。",
+          "answer": "A(修正-用户约束): 在 query 本地分支留就近锚点注释, 但因 roadmap 是临时文件(做完清理), 注释里【不引用 roadmap 编号】, 直接把必要信息自解释写进注释: query 本地无 wallclock 是刻意对齐 TS 运行时; TS 的 search 30s(cli.ts:1136) 是死代码(search/query 是 shared op 永不进 handleCliOnly); 若将来要作为 Rust 增强补上, 用 timeout.rs 的 with_read_only_timeout+report_timeout_and_exit 套 connect+dispatch 两段即可。零行为零测试影响, 纯防未来误补。",
+          "note": "用户明确: roadmap 临时文件会清理, 代码注释禁止引用 roadmap 编号, 必要信息直接写进注释自解释(项目长期约定, 已记 MEMORY.md)。B 只记 roadmap 不碰代码: 代码留看似遗漏的不对称(sources-list有/query没有)未来误补风险实打实; C UNMIGRATED_TS_* 常量数组锚定: 那是给未迁移命令/动词清单做测试锚定用, 这里是刻意不迁的单点行为, 一句注释足够, 上常量数组重型化 YAGNI。"
+        }
+      ],
+      "notes": "闭环(不施工, 结论=Rust 对齐 TS 运行时不补 wallclock)。TS cli.ts:1136 'search->30s' 死代码=TS 本地 search 从未真有 wallclock, Rust 同样无=已对齐, 补 wallclock 属产品增强非迁移, 超 charter 不做。附带清理: 因用户明确 roadmap 是临时文件(做完清理), 代码注释禁止引用 roadmap 编号——本刀清理全仓 14 处 roadmap 引用(lib.rs 8 + mcp_client.rs 1 + timeout.rs 2 + operation.rs 1 等), 改为自解释(TS行号锚点/行为原因/技术路径)或指向持久的 docs/plans/。timeout.rs 模块 doc 顺带修正一处事实错误(原写 query+sources list 都有 timeout, 实际只 sources list)。在 run_operation 本地分支加显式 anti-fix 锚点注释(说明 query 无 wallclock 是刻意对齐 TS+死代码原因+将来若做用 timeout.rs 现成三件套怎么接)。零行为零测试影响: cli 124 + core 569 全绿, 编译通过。约定已记 .workbuddy/memory/MEMORY.md。"
     }
   },
   "metadata": {
     "created": "2026-07-06 17:51:37",
-    "updated": "2026-07-06 20:48:06",
+    "updated": "2026-07-06 21:06:37",
     "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART3_RELEASE_AND_TS_RETIREMENT.md"
   }
 }

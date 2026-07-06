@@ -239,10 +239,10 @@ impl McpClient {
         // 180s for `think` / 30s otherwise) is applied on the reqwest `Client`
         // built in `McpClient::new`. A client-side timeout on any hop (token
         // mint or tool call) surfaces as `RemoteMcpError::Timeout` via
-        // `map_reqwest_error`. See roadmap 1-2-1. (The local read-only
-        // wall-clock timeout — TS cli.ts:1125-1170 — was migrated for
-        // `sources list` only in roadmap 1-2-3; the sibling `search → 30s`
-        // branch is TS dead code and was intentionally not ported.)
+        // `map_reqwest_error`. (The local read-only wall-clock timeout — TS
+        // cli.ts:1125-1170 — was migrated for `sources list` only; the
+        // sibling `search → 30s` branch is TS dead code and was intentionally
+        // not ported.)
         let remote_mcp = self
             .config
             .remote_mcp

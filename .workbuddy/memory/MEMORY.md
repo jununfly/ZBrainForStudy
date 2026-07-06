@@ -9,6 +9,7 @@
 - 测试目录迁移：整体物理迁移 `test/` 到 `tests/unit/`，这只是目录规范迁移，不等于删除 TS 测试；现有 `tests/heavy/` 保持，scripts 测试 glob 和文档引用同步改。当前已完成物理迁移与 runner/config 改动，阻塞在本机无 `bun`，无法执行 typecheck/test 分片验证。
 - Plans 清理：将 `docs/plans/20260526/` 提炼为 canonical 文档 `docs/plans/20260526-rust-rewrite-plan.md`（目标范围、slice 列表、已确认决策、当前状态/后续切片、废弃/关闭调查结论），提炼后删除连续过程文件；唯一且仍有效的决策必须先提炼再删。
 - Roadmap 拆 plan 约定：若审计或拆解时发现与当前节点目标存在语义偏差，且有跟进价值，应拆成 sub-node 跟踪，而不是吸收到当前 plan 中。
+- **代码注释禁止引用 roadmap 编号（2026-07-06 约定）**：roadmap JSON（`.workbuddy/roadmaps/*.json`）是**临时文件，工作完成后会清理**。因此**源码注释里绝不能引用 roadmap 编号**（如 "roadmap 1-2-3"、"Tracked by roadmap 1-2-2"、"see roadmap 1-8"）——清理后就成悬空死链。必要信息必须**直接自解释写进注释**（TS 行号锚点、行为原因、将来怎么做的技术路径），不依赖外部临时文档。同理 `FUTURE(tag)` 就近锚点也应自解释。docs/plans/ 下的 canonical 文档是持久的，可以引用。
 - Admin 路由路径差异（2026-06-30 发现）：Rust admin API 路由当前在 `/*`（如 `/register-client`），TS 对应路由在 `/admin/api/*`。admin/mod.rs 注释写 "mounted under `/admin/api/*`" 但实际 merge 在顶层无前缀。需后续对齐：要么加 `/admin/api` 前缀层，要么接受当前裸路径。路线图 Q6 决策是"方案A: 保持 /admin/api/*"。
 - 1-7-1-1~1-7-1-5 全部完成（Source CRUD, Import/Clone, Capture Pipeline, Content Extraction, Sync Engine）。
 - 1-7-1-7 完成：zbrain sources add/list/remove/status + zbrain capture CLI commands（5 子命令，68 CLI tests）。

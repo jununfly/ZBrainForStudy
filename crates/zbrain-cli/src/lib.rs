@@ -187,7 +187,7 @@ fn is_ts_timeout_magnitude(s: &str) -> bool {
 /// Unlike the TS global-flag parser (which fell through to the per-command
 /// parser on `None`), the Rust clap wiring treats `None` as a hard parse
 /// failure (exit 2) — a deliberate, audited departure from the TS soft
-/// fall-through (roadmap 1-2-1 Q5).
+/// fall-through.
 #[must_use]
 pub fn parse_timeout(s: &str) -> Option<u64> {
     let s = s.trim();
@@ -228,8 +228,8 @@ pub fn parse_timeout(s: &str) -> Option<u64> {
 ///
 /// Returns the resolved millisecond count, or an `Err(String)` that clap
 /// renders to stderr and exits with code 2. This is the deliberate,
-/// audited departure from the TS soft fall-through (roadmap 1-2-1 Q5):
-/// a bad `--timeout` is a hard usage error, not a silently-ignored flag.
+/// audited departure from the TS soft fall-through: a bad `--timeout` is a
+/// hard usage error, not a silently-ignored flag.
 fn parse_timeout_clap(s: &str) -> Result<u64, String> {
     parse_timeout(s).ok_or_else(|| {
         format!("invalid timeout '{s}': expected a positive value like 30s, 1500ms, or 2m")
@@ -245,10 +245,10 @@ const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 /// Default local read-only wall-clock timeout for `sources list`, in ms.
 ///
 /// Mirrors the ONE read-only default that is actually reachable in the TS CLI
-/// (`src/cli.ts:1137`, `sources list` → 10s). Roadmap 1-2-3 explore坐实: the
-/// sibling `search → 30_000` branch (cli.ts:1136) is dead code — `search`/
-/// `query` are shared ops that never enter `handleCliOnly`, so that timeout
-/// never fires in TS. We port only the live behavior; see roadmap 1-2-3.
+/// (`src/cli.ts:1137`, `sources list` → 10s). The sibling `search → 30_000`
+/// branch (cli.ts:1136) is dead code — `search`/`query` are shared ops that
+/// never enter `handleCliOnly`, so that timeout never fires in TS. We port
+/// only the live behavior.
 const SOURCES_LIST_DEFAULT_TIMEOUT_MS: u64 = 10_000;
 
 /// Resolve the effective wall-clock timeout for `sources list`.
@@ -280,11 +280,11 @@ fn resolve_timeout_ms(op_name: &str, cli_timeout_ms: Option<u64>) -> u64 {
 
 /// Honest warning for `--timeout` on the local (non-thin-client) path.
 ///
-/// Roadmap 1-2-1 Q4-修正 / 1-2-3: the local read-only wall-clock timeout was
-/// migrated for `sources list` only (mirroring the ONE live TS default;
-/// cli.ts:1136 `search → 30s` is dead code, see roadmap 1-2-3). `sources list`
-/// runs outside `run_operation`, so every command that *does* reach this
-/// warning (`query`, `think`, `get_page`, `list_pages`, …) still has no local
+/// The local read-only wall-clock timeout was migrated for `sources list`
+/// only (mirroring the ONE live TS default; cli.ts:1136 `search → 30s` is
+/// dead code — see `SOURCES_LIST_DEFAULT_TIMEOUT_MS`). `sources list` runs
+/// outside `run_operation`, so every command that *does* reach this warning
+/// (`query`, `think`, `get_page`, `list_pages`, …) still has no local
 /// wall-clock timeout — the warning remains truthful for them. We refuse to
 /// silently swallow `--timeout` (no `--offline`-style dead flag). Returns
 /// `Some(message)` when the user supplied `--timeout`, else `None`.
@@ -314,9 +314,10 @@ pub struct Cli {
     ///
     /// Accepts a bare millisecond count or a `Ns`/`Nms`/`Nm` value (e.g.
     /// `30s`, `1500ms`, `2m`). Mirrors the TS global `--timeout` flag; only
-    /// thin-client-routed operations consume it today (local operations warn
-    /// on stderr — see roadmap 1-2-1 / 1-2-3). Invalid values fail loudly with
-    /// exit 2 rather than silently falling through.
+    /// thin-client-routed operations (and the local `sources list`
+    /// wall-clock) consume it today — other local operations warn on stderr
+    /// (see `local_timeout_warning`). Invalid values fail loudly with exit 2
+    /// rather than silently falling through.
     #[arg(long, global = true, value_parser = parse_timeout_clap, value_name = "DURATION")]
     pub timeout: Option<u64>,
 
@@ -553,7 +554,7 @@ pub struct ThinkArgs {
 /// nothing for `--explain` to show. The flag is NOT wired to clap until the
 /// rerank + per-stage attribution subsystem lands (doctor already marks
 /// `reranker_health` as UNMIGRATED_TS). See
-/// docs/plans/2026-07-06-global-flag-gap-audit.md (roadmap 1-8).
+/// docs/plans/2026-07-06-global-flag-gap-audit.md.
 #[derive(Debug, Parser)]
 pub struct QueryArgs {
     /// Search query text
@@ -1332,8 +1333,23 @@ async fn run_operation(
     }
 
     // Local mode: execute against local engine.
-    // Roadmap 1-2-1 Q4-修正: --timeout does not affect local ops yet (tracked
-    // by 1-2-3). Warn on stderr rather than silently swallowing it.
+    //
+    // NOTE (intentional TS-parity gap, do NOT "fix" by adding a wall-clock
+    // timeout here): local operations routed through `run_operation` (`query`,
+    // `think`, `get_page`, `list_pages`, …) have NO local wall-clock timeout,
+    // and this mirrors the TS runtime. TS *looks* like it gives `search` a 30s
+    // timeout (cli.ts:1136), but that branch is dead code — `search`/`query`
+    // are shared ops that never enter `handleCliOnly`, so it never fires. Only
+    // `sources list` (a CLI_ONLY command, handled in `run_sources_list`) has a
+    // reachable TS timeout, and that is the only one ported. Giving `query` a
+    // wall-clock deadline would be a NEW behavior TS never actually had — a
+    // product enhancement, not a migration. If we ever choose to add it, the
+    // machinery is ready: wrap the connect + dispatch steps below with
+    // `timeout::with_read_only_timeout` and `timeout::report_timeout_and_exit`
+    // (see `run_sources_list` for the two-segment pattern).
+    //
+    // Until then, `--timeout` has no effect on these local ops, so we warn on
+    // stderr rather than silently swallowing it.
     if let Some(msg) = local_timeout_warning(cli_timeout_ms) {
         eprintln!("{msg}");
     }
@@ -2196,8 +2212,8 @@ async fn run_doctor_command(args: DoctorArgs, config_path: Option<&Path>) -> any
 /// FUTURE(schema-pack): The TS `zbrain schema` command was NOT a DDL dumper —
 /// it was a 1166-line schema-pack manager (Schema Cathedral v3) exposing the
 /// 32-verb taxonomy below. None of it is migrated to Rust yet. The Rust DDL
-/// dumper was renamed `schema` -> `schema-sql` (roadmap 1-4) precisely to free
-/// up the `schema` name for that future port.
+/// dumper was renamed `schema` -> `schema-sql` precisely to free up the
+/// `schema` name for that future port.
 ///
 /// This constant is the hard trace: a later agent can grep
 /// `UNMIGRATED_TS_SCHEMA_PACK_VERBS` (or `FUTURE(schema-pack)`) to find the
@@ -2645,7 +2661,7 @@ mod tests {
         assert_eq!(resolve_timeout_ms("query", Some(90_000)), 90_000);
     }
 
-    // ── sources-list wall-clock timeout resolution (roadmap 1-2-3) ──
+    // ── sources-list wall-clock timeout resolution ──
     // Only the live TS default (cli.ts:1137, sources list → 10s) is ported;
     // the dead `search → 30s` branch is intentionally NOT reproduced.
 
@@ -2663,7 +2679,7 @@ mod tests {
         assert_eq!(resolve_sources_list_timeout(Some(2_500)), (2_500, true));
     }
 
-    // ── local-path --timeout honesty (roadmap 1-2-1 Q4-修正) ──
+    // ── local-path --timeout honesty ──
 
     #[test]
     fn local_path_with_timeout_emits_honest_warning() {

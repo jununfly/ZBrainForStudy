@@ -1,12 +1,15 @@
-//! Local read-only wall-clock timeout helper (roadmap 1-2-3).
+//! Local read-only wall-clock timeout helper.
 //!
-//! Ports the TS `src/core/timeout.ts` + `cli.ts:1125-1170` behavior: read-only
-//! commands (`query` = TS `search`, `sources list`) get a wall-clock deadline
+//! Ports the live part of the TS `src/core/timeout.ts` + `cli.ts:1125-1170`
+//! behavior: the read-only `sources list` command gets a wall-clock deadline
 //! on both the connect phase and the command body so a hung schema probe /
-//! frozen query surfaces a timeout instead of spinning at 100% CPU (the
-//! production "10-day zombie zbrain search" bug class).
+//! frozen listing surfaces a timeout instead of spinning at 100% CPU (the
+//! production "10-day zombie zbrain search" bug class). Note the TS
+//! `search → 30s` sibling (cli.ts:1136) is dead code — `search`/`query` are
+//! shared ops that never enter `handleCliOnly` — so only `sources list` is
+//! ported here.
 //!
-//! Design (roadmap 1-2-3 Q3/Q4/Q5):
+//! Design:
 //!   * `with_read_only_timeout` — pure wrapper over `tokio::time::timeout`.
 //!     Returns `Ok(T)` on completion, `Err(ReadOnlyTimeout)` on deadline.
 //!     Never touches the process (fully unit-testable), mirroring the TS
