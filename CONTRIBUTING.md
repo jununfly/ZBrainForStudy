@@ -166,7 +166,7 @@ narrower mappings via `scripts/e2e-test-map.ts`.
 ## Building
 
 ```bash
-bun build --compile --outfile bin/gbrain src/cli.ts
+bun run build:rust   # cargo build --release -p zbrain-cli; runtime entry is the bin/zbrain wrapper (bin/zbrain-rs.js)
 ```
 
 ## Adding a new operation

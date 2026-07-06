@@ -30,11 +30,8 @@ cd "$ROOT"
 ALLOWED=(
   "src/core/db.ts"                      # the singleton's definition
   "src/core/postgres-engine.ts"         # calls db.connect + fallback in sql getter — PR 1 removes the fallback
-  "src/commands/init.ts"                # first-time setup path, no engine yet
-  "src/commands/doctor.ts"              # PR 1 refactors to accept engine
   "src/commands/files.ts"               # PR 1 refactors to accept engine
   "src/commands/repair-jsonb.ts"        # PR 1 refactors
-  "src/commands/serve-http.ts"          # PR 1 threads engine through the OAuth dispatch path
   "src/commands/integrity.ts"           # v0.22.8 batch-load fast path + scanIntegrityBatch; PR 1 refactors to accept engine
   "src/core/operations.ts"              # 3 localOnly ops (file_list/upload/url) move to ctx.engine in PR 1
 )

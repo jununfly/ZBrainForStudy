@@ -218,12 +218,33 @@
     "1-6": {
       "id": "1-6",
       "label": "migration cleanup for TS remnants and documentation links",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "Q1: 清理范围？src/cli.ts 仍是 84KB 活入口不能删",
+          "answer": "A: 只清安全死残留(死 script/失效文档链接/死 allowlist 项)，不碰 src/cli.ts 本体/postinstall TS 兜底/check-cli-executable.sh/src/commands 未迁命令",
+          "note": "TS 入口整体退役属 part3；且本刀明确排除品牌 gbrain->zbrain 大规模改名(独立品牌迁移 PRD)，documentation links 只修因 part2 命令改名/删除失效的链接"
+        },
+        {
+          "q": "Q3: build/build:all/prepublish:clawhub 发布链仍打 TS 二进制、与 Rust wrapper 入口分裂，怎么处理？",
+          "answer": "A(处理干净): 删死的 build；build:all+prepublish:clawhub 改成打 Rust，让发布产物与运行入口一致",
+          "note": "用户要求这次处理干净、不留待办。需先探查 clawhub bundle 发布机制 + wrapper build-from-source 行为再定多平台交叉编译具体做法"
+        },
+        {
+          "q": "Q4: 发现发布链是 openclaw bundle-plugin(清单 ./bin/zbrain serve)，切 Rust 需交叉编译+清单对齐 serve-mcp+二进制命名，本机无法验证 mac/linux 产物",
+          "answer": "A: 删真正的死 script build(TS->bin/zbrain 无人引用+与 wrapper 冲突)；发布基础设施迁移(交叉编译+openclaw 清单 serve/serve-mcp 语义+二进制命名)建 part3 移交节点，不提交无法验证的发布链",
+          "note": "干净=能无损删的立即删，扛不动且有验证盲区的诚实移交，不留半吊子隐性状态"
+        },
+        {
+          "q": "Q5: 其余死残留清单(a删build保留dev/b删死allowlist项/c修失效文档链接非品牌) + part3 移交节点挂哪？",
+          "answer": "清单 a-c 照办；d 选 A: 新建独立 part3 roadmap 承载发布链迁移+1-8 三块子系统(progress/timeout/rerank)+TS入口整体退役，1-6 audit 指向 part3，彻底不污染 part2 收尾",
+          "note": "part3 完整范围待开 part3 时 grill；本刀先 init part3 roadmap 骨架节点做移交锚点"
+        }
+      ],
+      "notes": "DONE: (1) 删 package.json 死 build script(bun build --compile bin/zbrain src/cli.ts, 无人引用+与 Rust wrapper 入口冲突; 保留 dev/build:all)。(2) check-no-legacy-getconnection.sh 删 3 个死 allowlist 项(init.ts/doctor.ts/serve-http.ts 均已不存在; 比 grill 预估多一个 serve-http.ts), 守卫脚本重跑 ok。(3) 修 2 处失效 build 命令文档链接(CONTRIBUTING.md:169 + CLAUDE.md:1246) 指向 bun run build:rust; 品牌 gbrain 词元不动(独立 PRD)。注: grill 预估的 ENGINES.md:200/ZBRAIN_V0.md:127 经核实指向仍存在的 src/cli.ts, 未失效, 不改。HAND-OFF: 发布链迁移(build:all/prepublish:clawhub 交叉编译 mac/linux + openclaw 清单 serve/serve-mcp 语义 + 二进制命名, 本机验证盲区)移交 part3 roadmap: .workbuddy/roadmaps/zbrain-ts-to-rust-part3-release-and-ts-retirement.json 节点 1-1; 未提交无法验证的发布链改动。"
     },
     "1-7": {
       "id": "1-7",
@@ -485,7 +506,7 @@
   },
   "metadata": {
     "created": "2026-07-02 21:39:54",
-    "updated": "2026-07-06 17:23:04",
+    "updated": "2026-07-06 17:53:05",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART2_CONFIG_BOOTSTRAP.md"
   }
 }
