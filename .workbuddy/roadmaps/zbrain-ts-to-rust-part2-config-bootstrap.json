@@ -6,7 +6,7 @@
     "1": {
       "id": "1",
       "label": "ZBrain TS->Rust Part2: Config/Bootstrap/Package Entrypoint strict parity",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": null,
       "children": [
@@ -248,13 +248,34 @@
     },
     "1-7": {
       "id": "1-7",
-      "label": "final validation for Part2 config/bootstrap migration",
-      "status": "pending",
+      "label": "Part2 slice deliverable validation (1-1~1-6 parity + wrapper passthrough + cleanup no-regression; excludes part3 subsystems)",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "Q1: 1-7 验证范围怎么框？'完整迁移'跨 Part1/2/3，Part2 从未被赋予完成完整迁移",
+          "answer": "A: 重新框定+改 label 为 Part2 slice 交付物验证——只验 1-1~1-6 六刀产物(init/config/doctor/schema-sql parity + bin wrapper 透传 + cleanup 无回归)，明确排除依赖 part3 未迁子系统(progress/timeout/rerank/发布链)的端到端行为",
+          "note": "用户澄清: Part2!=完整迁移(根节点 charter 三次声明其他未完成 TS->Rust 归 part3)；1-6 已完成无可挪、1-7 验证 part2 交付物属 part2 收口，两者都不挪 part3。真问题是 1-7 名字过度承诺，收窄边界让其当下可完成、fail-loud 不留半吊子。语义收窄属措辞细化不建 sub-node"
+        },
+        {
+          "q": "Q2: 用什么料验证 1-1~1-6 六刀？",
+          "answer": "B: 汇总现有测试+守卫脚本重跑(cargo test -p zbrain-cli --lib 含 1-1~1-5 累计 case + node --test bin/zbrain-rs.test.mjs wrapper 4 case + bash scripts/check-no-legacy-getconnection.sh) + 再补一层顶层 binary CLI 冒烟(编译后跑 init/config/doctor/schema-sql --help 等无副作用命令确认 clap 顶层装配未被撞坏)。1-7 不新写行为测试，只聚合执行+结果留痕确认无回归",
+          "note": "1-5 刚踩过'单元全绿但装配坏(入口脚本没进版控)'的坑，binary 冒烟是防装配级回归的最后一关，成本极低；冒烟只跑无副作用命令不碰 DB"
+        },
+        {
+          "q": "Q3: 1-7 产出形态 + 通过标准？",
+          "answer": "A: 产出收官验证报告 docs/plans/2026-07-06-part2-final-validation.md——记录三类料实际执行命令+结果(cargo test 通过数/wrapper 4/4/守卫 ok/各 --help 冒烟 exit 0) + 1-1~1-6 六刀交付物对照勾验表 + 显式声明 part3 移交边界(哪些端到端行为故意未验及原因)。通过标准: 三类料全绿 + 六刀勾验齐 + 移交边界写清",
+          "note": "与 part2 既有 audit 文档惯例一致，收官报告是 part2 关闭权威凭证并让 part3 接手看清边界；B notes 太短容不下对照表+移交声明；C 累计测试基线表 YAGNI(memory 已逐刀记增量)"
+        },
+        {
+          "q": "Q4: 验证跑出红/回归怎么处理？",
+          "answer": "A: 分类处置——(1) part2 范围内真回归(1-1~1-6 交付物坏)就地 fix 到绿再收口，属 1-7 分内；(2) part3 范围问题(依赖未迁子系统)记进报告移交边界、不在 1-7 修、不阻塞 part2 关闭；(3) 边界模糊当场 grill 定归属。fail-loud 任何红不隐藏",
+          "note": "符合处理干净不留半吊子：part2 自己的回归在 part2 收口时清掉，不留尾巴关门；part3 边界挡住不属本刀的问题不越界。B 太教条(能顺手修的 part2 回归硬另开刀)、C 太刚(part3 范围的红本就预期存在不该阻塞 part2)"
+        }
+      ],
+      "notes": "PASS. 三类料全绿: cargo test -p zbrain-cli --lib 101/101、node --test bin/zbrain-rs.test.mjs 4/4、check-no-legacy-getconnection.sh ok。顶层 binary 冒烟全绿(--version/--help/init|config|doctor|schema-sql --help rc=0; 无效子命令 rc=2; bare schema 已移除 rc=2 保持 1-4 成果)。1-1~1-6 六刀交付物对照勾验齐。part3 移交边界写清(progress/timeout/rerank/发布链/version-sync/TS退役)。无 part2 内回归、无需修复。报告 docs/plans/2026-07-06-part2-final-validation.md。观察: --version 显示 0.0.1(Cargo.toml) vs package.json 0.41.14.0 未同步, 属发布/版本同步范畴移交 part3 非 1-7 TS parity 范围。"
     },
     "1-1-1": {
       "id": "1-1-1",
@@ -506,7 +527,7 @@
   },
   "metadata": {
     "created": "2026-07-02 21:39:54",
-    "updated": "2026-07-06 17:53:05",
+    "updated": "2026-07-06 18:15:52",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART2_CONFIG_BOOTSTRAP.md"
   }
 }
