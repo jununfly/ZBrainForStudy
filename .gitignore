@@ -1,5 +1,14 @@
 node_modules/
-bin/
+# bin/ holds BOTH tracked source (bin/zbrain-rs.js wrapper + its test) and
+# bun --compile self-contained binaries. Ignore only the compiled artifacts,
+# not the source wrapper — the package.json `bin.zbrain` entrypoint lives here
+# and MUST be version-controlled or fresh clones / npm installs have no CLI.
+bin/zbrain
+bin/zbrain.exe
+bin/zbrain-darwin-arm64
+bin/zbrain-linux-x64
+bin/zbrain-*-x64
+bin/zbrain-*-arm64
 .DS_Store
 *.log
 .env

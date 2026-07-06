@@ -16,7 +16,8 @@
         "1-4",
         "1-5",
         "1-6",
-        "1-7"
+        "1-7",
+        "1-8"
       ],
       "decisions": [
         {
@@ -175,12 +176,43 @@
     },
     "1-5": {
       "id": "1-5",
-      "label": "package/bin entrypoint strict TS flag parity",
-      "status": "pending",
+      "label": "bin wrapper transparent pass-through correctness (argv + exit-code/signal)",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "Q1: node wrapper 是否应复刻 TS parseGlobalFlags 做 flag parity？",
+          "answer": "A: 重新框定为 bin wrapper 透明转发正确性；修 shell:true argv mangling + 退出码/信号掩盖；全局 flag 语义归属 Rust clap 层；改 label 避免误导",
+          "note": "TS 时代无 node wrapper 做 flag 解析，src/cli.ts 由 bun 直跑自解析。wrapper 复刻会双重解析冲突，反模式"
+        },
+        {
+          "q": "Q2: Rust 缺 TS 5 个全局 flag 如何跟踪？",
+          "answer": "C: 建 sub-node 跟踪 + 代码 FUTURE 锚点注释双留痕",
+          "note": "全局 flag: --quiet/--progress-json/--progress-interval/--timeout/--explain。本刀只修 wrapper 透传，不实现全局 flag"
+        },
+        {
+          "q": "Q3: shell:true argv mangling 怎么修？",
+          "answer": "A: 去掉 exec spawnSync 的 shell 选项(line 83)，二进制走 CreateProcess 直传 argv；build 的 cargo spawnSync 保留 shell:true",
+          "note": "exec 路径是透传关键，去 shell 最干净；build 不涉及用户 argv"
+        },
+        {
+          "q": "Q4: 退出码/信号传播怎么修？",
+          "answer": "A: status!=null->exit(status); signal 非空->exit(128+signum 或非零); result.error(spawn失败)->打印+非零。任何非正常结局传播为非零",
+          "note": "修掉 status||0 把 signal-kill(null) 报成 0 的核心 bug"
+        },
+        {
+          "q": "Q5: JS wrapper 如何 TDD 测？",
+          "answer": "A: 抽纯函数 resolveExitCode({status,signal,error}) 并 export，用 node:test+node:assert 零依赖覆盖 status/signal/error/正常四分支；透传靠去 shell + code review",
+          "note": "和前几刀纯函数代替 stdout 捕获一致"
+        },
+        {
+          "q": "Q6(收尾发现): bin/zbrain-rs.js 入口脚本被 .gitignore(bin/) 整体忽略、从未进版控，fresh clone/npm 无 CLI 入口",
+          "answer": "A: 精确化 .gitignore——只忽略 bun --compile 产物(bin/zbrain[.exe]/bin/zbrain-*-x64/-arm64)，放行源 wrapper bin/zbrain-rs.js + .test.mjs 进版控",
+          "note": "发布级 bug，与本刀入口透传正确性同源，顺手修"
+        }
+      ],
       "notes": ""
     },
     "1-6": {
@@ -413,11 +445,21 @@
       "children": [],
       "decisions": [],
       "notes": "Aligned config get semantics with TS. Gap1: config get on a missing key now anyhow::bail! (non-zero exit) instead of eprintln+Ok. Gap2: config get returns the raw stored value without redaction (explicit single-value read used to read back secrets); config show still redacts via redact_value (scrollback-leak protection). 2 new tests: config_get_missing_key_fails_loud, config_get_returns_raw_value_without_redaction (asserts the key IS redaction-sensitive so get intentionally skips it). Verified: cargo test -p zbrain-cli config_ --lib (21 passed), --lib (92 passed)."
+    },
+    "1-8": {
+      "id": "1-8",
+      "label": "Rust CLI global flag parity (--quiet/--progress-json/--progress-interval/--timeout/--explain)",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1",
+      "children": [],
+      "decisions": [],
+      "notes": "从 1-5 grill Q2 拆出。Rust Cli struct 当前仅有 --config/--debug 两个 global flag(lib.rs:169-181)。TS parseGlobalFlags(src/core/cli-options.ts) 提供 --quiet/--progress-json/--progress-interval/--timeout/--explain。需迁移到 Rust clap global=true 层。代码锚点见 bin/zbrain-rs.js FUTURE(global-flag-parity) 注释"
     }
   },
   "metadata": {
     "created": "2026-07-02 21:39:54",
-    "updated": "2026-07-06 16:11:23",
+    "updated": "2026-07-06 16:58:53",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART2_CONFIG_BOOTSTRAP.md"
   }
 }
