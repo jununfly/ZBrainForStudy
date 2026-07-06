@@ -6,6 +6,7 @@
 
 pub mod config;
 pub mod mcp_client;
+pub mod timeout;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -241,6 +242,28 @@ const THINK_DEFAULT_TIMEOUT_MS: u64 = 180_000;
 /// Default per-call timeout in milliseconds for all other operations.
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
+/// Default local read-only wall-clock timeout for `sources list`, in ms.
+///
+/// Mirrors the ONE read-only default that is actually reachable in the TS CLI
+/// (`src/cli.ts:1137`, `sources list` → 10s). Roadmap 1-2-3 explore坐实: the
+/// sibling `search → 30_000` branch (cli.ts:1136) is dead code — `search`/
+/// `query` are shared ops that never enter `handleCliOnly`, so that timeout
+/// never fires in TS. We port only the live behavior; see roadmap 1-2-3.
+const SOURCES_LIST_DEFAULT_TIMEOUT_MS: u64 = 10_000;
+
+/// Resolve the effective wall-clock timeout for `sources list`.
+///
+/// User-supplied `--timeout` (already in ms) wins; otherwise the 10s default.
+/// Returns the resolved ms plus whether it came from the user (controls the
+/// override hint in `timeout::format_timeout_message`).
+#[must_use]
+fn resolve_sources_list_timeout(cli_timeout_ms: Option<u64>) -> (u64, bool) {
+    match cli_timeout_ms {
+        Some(ms) => (ms, true),
+        None => (SOURCES_LIST_DEFAULT_TIMEOUT_MS, false),
+    }
+}
+
 /// Resolve the effective per-call timeout for an operation.
 ///
 /// Mirrors `src/cli.ts:302-303`: `think` defaults to 180s, everything else to
@@ -257,11 +280,14 @@ fn resolve_timeout_ms(op_name: &str, cli_timeout_ms: Option<u64>) -> u64 {
 
 /// Honest warning for `--timeout` on the local (non-thin-client) path.
 ///
-/// Roadmap 1-2-1 Q4-修正: the local read-only wall-clock timeout is a separate
-/// unmigrated feature (tracked by 1-2-3). Until it lands, a `--timeout` on the
-/// local path has no effect — but we refuse to silently swallow it (no
-/// `--offline`-style dead flag). Returns `Some(message)` to print to stderr
-/// when the user supplied `--timeout`, or `None` when there is nothing to say.
+/// Roadmap 1-2-1 Q4-修正 / 1-2-3: the local read-only wall-clock timeout was
+/// migrated for `sources list` only (mirroring the ONE live TS default;
+/// cli.ts:1136 `search → 30s` is dead code, see roadmap 1-2-3). `sources list`
+/// runs outside `run_operation`, so every command that *does* reach this
+/// warning (`query`, `think`, `get_page`, `list_pages`, …) still has no local
+/// wall-clock timeout — the warning remains truthful for them. We refuse to
+/// silently swallow `--timeout` (no `--offline`-style dead flag). Returns
+/// `Some(message)` when the user supplied `--timeout`, else `None`.
 #[must_use]
 fn local_timeout_warning(cli_timeout_ms: Option<u64>) -> Option<String> {
     cli_timeout_ms.map(|_| {
@@ -806,7 +832,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::ServeMcp(args) => run_serve_mcp_command(args, cli.config.as_deref()).await?,
         Commands::ServeHttp(args) => run_serve_http_command(args, cli.config.as_deref()).await?,
         Commands::Sync(args) => run_sync_command(args, cli.config.as_deref()).await?,
-        Commands::Sources(action) => run_sources_command(action, cli.config.as_deref()).await?,
+        Commands::Sources(action) => run_sources_command(action, cli.config.as_deref(), timeout_ms).await?,
         Commands::Capture(args) => run_capture_command(args, cli.config.as_deref()).await?,
     }
     Ok(())
@@ -1352,10 +1378,14 @@ async fn run_operation(
 }
 
 /// Execute `zbrain sources` subcommands.
-async fn run_sources_command(action: SourcesAction, config_path: Option<&Path>) -> anyhow::Result<()> {
+async fn run_sources_command(
+    action: SourcesAction,
+    config_path: Option<&Path>,
+    cli_timeout_ms: Option<u64>,
+) -> anyhow::Result<()> {
     match action {
         SourcesAction::Add(args) => run_sources_add(args, config_path).await?,
-        SourcesAction::List(args) => run_sources_list(args, config_path).await?,
+        SourcesAction::List(args) => run_sources_list(args, config_path, cli_timeout_ms).await?,
         SourcesAction::Remove(args) => run_sources_remove(args, config_path).await?,
         SourcesAction::Status(args) => run_sources_status(args, config_path).await?,
     }
@@ -1410,7 +1440,11 @@ async fn run_sources_add(args: SourcesAddArgs, config_path: Option<&Path>) -> an
 }
 
 /// Execute `zbrain sources list` command.
-async fn run_sources_list(args: SourcesListArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+async fn run_sources_list(
+    args: SourcesListArgs,
+    config_path: Option<&Path>,
+    cli_timeout_ms: Option<u64>,
+) -> anyhow::Result<()> {
     use zbrain_core::engine::{BrainEngine, EngineConfig};
 
     let config = config::load_config(config_path)?;
@@ -1421,10 +1455,41 @@ async fn run_sources_list(args: SourcesListArgs, config_path: Option<&Path>) -> 
         database_path: Some(db_path),
     };
     let engine = zbrain_core::libsql::LibsqlEngine::new();
-    engine.connect(&engine_config).await?;
-    engine.init_schema().await?;
 
-    let sources = engine.list_sources(false).await?;
+    // Roadmap 1-2-3: local read-only wall-clock timeout. Mirrors the ONE live
+    // TS default (cli.ts:1137, `sources list` → 10s); a user `--timeout` wins.
+    // Two segments with distinct labels (Q5) so the user can tell a hung
+    // connect apart from a hung listing — the "zombie zbrain" bug class.
+    let (timeout_ms, user_supplied) = resolve_sources_list_timeout(cli_timeout_ms);
+
+    // Segment 1: connect (label `zbrain sources list: connect`).
+    match timeout::with_read_only_timeout(
+        engine.connect(&engine_config),
+        timeout_ms,
+        "zbrain sources list: connect",
+        user_supplied,
+    )
+    .await
+    {
+        Ok(res) => res?,
+        Err(t) => timeout::report_timeout_and_exit(&t),
+    }
+
+    // Segment 2: body — init_schema + list_sources (label `zbrain sources list`).
+    let sources = match timeout::with_read_only_timeout(
+        async {
+            engine.init_schema().await?;
+            engine.list_sources(false).await
+        },
+        timeout_ms,
+        "zbrain sources list",
+        user_supplied,
+    )
+    .await
+    {
+        Ok(res) => res?,
+        Err(t) => timeout::report_timeout_and_exit(&t),
+    };
 
     if args.json {
         let json = serde_json::to_string_pretty(&sources)?;
@@ -2578,6 +2643,24 @@ mod tests {
         // A resolved --timeout beats the per-op default (both think and else).
         assert_eq!(resolve_timeout_ms("think", Some(5_000)), 5_000);
         assert_eq!(resolve_timeout_ms("query", Some(90_000)), 90_000);
+    }
+
+    // ── sources-list wall-clock timeout resolution (roadmap 1-2-3) ──
+    // Only the live TS default (cli.ts:1137, sources list → 10s) is ported;
+    // the dead `search → 30s` branch is intentionally NOT reproduced.
+
+    #[test]
+    fn resolve_sources_list_timeout_defaults_to_10s() {
+        // No user override → 10s default, flagged as NOT user-supplied so the
+        // timeout message includes the `--timeout=Ns` override hint.
+        assert_eq!(resolve_sources_list_timeout(None), (10_000, false));
+    }
+
+    #[test]
+    fn resolve_sources_list_timeout_user_override_wins() {
+        // A resolved --timeout beats the 10s default and is flagged as
+        // user-supplied so the override hint is suppressed.
+        assert_eq!(resolve_sources_list_timeout(Some(2_500)), (2_500, true));
     }
 
     // ── local-path --timeout honesty (roadmap 1-2-1 Q4-修正) ──
