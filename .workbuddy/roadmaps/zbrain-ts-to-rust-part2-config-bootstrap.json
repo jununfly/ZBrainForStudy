@@ -40,7 +40,7 @@
     "1-1": {
       "id": "1-1",
       "label": "init command strict TS flag parity",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1",
       "children": [
@@ -269,17 +269,43 @@
     "1-1-7": {
       "id": "1-1-7",
       "label": "Validate init existing-config and JSON output behavior",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-1",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "Q1: 这一刀是纯 validate 还是 validate+实现 JSON",
+          "answer": "A: validate existing-config 行为 + 实现 --json 输出",
+          "note": ""
+        },
+        {
+          "q": "Q2: --json 覆盖哪些终态及形状",
+          "answer": "A: 统一 envelope 含 status 判别字段",
+          "note": "成功: {status:initialized, config_path, database_url, mode:local|url|mcp-only}；existing 无 force: {status:exists, config_path, hint}。自动化靠 status 判别，不解析文本。TS 已路由到 Rust 无历史 JSON 契约，形状自定义参照仓库 serde_json+to_string_pretty 惯例。"
+        },
+        {
+          "q": "Q3: --json 时人类文本是否抑制",
+          "answer": "A: --json 抑制所有人类文本, stdout 只有单个 JSON 对象",
+          "note": "结构化输出标准契约: stdout 必须可直接 parse。Setting up... 及各终态成功/exists println 在 args.json 为真时不打印。"
+        },
+        {
+          "q": "Q4: existing-config 拒绝的退出码",
+          "answer": "A: 保持退出码 0 (Ok), JSON 用 status:exists 表达幂等跳过",
+          "note": "audit 基线为 exits successfully unless --force；本刀是 validate/锁定不改退出码语义；重复 init 应幂等不报错，脚本靠 status 区分而非退出码。"
+        },
+        {
+          "q": "Q5: 测试范围与 JSON 可测性",
+          "answer": "A: 3 个行为测试 + 抽 JSON 纯函数测",
+          "note": "1) existing-config 无 force 不改写 config 且 Ok；2) --force 覆盖；3) --json 成功路径产出可 parse 的 status:initialized。JSON 构造抽成返回 serde_json::Value 的纯函数直接单测，避免捕获 stdout。"
+        }
+      ],
+      "notes": "Validated init existing-config behavior and implemented --json output. existing-config without --force is idempotent (does not overwrite config, exit 0); --force overwrites; --json emits a single structured envelope on stdout and suppresses human text. Success: {status:initialized, config_path, database_url, mode:local|url|mcp-only}; existing: {status:exists, config_path, hint}. JSON construction extracted to pure functions init_initialized_json/init_exists_json (unit-tested without stdout capture). 3 new tests. Verified: cargo test -p zbrain-cli init --lib (21 passed), --lib (86 passed)."
     }
   },
   "metadata": {
     "created": "2026-07-02 21:39:54",
-    "updated": "2026-07-03 02:40:14",
+    "updated": "2026-07-06 12:04:42",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART2_CONFIG_BOOTSTRAP.md"
   }
 }

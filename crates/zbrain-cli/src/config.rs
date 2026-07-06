@@ -541,7 +541,6 @@ fn apply_env_overrides(config: &mut Config) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
 
     #[test]
     fn sensitive_key_detection() {

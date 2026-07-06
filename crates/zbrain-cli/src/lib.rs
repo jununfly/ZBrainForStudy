@@ -1493,8 +1493,26 @@ fn slugify(s: &str) -> String {
         .join("-")
 }
 
-fn apply_init_embedding_args(config: &mut config::Config, args: &InitArgs) {
-    if let Some(model) = &args.embedding_model {
+/// Build the structured JSON payload for a successful `zbrain init`.
+fn init_initialized_json(config_path: &Path, database_url: &str, mode: &str) -> serde_json::Value {
+    serde_json::json!({
+        "status": "initialized",
+        "config_path": config_path.display().to_string(),
+        "database_url": database_url,
+        "mode": mode,
+    })
+}
+
+/// Build the structured JSON payload when an existing config is left untouched.
+fn init_exists_json(config_path: &Path) -> serde_json::Value {
+    serde_json::json!({
+        "status": "exists",
+        "config_path": config_path.display().to_string(),
+        "hint": "Use --force to overwrite, or `zbrain init --migrate-only` to apply schema changes",
+    })
+}
+
+fn apply_init_embedding_args(config: &mut config::Config, args: &InitArgs) {    if let Some(model) = &args.embedding_model {
         config.embedding.model = model.clone();
     }
     if let Some(dimensions) = args.embedding_dimensions {
@@ -1544,7 +1562,9 @@ fn validate_mcp_only_init_args(args: &InitArgs) -> anyhow::Result<()> {
 /// - Applies schema migrations
 /// - Handles `--force` to overwrite existing config
 async fn run_init_command(args: InitArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
-    println!("Setting up ZBrain...");
+    if !args.json {
+        println!("Setting up ZBrain...");
+    }
 
     // 1. Determine config location and ensure directory exists
     let config_file = config_path
@@ -1572,8 +1592,15 @@ async fn run_init_command(args: InitArgs, config_path: Option<&Path>) -> anyhow:
 
     // 2. Check for existing config and --force flag
     if config_file.exists() && !args.force {
-        println!("Config already exists at: {}", config_file.display());
-        println!("Use --force to overwrite, or `zbrain init --migrate-only` to apply schema changes");
+        if args.json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&init_exists_json(&config_file))?
+            );
+        } else {
+            println!("Config already exists at: {}", config_file.display());
+            println!("Use --force to overwrite, or `zbrain init --migrate-only` to apply schema changes");
+        }
         return Ok(());
     }
 
@@ -1604,7 +1631,18 @@ async fn run_init_command(args: InitArgs, config_path: Option<&Path>) -> anyhow:
             oauth_client_secret: args.oauth_client_secret,
         });
         config::write_config(&config, &config_file)?;
-        println!("ZBrain initialized: {}", config_file.display());
+        if args.json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&init_initialized_json(
+                    &config_file,
+                    &config.database_url,
+                    "mcp-only",
+                ))?
+            );
+        } else {
+            println!("ZBrain initialized: {}", config_file.display());
+        }
         return Ok(());
     }
 
@@ -1612,7 +1650,7 @@ async fn run_init_command(args: InitArgs, config_path: Option<&Path>) -> anyhow:
         anyhow::bail!("--supabase init is not implemented yet");
     }
 
-    if let Some(url) = args.url {
+    if let Some(ref url) = args.url {
         let engine_config = zbrain_core::engine::EngineConfig {
             database_url: Some(url.clone()),
             database_path: None,
@@ -1620,42 +1658,57 @@ async fn run_init_command(args: InitArgs, config_path: Option<&Path>) -> anyhow:
         let engine = zbrain_core::postgres::PostgresEngine::new();
         engine.connect(&engine_config).await?;
         engine.init_schema().await?;
-        config.database_url = url;
+        config.database_url = url.clone();
         config::write_config(&config, &config_file)?;
         engine.disconnect().await?;
-    } else {
-        let zbrain_home = if config_path.is_some() {
-            config_file
-                .parent()
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("."))
-        } else {
-            dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".zbrain")
-        };
-        let db_path = zbrain_home.join("brain.pglite");
-        if let Some(parent) = db_path.parent() {
-            std::fs::create_dir_all(parent).with_context(|| {
-                format!("Failed to create database directory: {}", parent.display())
-            })?;
-        }
-
-        let database_url = format!("sqlite://{}", db_path.display());
-        let engine_config = zbrain_core::engine::EngineConfig {
-            database_url: None,
-            database_path: Some(db_path.to_string_lossy().to_string()),
-        };
-        let engine = zbrain_core::libsql::LibsqlEngine::new();
-        engine.connect(&engine_config).await?;
-        engine.init_schema().await?;
-        config.database_url = database_url;
-        config::write_config(&config, &config_file)?;
-        engine.disconnect().await?;
+        emit_init_success(&args, &config_file, &config.database_url, "url");
+        return Ok(());
     }
 
-    println!("ZBrain initialized: {}", config_file.display());
+    let zbrain_home = if config_path.is_some() {
+        config_file
+            .parent()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."))
+    } else {
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".zbrain")
+    };
+    let db_path = zbrain_home.join("brain.pglite");
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!("Failed to create database directory: {}", parent.display())
+        })?;
+    }
+
+    let database_url = format!("sqlite://{}", db_path.display());
+    let engine_config = zbrain_core::engine::EngineConfig {
+        database_url: None,
+        database_path: Some(db_path.to_string_lossy().to_string()),
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+    config.database_url = database_url;
+    config::write_config(&config, &config_file)?;
+    engine.disconnect().await?;
+
+    emit_init_success(&args, &config_file, &config.database_url, "local");
     Ok(())
+}
+
+/// Emit either the human-readable success line or a structured JSON payload.
+fn emit_init_success(args: &InitArgs, config_file: &Path, database_url: &str, mode: &str) {
+    if args.json {
+        match serde_json::to_string_pretty(&init_initialized_json(config_file, database_url, mode))
+        {
+            Ok(rendered) => println!("{rendered}"),
+            Err(err) => eprintln!("Failed to render init JSON output: {err}"),
+        }
+    } else {
+        println!("ZBrain initialized: {}", config_file.display());
+    }
 }
 
 async fn run_init_migrate_only(args: &InitArgs, config_file: &Path) -> anyhow::Result<()> {
@@ -2376,6 +2429,93 @@ mod tests {
         assert_eq!(written.embedding.model, "text-embedding-3-small");
         assert_eq!(written.embedding.dimensions, Some(1536));
         assert!(!written.embedding.enabled);
+    }
+
+    #[tokio::test]
+    async fn init_existing_config_without_force_refuses_overwrite() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("zbrain.yml");
+
+        // Seed an existing config with a distinctive database_url.
+        let mut seeded = config::Config::default();
+        seeded.database_url = "sqlite:///seeded/existing.db".to_string();
+        config::write_config(&seeded, &config_path).unwrap();
+
+        let args = InitArgs {
+            pglite: false,
+            supabase: false,
+            url: None,
+            force: false,
+            migrate_only: false,
+            mcp_only: false,
+            json: false,
+            non_interactive: true,
+            issuer_url: None,
+            mcp_url: None,
+            oauth_client_id: None,
+            oauth_client_secret: None,
+            embedding_model: None,
+            no_embedding: false,
+            embedding_dimensions: None,
+        };
+
+        run_init_command(args, Some(&config_path)).await.unwrap();
+
+        let after = config::load_config_from_path(&config_path).unwrap();
+        assert_eq!(
+            after.database_url, "sqlite:///seeded/existing.db",
+            "existing config must not be overwritten without --force"
+        );
+    }
+
+    #[tokio::test]
+    async fn init_force_overwrites_existing_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("zbrain.yml");
+
+        // Seed an existing config with a distinctive database_url.
+        let mut seeded = config::Config::default();
+        seeded.database_url = "sqlite:///seeded/existing.db".to_string();
+        config::write_config(&seeded, &config_path).unwrap();
+
+        let args = InitArgs {
+            pglite: false,
+            supabase: false,
+            url: None,
+            force: true,
+            migrate_only: false,
+            mcp_only: false,
+            json: false,
+            non_interactive: true,
+            issuer_url: None,
+            mcp_url: None,
+            oauth_client_id: None,
+            oauth_client_secret: None,
+            embedding_model: None,
+            no_embedding: false,
+            embedding_dimensions: None,
+        };
+
+        run_init_command(args, Some(&config_path)).await.unwrap();
+
+        let after = config::load_config_from_path(&config_path).unwrap();
+        assert_ne!(
+            after.database_url, "sqlite:///seeded/existing.db",
+            "--force must overwrite the seeded database_url with a fresh local config"
+        );
+    }
+
+    #[test]
+    fn init_initialized_json_emits_structured_status() {
+        let value = init_initialized_json(
+            Path::new("/home/u/.zbrain/zbrain.yml"),
+            "sqlite:///home/u/.zbrain/brain.pglite",
+            "local",
+        );
+        assert_eq!(value["status"], "initialized");
+        assert_eq!(value["config_path"], "/home/u/.zbrain/zbrain.yml");
+        assert_eq!(value["database_url"], "sqlite:///home/u/.zbrain/brain.pglite");
+        assert_eq!(value["mode"], "local");
     }
 
     #[tokio::test]
