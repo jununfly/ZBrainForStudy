@@ -192,8 +192,12 @@ pub enum Commands {
     /// Manage configuration values
     Config(ConfigArgs),
 
-    /// Print database schema SQL
-    Schema(SchemaArgs),
+    /// Print database schema SQL (DDL for the selected backend).
+    ///
+    /// Renamed from `schema`: the bare `schema` name is reserved for a future
+    /// port of the TS schema-pack manager (see UNMIGRATED_TS_SCHEMA_PACK_VERBS).
+    #[command(name = "schema-sql")]
+    SchemaSql(SchemaArgs),
 
     /// Read a page by slug
     GetPage(GetPageArgs),
@@ -521,7 +525,7 @@ pub enum ConfigAction {
     },
 }
 
-/// Arguments for `zbrain schema` command.
+/// Arguments for `zbrain schema-sql` command.
 #[derive(Debug, Parser)]
 pub struct SchemaArgs {
     /// Which backend schema to print
@@ -660,7 +664,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Init(args) => run_init_command(args, cli.config.as_deref()).await?,
         Commands::Doctor(args) => run_doctor_command(args, cli.config.as_deref()).await?,
         Commands::Config(args) => run_config_command(args, cli.config.as_deref()).await?,
-        Commands::Schema(args) => run_schema_command(args)?,
+        Commands::SchemaSql(args) => run_schema_command(args)?,
         Commands::GetPage(args) => run_get_page_command(args, cli.config.as_deref()).await?,
         Commands::Think(args) => run_think_command(args, cli.config.as_deref()).await?,
         Commands::Query(args) => run_query_command(args, cli.config.as_deref()).await?,
@@ -1984,10 +1988,37 @@ async fn run_doctor_command(args: DoctorArgs, config_path: Option<&Path>) -> any
     Ok(())
 }
 
-/// Execute `zbrain schema` command.
+/// FUTURE(schema-pack): The TS `zbrain schema` command was NOT a DDL dumper —
+/// it was a 1166-line schema-pack manager (Schema Cathedral v3) exposing the
+/// 32-verb taxonomy below. None of it is migrated to Rust yet. The Rust DDL
+/// dumper was renamed `schema` -> `schema-sql` (roadmap 1-4) precisely to free
+/// up the `schema` name for that future port.
 ///
-/// Prints the database schema SQL for the specified backend.
-/// Supports: libsql (default), postgres
+/// This constant is the hard trace: a later agent can grep
+/// `UNMIGRATED_TS_SCHEMA_PACK_VERBS` (or `FUTURE(schema-pack)`) to find the
+/// tracking point. Migrating the manager means wiring these verbs under a new
+/// `schema` subcommand tree and removing them from here. The anchor test
+/// guards against silent removal. Full detail: TS src/commands/schema.ts
+/// @ 5d5b404~1, and docs/plans/2026-07-06-schema-rename-audit.md.
+const UNMIGRATED_TS_SCHEMA_PACK_VERBS: &[&str] = &[
+    // Inspection
+    "active", "list", "show", "validate", "graph", "lint", "stats", "explain", "usage",
+    // Activation
+    "use", "downgrade", "reload",
+    // Authoring
+    "init", "fork", "edit", "diff",
+    "add-type", "remove-type", "update-type",
+    "add-alias", "remove-alias", "add-prefix", "remove-prefix",
+    "add-link-type", "remove-link-type",
+    "set-extractable", "set-expert-routing",
+    // Discovery + repair
+    "detect", "suggest", "review-candidates", "review-orphans", "sync",
+];
+
+/// Execute `zbrain schema-sql` command.
+///
+/// Prints the database schema SQL (DDL) for the specified backend.
+/// Supports: libsql (default), postgres.
 fn run_schema_command(args: SchemaArgs) -> anyhow::Result<()> {
     let backend = args.backend.to_lowercase();
 
@@ -2707,19 +2738,43 @@ mod tests {
     }
 
     #[test]
-    fn schema_command_parses_default() {
-        let result = Cli::try_parse_from(["zbrain", "schema"]);
+    fn schema_sql_command_parses_default() {
+        // The DDL dumper is `schema-sql` (renamed from `schema`, which was a
+        // naming bug: TS `schema` is a schema-pack manager, not a DDL dumper).
+        let result = Cli::try_parse_from(["zbrain", "schema-sql"]);
         assert!(result.is_ok());
         let cli = result.unwrap();
-        assert!(matches!(cli.command, Commands::Schema(args) if args.backend == "libsql"));
+        assert!(matches!(cli.command, Commands::SchemaSql(args) if args.backend == "libsql"));
     }
 
     #[test]
-    fn schema_command_postgres_parses() {
-        let result = Cli::try_parse_from(["zbrain", "schema", "--backend", "postgres"]);
+    fn schema_sql_command_postgres_parses() {
+        let result = Cli::try_parse_from(["zbrain", "schema-sql", "--backend", "postgres"]);
         assert!(result.is_ok());
         let cli = result.unwrap();
-        assert!(matches!(cli.command, Commands::Schema(args) if args.backend == "postgres"));
+        assert!(matches!(cli.command, Commands::SchemaSql(args) if args.backend == "postgres"));
+    }
+
+    #[test]
+    fn bare_schema_name_is_no_longer_the_ddl_dumper() {
+        // `schema` is deliberately freed up for a future schema-pack manager
+        // migration; the breaking rename has no compatibility alias.
+        let result = Cli::try_parse_from(["zbrain", "schema"]);
+        assert!(result.is_err(), "bare `schema` should no longer parse as the DDL dumper");
+    }
+
+    #[test]
+    fn unmigrated_ts_schema_pack_verbs_are_anchored() {
+        // Hard trace (mirrors doctor's UNMIGRATED_TS_DOCTOR_CHECKS): the TS
+        // `schema` command was a 34-verb schema-pack manager, none of which is
+        // migrated. This constant + a FUTURE anchor comment let a later agent
+        // grep the tracking point back. Guards against silent removal.
+        let n = UNMIGRATED_TS_SCHEMA_PACK_VERBS.len();
+        assert_eq!(n, 32, "expected the full TS schema-pack verb taxonomy (32 verbs), got {n}");
+        // A couple of representative verbs must be present so a rename/typo in
+        // the list is caught, not just a length change.
+        assert!(UNMIGRATED_TS_SCHEMA_PACK_VERBS.contains(&"add-link-type"));
+        assert!(UNMIGRATED_TS_SCHEMA_PACK_VERBS.contains(&"review-candidates"));
     }
 
     #[tokio::test]
@@ -3262,7 +3317,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_executes_schema_stub() {
-        let cli = Cli::try_parse_from(["zbrain", "schema"]).unwrap();
+        let cli = Cli::try_parse_from(["zbrain", "schema-sql"]).unwrap();
         let result = run(cli).await;
         assert!(result.is_ok());
     }

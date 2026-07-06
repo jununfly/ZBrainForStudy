@@ -139,13 +139,39 @@
     },
     "1-4": {
       "id": "1-4",
-      "label": "schema command strict TS flag parity",
-      "status": "pending",
+      "label": "rename schema DDL dumper to schema-sql and trace unmigrated schema-pack",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "Q1: 本刀 parity 尺度 / Rust schema 命名冲突处理",
+          "answer": "A: Rust schema 是 DDL dumper(遍历 LIBQL/POSTGRES_MIGRATIONS 打印建表 SQL),与 TS schema(1166行 schema-pack 管理器/34 verbs)语义零重叠——不是恰巧同名,是 2026-06-25 audit 看错 TS schema.ts(记成 ~150 行 DDL dumper,实为 pack 管理器)导致的命名 bug。本刀重定义为诚实的命名修正:把 Rust DDL dumper 重命名为 schema-sql,腾出 schema 名字给未来真正的 schema-pack 迁移;不复刻 34 verbs。",
+          "note": "证据: schema.ts 从 3c1cc8a(Cathedral v3)起 1166 行 pack 管理器,3c1cc8a~1 已是 795 行 pack 管理器(v0.38 Phase C)——TS schema 从来不是 DDL dumper。真实 TS DDL 能力散在 apply-migrations/migrate/core/pglite-schema。Rust 实现的是 audit 想象中的 schema。改名 schema-sql: 最小改动/语义精准/clap kebab-case 惯例。"
+        },
+        {
+          "q": "Q2: 旧 schema 名是否保留 hidden alias",
+          "answer": "A: 不保留 alias,直接破坏性改名 schema -> schema-sql。符合 AGENTS.md 第一阶段无兼容层立场(no online users, no GBrain aliases/fallbacks)。加 alias 会让 schema 名继续被 DDL dumper 占用,与腾出名字给未来 schema-pack 迁移冲突。",
+          "note": "AGENTS.md: 'Do not add GBrain aliases or compatibility fallbacks in the first cleanup phase. There are no online users yet.' 破坏性改名正是第一阶段允许的。"
+        },
+        {
+          "q": "Q3: schema-pack(34 verb 管理器)未迁移留痕方式",
+          "answer": "A: 代码常量 UNMIGRATED_TS_SCHEMA_PACK_VERBS(34 verb 名) + 测试锚点(非空&数量区间,防静默删除) + audit 记录整个 schema-pack 子系统未迁移。常量注释说明 schema 名字预留给此迁移。",
+          "note": "延续 doctor UNMIGRATED_TS_DOCTOR_CHECKS 硬留痕模式,给后续 agent 最硬信号。文档易被忽略,代码常量+测试才是硬约束。"
+        },
+        {
+          "q": "Q4: schema-sql DDL dumper 是否补 flag parity",
+          "answer": "A: 只做重命名,DDL dumper flag 现状不动(不加 --json)。DDL dumper 输出纯 SQL 文本,--json 无消费场景;未知 backend exit(1) 已 fail-loud。本刀核心价值是命名修正,不塞附加功能,保持垂直切片聚焦。",
+          "note": "YAGNI: --json 无实际消费者(不像 doctor 有 CI 契约)。--backend 已支持 libsql/sqlite/pglite 与 postgres/pg 多别名且未知值 fail-loud,无需收紧。"
+        },
+        {
+          "q": "Q5: 节点重命名与 schema-pack 迁移跟踪点",
+          "answer": "A: 不新建 sub-node。旧名 'strict TS flag parity' 是基于错误 audit 的伪命题(TS schema 是 pack 管理器,不存在可对齐的 flag parity),已被证伪而非推迟。schema-pack 34-verb 迁移不属 Part2 config/bootstrap 范围,用代码文件注释 + UNMIGRATED_TS_SCHEMA_PACK_VERBS 常量作为未来找回点,不在本 roadmap 开节点。",
+          "note": "用户补充: schema-pack 34-verb 迁移处在代码文件中加一条显式注释(TODO/FUTURE 锚点),方便未来 agent grep 找回跟踪点。label 从 'schema command strict TS flag parity' 改为命名修正+留痕。"
+        }
+      ],
+      "notes": "重命名 schema->schema-sql; UNMIGRATED_TS_SCHEMA_PACK_VERBS(32) + FUTURE(schema-pack) 注释锚点; audit docs/plans/2026-07-06-schema-rename-audit.md; --lib 101 passed"
     },
     "1-5": {
       "id": "1-5",
@@ -391,7 +417,7 @@
   },
   "metadata": {
     "created": "2026-07-02 21:39:54",
-    "updated": "2026-07-06 15:25:48",
+    "updated": "2026-07-06 16:11:23",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART2_CONFIG_BOOTSTRAP.md"
   }
 }
