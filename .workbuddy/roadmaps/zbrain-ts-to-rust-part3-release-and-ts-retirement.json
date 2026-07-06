@@ -12,13 +12,19 @@
       "children": [
         "1-1",
         "1-2",
-        "1-3"
+        "1-3",
+        "1-4"
       ],
       "decisions": [
         {
           "q": "part3 从何而来 + 三节点是否已确认实施顺序？",
           "answer": "part2 节点 1-6(migration cleanup) Q4/Q5 决策移交: 1-6 只清能无损删的死残留(死 build script/死 allowlist 项/失效 build 命令文档链接)，扛不动且有本机验证盲区的(mac/linux 交叉编译产物 + openclaw 清单语义)诚实移交到此。1-1/1-2/1-3 仅为移交锚点，实施顺序与切片待开 part3 时用 grill-me 逐题确认，不代表已确认。",
           "note": "1-3(TS退役)硬依赖 1-1(发布链切 Rust)完成，否则 src/cli.ts 仍是活发布入口不能删"
+        },
+        {
+          "q": "Q1: part3 本轮 grill 策略 + 第一刀选哪块？",
+          "answer": "A: 本轮只定 part3 全局排序 + 聚焦第一刀展开到可 TDD 切片；1-1/1-3 保持 explore 锚点各自开工前再单独 grill。第一刀锁 1-2 子系统补齐",
+          "note": "第一刀选 1-2 而非 1-1: (1) 1-3 依赖 1-1、1-1 有本机验证盲区(mac/linux 交叉编译无法在此验证)——两块都带外部阻塞; (2) 1-2 三 flag 落点 1-8 已 audit 清楚有 FUTURE 锚点、纯 Rust 内可测可验、唯一能立即 TDD 无盲区的块。符合先动能动的、诚实对待扛不动的、不做一次性大设计"
         }
       ],
       "notes": ""
@@ -35,12 +41,27 @@
     },
     "1-2": {
       "id": "1-2",
-      "label": "子系统补齐(1-8 审计移交): progress reporter (--quiet/--progress-json/--progress-interval) + MCP timeout (--timeout) + search attribution/rerank (--explain)",
+      "label": "子系统补齐(1-8 审计移交): MCP timeout (--timeout) + progress reporter (--quiet/--progress-json/--progress-interval)",
       "status": "pending",
       "mode": "explore",
       "parent": "1",
-      "children": [],
-      "decisions": [],
+      "children": [
+        "1-2-1",
+        "1-2-2",
+        "1-2-3"
+      ],
+      "decisions": [
+        {
+          "q": "Q2: 1-2 三块(timeout/progress/explain-rerank)关系怎么摆？--explain/rerank 留不留 1-2？",
+          "answer": "C: 1-2 只收 timeout + progress 两块(能纯 Rust 干净落地的补齐)；把 --explain/rerank 从 1-2 剥出升格为 part3 独立节点 1-4(其本质是 search rerank+分阶段归因子系统迁移，非补个 flag，doctor 已标 reranker_health=UNMIGRATED_TS)",
+          "note": "塞进'flag 补齐'会让 1-2 范围失真且极可能卡住 1-2 收口(同 1-8 pending 子节点卡死父节点教训)；timeout+progress 是真能当补齐干净做完的，rerank 剥出独立跟踪更诚实。1-2 label 需相应收窄(去掉 search attribution)"
+        },
+        {
+          "q": "Q3: 1-2 内部两块怎么切+先做哪个？",
+          "answer": "A: 拆两个有序 sub-node 先小后大——1-2-1 MCP timeout(--timeout 接进 Client，路由骨架已在，最小自洽刀) → 1-2-2 progress reporter(三态+节流，横切 op)。先用 timeout 小刀验证 part3 TDD 节奏，再啃 progress",
+          "note": "符合 tracer bullet 一次一薄片先做小而自洽；timeout 骨架已在能立刻红绿是理想开胃刀。progress reporter 需探 TS src/core/progress.ts 源，该探查放进 1-2-2 开工时做，不为整个 1-2 单开 audit 刀"
+        }
+      ],
       "notes": ""
     },
     "1-3": {
@@ -52,11 +73,67 @@
       "children": [],
       "decisions": [],
       "notes": ""
+    },
+    "1-4": {
+      "id": "1-4",
+      "label": "search rerank + 分阶段归因子系统迁移(--explain): Rust query 现为硬编码关键字加权，需迁 rerank/boost/attribution stages (doctor reranker_health=UNMIGRATED_TS)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-2-1": {
+      "id": "1-2-1",
+      "label": "MCP per-call timeout wiring (--timeout): 把 timeout 值接进 McpClient 的 http Client，消费已有 RemoteMcpError::Timeout 路由骨架",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-2",
+      "children": [],
+      "decisions": [
+        {
+          "q": "Q4: --timeout 在 Rust clap 怎么放 + 作用域诚实性？TS 是全局 flag 但只对 thin-client MCP 生效",
+          "answer": "A: clap 顶层全局 --timeout <VALUE>(对齐 TS 全局任意位置)，但作用域诚实——只有 thin-client 路径消费；本地模式传了则 stderr 警告'本地模式忽略 --timeout(仅 thin-client MCP 调用生效)'不静默",
+          "note": "TS 现状本地传 --timeout 静默忽略(带小谎)；迁移时一句 stderr 警告诚实化成本一行符合 fail-loud、又不重蹈 1-3 --offline 静默哑 flag。B 静态挂载 vs 动态 local_only() 判断对不齐会错配；C 忠实复刻但把 TS 小毛病一起搬"
+        },
+        {
+          "q": "Q4-修正(撤销Q4原判): explore 坐实 TS --timeout 有两类消费者，Q4 原premise错。(1)thin-client MCP 路由(cli.ts:301-303 think 180s/else 30s，默认在分派层注入，mcp-client 机制层缺省无 timeout); (2)本地 read-only wallclock(cli.ts:1125-1170 v0.41.6.0 search 30s/sources-list 10s connect+dispatch 超时 exit 124)。1-2-1 边界重定？",
+          "answer": "A: 1-2-1 只做 thin-client MCP timeout(骨架已在能红绿)。本地 read-only wallclock(withTimeout+connectEngine超时+exit124)是独立未迁特性，新建 1-2-3 锚点跟踪本刀不做。--timeout clap 全局 flag 照挂但本刀只 thin-client 路径消费；本地路径过渡期 stderr 警告'尚未接通本地超时'(诚实标记未完成，非永久忽略)",
+          "note": "撤销 Q4 原'本地模式忽略--timeout'判断(基于错误认知——本地 search/sources-list 是真消费者)。B 连带迁 withTimeout/connectEngine-timeout 基础设施体量爆炸违反最小切片；C 不建锚点会让真实缺口失追踪"
+        },
+        {
+          "q": "Q5: 1-2-1 解析格式+默认值语义怎么定？(TS parseTimeout: 30000/ms/s/m+小数, 非正->null fall-through; 默认 think 180s/else 30s @cli.ts:302; thin-client 超时 RemoteMcpError::Timeout)",
+          "answer": "A: (1)解析 Rust parse_timeout(&str)->Option<u64> 逐字对齐 TS 正则(ms/s/m+小数,非正->None)作 clap value_parser，但解析失败 fail-loud exit 2(丢弃 TS 软 fall-through 历史包袱，唯一有意偏离记 audit); (2)默认逐字对齐 TS 分派层 think 180s/else 30s，--timeout override，接进 McpClient reqwest Client timeout(Duration)，超时映射 RemoteMcpError::Timeout",
+          "note": "默认值已 explore 坐实(cli.ts:302 真实存在)非猜测该照迁；B 不设默认反丢 TS 真实行为；C 搬软 fall-through 历史包袱没必要"
+        }
+      ],
+      "notes": "DONE (TDD, 17 new tests, 118 pass). parse_timeout(&str)->Option<u64> 逐字对齐 TS parseTimeout 正则(整数/小数+ms/s/m,非正->None); 严格拒绝科学计数法/前导符号/裸小数(f64::parse 会接受,故加 is_ts_timeout_magnitude 字符类守卫)。clap 顶层全局 --timeout <DURATION> value_parser=parse_timeout_clap; 解析失败 clap ValueValidation -> exit 2(fail-loud,唯一有意偏离 TS 软 fall-through,已记 audit)。resolve_timeout_ms(op,override): think 180s/else 30s 对齐 cli.ts:302,override 优先。McpClient::new(config,Duration) 用 Client::builder().timeout(dur); map_reqwest_error: is_timeout()->RemoteMcpError::Timeout, 否则 TransportError。timeout 值从 run()->8 个 op 命令->run_operation->McpClient 全程线程化。本地路径 local_timeout_warning 传了 --timeout 时 stderr 警告(诚实标记,非静默,1-2-3 跟踪本地 wallclock)。旧 FUTURE(mcp-timeout) 注释已替换为现状说明。binary 冒烟: --timeout=nonsense rc=2, --help 展示 flag。clippy 新增代码零告警。"
+    },
+    "1-2-2": {
+      "id": "1-2-2",
+      "label": "progress reporter (--quiet/--progress-json/--progress-interval): 迁 TS src/core/progress.ts 三态+interval 节流，横切 op 进度上报",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-2",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-2-3": {
+      "id": "1-2-3",
+      "label": "local read-only wallclock timeout (--timeout 第二消费者): 迁 TS cli.ts:1125-1170 v0.41.6.0 特性——search 30s/sources-list 10s 的 connect+dispatch wallclock 超时 + exit 124；依赖 withTimeout/connectEngine-timeout 基础设施(Rust 未迁)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-2",
+      "children": [],
+      "decisions": [],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-06 17:51:37",
-    "updated": "2026-07-06 17:52:29",
-    "md_file": ""
+    "updated": "2026-07-06 19:15:23",
+    "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART3_RELEASE_AND_TS_RETIREMENT.md"
   }
 }

@@ -161,6 +161,115 @@ pub fn banner() -> String {
     )
 }
 
+/// Whether `s` matches the TS timeout magnitude class `[0-9]+(?:\.[0-9]+)?`:
+/// one or more ASCII digits, optionally followed by a single `.` and one or
+/// more ASCII digits. No sign, no exponent, no bare `.5` or `5.`.
+fn is_ts_timeout_magnitude(s: &str) -> bool {
+    let mut parts = s.splitn(2, '.');
+    let int_part = parts.next().unwrap_or("");
+    if int_part.is_empty() || !int_part.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    match parts.next() {
+        None => true, // no decimal point
+        Some(frac) => !frac.is_empty() && frac.bytes().all(|b| b.is_ascii_digit()),
+    }
+}
+
+/// Parse a `--timeout` value into milliseconds.
+///
+/// Mirrors `parseTimeout` in `src/core/cli-options.ts` character-for-character:
+/// accepts an integer or decimal magnitude with an optional `ms`/`s`/`m` unit
+/// suffix (no suffix defaults to `ms`). Non-positive or malformed values return
+/// `None`.
+///
+/// Unlike the TS global-flag parser (which fell through to the per-command
+/// parser on `None`), the Rust clap wiring treats `None` as a hard parse
+/// failure (exit 2) — a deliberate, audited departure from the TS soft
+/// fall-through (roadmap 1-2-1 Q5).
+#[must_use]
+pub fn parse_timeout(s: &str) -> Option<u64> {
+    let s = s.trim();
+    // Split trailing unit suffix (ms/s/m); default to ms when absent.
+    let (num_part, unit) = if let Some(rest) = s.strip_suffix("ms") {
+        (rest, "ms")
+    } else if let Some(rest) = s.strip_suffix('s') {
+        (rest, "s")
+    } else if let Some(rest) = s.strip_suffix('m') {
+        (rest, "m")
+    } else {
+        (s, "ms")
+    };
+
+    // Enforce the TS regex magnitude class `[0-9]+(?:\.[0-9]+)?` exactly:
+    // one or more digits, an optional single `.` followed by one or more
+    // digits. This rejects things Rust's `f64::parse` would otherwise accept
+    // (scientific notation `1e3`, leading `+`, `inf`/`nan`, `.5`, `5.`).
+    if !is_ts_timeout_magnitude(num_part) {
+        return None;
+    }
+
+    let n: f64 = num_part.parse().ok()?;
+    if !n.is_finite() || n <= 0.0 {
+        return None;
+    }
+
+    let ms = match unit {
+        "ms" => n,
+        "s" => n * 1000.0,
+        "m" => n * 60_000.0,
+        _ => unreachable!(),
+    };
+    Some(ms.floor() as u64)
+}
+
+/// clap `value_parser` adapter for `--timeout`.
+///
+/// Returns the resolved millisecond count, or an `Err(String)` that clap
+/// renders to stderr and exits with code 2. This is the deliberate,
+/// audited departure from the TS soft fall-through (roadmap 1-2-1 Q5):
+/// a bad `--timeout` is a hard usage error, not a silently-ignored flag.
+fn parse_timeout_clap(s: &str) -> Result<u64, String> {
+    parse_timeout(s).ok_or_else(|| {
+        format!("invalid timeout '{s}': expected a positive value like 30s, 1500ms, or 2m")
+    })
+}
+
+/// Default per-call timeout in milliseconds for `think`.
+/// Mirrors the TS dispatch-layer default at `src/cli.ts:302`.
+const THINK_DEFAULT_TIMEOUT_MS: u64 = 180_000;
+/// Default per-call timeout in milliseconds for all other operations.
+const DEFAULT_TIMEOUT_MS: u64 = 30_000;
+
+/// Resolve the effective per-call timeout for an operation.
+///
+/// Mirrors `src/cli.ts:302-303`: `think` defaults to 180s, everything else to
+/// 30s, and a user-supplied `--timeout` (already resolved to milliseconds)
+/// overrides the default.
+#[must_use]
+fn resolve_timeout_ms(op_name: &str, cli_timeout_ms: Option<u64>) -> u64 {
+    cli_timeout_ms.unwrap_or(if op_name == "think" {
+        THINK_DEFAULT_TIMEOUT_MS
+    } else {
+        DEFAULT_TIMEOUT_MS
+    })
+}
+
+/// Honest warning for `--timeout` on the local (non-thin-client) path.
+///
+/// Roadmap 1-2-1 Q4-修正: the local read-only wall-clock timeout is a separate
+/// unmigrated feature (tracked by 1-2-3). Until it lands, a `--timeout` on the
+/// local path has no effect — but we refuse to silently swallow it (no
+/// `--offline`-style dead flag). Returns `Some(message)` to print to stderr
+/// when the user supplied `--timeout`, or `None` when there is nothing to say.
+#[must_use]
+fn local_timeout_warning(cli_timeout_ms: Option<u64>) -> Option<String> {
+    cli_timeout_ms.map(|_| {
+        "warning: --timeout has no effect in local mode yet (only thin-client MCP calls honor it); local timeout support is pending"
+            .to_string()
+    })
+}
+
 /// ZBrain command-line interface.
 #[derive(Debug, Parser)]
 #[command(name = "zbrain")]
@@ -174,6 +283,16 @@ pub struct Cli {
     /// Enable debug logging
     #[arg(short, long, global = true)]
     pub debug: bool,
+
+    /// Per-call timeout for thin-client-routed MCP calls.
+    ///
+    /// Accepts a bare millisecond count or a `Ns`/`Nms`/`Nm` value (e.g.
+    /// `30s`, `1500ms`, `2m`). Mirrors the TS global `--timeout` flag; only
+    /// thin-client-routed operations consume it today (local operations warn
+    /// on stderr — see roadmap 1-2-1 / 1-2-3). Invalid values fail loudly with
+    /// exit 2 rather than silently falling through.
+    #[arg(long, global = true, value_parser = parse_timeout_clap, value_name = "DURATION")]
+    pub timeout: Option<u64>,
 
     /// Subcommand to execute
     #[command(subcommand)]
@@ -670,19 +789,20 @@ pub struct SyncArgs {
 
 /// Execute the parsed CLI command.
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
+    let timeout_ms = cli.timeout;
     match cli.command {
         Commands::Init(args) => run_init_command(args, cli.config.as_deref()).await?,
         Commands::Doctor(args) => run_doctor_command(args, cli.config.as_deref()).await?,
         Commands::Config(args) => run_config_command(args, cli.config.as_deref()).await?,
         Commands::SchemaSql(args) => run_schema_command(args)?,
-        Commands::GetPage(args) => run_get_page_command(args, cli.config.as_deref()).await?,
-        Commands::Think(args) => run_think_command(args, cli.config.as_deref()).await?,
-        Commands::Query(args) => run_query_command(args, cli.config.as_deref()).await?,
-        Commands::PutPage(args) => run_put_page_command(args, cli.config.as_deref()).await?,
-        Commands::DeletePage(args) => run_delete_page_command(args, cli.config.as_deref()).await?,
-        Commands::RestorePage(args) => run_restore_page_command(args, cli.config.as_deref()).await?,
-        Commands::PurgeDeletedPages(args) => run_purge_deleted_pages_command(args, cli.config.as_deref()).await?,
-        Commands::ListPages(args) => run_list_pages_command(args, cli.config.as_deref()).await?,
+        Commands::GetPage(args) => run_get_page_command(args, cli.config.as_deref(), timeout_ms).await?,
+        Commands::Think(args) => run_think_command(args, cli.config.as_deref(), timeout_ms).await?,
+        Commands::Query(args) => run_query_command(args, cli.config.as_deref(), timeout_ms).await?,
+        Commands::PutPage(args) => run_put_page_command(args, cli.config.as_deref(), timeout_ms).await?,
+        Commands::DeletePage(args) => run_delete_page_command(args, cli.config.as_deref(), timeout_ms).await?,
+        Commands::RestorePage(args) => run_restore_page_command(args, cli.config.as_deref(), timeout_ms).await?,
+        Commands::PurgeDeletedPages(args) => run_purge_deleted_pages_command(args, cli.config.as_deref(), timeout_ms).await?,
+        Commands::ListPages(args) => run_list_pages_command(args, cli.config.as_deref(), timeout_ms).await?,
         Commands::ServeMcp(args) => run_serve_mcp_command(args, cli.config.as_deref()).await?,
         Commands::ServeHttp(args) => run_serve_http_command(args, cli.config.as_deref()).await?,
         Commands::Sync(args) => run_sync_command(args, cli.config.as_deref()).await?,
@@ -693,7 +813,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
 }
 
 /// Execute `zbrain think` command.
-async fn run_think_command(args: ThinkArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+async fn run_think_command(args: ThinkArgs, config_path: Option<&Path>, timeout_ms: Option<u64>) -> anyhow::Result<()> {
     let params = serde_json::json!({
         "question": args.question,
         "anchor": args.anchor,
@@ -703,28 +823,28 @@ async fn run_think_command(args: ThinkArgs, config_path: Option<&Path>) -> anyho
         "until": args.until,
     });
 
-    let output = run_operation("think", params, config_path).await?;
+    let output = run_operation("think", params, config_path, timeout_ms).await?;
 
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }
 
 /// Execute `zbrain get-page` command.
-async fn run_get_page_command(args: GetPageArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+async fn run_get_page_command(args: GetPageArgs, config_path: Option<&Path>, timeout_ms: Option<u64>) -> anyhow::Result<()> {
     let params = serde_json::json!({
         "slug": args.slug,
         "fuzzy": args.fuzzy,
         "include_deleted": args.include_deleted,
     });
 
-    let output = run_operation("get_page", params, config_path).await?;
+    let output = run_operation("get_page", params, config_path, timeout_ms).await?;
 
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }
 
 /// Execute `zbrain query` command.
-async fn run_query_command(args: QueryArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+async fn run_query_command(args: QueryArgs, config_path: Option<&Path>, timeout_ms: Option<u64>) -> anyhow::Result<()> {
     let params = serde_json::json!({
         "query": args.query,
         "limit": args.limit,
@@ -732,14 +852,14 @@ async fn run_query_command(args: QueryArgs, config_path: Option<&Path>) -> anyho
         "source_id": args.source_id,
     });
 
-    let output = run_operation("query", params, config_path).await?;
+    let output = run_operation("query", params, config_path, timeout_ms).await?;
 
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }
 
 /// Execute `zbrain put-page` command.
-async fn run_put_page_command(args: PutPageArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+async fn run_put_page_command(args: PutPageArgs, config_path: Option<&Path>, timeout_ms: Option<u64>) -> anyhow::Result<()> {
     // Get content from --content flag or stdin
     let content = match args.content {
         Some(c) => c,
@@ -757,38 +877,38 @@ async fn run_put_page_command(args: PutPageArgs, config_path: Option<&Path>) -> 
         "compiled_truth": content,
     });
 
-    let output = run_operation("put_page", params, config_path).await?;
+    let output = run_operation("put_page", params, config_path, timeout_ms).await?;
 
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }
 
 /// Execute `zbrain delete-page` command.
-async fn run_delete_page_command(args: DeletePageArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+async fn run_delete_page_command(args: DeletePageArgs, config_path: Option<&Path>, timeout_ms: Option<u64>) -> anyhow::Result<()> {
     let params = serde_json::json!({
         "slug": args.slug,
     });
 
-    let output = run_operation("delete_page", params, config_path).await?;
+    let output = run_operation("delete_page", params, config_path, timeout_ms).await?;
 
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }
 
 /// Execute `zbrain restore-page` command.
-async fn run_restore_page_command(args: RestorePageArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+async fn run_restore_page_command(args: RestorePageArgs, config_path: Option<&Path>, timeout_ms: Option<u64>) -> anyhow::Result<()> {
     let params = serde_json::json!({
         "slug": args.slug,
     });
 
-    let output = run_operation("restore_page", params, config_path).await?;
+    let output = run_operation("restore_page", params, config_path, timeout_ms).await?;
 
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }
 
 /// Execute `zbrain purge-deleted-pages` command.
-async fn run_purge_deleted_pages_command(args: PurgeDeletedPagesArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+async fn run_purge_deleted_pages_command(args: PurgeDeletedPagesArgs, config_path: Option<&Path>, timeout_ms: Option<u64>) -> anyhow::Result<()> {
     // --force is required as a safety measure
     if !args.force {
         eprintln!("Error: --force flag is required to permanently purge deleted pages");
@@ -799,14 +919,14 @@ async fn run_purge_deleted_pages_command(args: PurgeDeletedPagesArgs, config_pat
         "older_than_days": null,
     });
 
-    let output = run_operation("purge_deleted_pages", params, config_path).await?;
+    let output = run_operation("purge_deleted_pages", params, config_path, timeout_ms).await?;
 
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }
 
 /// Execute `zbrain list-pages` command.
-async fn run_list_pages_command(args: ListPagesArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+async fn run_list_pages_command(args: ListPagesArgs, config_path: Option<&Path>, timeout_ms: Option<u64>) -> anyhow::Result<()> {
     let params = serde_json::json!({
         "kind": args.page_type,
         "tag": args.tag,
@@ -815,7 +935,7 @@ async fn run_list_pages_command(args: ListPagesArgs, config_path: Option<&Path>)
         "include_deleted": args.include_deleted,
     });
 
-    let output = run_operation("list_pages", params, config_path).await?;
+    let output = run_operation("list_pages", params, config_path, timeout_ms).await?;
 
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
@@ -1129,6 +1249,7 @@ async fn run_operation(
     name: &str,
     params: serde_json::Value,
     config_path: Option<&Path>,
+    cli_timeout_ms: Option<u64>,
 ) -> anyhow::Result<serde_json::Value> {
     // Load config and create engine
     let config_file = config_path
@@ -1171,8 +1292,12 @@ async fn run_operation(
             std::process::exit(1);
         }
 
-        // Non-local-only operations: route through remote MCP
-        let mcp_client = mcp_client::McpClient::new(config);
+        // Non-local-only operations: route through remote MCP.
+        // Resolve the per-call timeout: `think` -> 180s, else 30s, with a
+        // user-supplied `--timeout` override (threaded via cli_timeout_ms).
+        let timeout_ms = resolve_timeout_ms(name, cli_timeout_ms);
+        let mcp_client =
+            mcp_client::McpClient::new(config, std::time::Duration::from_millis(timeout_ms));
         let result = mcp_client.call_tool(name, params).await.map_err(|e| {
             eprintln!("Remote MCP call failed: {}", e);
             std::process::exit(1);
@@ -1180,7 +1305,12 @@ async fn run_operation(
         return Ok(result);
     }
 
-    // Local mode: execute against local engine
+    // Local mode: execute against local engine.
+    // Roadmap 1-2-1 Q4-修正: --timeout does not affect local ops yet (tracked
+    // by 1-2-3). Warn on stderr rather than silently swallowing it.
+    if let Some(msg) = local_timeout_warning(cli_timeout_ms) {
+        eprintln!("{msg}");
+    }
     let engine_config = zbrain_core::engine::EngineConfig {
         database_path: None,
         database_url: Some(config.database_url),
@@ -2346,6 +2476,128 @@ mod tests {
     #[test]
     fn cli_parses_successfully() {
         Cli::command().debug_assert();
+    }
+
+    // ── --timeout parsing (mirrors TS parseTimeout in src/core/cli-options.ts) ──
+
+    #[test]
+    fn parse_timeout_seconds_suffix() {
+        // "30s" -> 30000ms (tracer bullet: the suffix path works end-to-end)
+        assert_eq!(parse_timeout("30s"), Some(30_000));
+    }
+
+    #[test]
+    fn parse_timeout_minutes_suffix() {
+        assert_eq!(parse_timeout("2m"), Some(120_000));
+    }
+
+    #[test]
+    fn parse_timeout_plain_number_defaults_to_ms() {
+        // No suffix means milliseconds (TS: `unit ?? 'ms'`).
+        assert_eq!(parse_timeout("30000"), Some(30_000));
+    }
+
+    #[test]
+    fn parse_timeout_explicit_ms_suffix() {
+        assert_eq!(parse_timeout("30000ms"), Some(30_000));
+    }
+
+    #[test]
+    fn parse_timeout_decimal_seconds_floors() {
+        // "1.5s" -> 1500ms; TS applies Math.floor after unit conversion.
+        assert_eq!(parse_timeout("1.5s"), Some(1500));
+    }
+
+    #[test]
+    fn parse_timeout_rejects_scientific_notation() {
+        // TS regex `^([0-9]+(?:\.[0-9]+)?)(ms|s|m)?$` does NOT allow exponents.
+        // Rust f64::parse WOULD accept "1e3" as 1000 — we must reject it to
+        // stay char-for-char with TS.
+        assert_eq!(parse_timeout("1e3"), None);
+    }
+
+    #[test]
+    fn parse_timeout_rejects_non_positive() {
+        // TS: `if (!Number.isFinite(n) || n <= 0) return null`.
+        assert_eq!(parse_timeout("0"), None);
+        assert_eq!(parse_timeout("0s"), None);
+    }
+
+    #[test]
+    fn parse_timeout_rejects_garbage_and_empty() {
+        assert_eq!(parse_timeout(""), None);
+        assert_eq!(parse_timeout("abc"), None);
+        assert_eq!(parse_timeout("30x"), None); // unknown unit
+        assert_eq!(parse_timeout("-5s"), None); // leading sign not in TS class
+        assert_eq!(parse_timeout(".5s"), None); // bare fraction not in TS class
+    }
+
+    #[test]
+    fn cli_accepts_global_timeout_flag() {
+        // --timeout is a top-level global flag (mirrors TS parse-anywhere).
+        // Value is resolved to milliseconds on parse.
+        let cli = Cli::try_parse_from(["zbrain", "--timeout=30s", "query", "hello"])
+            .expect("--timeout=30s should parse");
+        assert_eq!(cli.timeout, Some(30_000));
+    }
+
+    #[test]
+    fn cli_timeout_flag_is_global_after_subcommand() {
+        // global = true means it parses after the subcommand too.
+        let cli = Cli::try_parse_from(["zbrain", "query", "hello", "--timeout", "2m"])
+            .expect("--timeout after subcommand should parse");
+        assert_eq!(cli.timeout, Some(120_000));
+    }
+
+    #[test]
+    fn cli_invalid_timeout_fails_loud_exit_2() {
+        // Departure from TS soft fall-through: a bad --timeout is a hard usage
+        // error. clap maps value_parser Err -> ErrorKind::ValueValidation,
+        // which the binary renders to stderr and exits with code 2.
+        let err = Cli::try_parse_from(["zbrain", "--timeout=nonsense", "query", "hi"])
+            .expect_err("invalid --timeout must not parse");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
+    }
+
+    // ── default timeout resolution (mirrors TS cli.ts:302) ──
+
+    #[test]
+    fn resolve_timeout_think_default_is_180s() {
+        // No user override: `think` gets the 180s default.
+        assert_eq!(resolve_timeout_ms("think", None), 180_000);
+    }
+
+    #[test]
+    fn resolve_timeout_other_ops_default_is_30s() {
+        assert_eq!(resolve_timeout_ms("query", None), 30_000);
+        assert_eq!(resolve_timeout_ms("get_page", None), 30_000);
+    }
+
+    #[test]
+    fn resolve_timeout_user_override_wins() {
+        // A resolved --timeout beats the per-op default (both think and else).
+        assert_eq!(resolve_timeout_ms("think", Some(5_000)), 5_000);
+        assert_eq!(resolve_timeout_ms("query", Some(90_000)), 90_000);
+    }
+
+    // ── local-path --timeout honesty (roadmap 1-2-1 Q4-修正) ──
+
+    #[test]
+    fn local_path_with_timeout_emits_honest_warning() {
+        // On the local path, --timeout is not yet wired (tracked by 1-2-3).
+        // We must NOT silently ignore it — emit a stderr warning that says so.
+        let msg = local_timeout_warning(Some(30_000)).expect("should warn when --timeout set");
+        assert!(msg.contains("--timeout"), "warning should name the flag: {msg}");
+        assert!(
+            msg.contains("thin-client") || msg.contains("thin client"),
+            "warning should scope to thin-client: {msg}"
+        );
+    }
+
+    #[test]
+    fn local_path_without_timeout_is_silent() {
+        // No --timeout means nothing to warn about.
+        assert_eq!(local_timeout_warning(None), None);
     }
 
     #[test]

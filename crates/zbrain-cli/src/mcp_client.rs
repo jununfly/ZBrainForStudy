@@ -66,6 +66,20 @@ impl std::fmt::Display for RemoteMcpError {
 
 impl std::error::Error for RemoteMcpError {}
 
+/// Convert a reqwest transport error into a typed [`RemoteMcpError`].
+///
+/// A client-side timeout (the reqwest `Client` was built with `.timeout(...)`)
+/// maps to [`RemoteMcpError::Timeout`] so the CLI dispatcher can render the
+/// timeout-specific hint; every other transport failure (DNS, connection
+/// refused, TLS) maps to [`RemoteMcpError::TransportError`].
+fn map_reqwest_error(e: &reqwest::Error) -> RemoteMcpError {
+    if e.is_timeout() {
+        RemoteMcpError::Timeout
+    } else {
+        RemoteMcpError::TransportError { message: e.to_string() }
+    }
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // OAuth Token Handling
 // ──────────────────────────────────────────────────────────────────────────
@@ -137,11 +151,20 @@ pub struct McpClient {
 }
 
 impl McpClient {
-    /// Create a new MCP client from a config.
-    pub fn new(config: Config) -> Self {
+    /// Create a new MCP client from a config with a per-call wall-clock timeout.
+    ///
+    /// The timeout is applied to the underlying reqwest `Client` (token mint +
+    /// tool call), mirroring the TS behavior where `--timeout` (default: 180s
+    /// for `think`, 30s otherwise) caps the whole routed call. On expiry, HTTP
+    /// requests fail and surface as [`RemoteMcpError::Timeout`].
+    pub fn new(config: Config, timeout: std::time::Duration) -> Self {
+        let http_client = Client::builder()
+            .timeout(timeout)
+            .build()
+            .unwrap_or_else(|_| Client::new());
         Self {
             config,
-            http_client: Client::new(),
+            http_client,
             token_cache: Arc::new(TokenCache::new()),
         }
     }
@@ -188,7 +211,7 @@ impl McpClient {
             .form(&form)
             .send()
             .await
-            .map_err(|e| RemoteMcpError::TransportError { message: e.to_string() })?;
+            .map_err(|e| map_reqwest_error(&e))?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -212,14 +235,13 @@ impl McpClient {
     /// Call a remote MCP tool.
     /// Mirrors `callRemoteTool` in TypeScript.
     pub async fn call_tool(&self, tool_name: &str, args: serde_json::Value) -> anyhow::Result<serde_json::Value> {
-        // FUTURE(mcp-timeout): the TS global flag `--timeout=<Ns|Nms|Nm>` set a
-        // per-call timeout for thin-client-routed MCP calls (TS
-        // src/core/cli-options.ts + mcp-client.ts). The Rust routing skeleton
-        // exists (this method + RemoteMcpError::Timeout variant) but `http_client`
-        // is built with `Client::new()` (no timeout) and nothing consumes a
-        // per-call timeout value, so `--timeout` is NOT wired to clap yet. Adding
-        // it would be a dead flag. See docs/plans/2026-07-06-global-flag-gap-audit.md
-        // (roadmap 1-8): wire reqwest timeout + thread the value here first.
+        // The per-call timeout (TS global flag `--timeout=<Ns|Nms|Nm>`, default
+        // 180s for `think` / 30s otherwise) is applied on the reqwest `Client`
+        // built in `McpClient::new`. A client-side timeout on any hop (token
+        // mint or tool call) surfaces as `RemoteMcpError::Timeout` via
+        // `map_reqwest_error`. See roadmap 1-2-1. (The local read-only
+        // wall-clock timeout — TS cli.ts:1125-1170 — is a separate unmigrated
+        // feature tracked by roadmap 1-2-3.)
         let remote_mcp = self
             .config
             .remote_mcp
@@ -241,7 +263,7 @@ impl McpClient {
                 .json(&args)
                 .send()
                 .await
-                .map_err(|e| RemoteMcpError::TransportError { message: e.to_string() })?;
+                .map_err(|e| map_reqwest_error(&e))?;
 
             let status = response.status();
 
@@ -283,5 +305,63 @@ impl McpClient {
             // Extract result.content as per MCP spec
             return Ok(result.get("content").cloned().unwrap_or(result));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// Build a Config in thin-client shape pointing at the given base URL.
+    fn thin_client_config(base_url: &str) -> Config {
+        let mut config = Config::default();
+        config.remote_mcp = Some(crate::config::RemoteMcpConfig {
+            issuer_url: base_url.to_string(),
+            mcp_url: format!("{base_url}/mcp"),
+            oauth_client_id: "test-client".to_string(),
+            oauth_client_secret: Some("test-secret".to_string()),
+        });
+        config
+    }
+
+    /// A hanging server: accepts TCP connections but never writes a response,
+    /// so any HTTP request against it blocks until the client-side timeout
+    /// fires. Returns the bound `http://127.0.0.1:PORT` base URL.
+    async fn spawn_hanging_server() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                // Accept and hold the socket open forever (drop nothing).
+                if let Ok((stream, _)) = listener.accept().await {
+                    // Leak the stream so the connection stays open and idle.
+                    std::mem::forget(stream);
+                }
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn call_tool_maps_client_timeout_to_timeout_variant() {
+        let base = spawn_hanging_server().await;
+        let config = thin_client_config(&base);
+
+        // A tiny timeout so the test is fast; the token request (first network
+        // hop) will hang and trip the client-side timeout.
+        let client = McpClient::new(config, Duration::from_millis(150));
+        let err = client
+            .call_tool("query", serde_json::json!({}))
+            .await
+            .expect_err("hanging server must not succeed");
+
+        let remote = err
+            .downcast_ref::<RemoteMcpError>()
+            .expect("error should be a RemoteMcpError");
+        assert!(
+            matches!(remote, RemoteMcpError::Timeout),
+            "client timeout must map to RemoteMcpError::Timeout, got: {remote:?}"
+        );
     }
 }
