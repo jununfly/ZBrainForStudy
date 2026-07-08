@@ -50,6 +50,10 @@ chrono = { workspace = true }
 default = []
 openai = ["dep:reqwest"]
 embedding = ["dep:reqwest"]
+# Real reqwest-backed cross-encoder rerank HTTP client. The mock client and
+# the fail-open `apply_reranker` call-site logic are always compiled; only the
+# live ZeroEntropy POST path needs reqwest.
+rerank = ["dep:reqwest"]
 
 [dev-dependencies]
 tokio = { workspace = true }

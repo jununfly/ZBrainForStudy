@@ -202,6 +202,21 @@ pub struct SearchResult {
     pub base_score: f64,
     /// Keyword snippet extracted from content (for UI display)
     pub snippet: Option<String>,
+    /// Cross-encoder reranker relevance score, stamped ONLY when the rerank
+    /// post-processing stage actually reordered this row. `None` for the
+    /// un-reranked tail and whenever the reranker is disabled or fails open.
+    /// Mirrors the TS `SearchResult.rerank_score` stamp
+    /// (`src/core/search/rerank.ts:119`). Does NOT overwrite `score` /
+    /// `base_score` — RRF fusion stays the authoritative fused signal;
+    /// `--explain` reads this as a separate stage multiplier.
+    pub rerank_score: Option<f64>,
+    /// Rank delta from the rerank stage: original RRF index minus the new
+    /// head position (positive = moved closer to the top). Computed as a free
+    /// by-product the moment the head is reordered, so a later `--explain`
+    /// attribution stage need not re-derive it. `None` mirrors `rerank_score`
+    /// (tail rows / reranker off / fail-open). Mirrors the TS
+    /// `SearchResult.reranker_delta` stamp (`src/core/search/rerank.ts:123`).
+    pub reranker_delta: Option<i64>,
 }
 
 /// Options for `search_pages`.
@@ -1630,6 +1645,12 @@ impl BrainEngine for InMemoryEngine {
                 score: base_score,
                 base_score,
                 snippet,
+                // Rerank is a query-pipeline post-processing stage layered on
+                // top of the engine's fused results (see operation.rs query
+                // path); the engine itself never reranks, so both stamps start
+                // as None and are set later only for reordered head rows.
+                rerank_score: None,
+                reranker_delta: None,
             });
         }
 

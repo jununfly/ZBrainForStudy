@@ -1273,13 +1273,30 @@ async fn run_serve_http_command(
 ///
 /// Local-only operations are refused on thin-client installs with a helpful message,
 /// matching the TypeScript behavior in `refuseThinClient`.
+/// Resolve the rerank-audit directory. Honors `ZBRAIN_AUDIT_DIR` (container /
+/// sandbox deploys where `$HOME` is read-only), else defaults to
+/// `~/.zbrain/audit` — the same resolution the TS audit-writer uses so both
+/// runtimes share rows. Shared by the rerank client wiring (writer) and the
+/// doctor `reranker_health` check (reader) so they never diverge.
+fn resolve_audit_dir() -> PathBuf {
+    std::env::var("ZBRAIN_AUDIT_DIR")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(".zbrain")
+                .join("audit")
+        })
+}
+
 async fn run_operation(
     name: &str,
     params: serde_json::Value,
     config_path: Option<&Path>,
     cli_timeout_ms: Option<u64>,
 ) -> anyhow::Result<serde_json::Value> {
-    // Load config and create engine
     let config_file = config_path
         .map(PathBuf::from)
         .or_else(|| config::user_config_path())
@@ -1362,7 +1379,22 @@ async fn run_operation(
     let engine = zbrain_core::libsql::LibsqlEngine::new();
     engine.connect(&engine_config).await?;
 
-    let ctx = OperationContext::local_cli().with_engine(std::sync::Arc::new(engine));
+    let mut ctx = OperationContext::local_cli().with_engine(std::sync::Arc::new(engine));
+
+    // Wire the cross-encoder reranker when it is enabled in config AND the API
+    // key is present in the environment (secrets never live in the config
+    // file). Missing key with reranker_enabled = leave it off rather than fail
+    // search; the doctor `reranker_health` check surfaces the misconfig. This
+    // is the sole production construction site for the rerank HTTP client.
+    if config.search.reranker_enabled {
+        if let Some(client) = zbrain_core::rerank_client::ZeroEntropyRerankClient::from_env(None) {
+            ctx = ctx.with_rerank(zbrain_core::rerank_client::RerankSettings {
+                client: std::sync::Arc::new(client),
+                audit_dir: resolve_audit_dir(),
+                model: None,
+            });
+        }
+    }
 
     // Use shared MCP dispatch path (dispatch_tool_call) so CLI and future MCP server
     // produce identical result formatting and error handling.
@@ -2161,19 +2193,9 @@ async fn run_doctor_command(args: DoctorArgs, config_path: Option<&Path>) -> any
             .as_ref()
             .map(|c| c.search.reranker_enabled)
             .unwrap_or(false);
-        // Audit dir: honor ZBRAIN_AUDIT_DIR (container/sandbox deploys where
-        // $HOME is read-only), else default to ~/.zbrain/audit — the same
-        // resolution the TS audit-writer uses so both runtimes share rows.
-        let audit_dir = std::env::var("ZBRAIN_AUDIT_DIR")
-            .ok()
-            .filter(|s| !s.trim().is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                dirs::home_dir()
-                    .unwrap_or_else(|| PathBuf::from("."))
-                    .join(".zbrain")
-                    .join("audit")
-            });
+        // Audit dir resolution is shared with the rerank client wiring in
+        // `run_operation` so the writer and the doctor reader always agree.
+        let audit_dir = resolve_audit_dir();
         let failures = zbrain_core::rerank_audit::read_recent_rerank_failures(
             &audit_dir,
             zbrain_core::rerank_audit::HEALTH_WINDOW_DAYS,

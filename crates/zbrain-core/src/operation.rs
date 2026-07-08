@@ -461,6 +461,14 @@ pub struct OperationContext {
     /// Optional: if not set, operations fall back to non-AI modes.
     #[serde(skip)]
     pub llm_client: Option<std::sync::Arc<dyn crate::llm::LlmClient>>,
+    /// Cross-encoder rerank settings for the query pipeline post-processing
+    /// stage. `None` = reranker off (the default): `QueryOperation::execute`
+    /// skips the rerank step entirely and returns fused RRF order. When set,
+    /// the query path reranks its top results and fails open to RRF on any
+    /// upstream error (see `rerank_client::apply_reranker`). Not serialized —
+    /// it carries a live HTTP client Arc, wired at CLI/dispatch construction.
+    #[serde(skip)]
+    pub rerank: Option<crate::rerank_client::RerankSettings>,
 }
 
 impl fmt::Debug for OperationContext {
@@ -505,6 +513,7 @@ impl OperationContext {
             brain_id: None,
             source_id: "default".to_string(),
             llm_client: None,
+            rerank: None,
         }
     }
 
@@ -529,6 +538,7 @@ impl OperationContext {
             brain_id: None,
             source_id: source_id.into(),
             llm_client: None,
+            rerank: None,
         }
     }
 
@@ -536,6 +546,14 @@ impl OperationContext {
     #[must_use]
     pub fn with_llm_client(mut self, llm_client: std::sync::Arc<dyn crate::llm::LlmClient>) -> Self {
         self.llm_client = Some(llm_client);
+        self
+    }
+
+    /// Attach cross-encoder rerank settings, enabling the query pipeline's
+    /// rerank post-processing stage. Absent this, the reranker stays off.
+    #[must_use]
+    pub fn with_rerank(mut self, rerank: crate::rerank_client::RerankSettings) -> Self {
+        self.rerank = Some(rerank);
         self
     }
 
@@ -1786,6 +1804,51 @@ impl TypedOperation for QueryOperation {
                 query_embedding: None,
             })
             .await?;
+
+        // Rerank post-processing stage. When `ctx.rerank` is set (reranker
+        // enabled), reorder the top DEFAULT_RERANK_TOP_N results by the
+        // cross-encoder score and stamp rerank_score / reranker_delta; on any
+        // upstream error this fails open to the fused RRF order and logs one
+        // audit row. `None` (the default) skips the stage entirely. This runs
+        // BEFORE pagination so the reranked order drives skip/take. Mirrors
+        // the TS `applyReranker` slot in hybridSearch (after fusion/dedup,
+        // before the token-budget/pagination cut).
+        //
+        // NOTE: Think/evidence internal retrieval (operation.rs ThinkOperation
+        // search path) intentionally does NOT rerank — whether that path
+        // should pay an extra cross-encoder round-trip is a separate product
+        // decision handled elsewhere, not wired here.
+        let results = if let Some(rerank) = ctx.rerank.as_ref() {
+            let query_text = params.query.as_deref().unwrap_or_default().to_string();
+            crate::rerank_client::apply_reranker(
+                rerank.client.as_ref(),
+                true,
+                &query_text,
+                results,
+                &rerank.audit_dir,
+                rerank.model.as_deref(),
+                // Document text sent to the cross-encoder: the display snippet
+                // if present, else the compiled page truth. Falls back to the
+                // page title so an empty body never sends a blank document.
+                |r| {
+                    r.snippet
+                        .clone()
+                        .filter(|s| !s.is_empty())
+                        .or_else(|| {
+                            let t = r.page.compiled_truth.clone();
+                            if t.is_empty() { None } else { Some(t) }
+                        })
+                        .unwrap_or_else(|| r.page.title.clone())
+                },
+                |r, score, delta| {
+                    r.rerank_score = Some(score);
+                    r.reranker_delta = Some(delta);
+                },
+            )
+            .await
+        } else {
+            results
+        };
 
         let total = results.len();
 
@@ -5196,6 +5259,180 @@ mod tests {
                 "Expected camelCase field names, got: {}",
                 output_str
             );
+        }
+
+        // ── rerank wiring (1-4-2-2): reranker off by default; on = reorder ──
+
+        /// A rerank client that imposes a deterministic order on the head it is
+        /// given: documents are ranked by their text in DESCENDING lexical
+        /// order, highest relevance first. This lets the wiring test assert an
+        /// exact output order without depending on the fused RRF tie-break,
+        /// which is nondeterministic for equally-scored pages. Not the real
+        /// transport — only the pipeline wiring is under test.
+        struct ReversingRerank;
+
+        #[async_trait::async_trait]
+        impl crate::rerank_client::RerankClient for ReversingRerank {
+            async fn rerank(
+                &self,
+                req: &crate::rerank_client::RerankRequest,
+            ) -> Result<Vec<crate::rerank_client::RerankOutcome>, crate::rerank_client::RerankError>
+            {
+                // Rank indices by their document text, descending. The outcome
+                // list is emitted already-sorted (the reranker contract), so
+                // the first entry is the highest-relevance document.
+                let mut idx: Vec<usize> = (0..req.documents.len()).collect();
+                idx.sort_by(|&a, &b| req.documents[b].cmp(&req.documents[a]));
+                let n = idx.len();
+                Ok(idx
+                    .into_iter()
+                    .enumerate()
+                    .map(|(rank, index)| crate::rerank_client::RerankOutcome {
+                        index,
+                        relevance_score: (n - rank) as f64,
+                    })
+                    .collect())
+            }
+        }
+
+        async fn seed_two_pages() -> InMemoryEngine {
+            let engine = InMemoryEngine::default();
+            engine
+                .put_page(
+                    "test/alpha",
+                    None,
+                    &PageInput {
+                        page_type: "note".to_string(),
+                        title: "Alpha".to_string(),
+                        compiled_truth: "shared keyword alpha body".to_string(),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+            engine
+                .put_page(
+                    "test/beta",
+                    None,
+                    &PageInput {
+                        page_type: "note".to_string(),
+                        title: "Beta".to_string(),
+                        compiled_truth: "shared keyword beta body".to_string(),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+            engine
+        }
+
+        #[tokio::test]
+        async fn query_reranker_off_by_default_keeps_rrf_order() {
+            let engine = seed_two_pages().await;
+            let mut registry = OperationRegistry::new();
+            registry.register(QueryOperation);
+
+            // No .with_rerank → ctx.rerank is None → stage is skipped.
+            let ctx = OperationContext::local_cli().with_engine(Arc::new(engine));
+            let params = serde_json::json!({ "query": "keyword" });
+            let output = registry.dispatch_json("query", &ctx, params).await.unwrap();
+
+            let results = output["results"].as_array().unwrap();
+            assert_eq!(results.len(), 2);
+            // No rerank stamps leak into the serialized output.
+            let s = serde_json::to_string(&output).unwrap();
+            assert!(!s.contains("rerankScore"), "no rerank stamp when reranker off");
+        }
+
+        #[tokio::test]
+        async fn query_reranker_on_reorders_results() {
+            let engine: Arc<InMemoryEngine> = Arc::new(seed_two_pages().await);
+            let mut registry = OperationRegistry::new();
+            registry.register(QueryOperation);
+
+            let audit = tempfile::TempDir::new().unwrap();
+            let settings = crate::rerank_client::RerankSettings {
+                client: Arc::new(ReversingRerank),
+                audit_dir: audit.path().to_path_buf(),
+                model: Some("zeroentropyai:zerank-2".to_string()),
+            };
+            let ctx = OperationContext::local_cli()
+                .with_engine(engine.clone())
+                .with_rerank(settings);
+
+            let on = registry
+                .dispatch_json("query", &ctx, serde_json::json!({ "query": "keyword" }))
+                .await
+                .unwrap();
+            let on_titles: Vec<String> = on["results"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["page"]["title"].as_str().unwrap().to_string())
+                .collect();
+
+            // ReversingRerank ranks documents by compiled_truth descending:
+            // "shared keyword beta body" > "shared keyword alpha body", so the
+            // reranked order is deterministic regardless of the fused RRF
+            // tie-break. This proves the pipeline applied the reranker's order.
+            assert_eq!(
+                on_titles,
+                vec!["Beta".to_string(), "Alpha".to_string()],
+                "rerank stage must apply the reranker's deterministic order"
+            );
+            // Success path writes no audit row.
+            let has_audit = std::fs::read_dir(audit.path())
+                .map(|mut d| d.next().is_some())
+                .unwrap_or(false);
+            assert!(!has_audit, "successful rerank writes no audit row");
+        }
+
+        #[tokio::test]
+        async fn query_reranker_fails_open_on_error() {
+            /// Always-fail client → exercise the fail-open + audit branch
+            /// through the real query pipeline.
+            struct FailingRerank;
+            #[async_trait::async_trait]
+            impl crate::rerank_client::RerankClient for FailingRerank {
+                async fn rerank(
+                    &self,
+                    _req: &crate::rerank_client::RerankRequest,
+                ) -> Result<
+                    Vec<crate::rerank_client::RerankOutcome>,
+                    crate::rerank_client::RerankError,
+                > {
+                    Err(crate::rerank_client::RerankError {
+                        message: "boom".to_string(),
+                        reason: crate::rerank_audit::RerankFailureReason::Network,
+                        status: None,
+                    })
+                }
+            }
+
+            let engine = seed_two_pages().await;
+            let mut registry = OperationRegistry::new();
+            registry.register(QueryOperation);
+
+            let audit = tempfile::TempDir::new().unwrap();
+            let ctx = OperationContext::local_cli()
+                .with_engine(Arc::new(engine))
+                .with_rerank(crate::rerank_client::RerankSettings {
+                    client: Arc::new(FailingRerank),
+                    audit_dir: audit.path().to_path_buf(),
+                    model: None,
+                });
+
+            // Search still succeeds (fails open), returning results.
+            let out = registry
+                .dispatch_json("query", &ctx, serde_json::json!({ "query": "keyword" }))
+                .await
+                .unwrap();
+            assert_eq!(out["results"].as_array().unwrap().len(), 2, "search survives rerank failure");
+            // One audit row was written.
+            let wrote_audit = std::fs::read_dir(audit.path())
+                .map(|mut d| d.next().is_some())
+                .unwrap_or(false);
+            assert!(wrote_audit, "fail-open must log an audit row");
         }
 
         // ──────────────────────────────────────────────────────────────────────

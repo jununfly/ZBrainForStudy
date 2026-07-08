@@ -315,7 +315,8 @@
       "parent": "1-4",
       "children": [
         "1-4-2-1",
-        "1-4-2-2"
+        "1-4-2-2",
+        "1-4-2-3"
       ],
       "decisions": [
         {
@@ -370,7 +371,43 @@
     "1-4-2-2": {
       "id": "1-4-2-2",
       "label": "rerank HTTP client + call-site 接线: Rust gateway rerank client(reqwest POST 外部 cross-encoder, RerankError 分类 + fail-open) 接进 query 搜索管道后处理阶段, 失败写 1-4-2-1 的 audit",
-      "status": "blocked",
+      "status": "completed",
+      "mode": "explore",
+      "parent": "1-4-2",
+      "children": [],
+      "decisions": [
+        {
+          "q": "这一刀完成形态: 真 client + 接线, 还是骨架/fail-fast?",
+          "answer": "a: 完整迁 client(reqwest 真 POST + RerankError 分类 + payload 预检 + 超时) + operation 层 fail-open 接线, 由 reranker_enabled 门控(默认 false); TDD 用 RerankClient trait + mock 断言分类/fail-open/audit 写入, 真实 HTTP 路径不进单测",
+          "note": "rerank 不依赖 embedding(cross-encoder 直吃文本), 无理由捆绑等真实 embedding provider; audit writer 上一刀即为此 producer 而建, 不接线则一直无生产调用点; fail-fast(C)违背 TS fail-open 契约(rerank 失败必须降级 RRF 不能挂搜索); mock 单测对齐本机无 ZE key 验证边界 + embedding.rs MockProvider 先例; base_score 已是真实融合分数, 非 horizontal slicing"
+        },
+        {
+          "q": "rerank 接入点位置与范围: 只接 query 还是连 Think/evidence?",
+          "answer": "A+新建node: 本刀只接 QueryOperation::execute(1788 search_pages 之后/分页 map 之前); Think/evidence 内部检索路径(operation.rs:1562)本刀不接, 拆新 sub-node 承载; Think 检索点留自解释注释(不引 roadmap 编号)",
+          "note": "rerank 是给用户看的最终排序后处理, 接用户显式 query 路径语义最清晰最易测; Think 内部检索是否 rerank 是独立产品判断(多一次外部 API 往返+增 Think 延迟), 不该顺手决定; engine 层排除(纯 trait 双实现 InMemory/Postgres 塞 HTTP 污染且拿不到 audit_dir); CLI 层排除(拿不到 base_score); operation 层可拿 Vec<SearchResult> 做后处理+fail-open 回退 RRF 序最干净"
+        },
+        {
+          "q": "rerank provider config 与 API key 来源: 全量多-provider 配置 vs 最小单-provider?",
+          "answer": "A: 最小 config 字段 + 从 env 读 key, 本刀只支持 ZeroEntropy 单 provider",
+          "note": "对齐 embedding provider 先例(单 provider 起步, MockProvider 测试); 多-provider 抽象是投机(YAGNI), 现在没有第二个 reranker; key 走 env 不入 config 文件(secret 不落盘, 对齐 embedding provider key 处理); config 仅需 reranker_enabled(已在 1-4-2-1 加) + 可能 reranker_model/endpoint, 具体字段在 TDD 时按 TS gateway rerank 契约最小化"
+        },
+        {
+          "q": "rerank 产物字段: 本刀给 SearchResult 加哪些字段?",
+          "answer": "同时加 rerank_score + reranker_delta 两个字段",
+          "note": "reranker_delta(原index-新pos)是 head 重排那一刻天然算出的副产品, 此刻不存则 1-4-3 需重新推导, 就近落盘更省事; 两字段均 Option, 未 rerank(tail/关闭)时为 None; 不覆盖 base_score(RRF 融合分, 对齐 TS 不覆盖 score); 1-4-3 --explain 直接读这两字段做乘子分解无需重算"
+        },
+        {
+          "q": "rerank head topN 默认值与归属?",
+          "answer": "参照 TS: 硬编码常量 DEFAULT_RERANK_TOP_N=30, 不入 config",
+          "note": "TS applyReranker topNIn 默认 30(只 rerank 前 30, tail 保留原 RRF 序追加); 硬编码常量镜像 TS 现状, 不发明 config 可调面(YAGNI, 无人要求调 topN); 全量 rerank 会偏离 TS 且大结果集撞 5MB payload 上限; 常量放 rerank client 模块与 RRF_K/max_payload_bytes 并列, 自解释注释标 TS 来源"
+        }
+      ],
+      "notes": "Done: crates/zbrain-core/src/rerank_client.rs (RerankClient trait transport seam + apply_reranker head/tail reorder + fail-open + audit producer; ZeroEntropyRerankClient reqwest impl under feature=rerank with payload preflight/bearer/timeout/status classification). Wired into QueryOperation::execute via OperationContext.rerank (Option<RerankSettings>, serde skip, None=off default). SearchResult gained rerank_score + reranker_delta (both Option, base_score untouched). Tests green: 34 rerank tests (feature on) + 601 lib tests, clippy clean. Think/evidence rerank deferred to existing sub-node 1-4-2-3 per Q2."
+    },
+    "1-4-2-3": {
+      "id": "1-4-2-3",
+      "label": "Think/evidence 内部检索是否接入 rerank 后处理(产品判断: 多一次外部 API 往返+Think 延迟 vs 证据质量提升); 依赖 1-4-2-2 client 就绪",
+      "status": "pending",
       "mode": "explore",
       "parent": "1-4-2",
       "children": [],
@@ -380,7 +417,8 @@
   },
   "metadata": {
     "created": "2026-07-06 17:51:37",
-    "updated": "2026-07-08 12:15:26",
+    "updated": "2026-07-08 14:53:51",
     "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART3_RELEASE_AND_TS_RETIREMENT.md"
-  }
+  },
+  "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_PART3_RELEASE_AND_TS_RETIREMENT.md"
 }
