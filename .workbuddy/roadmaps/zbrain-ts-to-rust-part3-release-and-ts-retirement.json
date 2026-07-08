@@ -310,7 +310,7 @@
     "1-4-2": {
       "id": "1-4-2",
       "label": "rerank 服务层: Rust gateway rerank client(外部 cross-encoder, fail-open) + rerank-audit JSONL + doctor reranker_health 真实断言(替换 UNMIGRATED_TS 留痕)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-4",
       "children": [
@@ -406,18 +406,49 @@
     },
     "1-4-2-3": {
       "id": "1-4-2-3",
-      "label": "Think/evidence 内部检索是否接入 rerank 后处理(产品判断: 多一次外部 API 往返+Think 延迟 vs 证据质量提升); 依赖 1-4-2-2 client 就绪",
-      "status": "pending",
+      "label": "审计 Think/evidence 检索的 rerank 缺口: Rust 接入点分层错位(rerank 在 operation 层 QueryOperation, Think 走 engine.search_pages 绕过), 对齐决策与实现路径记录",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-4-2",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "这一刀性质: 实现 Think rerank 接线, 还是调查+对齐决策落盘(不写/极少写生产代码)?",
+          "answer": "B: 调查+对齐决策落盘为主, 本刀不写生产接线代码, 改 label + 落盘 + 留自解释锚点, 实际接线推给未来结构重构",
+          "note": "探查推翻节点前提: TS 里 Think 检索本就 rerank(gather.ts:110 调 hybridSearch -> hybrid.ts:957 内建 applyReranker, 由 mode.reranker_enabled 决定, balanced/tokenmax 开/conservative 关), 是否 rerank 不是 Think 层产品判断而是 hybridSearch 引擎级检索原语的内建行为. Rust 侧我把 rerank 接在 operation 层(QueryOperation::execute), 而 ThinkOperation 调 engine.search_pages(operation.rs:1580, limit5/向量关) 绕过了 operation 层后处理 -> Think 意外丢失 TS 本有的 rerank. 真病根=接入点分层错位, 不是要不要. 修复两路都不小: (a)下沉 rerank 到 engine 层=推翻上一刀 Q2 明确排除的方案(HTTP 污染 trait + 拿不到 audit_dir); (b)ThinkOperation 复制 apply_reranker 后处理=可行但撞 Think 语义问题(limit5 < TOP_N30 等于全量, rerank_score 无消费者, mode 系统未迁). 符合项目一贯做法(1-2-4/1-8 前提被证伪时闭环调查+留痕不写死代码)"
+        },
+        {
+          "q": "节点 label 要不要改? 是否新建 sub-node 承接偏差?",
+          "answer": "A: 改 label 为审计缺口(接入点分层错位), 不新建 sub-node",
+          "note": "原 label 的产品判断(是否接入)是伪命题: TS 里不存在 Think 层的 rerank 开关, rerank 由 search mode 统一决定, 属目标被证伪(同 1-4 schema)而非目标被推迟, 故不建 sub-node. 真正推迟的实现工作在 Q3/Q4 作为独立结论落盘, 需要时再单独建节点. 与 1-3/1-5/1-8 被误框节点系列一致"
+        },
+        {
+          "q": "Rust 未来该怎么让 Think 重获 rerank? engine 下沉/operation 复制/抽共享 helper/不定方向?",
+          "answer": "C: 抽 operation 层共享检索后处理 helper(如 retrieve_and_rerank(ctx,opts,...)), Query 与 Think 都调它; 本刀只记录 C 为推荐路径, 不实际抽取(重构属未来工作)",
+          "note": "(a)engine 下沉违背刚落盘的 1-4-2-2 Q2(engine trait 拿不到 audit_dir + HTTP 污染 InMemory/Postgres 双实现), 一刀前才确认不该一刀后自推翻; (b)operation 复制埋 DRY 债(Query/Think/未来 evidence/brainstorm 每入口复制一遍 apply_reranker+document_of/stamp 闭包, 改策略要同步 N 处); (c)是 TS 精神(rerank 是检索原语一部分调用方自动继承)在 Rust 分层约束下的正确落点——TS 放 hybridSearch, Rust 因 engine trait 是纯存储抽象拿不到 config/audit_dir, 故放紧挨其上的 operation 层共享 helper, 同一意图的合理映射; 顺带把上一刀 QueryOperation 内联的 rerank 段重构成可复用单元(此重构本身是未来工作). 反驳权衡: 若 Think 迟迟不需 rerank(LLM 合成对证据顺序不敏感+5s API 往返+成本), (b)(c)都投机——但 C 只是钉方向不实现, 零投机成本, 未来真接时按 C 走即可"
+        },
+        {
+          "q": "留痕方式: 就近 FUTURE 注释 vs 集中 checklist 文档?",
+          "answer": "用户定调: 散落代码注释也容易遗忘, 改为在 docs/plans 下新建单一 KNOWN-GAPS checklist 文档作为已知缺口的唯一真相源(SSOT), 把本刀 Think-rerank 缺口 + 之前用代码注释暂存的缺口都显式登记进去. 原则: 毒草要长在阳光之下, 已知问题全部显式集中保存便于后续改进",
+          "note": "背景: roadmap 目标明确时, 同时发现的缺口若不在目标范围内, 既不适合新建 node 承载(污染树/父子状态卡死), 又不适合只留散落 FUTURE 注释(易遗忘/清理 roadmap 后死链). 需要一个妥协载体=持久的集中 checklist 文档(docs/plans 持久可引用, 区别于临时 roadmap JSON). 这是新增项目约定, 记入 MEMORY.md"
+        },
+        {
+          "q": "checklist 收录范围 + 与现存锚点(FUTURE 注释/UNMIGRATED 常量+测试)的去留关系?",
+          "answer": "A: 全部收录. checklist=已知缺口唯一权威索引; FUTURE 注释保留但瘦身为指路牌(冗长背景移进 checklist, 代码只留一行 see KNOWN-GAPS); UNMIGRATED_TS_* 常量+锚点测试原样保留(有硬测试防漂移, 删了失去防护), checklist 登记并指向代码不搬运清单内容",
+          "note": "全收=毒草长在阳光下, 选择性收录留暗角; 一次盘清后新缺口随手登记. 初始收录: 3 FUTURE(search-attribution/progress-reporter/schema-pack) + 2 UNMIGRATED 常量(doctor checks/schema-pack verbs) + 散落 TODO/not-implemented(webhook rate-limiter+MinionQueue x3, InMemory code-edge x2, create/revoke_api_key, code import, count_pages trait gap, libsql 单线程序列化) + 本刀 Think-rerank gap. 反方案 B(只收无载体的+索引已有锚点)更少重复但看全部要跳三处, 违背集中初衷"
+        },
+        {
+          "q": "checklist 文档命名/位置/结构 + 防遗忘护栏?",
+          "answer": "docs/plans/KNOWN-GAPS.md(无日期前缀=活文档, 区别于一次性快照 audit); 顶部用途声明+维护约定, 一张主表带类别列(ID|缺口|现载体|TS权威来源|推荐路径|状态), Think-rerank 给足详情其余一行索引; 护栏选 c: 双向指针(3 FUTURE 注释+2 UNMIGRATED 常量注释各加一行 registered in KNOWN-GAPS)+约定, 不加解析 markdown 的脆测试",
+          "note": "checklist 是给人读的治理活文档非运行时契约; UNMIGRATED_TS_* 硬测试适合清单条目会被误删场景, checklist 漂移的正确防线是 code review+约定非 CI(1-8 已确立不测纯文档存在性). 双向链接让人从任一端发现另一端"
+        }
+      ],
+      "notes": "调查+对齐落盘刀(无生产接线代码). 交付: (1) 新建 docs/plans/KNOWN-GAPS.md 已知缺口 SSOT 活文档(无日期前缀), 主表登记 G1-G12: G1 Think-rerank 缺口(含详情), G2 search-attribution, G3 progress-reporter, G4 schema-pack 32verb, G5 doctor 11 checks, G6 webhook rate-limiter, G7 webhook MinionQueue, G8 InMemory code-edge, G9 InMemory api_key, G10 import_code_file, G11 count_pages trait gap, G12 libsql 单线程序列化. (2) operation.rs ThinkOperation 检索处加 FUTURE(think-rerank) 自解释注释+G1 指针. (3) 3 FUTURE 注释瘦身为指路牌(search-attribution/progress-reporter/schema-pack, 冗长背景移入 KNOWN-GAPS)+2 UNMIGRATED 常量(doctor/schema-pack)加 registered 指针; 常量+锚点测试原样保留. 病根=接入点分层错位: TS Think 经 hybridSearch 内建 rerank(mode 门控), Rust 上一刀 rerank 接在 operation 层 QueryOperation, ThinkOperation 走 engine.search_pages 绕过. 推荐路径=抽 operation 层共享 retrieve_and_rerank helper(否决 engine 下沉/operation 复制), 本刀只钉方向不实现. 验证: cargo build 3 crate 通过(仅既有 warning), 注释-only 改动."
     }
   },
   "metadata": {
     "created": "2026-07-06 17:51:37",
-    "updated": "2026-07-08 14:53:51",
+    "updated": "2026-07-08 17:29:53",
     "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART3_RELEASE_AND_TS_RETIREMENT.md"
   },
   "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_PART3_RELEASE_AND_TS_RETIREMENT.md"

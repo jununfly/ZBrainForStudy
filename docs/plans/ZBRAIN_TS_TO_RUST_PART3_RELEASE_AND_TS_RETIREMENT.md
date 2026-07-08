@@ -49,20 +49,24 @@
 ├── [ ][X+] 1-3. TS 入口整体退役: src/cli.ts + postinstall TS 兜底 + check-cli-executable.sh + src/commands 未迁命令(依赖发布链切 Rust 完成)
 └── [ ][X+] 1-4. search rerank + 分阶段归因子系统迁移(--explain): Rust query 现为硬编码关键字加权，需迁 rerank/boost/attribution stages (doctor reranker_health=UNMIGRATED_TS)
     ├── [x][X+] 1-4-1. hybrid + vector 检索地基: Rust 侧从零建 embedding 写入/查询 + cosine 重打分 + RRF 融合(跨 InMemory/postgres/libsql 引擎), 为 rerank/attribution 提供真实融合分数 base_score
-    ├── [~][X+] 1-4-2. rerank 服务层: Rust gateway rerank client(外部 cross-encoder, fail-open) + rerank-audit JSONL + doctor reranker_health 真实断言(替换 UNMIGRATED_TS 留痕)
+    ├── [x][X+] 1-4-2. rerank 服务层: Rust gateway rerank client(外部 cross-encoder, fail-open) + rerank-audit JSONL + doctor reranker_health 真实断言(替换 UNMIGRATED_TS 留痕)
     └── [!][X+] 1-4-3. explain 分阶段归因输出(--explain flag): 展示层, 依赖 1-4-1/1-4-2 在 SearchResult 盖的 base_score/boost_*/reranker_delta 字段, 逐结果逐阶段乘子分解
 ```
 
-### 🔨 当前施工: 1-4-2. rerank 服务层: Rust gateway rerank client(外部 cross-encoder, fail-open) + rerank-audit JSONL + doctor reranker_health 真实断言(替换 UNMIGRATED_TS 留痕)
+### 🔨 当前施工: 1. ZBrain TS→Rust Part3: 发布链迁移 + 子系统补齐 + TS 入口退役
 **Status:** `in_progress` | **Mode:** `explore`
 
 **决策记录:**
-- Q: 1-4-2 交付到哪一层(范围切分)?
-  A: a: 只做可观测垂直切片(rerank-audit JSONL writer + doctor reranker_health 真实断言, 替换 UNMIGRATED_TS 留痕); 真实 HTTP cross-encoder client + query 管道 call-site 接线拆为后续子节点
-  > TS rerank 是贯穿链(applyReranker -> gateway.rerank HTTP -> audit JSONL -> doctor 读 JSONL), 但 Rust 连 call-site 都不存在, 三件事横跨三层, 全塞一刀=horizontal slicing. audit+doctor 是纯文件+config 读能立即 TDD 红绿, 无本机 ZE/llama-server 网络盲区; audit writer 可镜像现成 sync/failures.rs JSONL 惯例; 先钉死可观测契约让 doctor 从留痕变真断言(=label 最后一句核心). HTTP client 无本机真实上游且需先有 call-site 才有消费者(YAGNI)
+- Q: part3 从何而来 + 三节点是否已确认实施顺序？
+  A: part2 节点 1-6(migration cleanup) Q4/Q5 决策移交: 1-6 只清能无损删的死残留(死 build script/死 allowlist 项/失效 build 命令文档链接)，扛不动且有本机验证盲区的(mac/linux 交叉编译产物 + openclaw 清单语义)诚实移交到此。1-1/1-2/1-3 仅为移交锚点，实施顺序与切片待开 part3 时用 grill-me 逐题确认，不代表已确认。
+  > 1-3(TS退役)硬依赖 1-1(发布链切 Rust)完成，否则 src/cli.ts 仍是活发布入口不能删
+- Q: Q1: part3 本轮 grill 策略 + 第一刀选哪块？
+  A: A: 本轮只定 part3 全局排序 + 聚焦第一刀展开到可 TDD 切片；1-1/1-3 保持 explore 锚点各自开工前再单独 grill。第一刀锁 1-2 子系统补齐
+  > 第一刀选 1-2 而非 1-1: (1) 1-3 依赖 1-1、1-1 有本机验证盲区(mac/linux 交叉编译无法在此验证)——两块都带外部阻塞; (2) 1-2 三 flag 落点 1-8 已 audit 清楚有 FUTURE 锚点、纯 Rust 内可测可验、唯一能立即 TDD 无盲区的块。符合先动能动的、诚实对待扛不动的、不做一次性大设计
 
 **子节点:**
-- [x] 1-4-2-1. rerank 可观测契约: Rust rerank-audit JSONL writer(镜像 sync/failures.rs) + doctor reranker_health 真实断言(读 search.reranker.enabled + 7天窗口 failures, 复刻 auth/payload/transient 阈值), 替换 UNMIGRATED_TS_DOCTOR_CHECKS 留痕
-- [x] 1-4-2-2. rerank HTTP client + call-site 接线: Rust gateway rerank client(reqwest POST 外部 cross-encoder, RerankError 分类 + fail-open) 接进 query 搜索管道后处理阶段, 失败写 1-4-2-1 的 audit
-- [ ] 1-4-2-3. Think/evidence 内部检索是否接入 rerank 后处理(产品判断: 多一次外部 API 往返+Think 延迟 vs 证据质量提升); 依赖 1-4-2-2 client 就绪
+- [x] 1-1. 发布基础设施迁移: 交叉编译多平台 Rust 二进制 + openclaw bundle-plugin 清单 serve/serve-mcp 语义对齐 + 二进制命名对齐
+- [ ] 1-2. 子系统补齐(1-8 审计移交): MCP timeout (--timeout) + progress reporter (--quiet/--progress-json/--progress-interval)
+- [ ] 1-3. TS 入口整体退役: src/cli.ts + postinstall TS 兜底 + check-cli-executable.sh + src/commands 未迁命令(依赖发布链切 Rust 完成)
+- [ ] 1-4. search rerank + 分阶段归因子系统迁移(--explain): Rust query 现为硬编码关键字加权，需迁 rerank/boost/attribution stages (doctor reranker_health=UNMIGRATED_TS)
 <!-- ⚠️ ROADMAP_SECTION_END -->

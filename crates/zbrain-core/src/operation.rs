@@ -338,14 +338,10 @@ pub struct AuthInfo {
 ///
 /// FUTURE(progress-reporter): these three fields are the landing site for the
 /// TS global flags `--quiet` / `--progress-json` / `--progress-interval`, but
-/// they currently have NO consumer — no CLI path populates them and nothing
-/// reads them. Wiring the flags to clap is deferred until the progress-reporter
-/// subsystem (TS `src/core/progress.ts`: human/json/quiet three-state +
-/// interval throttle) is ported. Adding the flags now would create dead
-/// no-op flags. This is blocked on the first per-item consumer: a sync
-/// per-item import / embed / extract migration — whichever lands first ports
-/// the progress reporter with it, giving a real `.tick()` call site to drive
-/// the wiring. Original audit: docs/plans/2026-07-06-global-flag-gap-audit.md.
+/// have NO consumer yet — wiring them to clap is blocked on the first per-item
+/// consumer (a sync per-item import/embed/extract migration) porting the
+/// progress-reporter subsystem with a real `.tick()` call site. Full
+/// background: docs/plans/KNOWN-GAPS.md (G3).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CliOpts {
     /// Suppress human-friendly progress output.
@@ -1574,7 +1570,22 @@ impl TypedOperation for ThinkOperation {
         let mut context_chunks = Vec::new();
         let mut page_sources = Vec::new();
 
-        // Phase 2: Search for relevant pages if engine is available
+        // Phase 2: Search for relevant pages if engine is available.
+        //
+        // FUTURE(think-rerank): this retrieval bypasses the reranker that
+        // QueryOperation::execute applies. In TS, Think retrieval
+        // (src/core/think/gather.ts -> hybridSearch) inherits reranking as a
+        // built-in of the hybridSearch primitive (gated by the active search
+        // mode's reranker_enabled: off for `conservative`, on for
+        // `balanced`/`tokenmax`), so TS Think IS reranked. Here we call
+        // engine.search_pages directly, which is a pure storage query with no
+        // post-processing, so Think loses the rerank that Query got. The fix is
+        // NOT "add a Think-level rerank toggle" (that switch never existed in
+        // TS) but to extract a shared operation-layer retrieve+rerank helper
+        // that both QueryOperation and ThinkOperation call — engine-layer
+        // downsink is ruled out because the engine trait cannot reach
+        // config/audit_dir. Deferred to a future refactor.
+        // registered in docs/plans/KNOWN-GAPS.md (G1).
         if let Some(engine) = &ctx.engine {
             if !keywords.is_empty() {
                 let results = engine.search_pages(&SearchOpts {

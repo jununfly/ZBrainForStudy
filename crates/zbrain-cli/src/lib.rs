@@ -81,6 +81,7 @@ impl DoctorCheck {
 ///
 /// Hard trace: migrating a subsystem means moving its entry OUT of here into a
 /// real check — the anchor test guards against silent removal.
+/// registered in docs/plans/KNOWN-GAPS.md (G5).
 const UNMIGRATED_TS_DOCTOR_CHECKS: &[(&str, &str)] = &[
     ("embedding_health", "embedding provider reachability, embedding column, coverage backfill"),
     ("sync_freshness", "per-source lag, unacked parse failures, federated staleness"),
@@ -545,17 +546,10 @@ pub struct ThinkArgs {
 
 /// Arguments for `zbrain query` command.
 ///
-/// FUTURE(search-attribution): the TS global flag `--explain` switched
-/// `search`/`query` to a per-stage attribution view (base_score + each boost
-/// stage multiplier + reranker rank delta). Rust `query` scoring is currently a
-/// hardcoded keyword-hit weighting (title/content/frontmatter) in
-/// zbrain-core engine.rs with no rerank/boost/attribution stages, so there is
-/// nothing for `--explain` to show. The flag is NOT wired to clap until the
-/// rerank + per-stage attribution subsystem lands. (Note: doctor's
-/// `reranker_health` is now a real check reading the rerank-failure audit
-/// trail; but the *scoring* attribution stages `--explain` needs — boost
-/// multipliers + reranker rank delta stamped onto SearchResult — do not
-/// exist yet.) See docs/plans/2026-07-06-global-flag-gap-audit.md.
+/// FUTURE(search-attribution): the TS global flag `--explain` needs per-stage
+/// scoring attribution (base_score + boost multipliers + reranker rank delta)
+/// that Rust `query` scoring does not produce yet, so `--explain` is not wired
+/// to clap. Full background + recommended path: docs/plans/KNOWN-GAPS.md (G2).
 #[derive(Debug, Parser)]
 pub struct QueryArgs {
     /// Search query text
@@ -2274,18 +2268,15 @@ async fn run_doctor_command(args: DoctorArgs, config_path: Option<&Path>) -> any
     Ok(())
 }
 
-/// FUTURE(schema-pack): The TS `zbrain schema` command was NOT a DDL dumper —
-/// it was a 1166-line schema-pack manager (Schema Cathedral v3) exposing the
-/// 32-verb taxonomy below. None of it is migrated to Rust yet. The Rust DDL
-/// dumper was renamed `schema` -> `schema-sql` precisely to free up the
-/// `schema` name for that future port.
-///
-/// This constant is the hard trace: a later agent can grep
-/// `UNMIGRATED_TS_SCHEMA_PACK_VERBS` (or `FUTURE(schema-pack)`) to find the
-/// tracking point. Migrating the manager means wiring these verbs under a new
-/// `schema` subcommand tree and removing them from here. The anchor test
-/// guards against silent removal. Full detail: TS src/commands/schema.ts
-/// @ 5d5b404~1, and docs/plans/2026-07-06-schema-rename-audit.md.
+/// FUTURE(schema-pack): the TS `zbrain schema` command was a 1166-line
+/// schema-pack manager (Schema Cathedral v3) exposing the 32-verb taxonomy
+/// below; none of it is migrated. The Rust DDL dumper was renamed
+/// `schema` -> `schema-sql` to free up the `schema` name for that port.
+/// This constant is the hard grep anchor (`UNMIGRATED_TS_SCHEMA_PACK_VERBS`);
+/// migrating the manager means wiring these verbs under a new `schema`
+/// subcommand tree and removing them from here — the anchor test guards
+/// against silent removal. TS source: src/commands/schema.ts @ 5d5b404~1.
+/// Full background: docs/plans/KNOWN-GAPS.md (G4).
 const UNMIGRATED_TS_SCHEMA_PACK_VERBS: &[&str] = &[
     // Inspection
     "active", "list", "show", "validate", "graph", "lint", "stats", "explain", "usage",
