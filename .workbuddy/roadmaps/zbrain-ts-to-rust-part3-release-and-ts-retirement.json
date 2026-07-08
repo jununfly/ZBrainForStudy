@@ -294,7 +294,7 @@
     "1-4-1": {
       "id": "1-4-1",
       "label": "hybrid + vector 检索地基: Rust 侧从零建 embedding 写入/查询 + cosine 重打分 + RRF 融合(跨 InMemory/postgres/libsql 引擎), 为 rerank/attribution 提供真实融合分数 base_score",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-4",
       "children": [],
@@ -305,7 +305,7 @@
           "note": "InMemory 是当前唯一实现 search_pages 的引擎(pg/libsql 没实现)且单测在此, 能立即 TDD 红绿; embedding 字节列已存在, query 向量先用可注入桩/简单 embedding 把管道结构与真实 provider 解耦; 交付管道骨架+RRF+base_score 让 1-4-2/1-4-3 有真实分数可挂, 不先啃 pgvector SQL(本机 DB 盲区)"
         }
       ],
-      "notes": ""
+      "notes": "GREEN: dual-path RRF fusion in InMemoryEngine (lexical + cosine-over-embedding -> RRF_K=60 normalized base_score). SearchResult.base_score + SearchOpts.query_embedding added. Mirrors hybrid.ts:34/1251/1344 + gateway.ts:864 f32-LE. commit a3e5a10. lib 570/570."
     },
     "1-4-2": {
       "id": "1-4-2",
@@ -330,7 +330,7 @@
   },
   "metadata": {
     "created": "2026-07-06 17:51:37",
-    "updated": "2026-07-08 11:08:44",
+    "updated": "2026-07-08 11:25:47",
     "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART3_RELEASE_AND_TS_RETIREMENT.md"
   }
 }
