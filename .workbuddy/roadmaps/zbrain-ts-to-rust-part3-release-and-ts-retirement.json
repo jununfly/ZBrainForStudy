@@ -32,7 +32,7 @@
     "1-1": {
       "id": "1-1",
       "label": "发布基础设施迁移: 交叉编译多平台 Rust 二进制 + openclaw bundle-plugin 清单 serve/serve-mcp 语义对齐 + 二进制命名对齐",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [
@@ -248,17 +248,43 @@
     "1-1-3": {
       "id": "1-1-3",
       "label": "Rust 交叉编译 + 发布管线: 解除 .cargo/config.toml host-target 硬编码, 多平台 cargo build, 退役 TS build:all/release.yml(gbrain 命名 + bun 编译 TS)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-1",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "scope 与验证盲区如何处理",
+          "answer": "a: 本机可验证部分现在做(解 .cargo/config.toml host-target 硬编码 + 修 wrapper debug/release 与 bin/target 路径 + 改写 release.yml 为 Rust 多平台并去 gbrain/TS 编译), darwin/linux 真实交叉编译与 clawhub publish 写审计移交",
+          "note": "本机 Windows 仅装 x86_64-pc-windows-{msvc,gnu}, 无法真验 darwin/linux 交叉编译与 clawhub/CI runner; 验证 config/wrapper/YAML 形状, 实际多 OS runner 执行标 CI-verified-later"
+        },
+        {
+          "q": "如何搬迁硬编码 target",
+          "answer": "a: 删掉全局 [build] target, 依赖 host 默认(本机已是 msvc), binary 落自然 target/release/ (wrapper fallback 已覆盖); 交叉编译走 CI 显式 --target 无 config 冲突",
+          "note": "已验 rustc host=x86_64-pc-windows-msvc, rustup default msvc, 无 rust-toolchain 文件, 删 pin 安全保持 msvc"
+        },
+        {
+          "q": "wrapper 是否覆盖 debug 路径",
+          "answer": "a: getBinaryPath 加 debug 候选, release 优先 debug 兜底 (target/<triple>/{release,debug} + target/{release,debug}); 关掉 Part2 踩过的 rc=127 footgun; wrapper test 加 debug-only 命中用例",
+          "note": "删 .cargo pin 后裸 cargo build 落 target/debug/zbrain.exe, 原 wrapper 只找 release; 不扫 bin/(本刀正退役 TS build:all bin 产物)"
+        },
+        {
+          "q": "release.yml Rust 重写覆盖几个 target + 二进制如何到 wrapper",
+          "answer": "a: 4 主 triple 矩阵(x86_64/aarch64-apple-darwin, x86_64-unknown-linux-gnu, x86_64-pc-windows-msvc) 各跑 cargo build --release --target -p zbrain-cli, artifact 按 triple 命名去掉 gbrain-*; wrapper 只在 target/ 找二进制的 delivery-gap 在审计显式标记",
+          "note": "仅验 YAML 形状(合法 workflow/triple/命令), 多 OS runner 实跑 CI-verified-later; 6 triple 里 ia32 与 msvc 重复/arm64-linux 需 cross+QEMU YAGNI, 先 4"
+        },
+        {
+          "q": "build:all/prepublish:clawhub 何去何从",
+          "answer": "a: build:all 重指向 host Rust binary(bun run build:rust=cargo build --release -p zbrain-cli), 本地 prepublish:clawhub 产 host 平台可用 binary; 真多平台由 release.yml CI 矩阵产 GitHub release artifact 而非本地 publish",
+          "note": "审计写明本地 publish:clawhub 只发 host binary + wrapper cargo-build fallback 覆盖其他平台, 直到 CI artifact 接入 bundle; 移除死 TS 编译"
+        }
+      ],
       "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-06 17:51:37",
-    "updated": "2026-07-06 21:30:44",
+    "updated": "2026-07-06 21:55:28",
     "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART3_RELEASE_AND_TS_RETIREMENT.md"
   }
 }

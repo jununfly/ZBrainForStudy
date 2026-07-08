@@ -1,4 +1,12 @@
-[build]
-# Use MSVC toolchain for better Windows compatibility
-# target = "x86_64-pc-windows-gnullvm"
-target = "x86_64-pc-windows-msvc"
+# Rust build configuration.
+#
+# We intentionally do NOT pin `[build] target` here. Pinning it forced every
+# `cargo` invocation to a single triple, which (a) blocked cross-compilation
+# (`cargo build --target=<other>` double-applied the pin) and (b) relocated the
+# host binary into target/<triple>/... instead of the natural target/{debug,
+# release}/ paths the bin/zbrain-rs.js wrapper searches (Part2 rc=127 footgun).
+#
+# Local dev builds now use the host default toolchain (Windows dev already
+# defaults to x86_64-pc-windows-msvc). Multi-platform release binaries are
+# produced by the CI matrix in .github/workflows/release.yml via explicit
+# `cargo build --release --target=<triple>`.

@@ -46,21 +46,52 @@ const TARGET_MAP = {
   'linux-arm64': 'aarch64-unknown-linux-gnu',
 };
 
+/**
+ * Build the ordered list of candidate binary paths for a given platform/arch.
+ *
+ * Pure + exported so the wrapper's test can exercise path resolution without
+ * touching the real filesystem or the host's actual platform.
+ *
+ * Ordering rules:
+ *   - Triple-specific paths before the bare `target/` paths (a cross-compiled
+ *     or explicitly-targeted build is more specific than the default).
+ *   - Within each location, RELEASE before DEBUG: prefer the optimized binary
+ *     the release ships, but fall back to a plain `cargo build` (debug) so
+ *     local dev works too. Removing the hardcoded target from
+ *     .cargo/config.toml means a bare `cargo build` now lands at
+ *     target/debug/zbrain[.exe]; the old release-only list missed it.
+ *
+ * @param {string} platform  process.platform value (e.g. 'win32')
+ * @param {string} arch      process.arch value (e.g. 'x64')
+ * @param {string} root      project root directory
+ * @returns {string[]}
+ */
+export function getBinaryCandidates(platform, arch, root) {
+  const target = TARGET_MAP[`${platform}-${arch}`];
+  const names = ['zbrain', 'zbrain.exe'];
+  const candidates = [];
+
+  // Triple-specific locations (only when the platform/arch is mapped).
+  if (target) {
+    for (const profile of ['release', 'debug']) {
+      for (const name of names) {
+        candidates.push(join(root, 'target', target, profile, name));
+      }
+    }
+  }
+
+  // Bare target/ locations (host-default build, or unmapped platform).
+  for (const profile of ['release', 'debug']) {
+    for (const name of names) {
+      candidates.push(join(root, 'target', profile, name));
+    }
+  }
+
+  return candidates;
+}
+
 function getBinaryPath() {
-  const platform = process.platform;
-  const arch = process.arch;
-  const key = `${platform}-${arch}`;
-  const target = TARGET_MAP[key] || 'release';
-
-  // Check standard cargo target locations
-  const candidates = [
-    join(projectRoot, 'target', target, 'release', 'zbrain'),
-    join(projectRoot, 'target', target, 'release', 'zbrain.exe'),
-    join(projectRoot, 'target', 'release', 'zbrain'),
-    join(projectRoot, 'target', 'release', 'zbrain.exe'),
-  ];
-
-  for (const candidate of candidates) {
+  for (const candidate of getBinaryCandidates(process.platform, process.arch, projectRoot)) {
     if (existsSync(candidate)) {
       return candidate;
     }
