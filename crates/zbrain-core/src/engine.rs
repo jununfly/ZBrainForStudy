@@ -190,8 +190,16 @@ pub enum PageSort {
 pub struct SearchResult {
     /// The matched page
     pub page: Page,
-    /// Relevance score (0..1)
+    /// Final relevance score (0..1). After the fusion foundation this is the
+    /// RRF-fused, normalized score; downstream boost/rerank stages (later
+    /// sub-nodes) mutate this in place.
     pub score: f64,
+    /// Pre-boost fused score captured once at pipeline entry, mirroring the TS
+    /// attribution stamp (`src/core/search/hybrid.ts:289` — "capture base_score
+    /// ONCE at entry"). Lets later rerank/`--explain` stages reconstruct the
+    /// per-stage multiplier breakdown (base → boost → reranker_delta → final)
+    /// without re-running fusion. Equal to `score` until a boost stage runs.
+    pub base_score: f64,
     /// Keyword snippet extracted from content (for UI display)
     pub snippet: Option<String>,
 }
@@ -207,7 +215,87 @@ pub struct SearchOpts {
     pub min_score: Option<f64>,
     /// Source scope (None = all sources)
     pub source_id: Option<String>,
+    /// Query embedding for the vector-retrieval path (f32, same space as the
+    /// stored `Page::embedding` f32-LE bytes). `None` disables the vector path
+    /// so fusion degenerates to lexical-only. Injectable here (rather than
+    /// computed internally) so the fusion pipeline is decoupled from a real
+    /// embedding provider — provider wiring is a deferred sub-node. When the
+    /// vector path is inactive, RRF fusion still runs over the single lexical
+    /// list, so `base_score` is always populated.
+    pub query_embedding: Option<Vec<f32>>,
 }
+
+/// Reciprocal Rank Fusion constant. Mirrors `RRF_K` at
+/// `src/core/search/hybrid.ts:34`. Lower values weight top ranks more heavily.
+pub const RRF_K: f64 = 60.0;
+
+/// Decode a `Page::embedding` little-endian f32 byte blob into an f32 vector.
+///
+/// Mirrors the TS decode path (Voyage f32-LE base64 → `Float32Array` at
+/// `src/core/ai/gateway.ts:864`). Returns `None` when the blob is empty or its
+/// length is not a multiple of 4 (fail-loud on a malformed column rather than
+/// silently truncating).
+fn decode_embedding_le(bytes: &[u8]) -> Option<Vec<f32>> {
+    if bytes.is_empty() || bytes.len() % 4 != 0 {
+        return None;
+    }
+    Some(
+        bytes
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect(),
+    )
+}
+
+/// Cosine similarity of two equal-length f32 vectors. Mirrors
+/// `cosineSimilarity` at `src/core/search/hybrid.ts:1344`. Returns `0.0` when
+/// lengths differ or either magnitude is zero (matches the TS denom-zero
+/// guard), so a dimension mismatch degrades gracefully instead of ranking on
+/// garbage.
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
+    if a.len() != b.len() {
+        return 0.0;
+    }
+    let (mut dot, mut mag_a, mut mag_b) = (0.0f64, 0.0f64, 0.0f64);
+    for i in 0..a.len() {
+        let (x, y) = (f64::from(a[i]), f64::from(b[i]));
+        dot += x * y;
+        mag_a += x * x;
+        mag_b += y * y;
+    }
+    let denom = mag_a.sqrt() * mag_b.sqrt();
+    if denom == 0.0 {
+        0.0
+    } else {
+        dot / denom
+    }
+}
+
+/// Merge ranked lists via Reciprocal Rank Fusion, keyed by page id.
+///
+/// Mirrors `rrfFusion` at `src/core/search/hybrid.ts:1251`: each list
+/// contributes `1 / (K + rank)` per member, contributions accumulate across
+/// lists, then the fused scores are normalized to 0..1 by the observed max.
+/// Input is a slice of ranked page-id lists (rank = index); output maps page id
+/// → normalized fused score. Boost/rerank stages are deliberately out of scope
+/// (later sub-nodes) — this only produces the pre-boost `base_score`.
+fn rrf_fuse(lists: &[Vec<u64>], k: f64) -> std::collections::HashMap<u64, f64> {
+    use std::collections::HashMap;
+    let mut acc: HashMap<u64, f64> = HashMap::new();
+    for list in lists {
+        for (rank, &id) in list.iter().enumerate() {
+            *acc.entry(id).or_insert(0.0) += 1.0 / (k + rank as f64);
+        }
+    }
+    let max = acc.values().copied().fold(0.0f64, f64::max);
+    if max > 0.0 {
+        for score in acc.values_mut() {
+            *score /= max;
+        }
+    }
+    acc
+}
+
 
 /// Returns the whitelisted SQL `ORDER BY` fragment for the given sort mode.
 /// Mirrors `PAGE_SORT_SQL` at `types.ts:332`. Engines splice this literal
@@ -1427,71 +1515,122 @@ impl BrainEngine for InMemoryEngine {
             .lock()
             .expect("InMemoryEngine store mutex poisoned");
 
-        let mut results = Vec::new();
-        let keywords_lower: Vec<String> = opts.keywords.iter()
-            .map(|k| k.to_lowercase())
-            .collect();
+        let keywords_lower: Vec<String> =
+            opts.keywords.iter().map(|k| k.to_lowercase()).collect();
 
+        // Candidate set after deleted / source filtering, indexed by page id so
+        // the two retrieval paths and the fusion step share one lookup.
+        let mut candidates: std::collections::HashMap<u64, &Page> =
+            std::collections::HashMap::new();
         for page in store.iter() {
-            // Skip deleted pages
             if page.deleted_at.is_some() {
                 continue;
             }
-            // Source filtering
             if let Some(source_id) = &opts.source_id {
                 if page.source_id != *source_id {
                     continue;
                 }
             }
+            candidates.insert(page.id, page);
+        }
 
-            let mut score: f64 = 0.0;
-            let mut match_count = 0;
-
-            // Count keyword matches in title, compiled_truth, frontmatter
+        // ── Lexical path ────────────────────────────────────────────────────
+        // Substring match over title / compiled_truth / frontmatter. Produces a
+        // rank-ordered list of page ids (higher weighted-hit sum ranks first).
+        let mut lexical: Vec<(u64, f64)> = Vec::new();
+        for (&id, page) in &candidates {
             let title_lower = page.title.to_lowercase();
             let content_lower = page.compiled_truth.to_lowercase();
             let frontmatter_lower = page.frontmatter.to_string().to_lowercase();
 
+            let mut weight = 0.0;
+            let mut hit = false;
             for keyword in &keywords_lower {
                 if title_lower.contains(keyword) {
-                    score += 0.4; // Title matches count more
-                    match_count += 1;
+                    weight += 0.4; // Title matches count more
+                    hit = true;
                 }
                 if content_lower.contains(keyword) {
-                    score += 0.4; // Content matches
-                    match_count += 1;
+                    weight += 0.4; // Content matches
+                    hit = true;
                 }
                 if frontmatter_lower.contains(keyword) {
-                    score += 0.2; // Frontmatter matches
-                    match_count += 1;
+                    weight += 0.2; // Frontmatter matches
+                    hit = true;
                 }
             }
+            if hit {
+                lexical.push((id, weight));
+            }
+        }
+        lexical.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let lexical_ids: Vec<u64> = lexical.iter().map(|(id, _)| *id).collect();
 
-            if match_count > 0 {
-                // Cap score at 1.0
-                score = score.min(1.0);
-
-                // Extract snippet (first 150 chars of content around first match)
-                let snippet = if !content_lower.is_empty() {
-                    let first_match = keywords_lower.iter()
-                        .find_map(|k| content_lower.find(k))
-                        .unwrap_or(0);
-                    let start = first_match.saturating_sub(50);
-                    let end = (start + 150).min(content_lower.len());
-                    Some(page.compiled_truth[start..end].to_string())
-                } else {
-                    None
-                };
-
-                // Filter by min_score if set
-                if opts.min_score.map_or(true, |min| score >= min) {
-                    results.push(SearchResult {
-                        page: page.clone(),
-                        score,
-                        snippet,
-                    });
+        // ── Vector path ─────────────────────────────────────────────────────
+        // Cosine similarity between the injected query embedding and each
+        // candidate's stored f32-LE embedding. Skipped entirely when no query
+        // embedding is supplied, so fusion degenerates to lexical-only.
+        let mut vector_ids: Vec<u64> = Vec::new();
+        if let Some(query_vec) = &opts.query_embedding {
+            let mut scored: Vec<(u64, f64)> = Vec::new();
+            for (&id, page) in &candidates {
+                if let Some(bytes) = &page.embedding {
+                    if let Some(page_vec) = decode_embedding_le(bytes) {
+                        let cos = cosine_similarity(query_vec, &page_vec);
+                        if cos > 0.0 {
+                            scored.push((id, cos));
+                        }
+                    }
                 }
             }
+            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            vector_ids = scored.iter().map(|(id, _)| *id).collect();
+        }
+
+        // ── Fusion ──────────────────────────────────────────────────────────
+        // RRF-fuse the two ranked lists into a normalized 0..1 base_score. A
+        // page appearing in both lists accumulates both contributions.
+        let fused = rrf_fuse(&[lexical_ids, vector_ids], RRF_K);
+
+        let mut results = Vec::new();
+        for (id, base_score) in fused {
+            let Some(page) = candidates.get(&id) else {
+                continue;
+            };
+            if opts.min_score.map_or(false, |min| base_score < min) {
+                continue;
+            }
+
+            // Snippet: 150-char window around the first keyword hit, else the
+            // content head (vector-only matches have no keyword to anchor on).
+            let content_lower = page.compiled_truth.to_lowercase();
+            let snippet = if page.compiled_truth.is_empty() {
+                None
+            } else {
+                let first_match = keywords_lower
+                    .iter()
+                    .find_map(|k| content_lower.find(k))
+                    .unwrap_or(0);
+                let start = first_match.saturating_sub(50);
+                let end = (start + 150).min(page.compiled_truth.len());
+                // Clamp to a char boundary so the slice never panics on UTF-8.
+                let mut s = start;
+                while s > 0 && !page.compiled_truth.is_char_boundary(s) {
+                    s -= 1;
+                }
+                let mut e = end;
+                while e < page.compiled_truth.len() && !page.compiled_truth.is_char_boundary(e) {
+                    e += 1;
+                }
+                Some(page.compiled_truth[s..e].to_string())
+            };
+
+            results.push(SearchResult {
+                page: (*page).clone(),
+                score: base_score,
+                base_score,
+                snippet,
+            });
         }
 
         // Sort by score descending
@@ -2070,6 +2209,7 @@ mod tests {
             limit: None,
             min_score: None,
             source_id: None,
+            query_embedding: None,
         }).await.unwrap();
 
         assert_eq!(results.len(), 1);
@@ -2110,6 +2250,7 @@ mod tests {
             limit: None,
             min_score: None,
             source_id: None,
+            query_embedding: None,
         }).await.unwrap();
 
         assert_eq!(results.len(), 1);
@@ -2149,6 +2290,7 @@ mod tests {
             limit: None,
             min_score: None,
             source_id: None,
+            query_embedding: None,
         }).await.unwrap();
 
         assert_eq!(results.len(), 0);
@@ -2189,6 +2331,7 @@ mod tests {
             limit: Some(2),
             min_score: None,
             source_id: None,
+            query_embedding: None,
         }).await.unwrap();
 
         assert_eq!(results.len(), 2);
@@ -2251,6 +2394,7 @@ mod tests {
             limit: None,
             min_score: None,
             source_id: Some("source-a".to_string()),
+            query_embedding: None,
         }).await.unwrap();
 
         assert_eq!(results.len(), 1);
@@ -2316,11 +2460,73 @@ mod tests {
             limit: None,
             min_score: None,
             source_id: None,
+            query_embedding: None,
         }).await.unwrap();
 
         assert_eq!(results.len(), 2);
         // Higher score page should come first
         assert!(results[0].score > results[1].score);
+    }
+
+    /// Encode an f32 vector to the little-endian byte layout used by the
+    /// `Page::embedding` column (mirrors the TS Voyage f32-LE decode at
+    /// `src/core/ai/gateway.ts:864`).
+    fn f32_le_bytes(v: &[f32]) -> Vec<u8> {
+        v.iter().flat_map(|f| f.to_le_bytes()).collect()
+    }
+
+    #[tokio::test]
+    async fn search_pages_finds_vector_match_without_keyword() {
+        let engine = InMemoryEngine::default();
+        // Page has NO lexical overlap with the query keyword ("quantum"),
+        // but its stored embedding is colinear with the query embedding.
+        // Lexical-only search returns nothing; the vector path must surface it.
+        engine
+            .put_page(
+                "semantic-only",
+                Some("default"),
+                &PageInput {
+                    page_type: "note".to_string(),
+                    title: "Feline companions".to_string(),
+                    compiled_truth: "Domestic cats and their behaviour.".to_string(),
+                    timeline: None,
+                    frontmatter: None,
+                    content_hash: None,
+                    page_kind: None,
+                    effective_date: None,
+                    effective_date_source: None,
+                    import_filename: None,
+                    chunker_version: None,
+                    source_path: None,
+                    source_kind: None,
+                    source_uri: None,
+                    ingested_via: None,
+                    ingested_at: None,
+                    last_retrieved_at: None,
+                    embedding: Some(f32_le_bytes(&[1.0, 0.0, 0.0])),
+                },
+            )
+            .await
+            .unwrap();
+
+        let results = engine
+            .search_pages(&SearchOpts {
+                keywords: vec!["quantum".to_string()],
+                limit: None,
+                min_score: None,
+                source_id: None,
+                // Colinear with the page embedding → cosine ≈ 1.0.
+                query_embedding: Some(vec![1.0, 0.0, 0.0]),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1, "vector path should surface the page");
+        assert_eq!(results[0].page.slug, "semantic-only");
+        assert!(
+            results[0].base_score > 0.0,
+            "fusion must populate base_score"
+        );
     }
 }
 

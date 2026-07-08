@@ -1564,6 +1564,7 @@ impl TypedOperation for ThinkOperation {
                     limit: Some(5),
                     min_score: Some(0.1),
                     source_id: None,
+                    query_embedding: None,
                 }).await?;
 
                 evidence_used = results.len() as u32;
@@ -1782,6 +1783,7 @@ impl TypedOperation for QueryOperation {
                 limit: Some(limit),
                 min_score: Some(0.01),
                 source_id: params.source_id.clone(),
+                query_embedding: None,
             })
             .await?;
 
