@@ -85,8 +85,18 @@
       "status": "pending",
       "mode": "explore",
       "parent": "1",
-      "children": [],
-      "decisions": [],
+      "children": [
+        "1-4-1",
+        "1-4-2",
+        "1-4-3"
+      ],
+      "decisions": [
+        {
+          "q": "节点性质+拆分",
+          "answer": "a: 重新框定为聚合节点, 拆 3 有序子节点(1-4-1 hybrid+vector 地基 / 1-4-2 rerank 服务层 / 1-4-3 --explain 归因), 本轮只拆+落盘, 先施工 1-4-1",
+          "note": "侦察推翻 label 前提: Rust 不只是硬编码关键字加权, 而是整个向量地基缺失(pg/libsql 引擎连 search_pages 都没实现, embedding 列从不写/查, 无 cosine/RRF/tsvector); TS search/ ~7249 行, rerank 依赖外部 cross-encoder(ZeroEntropy zerank-2/llama-server-reranker); 地基无融合分数则 rerank 无对象/attribution 无数据, 强行合并=horizontal slicing"
+        }
+      ],
       "notes": ""
     },
     "1-2-1": {
@@ -280,11 +290,47 @@
         }
       ],
       "notes": ""
+    },
+    "1-4-1": {
+      "id": "1-4-1",
+      "label": "hybrid + vector 检索地基: Rust 侧从零建 embedding 写入/查询 + cosine 重打分 + RRF 融合(跨 InMemory/postgres/libsql 引擎), 为 rerank/attribution 提供真实融合分数 base_score",
+      "status": "in_progress",
+      "mode": "explore",
+      "parent": "1-4",
+      "children": [],
+      "decisions": [
+        {
+          "q": "地基第一刀最小垂直切片范围",
+          "answer": "a: 先只在 InMemoryEngine 做真实融合分数最小切片(词法+向量双路+RRF 融合, 产出带 base_score 的 SearchResult); pg/libsql search_pages + 真实 embedding provider 拆后续 tracer bullet/sub-node",
+          "note": "InMemory 是当前唯一实现 search_pages 的引擎(pg/libsql 没实现)且单测在此, 能立即 TDD 红绿; embedding 字节列已存在, query 向量先用可注入桩/简单 embedding 把管道结构与真实 provider 解耦; 交付管道骨架+RRF+base_score 让 1-4-2/1-4-3 有真实分数可挂, 不先啃 pgvector SQL(本机 DB 盲区)"
+        }
+      ],
+      "notes": ""
+    },
+    "1-4-2": {
+      "id": "1-4-2",
+      "label": "rerank 服务层: Rust gateway rerank client(外部 cross-encoder, fail-open) + rerank-audit JSONL + doctor reranker_health 真实断言(替换 UNMIGRATED_TS 留痕)",
+      "status": "blocked",
+      "mode": "explore",
+      "parent": "1-4",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-4-3": {
+      "id": "1-4-3",
+      "label": "explain 分阶段归因输出(--explain flag): 展示层, 依赖 1-4-1/1-4-2 在 SearchResult 盖的 base_score/boost_*/reranker_delta 字段, 逐结果逐阶段乘子分解",
+      "status": "blocked",
+      "mode": "explore",
+      "parent": "1-4",
+      "children": [],
+      "decisions": [],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-06 17:51:37",
-    "updated": "2026-07-06 21:55:28",
+    "updated": "2026-07-08 11:08:44",
     "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART3_RELEASE_AND_TS_RETIREMENT.md"
   }
 }
