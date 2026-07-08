@@ -217,6 +217,21 @@ pub struct SearchResult {
     /// (tail rows / reranker off / fail-open). Mirrors the TS
     /// `SearchResult.reranker_delta` stamp (`src/core/search/rerank.ts:123`).
     pub reranker_delta: Option<i64>,
+    /// Salience boost multiplier stamped ONLY when the post-fusion salience
+    /// stage actually multiplied this row's score (`1 + k*ln(1 + salience)`,
+    /// k=0.15 'on' / 0.30 'strong'). `None` when the row had zero salience or
+    /// was skipped by the floor-threshold gate, so `--explain` can render "no
+    /// salience boost applied" honestly. Does NOT overwrite `base_score` (the
+    /// pre-boost fused signal). Mirrors TS `SearchResult.salience_boost`
+    /// (`src/core/search/hybrid.ts:169`).
+    ///
+    /// FUTURE(boost-metadata-axes): the sibling metadata-axis boosts —
+    /// backlink_boost / recency_boost / graph_signal / source_boost — plus the
+    /// lexical exact-match boost are NOT migrated yet; each blocks on a data
+    /// layer that does not exist in Rust (backlink counts, graph edges, source
+    /// weights, intent-weights). They will add their own stamp fields here when
+    /// ported. registered in docs/plans/KNOWN-GAPS.md (G13).
+    pub salience_boost: Option<f64>,
 }
 
 /// Options for `search_pages`.
@@ -238,6 +253,15 @@ pub struct SearchOpts {
     /// vector path is inactive, RRF fusion still runs over the single lexical
     /// list, so `base_score` is always populated.
     pub query_embedding: Option<Vec<f32>>,
+    /// Floor-threshold ratio for the post-fusion metadata-axis boost gate. When
+    /// `Some(r)` (0 < r <= 1), a boost stage SKIPS any result whose fused score
+    /// is below `top_score * r`, so a weak-overlap tail page can't leapfrog the
+    /// primary hit by accumulating metadata boost. `None` (default) disables
+    /// the gate, preserving prior behavior. Mirrors TS `computeFloorThreshold`
+    /// (`src/core/search/hybrid.ts:126`) — the threshold is computed ONCE at
+    /// post-fusion entry from the pre-boost scores so stage order can't change
+    /// which rows clear the gate.
+    pub floor_ratio: Option<f64>,
 }
 
 /// Reciprocal Rank Fusion constant. Mirrors `RRF_K` at
@@ -309,6 +333,39 @@ fn rrf_fuse(lists: &[Vec<u64>], k: f64) -> std::collections::HashMap<u64, f64> {
         }
     }
     acc
+}
+
+/// Salience-boost coefficient for strength `'on'`. Mirrors TS
+/// `applySalienceBoost` k=0.15 (`src/core/search/hybrid.ts:159`). The
+/// logarithmic form `1 + k*ln(1 + salience)` keeps the factor in a bounded
+/// `[1.0, ~1.6]` range so a strong boost can't catastrophically flip rankings.
+const SALIENCE_BOOST_COEF_ON: f64 = 0.15;
+
+/// Compute the absolute score floor below which post-fusion metadata boosts
+/// skip a result. Mirrors TS `computeFloorThreshold`
+/// (`src/core/search/hybrid.ts:126`).
+///
+/// Returns `f64::NEG_INFINITY` (no gate) when `floor_ratio` is `None`, out of
+/// range (NaN / non-finite / <= 0 / > 1), or when no result has a positive
+/// finite score. Otherwise returns `top_score * ratio`, where `top_score` is
+/// the largest finite score. Computed ONCE before any boost mutates scores so
+/// stage order can't change which rows clear the gate.
+fn compute_floor_threshold(scores: &[f64], floor_ratio: Option<f64>) -> f64 {
+    let Some(ratio) = floor_ratio else {
+        return f64::NEG_INFINITY;
+    };
+    if !ratio.is_finite() || ratio <= 0.0 || ratio > 1.0 {
+        return f64::NEG_INFINITY;
+    }
+    let top = scores
+        .iter()
+        .copied()
+        .filter(|s| s.is_finite() && *s > 0.0)
+        .fold(f64::NEG_INFINITY, f64::max);
+    if top == f64::NEG_INFINITY {
+        return f64::NEG_INFINITY;
+    }
+    top * ratio
 }
 
 
@@ -941,6 +998,23 @@ impl InMemoryEngine {
             .lock()
             .expect("InMemoryEngine chunk_upsert_error mutex poisoned") = Some(error);
     }
+
+    /// Set a page's `emotional_weight` directly for tests. `PageInput` does not
+    /// carry `emotional_weight` (it is normally produced by the
+    /// `recompute_emotional_weight` pipeline), so salience-boost tests need a
+    /// backdoor to seed the value that `get_salience_scores` reads.
+    pub fn set_emotional_weight_for_tests(&self, slug: &str, source_id: &str, weight: f64) {
+        let mut store = self
+            .store
+            .lock()
+            .expect("InMemoryEngine store mutex poisoned");
+        if let Some(page) = store
+            .iter_mut()
+            .find(|p| p.slug == slug && p.source_id == source_id && p.deleted_at.is_none())
+        {
+            page.emotional_weight = Some(weight);
+        }
+    }
 }
 
 #[async_trait]
@@ -1525,13 +1599,18 @@ impl BrainEngine for InMemoryEngine {
     }
 
     async fn search_pages(&self, opts: &SearchOpts) -> crate::Result<Vec<SearchResult>> {
-        let store = self
-            .store
-            .lock()
-            .expect("InMemoryEngine store mutex poisoned");
-
         let keywords_lower: Vec<String> =
             opts.keywords.iter().map(|k| k.to_lowercase()).collect();
+
+        // Build the fused, pre-boost result list under the store lock in a
+        // scoped block so the (non-Send) MutexGuard is dropped before the async
+        // salience read below — a guard held across an await would make this
+        // future non-Send.
+        let mut results = {
+            let store = self
+                .store
+                .lock()
+                .expect("InMemoryEngine store mutex poisoned");
 
         // Candidate set after deleted / source filtering, indexed by page id so
         // the two retrieval paths and the fusion step share one lookup.
@@ -1651,10 +1730,55 @@ impl BrainEngine for InMemoryEngine {
                 // as None and are set later only for reordered head rows.
                 rerank_score: None,
                 reranker_delta: None,
+                salience_boost: None,
             });
         }
 
-        // Sort by score descending
+            results
+        }; // store lock (and all borrows of it) dropped here
+
+        // ── Post-fusion boost stages ────────────────────────────────────────
+        // Mirrors TS `runPostFusionStages` (src/core/search/hybrid.ts:282):
+        // compute the floor-threshold ONCE from the pre-boost fused scores,
+        // then apply each metadata-axis boost gated by it. Only the salience
+        // stage is migrated so far; strength is hardcoded to 'on' (k=0.15)
+        // because the search-mode system that resolves 'on'/'strong'/'off' is
+        // not ported yet.
+        //
+        // FUTURE(salience-strength-by-mode): TS resolves salience strength from
+        // the active search mode (ModeBundle). Rust has no mode system yet, so
+        // this is pinned to 'on'. registered in docs/plans/KNOWN-GAPS.md (G13).
+        if !results.is_empty() {
+            let pre_boost: Vec<f64> = results.iter().map(|r| r.base_score).collect();
+            let floor = compute_floor_threshold(&pre_boost, opts.floor_ratio);
+
+            // Salience scores are keyed by "{source_id}::{slug}"; read them via
+            // the same engine method the trait already exposes.
+            let refs: Vec<crate::types::PageRef> = results
+                .iter()
+                .map(|r| crate::types::PageRef {
+                    slug: r.page.slug.clone(),
+                    source_id: r.page.source_id.clone(),
+                })
+                .collect();
+            let salience = self.get_salience_scores(&refs).await?;
+
+            for r in &mut results {
+                if !r.score.is_finite() || r.score < floor {
+                    continue;
+                }
+                let key = format!("{}::{}", r.page.source_id, r.page.slug);
+                let Some(&s) = salience.get(&key) else { continue };
+                if s <= 0.0 {
+                    continue;
+                }
+                let factor = 1.0 + SALIENCE_BOOST_COEF_ON * (1.0 + s).ln();
+                r.score *= factor;
+                r.salience_boost = Some(factor);
+            }
+        }
+
+        // Sort by score descending (boosts may have reordered the head).
         results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
 
         // Apply limit if set
@@ -2231,6 +2355,7 @@ mod tests {
             min_score: None,
             source_id: None,
             query_embedding: None,
+            floor_ratio: None,
         }).await.unwrap();
 
         assert_eq!(results.len(), 1);
@@ -2272,6 +2397,7 @@ mod tests {
             min_score: None,
             source_id: None,
             query_embedding: None,
+            floor_ratio: None,
         }).await.unwrap();
 
         assert_eq!(results.len(), 1);
@@ -2312,6 +2438,7 @@ mod tests {
             min_score: None,
             source_id: None,
             query_embedding: None,
+            floor_ratio: None,
         }).await.unwrap();
 
         assert_eq!(results.len(), 0);
@@ -2353,6 +2480,7 @@ mod tests {
             min_score: None,
             source_id: None,
             query_embedding: None,
+            floor_ratio: None,
         }).await.unwrap();
 
         assert_eq!(results.len(), 2);
@@ -2416,6 +2544,7 @@ mod tests {
             min_score: None,
             source_id: Some("source-a".to_string()),
             query_embedding: None,
+            floor_ratio: None,
         }).await.unwrap();
 
         assert_eq!(results.len(), 1);
@@ -2482,11 +2611,169 @@ mod tests {
             min_score: None,
             source_id: None,
             query_embedding: None,
+            floor_ratio: None,
         }).await.unwrap();
 
         assert_eq!(results.len(), 2);
         // Higher score page should come first
         assert!(results[0].score > results[1].score);
+    }
+
+    /// Salience boost tracer bullet: a page with a higher `emotional_weight`
+    /// gets its fused score multiplied by `1 + 0.15*ln(1 + salience_score)`
+    /// (salience_score = emotional_weight * 5 in InMemory), reordering it above
+    /// an equally-matched page with no emotional weight, and the applied factor
+    /// is stamped onto `salience_boost`. Mirrors TS `applySalienceBoost`
+    /// (src/core/search/hybrid.ts:153, strength 'on' => k=0.15).
+    #[tokio::test]
+    async fn search_pages_salience_boost_reorders_and_stamps() {
+        let engine = InMemoryEngine::default();
+        // Two pages with the IDENTICAL lexical match profile (keyword in
+        // content only) so their fused base_score is equal and salience is the
+        // sole tie-breaker.
+        for slug in ["salient", "plain"] {
+            engine.put_page(
+                slug,
+                Some("default"),
+                &PageInput {
+                    page_type: "note".to_string(),
+                    title: "Untitled".to_string(),
+                    compiled_truth: "Has rust content.".to_string(),
+                    timeline: None,
+                    frontmatter: None,
+                    content_hash: None,
+                    page_kind: None,
+                    effective_date: None,
+                    effective_date_source: None,
+                    import_filename: None,
+                    chunker_version: None,
+                    source_path: None,
+                    source_kind: None,
+                    source_uri: None,
+                    ingested_via: None,
+                    ingested_at: None,
+                    last_retrieved_at: None,
+                    embedding: None,
+                },
+            ).await.unwrap();
+        }
+        // salient: emotional_weight 2.0 => salience_score = 10.0
+        engine.set_emotional_weight_for_tests("salient", "default", 2.0);
+        // plain: leave emotional_weight None => salience_score 0 => no boost
+
+        let results = engine.search_pages(&SearchOpts {
+            keywords: vec!["rust".to_string()],
+            limit: None,
+            min_score: None,
+            source_id: None,
+            query_embedding: None,
+            floor_ratio: None,
+        }).await.unwrap();
+
+        assert_eq!(results.len(), 2);
+        // salient must now rank first (base scores equal, salience lifts it).
+        assert_eq!(results[0].page.slug, "salient");
+        assert_eq!(results[1].page.slug, "plain");
+
+        // factor = 1 + 0.15 * ln(1 + 10.0)
+        let expected_factor = 1.0 + 0.15 * (1.0_f64 + 10.0).ln();
+        let stamp = results[0].salience_boost.expect("salient row stamped");
+        assert!(
+            (stamp - expected_factor).abs() < 1e-9,
+            "salience_boost stamp {stamp} != expected {expected_factor}"
+        );
+        // score = base_score * factor (base_score preserved as the pre-boost value).
+        assert!(
+            (results[0].score - results[0].base_score * expected_factor).abs() < 1e-9,
+            "boosted score must equal base_score * factor"
+        );
+        // plain row got no boost => stamp stays None, score == base_score.
+        assert_eq!(results[1].salience_boost, None, "unboosted row not stamped");
+        assert!((results[1].score - results[1].base_score).abs() < 1e-9);
+    }
+
+    /// Floor-threshold gate: with `floor_ratio` set, a result whose fused score
+    /// is below `topScore * floor_ratio` is SKIPPED by the salience stage (no
+    /// mutation, no stamp), so a weak-overlap tail page can't leapfrog via
+    /// metadata boost. Mirrors TS `computeFloorThreshold` +
+    /// gate in `applySalienceBoost` (src/core/search/hybrid.ts:162).
+    #[tokio::test]
+    async fn search_pages_salience_boost_respects_floor_gate() {
+        let engine = InMemoryEngine::default();
+        // strong: keyword in title + content + frontmatter => uniquely highest
+        // lexical weight (0.4+0.4+0.2), so it deterministically fuses to the
+        // normalized top score 1.0.
+        engine.put_page(
+            "strong",
+            Some("default"),
+            &PageInput {
+                page_type: "note".to_string(),
+                title: "Rust Guide".to_string(),
+                compiled_truth: "Rust everywhere.".to_string(),
+                timeline: None,
+                frontmatter: Some(serde_json::json!({ "tag": "rust" })),
+                content_hash: None,
+                page_kind: None, effective_date: None, effective_date_source: None,
+                import_filename: None, chunker_version: None, source_path: None,
+                source_kind: None, source_uri: None, ingested_via: None,
+                ingested_at: None, last_retrieved_at: None, embedding: None,
+            },
+        ).await.unwrap();
+        // Three filler pages with a title+content match (weight 0.8) so the weak
+        // page is pushed down to fusion rank 4. At RRF_K=60 the normalized score
+        // there is 60/64 ~= 0.9375, below the 0.95 floor, while every filler
+        // (ranks 1..3 => >= 60/63 ~= 0.952) clears it.
+        for slug in ["filler-a", "filler-b", "filler-c"] {
+            engine.put_page(
+                slug,
+                Some("default"),
+                &PageInput {
+                    page_type: "note".to_string(),
+                    title: "Rust Notes".to_string(),
+                    compiled_truth: "Rust content.".to_string(),
+                    timeline: None, frontmatter: None, content_hash: None,
+                    page_kind: None, effective_date: None, effective_date_source: None,
+                    import_filename: None, chunker_version: None, source_path: None,
+                    source_kind: None, source_uri: None, ingested_via: None,
+                    ingested_at: None, last_retrieved_at: None, embedding: None,
+                },
+            ).await.unwrap();
+        }
+        // weak: keyword in content only => lowest lexical weight (0.4), fuses to
+        // the tail, below the floor.
+        engine.put_page(
+            "weak",
+            Some("default"),
+            &PageInput {
+                page_type: "note".to_string(),
+                title: "Untitled".to_string(),
+                compiled_truth: "Has rust content.".to_string(),
+                timeline: None, frontmatter: None, content_hash: None,
+                page_kind: None, effective_date: None, effective_date_source: None,
+                import_filename: None, chunker_version: None, source_path: None,
+                source_kind: None, source_uri: None, ingested_via: None,
+                ingested_at: None, last_retrieved_at: None, embedding: None,
+            },
+        ).await.unwrap();
+        // Give the WEAK page a large emotional_weight — without the gate it
+        // would leapfrog via salience boost.
+        engine.set_emotional_weight_for_tests("weak", "default", 5.0);
+
+        let results = engine.search_pages(&SearchOpts {
+            keywords: vec!["rust".to_string()],
+            limit: None,
+            min_score: None,
+            source_id: None,
+            query_embedding: None,
+            floor_ratio: Some(0.95),
+        }).await.unwrap();
+
+        let weak = results.iter().find(|r| r.page.slug == "weak").unwrap();
+        // Gated out: no boost applied, stamp stays None, score == base_score.
+        assert_eq!(weak.salience_boost, None, "gated row must not be stamped");
+        assert!((weak.score - weak.base_score).abs() < 1e-9, "gated row score unchanged");
+        // strong still ranks first (unique top lexical weight).
+        assert_eq!(results[0].page.slug, "strong");
     }
 
     /// Encode an f32 vector to the little-endian byte layout used by the
@@ -2538,6 +2825,7 @@ mod tests {
                 source_id: None,
                 // Colinear with the page embedding → cosine ≈ 1.0.
                 query_embedding: Some(vec![1.0, 0.0, 0.0]),
+                floor_ratio: None,
             })
             .await
             .unwrap();

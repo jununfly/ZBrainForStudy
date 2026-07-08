@@ -88,13 +88,19 @@
       "children": [
         "1-4-1",
         "1-4-2",
-        "1-4-3"
+        "1-4-3",
+        "1-4-4"
       ],
       "decisions": [
         {
           "q": "节点性质+拆分",
           "answer": "a: 重新框定为聚合节点, 拆 3 有序子节点(1-4-1 hybrid+vector 地基 / 1-4-2 rerank 服务层 / 1-4-3 --explain 归因), 本轮只拆+落盘, 先施工 1-4-1",
           "note": "侦察推翻 label 前提: Rust 不只是硬编码关键字加权, 而是整个向量地基缺失(pg/libsql 引擎连 search_pages 都没实现, embedding 列从不写/查, 无 cosine/RRF/tsvector); TS search/ ~7249 行, rerank 依赖外部 cross-encoder(ZeroEntropy zerank-2/llama-server-reranker); 地基无融合分数则 rerank 无对象/attribution 无数据, 强行合并=horizontal slicing"
+        },
+        {
+          "q": "1-4-3(--explain)依赖的 boost 阶段整块无节点无字段, 怎么补?",
+          "answer": "新方向: 为 boost metadata-axis 子系统单拆子树并优先施工(排在 1-4-3 explain 之前), 1-4-3 转回 blocked 等 boost 落地",
+          "note": "探查确认: roadmap 层 boost 从没被拆成节点(1-4-1 地基决策明确只做 RRF+base_score 不含 boost), 代码层 Rust SearchResult 无任何 boost_* 字段, 而 TS boost 是整套 metadata-axis 子系统(backlink/salience/recency/exact-match/graph-signals/source-boost 散在 hybrid.ts+多文件)+依赖 emotional_weight/take_count/backlink/graph 等未迁数据模型. explain 三档归因 base->boost->rerank 中间档整块缺失且无人认领 -> 修正拆分盲点, 单拆 boost 子树"
         }
       ],
       "notes": ""
@@ -444,11 +450,66 @@
         }
       ],
       "notes": "调查+对齐落盘刀(无生产接线代码). 交付: (1) 新建 docs/plans/KNOWN-GAPS.md 已知缺口 SSOT 活文档(无日期前缀), 主表登记 G1-G12: G1 Think-rerank 缺口(含详情), G2 search-attribution, G3 progress-reporter, G4 schema-pack 32verb, G5 doctor 11 checks, G6 webhook rate-limiter, G7 webhook MinionQueue, G8 InMemory code-edge, G9 InMemory api_key, G10 import_code_file, G11 count_pages trait gap, G12 libsql 单线程序列化. (2) operation.rs ThinkOperation 检索处加 FUTURE(think-rerank) 自解释注释+G1 指针. (3) 3 FUTURE 注释瘦身为指路牌(search-attribution/progress-reporter/schema-pack, 冗长背景移入 KNOWN-GAPS)+2 UNMIGRATED 常量(doctor/schema-pack)加 registered 指针; 常量+锚点测试原样保留. 病根=接入点分层错位: TS Think 经 hybridSearch 内建 rerank(mode 门控), Rust 上一刀 rerank 接在 operation 层 QueryOperation, ThinkOperation 走 engine.search_pages 绕过. 推荐路径=抽 operation 层共享 retrieve_and_rerank helper(否决 engine 下沉/operation 复制), 本刀只钉方向不实现. 验证: cargo build 3 crate 通过(仅既有 warning), 注释-only 改动."
+    },
+    "1-4-4": {
+      "id": "1-4-4",
+      "label": "boost metadata-axis 子系统迁移: Rust query 补齐 TS post-fusion boost 阶段(backlink/salience/recency/exact-match/graph-signals/source-boost + floor-threshold gate), 填 --explain 三档归因的中间 boost 档; 按数据就绪度分层, 数据未迁的 boost 不硬做",
+      "status": "in_progress",
+      "mode": "explore",
+      "parent": "1-4",
+      "children": [
+        "1-4-4-2",
+        "1-4-4-3"
+      ],
+      "decisions": [
+        {
+          "q": "boost 子树挂载点+拆分粒度?",
+          "answer": "A: 挂 1-4 下作 1-4-4(编号尾挂, 施工序靠 status/依赖表达, 语义在 rerank 后 explain 前); 按数据就绪度分层拆有序子节点, 先做能立即 TDD 的(骨架+stamp+gate -> salience -> recency), 数据未迁的 boost(backlink/graph-signals/source-boost/exact-match)登记 pending 不硬做",
+          "note": "探查: TS post-fusion boost 阶段依赖数据就绪度参差 —— salience 齐(emotional_weight/salience_score/get_salience_scores 已在), recency 半齐(created_at/updated_at 在, 半衰期聚合无), backlink(无 get_backlink_counts trait)/graph-signals(InMemory 未实现)/source-boost/exact-match(intent-weights 未迁)全欠数据层. 每个 boost 是天然垂直切片(stamp 字段->算 factor->重排->断言顺序). 反 B(一节点全做=horizontal slicing 且卡在未迁数据), 反 C(纯骨架无真实 boost 消费者=空管道价值单薄)"
+        },
+        {
+          "q": "数据层未迁的 4 个 boost(backlink/graph-signals/source-boost/exact-match)用什么载体?",
+          "answer": "A: 不建 pending 子节点, 全部登记 KNOWN-GAPS(新增 G13 boost 缺口条目), 1-4-4 只含能垂直切片的 3 子节点(骨架/salience/recency); 骨架里给 4 个 boost 留 FUTURE(boost-*) 自解释锚点指向 G13",
+          "note": "复用 1-8 Q3 + 1-4-2-3 既定治理: pending 子节点会让父节点(1-4-4->1-4->1)永远无法 completed 冒泡卡死 part3 收尾(1-8 明确否决的反模式). 反 B(4 个 pending 子节点=父状态卡死), 反 C(汇总 pending 子节点仍卡死同一问题). 依赖未迁数据层: backlink 无 get_backlink_counts trait, graph-signals InMemory 未实现, source-boost 未迁, exact-match intent-weights 未迁"
+        },
+        {
+          "q": "骨架单独成刀 vs 与 salience 合并为首个真 tracer bullet?",
+          "answer": "A: 合并原 1-4-4-1(骨架)+1-4-4-2(salience) 为单一首刀=端到端垂直切片(编排入口+floor gate+SearchResult stamp 字段+salience 真实 factor 一条红绿链), 删独立骨架节点; recency 顺延为第二刀. 1-4-4 下最终为 2 子节点",
+          "note": "纯骨架(无真实 boost factor)只能断言字段默认 None/空列表跑通=horizontal slice, 与否决 Q2-C 同理违背 tracer bullet 一刀端到端见效. 反 B(骨架先行=空管道 gate/stamp 无验证对象), 反 C(假 factor 脚手架浪费+可能遗留). 首刀测试: 两个 emotional_weight 不同页 -> 断言 salience 重排+stamp 正确+gate 生效, 结构与首个真实行为同一测试证明"
+        }
+      ],
+      "notes": ""
+    },
+    "1-4-4-2": {
+      "id": "1-4-4-2",
+      "label": "boost 管道骨架 + salience_boost(首个端到端 tracer bullet): 建 run_post_fusion_stages 编排入口 + compute_floor_threshold gate(topScore*ratio 横切 metadata boost) + SearchResult 加 *_boost stamp 字段(None=未施加供 --explain 诚实渲染) + salience_boost 真实 factor(复刻 TS applySalienceBoost [1.0,~1.6] log clip, 数据已就绪 get_salience_scores/emotional_weight); 首刀测试断言 salience 重排+stamp+gate 一条链",
+      "status": "completed",
+      "mode": "explore",
+      "parent": "1-4-4",
+      "children": [],
+      "decisions": [
+        {
+          "q": "首刀落点(engine vs operation 层) + salience strength 来源?",
+          "answer": "(1)A: boost 接 engine 层 InMemoryEngine::search_pages 紧接 RRF 融合之后(对齐 1-4-1 融合+base_score 同层, TS 里融合+boost 同在 hybridSearch); salience 数据源 get_salience_scores 本就是 engine trait 方法引擎内直接可调, 不像 rerank 需外部 HTTP/audit_dir 而被迫上 operation 层. (2)A: 首刀 hardcode strength='on'(k=0.15, TS 默认档), strength-by-mode 因 search mode 系统未迁登记缺口(FUTURE 锚点)",
+          "note": "首刀验收边界(收窄): InMemory + salience 'on' + floor gate; 两个 emotional_weight 不同页断言 (a)高 salience 页 score 乘对应 factor=1+0.15*ln(1+s) (b)salience_boost stamp 值正确 (c)score<floor 页被 gate 跳过不 stamp. OUT: backlink/recency/graph/source/exact-match + strength-from-mode. 反 (1)B(boost 纯数据变换+数据源在 engine 内, 提到 operation 层要把 salience scores 传出再传回拧巴), 反 (2)B(迁整个 mode 系统=horizontal slicing 爆炸). 多引擎重复未来抽 helper 登记 G-boost"
+        }
+      ],
+      "notes": "DONE (TDD GREEN, 603 lib tests pass). Impl in crates/zbrain-core/src/engine.rs: (1) SearchResult += salience_boost: Option<f64> (None=不施加, --explain 诚实渲染; FUTURE(boost-metadata-axes) 指向 G13). (2) SearchOpts += floor_ratio: Option<f64>. (3) const SALIENCE_BOOST_COEF_ON=0.15. (4) fn compute_floor_threshold(scores, ratio) -> f64: None/越界/无正分 => NEG_INFINITY(无gate); 否则 top*ratio; post-fusion 入口算一次(boost 前 base_score), 阶段序不改谁过 gate. (5) search_pages 重构: 持锁融合段包进 scoped block, MutexGuard 在 async get_salience_scores().await 前 drop(否则 future 非 Send). (6) post-fusion salience 阶段: gate 检查(score<floor 跳过) + factor=1+0.15*ln(1+s) + r.score*=factor + stamp salience_boost=Some(factor); 之后按 score 重排. (7) 测试 mutator set_emotional_weight_for_tests(PageInput 不带 emotional_weight). 两个 tracer 测试: reorders_and_stamps(salience 高页乘 factor 上位 + stamp 精确 + base_score 保留 + 未 boost 页 stamp=None) + respects_floor_gate(floor_ratio=0.95, 4 filler 把 weak 挤到 rank4 归一 0.9375<0.95, weak 高 emotional_weight 仍被 gate 跳过不 stamp). 登记缺口: salience-strength-by-mode(硬编码 'on') + sibling metadata boosts(backlink/recency/graph/source/exact-match, 各阻塞数据层) => KNOWN-GAPS G13."
+    },
+    "1-4-4-3": {
+      "id": "1-4-4-3",
+      "label": "recency_boost 阶段: per-prefix 半衰期时间衰减(源自 created_at/updated_at), 复刻 TS applyRecencyBoost(dates keyed by source_id::slug + 半衰期 factor), 受 floor-threshold gate, mutate score + stamp recency_boost factor, 断言重排",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-4-4",
+      "children": [],
+      "decisions": [],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-06 17:51:37",
-    "updated": "2026-07-08 17:29:53",
+    "updated": "2026-07-08 18:21:27",
     "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART3_RELEASE_AND_TS_RETIREMENT.md"
   },
   "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_PART3_RELEASE_AND_TS_RETIREMENT.md"

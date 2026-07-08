@@ -41,6 +41,7 @@
 | G10 | `import_code_file` 空壳 | `crates/zbrain-core/src/import.rs:124`（`TODO: 实现代码导入逻辑`，占位测试 `import_code_file_placeholder`） | TS 代码文件导入路径 | 实现 chunk 切分 + `add_code_edges` 接线（依赖 tree-sitter chunker，见 part2 roadmap #108） | open |
 | G11 | `count_pages` 未进 BrainEngine trait | `crates/zbrain-core/src/sources_ops.rs:232`（自由函数）+ `:237` `TODO: add count_pages to BrainEngine trait` | — （Rust 内部结构缺口，非 TS 行为差异） | 把 `count_pages` 提升为 trait 方法，各后端各自高效实现（当前自由函数走通用路径） | open |
 | G12 | libsql 非单线程序列化访问 | `crates/zbrain-core/src/libsql.rs:239`（`TODO`：借线程消息循环序列化所有读写避免竞态） | — （Rust 后端并发正确性加固） | 单例内单线程 + 消息循环序列化 DB 读写。注：schema init 已有进程级 `SCHEMA_INIT_LOCK`（`:233`）覆盖初始化竞态 | open |
+| G13 | boost metadata-axis 部分未迁 + salience strength 硬编码 | `crates/zbrain-core/src/engine.rs` `SearchResult.salience_boost` 字段 `FUTURE(boost-metadata-axes)` 注释 + `search_pages` post-fusion 阶段 `FUTURE(salience-strength-by-mode)` 注释 | TS `runPostFusionStages`（`src/core/search/hybrid.ts:282`）编排 `applyBacklinkBoost`/`applySalienceBoost`/`applyRecencyBoost`/`applyGraphSignals` + `applyExactMatchBoost`（`intent-weights.ts`）；salience strength 由 search mode（ModeBundle）解析 'on'/'strong'/'off' | (a) salience strength：迁 search-mode 系统后从 ModeBundle 解析替换硬编码 'on'(k=0.15)。(b) sibling boosts：backlink（缺 `get_backlink_counts` trait + count 数据）/recency（数据半齐，见 roadmap 1-4-4-3）/graph-signals（InMemory 未实现 edges，见 G8）/source-boost（缺 source 权重）/exact-match（intent-weights 未迁）各自阻塞数据层，数据就绪一个迁一个，各加 `*_boost` stamp 字段 | open |
 
 ## G1 详情 — Think/evidence 检索丢失 rerank
 
