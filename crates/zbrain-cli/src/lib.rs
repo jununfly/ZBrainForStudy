@@ -84,7 +84,6 @@ impl DoctorCheck {
 const UNMIGRATED_TS_DOCTOR_CHECKS: &[(&str, &str)] = &[
     ("embedding_health", "embedding provider reachability, embedding column, coverage backfill"),
     ("sync_freshness", "per-source lag, unacked parse failures, federated staleness"),
-    ("reranker_health", "reranker provider / recipe check"),
     ("search_mode", "search modes overrides, mode drift"),
     ("federation_health", "federated source sync, mount reachability"),
     ("schema_packs", "schema pack presence / drift"),
@@ -552,9 +551,11 @@ pub struct ThinkArgs {
 /// hardcoded keyword-hit weighting (title/content/frontmatter) in
 /// zbrain-core engine.rs with no rerank/boost/attribution stages, so there is
 /// nothing for `--explain` to show. The flag is NOT wired to clap until the
-/// rerank + per-stage attribution subsystem lands (doctor already marks
-/// `reranker_health` as UNMIGRATED_TS). See
-/// docs/plans/2026-07-06-global-flag-gap-audit.md.
+/// rerank + per-stage attribution subsystem lands. (Note: doctor's
+/// `reranker_health` is now a real check reading the rerank-failure audit
+/// trail; but the *scoring* attribution stages `--explain` needs — boost
+/// multipliers + reranker rank delta stamped onto SearchResult — do not
+/// exist yet.) See docs/plans/2026-07-06-global-flag-gap-audit.md.
 #[derive(Debug, Parser)]
 pub struct QueryArgs {
     /// Search query text
@@ -2086,14 +2087,16 @@ async fn run_doctor_command(args: DoctorArgs, config_path: Option<&Path>) -> any
     let mut checks: Vec<DoctorCheck> = Vec::new();
 
     // 1. Config file validation
-    match config::load_config(config_path) {
+    let loaded_config = match config::load_config(config_path) {
         Ok(config) => {
             checks.push(DoctorCheck::ok("config", &format!("Loaded config with database: {}", config.database_url)));
+            Some(config)
         }
         Err(e) => {
             checks.push(DoctorCheck::fail("config", &format!("Failed to load config: {}", e)));
+            None
         }
-    }
+    };
 
     // 2. Database connectivity check
     let db_path = dirs::home_dir()
@@ -2147,7 +2150,47 @@ async fn run_doctor_command(args: DoctorArgs, config_path: Option<&Path>) -> any
         }
     }
 
-    // 5. Traceability: surface TS doctor checks not yet migrated to Rust (Q2).
+    // 5. Reranker health (engine-free: reads the config file plane + the
+    // rerank-failure audit JSONL). No DB/network — the reranker fails open
+    // at search time, so its health is purely "did fail-open fire recently
+    // and does the operator need to act". Mirrors the TS `reranker_health`
+    // check (src/commands/doctor.ts checkRerankerHealth): read
+    // `search.reranker.enabled`, read the 7-day failure window, classify.
+    {
+        let reranker_enabled = loaded_config
+            .as_ref()
+            .map(|c| c.search.reranker_enabled)
+            .unwrap_or(false);
+        // Audit dir: honor ZBRAIN_AUDIT_DIR (container/sandbox deploys where
+        // $HOME is read-only), else default to ~/.zbrain/audit — the same
+        // resolution the TS audit-writer uses so both runtimes share rows.
+        let audit_dir = std::env::var("ZBRAIN_AUDIT_DIR")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                dirs::home_dir()
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join(".zbrain")
+                    .join("audit")
+            });
+        let failures = zbrain_core::rerank_audit::read_recent_rerank_failures(
+            &audit_dir,
+            zbrain_core::rerank_audit::HEALTH_WINDOW_DAYS,
+        );
+        let (status, message) =
+            zbrain_core::rerank_audit::classify_reranker_health(reranker_enabled, &failures);
+        match status {
+            zbrain_core::rerank_audit::RerankerHealthStatus::Ok => {
+                checks.push(DoctorCheck::ok("reranker_health", &message));
+            }
+            zbrain_core::rerank_audit::RerankerHealthStatus::Warn => {
+                checks.push(DoctorCheck::warn("reranker_health", &message));
+            }
+        }
+    }
+
+    // 6. Traceability: surface TS doctor checks not yet migrated to Rust (Q2).
     // These are `not-implemented` — visible but excluded from health_score /
     // status / exit code, so a later agent cannot mistake doctor for complete.
     for (name, covers) in UNMIGRATED_TS_DOCTOR_CHECKS {
@@ -2896,6 +2939,22 @@ mod tests {
         assert!(
             (8..=12).contains(&n),
             "expected 8-12 subsystem-aggregated entries, got {n}"
+        );
+    }
+
+    #[test]
+    fn reranker_health_is_no_longer_unmigrated() {
+        // Migration hard-trace: `reranker_health` moved OUT of the UNMIGRATED
+        // stand-in list into a real doctor check (reads the config-plane
+        // `search.reranker_enabled` + the rerank-failure audit JSONL and
+        // classifies auth/payload/transient thresholds). Guards against a
+        // later agent re-adding it to the not-implemented band and silently
+        // regressing the real check back to a placeholder.
+        assert!(
+            !UNMIGRATED_TS_DOCTOR_CHECKS
+                .iter()
+                .any(|(name, _)| *name == "reranker_health"),
+            "reranker_health is a real check now; it must not appear in UNMIGRATED_TS_DOCTOR_CHECKS"
         );
     }
 

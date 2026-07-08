@@ -185,6 +185,16 @@ pub struct SearchConfig {
     /// Whether to do hybrid search (keyword + semantic) (default: true)
     #[serde(default = "default_true")]
     pub hybrid_search: bool,
+
+    /// Whether the cross-encoder reranker is enabled (default: false).
+    ///
+    /// Read by `zbrain doctor`'s `reranker_health` check to interpret an
+    /// empty failure window: enabled + no failures = healthy; disabled =
+    /// no failures expected. Mirrors the TS `search.reranker.enabled` key,
+    /// but lives on the config file plane here (per the Rust config unifies
+    /// on a single file plane; the TS DB-plane key is not migrated).
+    #[serde(default)]
+    pub reranker_enabled: bool,
 }
 
 /// Agent and worker configuration.
@@ -315,6 +325,7 @@ impl Default for SearchConfig {
             min_score: 0.0,
             include_facts: true,
             hybrid_search: true,
+            reranker_enabled: false,
         }
     }
 }

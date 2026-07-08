@@ -310,11 +310,20 @@
     "1-4-2": {
       "id": "1-4-2",
       "label": "rerank 服务层: Rust gateway rerank client(外部 cross-encoder, fail-open) + rerank-audit JSONL + doctor reranker_health 真实断言(替换 UNMIGRATED_TS 留痕)",
-      "status": "blocked",
+      "status": "in_progress",
       "mode": "explore",
       "parent": "1-4",
-      "children": [],
-      "decisions": [],
+      "children": [
+        "1-4-2-1",
+        "1-4-2-2"
+      ],
+      "decisions": [
+        {
+          "q": "1-4-2 交付到哪一层(范围切分)?",
+          "answer": "a: 只做可观测垂直切片(rerank-audit JSONL writer + doctor reranker_health 真实断言, 替换 UNMIGRATED_TS 留痕); 真实 HTTP cross-encoder client + query 管道 call-site 接线拆为后续子节点",
+          "note": "TS rerank 是贯穿链(applyReranker -> gateway.rerank HTTP -> audit JSONL -> doctor 读 JSONL), 但 Rust 连 call-site 都不存在, 三件事横跨三层, 全塞一刀=horizontal slicing. audit+doctor 是纯文件+config 读能立即 TDD 红绿, 无本机 ZE/llama-server 网络盲区; audit writer 可镜像现成 sync/failures.rs JSONL 惯例; 先钉死可观测契约让 doctor 从留痕变真断言(=label 最后一句核心). HTTP client 无本机真实上游且需先有 call-site 才有消费者(YAGNI)"
+        }
+      ],
       "notes": ""
     },
     "1-4-3": {
@@ -326,11 +335,52 @@
       "children": [],
       "decisions": [],
       "notes": ""
+    },
+    "1-4-2-1": {
+      "id": "1-4-2-1",
+      "label": "rerank 可观测契约: Rust rerank-audit JSONL writer(镜像 sync/failures.rs) + doctor reranker_health 真实断言(读 search.reranker.enabled + 7天窗口 failures, 复刻 auth/payload/transient 阈值), 替换 UNMIGRATED_TS_DOCTOR_CHECKS 留痕",
+      "status": "completed",
+      "mode": "explore",
+      "parent": "1-4-2",
+      "children": [],
+      "decisions": [
+        {
+          "q": "audit 存储路径与轮转格式?",
+          "answer": "a: 严格对齐 TS -- ~/.zbrain/audit/rerank-failures-YYYY-Www.jsonl, ISO 周轮转, doctor 读最近 7 天窗口. sync/failures.rs 只作 JSONL append 写法参考(fs 惯例/best-effort/错误落 stderr), 不套其 per-source 路径与分区模型",
+          "note": "audit 是跨进程契约非内部细节, doctor 的 7 天窗口 + auth>=1/payload>=1/transient>=5 阈值全围绕周轮转文件+时间窗口设计; 换 per-key 无轮转格式则时间窗口无从计算且偏离 TS 运行时. ~/.zbrain/audit/ 是 TS 既有约定(slug-fallback-audit 也在此). sync/failures.rs 是另一个领域(按 source 分组同步失败), 惯例不硬套"
+        },
+        {
+          "q": "ISO 周号 + 7 天窗口用什么算?",
+          "answer": "a: 把 chrono 提升为 zbrain-core 直接依赖, 用 IsoWeek(%G-W%V) 算周号 + Duration 做 7 天窗口",
+          "note": "chrono 已被 sqlx feature 编进依赖树, 提升为直接依赖零新增编译成本; ISO-8601 周号年份边界(第1周含首个周四/跨年周归属)极易手写出 bug. engine.rs:789 那条 avoid pulling chrono 注释是 Page 时间戳存储类型的局部权衡(选 String 图 wire 简单), 非全仓禁用 chrono 的全局禁令; audit ISO 周计算正是 chrono 价值所在"
+        },
+        {
+          "q": "doctor reranker_health 怎么读 reranker-enabled 状态?",
+          "answer": "a: 给 SearchConfig 加 reranker_enabled: bool(默认 false), doctor 从已加载的文件平面 Config 读, 不碰 engine/DB; reranker_health 保持 engine-free(纯文件: 读 Config + 读 audit JSONL)",
+          "note": "对齐 1-2 config 统一文件平面约定(TS 的 search.reranker.enabled DB 键属已列为 TS-only 不迁移的 DB-plane 族); doctor 第1步已 load_config, 复用同一 Config; engine-agnostic(file-based + one config-key read) 中那个 key read 从 DB 变文件. 默认 false 语义正确: 没配 reranker=关闭='无失败预期'路径, 保留 TS enabled/disabled 语义分支"
+        },
+        {
+          "q": "audit writer 放哪个 crate + 无真实 producer 时怎么 TDD?",
+          "answer": "a: writer/reader 放 zbrain-core 新模块 rerank_audit.rs(公开 log_rerank_failure/read_recent_rerank_failures/rerank_audit_filename), doctor check 放 zbrain-cli 消费; TDD 用 writer->reader 往返 + classify_reranker_health 纯函数四分支断言(auth>=1/payload>=1/transient>=5/空窗口), 不依赖真实 rerank client",
+          "note": "镜像 TS 模块边界(src/core/rerank-audit.ts 在 core, doctor 在 command 层); writer/reader TDD 直接写一条读回验往返(=TS rerank-audit.test.ts 做法); doctor 阈值抽纯函数喂构造 failure 列表断言, 零 I/O 零网络. writer 本刀无生产调用点是预期的(消费者=1-4-2-2 HTTP client fail-open 分支), 但立即被 doctor reader+测试消费非死代码; 给 log_rerank_failure 加自解释注释标明未来唯一生产调用点与技术路径(不引 roadmap 编号)"
+        }
+      ],
+      "notes": ""
+    },
+    "1-4-2-2": {
+      "id": "1-4-2-2",
+      "label": "rerank HTTP client + call-site 接线: Rust gateway rerank client(reqwest POST 外部 cross-encoder, RerankError 分类 + fail-open) 接进 query 搜索管道后处理阶段, 失败写 1-4-2-1 的 audit",
+      "status": "blocked",
+      "mode": "explore",
+      "parent": "1-4-2",
+      "children": [],
+      "decisions": [],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-06 17:51:37",
-    "updated": "2026-07-08 11:25:47",
+    "updated": "2026-07-08 12:15:26",
     "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART3_RELEASE_AND_TS_RETIREMENT.md"
   }
 }
