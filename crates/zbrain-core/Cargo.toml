@@ -39,6 +39,12 @@ rand = "0.8"
 serde_yaml = { workspace = true }
 unicode-normalization = { workspace = true }
 walkdir = "2"
+# ISO-8601 week-number math for the rerank-audit JSONL file rotation
+# (`rerank-failures-YYYY-Www.jsonl`) and the doctor 7-day failure window.
+# ISO week year-boundary rules (week 1 contains the first Thursday; a
+# late-December date can belong to week 53 of the *previous* year) are
+# error-prone to hand-roll, so we lean on chrono's `IsoWeek` + `%G-W%V`.
+chrono = { workspace = true }
 
 [features]
 default = []

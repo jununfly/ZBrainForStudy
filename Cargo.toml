@@ -40,6 +40,12 @@ url = { version = "2", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 async-trait = "0.1"
+# Promoted to a direct workspace dependency for ISO-8601 week-number math
+# (audit-file rotation) and time-window filtering. Already pulled into the
+# tree transitively via sqlx's `chrono` feature, so this adds no new compile
+# cost. `default-features = false` + `clock` gives `Utc::now()` and the
+# `%G-W%V` formatting without the (default) `oldtime`/`wasmbind` extras.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # Slice 4a: PostgreSQL engine. `runtime-tokio-rustls` avoids OpenSSL system
 # linkage (cross-platform reproducibility). `migrate` ships the embedded-
 # migrations API used by PostgresEngine::init_schema.
