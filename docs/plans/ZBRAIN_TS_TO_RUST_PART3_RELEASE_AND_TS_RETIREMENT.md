@@ -50,25 +50,24 @@
 └── [ ][X+] 1-4. search rerank + 分阶段归因子系统迁移(--explain): Rust query 现为硬编码关键字加权，需迁 rerank/boost/attribution stages (doctor reranker_health=UNMIGRATED_TS)
     ├── [x][X+] 1-4-1. hybrid + vector 检索地基: Rust 侧从零建 embedding 写入/查询 + cosine 重打分 + RRF 融合(跨 InMemory/postgres/libsql 引擎), 为 rerank/attribution 提供真实融合分数 base_score
     ├── [x][X+] 1-4-2. rerank 服务层: Rust gateway rerank client(外部 cross-encoder, fail-open) + rerank-audit JSONL + doctor reranker_health 真实断言(替换 UNMIGRATED_TS 留痕)
-    ├── [!][X+] 1-4-3. explain 分阶段归因输出(--explain flag): 展示层, 依赖 1-4-1/1-4-2 在 SearchResult 盖的 base_score/boost_*/reranker_delta 字段, 逐结果逐阶段乘子分解
-    └── [~][X+] 1-4-4. boost metadata-axis 子系统迁移: Rust query 补齐 TS post-fusion boost 阶段(backlink/salience/recency/exact-match/graph-signals/source-boost + floor-threshold gate), 填 --explain 三档归因的中间 boost 档; 按数据就绪度分层, 数据未迁的 boost 不硬做
+    ├── [ ][X+] 1-4-3. explain 分阶段归因输出(--explain flag): 展示层, 依赖 1-4-1/1-4-2 在 SearchResult 盖的 base_score/boost_*/reranker_delta 字段, 逐结果逐阶段乘子分解
+    └── [x][X+] 1-4-4. boost metadata-axis 子系统迁移: Rust query 补齐 TS post-fusion boost 阶段(backlink/salience/recency/exact-match/graph-signals/source-boost + floor-threshold gate), 填 --explain 三档归因的中间 boost 档; 按数据就绪度分层, 数据未迁的 boost 不硬做
 ```
 
-### 🔨 当前施工: 1-4-4. boost metadata-axis 子系统迁移: Rust query 补齐 TS post-fusion boost 阶段(backlink/salience/recency/exact-match/graph-signals/source-boost + floor-threshold gate), 填 --explain 三档归因的中间 boost 档; 按数据就绪度分层, 数据未迁的 boost 不硬做
+### 🔨 当前施工: 1. ZBrain TS→Rust Part3: 发布链迁移 + 子系统补齐 + TS 入口退役
 **Status:** `in_progress` | **Mode:** `explore`
 
 **决策记录:**
-- Q: boost 子树挂载点+拆分粒度?
-  A: A: 挂 1-4 下作 1-4-4(编号尾挂, 施工序靠 status/依赖表达, 语义在 rerank 后 explain 前); 按数据就绪度分层拆有序子节点, 先做能立即 TDD 的(骨架+stamp+gate -> salience -> recency), 数据未迁的 boost(backlink/graph-signals/source-boost/exact-match)登记 pending 不硬做
-  > 探查: TS post-fusion boost 阶段依赖数据就绪度参差 —— salience 齐(emotional_weight/salience_score/get_salience_scores 已在), recency 半齐(created_at/updated_at 在, 半衰期聚合无), backlink(无 get_backlink_counts trait)/graph-signals(InMemory 未实现)/source-boost/exact-match(intent-weights 未迁)全欠数据层. 每个 boost 是天然垂直切片(stamp 字段->算 factor->重排->断言顺序). 反 B(一节点全做=horizontal slicing 且卡在未迁数据), 反 C(纯骨架无真实 boost 消费者=空管道价值单薄)
-- Q: 数据层未迁的 4 个 boost(backlink/graph-signals/source-boost/exact-match)用什么载体?
-  A: A: 不建 pending 子节点, 全部登记 KNOWN-GAPS(新增 G13 boost 缺口条目), 1-4-4 只含能垂直切片的 3 子节点(骨架/salience/recency); 骨架里给 4 个 boost 留 FUTURE(boost-*) 自解释锚点指向 G13
-  > 复用 1-8 Q3 + 1-4-2-3 既定治理: pending 子节点会让父节点(1-4-4->1-4->1)永远无法 completed 冒泡卡死 part3 收尾(1-8 明确否决的反模式). 反 B(4 个 pending 子节点=父状态卡死), 反 C(汇总 pending 子节点仍卡死同一问题). 依赖未迁数据层: backlink 无 get_backlink_counts trait, graph-signals InMemory 未实现, source-boost 未迁, exact-match intent-weights 未迁
-- Q: 骨架单独成刀 vs 与 salience 合并为首个真 tracer bullet?
-  A: A: 合并原 1-4-4-1(骨架)+1-4-4-2(salience) 为单一首刀=端到端垂直切片(编排入口+floor gate+SearchResult stamp 字段+salience 真实 factor 一条红绿链), 删独立骨架节点; recency 顺延为第二刀. 1-4-4 下最终为 2 子节点
-  > 纯骨架(无真实 boost factor)只能断言字段默认 None/空列表跑通=horizontal slice, 与否决 Q2-C 同理违背 tracer bullet 一刀端到端见效. 反 B(骨架先行=空管道 gate/stamp 无验证对象), 反 C(假 factor 脚手架浪费+可能遗留). 首刀测试: 两个 emotional_weight 不同页 -> 断言 salience 重排+stamp 正确+gate 生效, 结构与首个真实行为同一测试证明
+- Q: part3 从何而来 + 三节点是否已确认实施顺序？
+  A: part2 节点 1-6(migration cleanup) Q4/Q5 决策移交: 1-6 只清能无损删的死残留(死 build script/死 allowlist 项/失效 build 命令文档链接)，扛不动且有本机验证盲区的(mac/linux 交叉编译产物 + openclaw 清单语义)诚实移交到此。1-1/1-2/1-3 仅为移交锚点，实施顺序与切片待开 part3 时用 grill-me 逐题确认，不代表已确认。
+  > 1-3(TS退役)硬依赖 1-1(发布链切 Rust)完成，否则 src/cli.ts 仍是活发布入口不能删
+- Q: Q1: part3 本轮 grill 策略 + 第一刀选哪块？
+  A: A: 本轮只定 part3 全局排序 + 聚焦第一刀展开到可 TDD 切片；1-1/1-3 保持 explore 锚点各自开工前再单独 grill。第一刀锁 1-2 子系统补齐
+  > 第一刀选 1-2 而非 1-1: (1) 1-3 依赖 1-1、1-1 有本机验证盲区(mac/linux 交叉编译无法在此验证)——两块都带外部阻塞; (2) 1-2 三 flag 落点 1-8 已 audit 清楚有 FUTURE 锚点、纯 Rust 内可测可验、唯一能立即 TDD 无盲区的块。符合先动能动的、诚实对待扛不动的、不做一次性大设计
 
 **子节点:**
-- [x] 1-4-4-2. boost 管道骨架 + salience_boost(首个端到端 tracer bullet): 建 run_post_fusion_stages 编排入口 + compute_floor_threshold gate(topScore*ratio 横切 metadata boost) + SearchResult 加 *_boost stamp 字段(None=未施加供 --explain 诚实渲染) + salience_boost 真实 factor(复刻 TS applySalienceBoost [1.0,~1.6] log clip, 数据已就绪 get_salience_scores/emotional_weight); 首刀测试断言 salience 重排+stamp+gate 一条链
-- [ ] 1-4-4-3. recency_boost 阶段: per-prefix 半衰期时间衰减(源自 created_at/updated_at), 复刻 TS applyRecencyBoost(dates keyed by source_id::slug + 半衰期 factor), 受 floor-threshold gate, mutate score + stamp recency_boost factor, 断言重排
+- [x] 1-1. 发布基础设施迁移: 交叉编译多平台 Rust 二进制 + openclaw bundle-plugin 清单 serve/serve-mcp 语义对齐 + 二进制命名对齐
+- [ ] 1-2. 子系统补齐(1-8 审计移交): MCP timeout (--timeout) + progress reporter (--quiet/--progress-json/--progress-interval)
+- [ ] 1-3. TS 入口整体退役: src/cli.ts + postinstall TS 兜底 + check-cli-executable.sh + src/commands 未迁命令(依赖发布链切 Rust 完成)
+- [ ] 1-4. search rerank + 分阶段归因子系统迁移(--explain): Rust query 现为硬编码关键字加权，需迁 rerank/boost/attribution stages (doctor reranker_health=UNMIGRATED_TS)
 <!-- ⚠️ ROADMAP_SECTION_END -->

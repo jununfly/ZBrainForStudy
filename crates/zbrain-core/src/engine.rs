@@ -232,6 +232,15 @@ pub struct SearchResult {
     /// weights, intent-weights). They will add their own stamp fields here when
     /// ported. registered in docs/plans/KNOWN-GAPS.md (G13).
     pub salience_boost: Option<f64>,
+    /// Recency boost multiplier stamped ONLY when the post-fusion recency stage
+    /// actually multiplied this row's score (`1 + strengthMul * coef * hl /
+    /// (hl + days_old)`, strengthMul 1.0 'on' / 1.5 'strong'). `None` when the
+    /// page had no effective-date entry, matched an evergreen prefix
+    /// (`halflife_days == 0` or `coefficient == 0`), or was skipped by the
+    /// floor-threshold gate — so `--explain` can render "no recency boost
+    /// applied" honestly. Does NOT overwrite `base_score`. Mirrors TS
+    /// `SearchResult.recency_boost` (`src/core/search/hybrid.ts:220`).
+    pub recency_boost: Option<f64>,
 }
 
 /// Options for `search_pages`.
@@ -262,6 +271,19 @@ pub struct SearchOpts {
     /// post-fusion entry from the pre-boost scores so stage order can't change
     /// which rows clear the gate.
     pub floor_ratio: Option<f64>,
+    /// Per-prefix recency-decay map for the post-fusion recency boost stage.
+    /// `None` (default) means the engine falls back to
+    /// `recency_decay::DEFAULT_RECENCY_DECAY`. The caller resolves the effective
+    /// map (defaults + zbrain.yml + `ZBRAIN_RECENCY_DECAY` env + overrides) via
+    /// `recency_decay::resolve_recency_decay_map` and passes the already-merged
+    /// result here, mirroring the TS `applyRecencyBoost(..., decayMap, ...)`
+    /// parameter shape — the engine stays a pure scoring machine and never
+    /// reads env itself.
+    pub recency_decay: Option<crate::recency_decay::RecencyDecayMap>,
+    /// Fallback decay config applied to slugs that match no prefix in
+    /// `recency_decay`. `None` uses `recency_decay::DEFAULT_FALLBACK`. Mirrors
+    /// the TS `applyRecencyBoost(..., fallback)` parameter.
+    pub recency_fallback: Option<crate::recency_decay::RecencyDecayConfig>,
 }
 
 /// Reciprocal Rank Fusion constant. Mirrors `RRF_K` at
@@ -340,6 +362,31 @@ fn rrf_fuse(lists: &[Vec<u64>], k: f64) -> std::collections::HashMap<u64, f64> {
 /// logarithmic form `1 + k*ln(1 + salience)` keeps the factor in a bounded
 /// `[1.0, ~1.6]` range so a strong boost can't catastrophically flip rankings.
 const SALIENCE_BOOST_COEF_ON: f64 = 0.15;
+
+/// Parse an ISO-8601 timestamp (as stored on `Page::created_at` /
+/// `updated_at` / `effective_date`) to Unix epoch milliseconds. Returns `None`
+/// for an unparseable string so the recency stage simply skips that row (the
+/// same "no date entry → no boost" branch as a missing key). Accepts RFC-3339
+/// with an explicit offset (e.g. `2026-07-08T00:00:00Z`) and bare
+/// `YYYY-MM-DD` / `YYYY-MM-DDTHH:MM:SS` (assumed UTC), matching the shapes the
+/// TS layer feeds `new Date(...)`.
+fn iso8601_to_unix_ms(s: &str) -> Option<i64> {
+    use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
+    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+        return Some(dt.with_timezone(&Utc).timestamp_millis());
+    }
+    // Bare datetime without timezone → assume UTC.
+    for fmt in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"] {
+        if let Ok(ndt) = NaiveDateTime::parse_from_str(s, fmt) {
+            return Some(ndt.and_utc().timestamp_millis());
+        }
+    }
+    // Date only → midnight UTC.
+    if let Ok(d) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        return Some(d.and_hms_opt(0, 0, 0)?.and_utc().timestamp_millis());
+    }
+    None
+}
 
 /// Compute the absolute score floor below which post-fusion metadata boosts
 /// skip a result. Mirrors TS `computeFloorThreshold`
@@ -1013,6 +1060,23 @@ impl InMemoryEngine {
             .find(|p| p.slug == slug && p.source_id == source_id && p.deleted_at.is_none())
         {
             page.emotional_weight = Some(weight);
+        }
+    }
+
+    /// Set a page's `effective_date` directly for tests. The recency stage
+    /// reads dates via `get_effective_dates` (COALESCE effective_date /
+    /// updated_at / created_at), so seeding `effective_date` gives a
+    /// deterministic date without going through the import pipeline.
+    pub fn set_effective_date_for_tests(&self, slug: &str, source_id: &str, iso8601: &str) {
+        let mut store = self
+            .store
+            .lock()
+            .expect("InMemoryEngine store mutex poisoned");
+        if let Some(page) = store
+            .iter_mut()
+            .find(|p| p.slug == slug && p.source_id == source_id && p.deleted_at.is_none())
+        {
+            page.effective_date = Some(iso8601.to_string());
         }
     }
 }
@@ -1731,6 +1795,7 @@ impl BrainEngine for InMemoryEngine {
                 rerank_score: None,
                 reranker_delta: None,
                 salience_boost: None,
+                recency_boost: None,
             });
         }
 
@@ -1776,6 +1841,54 @@ impl BrainEngine for InMemoryEngine {
                 r.score *= factor;
                 r.salience_boost = Some(factor);
             }
+
+            // Recency stage (per-prefix half-life decay). Uses the same
+            // once-computed floor as salience so a weak-overlap tail page can't
+            // leapfrog the primary hit by stacking recency on top. The decay
+            // map is caller-resolved config (defaults + zbrain.yml + env +
+            // overrides), passed in via SearchOpts — the engine never reads env
+            // itself, staying a pure scoring machine. Dates come from the
+            // engine's own get_effective_dates; strength is pinned to 'on'
+            // (search-mode system unported — see the salience note above / G13).
+            let date_strings = self.get_effective_dates(&refs).await?;
+            let dates_ms: std::collections::HashMap<String, i64> = date_strings
+                .into_iter()
+                .filter_map(|(k, v)| iso8601_to_unix_ms(&v).map(|ms| (k, ms)))
+                .collect();
+            let decay_map = opts
+                .recency_decay
+                .clone()
+                .unwrap_or_else(crate::recency_decay::default_recency_decay);
+            let fallback = opts
+                .recency_fallback
+                .unwrap_or(crate::recency_decay::DEFAULT_FALLBACK);
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
+            let mut rows: Vec<crate::recency_decay::RecencyRow<'_>> = results
+                .iter_mut()
+                .map(|r| {
+                    let key = format!("{}::{}", r.page.source_id, r.page.slug);
+                    crate::recency_decay::RecencyRow {
+                        slug: r.page.slug.as_str(),
+                        key,
+                        score: &mut r.score,
+                        recency_boost: &mut r.recency_boost,
+                    }
+                })
+                .collect();
+            crate::recency_decay::apply_recency_boost(
+                &mut rows,
+                &dates_ms,
+                // Pinned to 'on': Rust has no search-mode system yet to resolve
+                // 'on'/'strong'/'off' from a ModeBundle (same gap as salience
+                // strength above). registered in docs/plans/KNOWN-GAPS.md (G13).
+                crate::recency_decay::RecencyStrength::On,
+                &decay_map,
+                fallback,
+                now_ms,
+                if floor.is_finite() { Some(floor) } else { None },
+            );
         }
 
         // Sort by score descending (boosts may have reordered the head).
@@ -2356,6 +2469,8 @@ mod tests {
             source_id: None,
             query_embedding: None,
             floor_ratio: None,
+            recency_decay: None,
+            recency_fallback: None,
         }).await.unwrap();
 
         assert_eq!(results.len(), 1);
@@ -2398,6 +2513,8 @@ mod tests {
             source_id: None,
             query_embedding: None,
             floor_ratio: None,
+            recency_decay: None,
+            recency_fallback: None,
         }).await.unwrap();
 
         assert_eq!(results.len(), 1);
@@ -2439,6 +2556,8 @@ mod tests {
             source_id: None,
             query_embedding: None,
             floor_ratio: None,
+            recency_decay: None,
+            recency_fallback: None,
         }).await.unwrap();
 
         assert_eq!(results.len(), 0);
@@ -2481,6 +2600,8 @@ mod tests {
             source_id: None,
             query_embedding: None,
             floor_ratio: None,
+            recency_decay: None,
+            recency_fallback: None,
         }).await.unwrap();
 
         assert_eq!(results.len(), 2);
@@ -2545,6 +2666,8 @@ mod tests {
             source_id: Some("source-a".to_string()),
             query_embedding: None,
             floor_ratio: None,
+            recency_decay: None,
+            recency_fallback: None,
         }).await.unwrap();
 
         assert_eq!(results.len(), 1);
@@ -2612,6 +2735,8 @@ mod tests {
             source_id: None,
             query_embedding: None,
             floor_ratio: None,
+            recency_decay: None,
+            recency_fallback: None,
         }).await.unwrap();
 
         assert_eq!(results.len(), 2);
@@ -2630,8 +2755,10 @@ mod tests {
         let engine = InMemoryEngine::default();
         // Two pages with the IDENTICAL lexical match profile (keyword in
         // content only) so their fused base_score is equal and salience is the
-        // sole tie-breaker.
-        for slug in ["salient", "plain"] {
+        // sole tie-breaker. The `concepts/` prefix is evergreen in
+        // DEFAULT_RECENCY_DECAY (halflife 0), so the always-on recency stage is
+        // a no-op here and can't perturb the exact salience-factor assertions.
+        for slug in ["concepts/salient", "concepts/plain"] {
             engine.put_page(
                 slug,
                 Some("default"),
@@ -2658,7 +2785,7 @@ mod tests {
             ).await.unwrap();
         }
         // salient: emotional_weight 2.0 => salience_score = 10.0
-        engine.set_emotional_weight_for_tests("salient", "default", 2.0);
+        engine.set_emotional_weight_for_tests("concepts/salient", "default", 2.0);
         // plain: leave emotional_weight None => salience_score 0 => no boost
 
         let results = engine.search_pages(&SearchOpts {
@@ -2668,12 +2795,14 @@ mod tests {
             source_id: None,
             query_embedding: None,
             floor_ratio: None,
+            recency_decay: None,
+            recency_fallback: None,
         }).await.unwrap();
 
         assert_eq!(results.len(), 2);
         // salient must now rank first (base scores equal, salience lifts it).
-        assert_eq!(results[0].page.slug, "salient");
-        assert_eq!(results[1].page.slug, "plain");
+        assert_eq!(results[0].page.slug, "concepts/salient");
+        assert_eq!(results[1].page.slug, "concepts/plain");
 
         // factor = 1 + 0.15 * ln(1 + 10.0)
         let expected_factor = 1.0 + 0.15 * (1.0_f64 + 10.0).ln();
@@ -2766,6 +2895,8 @@ mod tests {
             source_id: None,
             query_embedding: None,
             floor_ratio: Some(0.95),
+            recency_decay: None,
+            recency_fallback: None,
         }).await.unwrap();
 
         let weak = results.iter().find(|r| r.page.slug == "weak").unwrap();
@@ -2774,6 +2905,82 @@ mod tests {
         assert!((weak.score - weak.base_score).abs() < 1e-9, "gated row score unchanged");
         // strong still ranks first (unique top lexical weight).
         assert_eq!(results[0].page.slug, "strong");
+    }
+
+    /// Recency boost wiring: two pages with the identical lexical match profile
+    /// (keyword in content only) fuse to an equal base_score, so the recency
+    /// axis is the sole tie-breaker. Both slugs share the `daily/` prefix
+    /// (hl=14, coef=1.5); the fresh page (effective_date = now) gets the larger
+    /// factor and reorders above the stale page (effective_date ~2 years old),
+    /// and both rows carry a `recency_boost` stamp. Proves the engine resolves
+    /// dates via get_effective_dates + DEFAULT_RECENCY_DECAY and applies the
+    /// pure `apply_recency_boost` stage.
+    #[tokio::test]
+    async fn search_pages_recency_boost_reorders_and_stamps() {
+        let engine = InMemoryEngine::default();
+        for slug in ["daily/fresh", "daily/stale"] {
+            engine.put_page(
+                slug,
+                Some("default"),
+                &PageInput {
+                    page_type: "note".to_string(),
+                    title: "Untitled".to_string(),
+                    compiled_truth: "Has rust content.".to_string(),
+                    timeline: None,
+                    frontmatter: None,
+                    content_hash: None,
+                    page_kind: None,
+                    effective_date: None,
+                    effective_date_source: None,
+                    import_filename: None,
+                    chunker_version: None,
+                    source_path: None,
+                    source_kind: None,
+                    source_uri: None,
+                    ingested_via: None,
+                    ingested_at: None,
+                    last_retrieved_at: None,
+                    embedding: None,
+                },
+            ).await.unwrap();
+        }
+        // fresh: near now => large recency factor.
+        // stale: ~2 years ago => days_old >> halflife => factor near 1.0.
+        engine.set_effective_date_for_tests(
+            "daily/fresh",
+            "default",
+            &crate::time::current_utc_iso8601(),
+        );
+        engine.set_effective_date_for_tests("daily/stale", "default", "2024-01-01T00:00:00Z");
+
+        let results = engine.search_pages(&SearchOpts {
+            keywords: vec!["rust".to_string()],
+            limit: None,
+            min_score: None,
+            source_id: None,
+            query_embedding: None,
+            floor_ratio: None,
+            recency_decay: None,    // engine falls back to DEFAULT_RECENCY_DECAY
+            recency_fallback: None, // engine falls back to DEFAULT_FALLBACK
+        }).await.unwrap();
+
+        assert_eq!(results.len(), 2);
+        // Fresh page reorders to the top (equal base scores, recency lifts it).
+        assert_eq!(results[0].page.slug, "daily/fresh");
+        assert_eq!(results[1].page.slug, "daily/stale");
+        // Both rows got a recency stamp (both have a date + non-evergreen prefix).
+        let fresh_factor = results[0].recency_boost.expect("fresh row stamped");
+        let stale_factor = results[1].recency_boost.expect("stale row stamped");
+        // Fresh (days_old ~0) approaches 1 + coef = 2.5; stale is far smaller.
+        assert!(
+            fresh_factor > stale_factor,
+            "fresh factor {fresh_factor} must exceed stale factor {stale_factor}"
+        );
+        // Boosted score == base_score * factor (base_score preserved pre-boost).
+        assert!(
+            (results[0].score - results[0].base_score * fresh_factor).abs() < 1e-9,
+            "boosted score must equal base_score * recency factor"
+        );
     }
 
     /// Encode an f32 vector to the little-endian byte layout used by the
@@ -2826,6 +3033,8 @@ mod tests {
                 // Colinear with the page embedding → cosine ≈ 1.0.
                 query_embedding: Some(vec![1.0, 0.0, 0.0]),
                 floor_ratio: None,
+                recency_decay: None,
+                recency_fallback: None,
             })
             .await
             .unwrap();

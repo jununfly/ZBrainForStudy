@@ -30,6 +30,7 @@ pub mod llm;
 pub mod migration;
 pub mod operation;
 pub mod postgres;
+pub mod recency_decay;
 pub mod rerank_audit;
 pub mod rerank_client;
 pub mod sources_ops;

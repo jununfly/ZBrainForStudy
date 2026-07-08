@@ -336,12 +336,12 @@
     "1-4-3": {
       "id": "1-4-3",
       "label": "explain 分阶段归因输出(--explain flag): 展示层, 依赖 1-4-1/1-4-2 在 SearchResult 盖的 base_score/boost_*/reranker_delta 字段, 逐结果逐阶段乘子分解",
-      "status": "blocked",
+      "status": "pending",
       "mode": "explore",
       "parent": "1-4",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "解除阻塞(1-4-4 boost 子系统全 completed): SearchResult 归因字段现已齐 base_score(1-4-1 融合分)+salience_boost/recency_boost(1-4-4-2/3, None=未施加)+reranker_delta(1-4-2). --explain 逐阶段乘子分解的数据前置条件满足, 可进入展示层实现"
     },
     "1-4-2-1": {
       "id": "1-4-2-1",
@@ -454,7 +454,7 @@
     "1-4-4": {
       "id": "1-4-4",
       "label": "boost metadata-axis 子系统迁移: Rust query 补齐 TS post-fusion boost 阶段(backlink/salience/recency/exact-match/graph-signals/source-boost + floor-threshold gate), 填 --explain 三档归因的中间 boost 档; 按数据就绪度分层, 数据未迁的 boost 不硬做",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-4",
       "children": [
@@ -499,17 +499,33 @@
     "1-4-4-3": {
       "id": "1-4-4-3",
       "label": "recency_boost 阶段: per-prefix 半衰期时间衰减(源自 created_at/updated_at), 复刻 TS applyRecencyBoost(dates keyed by source_id::slug + 半衰期 factor), 受 floor-threshold gate, mutate score + stamp recency_boost factor, 断言重排",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-4-4",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "recency decay map 配置来源边界(DEFAULT / +env / 全套)?",
+          "answer": "C: 全套配置解析链都迁 — DEFAULT_RECENCY_DECAY(11 prefix)+DEFAULT_FALLBACK + ZBRAIN_RECENCY_DECAY env parser(fail-loud) + zbrain.yml recency: 段 parser + caller override + resolveRecencyDecayMap merge(later wins), 全部复刻到 Rust 新模块 crates/zbrain-core/src/search/recency_decay.rs(或就近)",
+          "note": "TS 有效 decay map=四层合并(DEFAULT/yaml/env/caller). 反 A(只硬编码内置表)/B(只加 env): 配置解析是纯 transform, 可整块独立 TDD 一次迁清, 不留半迁状态引诱后续二次改动; env parser 的 fail-loud 语义(源 M-CX-3, 拒绝而非静默跳过 malformed)是可观测契约的一部分必须复刻. per-prefix 最长匹配+半衰期 factor=1+strengthMul*coef*hl/(hl+daysOld), evergreen(hl=0/coef=0) 跳过. OUT: strength-by-mode(硬编码 'on'=1.0, 同 salience 登 G13)"
+        },
+        {
+          "q": "解析出的 RecencyDecayMap 怎么到达 engine search_pages?",
+          "answer": "A: SearchOpts += recency_decay: Option<RecencyDecayMap>(+ recency_fallback), caller 侧 resolve 后把已解析好的 map 传入(镜像 TS applyRecencyBoost(results, dates, strength, decayMap, fallback) 的入参形态); engine None 时 fallback 到 DEFAULT_RECENCY_DECAY, engine 只负责 apply 不读 env",
+          "note": "决定性区分数据 vs 配置: salience 走 engine 层因 get_salience_scores 是 engine 自己的数据(trait 读 store); recency decay map 是策略/配置属 caller 关注点. 反 B/C(engine 内读 ZBRAIN_RECENCY_DECAY env): env 污染破坏并发测试确定性 + 违反引擎=纯打分机分层. 纯解析模块(DEFAULT+2 parser+merge+error)独立 TDD 不碰 engine; engine 只测 apply(None->DEFAULT fallback 路径). 首刀 engine apply 走 None/DEFAULT 端到端验证重排+stamp+gate, env/yaml call-site resolve 接线同刀或紧随"
+        },
+        {
+          "q": "测试层次: 抽纯函数注入 now vs engine 内联宽容断言?",
+          "answer": "A: 抽纯函数 apply_recency_boost(results, dates, strength, decay_map, fallback, now_ms, floor)(镜像 TS 同名 + nowMs 入参); 纯函数单测注入固定 now_ms 断言精确 factor; engine 层 resolve now=SystemTime::now()+从 store 取 dates 后调纯函数, 另加 1 集成测证 wiring",
+          "note": "确定性是 TDD 命脉: recency factor 依赖 daysOld=依赖 now. 反 B(engine 内联 SystemTime::now): daysOld 随真实时钟漂移只能断言 factor>1+重排方向, 测不出公式对错(hl/(hl+daysOld) 写反/strengthMul 用错/evergreen 漏判都可能悄悄通过). 纯函数注入 now 断言精确 factor=1+strengthMul*coef*hl/(hl+daysOld). 纯函数还可被 3 引擎共享(呼应 1-4-4-2 抽 helper 登记). 首刀验收: 纯函数单测(a)最长前缀匹配(b)evergreen hl=0 跳过不 stamp(c)精确半衰期 factor(daysOld=hl->1+coef/2)(d)floor gate 跳过(e)无 date entry 跳过; engine 集成测 seed 两页不同 effective_date+DEFAULT map 断言重排+recency_boost stamp; OUT strength-by-mode(硬编码 'on'=1.0 登 G13)"
+        }
+      ],
+      "notes": "GREEN 621 tests(zbrain-core lib). 新建纯模块 crates/zbrain-core/src/recency_decay.rs: RecencyDecayConfig{halflife_days,coefficient}(Copy)+RecencyDecayMap 别名; RecencyStrength{On=1.0,Strong=1.5}; DEFAULT_FALLBACK(90,0.5)+default_recency_decay()复刻 11 prefix; parse_recency_decay_env(rfind 从右两个 ':' 保护 slug 内 '/', fail-loud 源 M-CX-3)+parse_recency_decay_yaml(读 recency: mapping, fail-loud)+resolve_recency_decay_map(default->yaml->env->caller extend, later wins)+RecencyDecayParseError(Display+Error); RecencyRow<'a>{slug,key,score:&mut,recency_boost:&mut}engine-agnostic adapter 可跨 InMemory/libsql/postgres; apply_recency_boost(rows,dates:HashMap<String,i64>,strength,decay_map,fallback,now_ms:i64,floor:Option)纯函数(prefixes 按 len 降序最长匹配, evergreen hl=0||coef=0 跳过, factor=1+strengthMul*coef*hl/(hl+days_old), 乘 score+stamp); 17 单测(env5/yaml4/resolve2/apply6). engine.rs: SearchResult+=recency_boost:Option<f64>(hybrid.ts:220); SearchOpts+=recency_decay+recency_fallback; iso8601_to_unix_ms(chrono RFC3339/bare/date-only, 不可解析->None 跳过); search_pages salience 后加 recency 阶段(get_effective_dates->iso->dates_ms, opts.recency_decay||default, now=SystemTime::now, RecencyStrength::On, floor gate); set_effective_date_for_tests mutator; 集成测 search_pages_recency_boost_reorders_and_stamps(daily/fresh vs daily/stale 断言重排+双 stamp+fresh_factor>stale_factor+score=base*factor); 修 salience 测改用 concepts/ evergreen 前缀隔离. 10 engine+2 operation SearchOpts 构造点补 None. 决策 Q1=C 全套配置链/Q2=A SearchOpts 携已解析 map engine 只 apply/Q3=A 纯函数注入 now_ms. OUT: strength-by-mode 硬编码 'on' 登 G13"
     }
   },
   "metadata": {
     "created": "2026-07-06 17:51:37",
-    "updated": "2026-07-08 18:21:27",
+    "updated": "2026-07-08 19:51:30",
     "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART3_RELEASE_AND_TS_RETIREMENT.md"
   },
   "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_PART3_RELEASE_AND_TS_RETIREMENT.md"

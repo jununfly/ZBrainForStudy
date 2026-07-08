@@ -1595,6 +1595,8 @@ impl TypedOperation for ThinkOperation {
                     source_id: None,
                     query_embedding: None,
                     floor_ratio: None,
+                    recency_decay: None,
+                    recency_fallback: None,
                 }).await?;
 
                 evidence_used = results.len() as u32;
@@ -1815,6 +1817,8 @@ impl TypedOperation for QueryOperation {
                 source_id: params.source_id.clone(),
                 query_embedding: None,
                 floor_ratio: None,
+                recency_decay: None,
+                recency_fallback: None,
             })
             .await?;
 
