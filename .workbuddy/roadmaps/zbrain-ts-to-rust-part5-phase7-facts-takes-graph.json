@@ -4,7 +4,7 @@
   "version": 1,
   "metadata": {
     "created": "2026-07-09 14:18:00",
-    "updated": "2026-07-09 15:15:34"
+    "updated": "2026-07-09 16:36:48"
   },
   "nodes": {
     "1": {
@@ -121,7 +121,13 @@
         "1-2-1",
         "1-2-2",
         "1-2-3",
-        "1-2-4"
+        "1-2-4",
+        "1-2-5",
+        "1-2-6",
+        "1-2-7",
+        "1-2-8",
+        "1-2-9",
+        "1-2-10"
       ],
       "decisions": [],
       "notes": "links table exists (0006 migration), just need query methods. Facts: new table + fence parser + CRUD."
@@ -159,12 +165,12 @@
     "1-2-3": {
       "id": "1-2-3",
       "label": "1-2-3: Backend implementations (InMemory + libsql + postgres links CRUD)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-2",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "All 3 backends done: InMemory BFS traverse, libsql JOIN-based, postgres unnest(). Verified by 26 integration tests in 1-2-4."
     },
     "1-2-4": {
       "id": "1-2-4",
@@ -179,6 +185,92 @@
         "libsql link_source CHECK constraint allows only: NULL, markdown, frontmatter, manual, mentions"
       ],
       "notes": "26 tests: 16 InMemory + 10 libsql. Covers add/remove/get_links/get_backlinks/get_backlink_counts/traverse_paths. Postgres deferred to Phase 7C when pg-embed parallelism is addressed."
+    },
+    "1-2-5": {
+      "id": "1-2-5",
+      "label": "Facts DB migration: new facts table (~20+ columns)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-2",
+      "children": [],
+      "decisions": [
+        {
+          "q": "Facts 表 schema 范围？",
+          "answer": "全量建表（~24列），包含 CRUD 核心列 + 向量列(embedding/embedded_at) + typed-claim 列(claim_metric/value/unit/period, event_type) + fence 对账列(row_num, source_markdown_slug, consolidated_at/into)。新表边际成本为零，避免后续 ALTER TABLE churn。向量列用 VECTOR 类型，各引擎可用空实现。",
+          "note": ""
+        }
+      ],
+      "notes": "PostgreSQL + SQLite migrations created (0013_facts.sql). 27 columns: CRUD core, consolidation, REAL[] embedding, typed-claim, fence sync. CHECK constraints for kind/visibility/notability/confidence. Registered as v13 in both LIBQL_MIGRATIONS and POSTGRES_MIGRATIONS. All 717 tests pass."
+    },
+    "1-2-6": {
+      "id": "1-2-6",
+      "label": "Rust types: FactRow, NewFact, FactKind, FactVisibility, ParsedFact, FactsHealth",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-2",
+      "children": [],
+      "decisions": [],
+      "notes": "FactKind(5 variants), FactVisibility(2), FactInsertStatus(3), FactRow(19 fields), NewFact(17 fields), FactsHealth, EntityCount, FactListOpts. Serde camelCase wire format. All 691 tests pass."
+    },
+    "1-2-7": {
+      "id": "1-2-7",
+      "label": "Facts fence parser/renderer: parse_facts_fence / render_facts_fence",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-2",
+      "children": [],
+      "decisions": [
+        {
+          "q": "Facts fence 列数？",
+          "answer": "全量 14 列：基础 9 列(claim/kind/confidence/visibility/notability/valid_from/valid_until/source/context) + typed-claim 5 列(claim_metric/value/unit/period, event_type)。parser 一次写完，和 DB 全量建表对称。",
+          "note": ""
+        }
+      ],
+      "notes": "",
+      "completedAt": "2026-07-09T08:42:17.266Z"
+    },
+    "1-2-8": {
+      "id": "1-2-8",
+      "label": "BrainEngine trait facts methods: insertFact(supersede), listFactsByEntity, getFactsHealth, expireFact",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-2",
+      "children": [],
+      "decisions": [
+        {
+          "q": "Facts 引擎层方法范围？",
+          "answer": "insertFact + 3 个查询：insertFact(含内部 supersede 事务)、listFactsByEntity(按 entity 查询)、getFactsHealth(运维指标)、expireFact(软删除)。不做 insertFacts(batch)、deleteFactsForPage、consolidateFact、findTrajectory。",
+          "note": ""
+        }
+      ],
+      "notes": "",
+      "completedAt": "2026-07-09T08:55:00.938Z"
+    },
+    "1-2-9": {
+      "id": "1-2-9",
+      "label": "Backend implementations: InMemory + libsql + postgres facts CRUD",
+      "status": "in_progress",
+      "mode": "exploit",
+      "parent": "1-2",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-2-10": {
+      "id": "1-2-10",
+      "label": "Facts integration tests: fence round-trip, CRUD, supersede, health",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-2",
+      "children": [],
+      "decisions": [
+        {
+          "q": "Postgres 集成测试策略？",
+          "answer": "和 Links 一致：InMemory + libsql 写集成测试，Postgres 后端实现但不写测试，延后到 Phase 7C 统一补。",
+          "note": ""
+        }
+      ],
+      "notes": ""
     }
   }
 }

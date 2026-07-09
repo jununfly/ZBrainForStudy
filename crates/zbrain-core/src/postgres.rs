@@ -213,6 +213,7 @@ const MIGRATION_0009: &str = include_str!("../migrations/0009_raw_data_and_page_
 const MIGRATION_0010: &str = include_str!("../migrations/0010_oauth_tables.sql");
 const MIGRATION_0011: &str = include_str!("../migrations/0011_sources_full_columns.sql");
 const MIGRATION_0012: &str = include_str!("../migrations/0012_takes_full_columns.sql");
+const MIGRATION_0013: &str = include_str!("../migrations/0013_facts.sql");
 
 /// Global migration registry for Postgres backend. Built once at runtime first use.
 pub static POSTGRES_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
@@ -278,6 +279,11 @@ pub static POSTGRES_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 12,
         name: "takes_full_columns",
         sql: MIGRATION_0012,
+    }));
+    registry.add(Box::new(PostgresMigration {
+        version: 13,
+        name: "facts",
+        sql: MIGRATION_0013,
     }));
 
     registry

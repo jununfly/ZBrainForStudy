@@ -20,8 +20,9 @@ use crate::{
         RegisterClientResponse, RevokeClientResponse, UpdateClientTtlResponse},
     time::current_utc_iso8601, types::PageVersion, types::RawData, types::Take,
     types::TakeInput, types::TakeResolution, types::UpsertTakesResult, CRMode, DuplicatePage,
-    EffectiveDateSource, Error, FileRow, FileSpec, FindDuplicatePageOpts, GraphNode, GraphPath,
-    Link, LinkBatchInput, OrphanPage, PageKind, PageRef, PageType, PurgeResult,
+    EffectiveDateSource, Error, EntityCount, FactInsertStatus, FactKind, FactListOpts, FactRow,
+    FactVisibility, FactsHealth, FileRow, FileSpec, FindDuplicatePageOpts, GraphNode, GraphPath,
+    Link, LinkBatchInput, NewFact, OrphanPage, PageKind, PageRef, PageType, PurgeResult,
     RefreshPageBodyArgs, UpsertFileResult,
 };
 
@@ -1102,6 +1103,71 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
             "traverse_paths not yet implemented for this engine",
         ))
     }
+
+    // ── Facts (Phase 7B) ──────────────────────────────────────────────────
+
+    /// Insert a fact with automatic supersede semantics.
+    /// When `confidence > 0.9` and a same-entity same-kind same-source fact
+    /// exists and is still active, the old fact is superseded
+    /// (`superseded_by` set to the new row's id) in the same logical
+    /// transaction. Returns `Inserted`, `Duplicate`, or `Superseded`.
+    /// Mirrors TS `insertFact`.
+    async fn insert_fact(
+        &self,
+        source_id: &str,
+        entity_slug: &str,
+        input: &crate::types::NewFact,
+    ) -> crate::Result<crate::types::FactInsertStatus> {
+        let _ = (source_id, entity_slug, input);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "insert_fact not yet implemented for this engine",
+        ))
+    }
+
+    /// List facts for an entity, ordered by `created_at DESC`.
+    /// Supports `active_only`, `kinds`, `visibility`, `limit`, `offset`
+    /// via `FactListOpts`. Mirrors TS `listFactsByEntity`.
+    async fn list_facts_by_entity(
+        &self,
+        source_id: &str,
+        entity_slug: &str,
+        opts: &crate::types::FactListOpts,
+    ) -> crate::Result<Vec<crate::types::FactRow>> {
+        let _ = (source_id, entity_slug, opts);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "list_facts_by_entity not yet implemented for this engine",
+        ))
+    }
+
+    /// Return a health snapshot for the facts domain in this source.
+    /// Includes active/today/week/expired/consolidated counts and
+    /// top entities by fact volume. Mirrors TS `getFactsHealth`.
+    async fn get_facts_health(
+        &self,
+        source_id: &str,
+    ) -> crate::Result<crate::types::FactsHealth> {
+        let _ = source_id;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "get_facts_health not yet implemented for this engine",
+        ))
+    }
+
+    /// Mark a fact as expired (set `expired_at = now()`).
+    /// Returns `true` if a row was affected. Mirrors TS `expireFact`.
+    async fn expire_fact(&self, source_id: &str, fact_id: i64) -> crate::Result<bool> {
+        let _ = (source_id, fact_id);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "expire_fact not yet implemented for this engine",
+        ))
+    }
 }
 
 // ─── InMemoryEngine ──────────────────────────────────────────────────────────
@@ -1156,6 +1222,9 @@ pub struct InMemoryEngine {
     next_take_id: Mutex<u64>,
     // Phase 7B: links storage (in-memory, for testing)
     links_store: Mutex<Vec<InternalLink>>,
+    // Phase 7B: facts storage (in-memory, for testing)
+    facts_store: Mutex<Vec<crate::types::FactRow>>,
+    next_fact_id: Mutex<i64>,
 }
 
 // ─── Tag helpers ─────────────────────────────────────────────────────────────
@@ -1206,6 +1275,9 @@ impl InMemoryEngine {
             next_take_id: Mutex::new(1),
             // Phase 7B: links storage (in-memory, for testing)
             links_store: Mutex::new(Vec::new()),
+            // Phase 7B: facts storage (in-memory, for testing)
+            facts_store: Mutex::new(Vec::new()),
+            next_fact_id: Mutex::new(1),
         }
     }
 
@@ -1238,6 +1310,22 @@ impl InMemoryEngine {
             *next_id = take.id + 1;
         }
         store.push(take);
+    }
+
+    /// Phase 7B: add a fact row directly for test setup.
+    pub fn add_fact(&self, fact: FactRow) {
+        let mut store = self
+            .facts_store
+            .lock()
+            .expect("InMemoryEngine facts_store mutex poisoned");
+        let mut next_id = self
+            .next_fact_id
+            .lock()
+            .expect("InMemoryEngine next_fact_id mutex poisoned");
+        if fact.id >= *next_id {
+            *next_id = fact.id + 1;
+        }
+        store.push(fact);
     }
 
     /// Configure chunk upserts to fail in tests.
@@ -2918,6 +3006,220 @@ impl BrainEngine for InMemoryEngine {
         Ok(result)
     }
 
+    // ── Facts (Phase 7B) ──────────────────────────────────────────────────
+
+    async fn insert_fact(
+        &self,
+        source_id: &str,
+        entity_slug: &str,
+        input: &NewFact,
+    ) -> crate::Result<FactInsertStatus> {
+        let mut store = self.facts_store.lock().expect("poisoned");
+        let mut next_id = self.next_fact_id.lock().expect("poisoned");
+        let now = crate::time::current_utc_iso8601();
+
+        // Duplicate detection: same source + same entity + same fact text +
+        // same kind + still active. Duplicates are silently ignored.
+        // Confidence threshold for supersede: > 0.9.
+        let supersede_threshold = 0.9;
+        let maybe_supersede = if input.confidence.unwrap_or(1.0) > supersede_threshold {
+            // Find an active same-entity same-kind fact to supersede
+            let target = store.iter().position(|f| {
+                f.source_id == source_id
+                    && f.entity_slug.as_deref() == Some(entity_slug)
+                    && f.kind == input.kind.clone().unwrap_or(FactKind::Fact)
+                    && f.expired_at.is_none()
+                    && f.superseded_by.is_none()
+            });
+            target
+        } else {
+            None
+        };
+
+        // Always check for exact duplicate (regardless of confidence)
+        let is_duplicate = store.iter().any(|f| {
+            f.source_id == source_id
+                && f.entity_slug.as_deref() == Some(entity_slug)
+                && f.fact == input.fact
+                && f.kind == input.kind.clone().unwrap_or(FactKind::Fact)
+                && f.expired_at.is_none()
+                && f.superseded_by.is_none()
+        });
+
+        if is_duplicate {
+            return Ok(FactInsertStatus::Duplicate);
+        }
+
+        let new_id = *next_id;
+        *next_id += 1;
+
+        // If superseding, mark the old fact
+        if let Some(pos) = maybe_supersede {
+            store[pos].superseded_by = Some(new_id);
+        }
+
+        let row = FactRow {
+            id: new_id,
+            source_id: source_id.to_string(),
+            entity_slug: Some(entity_slug.to_string()),
+            fact: input.fact.clone(),
+            kind: input.kind.clone().unwrap_or(FactKind::Fact),
+            visibility: input.visibility.clone().unwrap_or(FactVisibility::Private),
+            notability: input
+                .notability
+                .clone()
+                .unwrap_or_else(|| "medium".to_string()),
+            context: input.context.clone(),
+            valid_from: input.valid_from.clone(),
+            valid_until: input.valid_until.clone(),
+            expired_at: None,
+            superseded_by: None,
+            consolidated_at: None,
+            consolidated_into: None,
+            source: input.source.clone(),
+            source_session: input.source_session.clone(),
+            confidence: input.confidence.unwrap_or(1.0),
+            created_at: Some(now),
+        };
+        store.push(row);
+
+        if maybe_supersede.is_some() {
+            Ok(FactInsertStatus::Superseded)
+        } else {
+            Ok(FactInsertStatus::Inserted)
+        }
+    }
+
+    async fn list_facts_by_entity(
+        &self,
+        source_id: &str,
+        entity_slug: &str,
+        opts: &FactListOpts,
+    ) -> crate::Result<Vec<FactRow>> {
+        let store = self.facts_store.lock().expect("poisoned");
+
+        let mut rows: Vec<FactRow> = store
+            .iter()
+            .filter(|f| f.source_id == source_id)
+            .filter(|f| f.entity_slug.as_deref() == Some(entity_slug))
+            .filter(|f| {
+                if opts.active_only.unwrap_or(false) {
+                    f.expired_at.is_none() && f.superseded_by.is_none()
+                } else {
+                    true
+                }
+            })
+            .filter(|f| {
+                opts.kinds
+                    .as_ref()
+                    .map_or(true, |ks| ks.iter().any(|k| f.kind == *k))
+            })
+            .filter(|f| {
+                opts.visibility
+                    .as_ref()
+                    .map_or(true, |vs| vs.iter().any(|v| f.visibility == *v))
+            })
+            .cloned()
+            .collect();
+
+        // Newest first (mirrors TS ORDER BY created_at DESC)
+        rows.sort_by(|a, b| {
+            b.created_at
+                .as_deref()
+                .unwrap_or("")
+                .cmp(&a.created_at.as_deref().unwrap_or(""))
+        });
+
+        let offset = opts.offset.unwrap_or(0) as usize;
+        if offset > 0 {
+            rows = rows.into_iter().skip(offset).collect();
+        }
+        if let Some(limit) = opts.limit {
+            rows.truncate(limit as usize);
+        }
+
+        Ok(rows)
+    }
+
+    async fn get_facts_health(&self, source_id: &str) -> crate::Result<FactsHealth> {
+        let store = self.facts_store.lock().expect("poisoned");
+        let now = crate::time::current_utc_iso8601();
+
+        let total_active = store
+            .iter()
+            .filter(|f| f.source_id == source_id && f.expired_at.is_none() && f.superseded_by.is_none())
+            .count() as i64;
+
+        let total_today = store
+            .iter()
+            .filter(|f| f.source_id == source_id && f.created_at.as_deref().unwrap_or("") >= &now[..10])
+            .count() as i64;
+
+        // Week: last 7 days (approximate by prefix check on date part)
+        let week_cutoff = {
+            // Simple approximation: today minus 7 days
+            use chrono::{NaiveDate, Duration};
+            let today = NaiveDate::parse_from_str(&now[..10], "%Y-%m-%d")
+                .unwrap_or_else(|_| NaiveDate::from_ymd_opt(2026, 1, 1).unwrap());
+            let cutoff = today - Duration::days(7);
+            cutoff.format("%Y-%m-%d").to_string()
+        };
+        let total_week = store
+            .iter()
+            .filter(|f| f.source_id == source_id && f.created_at.as_deref().unwrap_or("") >= week_cutoff.as_str())
+            .count() as i64;
+
+        let total_expired = store
+            .iter()
+            .filter(|f| f.source_id == source_id && f.expired_at.is_some())
+            .count() as i64;
+
+        let total_consolidated = store
+            .iter()
+            .filter(|f| f.source_id == source_id && f.consolidated_at.is_some())
+            .count() as i64;
+
+        // Top entities by fact count
+        let mut entity_counts: std::collections::HashMap<String, i64> =
+            std::collections::HashMap::new();
+        for f in store.iter().filter(|f| f.source_id == source_id) {
+            if let Some(ref slug) = f.entity_slug {
+                *entity_counts.entry(slug.clone()).or_insert(0) += 1;
+            }
+        }
+        let mut top_entities: Vec<EntityCount> = entity_counts
+            .into_iter()
+            .map(|(entity_slug, count)| EntityCount { entity_slug, count })
+            .collect();
+        top_entities.sort_by(|a, b| b.count.cmp(&a.count));
+        top_entities.truncate(10);
+
+        Ok(FactsHealth {
+            source_id: source_id.to_string(),
+            total_active,
+            total_today,
+            total_week,
+            total_expired,
+            total_consolidated,
+            top_entities,
+        })
+    }
+
+    async fn expire_fact(&self, source_id: &str, fact_id: i64) -> crate::Result<bool> {
+        let mut store = self.facts_store.lock().expect("poisoned");
+        let now = crate::time::current_utc_iso8601();
+
+        if let Some(fact) = store
+            .iter_mut()
+            .find(|f| f.id == fact_id && f.source_id == source_id && f.expired_at.is_none())
+        {
+            fact.expired_at = Some(now);
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
     // --- #110: Chunks & Code Edges (slice #110) ---
 
     async fn upsert_chunks(
@@ -3630,6 +3932,435 @@ mod tests {
             results[0].base_score > 0.0,
             "fusion must populate base_score"
         );
+    }
+
+    // ── Facts engine tests ──────────────────────────────────────────────
+
+    fn test_fact(
+        id: i64,
+        source_id: &str,
+        entity_slug: &str,
+        fact: &str,
+        kind: FactKind,
+    ) -> FactRow {
+        FactRow {
+            id,
+            source_id: source_id.to_string(),
+            entity_slug: Some(entity_slug.to_string()),
+            fact: fact.to_string(),
+            kind,
+            visibility: FactVisibility::Private,
+            notability: "medium".to_string(),
+            context: None,
+            valid_from: Some("2026-01-01T00:00:00Z".to_string()),
+            valid_until: None,
+            expired_at: None,
+            superseded_by: None,
+            consolidated_at: None,
+            consolidated_into: None,
+            source: "test".to_string(),
+            source_session: None,
+            confidence: 1.0,
+            created_at: Some("2026-07-09T00:00:00Z".to_string()),
+        }
+    }
+
+    #[tokio::test]
+    async fn insert_fact_basic() {
+        let engine = InMemoryEngine::new();
+        let status = engine
+            .insert_fact(
+                "test-source",
+                "alice",
+                &NewFact {
+                    fact: "likes coffee".to_string(),
+                    kind: Some(FactKind::Preference),
+                    entity_slug: None,
+                    visibility: None,
+                    context: None,
+                    valid_from: None,
+                    valid_until: None,
+                    source: "test".to_string(),
+                    source_session: None,
+                    confidence: None,
+                    notability: None,
+                    claim_metric: None,
+                    claim_value: None,
+                    claim_unit: None,
+                    claim_period: None,
+                    event_type: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(status, FactInsertStatus::Inserted);
+
+        let rows = engine
+            .list_facts_by_entity("test-source", "alice", &FactListOpts::default())
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].fact, "likes coffee");
+        assert_eq!(rows[0].kind, FactKind::Preference);
+    }
+
+    #[tokio::test]
+    async fn insert_fact_duplicate_detection() {
+        let engine = InMemoryEngine::new();
+        let new_fact = || NewFact {
+            fact: "likes coffee".to_string(),
+            kind: Some(FactKind::Preference),
+            entity_slug: None,
+            visibility: None,
+            context: None,
+            valid_from: None,
+            valid_until: None,
+            source: "test".to_string(),
+            source_session: None,
+            confidence: None,
+            notability: None,
+            claim_metric: None,
+            claim_value: None,
+            claim_unit: None,
+            claim_period: None,
+            event_type: None,
+        };
+
+        let s1 = engine.insert_fact("test-source", "alice", &new_fact()).await.unwrap();
+        assert_eq!(s1, FactInsertStatus::Inserted);
+
+        // Same fact again → duplicate
+        let s2 = engine.insert_fact("test-source", "alice", &new_fact()).await.unwrap();
+        assert_eq!(s2, FactInsertStatus::Duplicate);
+
+        // Different entity → still inserted
+        let s3 = engine.insert_fact("test-source", "bob", &new_fact()).await.unwrap();
+        assert_eq!(s3, FactInsertStatus::Inserted);
+    }
+
+    #[tokio::test]
+    async fn insert_fact_supersede_high_confidence() {
+        let engine = InMemoryEngine::new();
+        // First fact: likes coffee, confidence 0.8 (below threshold)
+        let s1 = engine
+            .insert_fact(
+                "test-source",
+                "alice",
+                &NewFact {
+                    fact: "likes coffee".to_string(),
+                    kind: Some(FactKind::Preference),
+                    confidence: Some(0.8),
+                    entity_slug: None,
+                    visibility: None,
+                    context: None,
+                    valid_from: None,
+                    valid_until: None,
+                    source: "test".to_string(),
+                    source_session: None,
+                    notability: None,
+                    claim_metric: None,
+                    claim_value: None,
+                    claim_unit: None,
+                    claim_period: None,
+                    event_type: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(s1, FactInsertStatus::Inserted);
+
+        // Second fact: same entity same kind, confidence 0.95 (above threshold)
+        // Should supersede the first.
+        let s2 = engine
+            .insert_fact(
+                "test-source",
+                "alice",
+                &NewFact {
+                    fact: "loves espresso".to_string(),
+                    kind: Some(FactKind::Preference),
+                    confidence: Some(0.95),
+                    entity_slug: None,
+                    visibility: None,
+                    context: None,
+                    valid_from: None,
+                    valid_until: None,
+                    source: "test".to_string(),
+                    source_session: None,
+                    notability: None,
+                    claim_metric: None,
+                    claim_value: None,
+                    claim_unit: None,
+                    claim_period: None,
+                    event_type: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(s2, FactInsertStatus::Superseded);
+
+        // Check that the old fact was superseded
+        let rows = engine
+            .list_facts_by_entity(
+                "test-source",
+                "alice",
+                &FactListOpts {
+                    active_only: Some(false),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        let old = rows.iter().find(|r| r.fact == "likes coffee").unwrap();
+        assert!(old.superseded_by.is_some());
+        // newest fact gets the higher id (auto-increment), superseded_by points to it
+        let newest_id = rows.iter().map(|r| r.id).max().unwrap();
+        assert_eq!(old.superseded_by.unwrap(), newest_id);
+    }
+
+    #[tokio::test]
+    async fn list_facts_active_only() {
+        let engine = InMemoryEngine::new();
+        // Insert two facts of different kinds (same kind+entity+high confidence
+        // triggers supersede by design — see the 1-2-8 grill-me decision).
+        engine
+            .insert_fact(
+                "test-source",
+                "alice",
+                &NewFact {
+                    fact: "active fact".to_string(),
+                    kind: Some(FactKind::Preference),
+                    entity_slug: None,
+                    visibility: None,
+                    context: None,
+                    valid_from: None,
+                    valid_until: None,
+                    source: "test".to_string(),
+                    source_session: None,
+                    confidence: None,
+                    notability: None,
+                    claim_metric: None,
+                    claim_value: None,
+                    claim_unit: None,
+                    claim_period: None,
+                    event_type: None,
+                },
+            )
+            .await
+            .unwrap();
+        engine
+            .insert_fact(
+                "test-source",
+                "alice",
+                &NewFact {
+                    fact: "expired fact".to_string(),
+                    kind: Some(FactKind::Belief),
+                    entity_slug: None,
+                    visibility: None,
+                    context: None,
+                    valid_from: None,
+                    valid_until: None,
+                    source: "test".to_string(),
+                    source_session: None,
+                    confidence: None,
+                    notability: None,
+                    claim_metric: None,
+                    claim_value: None,
+                    claim_unit: None,
+                    claim_period: None,
+                    event_type: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        // Expire the second fact
+        let expired = engine.expire_fact("test-source", 2).await.unwrap();
+        assert!(expired);
+
+        let active = engine
+            .list_facts_by_entity(
+                "test-source",
+                "alice",
+                &FactListOpts {
+                    active_only: Some(true),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].fact, "active fact");
+    }
+
+    #[tokio::test]
+    async fn list_facts_wrong_source_returns_empty() {
+        let engine = InMemoryEngine::new();
+        engine
+            .insert_fact(
+                "source-a",
+                "alice",
+                &NewFact {
+                    fact: "only in source-a".to_string(),
+                    kind: None,
+                    entity_slug: None,
+                    visibility: None,
+                    context: None,
+                    valid_from: None,
+                    valid_until: None,
+                    source: "test".to_string(),
+                    source_session: None,
+                    confidence: None,
+                    notability: None,
+                    claim_metric: None,
+                    claim_value: None,
+                    claim_unit: None,
+                    claim_period: None,
+                    event_type: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        let rows = engine
+            .list_facts_by_entity("source-b", "alice", &FactListOpts::default())
+            .await
+            .unwrap();
+        assert!(rows.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_facts_health_counts() {
+        let engine = InMemoryEngine::new();
+        // Use different kinds to avoid supersede kick-in
+        engine
+            .insert_fact(
+                "s1",
+                "alice",
+                &NewFact {
+                    fact: "fact 1".to_string(),
+                    kind: Some(FactKind::Event),
+                    entity_slug: None,
+                    visibility: None,
+                    context: None,
+                    valid_from: None,
+                    valid_until: None,
+                    source: "test".to_string(),
+                    source_session: None,
+                    confidence: None,
+                    notability: None,
+                    claim_metric: None,
+                    claim_value: None,
+                    claim_unit: None,
+                    claim_period: None,
+                    event_type: None,
+                },
+            )
+            .await
+            .unwrap();
+        engine
+            .insert_fact(
+                "s1",
+                "alice",
+                &NewFact {
+                    fact: "fact 2".to_string(),
+                    kind: Some(FactKind::Preference),
+                    entity_slug: None,
+                    visibility: None,
+                    context: None,
+                    valid_from: None,
+                    valid_until: None,
+                    source: "test".to_string(),
+                    source_session: None,
+                    confidence: None,
+                    notability: None,
+                    claim_metric: None,
+                    claim_value: None,
+                    claim_unit: None,
+                    claim_period: None,
+                    event_type: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        let health = engine.get_facts_health("s1").await.unwrap();
+        assert_eq!(health.source_id, "s1");
+        assert_eq!(health.total_active, 2);
+        assert!(health.total_expired == 0);
+        assert_eq!(health.top_entities.len(), 1);
+        assert_eq!(health.top_entities[0].entity_slug, "alice");
+        assert_eq!(health.top_entities[0].count, 2);
+    }
+
+    #[tokio::test]
+    async fn expire_fact_returns_false_for_already_expired() {
+        let engine = InMemoryEngine::new();
+        engine
+            .insert_fact(
+                "test-source",
+                "alice",
+                &NewFact {
+                    fact: "will expire".to_string(),
+                    kind: None,
+                    entity_slug: None,
+                    visibility: None,
+                    context: None,
+                    valid_from: None,
+                    valid_until: None,
+                    source: "test".to_string(),
+                    source_session: None,
+                    confidence: None,
+                    notability: None,
+                    claim_metric: None,
+                    claim_value: None,
+                    claim_unit: None,
+                    claim_period: None,
+                    event_type: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        let ok = engine.expire_fact("test-source", 1).await.unwrap();
+        assert!(ok);
+
+        // Second expire → false (already expired)
+        let ok2 = engine.expire_fact("test-source", 1).await.unwrap();
+        assert!(!ok2);
+    }
+
+    #[tokio::test]
+    async fn expire_fact_wrong_source_returns_false() {
+        let engine = InMemoryEngine::new();
+        engine
+            .insert_fact(
+                "source-a",
+                "alice",
+                &NewFact {
+                    fact: "fact".to_string(),
+                    kind: None,
+                    entity_slug: None,
+                    visibility: None,
+                    context: None,
+                    valid_from: None,
+                    valid_until: None,
+                    source: "test".to_string(),
+                    source_session: None,
+                    confidence: None,
+                    notability: None,
+                    claim_metric: None,
+                    claim_value: None,
+                    claim_unit: None,
+                    claim_period: None,
+                    event_type: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        let ok = engine.expire_fact("source-b", 1).await.unwrap();
+        assert!(!ok);
     }
 }
 

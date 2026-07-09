@@ -43,29 +43,32 @@ async fn read_version_raw(path: &std::path::Path) -> i64 {
     rows.next().await.unwrap().unwrap().get(0).unwrap()
 }
 
+/// Current migration version. Bump when new migrations are added.
+const EXPECTED_VERSION: i64 = 13;
+
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn fresh_db_runs_all_ten_migrations_ends_at_version_10() {
+async fn fresh_db_runs_all_migrations_ends_at_expected_version() {
     let (_temp, engine) = temp_engine().await;
     engine.init_schema().await.unwrap();
     let version = read_version_raw(_temp.path()).await;
-    assert_eq!(version, 10);
+    assert_eq!(version, EXPECTED_VERSION);
 }
 
 #[tokio::test]
 async fn idempotent_init_schema_applies_zero_migrations_second_run() {
     let (_temp, engine) = temp_engine().await;
 
-    // First run - should apply all 10 migrations
+    // First run - should apply all migrations
     engine.init_schema().await.unwrap();
     let v1 = read_version_raw(_temp.path()).await;
-    assert_eq!(v1, 10);
+    assert_eq!(v1, EXPECTED_VERSION);
 
     // Second run - should be idempotent (no migrations applied)
     engine.init_schema().await.unwrap();
     let v2 = read_version_raw(_temp.path()).await;
-    assert_eq!(v2, 10);
+    assert_eq!(v2, EXPECTED_VERSION);
 }
 
 #[tokio::test]

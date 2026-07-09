@@ -113,6 +113,8 @@ const MIGRATION_0009: &str = include_str!("../migrations-sqlite/0009_oauth_table
 const MIGRATION_0010: &str = include_str!("../migrations-sqlite/0010_sources_full_columns.sql");
 /// Expand `takes` table to full TS schema (PG→SQLite port).
 const MIGRATION_0012: &str = include_str!("../migrations-sqlite/0012_takes_full_columns.sql");
+/// Create `facts` table with full 27-column TS schema (PG→SQLite port).
+const MIGRATION_0013: &str = include_str!("../migrations-sqlite/0013_facts.sql");
 
 /// Legacy string array — REMOVED in favor of MigrationRegistry.
 /// Use LIBQL_MIGRATIONS instead.
@@ -198,6 +200,11 @@ pub static LIBQL_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 12,
         name: "takes_full_columns",
         sql: MIGRATION_0012,
+    }));
+    registry.add(Box::new(LibsqlMigration {
+        version: 13,
+        name: "facts",
+        sql: MIGRATION_0013,
     }));
 
     registry

@@ -13,6 +13,7 @@ pub mod cjk;
 pub mod embedding;
 pub mod embedding_context;
 pub mod embedding_pricing;
+pub mod facts_fence;
 pub mod import;
 pub mod scope;
 pub mod token_queries;
@@ -50,8 +51,9 @@ pub use capture::{
 };
 pub use error::{from_std_error, Error, Result, StructuredError};
 pub use types::{
-    is_base_page_type, CRMode, DuplicatePage, EffectiveDateSource, FileRow, FileSpec,
-    FindDuplicatePageOpts, GraphNode, GraphNodeLink, GraphPath, Link, LinkBatchInput,
+    is_base_page_type, CRMode, DuplicatePage, EffectiveDateSource, EntityCount, FactInsertStatus,
+    FactKind, FactListOpts, FactRow, FactVisibility, FactsHealth, FileRow, FileSpec,
+    FindDuplicatePageOpts, GraphNode, GraphNodeLink, GraphPath, Link, LinkBatchInput, NewFact,
     OrphanPage, PageKind, PageRef, PageType, PurgeResult, RefreshPageBodyArgs, Take,
     TakeInput, TakeResolution, UpsertFileResult, UpsertTakesResult, ALL_PAGE_TYPES,
 };
@@ -90,6 +92,11 @@ pub use url_safety::{
 };
 pub use markdown::{
     infer_slug, infer_tags, infer_title, infer_type, parse_markdown, split_body, ParsedMarkdown,
+};
+pub use facts_fence::{
+    parse_facts_fence, render_facts_fence, strip_facts_fence, upsert_fact_row, FenceFact,
+    FenceFactInput, FactsParseResult, StripFactsFenceOpts, UpsertFactResult, FACTS_FENCE_BEGIN,
+    FACTS_FENCE_END,
 };
 pub use file_classify::{
     classify_file, detect_code_language, detect_image_format, is_markdown_path, FileType,

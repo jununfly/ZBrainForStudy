@@ -399,6 +399,142 @@ pub struct GraphPath {
     pub depth: u32,
 }
 
+// ---------------------------------------------------------------------------
+// Facts domain types (Phase 7B engine layer)
+// ---------------------------------------------------------------------------
+// Mirrors TS types in src/core/engine.ts:
+//   FactKind    (L399), FactVisibility (L406), FactInsertStatus (L409),
+//   FactRow     (L412), NewFact        (L442), FactsHealth     (L492),
+//   FactListOpts(L477)
+
+/// Fact claim kind. Mirrors TS `FactKind` union.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FactKind {
+    Event,
+    Preference,
+    Commitment,
+    Belief,
+    Fact,
+}
+
+impl std::fmt::Display for FactKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FactKind::Event => write!(f, "event"),
+            FactKind::Preference => write!(f, "preference"),
+            FactKind::Commitment => write!(f, "commitment"),
+            FactKind::Belief => write!(f, "belief"),
+            FactKind::Fact => write!(f, "fact"),
+        }
+    }
+}
+
+/// Fact visibility level. Mirrors TS `FactVisibility` union.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FactVisibility {
+    Private,
+    World,
+}
+
+impl std::fmt::Display for FactVisibility {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FactVisibility::Private => write!(f, "private"),
+            FactVisibility::World => write!(f, "world"),
+        }
+    }
+}
+
+/// Result of an insertFact call. Mirrors TS `FactInsertStatus`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FactInsertStatus {
+    Inserted,
+    Duplicate,
+    Superseded,
+}
+
+/// A single row read from the `facts` table. Mirrors TS `FactRow` interface.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FactRow {
+    pub id: i64,
+    pub source_id: String,
+    pub entity_slug: Option<String>,
+    pub fact: String,
+    pub kind: FactKind,
+    pub visibility: FactVisibility,
+    pub notability: String,
+    pub context: Option<String>,
+    pub valid_from: Option<String>,
+    pub valid_until: Option<String>,
+    pub expired_at: Option<String>,
+    pub superseded_by: Option<i64>,
+    pub consolidated_at: Option<String>,
+    pub consolidated_into: Option<i64>,
+    pub source: String,
+    pub source_session: Option<String>,
+    pub confidence: f64,
+    pub created_at: Option<String>,
+}
+
+/// Input for `insertFact`. Mirrors TS `NewFact` interface.
+/// All optional fields have sensible defaults applied by the implementation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewFact {
+    pub fact: String,
+    pub kind: Option<FactKind>,
+    pub entity_slug: Option<String>,
+    pub visibility: Option<FactVisibility>,
+    pub context: Option<String>,
+    pub valid_from: Option<String>,
+    pub valid_until: Option<String>,
+    pub source: String,
+    pub source_session: Option<String>,
+    pub confidence: Option<f64>,
+    pub notability: Option<String>,
+    pub claim_metric: Option<String>,
+    pub claim_value: Option<f64>,
+    pub claim_unit: Option<String>,
+    pub claim_period: Option<String>,
+    pub event_type: Option<String>,
+}
+
+/// Operational health snapshot for the facts domain.
+/// Mirrors TS `FactsHealth` interface.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FactsHealth {
+    pub source_id: String,
+    pub total_active: i64,
+    pub total_today: i64,
+    pub total_week: i64,
+    pub total_expired: i64,
+    pub total_consolidated: i64,
+    pub top_entities: Vec<EntityCount>,
+}
+
+/// An entity slug + fact count pair used in `FactsHealth.top_entities`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityCount {
+    pub entity_slug: String,
+    pub count: i64,
+}
+
+/// Query filter options for listing facts. Mirrors TS `FactListOpts`.
+#[derive(Debug, Clone, Default)]
+pub struct FactListOpts {
+    pub active_only: Option<bool>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+    pub kinds: Option<Vec<FactKind>>,
+    pub visibility: Option<Vec<FactVisibility>>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
