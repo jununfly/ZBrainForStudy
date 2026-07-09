@@ -82,7 +82,7 @@
     "1-4": {
       "id": "1-4",
       "label": "search rerank + 分阶段归因子系统迁移(--explain): Rust query 现为硬编码关键字加权，需迁 rerank/boost/attribution stages (doctor reranker_health=UNMIGRATED_TS)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [
@@ -336,12 +336,28 @@
     "1-4-3": {
       "id": "1-4-3",
       "label": "explain 分阶段归因输出(--explain flag): 展示层, 依赖 1-4-1/1-4-2 在 SearchResult 盖的 base_score/boost_*/reranker_delta 字段, 逐结果逐阶段乘子分解",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-4",
       "children": [],
-      "decisions": [],
-      "notes": "解除阻塞(1-4-4 boost 子系统全 completed): SearchResult 归因字段现已齐 base_score(1-4-1 融合分)+salience_boost/recency_boost(1-4-4-2/3, None=未施加)+reranker_delta(1-4-2). --explain 逐阶段乘子分解的数据前置条件满足, 可进入展示层实现"
+      "decisions": [
+        {
+          "q": "这一刀 --explain 的交付边界?",
+          "answer": "A: 归因数据流+--explain 人读渲染一刀端到端(最小垂直切片)",
+          "note": "扩 QueryResultItem 携 base_score/salience_boost/recency_boost/reranker_delta(复刻 TS camelCase, skip_serializing_if=None) + QueryArgs 加 --explain flag + 仿 explain-formatter.ts 写 Rust formatter 逐阶段乘子分解人读文本 + 默认非 explain 保持现输出. 只渲染已迁 3 stage(salience/recency/reranker), 未迁 boost(backlink/exact-match/graph/session-demote)待数据层补齐追加. 反 B(只扩数据留 JSON 有字段无 --explain 半迁态)/C(渲染悬空 None 字段=死代码+引用不存在 struct 字段编译不过). 病根探查: operation.rs:1877 QueryResultItem 当前只留 page/score/snippet 丢弃全部归因字段, JSON 根本不暴露归因, 故须先通数据管道"
+        },
+        {
+          "q": "explain formatter 放哪层吃什么类型?",
+          "answer": "A: formatter 放 zbrain-core 吃强类型 &[QueryResultItem] 返回 String, CLI 层 --explain 时 from_value 反序列化回 QueryOutput 再调",
+          "note": "formatter 纯函数吃强类型可在 core 单测断言精确文本格式(不碰 IO/CLI), 镜像 TS formatResultExplain 形态. CLI 只做一次 serde_json::from_value::<QueryOutput> 往返 + 分支调用(薄). 需给 QueryOutput/QueryResultItem 补 Deserialize(与现 Serialize 对称, camelCase rename). 反 B(CLI 层从 serde_json::Value 弱类型字段名索引: typo 不报错+None 分支手搓+测试构造 JSON 不能断言强类型)/C(formatter 困在 CLI crate 难单测, core 才是打分归因语义归属地)"
+        },
+        {
+          "q": "Rust formatter 对 TS 格式的忠实边界?",
+          "answer": "A: 逐字节忠实复刻 TS 现有格式但只实现 3 个已迁分支(salience/recency/reranker), 未迁 5 分支不写代码不留占位",
+          "note": "标题 {rank}. {slug} (score={fmt}) + base={fmt} (rrf+cosine) + '+ salience x{fmt}' + '+ recency  x{fmt}'(保双空格对齐) + arrow reranker rank +-N + 空路径 'no boosts applied' + 收尾 '= final {fmt}' + 空列表 'No results.'; fmt 复刻 toFixed(4)去尾零; 条件同 TS(salience/recency !=1.0, reranker !=0). 将来补 backlink/exact-match/graph 按 TS 顺序插分支无需返工. 反 B(格式自由重写: 与 TS diff 噪音大 + {:.4}不去尾零 1.5000 vs 1.5)/C(未迁 5 分支留 FUTURE 占位注释: 提前假设数据层顺序 + KNOWN-GAPS G13 已登记无需代码再标 = 多余噪音)"
+        }
+      ],
+      "notes": "DONE(端到端最小垂直切片, 全 3 决策落地): (1) 扩 QueryResultItem(operation.rs:1763) 携 base_score/salience_boost/recency_boost/reranker_delta(camelCase, skip_serializing_if=None), paginated map(operation.rs:1911) 从 SearchResult 复制归因字段; QueryOutput/QueryResultItem 补 Deserialize; 连带给 engine.rs Page 补 Deserialize(与 Serialize 对称, 3 个嵌套 enum 已有 Deserialize). (2) 新建 crates/zbrain-core/src/explain_formatter.rs 逐字节忠实复刻 explain-formatter.ts: format_result_explain/format_results_explain/fmt 纯函数, 只实现 salience/recency/reranker 3 分支(recency 保双空格对齐), fmt 复刻 toFixed(4)去尾零, 边界 'no boosts applied'/'No results.', 8 单测断言精确多行文本全绿. (3) CLI QueryArgs 加 --explain flag(lib.rs:553), run_query_command(:869) 依 flag 分支: explain 时 from_value::<QueryOutput> 往返调 core formatter 打印人读文本, 否则保持 JSON pretty-print. 验证: workspace build 绿, core 629 + cli 125 lib test 全绿, clippy 新代码无警告. KNOWN-GAPS G2 已删(--explain 已接线), 残留未迁 boost 轴归 G13. 未迁 5 boost 分支不写代码不留占位(G13 已登记)"
     },
     "1-4-2-1": {
       "id": "1-4-2-1",
@@ -525,7 +541,7 @@
   },
   "metadata": {
     "created": "2026-07-06 17:51:37",
-    "updated": "2026-07-08 19:51:30",
+    "updated": "2026-07-09 11:10:34",
     "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART3_RELEASE_AND_TS_RETIREMENT.md"
   },
   "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_PART3_RELEASE_AND_TS_RETIREMENT.md"

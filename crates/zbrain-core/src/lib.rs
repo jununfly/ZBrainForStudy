@@ -23,6 +23,7 @@ pub mod markdown;
 pub mod oauth_queries;
 pub mod engine;
 pub mod error;
+pub mod explain_formatter;
 pub mod git_remote;
 pub mod ingestion;
 pub mod libsql;

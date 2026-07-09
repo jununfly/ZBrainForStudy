@@ -546,10 +546,11 @@ pub struct ThinkArgs {
 
 /// Arguments for `zbrain query` command.
 ///
-/// FUTURE(search-attribution): the TS global flag `--explain` needs per-stage
-/// scoring attribution (base_score + boost multipliers + reranker rank delta)
-/// that Rust `query` scoring does not produce yet, so `--explain` is not wired
-/// to clap. Full background + recommended path: docs/plans/KNOWN-GAPS.md (G2).
+/// `--explain` mirrors the TS global flag: it swaps the default JSON output for
+/// a human-readable per-stage scoring attribution breakdown (base_score →
+/// migrated boost multipliers → reranker rank delta → final). Only the stages
+/// with a Rust data layer are rendered (salience / recency / reranker); the
+/// un-migrated boost axes are tracked in docs/plans/KNOWN-GAPS.md (G13).
 #[derive(Debug, Parser)]
 pub struct QueryArgs {
     /// Search query text
@@ -566,6 +567,11 @@ pub struct QueryArgs {
     /// Scope search to a specific source
     #[arg(long)]
     pub source_id: Option<String>,
+
+    /// Print a human-readable per-stage scoring attribution breakdown instead
+    /// of JSON.
+    #[arg(long)]
+    pub explain: bool,
 }
 
 /// Arguments for `zbrain init` command.
@@ -876,7 +882,20 @@ async fn run_query_command(args: QueryArgs, config_path: Option<&Path>, timeout_
 
     let output = run_operation("query", params, config_path, timeout_ms).await?;
 
-    println!("{}", serde_json::to_string_pretty(&output)?);
+    if args.explain {
+        // `run_operation` hands back a weakly-typed `serde_json::Value`, so
+        // round-trip it into the strong `QueryOutput` (which derives
+        // Deserialize for exactly this hop) before handing the typed result
+        // slice to the core explain formatter. The formatter owns the
+        // byte-faithful TS output shape; the CLI only chooses JSON vs explain.
+        let parsed: zbrain_core::operation::QueryOutput = serde_json::from_value(output)?;
+        print!(
+            "{}",
+            zbrain_core::explain_formatter::format_results_explain(&parsed.results)
+        );
+    } else {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    }
     Ok(())
 }
 

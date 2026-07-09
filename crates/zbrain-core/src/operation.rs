@@ -1726,7 +1726,12 @@ impl ValidateParams for QueryParams {
 ///
 /// Flat array of results matching TS output shape.
 /// Sorted by relevance score descending.
-#[derive(Debug, serde::Serialize)]
+///
+/// `Deserialize` is derived so the CLI `--explain` path can round-trip the
+/// `run_operation` `serde_json::Value` back into strong types before handing a
+/// `&[QueryResultItem]` slice to the core explain formatter (the CLI layer only
+/// ever sees the weakly-typed `Value`, so a `from_value` hop is required).
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryOutput {
     /// Search results sorted by relevance
@@ -1740,7 +1745,20 @@ pub struct QueryOutput {
 }
 
 /// Single query result item matching TS SearchResult shape.
-#[derive(Debug, serde::Serialize)]
+///
+/// Carries the per-stage attribution stamps captured on `engine::SearchResult`
+/// so the CLI `--explain` renderer can reconstruct the multiplier breakdown
+/// (`base → boost → reranker_delta → final`) without re-running search. Only
+/// the migrated stages are surfaced (base_score always present; salience /
+/// recency / reranker stamped only when their stage fired). The un-migrated
+/// boost axes (backlink / exact-match / graph / session-demote) have no data
+/// layer yet and are intentionally absent — see docs/plans/KNOWN-GAPS.md (G13).
+///
+/// `Deserialize` is derived (with `#[serde(default)]` on the optional stamps) so
+/// the CLI can round-trip `run_operation`'s `serde_json::Value` back into this
+/// strong type. `skip_serializing_if = "Option::is_none"` keeps the JSON output
+/// lean — an absent stamp means "this stage did not fire for this row".
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryResultItem {
     /// The matched page
@@ -1748,8 +1766,24 @@ pub struct QueryResultItem {
     /// Relevance score (0..1)
     pub score: f64,
     /// Keyword snippet extracted from content (for UI display)
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
+    /// Pre-boost fused score (RRF + cosine), copied from
+    /// `SearchResult.base_score`. Always present; equals `score` when no boost
+    /// stage ran. `--explain` renders this as the `base=` line.
+    pub base_score: f64,
+    /// Salience boost multiplier, copied from `SearchResult.salience_boost`.
+    /// `None` when the salience stage did not multiply this row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub salience_boost: Option<f64>,
+    /// Recency boost multiplier, copied from `SearchResult.recency_boost`.
+    /// `None` when the recency stage did not multiply this row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recency_boost: Option<f64>,
+    /// Rerank rank delta, copied from `SearchResult.reranker_delta`.
+    /// `None` for un-reranked tail rows / reranker off / fail-open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reranker_delta: Option<i64>,
 }
 
 #[async_trait]
@@ -1878,6 +1912,14 @@ impl TypedOperation for QueryOperation {
                 page: r.page,
                 score: r.score,
                 snippet: r.snippet,
+                // Carry the attribution stamps through so `--explain` can render
+                // the per-stage multiplier breakdown. Only migrated stages exist
+                // on SearchResult today (base_score always set; salience/recency/
+                // reranker_delta stamped only when their stage fired).
+                base_score: r.base_score,
+                salience_boost: r.salience_boost,
+                recency_boost: r.recency_boost,
+                reranker_delta: r.reranker_delta,
             })
             .collect();
 

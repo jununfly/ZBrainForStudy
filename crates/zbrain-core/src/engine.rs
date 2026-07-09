@@ -56,7 +56,12 @@ pub struct EngineConfig {
 ///
 /// `Eq` is intentionally dropped because `emotional_weight: Option<f64>` and
 /// `frontmatter: Value` do not implement `Eq`.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+///
+/// `Deserialize` is derived (symmetric with `Serialize`) so the CLI
+/// `--explain` path can round-trip a `QueryOutput` back out of the
+/// `run_operation` `serde_json::Value` — see `operation::QueryResultItem`.
+/// All fields are deserializable (the three nested enums already derive it).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Page {
     // ── identity (always present) ────────────────────────────────────────
