@@ -171,8 +171,9 @@ use crate::types::PageRef;
 use crate::types::PurgeResult;
 use crate::types::RefreshPageBodyArgs;
 use crate::types::{
-    CRMode, DuplicatePage, EffectiveDateSource, FileRow, FileSpec, PageKind, PageVersion, RawData,
-    UpsertFileResult,
+    CRMode, DuplicatePage, EffectiveDateSource, FileRow, FileSpec, GraphPath, Link,
+    LinkBatchInput, PageKind, PageVersion, RawData, Take, TakeInput, UpsertFileResult,
+    UpsertTakesResult,
 };
 
 /// Postgres-specific migration implementation. Wraps raw SQL from
@@ -211,6 +212,7 @@ const MIGRATION_0008: &str = include_str!("../migrations/0008_files.sql");
 const MIGRATION_0009: &str = include_str!("../migrations/0009_raw_data_and_page_versions.sql");
 const MIGRATION_0010: &str = include_str!("../migrations/0010_oauth_tables.sql");
 const MIGRATION_0011: &str = include_str!("../migrations/0011_sources_full_columns.sql");
+const MIGRATION_0012: &str = include_str!("../migrations/0012_takes_full_columns.sql");
 
 /// Global migration registry for Postgres backend. Built once at runtime first use.
 pub static POSTGRES_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
@@ -271,6 +273,11 @@ pub static POSTGRES_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 11,
         name: "sources_full_columns",
         sql: MIGRATION_0011,
+    }));
+    registry.add(Box::new(PostgresMigration {
+        version: 12,
+        name: "takes_full_columns",
+        sql: MIGRATION_0012,
     }));
 
     registry
@@ -2013,6 +2020,372 @@ impl BrainEngine for PostgresEngine {
             });
         }
         Ok(out)
+    }
+
+    // --- Phase 7A: Takes ---
+
+    async fn get_takes_for_page(&self, page_id: u64) -> Result<Vec<Take>> {
+        let pool = self.pool()?;
+        let rows = sqlx::query(
+            "SELECT id, page_id, row_num, claim, kind, holder, weight, \
+                    since_date, until_date, source, superseded_by, active, \
+                    resolved_at, resolved_quality, resolved_outcome, \
+                    resolved_evidence, resolved_value, resolved_unit, \
+                    resolved_by, created_at, updated_at \
+             FROM takes WHERE page_id = $1 ORDER BY row_num ASC",
+        )
+        .bind(page_id as i64)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_takes_for_page: {e}")))?;
+
+        rows.into_iter()
+            .map(|r| {
+                Ok(Take {
+                    id: r.try_get::<i64, _>("id").map(|v| v as u64)
+                        .map_err(|e| Error::engine(format!("take id: {e}")))?,
+                    page_id: r.try_get::<i64, _>("page_id").map(|v| v as u64)
+                        .map_err(|e| Error::engine(format!("take page_id: {e}")))?,
+                    row_num: r.try_get::<i32, _>("row_num")
+                        .map_err(|e| Error::engine(format!("take row_num: {e}")))?,
+                    claim: r.try_get("claim").unwrap_or_default(),
+                    kind: r.try_get("kind").unwrap_or_default(),
+                    holder: r.try_get("holder").unwrap_or_default(),
+                    weight: r.try_get("weight").unwrap_or(0.5),
+                    since_date: r.try_get("since_date").unwrap_or(None),
+                    until_date: r.try_get("until_date").unwrap_or(None),
+                    source: r.try_get("source").unwrap_or(None),
+                    superseded_by: r.try_get::<Option<i32>, _>("superseded_by").unwrap_or(None),
+                    active: r.try_get::<bool, _>("active").unwrap_or(true),
+                    resolved_at: {
+                        let dt: Option<sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>> =
+                            r.try_get("resolved_at").unwrap_or(None);
+                        dt.map(|ts| ts.to_rfc3339())
+                    },
+                    resolved_quality: r.try_get("resolved_quality").unwrap_or(None),
+                    resolved_outcome: r.try_get("resolved_outcome").unwrap_or(None),
+                    resolved_evidence: r.try_get("resolved_evidence").unwrap_or(None),
+                    resolved_value: r.try_get("resolved_value").unwrap_or(None),
+                    resolved_unit: r.try_get("resolved_unit").unwrap_or(None),
+                    resolved_by: r.try_get("resolved_by").unwrap_or(None),
+                    created_at: {
+                        let dt: sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc> =
+                            r.try_get("created_at")
+                                .map_err(|e| Error::engine(format!("take created_at: {e}")))?;
+                        dt.to_rfc3339()
+                    },
+                    updated_at: {
+                        let dt: sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc> =
+                            r.try_get("updated_at")
+                                .map_err(|e| Error::engine(format!("take updated_at: {e}")))?;
+                        dt.to_rfc3339()
+                    },
+                })
+            })
+            .collect()
+    }
+
+    async fn add_takes_batch(
+        &self,
+        page_id: u64,
+        takes: &[TakeInput],
+    ) -> Result<UpsertTakesResult> {
+        if takes.is_empty() {
+            return Ok(UpsertTakesResult { upserted: 0, weight_clamped: 0 });
+        }
+        let pool = self.pool()?;
+        let now = sqlx::types::chrono::Utc::now();
+        let mut upserted = 0usize;
+        let mut weight_clamped = 0usize;
+
+        for input in takes {
+            let weight = input.weight.clamp(0.0, 1.0);
+            if (weight - input.weight).abs() > f64::EPSILON {
+                weight_clamped += 1;
+            }
+            sqlx::query(
+                "INSERT INTO takes (page_id, row_num, claim, kind, holder, weight, \
+                        since_date, until_date, source, superseded_by, active, created_at, updated_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)",
+            )
+            .bind(page_id as i64)
+            .bind(input.row_num.unwrap_or(0))
+            .bind(&input.claim)
+            .bind(&input.kind)
+            .bind(&input.holder)
+            .bind(weight)
+            .bind(&input.since_date)
+            .bind(&input.until_date)
+            .bind(&input.source)
+            .bind(input.superseded_by)
+            .bind(input.active.unwrap_or(true))
+            .bind(now)
+            .execute(pool)
+            .await
+            .map_err(|e| Error::engine(format!("add_takes_batch insert: {e}")))?;
+            upserted += 1;
+        }
+
+        Ok(UpsertTakesResult { upserted, weight_clamped })
+    }
+
+    async fn resolve_take(
+        &self,
+        page_id: u64,
+        row_num: i32,
+        resolution: &crate::types::TakeResolution,
+    ) -> Result<()> {
+        let pool = self.pool()?;
+        let now = sqlx::types::chrono::Utc::now();
+        let result = sqlx::query(
+            "UPDATE takes SET \
+                    resolved_at = $1, resolved_quality = $2, resolved_outcome = $3, \
+                    resolved_evidence = $4, resolved_value = $5, resolved_unit = $6, \
+                    resolved_by = $7, updated_at = $8 \
+             WHERE page_id = $9 AND row_num = $10",
+        )
+        .bind(now)
+        .bind(&resolution.quality)
+        .bind(resolution.outcome)
+        .bind(&resolution.evidence)
+        .bind(resolution.value)
+        .bind(&resolution.unit)
+        .bind(&resolution.by)
+        .bind(now)
+        .bind(page_id as i64)
+        .bind(row_num)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("resolve_take: {e}")))?;
+
+        if result.rows_affected() == 0 {
+            return Err(crate::error::StructuredError::new(
+                "Not Found",
+                "not_found",
+                format!("no take found for page_id={page_id} row_num={row_num}"),
+            ));
+        }
+        Ok(())
+    }
+
+    // ── Links (Phase 7B) ──────────────────────────────────────────────────
+
+    async fn add_links_batch(&self, links: &[LinkBatchInput]) -> Result<usize> {
+        if links.is_empty() {
+            return Ok(0);
+        }
+        let pool = self.pool()?;
+
+        // Use PostgreSQL unnest() pattern — same shape as TS addLinksBatch.
+        // 10 array-typed parameters regardless of batch size.
+        let from_slugs: Vec<&str> = links.iter().map(|l| l.from_slug.as_str()).collect();
+        let to_slugs: Vec<&str> = links.iter().map(|l| l.to_slug.as_str()).collect();
+        let link_types: Vec<&str> = links.iter().map(|l| l.link_type.as_deref().unwrap_or("")).collect();
+        let contexts: Vec<&str> = links.iter().map(|l| l.context.as_deref().unwrap_or("")).collect();
+        let link_sources: Vec<&str> = links.iter().map(|l| l.link_source.as_deref().unwrap_or("markdown")).collect();
+        let origin_slugs: Vec<Option<&str>> = links.iter().map(|l| l.origin_slug.as_deref()).collect();
+        let origin_fields: Vec<Option<&str>> = links.iter().map(|l| l.origin_field.as_deref()).collect();
+        let from_source_ids: Vec<&str> = links.iter().map(|l| l.from_source_id.as_deref().unwrap_or("default")).collect();
+        let to_source_ids: Vec<&str> = links.iter().map(|l| l.to_source_id.as_deref().unwrap_or("default")).collect();
+        let origin_source_ids: Vec<&str> = links.iter().map(|l| l.origin_source_id.as_deref().unwrap_or("default")).collect();
+
+        let result = sqlx::query(
+            "INSERT INTO links (from_page_id, to_page_id, link_type, context, link_source, \
+                    origin_page_id, origin_field) \
+             SELECT f.id, t.id, v.link_type, v.context, v.link_source, o.id, v.origin_field \
+             FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], \
+                         $6::text[], $7::text[], $8::text[], $9::text[], $10::text[]) \
+               AS v(from_slug, to_slug, link_type, context, link_source, \
+                     origin_slug, origin_field, from_source_id, to_source_id, origin_source_id) \
+             JOIN pages f ON f.slug = v.from_slug AND f.source_id = v.from_source_id \
+             JOIN pages t ON t.slug = v.to_slug AND t.source_id = v.to_source_id \
+             LEFT JOIN pages o ON o.slug = v.origin_slug AND o.source_id = v.origin_source_id \
+             ON CONFLICT (from_page_id, to_page_id, link_type, link_source, origin_page_id) \
+             DO NOTHING",
+        )
+        .bind(&from_slugs)
+        .bind(&to_slugs)
+        .bind(&link_types)
+        .bind(&contexts)
+        .bind(&link_sources)
+        .bind(&origin_slugs)
+        .bind(&origin_fields)
+        .bind(&from_source_ids)
+        .bind(&to_source_ids)
+        .bind(&origin_source_ids)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("add_links_batch: {e}")))?;
+
+        Ok(result.rows_affected() as usize)
+    }
+
+    async fn remove_link(
+        &self,
+        from: &str,
+        to: &str,
+        link_type: Option<&str>,
+        link_source: Option<&str>,
+        from_source_id: Option<&str>,
+        to_source_id: Option<&str>,
+    ) -> Result<()> {
+        let pool = self.pool()?;
+        let from_sid = from_source_id.unwrap_or("default");
+        let to_sid = to_source_id.unwrap_or("default");
+
+        sqlx::query(
+            "DELETE FROM links l \
+             USING pages f, pages t \
+             WHERE l.from_page_id = f.id \
+               AND l.to_page_id = t.id \
+               AND f.slug = $1 AND f.source_id = $3 \
+               AND t.slug = $2 AND t.source_id = $4 \
+               AND ($5::text IS NULL OR l.link_type = $5) \
+               AND ($6::text IS NULL OR l.link_source = $6)",
+        )
+        .bind(from)
+        .bind(to)
+        .bind(from_sid)
+        .bind(to_sid)
+        .bind(link_type)
+        .bind(link_source)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("remove_link: {e}")))?;
+
+        Ok(())
+    }
+
+    async fn get_links(
+        &self,
+        slug: &str,
+        source_id: Option<&str>,
+    ) -> Result<Vec<Link>> {
+        let pool = self.pool()?;
+        let sid = source_id.unwrap_or("default");
+
+        let rows = sqlx::query(
+            "SELECT f.slug AS from_slug, t.slug AS to_slug, l.link_type, l.context, \
+                    l.link_source, o.slug AS origin_slug, l.origin_field \
+             FROM links l \
+             JOIN pages f ON f.id = l.from_page_id \
+             JOIN pages t ON t.id = l.to_page_id \
+             LEFT JOIN pages o ON o.id = l.origin_page_id \
+             WHERE f.slug = $1 AND f.source_id = $2 \
+               AND f.deleted_at IS NULL AND t.deleted_at IS NULL \
+             ORDER BY l.link_type, t.slug",
+        )
+        .bind(slug)
+        .bind(sid)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_links: {e}")))?;
+
+        rows.iter()
+            .map(|row| {
+                Ok(Link {
+                    from_slug: row.try_get("from_slug").map_err(|e| Error::engine(format!("decode from_slug: {e}")))?,
+                    to_slug: row.try_get("to_slug").map_err(|e| Error::engine(format!("decode to_slug: {e}")))?,
+                    link_type: row.try_get("link_type").map_err(|e| Error::engine(format!("decode link_type: {e}")))?,
+                    context: row.try_get("context").map_err(|e| Error::engine(format!("decode context: {e}")))?,
+                    link_source: row.try_get("link_source").map_err(|e| Error::engine(format!("decode link_source: {e}")))?,
+                    origin_slug: row.try_get("origin_slug").map_err(|e| Error::engine(format!("decode origin_slug: {e}")))?,
+                    origin_field: row.try_get("origin_field").map_err(|e| Error::engine(format!("decode origin_field: {e}")))?,
+                })
+            })
+            .collect()
+    }
+
+    async fn get_backlinks(
+        &self,
+        slug: &str,
+        source_id: Option<&str>,
+    ) -> Result<Vec<Link>> {
+        let pool = self.pool()?;
+        let sid = source_id.unwrap_or("default");
+
+        let rows = sqlx::query(
+            "SELECT f.slug AS from_slug, t.slug AS to_slug, l.link_type, l.context, \
+                    l.link_source, o.slug AS origin_slug, l.origin_field \
+             FROM links l \
+             JOIN pages f ON f.id = l.from_page_id \
+             JOIN pages t ON t.id = l.to_page_id \
+             LEFT JOIN pages o ON o.id = l.origin_page_id \
+             WHERE t.slug = $1 AND t.source_id = $2 \
+               AND f.deleted_at IS NULL AND t.deleted_at IS NULL \
+             ORDER BY l.link_type, f.slug",
+        )
+        .bind(slug)
+        .bind(sid)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_backlinks: {e}")))?;
+
+        rows.iter()
+            .map(|row| {
+                Ok(Link {
+                    from_slug: row.try_get("from_slug").map_err(|e| Error::engine(format!("decode from_slug: {e}")))?,
+                    to_slug: row.try_get("to_slug").map_err(|e| Error::engine(format!("decode to_slug: {e}")))?,
+                    link_type: row.try_get("link_type").map_err(|e| Error::engine(format!("decode link_type: {e}")))?,
+                    context: row.try_get("context").map_err(|e| Error::engine(format!("decode context: {e}")))?,
+                    link_source: row.try_get("link_source").map_err(|e| Error::engine(format!("decode link_source: {e}")))?,
+                    origin_slug: row.try_get("origin_slug").map_err(|e| Error::engine(format!("decode origin_slug: {e}")))?,
+                    origin_field: row.try_get("origin_field").map_err(|e| Error::engine(format!("decode origin_field: {e}")))?,
+                })
+            })
+            .collect()
+    }
+
+    async fn get_backlink_counts(
+        &self,
+        slugs: &[String],
+    ) -> Result<std::collections::HashMap<String, u64>> {
+        if slugs.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let pool = self.pool()?;
+
+        let rows = sqlx::query(
+            "SELECT t.slug, COUNT(*)::bigint \
+             FROM links l \
+             JOIN pages t ON t.id = l.to_page_id \
+             JOIN pages f ON f.id = l.from_page_id \
+             WHERE t.slug = ANY($1) \
+               AND f.deleted_at IS NULL AND t.deleted_at IS NULL \
+             GROUP BY t.slug",
+        )
+        .bind(slugs)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_backlink_counts: {e}")))?;
+
+        let mut counts: std::collections::HashMap<String, u64> =
+            slugs.iter().map(|s| (s.clone(), 0u64)).collect();
+
+        for row in &rows {
+            let slug: String = row.try_get("slug")
+                .map_err(|e| Error::engine(format!("decode slug: {e}")))?;
+            let count: i64 = row.try_get("count")
+                .map_err(|e| Error::engine(format!("decode count: {e}")))?;
+            counts.insert(slug, count as u64);
+        }
+        Ok(counts)
+    }
+
+    async fn traverse_paths(
+        &self,
+        _slug: &str,
+        _depth: Option<u32>,
+        _link_type: Option<&str>,
+        _direction: Option<&str>,
+        _source_id: Option<&str>,
+        _source_ids: Option<&[String]>,
+    ) -> Result<Vec<GraphPath>> {
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "traverse_paths not yet implemented for postgres engine",
+        ))
     }
 }
 

@@ -254,6 +254,151 @@ pub struct PageVersion {
     pub snapshot_at: String,
 }
 
+/// A single take record as stored in the `takes` table (read shape).
+/// Mirrors TS `ParsedTake` in `src/core/takes-fence.ts`.
+///
+/// Unlike the TS fence model where `active` starts true and strikethrough
+/// makes it false, the DB `active` column defaults to TRUE and is set FALSE
+/// on supersede or manual deactivation.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Take {
+    pub id: u64,
+    pub page_id: u64,
+    pub row_num: i32,
+    pub claim: String,
+    pub kind: String,
+    pub holder: String,
+    pub weight: f64,
+    pub since_date: Option<String>,
+    pub until_date: Option<String>,
+    pub source: Option<String>,
+    pub superseded_by: Option<i32>,
+    pub active: bool,
+    pub resolved_at: Option<String>,
+    pub resolved_quality: Option<String>,
+    pub resolved_outcome: Option<bool>,
+    pub resolved_evidence: Option<String>,
+    pub resolved_value: Option<f64>,
+    pub resolved_unit: Option<String>,
+    pub resolved_by: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Write spec for creating/upserting a single take. Mirrors the INSERT
+/// columns used in TS postgres-engine.ts:3365.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TakeInput {
+    pub page_id: u64,
+    pub row_num: Option<i32>,
+    pub claim: String,
+    pub kind: String,
+    pub holder: String,
+    pub weight: f64,
+    pub since_date: Option<String>,
+    pub until_date: Option<String>,
+    pub source: Option<String>,
+    pub superseded_by: Option<i32>,
+    pub active: Option<bool>,
+}
+
+/// Write spec for resolving a take (v0.30+ quality/outcome fields).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TakeResolution {
+    pub page_id: u64,
+    pub row_num: i32,
+    pub quality: Option<String>,
+    pub outcome: Option<bool>,
+    pub evidence: Option<String>,
+    pub value: Option<f64>,
+    pub unit: Option<String>,
+    pub by: Option<String>,
+}
+
+/// Canonical take kinds seeded from gbrain-base. Mirrors TS `TakeKind`
+/// before v0.38 opened it to `string`. The DB CHECK constraint
+/// `takes_kind_valid` enforces this closed set; the Rust layer accepts
+/// any `String` to stay forward-compat with schema-pack extensions.
+pub const SEED_TAKE_KINDS: &[&str] = &["fact", "take", "bet", "hunch"];
+
+/// Result of a batch takes upsert operation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UpsertTakesResult {
+    pub upserted: usize,
+    pub weight_clamped: usize,
+}
+
+// ─── Link / Graph types (Phase 7B) ────────────────────────────────────────
+
+/// A single link (directed edge) between two pages. Mirrors TS `Link` in
+/// `src/core/types.ts`. Returned by `get_links` / `get_backlinks` — carries
+/// slug references (not page IDs) so callers don't need a second lookup.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Link {
+    pub from_slug: String,
+    pub to_slug: String,
+    pub link_type: String,
+    pub context: String,
+    pub link_source: Option<String>,
+    pub origin_slug: Option<String>,
+    pub origin_field: Option<String>,
+}
+
+/// Write spec for creating a single link. Mirrors TS `LinkBatchInput` in
+/// `src/core/engine.ts`. All optional fields default per the TS convention:
+/// `link_type` → `""`, `link_source` → `"markdown"` on new writes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinkBatchInput {
+    pub from_slug: String,
+    pub to_slug: String,
+    pub link_type: Option<String>,
+    pub context: Option<String>,
+    pub link_source: Option<String>,
+    pub origin_slug: Option<String>,
+    pub origin_field: Option<String>,
+    pub from_source_id: Option<String>,
+    pub to_source_id: Option<String>,
+    pub origin_source_id: Option<String>,
+}
+
+/// A page in a graph traversal with its outgoing edges. Mirrors TS
+/// `GraphNode` in `src/core/types.ts`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphNodeLink {
+    pub to_slug: String,
+    pub link_type: String,
+}
+
+/// A page node in a graph traversal result. Mirrors TS `GraphNode` in
+/// `src/core/types.ts`. Field `rtype` serializes as `type` to match the TS
+/// wire contract while avoiding the Rust keyword conflict.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphNode {
+    pub slug: String,
+    pub title: String,
+    #[serde(rename = "type")]
+    pub page_type: String,
+    pub depth: u32,
+    pub links: Vec<GraphNodeLink>,
+}
+
+/// A single edge in a graph path traversal. Mirrors TS `GraphPath` in
+/// `src/core/types.ts`. Carries both endpoint slugs, edge type, context,
+/// and the depth of `to_slug` from the traversal root.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphPath {
+    pub from_slug: String,
+    pub to_slug: String,
+    pub link_type: String,
+    pub context: String,
+    pub depth: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -359,5 +504,62 @@ mod tests {
             let back: EffectiveDateSource = serde_json::from_str(&json).unwrap();
             assert_eq!(s, back);
         }
+    }
+
+    // --- Link types (Phase 7B) ---------------------------------------------
+
+    #[test]
+    fn link_serializes_camel_case() {
+        let link = Link {
+            from_slug: "people/alice".into(),
+            to_slug: "companies/acme".into(),
+            link_type: "works_at".into(),
+            context: "Alice works at Acme".into(),
+            link_source: Some("frontmatter".into()),
+            origin_slug: Some("people/alice".into()),
+            origin_field: Some("company".into()),
+        };
+        let json = serde_json::to_string(&link).unwrap();
+        assert!(json.contains("\"fromSlug\""));
+        assert!(json.contains("\"toSlug\""));
+        assert!(json.contains("\"linkType\""));
+        assert!(json.contains("\"linkSource\""));
+        assert!(json.contains("\"originSlug\""));
+        assert!(json.contains("\"originField\""));
+    }
+
+    #[test]
+    fn graph_node_serializes_type_field() {
+        let node = GraphNode {
+            slug: "companies/acme".into(),
+            title: "Acme Corp".into(),
+            page_type: "company".into(),
+            depth: 1,
+            links: vec![GraphNodeLink {
+                to_slug: "people/alice".into(),
+                link_type: "works_at".into(),
+            }],
+        };
+        let json = serde_json::to_string(&node).unwrap();
+        // $type is the Rust keyword workaround — wire must say "type"
+        assert!(json.contains("\"type\":\"company\""));
+        assert!(json.contains("\"depth\":1"));
+        assert!(json.contains("\"toSlug\":\"people/alice\""));
+    }
+
+    #[test]
+    fn graph_path_serializes_camel_case() {
+        let path = GraphPath {
+            from_slug: "people/alice".into(),
+            to_slug: "companies/acme".into(),
+            link_type: "works_at".into(),
+            context: "Alice works at Acme Corp".into(),
+            depth: 2,
+        };
+        let json = serde_json::to_string(&path).unwrap();
+        assert!(json.contains("\"fromSlug\""));
+        assert!(json.contains("\"toSlug\""));
+        assert!(json.contains("\"linkType\""));
+        assert!(json.contains("\"depth\":2"));
     }
 }

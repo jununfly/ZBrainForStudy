@@ -36,6 +36,7 @@ uuid = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 rand = "0.8"
+regex = "1"
 serde_yaml = { workspace = true }
 unicode-normalization = { workspace = true }
 walkdir = "2"
@@ -45,6 +46,7 @@ walkdir = "2"
 # late-December date can belong to week 53 of the *previous* year) are
 # error-prone to hand-roll, so we lean on chrono's `IsoWeek` + `%G-W%V`.
 chrono = { workspace = true }
+zbrain-chunking = { path = "../zbrain-chunking" }
 
 [features]
 default = []

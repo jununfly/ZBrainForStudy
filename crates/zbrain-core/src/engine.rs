@@ -18,9 +18,11 @@ use crate::{
         PatternDetail, TakeSummary, TakesScorecard},
     oauth_queries::{ExchangeTokens, OAuthClientInfo, OAuthQueries, RegisterClientRequest,
         RegisterClientResponse, RevokeClientResponse, UpdateClientTtlResponse},
-    time::current_utc_iso8601, types::PageVersion, types::RawData, CRMode, DuplicatePage,
-    EffectiveDateSource, Error, FileRow, FileSpec, FindDuplicatePageOpts, OrphanPage, PageKind,
-    PageRef, PageType, PurgeResult, RefreshPageBodyArgs, UpsertFileResult,
+    time::current_utc_iso8601, types::PageVersion, types::RawData, types::Take,
+    types::TakeInput, types::TakeResolution, types::UpsertTakesResult, CRMode, DuplicatePage,
+    EffectiveDateSource, Error, FileRow, FileSpec, FindDuplicatePageOpts, GraphNode, GraphPath,
+    Link, LinkBatchInput, OrphanPage, PageKind, PageRef, PageType, PurgeResult,
+    RefreshPageBodyArgs, UpsertFileResult,
 };
 
 // ─── Value types ─────────────────────────────────────────────────────────────
@@ -937,15 +939,169 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
     ///       + ln(1 + distinct_active_take_count)
     /// ```
     ///
-    /// **6a quirk**: the `takes` table lands in slice 6c. Until then,
-    /// `distinct_active_take_count` is hard-coded to `0`, so every score
-    /// degenerates to `emotional_weight * 5`. The dedicated red test
-    /// `page_methods_salience_scores_takes_zero_until_6c.rs` locks this
-    /// behaviour so we cannot accidentally claim 6a is "done with takes".
+    /// **Phase 7**: the `takes` table is now available via
+    /// [`get_takes_for_page`]. Backends SHOULD compute the real
+    /// `distinct_active_take_count` rather than hard-coding 0.
+    /// The red test `page_methods_salience_scores_takes_zero_until_6c`
+    /// should be updated to verify the takes term contributes.
     async fn get_salience_scores(
         &self,
         refs: &[PageRef],
     ) -> crate::Result<std::collections::HashMap<String, f64>>;
+
+    // ── Takes (Phase 7A) ──────────────────────────────────────────────────
+
+    /// Return all takes for a page, ordered by `row_num` ascending.
+    /// Mirrors TS `getTakesForPage(pageId)`.
+    async fn get_takes_for_page(&self, page_id: u64) -> crate::Result<Vec<Take>> {
+        let _ = page_id;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "get_takes_for_page not yet implemented for this engine",
+        ))
+    }
+
+    /// Batch-upsert takes for a page with append-only semantics.
+    /// Each `TakeInput` is inserted as a new row; the caller is
+    /// responsible for supersede logic via the fence parser. Returns
+    /// the count of upserted rows and weight-clamp events.
+    /// Mirrors TS `addTakesBatch(pageId, takes)`.
+    async fn add_takes_batch(
+        &self,
+        page_id: u64,
+        takes: &[TakeInput],
+    ) -> crate::Result<UpsertTakesResult> {
+        let _ = (page_id, takes);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "add_takes_batch not yet implemented for this engine",
+        ))
+    }
+
+    /// Resolve a take by `(page_id, row_num)` — stores resolution
+    /// quality/outcome/evidence/value fields. Mirrors TS `resolveTake`.
+    async fn resolve_take(
+        &self,
+        page_id: u64,
+        row_num: i32,
+        resolution: &TakeResolution,
+    ) -> crate::Result<()> {
+        let _ = (page_id, row_num, resolution);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "resolve_take not yet implemented for this engine",
+        ))
+    }
+
+    // ── Links / Backlinks / Graph (Phase 7B) ───────────────────────────────
+
+    /// Batch-upsert links with `ON CONFLICT DO NOTHING` semantics.
+    /// Returns the count of newly inserted rows (duplicates are silently
+    /// skipped). Mirrors TS `addLinksBatch`.
+    async fn add_links_batch(
+        &self,
+        links: &[LinkBatchInput],
+    ) -> crate::Result<usize> {
+        let _ = links;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "add_links_batch not yet implemented for this engine",
+        ))
+    }
+
+    /// Remove one or more links matching `(from_slug, to_slug)`.
+    /// When `link_type` is `None`, all link types between the pair are
+    /// removed. `link_source` further constrains the delete to a specific
+    /// provenance — used by `runAutoLink` reconciliation. Mirrors TS
+    /// `removeLink`.
+    async fn remove_link(
+        &self,
+        from: &str,
+        to: &str,
+        link_type: Option<&str>,
+        link_source: Option<&str>,
+        from_source_id: Option<&str>,
+        to_source_id: Option<&str>,
+    ) -> crate::Result<()> {
+        let _ = (from, to, link_type, link_source, from_source_id, to_source_id);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "remove_link not yet implemented for this engine",
+        ))
+    }
+
+    /// Return all outbound links for a page, joined to page slugs.
+    /// Optionally scoped by `source_id`. Mirrors TS `getLinks`.
+    async fn get_links(
+        &self,
+        slug: &str,
+        source_id: Option<&str>,
+    ) -> crate::Result<Vec<Link>> {
+        let _ = (slug, source_id);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "get_links not yet implemented for this engine",
+        ))
+    }
+
+    /// Return all inbound links to a page (backlinks), joined to page slugs.
+    /// Optionally scoped by `source_id` on the FROM side. Mirrors TS
+    /// `getBacklinks`.
+    async fn get_backlinks(
+        &self,
+        slug: &str,
+        source_id: Option<&str>,
+    ) -> crate::Result<Vec<Link>> {
+        let _ = (slug, source_id);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "get_backlinks not yet implemented for this engine",
+        ))
+    }
+
+    /// For a list of slugs, return how many inbound links each has.
+    /// Used by hybrid search backlink boost. Single SQL query, not N+1.
+    /// Slugs with zero inbound links are present in the map with value 0.
+    /// Mirrors TS `getBacklinkCounts`.
+    async fn get_backlink_counts(
+        &self,
+        slugs: &[String],
+    ) -> crate::Result<std::collections::HashMap<String, u64>> {
+        let _ = slugs;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "get_backlink_counts not yet implemented for this engine",
+        ))
+    }
+
+    /// BFS-style graph traversal from a root slug. Returns edges with depth
+    /// metadata. Mirrors TS `traversePaths`. Supports direction `out`
+    /// (default), `in`, or `both`; optional `link_type` filter; and
+    /// optional source scoping via `source_id` / `source_ids`.
+    async fn traverse_paths(
+        &self,
+        slug: &str,
+        depth: Option<u32>,
+        link_type: Option<&str>,
+        direction: Option<&str>,
+        source_id: Option<&str>,
+        source_ids: Option<&[String]>,
+    ) -> crate::Result<Vec<GraphPath>> {
+        let _ = (slug, depth, link_type, direction, source_id, source_ids);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "traverse_paths not yet implemented for this engine",
+        ))
+    }
 }
 
 // ─── InMemoryEngine ──────────────────────────────────────────────────────────
@@ -958,6 +1114,20 @@ struct InternalRawData {
     source: String,
     data: Value,
     fetched_at: String,
+}
+
+/// Internal link row used by `InMemoryEngine` to store links by page IDs
+/// (mirroring the `links` DB table). Converted to public `Link` on read
+/// by resolving IDs back to slugs via the page store.
+#[derive(Debug, Clone)]
+struct InternalLink {
+    from_page_id: u64,
+    to_page_id: u64,
+    link_type: String,
+    context: String,
+    link_source: Option<String>,
+    origin_page_id: Option<u64>,
+    origin_field: Option<String>,
 }
 
 /// In-process engine backed by a `Vec<Page>`. Not persistent, not
@@ -981,6 +1151,11 @@ pub struct InMemoryEngine {
     // #110: chunk storage (in-memory, for testing)
     chunk_store: Mutex<std::collections::HashMap<String, Vec<crate::import::ChunkInput>>>,
     chunk_upsert_error: Mutex<Option<crate::error::StructuredError>>,
+    // Phase 7A: takes storage (in-memory, for testing)
+    takes_store: Mutex<Vec<Take>>,
+    next_take_id: Mutex<u64>,
+    // Phase 7B: links storage (in-memory, for testing)
+    links_store: Mutex<Vec<InternalLink>>,
 }
 
 // ─── Tag helpers ─────────────────────────────────────────────────────────────
@@ -1026,6 +1201,11 @@ impl InMemoryEngine {
             // #110: chunk storage (in-memory, for testing)
             chunk_store: Mutex::new(std::collections::HashMap::new()),
             chunk_upsert_error: Mutex::new(None),
+            // Phase 7A: takes storage (in-memory, for testing)
+            takes_store: Mutex::new(Vec::new()),
+            next_take_id: Mutex::new(1),
+            // Phase 7B: links storage (in-memory, for testing)
+            links_store: Mutex::new(Vec::new()),
         }
     }
 
@@ -1041,6 +1221,23 @@ impl InMemoryEngine {
             .lock()
             .expect("InMemoryEngine sources mutex poisoned")
             .push(source);
+    }
+
+    /// Phase 7A: add a take record directly for test setup.
+    /// The take will be inserted with `active = true` and `created_at`/`updated_at` = now.
+    pub fn add_take(&self, take: Take) {
+        let mut store = self
+            .takes_store
+            .lock()
+            .expect("InMemoryEngine takes_store mutex poisoned");
+        let mut next_id = self
+            .next_take_id
+            .lock()
+            .expect("InMemoryEngine next_take_id mutex poisoned");
+        if take.id >= *next_id {
+            *next_id = take.id + 1;
+        }
+        store.push(take);
     }
 
     /// Configure chunk upserts to fail in tests.
@@ -2315,8 +2512,7 @@ impl BrainEngine for InMemoryEngine {
     }
 
     /// `get_salience_scores` — key = `"{source_id}::{slug}"`, score =
-    /// `emotional_weight.unwrap_or(0.0) * 5.0 + ln(1 + 0)` (no takes table
-    /// in `InMemory`, so the takes term is 0 → score = `emotional_weight * 5`).
+    /// `emotional_weight.unwrap_or(0.0) * 5.0 + ln(1 + distinct_active_take_count)`.
     async fn get_salience_scores(
         &self,
         refs: &[PageRef],
@@ -2325,17 +2521,401 @@ impl BrainEngine for InMemoryEngine {
             .store
             .lock()
             .expect("InMemoryEngine store mutex poisoned");
+        let takes = self
+            .takes_store
+            .lock()
+            .expect("InMemoryEngine takes_store mutex poisoned");
         let mut out = std::collections::HashMap::new();
         for r in refs {
             if let Some(p) = store
                 .iter()
                 .find(|p| p.slug == r.slug && p.source_id == r.source_id && p.deleted_at.is_none())
             {
-                let value = p.emotional_weight.unwrap_or(0.0) * 5.0;
+                let base = p.emotional_weight.unwrap_or(0.0) * 5.0;
+                let distinct_takes = takes.iter().filter(|t| t.page_id == p.id && t.active).count() as f64;
+                let value = base + (1.0 + distinct_takes).ln();
                 out.insert(format!("{}::{}", r.source_id, r.slug), value);
             }
         }
         Ok(out)
+    }
+
+    // --- Phase 7A: Takes ---
+
+    async fn get_takes_for_page(&self, page_id: u64) -> crate::Result<Vec<Take>> {
+        let store = self
+            .takes_store
+            .lock()
+            .expect("InMemoryEngine takes_store mutex poisoned");
+        let mut takes: Vec<_> = store.iter().filter(|t| t.page_id == page_id).cloned().collect();
+        takes.sort_by_key(|t| t.row_num);
+        Ok(takes)
+    }
+
+    async fn add_takes_batch(
+        &self,
+        page_id: u64,
+        takes: &[TakeInput],
+    ) -> crate::Result<UpsertTakesResult> {
+        let mut store = self
+            .takes_store
+            .lock()
+            .expect("InMemoryEngine takes_store mutex poisoned");
+        let mut next_id = self
+            .next_take_id
+            .lock()
+            .expect("InMemoryEngine next_take_id mutex poisoned");
+        let upserted = takes.len();
+        let mut weight_clamped = 0usize;
+
+        let now = crate::time::current_utc_iso8601();
+        for input in takes {
+            let weight = input.weight.clamp(0.0, 1.0);
+            if (weight - input.weight).abs() > f64::EPSILON {
+                weight_clamped += 1;
+            }
+            let id = *next_id;
+            *next_id += 1;
+            store.push(Take {
+                id,
+                page_id,
+                row_num: input.row_num.unwrap_or(0),
+                claim: input.claim.clone(),
+                kind: input.kind.clone(),
+                holder: input.holder.clone(),
+                weight,
+                since_date: input.since_date.clone(),
+                until_date: input.until_date.clone(),
+                source: input.source.clone(),
+                superseded_by: input.superseded_by,
+                active: input.active.unwrap_or(true),
+                resolved_at: None,
+                resolved_quality: None,
+                resolved_outcome: None,
+                resolved_evidence: None,
+                resolved_value: None,
+                resolved_unit: None,
+                resolved_by: None,
+                created_at: now.clone(),
+                updated_at: now.clone(),
+            });
+        }
+
+        Ok(UpsertTakesResult {
+            upserted,
+            weight_clamped,
+        })
+    }
+
+    async fn resolve_take(
+        &self,
+        page_id: u64,
+        row_num: i32,
+        resolution: &TakeResolution,
+    ) -> crate::Result<()> {
+        let mut store = self
+            .takes_store
+            .lock()
+            .expect("InMemoryEngine takes_store mutex poisoned");
+        let now = crate::time::current_utc_iso8601();
+        let mut found = false;
+        for take in store.iter_mut() {
+            if take.page_id == page_id && take.row_num == row_num {
+                take.resolved_at = Some(now.clone());
+                take.resolved_quality = resolution.quality.clone();
+                take.resolved_outcome = resolution.outcome;
+                take.resolved_evidence = resolution.evidence.clone();
+                take.resolved_value = resolution.value;
+                take.resolved_unit = resolution.unit.clone();
+                take.resolved_by = resolution.by.clone();
+                take.updated_at = now.clone();
+                found = true;
+                break;
+            }
+        }
+        if found {
+            Ok(())
+        } else {
+            Err(crate::error::StructuredError::new(
+                "Not Found",
+                "not_found",
+                format!("no take found for page_id={page_id} row_num={row_num}"),
+            ))
+        }
+    }
+
+    // ── Links (Phase 7B) ──────────────────────────────────────────────────
+
+    async fn add_links_batch(
+        &self,
+        links: &[LinkBatchInput],
+    ) -> crate::Result<usize> {
+        let store = self.store.lock().expect("poisoned");
+        let mut links_store = self.links_store.lock().expect("poisoned");
+
+        let mut inserted = 0usize;
+        for input in links {
+            // Resolve slugs to page IDs; skip if either doesn't exist.
+            let from_page = store.iter().find(|p| p.slug == input.from_slug);
+            let to_page = store.iter().find(|p| p.slug == input.to_slug);
+            let (from_page_id, to_page_id) = match (from_page, to_page) {
+                (Some(f), Some(t)) => (f.id, t.id),
+                _ => continue,
+            };
+
+            let origin_page_id = input.origin_slug.as_ref().and_then(|s| {
+                store.iter().find(|p| p.slug == *s).map(|p| p.id)
+            });
+
+            // Normalize None → "markdown" for duplicate detection,
+            // matching the storage default in the insert branch below.
+            let normalized_link_source = input.link_source.as_deref().unwrap_or("markdown");
+            let existing = links_store.iter().any(|l| {
+                l.from_page_id == from_page_id
+                    && l.to_page_id == to_page_id
+                    && l.link_type == input.link_type.as_deref().unwrap_or("")
+                    && l.link_source.as_deref() == Some(normalized_link_source)
+                    && l.origin_page_id == origin_page_id
+            });
+
+            if !existing {
+                links_store.push(InternalLink {
+                    from_page_id,
+                    to_page_id,
+                    link_type: input.link_type.clone().unwrap_or_default(),
+                    context: input.context.clone().unwrap_or_default(),
+                    link_source: input.link_source.clone().or(Some("markdown".into())),
+                    origin_page_id,
+                    origin_field: input.origin_field.clone(),
+                });
+                inserted += 1;
+            }
+        }
+        Ok(inserted)
+    }
+
+    async fn remove_link(
+        &self,
+        from: &str,
+        to: &str,
+        link_type: Option<&str>,
+        link_source: Option<&str>,
+        from_source_id: Option<&str>,
+        to_source_id: Option<&str>,
+    ) -> crate::Result<()> {
+        let store = self.store.lock().expect("poisoned");
+        let mut links_store = self.links_store.lock().expect("poisoned");
+
+        // Find matching page IDs
+        let from_page = store.iter().find(|p| {
+            p.slug == from && (from_source_id.is_none() || Some(p.source_id.as_str()) == from_source_id)
+        });
+        let to_page = store.iter().find(|p| {
+            p.slug == to && (to_source_id.is_none() || Some(p.source_id.as_str()) == to_source_id)
+        });
+
+        let (from_id, to_id) = match (from_page, to_page) {
+            (Some(f), Some(t)) => (f.id, t.id),
+            _ => return Ok(()), // nothing to remove
+        };
+
+        links_store.retain(|l| {
+            !(l.from_page_id == from_id
+                && l.to_page_id == to_id
+                && (link_type.is_none() || l.link_type == link_type.unwrap_or(""))
+                && (link_source.is_none() || l.link_source.as_deref() == link_source))
+        });
+        Ok(())
+    }
+
+    async fn get_links(
+        &self,
+        slug: &str,
+        source_id: Option<&str>,
+    ) -> crate::Result<Vec<Link>> {
+        let store = self.store.lock().expect("poisoned");
+        let links_store = self.links_store.lock().expect("poisoned");
+
+        let from_page = store.iter().find(|p| {
+            p.slug == slug && (source_id.is_none() || p.source_id == source_id.unwrap_or(""))
+        });
+        let Some(from_page) = from_page else {
+            return Ok(Vec::new());
+        };
+
+        let result: Vec<Link> = links_store
+            .iter()
+            .filter(|l| l.from_page_id == from_page.id)
+            .filter_map(|l| {
+                let to_page = store.iter().find(|p| p.id == l.to_page_id)?;
+                let origin_slug = l.origin_page_id.and_then(|oid| {
+                    store.iter().find(|p| p.id == oid).map(|p| p.slug.clone())
+                });
+                Some(Link {
+                    from_slug: from_page.slug.clone(),
+                    to_slug: to_page.slug.clone(),
+                    link_type: l.link_type.clone(),
+                    context: l.context.clone(),
+                    link_source: l.link_source.clone(),
+                    origin_slug,
+                    origin_field: l.origin_field.clone(),
+                })
+            })
+            .collect();
+        Ok(result)
+    }
+
+    async fn get_backlinks(
+        &self,
+        slug: &str,
+        source_id: Option<&str>,
+    ) -> crate::Result<Vec<Link>> {
+        let store = self.store.lock().expect("poisoned");
+        let links_store = self.links_store.lock().expect("poisoned");
+
+        let to_page = store.iter().find(|p| {
+            p.slug == slug && (source_id.is_none() || p.source_id == source_id.unwrap_or(""))
+        });
+        let Some(to_page) = to_page else {
+            return Ok(Vec::new());
+        };
+
+        let result: Vec<Link> = links_store
+            .iter()
+            .filter(|l| l.to_page_id == to_page.id)
+            .filter_map(|l| {
+                let from_page = store.iter().find(|p| p.id == l.from_page_id)?;
+                let origin_slug = l.origin_page_id.and_then(|oid| {
+                    store.iter().find(|p| p.id == oid).map(|p| p.slug.clone())
+                });
+                Some(Link {
+                    from_slug: from_page.slug.clone(),
+                    to_slug: to_page.slug.clone(),
+                    link_type: l.link_type.clone(),
+                    context: l.context.clone(),
+                    link_source: l.link_source.clone(),
+                    origin_slug,
+                    origin_field: l.origin_field.clone(),
+                })
+            })
+            .collect();
+        Ok(result)
+    }
+
+    async fn get_backlink_counts(
+        &self,
+        slugs: &[String],
+    ) -> crate::Result<std::collections::HashMap<String, u64>> {
+        let store = self.store.lock().expect("poisoned");
+        let links_store = self.links_store.lock().expect("poisoned");
+
+        let slug_to_id: std::collections::HashMap<&str, u64> = store
+            .iter()
+            .filter_map(|p| {
+                if slugs.contains(&p.slug) { Some((p.slug.as_str(), p.id)) } else { None }
+            })
+            .collect();
+
+        let mut counts: std::collections::HashMap<String, u64> =
+            slugs.iter().map(|s| (s.clone(), 0u64)).collect();
+
+        for link in links_store.iter() {
+            for (slug, page_id) in &slug_to_id {
+                if link.to_page_id == *page_id {
+                    *counts.get_mut(*slug).unwrap_or(&mut 0) += 1;
+                }
+            }
+        }
+        Ok(counts)
+    }
+
+    async fn traverse_paths(
+        &self,
+        slug: &str,
+        depth: Option<u32>,
+        link_type: Option<&str>,
+        direction: Option<&str>,
+        source_id: Option<&str>,
+        _source_ids: Option<&[String]>,
+    ) -> crate::Result<Vec<GraphPath>> {
+        let store = self.store.lock().expect("poisoned");
+        let links_store = self.links_store.lock().expect("poisoned");
+
+        let max_depth = depth.unwrap_or(1);
+        let dir = direction.unwrap_or("out");
+
+        let start_page = store.iter().find(|p| {
+            p.slug == slug && (source_id.is_none() || p.source_id == source_id.unwrap_or(""))
+        });
+        let Some(start_page) = start_page else {
+            return Ok(Vec::new());
+        };
+
+        let id_to_slug: std::collections::HashMap<u64, &str> = store
+            .iter()
+            .map(|p| (p.id, p.slug.as_str()))
+            .collect();
+
+        let mut result: Vec<GraphPath> = Vec::new();
+        // BFS: (page_id, depth)
+        let mut visited: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        let mut queue: std::collections::VecDeque<(u64, u32)> = std::collections::VecDeque::new();
+        visited.insert(start_page.id);
+        queue.push_back((start_page.id, 0));
+
+        while let Some((current_id, current_depth)) = queue.pop_front() {
+            if current_depth >= max_depth {
+                continue;
+            }
+
+            let edges: Vec<&InternalLink> = links_store
+                .iter()
+                .filter(|l| {
+                    if dir == "out" || dir == "both" {
+                        l.from_page_id == current_id
+                    } else if dir == "in" {
+                        l.to_page_id == current_id
+                    } else {
+                        false
+                    }
+                })
+                .filter(|l| {
+                    link_type.is_none() || l.link_type == link_type.unwrap_or("")
+                })
+                .collect();
+
+            for edge in &edges {
+                let neighbor_id = if dir == "in" {
+                    edge.from_page_id
+                } else {
+                    edge.to_page_id
+                };
+
+                // GraphPath always preserves original edge direction:
+                // from_slug = edge source, to_slug = edge target.
+                let (from_slug_opt, to_slug_opt) = (
+                    id_to_slug.get(&edge.from_page_id).map(|s| s.to_string()),
+                    id_to_slug.get(&edge.to_page_id).map(|s| s.to_string()),
+                );
+
+                if let (Some(from), Some(to)) = (from_slug_opt, to_slug_opt) {
+                    result.push(GraphPath {
+                        from_slug: from,
+                        to_slug: to,
+                        link_type: edge.link_type.clone(),
+                        context: edge.context.clone(),
+                        depth: current_depth + 1,
+                    });
+                }
+
+                if !visited.contains(&neighbor_id) {
+                    visited.insert(neighbor_id);
+                    queue.push_back((neighbor_id, current_depth + 1));
+                }
+            }
+        }
+
+        Ok(result)
     }
 
     // --- #110: Chunks & Code Edges (slice #110) ---
@@ -3131,16 +3711,50 @@ impl crate::admin_queries::AdminQueries for InMemoryEngine {
     }
 }
 
-/// In-memory calibration query stubs — all return empty/defaults.
+/// In-memory calibration queries — computed from in-memory takes store.
 #[async_trait]
 impl CalibrationQueries for InMemoryEngine {
-    async fn get_scorecard(&self, _holder: &str) -> crate::error::Result<TakesScorecard> {
+    async fn get_scorecard(&self, holder: &str) -> crate::error::Result<TakesScorecard> {
+        let store = self
+            .takes_store
+            .lock()
+            .expect("InMemoryEngine takes_store mutex poisoned");
+        let resolved: Vec<_> = store
+            .iter()
+            .filter(|t| t.holder == holder && t.resolved_outcome.is_some())
+            .collect();
+        let total = resolved.len() as i64;
+        if total == 0 {
+            return Ok(TakesScorecard {
+                resolved: 0,
+                brier: 0.0,
+                accuracy: 0.0,
+                correct: 0,
+                incorrect: 0,
+                partial_rate: 0.0,
+            });
+        }
+        let correct = resolved
+            .iter()
+            .filter(|t| t.resolved_outcome == Some(true))
+            .count() as i64;
+        let incorrect = total - correct;
+        let accuracy = if total > 0 { correct as f64 / total as f64 } else { 0.0 };
+        let brier_sum: f64 = resolved
+            .iter()
+            .map(|t| {
+                let pred = t.weight;
+                let actual = if t.resolved_outcome == Some(true) { 1.0 } else { 0.0 };
+                (pred - actual).powi(2)
+            })
+            .sum();
+        let brier = if total > 0 { brier_sum / total as f64 } else { 0.0 };
         Ok(TakesScorecard {
-            resolved: 0,
-            brier: 0.0,
-            accuracy: 0.0,
-            correct: 0,
-            incorrect: 0,
+            resolved: total,
+            brier,
+            accuracy,
+            correct,
+            incorrect,
             partial_rate: 0.0,
         })
     }

@@ -6,7 +6,7 @@
     "1": {
       "id": "1",
       "label": "ZBrain TS→Rust Part3: 发布链迁移 + 子系统补齐 + TS 入口退役",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": null,
       "children": [
@@ -46,7 +46,7 @@
     "1-2": {
       "id": "1-2",
       "label": "子系统补齐(1-8 审计移交): MCP timeout (--timeout) + progress reporter (--quiet/--progress-json/--progress-interval)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [
@@ -577,7 +577,7 @@
   },
   "metadata": {
     "created": "2026-07-06 17:51:37",
-    "updated": "2026-07-09 11:46:22",
+    "updated": "2026-07-09 13:32:04",
     "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART3_RELEASE_AND_TS_RETIREMENT.md"
   },
   "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_PART3_RELEASE_AND_TS_RETIREMENT.md"

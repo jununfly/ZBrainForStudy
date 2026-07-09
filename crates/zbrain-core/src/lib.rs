@@ -37,6 +37,7 @@ pub mod rerank_audit;
 pub mod rerank_client;
 pub mod sources_ops;
 pub mod sync;
+pub mod takes_fence;
 pub mod time;
 pub mod types;
 pub mod url_safety;
@@ -50,8 +51,9 @@ pub use capture::{
 pub use error::{from_std_error, Error, Result, StructuredError};
 pub use types::{
     is_base_page_type, CRMode, DuplicatePage, EffectiveDateSource, FileRow, FileSpec,
-    FindDuplicatePageOpts, OrphanPage, PageKind, PageRef, PageType, PurgeResult,
-    RefreshPageBodyArgs, UpsertFileResult, ALL_PAGE_TYPES,
+    FindDuplicatePageOpts, GraphNode, GraphNodeLink, GraphPath, Link, LinkBatchInput,
+    OrphanPage, PageKind, PageRef, PageType, PurgeResult, RefreshPageBodyArgs, Take,
+    TakeInput, TakeResolution, UpsertFileResult, UpsertTakesResult, ALL_PAGE_TYPES,
 };
 pub use engine::{BrainEngine, CreateSourceInput, InMemoryEngine, Page, PageInput, PageFilters, SearchOpts, SearchResult, GetPageOpts, ResolveSlugsOpts, SourceRow, UpdateSourceInput};
 pub use admin_queries::{

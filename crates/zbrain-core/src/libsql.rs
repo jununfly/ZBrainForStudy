@@ -42,8 +42,8 @@ use crate::migration::{Migration, MigrationRegistry};
 use crate::time::current_utc_iso8601;
 use crate::types::{
     CRMode, DuplicatePage, EffectiveDateSource, FileRow, FileSpec, FindDuplicatePageOpts,
-    OrphanPage, PageKind, PageRef, PageVersion, PurgeResult, RawData, RefreshPageBodyArgs,
-    UpsertFileResult,
+    GraphPath, Link, LinkBatchInput, OrphanPage, PageKind, PageRef, PageVersion, PurgeResult,
+    RawData, RefreshPageBodyArgs, Take, TakeInput, UpsertFileResult, UpsertTakesResult,
 };
 
 /// libsql-specific migration implementation. Wraps raw SQL from
@@ -111,6 +111,8 @@ const MIGRATION_0008: &str =
 const MIGRATION_0009: &str = include_str!("../migrations-sqlite/0009_oauth_tables.sql");
 /// Expand `sources` table to full TS schema (PG→SQLite port).
 const MIGRATION_0010: &str = include_str!("../migrations-sqlite/0010_sources_full_columns.sql");
+/// Expand `takes` table to full TS schema (PG→SQLite port).
+const MIGRATION_0012: &str = include_str!("../migrations-sqlite/0012_takes_full_columns.sql");
 
 /// Legacy string array — REMOVED in favor of MigrationRegistry.
 /// Use LIBQL_MIGRATIONS instead.
@@ -191,6 +193,11 @@ pub static LIBQL_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 10,
         name: "sources_full_columns",
         sql: MIGRATION_0010,
+    }));
+    registry.add(Box::new(LibsqlMigration {
+        version: 12,
+        name: "takes_full_columns",
+        sql: MIGRATION_0012,
     }));
 
     registry
@@ -2231,6 +2238,386 @@ impl BrainEngine for LibsqlEngine {
             out.insert(format!("{source_id}::{slug}"), score);
         }
         Ok(out)
+    }
+
+    // --- Phase 7A: Takes ---
+
+    async fn get_takes_for_page(&self, page_id: u64) -> Result<Vec<Take>> {
+        let conn = self.conn().await?;
+        let mut rows = conn
+            .query(
+                "SELECT id, page_id, row_num, claim, kind, holder, weight, \
+                        since_date, until_date, source, superseded_by, active, \
+                        resolved_at, resolved_quality, resolved_outcome, \
+                        resolved_evidence, resolved_value, resolved_unit, \
+                        resolved_by, created_at, updated_at \
+                 FROM takes WHERE page_id = ?1 ORDER BY row_num ASC",
+                ::libsql::params![page_id as i64],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("get_takes_for_page query: {e}")))?;
+
+        let mut out = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("get_takes_for_page row: {e}")))?
+        {
+            out.push(Take {
+                id: row.get::<i64>(0).map_err(|e| Error::engine(format!("take id: {e}")))? as u64,
+                page_id: row.get::<i64>(1).map_err(|e| Error::engine(format!("take page_id: {e}")))? as u64,
+                row_num: row.get::<i64>(2).map_err(|e| Error::engine(format!("take row_num: {e}")))? as i32,
+                claim: row.get(3).unwrap_or_default(),
+                kind: row.get(4).unwrap_or_default(),
+                holder: row.get(5).unwrap_or_default(),
+                weight: row.get::<f64>(6).unwrap_or(0.5),
+                since_date: row.get(7).unwrap_or(None),
+                until_date: row.get(8).unwrap_or(None),
+                source: row.get(9).unwrap_or(None),
+                superseded_by: row.get::<Option<i64>>(10).unwrap_or(None).map(|v| v as i32),
+                active: row.get::<i64>(11).unwrap_or(1) != 0,
+                resolved_at: row.get(12).unwrap_or(None),
+                resolved_quality: row.get(13).unwrap_or(None),
+                resolved_outcome: row.get::<Option<i64>>(14).unwrap_or(None).map(|v| v != 0),
+                resolved_evidence: row.get(15).unwrap_or(None),
+                resolved_value: row.get(16).unwrap_or(None),
+                resolved_unit: row.get(17).unwrap_or(None),
+                resolved_by: row.get(18).unwrap_or(None),
+                created_at: row.get(19).unwrap_or_default(),
+                updated_at: row.get(20).unwrap_or_default(),
+            });
+        }
+        Ok(out)
+    }
+
+    async fn add_takes_batch(
+        &self,
+        page_id: u64,
+        takes: &[TakeInput],
+    ) -> Result<UpsertTakesResult> {
+        if takes.is_empty() {
+            return Ok(UpsertTakesResult { upserted: 0, weight_clamped: 0 });
+        }
+        let conn = self.conn().await?;
+        let now = current_utc_iso8601();
+        let mut upserted = 0usize;
+        let mut weight_clamped = 0usize;
+
+        for input in takes {
+            let weight = input.weight.clamp(0.0, 1.0);
+            if (weight - input.weight).abs() > f64::EPSILON {
+                weight_clamped += 1;
+            }
+            conn.execute(
+                "INSERT INTO takes (page_id, row_num, claim, kind, holder, weight, \
+                        since_date, until_date, source, superseded_by, active, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
+                ::libsql::params![
+                    page_id as i64,
+                    input.row_num.unwrap_or(0) as i64,
+                    input.claim.clone(),
+                    input.kind.clone(),
+                    input.holder.clone(),
+                    weight,
+                    input.since_date.clone(),
+                    input.until_date.clone(),
+                    input.source.clone(),
+                    input.superseded_by.map(|v| v as i64),
+                    input.active.unwrap_or(true) as i64,
+                    now.clone(),
+                ],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("add_takes_batch insert: {e}")))?;
+            upserted += 1;
+        }
+
+        Ok(UpsertTakesResult { upserted, weight_clamped })
+    }
+
+    async fn resolve_take(
+        &self,
+        page_id: u64,
+        row_num: i32,
+        resolution: &crate::types::TakeResolution,
+    ) -> Result<()> {
+        let conn = self.conn().await?;
+        let now = current_utc_iso8601();
+        let affected = conn
+            .execute(
+                "UPDATE takes SET \
+                        resolved_at = ?1, resolved_quality = ?2, resolved_outcome = ?3, \
+                        resolved_evidence = ?4, resolved_value = ?5, resolved_unit = ?6, \
+                        resolved_by = ?7, updated_at = ?8 \
+                 WHERE page_id = ?9 AND row_num = ?10",
+                ::libsql::params![
+                    now.clone(),
+                    resolution.quality.clone(),
+                    resolution.outcome.map(|b| b as i64),
+                    resolution.evidence.clone(),
+                    resolution.value,
+                    resolution.unit.clone(),
+                    resolution.by.clone(),
+                    now,
+                    page_id as i64,
+                    row_num as i64,
+                ],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("resolve_take: {e}")))?;
+        if affected == 0 {
+            return Err(crate::error::StructuredError::new(
+                "Not Found",
+                "not_found",
+                format!("no take found for page_id={page_id} row_num={row_num}"),
+            ));
+        }
+        Ok(())
+    }
+
+    // ── Links (Phase 7B) ──────────────────────────────────────────────────
+
+    async fn add_links_batch(&self, links: &[LinkBatchInput]) -> Result<usize> {
+        if links.is_empty() {
+            return Ok(0);
+        }
+        let conn = self.conn().await?;
+        let mut inserted = 0usize;
+
+        for input in links {
+            let link_type = input.link_type.as_deref().unwrap_or("");
+            let context = input.context.as_deref().unwrap_or("");
+            let link_source = input.link_source.as_deref().unwrap_or("markdown");
+            let from_source_id = input.from_source_id.as_deref().unwrap_or("default");
+            let to_source_id = input.to_source_id.as_deref().unwrap_or("default");
+            let origin_source_id = input.origin_source_id.as_deref().unwrap_or("default");
+
+            let affected = conn
+                .execute(
+                    "INSERT OR IGNORE INTO links \
+                            (from_page_id, to_page_id, link_type, context, link_source, \
+                             origin_page_id, origin_field) \
+                     SELECT f.id, t.id, ?3, ?4, ?5, o.id, ?6 \
+                     FROM pages f \
+                     JOIN pages t ON t.slug = ?2 AND t.source_id = ?8 \
+                     LEFT JOIN pages o ON o.slug = ?7 AND o.source_id = ?9 \
+                     WHERE f.slug = ?1 AND f.source_id = ?10",
+                    ::libsql::params![
+                        input.from_slug.as_str(),
+                        input.to_slug.as_str(),
+                        link_type,
+                        context,
+                        link_source,
+                        input.origin_field.as_deref(),
+                        input.origin_slug.as_deref(),
+                        to_source_id,
+                        origin_source_id,
+                        from_source_id,
+                    ],
+                )
+                .await
+                .map_err(|e| Error::engine(format!("add_links_batch INSERT: {e}")))?;
+            inserted += affected as usize;
+        }
+        Ok(inserted)
+    }
+
+    async fn remove_link(
+        &self,
+        from: &str,
+        to: &str,
+        link_type: Option<&str>,
+        link_source: Option<&str>,
+        from_source_id: Option<&str>,
+        to_source_id: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.conn().await?;
+        let from_sid = from_source_id.unwrap_or("default");
+        let to_sid = to_source_id.unwrap_or("default");
+
+        // Build DELETE with dynamic WHERE clauses.
+        // SQLite doesn't support DELETE ... JOIN, so we use a subquery.
+        let mut sql = String::from(
+            "DELETE FROM links WHERE rowid IN (\
+                    SELECT l.rowid FROM links l \
+                    JOIN pages f ON f.id = l.from_page_id \
+                    JOIN pages t ON t.id = l.to_page_id \
+                    WHERE f.slug = ?1 AND f.source_id = ?3 \
+                      AND t.slug = ?2 AND t.source_id = ?4",
+        );
+        let mut param_idx = 5usize;
+
+        if link_type.is_some() {
+            sql.push_str(&format!(" AND l.link_type = ?{param_idx}"));
+            param_idx += 1;
+        }
+        if link_source.is_some() {
+            sql.push_str(&format!(" AND l.link_source = ?{param_idx}"));
+        }
+        sql.push(')');
+
+        let mut params: Vec<::libsql::Value> = vec![
+            ::libsql::Value::from(from),
+            ::libsql::Value::from(to),
+            ::libsql::Value::from(from_sid),
+            ::libsql::Value::from(to_sid),
+        ];
+        if let Some(lt) = link_type {
+            params.push(::libsql::Value::from(lt));
+        }
+        if let Some(ls) = link_source {
+            params.push(::libsql::Value::from(ls));
+        }
+
+        conn.execute(&sql, ::libsql::params::Params::Positional(params))
+            .await
+            .map_err(|e| Error::engine(format!("remove_link DELETE: {e}")))?;
+
+        Ok(())
+    }
+
+    async fn get_links(
+        &self,
+        slug: &str,
+        source_id: Option<&str>,
+    ) -> Result<Vec<Link>> {
+        let conn = self.conn().await?;
+        let sid = source_id.unwrap_or("default");
+
+        let mut rows = conn
+            .query(
+                "SELECT f.slug, t.slug, l.link_type, l.context, l.link_source, \
+                        o.slug, l.origin_field \
+                 FROM links l \
+                 JOIN pages f ON f.id = l.from_page_id \
+                 JOIN pages t ON t.id = l.to_page_id \
+                 LEFT JOIN pages o ON o.id = l.origin_page_id \
+                 WHERE f.slug = ?1 AND f.source_id = ?2 \
+                   AND f.deleted_at IS NULL AND t.deleted_at IS NULL \
+                 ORDER BY l.link_type, t.slug",
+                ::libsql::params![slug, sid],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("get_links query: {e}")))?;
+
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await
+            .map_err(|e| Error::engine(format!("get_links row: {e}")))?
+        {
+            out.push(Link {
+                from_slug: row.get(0).map_err(|e| Error::engine(format!("get_links decode from_slug: {e}")))?,
+                to_slug: row.get(1).map_err(|e| Error::engine(format!("get_links decode to_slug: {e}")))?,
+                link_type: row.get(2).map_err(|e| Error::engine(format!("get_links decode link_type: {e}")))?,
+                context: row.get(3).map_err(|e| Error::engine(format!("get_links decode context: {e}")))?,
+                link_source: row.get(4).map_err(|e| Error::engine(format!("get_links decode link_source: {e}")))?,
+                origin_slug: row.get(5).map_err(|e| Error::engine(format!("get_links decode origin_slug: {e}")))?,
+                origin_field: row.get(6).map_err(|e| Error::engine(format!("get_links decode origin_field: {e}")))?,
+            });
+        }
+        Ok(out)
+    }
+
+    async fn get_backlinks(
+        &self,
+        slug: &str,
+        source_id: Option<&str>,
+    ) -> Result<Vec<Link>> {
+        let conn = self.conn().await?;
+        let sid = source_id.unwrap_or("default");
+
+        let mut rows = conn
+            .query(
+                "SELECT f.slug, t.slug, l.link_type, l.context, l.link_source, \
+                        o.slug, l.origin_field \
+                 FROM links l \
+                 JOIN pages f ON f.id = l.from_page_id \
+                 JOIN pages t ON t.id = l.to_page_id \
+                 LEFT JOIN pages o ON o.id = l.origin_page_id \
+                 WHERE t.slug = ?1 AND t.source_id = ?2 \
+                   AND f.deleted_at IS NULL AND t.deleted_at IS NULL \
+                 ORDER BY l.link_type, f.slug",
+                ::libsql::params![slug, sid],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("get_backlinks query: {e}")))?;
+
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await
+            .map_err(|e| Error::engine(format!("get_backlinks row: {e}")))?
+        {
+            out.push(Link {
+                from_slug: row.get(0).map_err(|e| Error::engine(format!("get_backlinks decode from_slug: {e}")))?,
+                to_slug: row.get(1).map_err(|e| Error::engine(format!("get_backlinks decode to_slug: {e}")))?,
+                link_type: row.get(2).map_err(|e| Error::engine(format!("get_backlinks decode link_type: {e}")))?,
+                context: row.get(3).map_err(|e| Error::engine(format!("get_backlinks decode context: {e}")))?,
+                link_source: row.get(4).map_err(|e| Error::engine(format!("get_backlinks decode link_source: {e}")))?,
+                origin_slug: row.get(5).map_err(|e| Error::engine(format!("get_backlinks decode origin_slug: {e}")))?,
+                origin_field: row.get(6).map_err(|e| Error::engine(format!("get_backlinks decode origin_field: {e}")))?,
+            });
+        }
+        Ok(out)
+    }
+
+    async fn get_backlink_counts(
+        &self,
+        slugs: &[String],
+    ) -> Result<std::collections::HashMap<String, u64>> {
+        if slugs.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let conn = self.conn().await?;
+
+        // Build IN clause placeholders
+        let placeholders: Vec<String> = (0..slugs.len()).map(|i| format!("?{}", i + 1)).collect();
+        let sql = format!(
+            "SELECT t.slug, COUNT(*) \
+             FROM links l \
+             JOIN pages t ON t.id = l.to_page_id \
+             JOIN pages f ON f.id = l.from_page_id \
+             WHERE t.slug IN ({}) \
+               AND f.deleted_at IS NULL AND t.deleted_at IS NULL \
+             GROUP BY t.slug",
+            placeholders.join(",")
+        );
+
+        let mut rows = conn
+            .query(&sql, ::libsql::params::Params::Positional(
+                slugs.iter().map(|s| ::libsql::Value::from(s.as_str())).collect()
+            ))
+            .await
+            .map_err(|e| Error::engine(format!("get_backlink_counts query: {e}")))?;
+
+        let mut counts: std::collections::HashMap<String, u64> =
+            slugs.iter().map(|s| (s.clone(), 0u64)).collect();
+
+        while let Some(row) = rows.next().await
+            .map_err(|e| Error::engine(format!("get_backlink_counts row: {e}")))?
+        {
+            let slug: String = row.get(0)
+                .map_err(|e| Error::engine(format!("get_backlink_counts decode slug: {e}")))?;
+            let count: i64 = row.get(1)
+                .map_err(|e| Error::engine(format!("get_backlink_counts decode count: {e}")))?;
+            counts.insert(slug, count as u64);
+        }
+        Ok(counts)
+    }
+
+    async fn traverse_paths(
+        &self,
+        _slug: &str,
+        _depth: Option<u32>,
+        _link_type: Option<&str>,
+        _direction: Option<&str>,
+        _source_id: Option<&str>,
+        _source_ids: Option<&[String]>,
+    ) -> Result<Vec<GraphPath>> {
+        // traverse_paths uses BFS and is complex to implement in SQL.
+        // Defer to a later slice; fall back to default (Unsupported error).
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "traverse_paths not yet implemented for libsql engine",
+        ))
     }
 }
 

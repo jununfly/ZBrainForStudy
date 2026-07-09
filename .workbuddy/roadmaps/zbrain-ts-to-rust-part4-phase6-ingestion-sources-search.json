@@ -1,0 +1,68 @@
+{
+  "title": "ZBrain TS→Rust Part4: Phase 6 — Ingestion, Sources, Search, Retrieval",
+  "description": "Chunking/Embedding pipeline integration (tree-sitter #108), search backend completion, chunker-import wiring",
+  "version": 1,
+  "nodes": {
+    "1": {
+      "id": "1",
+      "label": "ZBrain TS→Rust Part4: Phase 6 — Ingestion, Sources, Search, Retrieval",
+      "status": "completed",
+      "mode": "explore",
+      "parent": null,
+      "children": [
+        "1-1",
+        "1-2"
+      ],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-1": {
+      "id": "1-1",
+      "label": "Source Management + Capture + Sync + CLI (1-7-1-1~1-7-1-5, 1-7-1-7)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-2": {
+      "id": "1-2",
+      "label": "Chunking & Embedding Pipeline",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1",
+      "children": [
+        "1-2-1",
+        "1-2-2"
+      ],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-2-1": {
+      "id": "1-2-1",
+      "label": "Recursive text chunker with CJK support (#107)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-2",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-2-2": {
+      "id": "1-2-2",
+      "label": "Tree-sitter code chunker integration into import pipeline (#108)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-2",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    }
+  },
+  "metadata": {
+    "created": "2026-07-09 13:38:55",
+    "updated": "2026-07-09 11:42:00",
+    "md_file": ""
+  }
+}

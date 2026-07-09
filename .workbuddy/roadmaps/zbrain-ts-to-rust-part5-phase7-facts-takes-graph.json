@@ -1,0 +1,184 @@
+{
+  "title": "ZBrain TS→Rust Part5: Phase 7 — Facts, Takes, Timeline, Salience, Graph",
+  "description": "Port takes CRUD + fence parser, facts, backlinks, graph traverse, timeline, salience scoring integration",
+  "version": 1,
+  "metadata": {
+    "created": "2026-07-09 14:18:00",
+    "updated": "2026-07-09 15:15:34"
+  },
+  "nodes": {
+    "1": {
+      "id": "1",
+      "label": "Phase 7 — Facts, Takes, Timeline, Salience, Graph",
+      "status": "in_progress",
+      "mode": "exploit",
+      "parent": null,
+      "children": [
+        "1-1",
+        "1-2",
+        "1-3"
+      ],
+      "decisions": [
+        "User chose 方案B: fence parser + DB 层一起做"
+      ],
+      "notes": ""
+    },
+    "1-1": {
+      "id": "1-1",
+      "label": "Phase 7A: Takes 引擎层 (DB schema + trait + fence parser + salience wiring + scorecard)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1",
+      "children": [
+        "1-1-1",
+        "1-1-2",
+        "1-1-3",
+        "1-1-4",
+        "1-1-5",
+        "1-1-6",
+        "1-1-7"
+      ],
+      "decisions": [],
+      "notes": "Fence parser/renderer included per 方案B. All 7 children completed 2026-07-09."
+    },
+    "1-1-1": {
+      "id": "1-1-1",
+      "label": "DB migration: extend takes table to full TS schema",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": "From 0007 3-col (id/page_id/active) → full ~21-col. New migration 0012. Done 2026-07-09."
+    },
+    "1-1-2": {
+      "id": "1-1-2",
+      "label": "Rust types: Take struct, TakeRow, TakeKind, fence types",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": "In zbrain-core types.rs. Take (21 fields), TakeInput, TakeResolution, UpsertTakesResult, SEED_TAKE_KINDS. Done 2026-07-09."
+    },
+    "1-1-3": {
+      "id": "1-1-3",
+      "label": "Fence parser/renderer: parse_takes_fence / render_takes_fence",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": "Port takes-fence.ts. 32 round-trip tests in takes_fence.rs. Done 2026-07-09."
+    },
+    "1-1-4": {
+      "id": "1-1-4",
+      "label": "BrainEngine trait: add get_takes_for_page, add_takes_batch, resolve_take",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": "3 new trait methods with default Unsupported. Plus InMemory CalibrationQueries::get_scorecard real impl. Done 2026-07-09."
+    },
+    "1-1-5": {
+      "id": "1-1-5",
+      "label": "Backend impls: libsql + postgres + InMemory takes CRUD + scorecard",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": "All 3 backends. Libsql ~110 lines, Postgres ~120 lines sqlx, InMemory full CRUD + real scorecard. Done 2026-07-09."
+    },
+    "1-1-6": {
+      "id": "1-1-6",
+      "label": "Wire salience: update get_salience_scores to use real takes_count",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": "Already done in previous 6c-takes-salience slice. Libsql: LEFT JOIN takes + ln(1+N) in Rust. Postgres: ln(1+COUNT) in SQL. InMemory: ln(1+distinct_takes). Existing 6+7 salience tests pass. Done 2026-07-09."
+    },
+    "1-1-7": {
+      "id": "1-1-7",
+      "label": "Tests: fence round-trip, CRUD integration, scorecard, salience with takes",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": "takes_crud.rs: 19 tests (13 InMemory + 6 Libsql). page_methods_salience_scores_with_takes.rs: 6 tests (3 libsql + 3 postgres). takes_fence.rs: 32 round-trip tests. Libsql/postgres resolve_take not-found error unified to not_found code. Done 2026-07-09."
+    },
+    "1-2": {
+      "id": "1-2",
+      "label": "Phase 7B: Backlinks + Facts 引擎层",
+      "status": "in_progress",
+      "mode": "exploit",
+      "parent": "1",
+      "children": [
+        "1-2-1",
+        "1-2-2",
+        "1-2-3",
+        "1-2-4"
+      ],
+      "decisions": [],
+      "notes": "links table exists (0006 migration), just need query methods. Facts: new table + fence parser + CRUD."
+    },
+    "1-3": {
+      "id": "1-3",
+      "label": "Phase 7C: Graph + Salience 收尾 + CLI 接线",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1",
+      "children": [],
+      "decisions": [],
+      "notes": "traverse_paths, adjacency boost, get_recent_salience, CLI commands for all migrated domains."
+    },
+    "1-2-1": {
+      "id": "1-2-1",
+      "label": "1-2-1: Rust types (Link, LinkBatchInput, GraphNode, GraphPath)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-2",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-2-2": {
+      "id": "1-2-2",
+      "label": "1-2-2: BrainEngine trait link methods (add_links_batch, remove_link, get_links, get_backlinks, get_backlink_counts, traverse_paths)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-2",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-2-3": {
+      "id": "1-2-3",
+      "label": "1-2-3: Backend implementations (InMemory + libsql + postgres links CRUD)",
+      "status": "in_progress",
+      "mode": "exploit",
+      "parent": "1-2",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-2-4": {
+      "id": "1-2-4",
+      "label": "1-2-4: Links integration tests",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-2",
+      "children": [],
+      "decisions": [
+        "InMemory duplicate check normalizes None link_source → 'markdown' to match storage default",
+        "traverse_paths direction=in now preserves original edge direction in GraphPath (was swapped)",
+        "libsql link_source CHECK constraint allows only: NULL, markdown, frontmatter, manual, mentions"
+      ],
+      "notes": "26 tests: 16 InMemory + 10 libsql. Covers add/remove/get_links/get_backlinks/get_backlink_counts/traverse_paths. Postgres deferred to Phase 7C when pg-embed parallelism is addressed."
+    }
+  }
+}

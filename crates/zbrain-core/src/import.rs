@@ -109,25 +109,63 @@ pub async fn import_from_content(
 /// 从代码文件导入
 ///
 /// 1. 读取文件
-/// 2. 解析代码（函数/类/方法）
-/// 3. 生成 embeddings
-/// 4. 调用 engine.upsert_chunks()
-/// 5. 调用 engine.add_code_edges()
-/// 6. 返回 ImportResult
+/// 2. 通过 tree-sitter 解析代码（函数/类/方法）
+/// 3. 调用 engine.upsert_chunks()
+/// 4. 返回 ImportResult
 pub async fn import_code_file(
     engine: &dyn crate::engine::BrainEngine,
     slug: &str,
     file_path: &str,
-    language: &str,
+    _language: &str,
     tags: &[String],
 ) -> Result<ImportResult> {
-    // TODO: 实现代码导入逻辑
-    // 暂时返回占位符
-    
+    // 1. 读取文件内容
+    let content = std::fs::read_to_string(file_path).map_err(|e| {
+        crate::error::StructuredError::new(
+            "IO",
+            "io_error",
+            format!("Failed to read {}: {}", file_path, e),
+        )
+    })?;
+
+    // 2. 通过 tree-sitter 切分代码
+    let code_chunks = zbrain_chunking::chunk::chunk_code_text(&content, file_path).map_err(|e| {
+        crate::error::StructuredError::new(
+            "Chunking",
+            "chunking_error",
+            format!("Code chunking failed for {}: {}", file_path, e),
+        )
+    })?;
+
+    // 3. CodeChunk → ChunkInput 映射
+    let chunks: Vec<ChunkInput> = code_chunks
+        .into_iter()
+        .map(|cc| ChunkInput {
+            chunk_index: cc.index,
+            chunk_text: cc.text,
+            chunk_source: ChunkSource::CompiledTruth,
+            embedding: None,
+            token_count: None,
+            language: Some(cc.metadata.language),
+            symbol_name: cc.metadata.symbol_name,
+            symbol_type: Some(cc.metadata.symbol_type),
+            start_line: Some(cc.metadata.start_line),
+            end_line: Some(cc.metadata.end_line),
+            parent_symbol_path: cc.metadata.parent_symbol_path,
+            symbol_name_qualified: cc.metadata.symbol_name_qualified,
+        })
+        .collect();
+
+    let chunks_created = chunks.len();
+
+    // 4. 写入引擎
+    engine.upsert_chunks(slug, &chunks).await?;
+
+    // 5. 返回结果
     Ok(ImportResult {
         slug: slug.to_string(),
         title: None,
-        chunks_created: 0,
+        chunks_created,
         chunks_updated: 0,
         tags_added: tags.len(),
         tags_removed: 0,
@@ -357,15 +395,124 @@ mod tests {
     async fn import_code_file_placeholder() {
         let engine = create_test_engine();
         let slug = "test-code";
-        let file_path = "test.rs";
-        let language = "rust";
+
+        // Create a real temp file (stub was replaced with real implementation)
+        let dir = tempfile::tempdir().unwrap();
+        let rs_path = dir.path().join("test.rs");
+        std::fs::write(&rs_path, "fn main() {}\n").unwrap();
+
         let tags = vec!["code".to_string()];
-        
-        let result = import_code_file(&engine, slug, file_path, language, &tags).await;
+        let result = import_code_file(
+            &engine,
+            slug,
+            rs_path.to_str().unwrap(),
+            "rust",
+            &tags,
+        )
+        .await;
         assert!(result.is_ok());
-        
+
         let import_result = result.unwrap();
         assert_eq!(import_result.slug, slug);
         assert_eq!(import_result.tags_added, 1);
+        assert!(import_result.chunks_created > 0);
+    }
+
+    /// RED: import_code_file with a real Rust source file should produce > 0 chunks.
+    /// This test is expected to FAIL initially because import_code_file is a stub
+    /// returning chunks_created: 0.
+    #[tokio::test]
+    async fn import_code_file_creates_chunks_from_real_file() {
+        let engine = create_test_engine();
+        let slug = "test-real-code";
+
+        // Create a temp dir + .rs file with two Rust functions
+        let dir = tempfile::tempdir().unwrap();
+        let rs_path = dir.path().join("test.rs");
+        let content = "fn main() {}\n\nfn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n";
+        std::fs::write(&rs_path, content).unwrap();
+
+        let tags = vec!["code".to_string()];
+        let result = import_code_file(
+            &engine,
+            slug,
+            rs_path.to_str().unwrap(),
+            "rust",
+            &tags,
+        )
+        .await;
+
+        assert!(result.is_ok(), "import_code_file should succeed: {:?}", result.err());
+        let import_result = result.unwrap();
+        assert_eq!(import_result.slug, slug);
+        assert_eq!(import_result.tags_added, 1);
+
+        // This assertion will FAIL because the stub returns chunks_created: 0.
+        assert!(
+            import_result.chunks_created > 0,
+            "Expected > 0 chunks from real code file, got {}",
+            import_result.chunks_created
+        );
+    }
+
+    /// Verify chunk metadata from tree-sitter code chunking: symbol names,
+    /// language, line ranges, and parent paths should be populated.
+    /// Uses a struct with methods to ensure multiple chunks (not merged).
+    #[tokio::test]
+    async fn import_code_file_chunk_metadata() {
+        let engine = create_test_engine();
+        let slug = "test-code-meta";
+
+        let dir = tempfile::tempdir().unwrap();
+        let rs_path = dir.path().join("lib.rs");
+        // A Rust struct with two methods — won't be merged by mergeSmallSiblings
+        let content = "\
+pub struct Calculator {
+    value: i32,
+}
+
+impl Calculator {
+    pub fn add(&mut self, x: i32) {
+        self.value += x;
+    }
+
+    pub fn multiply(&mut self, x: i32) {
+        self.value *= x;
+    }
+}
+";
+        std::fs::write(&rs_path, content).unwrap();
+
+        let result = import_code_file(
+            &engine,
+            slug,
+            rs_path.to_str().unwrap(),
+            "rust",
+            &[],
+        )
+        .await
+        .unwrap();
+
+        // Struct + 2 methods → at least 2 chunks
+        assert!(result.chunks_created >= 2,
+            "Expected >= 2 chunks, got {}", result.chunks_created);
+
+        // Verify chunks are stored with metadata
+        let stored = engine.get_chunks_for_page(slug).await.unwrap();
+        assert!(!stored.is_empty());
+
+        // Check that symbol metadata exists (for tree-sitter chunks)
+        let has_symbols = stored.iter().any(|c| c.symbol_name.is_some());
+        assert!(has_symbols, "Expected at least one chunk with symbol_name");
+
+        let has_language = stored.iter().any(|c| c.language.as_deref() == Some("Rust"));
+        assert!(has_language, "Expected at least one chunk with language=Rust");
+
+        let has_line_range = stored.iter().any(|c| c.start_line.is_some() && c.end_line.is_some());
+        assert!(has_line_range, "Expected at least one chunk with start/end line");
+
+        // Check parent_symbol_path exists for method chunks (nested in impl)
+        let has_parent = stored.iter().any(|c| !c.parent_symbol_path.is_empty());
+        assert!(has_parent, "Expected at least one chunk with parent_symbol_path");
     }
 }
