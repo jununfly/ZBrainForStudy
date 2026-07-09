@@ -31,6 +31,7 @@ pub mod llm;
 pub mod migration;
 pub mod operation;
 pub mod postgres;
+pub mod progress;
 pub mod recency_decay;
 pub mod rerank_audit;
 pub mod rerank_client;
@@ -62,6 +63,7 @@ pub use calibration_queries::{
     CalibrationQueries, CalibrationBucket, CalibrationProfileRow, PatternDetail, TakeSummary,
     TakesScorecard,
 };
+pub use progress::{ProgressMode, ProgressReporter};
 pub use oauth_queries::{
     ExchangeTokens, OAuthClientInfo, OAuthQueries, RegisterClientRequest, RegisterClientResponse,
     RevokeClientResponse, UpdateClientTtlResponse,

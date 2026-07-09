@@ -335,13 +335,6 @@ pub struct AuthInfo {
 /// Mirrors `ctx.cliOpts` in TS. Populated by CLI callers; MCP / library
 /// callers may leave it undefined — consumers default to quiet/no-progress
 /// for background work.
-///
-/// FUTURE(progress-reporter): these three fields are the landing site for the
-/// TS global flags `--quiet` / `--progress-json` / `--progress-interval`, but
-/// have NO consumer yet — wiring them to clap is blocked on the first per-item
-/// consumer (a sync per-item import/embed/extract migration) porting the
-/// progress-reporter subsystem with a real `.tick()` call site. Full
-/// background: docs/plans/KNOWN-GAPS.md (G3).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CliOpts {
     /// Suppress human-friendly progress output.

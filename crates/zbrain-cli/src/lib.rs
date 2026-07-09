@@ -14,7 +14,8 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use zbrain_core::engine::BrainEngine;
-use zbrain_core::operation::{OperationContext, OperationRegistry};
+use zbrain_core::operation::{CliOpts, OperationContext, OperationRegistry};
+use zbrain_core::progress::{ProgressMode, ProgressReporter};
 
 /// Doctor check status
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -320,6 +321,18 @@ pub struct Cli {
     /// rather than silently falling through.
     #[arg(long, global = true, value_parser = parse_timeout_clap, value_name = "DURATION")]
     pub timeout: Option<u64>,
+
+    /// Suppress human-friendly progress output (stderr).
+    #[arg(long, global = true)]
+    pub quiet: bool,
+
+    /// Emit newline-delimited JSON progress events instead of human-readable text.
+    #[arg(long, global = true)]
+    pub progress_json: bool,
+
+    /// Minimum interval in milliseconds between progress ticks (default: 1000).
+    #[arg(long, global = true, value_parser = parse_timeout_clap, value_name = "DURATION")]
+    pub progress_interval: Option<u64>,
 
     /// Subcommand to execute
     #[command(subcommand)]
@@ -833,7 +846,14 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::ListPages(args) => run_list_pages_command(args, cli.config.as_deref(), timeout_ms).await?,
         Commands::ServeMcp(args) => run_serve_mcp_command(args, cli.config.as_deref()).await?,
         Commands::ServeHttp(args) => run_serve_http_command(args, cli.config.as_deref()).await?,
-        Commands::Sync(args) => run_sync_command(args, cli.config.as_deref()).await?,
+        Commands::Sync(args) => {
+            let cli_opts = CliOpts {
+                quiet: cli.quiet,
+                progress_json: cli.progress_json,
+                progress_interval: cli.progress_interval.unwrap_or(1000) as u32,
+            };
+            run_sync_command(args, cli.config.as_deref(), &cli_opts).await?
+        }
         Commands::Sources(action) => run_sources_command(action, cli.config.as_deref(), timeout_ms).await?,
         Commands::Capture(args) => run_capture_command(args, cli.config.as_deref()).await?,
     }
@@ -1074,7 +1094,7 @@ fn build_operation_registry() -> Arc<OperationRegistry> {
 /// Syncs markdown files from a git repository into the knowledge base.
 /// Performs an incremental sync by default (git diff since last anchor),
 /// or a full sync if `--full-sync` is passed or no anchor exists.
-async fn run_sync_command(args: SyncArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+async fn run_sync_command(args: SyncArgs, config_path: Option<&Path>, cli_opts: &CliOpts) -> anyhow::Result<()> {
     use zbrain_core::engine::{BrainEngine, EngineConfig};
     use zbrain_core::sync::core::{perform_full_sync, perform_sync, FullSyncOpts, IncrementalSyncOpts};
 
@@ -1129,6 +1149,17 @@ async fn run_sync_command(args: SyncArgs, config_path: Option<&Path>) -> anyhow:
     engine.init_schema().await?;
     let engine: std::sync::Arc<dyn BrainEngine> = std::sync::Arc::new(engine);
 
+    // Build progress reporter from CLI flags.
+    let mode = if cli_opts.quiet {
+        ProgressMode::Quiet
+    } else if cli_opts.progress_json {
+        ProgressMode::Json
+    } else {
+        ProgressMode::Human
+    };
+    let min_interval_ms = cli_opts.progress_interval as u64;
+    let mut reporter = ProgressReporter::new(mode, min_interval_ms, Box::new(std::io::stderr()));
+
     // Ensure source exists
     ensure_source_exists(&engine, &args.source_id).await?;
 
@@ -1142,7 +1173,7 @@ async fn run_sync_command(args: SyncArgs, config_path: Option<&Path>) -> anyhow:
             failures_dir: failures_dir.clone(),
             max_file_size,
         };
-        perform_full_sync(&engine, &opts).await?
+        perform_full_sync(&engine, &opts, Some(&mut reporter)).await?
     } else {
         // Get previous anchor for incremental sync
         let source = engine
@@ -1167,7 +1198,7 @@ async fn run_sync_command(args: SyncArgs, config_path: Option<&Path>) -> anyhow:
             failures_dir: failures_dir.clone(),
             max_file_size,
         };
-        perform_sync(&engine, &opts).await?
+        perform_sync(&engine, &opts, Some(&mut reporter)).await?
     };
 
     // Print result

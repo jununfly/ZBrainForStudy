@@ -133,8 +133,8 @@
     },
     "1-2-2": {
       "id": "1-2-2",
-      "label": "progress reporter (--quiet/--progress-json/--progress-interval): 迁 TS src/core/progress.ts 三态+interval 节流，横切 op 进度上报【BLOCKED: 需先有首个带 per-item tick 循环的消费者命令】",
-      "status": "blocked",
+      "label": "progress reporter (--quiet/--progress-json/--progress-interval): 迁 TS src/core/progress.ts 三态+interval 节流, 接 sync perform_full_sync per-path 循环真实 .tick()",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-2",
       "children": [],
@@ -153,9 +153,24 @@
           "q": "Q3: operation.rs:339 FUTURE(progress-reporter) 注释要不要动?(注释已自陈三字段无消费者/指向progress.ts/点名加了是死flag/引用 global-flag-gap-audit.md roadmap 1-8)",
           "answer": "A: 只更新引用指向,把(roadmap 1-8)改成(roadmap 1-2-2, blocked on first per-item consumer),其余不动。注释技术判断(无消费者/加了是死flag)依然完全正确,1-8只是当时做审计的节点,该缺口正式追踪节点现已是1-2-2。改一处引用让代码锚点指向当前canonical追踪点,读代码者能顺藤摸到blocked原因。纯文档一致性,零行为改动零测试影响。",
           "note": "B 注释完全不动: (roadmap 1-8)过时引用,1-8是已关闭审计节点,顺着找到已完成审计而非缺口现归谁追踪,轻微误导;C 扩写把探查结论塞源码注释: 探查结论属roadmap notes职责,塞源码会随消费者迁入腐坏,违反就近最小原则"
+        },
+        {
+          "q": "Q1: 阻塞前提(Rust 无 per-item tick 消费者)是否仍成立? 这一刀怎么走?",
+          "answer": "A: 阻塞前提已过时失效, 解除 blocked 现在施工(sync 垂直切片迁 progress reporter)",
+          "note": "explore 复查推翻旧结论: sync 已拆到 sync/core.rs, perform_full_sync(:89) 现有真实 per-path 循环 :111 for entry in &entries{import_one_path(..)} 循环内无输出=理想 .tick() 落点; perform_sync(:174) 两循环(import:212/delete:237); embed_batch(embedding.rs:157) 已预置 on_progress 回调骨架但仅测试调用. operation.rs:339 FUTURE 注释亲述前置='sync per-item import 迁移', 现已被 perform_full_sync 满足=阻塞点实际解除. 做法: 给 perform_full_sync per-path 循环接真实 .tick() 驱动 --quiet/--progress-json/--progress-interval flag 接线, 符合原始约定'首个 per-item 消费者落地时同批垂直切片迁入'. 反 B(继续压 blocked): 消费者已存在, 再等=虚构阻塞"
+        },
+        {
+          "q": "Q2: 迁移范围——490行 progress.ts 全搬还是最小切片?",
+          "answer": "A: 最小可用核心(只迁 start/tick/finish + 三态 human-plain/json/quiet + 双闸节流 + NDJSON start/tick/finish + 写 stderr), 接 perform_full_sync. 砍信号协调器/EPIPE/child/source-prefix/heartbeat/TTY \\r 重写/abort 事件, 各记 KNOWN-GAPS",
+          "note": "TS progress.ts 490 行是横切基础设施(4 渲染模式/start-tick-heartbeat-finish-child/双闸节流 1000ms 或 max(10,ceil(total/100))/5 NDJSON 事件/SIGINT-SIGTERM 信号协调/EPIPE 防御/source-prefix/TTY \\r 重写/heartbeat timer). 按 zj-tdd 垂直切片只迁 sync perform_full_sync 逐条 import 端到端路径真正需要的核心. 反 B(TTY 重写): 交互体验好但非这条切片必需, 缓. 反 C(全量 490 行): 信号协调器+EPIPE+child+heartbeat 都是外围, 一次全搬违反垂直切片原则, 砍的各自记缺口"
+        },
+        {
+          "q": "Q3: ProgressReporter 放哪、API 形状怎么定?",
+          "answer": "A: 有状态 struct 放 zbrain-core(忠实 TS), perform_full_sync 加 Option<&mut ProgressReporter> 参数, CLI 依 flag 构造后传入, core 单测断言精确输出",
+          "note": "TS ProgressReporter 是有状态对象(mode/intervalMs/total/done/lastTickTime/lastTickItems/stream + start/tick/heartbeat/finish/child 方法). 反 B(简单回调跟 embed_batch): 丢 start/finish 生命周期事件, core 无法单测节流逻辑, 且 NDJSON start/finish 事件无处发. A 的穿透代价(多一个参数)可接受: perform_full_sync 是叶子调用点, 不需要层层穿透"
         }
       ],
-      "notes": "BLOCKED(explore结论,本轮不写代码)。explore 坐实 Rust 侧 progress 真实消费者=0: operation.rs:339-354 已有预留 CliOpts{quiet,progress_json,progress_interval} 但注释自陈无消费者、加 flag=死flag;已迁 sync/capture/sources/doctor 均无 per-item tick 循环(仅阶段 eprintln+汇总 println);TS 20+消费者(sync逐条/embed/extract/reindex...)绝大多数未迁Rust。progress.ts(490行:auto/human/json/quiet四态+interval/items双闸节流+NDJSON schema+进程级信号协调+child+heartbeat+EPIPE防御)全部价值只在 .tick()/.heartbeat() 被长跑循环调用时兑现。决策(Q1-A):不独立迁,等首个带 per-item 循环命令(sync per-item导入/embed迁移/extract迁移 择一先落地)时 progress reporter 同批垂直切片迁入,那时才有真实 tick 调用点驱动 TDD。落盘(Q2-A):标 blocked 不建投机消费者节点,等消费者真要迁时再建其节点并 addBlockedBy 回连 1-2-2;focus 从此跳过。代码侧(Q3-A):operation.rs FUTURE(progress-reporter) 注释引用由 roadmap 1-8 改指 1-2-2。"
+      "notes": "COMPLETED. 阻塞前提过时失效(sync perform_full_sync 已有 per-path 循环提供真实 .tick() 落点), grill Q1-Q3 全落盘后施工。交付: (1) 新建 crates/zbrain-core/src/progress.rs(296行,最小可用核心: start/tick/finish + 三态 human/json/quiet + 双闸节流 + NDJSON + 23 单测全绿); (2) sync/core.rs perform_full_sync/perform_sync 加 Option<&mut ProgressReporter> 参数, per-path 循环接 .tick() + .start/.finish; (3) CLI lib.rs 加 --quiet/--progress-json/--progress-interval 全局 clap flags, sync 命令构造 ProgressReporter 传入; (4) operation.rs 删 CliOpts 上已过时 FUTURE(progress-reporter) 注释(消费者已落地); (5) KNOWN-GAPS 登记 G14-G20(砍掉信号协调器/EPIPE/child/heartbeat/TTY重写/source-prefix/abort)。验证: workspace build clean + core 654 + cli 125 tests 全绿。"
     },
     "1-2-3": {
       "id": "1-2-3",
@@ -541,7 +556,7 @@
   },
   "metadata": {
     "created": "2026-07-06 17:51:37",
-    "updated": "2026-07-09 11:10:34",
+    "updated": "2026-07-09 11:46:22",
     "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART3_RELEASE_AND_TS_RETIREMENT.md"
   },
   "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_PART3_RELEASE_AND_TS_RETIREMENT.md"

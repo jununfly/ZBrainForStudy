@@ -11,6 +11,7 @@
 //!   files from the knowledge base.
 
 use crate::engine::BrainEngine;
+use crate::progress::ProgressReporter;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -86,9 +87,13 @@ pub async fn needs_full_sync(
 /// This is a simplified synchronous (single-threaded) full sync that
 /// walks the entire repo and imports every syncable markdown file.
 /// The concurrency strategy is determined by the engine type.
+///
+/// If `progress` is `Some`, emits human/JSON progress events via the
+/// reporter (`start` with total count, `tick` per path, `finish`).
 pub async fn perform_full_sync(
     engine: &Arc<dyn BrainEngine>,
     opts: &FullSyncOpts,
+    mut progress: Option<&mut ProgressReporter>,
 ) -> Result<SyncResult, crate::error::Error> {
     // Walk the repo
     let walk_opts = WalkOpts {
@@ -106,6 +111,10 @@ pub async fn perform_full_sync(
 
     let mut imported = 0usize;
     let mut failures = Vec::new();
+
+    if let Some(ref mut p) = progress {
+        p.start("sync.import", Some(entries.len()));
+    }
 
     // Import each file (serial for now; concurrency will be added later)
     for entry in &entries {
@@ -128,6 +137,14 @@ pub async fn perform_full_sync(
                 });
             }
         }
+
+        if let Some(ref mut p) = progress {
+            p.tick(1, None);
+        }
+    }
+
+    if let Some(ref mut p) = progress {
+        p.finish(None);
     }
 
     // Record failures
@@ -174,6 +191,7 @@ pub struct IncrementalSyncOpts {
 pub async fn perform_sync(
     engine: &Arc<dyn BrainEngine>,
     opts: &IncrementalSyncOpts,
+    mut progress: Option<&mut ProgressReporter>,
 ) -> Result<SyncResult, crate::error::Error> {
     let previous_commit = match &opts.previous_commit {
         Some(c) => c.clone(),
@@ -189,6 +207,7 @@ pub async fn perform_sync(
                     failures_dir: opts.failures_dir.clone(),
                     max_file_size: opts.max_file_size,
                 },
+                progress,
             )
             .await;
         }
@@ -207,6 +226,10 @@ pub async fn perform_sync(
 
     let mut imported = 0usize;
     let mut failures = Vec::new();
+
+    if let Some(ref mut p) = progress {
+        p.start("sync.import", Some(manifest.to_sync.len()));
+    }
 
     // Import changed files
     for file in &manifest.to_sync {
@@ -230,10 +253,23 @@ pub async fn perform_sync(
                 });
             }
         }
+
+        if let Some(ref mut p) = progress {
+            p.tick(1, None);
+        }
+    }
+
+    if let Some(ref mut p) = progress {
+        p.finish(None);
     }
 
     // Delete removed files from KB
     let mut deleted = 0usize;
+
+    if let Some(ref mut p) = progress {
+        p.start("sync.delete", Some(manifest.to_delete.len()));
+    }
+
     for file in &manifest.to_delete {
         let rel_path_str = file.rel_path.to_string_lossy();
         // Infer the slug from the path (same logic as import)
@@ -246,6 +282,14 @@ pub async fn perform_sync(
                 tracing::debug!("delete_page failed for {rel_path_str}: {_e}");
             }
         }
+
+        if let Some(ref mut p) = progress {
+            p.tick(1, None);
+        }
+    }
+
+    if let Some(ref mut p) = progress {
+        p.finish(None);
     }
 
     // Record failures
@@ -380,7 +424,7 @@ mod tests {
             max_file_size: None,
         };
 
-        let result = perform_full_sync(&engine, &opts).await.unwrap();
+        let result = perform_full_sync(&engine, &opts, None).await.unwrap();
 
         assert_eq!(result.imported, 2); // readme.md + docs/guide.md
         assert_eq!(result.deleted, 0);
@@ -405,7 +449,7 @@ mod tests {
             max_file_size: None,
         };
 
-        let result = perform_full_sync(&engine, &opts).await.unwrap();
+        let result = perform_full_sync(&engine, &opts, None).await.unwrap();
         assert_eq!(result.imported, 0);
     }
 }
