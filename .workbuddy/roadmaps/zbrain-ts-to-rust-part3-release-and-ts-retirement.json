@@ -72,12 +72,33 @@
     "1-3": {
       "id": "1-3",
       "label": "TS 入口整体退役: src/cli.ts + postinstall TS 兜底 + check-cli-executable.sh + src/commands 未迁命令(依赖发布链切 Rust 完成)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "Q1: 范围是什么?",
+          "answer": "A: (a) postinstall 去 TS fallback→纯 Rust; (b) zbrain-ts bin 从 package.json 删; (c) check-cli-executable.sh 改检查 bin/zbrain-rs.js; (d) src/cli.ts/src/commands/ 代码不删(等各命令陆续迁 Rust 后自然淘汰)。四动作, 不动代码。",
+          "note": "B 更窄(只删bin+改postinstall忽略check-cli)太窄, 埋遗留依赖; C 更宽(同时删 src/cli.ts)违反'TS 代码先不直接动'原则"
+        },
+        {
+          "q": "Q2: ~80 未迁命令, 退役后怎么访问?",
+          "answer": "A: zbrain-ts bin 删, 不建代理层(zbrain ts <cmd>)。普通用户不需要碰 TS 命令(未迁=未发布); 开发者 bun src/cli.ts <cmd> 足够; 不加 Rust shell-out 代理增加复杂度。",
+          "note": "B 保留 zbrain-ts bin 违背入口退役初衷; C 建 Rust zbrain ts <cmd> shell-out 代理增加复杂度+命令集持续缩小"
+        },
+        {
+          "q": "Q3: postinstall 怎么办?",
+          "answer": "A: 纯 Rust→cargo build --release + zbrain init --migrate-only。TS fallback 全删。完整 apply-migrations 登记 G21。Rust --migrate-only 需已有 config, 首次安装会 fail→打印 zbrain init 引导。",
+          "note": "B 保留 TS fallback 违背退役初衷; C 在 postinstall 里造 apply-migrations Rust 等价物超出本轮范围"
+        },
+        {
+          "q": "Q4: check-cli-executable.sh 和 check:resolver 怎么办?",
+          "answer": "A: check-cli-executable.sh 改检查 bin/zbrain-rs.js 的 git mode=100755(用户实际入口)。check:resolver 不动(bun src/cli.ts check-resolvable 是 dev tooling, Rust 无等价物, 不受入口退役影响)。",
+          "note": "B 两个都删: 丢掉入口可执行性 CI guard, 无人防守 mode bit 漂移; C 两个都改 Rust: check:resolver 无 Rust 等价物, 强行造=投机"
+        }
+      ],
+      "notes": "DONE 4 actions: (1) package.json 删 zbrain-ts bin(line 9); (2) postinstall.ts 重写为纯 Rust 路径(cargo build+init --migrate-only), TS fallback 删; (3) check-cli-executable.sh 检查目标 src/cli.ts→bin/zbrain-rs.js+修复 mode bit 100644→100755; (4) KNOWN-GAPS 登记 G21(apply-migrations 未迁)。src/cli.ts/src/commands/ 代码不动。"
     },
     "1-4": {
       "id": "1-4",

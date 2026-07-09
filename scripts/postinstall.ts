@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { accessSync, constants, existsSync } from 'node:fs';
+import { accessSync, constants } from 'node:fs';
 import { delimiter, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -53,8 +53,9 @@ function buildRustBinary(): boolean {
   return result.status === 0;
 }
 
-function runMigrations(executable: string, args: string[]): number {
-  const result = spawnSync(executable, args, {
+function runZbrain(args: string[]): number {
+  const wrapper = join(projectRoot, 'bin', 'zbrain-rs.js');
+  const result = spawnSync(process.execPath, [wrapper, ...args], {
     stdio: 'inherit',
     cwd: projectRoot,
     shell: false,
@@ -62,33 +63,32 @@ function runMigrations(executable: string, args: string[]): number {
   return result.status ?? 1;
 }
 
-// Main postinstall flow
-const rustWrapper = join(projectRoot, 'bin', 'zbrain-rs.js');
-const tsCli = join(projectRoot, 'src', 'cli.ts');
-const bun = findCommand('bun');
-
-// Try Rust first
-if (hasRustToolchain()) {
-  if (buildRustBinary()) {
-    console.log('[zbrain] Running migrations with Rust binary...');
-    const exitCode = runMigrations(process.execPath, [rustWrapper, 'apply-migrations', '--yes', '--non-interactive']);
-    if (exitCode === 0) {
-      console.log('[zbrain] postinstall completed successfully.');
-      process.exit(0);
-    }
-    console.log('[zbrain] Rust binary migration failed, falling back to TypeScript...');
-  }
+// Main postinstall flow — Rust-only, no TypeScript fallback.
+//
+// G21 (registered in docs/plans/KNOWN-GAPS.md):
+//   Rust has no `apply-migrations` command (version tracking + migration
+//   scripts). Only DDL-level `init --migrate-only` is available. Developers
+//   needing full migrations should use `bun src/cli.ts apply-migrations`.
+if (!hasRustToolchain()) {
+  console.log('[zbrain] No Rust toolchain found. Skipping CLI build.');
+  console.log('[zbrain] Run `zbrain init` after installing Rust to set up the brain.');
+  process.exit(0);
 }
 
-// Fallback to TypeScript
-if (bun && existsSync(tsCli)) {
-  console.log('[zbrain] Running migrations with TypeScript fallback...');
-  const exitCode = runMigrations(bun, [tsCli, 'apply-migrations', '--yes', '--non-interactive']);
-  if (exitCode === 0) {
-    console.log('[zbrain] postinstall completed successfully.');
-    process.exit(0);
-  }
+if (!buildRustBinary()) {
+  console.log('[zbrain] Rust CLI build failed. Run `cargo build --release -p zbrain-cli` manually.');
+  process.exit(1);
 }
 
-console.log('[zbrain] postinstall: automatic migration skipped. Run `zbrain doctor` and `zbrain apply-migrations --yes` manually.');
+// Try DDL migration. Rust CLI uses its own config discovery
+// (~/.zbrain/config, ./zbrain.yml, etc.). If no config exists,
+// --migrate-only will fail with a clear message — that's fine.
+console.log('[zbrain] Running DDL migration (--migrate-only)...');
+const exitCode = runZbrain(['init', '--migrate-only']);
+if (exitCode !== 0) {
+  console.log('[zbrain] DDL migration skipped (no existing config, or migration failed).');
+  console.log('[zbrain] Run `zbrain init` to set up a new brain, or `zbrain init --migrate-only` to migrate an existing one.');
+}
+
+console.log('[zbrain] postinstall completed.');
 process.exit(0);
