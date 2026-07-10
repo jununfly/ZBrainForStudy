@@ -58,7 +58,8 @@ use crate::error::Result;
 ///
 /// 这是 #110 的核心函数：协调整个导入事务
 /// 1. 分割 Markdown 为 chunks
-/// 2. 生成 embeddings (如果提供 embedding_client)
+/// 2. 生成 embeddings (如果提供 embedding_client) — 尚未接线，chunk.embedding 恒 None，
+///    无 embedding_client 参数。registered in docs/plans/KNOWN-GAPS.md (G25)
 /// 3. 调用 engine.upsert_chunks()
 /// 4. 更新页面元数据
 /// 5. 返回 ImportResult

@@ -1,0 +1,217 @@
+{
+  "title": "ZBrain TS→Rust Part7: Phase 9 — Jobs / Agents / Minions / Autopilot / Remote",
+  "description": "绿地迁移 src/core/minions/ (40 文件) + jobs/agent/autopilot/remote 命令。单向依赖 Phase 8 AI Gateway(minions worker 调 gateway.toolLoop)。解锁后可接 KNOWN-GAPS G7(webhook 直写绕过 MinionQueue)。当前 explore: 子域骨架待细化。",
+  "version": 1,
+  "nodes": {
+    "1": {
+      "id": "1",
+      "label": "ZBrain TS→Rust Part7: Phase 9 — Jobs / Agents / Minions / Autopilot / Remote",
+      "status": "blocked",
+      "mode": "explore",
+      "parent": null,
+      "children": [
+        "1-1",
+        "1-2",
+        "1-3",
+        "1-4",
+        "1-5",
+        "1-6",
+        "1-7",
+        "1-8"
+      ],
+      "decisions": [
+        {
+          "q": "为何 explore 而非 exploit",
+          "answer": "绿地未细化 + 被 Phase 8 阻塞, 先建子域骨架不细拆 slice",
+          "note": "Rust 侧近乎零基础(仅 web 只读 agents.rs)。子域 slice 边界待 Phase 8 gateway 落地、且真正开工前再 grill 细拆。当前只登记 8 个子域占位"
+        },
+        {
+          "q": "施工前置条件",
+          "answer": "等 Phase 8 至少 chat+toolLoop(刀4-5) 落地",
+          "note": "minions worker 调 gateway.toolLoop 干活, 无 gateway 则 worker 无法真实执行。queue/budget 数据层可提前, 但 worker 执行核心须等 gateway"
+        }
+      ],
+      "notes": ""
+    },
+    "1-1": {
+      "id": "1-1",
+      "label": "MinionQueue + job 持久化 (queue.ts, job 生命周期/优先级/状态; jobs CLI 是其 thin wrapper)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1",
+      "children": [
+        "1-1-1",
+        "1-1-2",
+        "1-1-3"
+      ],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-2": {
+      "id": "1-2",
+      "label": "MinionWorker + supervisor (worker.ts/supervisor.ts/child-worker-supervisor.ts, 调 gateway.toolLoop 干活)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-3": {
+      "id": "1-3",
+      "label": "Budget + rate leases (budget-tracker/budget-*/rate-leases.ts, 成本上限与限流)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-4": {
+      "id": "1-4",
+      "label": "Minion handlers + tools (handlers/ + tools/, 具体任务类型: subagent/embed-backfill 等)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-5": {
+      "id": "1-5",
+      "label": "Autopilot + fanout (autopilot.ts/autopilot-fanout.ts 命令 + core)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6": {
+      "id": "1-6",
+      "label": "Remote execution (remote.ts 命令 + 远程 fanout, 保 PII/trust 边界)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-7": {
+      "id": "1-7",
+      "label": "jobs/agent CLI 命令层 (jobs/jobs-watch/agent/agent-logs, thin wrapper over queue/worker)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-8": {
+      "id": "1-8",
+      "label": "G7 收口: webhook 接入 MinionQueue (替换 zbrain-web 直写 put_page + placeholder job_id)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-1-1": {
+      "id": "1-1-1",
+      "label": "A+B: schema migration + Job 类型/status 枚举 + add/getJob/getJobs + claim/completeJob/failJob/renewLock/retryJob (最小可用队列, SKIP LOCKED 双后端岔口在此)",
+      "status": "completed",
+      "mode": "build",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [
+        {
+          "q": "切片粒度: 1-1 做到哪层?",
+          "answer": "A+B(地基+并发核心): schema+Job类型+status枚举+add/getJob/getJobs + claim/completeJob/failJob/renewLock/retryJob。C(后台sweep)拆1-1-2, D(依赖图/inbox/附件/运维)拆1-1-3",
+          "note": "A+B=最小可用队列, 正好是1-2 Worker接线所需最小契约; SKIP LOCKED双后端岔口聚焦在B"
+        },
+        {
+          "q": "MinionQueue架构落点: job SQL写哪/怎么拿连接?",
+          "answer": "A: job方法进BrainEngine trait, postgres.rs+libsql.rs各实现原生SQL",
+          "note": "SKIP LOCKED(PG) vs BEGIN IMMEDIATE(SQLite)差异天然按后端隔离; 与仓库60+现有trait方法范式一致; B的通用SQL逃生舱是反模式(RETURNING/JSONB/递归CTE跨后端无法抽象); C走不通(现有trait方法给不了原子claim/事务/RETURNING原语)"
+        },
+        {
+          "q": "SQLite后端如何实现原子claim(无SKIP LOCKED)?",
+          "answer": "A: BEGIN IMMEDIATE拿写锁 -> SELECT id ORDER BY priority,created_at LIMIT 1 -> UPDATE WHERE id=? RETURNING * -> COMMIT, 同一conn句柄串起",
+          "note": "SQLite单写者语义本就等价SKIP LOCKED效果(不允许并发写事务, IMMEDIATE拿写锁后select+update独占); 与仓库libsql migration已用的BEGIN/COMMIT单连接事务模式一致; PG侧保持FOR UPDATE SKIP LOCKED, 两后端各自最优; RETURNING SQLite3.35+/libsql支持. 拒B(进程内Mutex防不住多进程且DB写锁已串行化)拒C(乐观锁需重试循环更复杂)"
+        },
+        {
+          "q": "migration schema建多少?",
+          "answer": "A: 一次建全minion_jobs完整40列+全约束(9状态CHECK/自引用FK/7 partial index), 暂不建minion_inbox/minion_attachments(留1-1-3 D层)",
+          "note": "40列是原子单元, CHECK/自引用FK/partial index是整体设计, 拆列建再ALTER补在SQLite侧尤痛(改CHECK/加FK要12步rebuild table); A+B只不写未用列(depth/timeout/tokens走DEFAULT零成本); inbox/attachments是物理独立表与jobs解耦, 延后建是干净表级切分. 编号: postgres 0014_minion_jobs.sql + sqlite 0014对齐(SERIAL->INTEGER PK AUTOINCREMENT, JSONB->TEXT, TIMESTAMPTZ->TEXT/INTEGER, partial index语法核对). 拒B(列级拆分+ALTER自找麻烦)拒C(inbox/attachments建了是死表)"
+        },
+        {
+          "q": "SQLite时间字段存储:调度列(lock_until/delay_until/timeout_at)用什么类型?",
+          "answer": "A: 调度列INTEGER(Unix epoch毫秒)+算术全在Rust侧做; 记录列(created/updated/started/finished_at)沿用仓库惯例TEXT ISO-8601",
+          "note": "算术无论如何得上移Rust侧(SQLite无interval); 既然如此存INTEGER则比较变纯整数< 无字典序陷阱/时区格式歧义/补零风险; TS now()+N*interval语义=Rust now_ms+duration_ms 1:1; PG侧完全不动照抄now()+interval(决策2选A红利); 只有需算术的3调度列特殊处理边界清晰. libsql row_to_job读INTEGER epoch-ms与PG读TIMESTAMPTZ归一同一Rust类型(Option<i64> epoch-ms). 拒B(TEXT字典序脆+格式歧义)拒C(REAL精度差心智负担)"
+        },
+        {
+          "q": "A+B的add做多少子功能?",
+          "answer": "基础insert+幂等(idempotency_key快路径SELECT+ON CONFLICT DO NOTHING+race fallback), 不做parent(父子依赖归D=1-1-3)也不做backpressure(pg_advisory_xact_lock PG专有,SQLite需单独设计,可选高频限流非最小队列)",
+          "note": "父子依赖(parent FOR UPDATE+depth/max_children校验+父翻waiting-children)是D层依赖图入口跟D走内聚; backpressure pg_advisory_xact_lock SQLite无对应需单独grill; 幂等留下因与基础INSERT是同一条SQL(ON CONFLICT...RETURNING+race fallback)物理无法干净拆且是防重复提交基础正确性. A+B锁定: schema 0014_minion_jobs(PG+SQLite 40列全建) + MinionJob/MinionJobStatus/opts(无parent/maxWaiting) + add(insert+幂等)/get_job/get_jobs + claim/complete_job/fail_job/renew_lock/retry_job + 双后端trait各实现+TDD"
+        }
+      ],
+      "notes": "完成(2026-07-09/10). 交付: migration 0014(PG+SQLite 40列全建) + minions/types.rs(MinionJob/status枚举/Input/Filters/FailOutcome) + minions/queue.rs薄facade + BrainEngine 8 job方法三后端实现(InMemory/Libsql/Postgres) + tests/minion_queue.rs backend-agnostic contract(28测试全绿). 落地要点: 记录列TEXT ISO-8601显式写current_utc_iso8601(两后端一致), 调度列PG读回EXTRACT(EPOCH)*1000::bigint/SQLite裸INTEGER epoch-ms归一Option<i64>; PG claim用WITH claimed AS(SELECT id AS cid ... FOR UPDATE SKIP LOCKED) UPDATE ... FROM claimed WHERE m.id=claimed.cid(CTE列须别名cid否则RETURNING裸id歧义); SQLite claim用BEGIN IMMEDIATE+claim_job_locked free fn. 类型决策: backoff_jitter必须DOUBLE PRECISION(f64)不能REAL/float4(0.2 float4 round-trip超1e-9破坏精确断言), migration头注释已锁'do not narrow back'. PG job列SERIAL/int4读回i64::from(get i32)."
+    },
+    "1-1-2": {
+      "id": "1-1-2",
+      "label": "C: 后台 sweep (promoteDelayed/handleStalled/handleTimeouts/handleWallClockTimeouts, 延迟提升/停滞恢复/超时→dead)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [
+        {
+          "q": "handleTimeouts/handleWallClockTimeouts 的 D 层耦合(给 minion_inbox 插 child_done + 解锁 waiting-children 父)在 C 层怎么处理?",
+          "answer": "选项1: C 层只移植 4 方法的纯 sweep 主 UPDATE(promoteDelayed/handleStalled/handleTimeouts/handleWallClockTimeouts), 返回受影响 jobs; inbox 插消息+父解锁完全留给 D=1-1-3, 届时统一协调",
+          "note": "与1-1-1切片边界一致(add砍parent/fail_job终态不notify): 纯状态机时间推进归C, 父子依赖协调归D, 关注点正交. minion_inbox表1-1-3才建, C层引用会三后端全崩. 拒预留hook(违反不提前定死接线点+TS里timeout UPDATE与inbox INSERT同事务, no-op会破坏不变量或成负债). 拒整体推迟(promoteDelayed/handleStalled是Worker循环最小必需, 捆绑推迟Worker缺胳膊). 诚实trade-off: dead job有parent的通知归D统一做, sweep→notify不再同事务, 出现'job已dead但父未通知'最终一致窗口, 但resolveParent幂等周期扫描下tick收敛"
+        },
+        {
+          "q": "4 个 sweep 方法的 trait 签名与返回类型?",
+          "answer": "选项1 忠实TS: promote_delayed/handle_timeouts/handle_wall_clock_timeouts 返 Vec<MinionJob>(受影响jobs); handle_stalled 返新 struct StalledSweep{requeued:Vec<MinionJob>,dead:Vec<MinionJob>}(放 minions/types.rs); handle_wall_clock_timeouts(lock_duration_ms:i64) 带参; 全部 &self async trait 方法",
+          "note": "handle_stalled 的 requeued(锁过期未到max_stalled放回重试) vs dead(停滞耗尽死信)是语义不同的两个结果,调用方(Worker循环/stats/告警)关心区分. 拒统一SweepOutcome(抹平双桶丢语义). 拒全Vec+status区分(逼调用方每次自己按status分桶,重复+易错). 双桶struct最贴真实用途,与TS 1:1"
+        },
+        {
+          "q": "SQLite 后端 handle_stalled 怎么实现(PG 多分支 CTE 在 SQLite 不可用)?",
+          "answer": "选项1 双后端各自最优: PG 保持原生多分支 CTE(FOR UPDATE SKIP LOCKED + requeued/dead 双 UPDATE + UNION ALL 一条 SQL 原子); SQLite 复刻 1-1-1 claim 先例: BEGIN IMMEDIATE 拿写锁 → SELECT 停滞候选(status=active AND lock_until<now) → Rust 侧按 stalled_counter+1<max_stalled 分两组 → 两条 UPDATE(requeued/dead) → COMMIT, 结果各自 reselect. 其余3方法(promote_delayed/handle_timeouts/handle_wall_clock)单条 UPDATE 双后端天然一致无需事务",
+          "note": "与1-1-1 claim岔口决策同构(PG SKIP LOCKED vs SQLite BEGIN IMMEDIATE单写者等价),已落盘,认知零负担. 拒选项2统一SELECT-then-UPDATE(为代码统一放弃PG单SQL原子性是反向优化, handle_stalled正是多分支CTE完美用例, 1-1-1已拒通用SQL逃生舱). 拒选项3裸UPDATE不开事务(两条UPDATE间各自获取释放写锁,中间可能被claim写插入,同job被requeue后又被另一sweep看到, BEGIN IMMEDIATE包读候选→双写才安全). 只有handle_stalled因双分支需SQLite事务"
+        },
+        {
+          "q": "handle_wall_clock_timeouts 阈值算术(now-started_at 比 timeout_ms*2 或 lockDur*2*max_stalled)在哪算? SQLite started_at 是 TEXT ISO-8601 非 epoch",
+          "answer": "选项1 双后端各自 SQL 内算: PG 保持 EXTRACT(EPOCH FROM now()-started_at)*1000; SQLite 用 (julianday('now')-julianday(started_at))*86400000.0 算毫秒差在 WHERE 比较. 两边都一条 UPDATE, 阈值全在 SQL. CASE: timeout_ms 有值→timeout_ms*2, 无值→lock_duration_ms*2*GREATEST(max_stalled,1)",
+          "note": "julianday 是 SQLite 原生精确无依赖日期差函数, 与 PG EXTRACT(EPOCH)*1000 语义等价, 单 UPDATE 无往返, 与其余3方法单UPDATE一致. 拒选项2(阈值per-row依赖timeout_ms/max_stalled无法预算单一cutoff,技术不成立). 拒选项3(为绕开现成julianday引入Rust往返+逐行parse ISO,过度设计且候选大时更慢更脆). 实现期尾巴: started_at是current_utc_iso8601()(RFC-3339带Z/+00:00), 需测试验证libsql julianday对时区后缀解析正确; 若有偏差退路=仅此方法降级SELECT候选+Rust parse(选项3)"
+        },
+        {
+          "q": "InMemoryEngine 4 个 sweep 方法怎么实现(尤其 handle_wall_clock 的 now-started_at, started_at 是 Option<String> RFC-3339)?",
+          "answer": "选项A: Mutex<Vec<MinionJob>> 持锁遍历改字段; 3纯sweep(promote/stalled/timeouts)对 Option<i64> epoch-ms 调度列整数比较; handle_wall_clock 用 chrono DateTime::parse_from_rfc3339(started_at)→epoch-ms 比阈值. 不给 MinionJob 加影子字段",
+          "note": "MinionJob.started_at 已是 Option<String> RFC-3339(1-1-1定),parse回去是唯一不污染结构做法. crate已依赖chrono(current_utc_iso8601就是chrono产),parse_from_rfc3339零新依赖且精确round-trip自己写的格式(比SQLite julianday时区后缀更稳). 拒选项B影子字段(污染三后端共享核心类型或逼wrapper,为省一次parse引结构复杂度不值,deep module应把复杂度关方法体内). 一致性红利: 三后端handle_wall_clock同语义'now-started_at>threshold'(InMemory parse/PG EXTRACT/SQLite julianday三表达),contract测试一把校验对齐"
+        },
+        {
+          "q": "sweep contract 测试如何构造'时间已流逝'场景而不用真 sleep()",
+          "answer": "注入过去时间戳,不引入可注入时钟。① 调度列(epoch-ms Option<i64>):测试直接塞过去的整数——promote_delayed/handle_stalled/handle_timeouts 用负 delay 或 enqueue 时锁极短使调度列<now 天然过期。② 记录列 started_at(RFC-3339 String):三后端各提供 test-only helper set_started_at_for_test 把 started_at 改成 now-10min 供 handle_wall_clock_timeouts 命中。主体断言全走 backend-agnostic contract_* fn,与 1-1-1 的 10 个 contract fn 同构。",
+          "note": "拒绝'假时钟注入':TS sweep 全靠 SQL now()/julianday('now') 墙上时钟,引入可注入 Clock 需把 now() 从 SQL 拽成参数传进每方法,破坏'SQL 内一次算完'的 deep module 边界,并与 1-1-1 事务内自洽(FOR UPDATE SKIP LOCKED/BEGIN IMMEDIATE)冲突。注入过去时间戳把'时间流逝'变纯数据 fixture,零 flaky 零 sleep 三后端一致。"
+        }
+      ],
+      "notes": "完成(2026-07-10). 交付: types.rs 新增 StalledSweep{requeued,dead}; BrainEngine trait 新增 promote_delayed/handle_stalled/handle_timeouts/handle_wall_clock_timeouts(lock_duration_ms) + 2 test-only helper(set_started_at_for_test/set_timeout_at_for_test, 默认 Unsupported); 三后端(InMemory/Libsql/Postgres)全实现; queue.rs facade 4 薄封装; tests/minion_queue.rs 4 个 backend-agnostic contract fn × 三后端 = 12 新测试, 全量 40 passed 含真实 PG(pg-embed). 落地要点: (1) 纯 C 层, inbox/父解锁归 1-1-3 D 层. (2) InMemory 持 mutex 遍历 Vec, 3 纯 sweep 对 Option<i64> epoch-ms 整数比较, wall_clock 用 chrono parse_from_rfc3339. (3) Libsql: promote/timeouts/wall_clock 用 SELECT ids→UPDATE→reselect(libsql 无 UPDATE RETURNING), handle_stalled 用 BEGIN IMMEDIATE 包读候选+双 UPDATE(requeued<max_stalled / dead>=)+COMMIT+reselect; wall_clock 阈值 (julianday(?now)-julianday(started_at))*86400000 在 SQL 内算. (4) Postgres: 全 UPDATE...RETURNING 单语句, handle_stalled 两条 disjoint-WHERE UPDATE 复现分组, wall_clock 用 EXTRACT(EPOCH FROM now()-started_at)*1000. 关键坑: SQLite/PG 都有 chk_minion_timeout_positive CHECK(timeout_ms>0), 决策 6 原设想'负 timeout_ms 令 timeout_at<now' 在 SQL 后端被约束拒绝(InMemory 无约束掩盖了) → 改用 set_timeout_at_for_test helper 正常 claim(正 timeout_ms)后直接改写 timeout_at 列; 印证 PG/SQLite 强约束能揪出 InMemory 掩盖的 bug. julianday 对 RFC-3339 带 Z 后缀解析验证正确(libsql_handle_wall_clock_timeouts 绿), 决策 4 降级退路未触发."
+      "id": "1-1-3",
+      "label": "D: 高级 (父子依赖 resolveParent/cancelJob 递归CTE + inbox sendMessage/readInbox + 附件CRUD + pause/resume/prune/getStats)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    }
+  },
+  "metadata": {
+    "created": "2026-07-09 21:33:13",
+    "updated": "2026-07-10 22:35:00",
+    "md_file": ".workbuddy/roadmaps/ZJ_ROADMAP.md"
+  },
+  "md_file": "C:/workspace/github/jununfly/zbrain/.workbuddy/roadmaps/ZJ_ROADMAP.md"
+}

@@ -22,7 +22,7 @@ use crate::{
     types::TakeInput, types::TakeResolution, types::UpsertTakesResult, CRMode, DuplicatePage,
     EffectiveDateSource, Error, EntityCount, FactInsertStatus, FactKind, FactListOpts, FactRow,
     FactVisibility, FactsHealth, FileRow, FileSpec, FindDuplicatePageOpts, GraphNode, GraphPath,
-    Link, LinkBatchInput, NewFact, OrphanPage, PageKind, PageRef, PageType, PurgeResult,
+    AdjacencyRow, Link, LinkBatchInput, NewFact, OrphanPage, PageKind, PageRef, PageType, PurgeResult,
     RefreshPageBodyArgs, UpsertFileResult,
 };
 
@@ -423,6 +423,257 @@ fn compute_floor_threshold(scores: &[f64], floor_ratio: Option<f64>) -> f64 {
     top * ratio
 }
 
+/// Backend-agnostic search core: fuse two retrieval signals over a
+/// pre-filtered candidate set, then apply the post-fusion metadata boosts.
+///
+/// This is the shared half of `BrainEngine::search_pages`. Each backend is
+/// responsible only for the backend-*specific* half — materializing the
+/// candidate `Page`s (live/non-deleted, optionally source-scoped) — then hands
+/// them here so InMemory, libsql, and postgres all fuse, snippet, and boost
+/// identically. That guarantees a single scoring truth across engines instead
+/// of three drifting copies.
+///
+/// `candidates` is an owned slice (not a live store borrow) precisely so the
+/// caller can drop any non-Send store guard before this async fn awaits the
+/// salience / effective-date reads — a lock held across an await would make the
+/// caller's future non-Send. The extra clone at the call site is the price of
+/// that Send-safety and is negligible against the retrieval itself.
+///
+/// Pipeline (mirrors TS `src/core/search/hybrid.ts`):
+/// 1. Lexical path — weighted substring match over title (0.4) /
+///    compiled_truth (0.4) / frontmatter (0.2), rank-ordered by hit weight.
+/// 2. Vector path — cosine similarity of `opts.query_embedding` against each
+///    candidate's stored f32-LE embedding; skipped when no query embedding is
+///    supplied, so fusion degenerates to lexical-only.
+/// 3. RRF fusion → normalized `base_score`, snippet extraction, `min_score`
+///    gate.
+/// 4. Post-fusion boosts — floor-threshold computed ONCE from the pre-boost
+///    scores, then salience (k=0.15 'on') and recency (per-prefix half-life)
+///    stages gated by it. `engine` supplies `get_salience_scores` /
+///    `get_effective_dates`, so the boost inputs come from whichever backend
+///    called in.
+/// 5. Sort by final score descending, then apply `opts.limit`.
+pub(crate) async fn fuse_and_boost(
+    engine: &dyn BrainEngine,
+    candidates: &[Page],
+    opts: &SearchOpts,
+) -> crate::Result<Vec<SearchResult>> {
+    let keywords_lower: Vec<String> = opts.keywords.iter().map(|k| k.to_lowercase()).collect();
+
+    // Index the owned candidate slice by page id so the two retrieval paths and
+    // the fusion step share one lookup (was a `HashMap<u64, &Page>` over the
+    // live store; now over the caller-materialized slice).
+    let candidates_by_id: std::collections::HashMap<u64, &Page> =
+        candidates.iter().map(|p| (p.id, p)).collect();
+
+    // ── Lexical path ────────────────────────────────────────────────────
+    // Substring match over title / compiled_truth / frontmatter. Produces a
+    // rank-ordered list of page ids (higher weighted-hit sum ranks first).
+    let mut lexical: Vec<(u64, f64)> = Vec::new();
+    for (&id, page) in &candidates_by_id {
+        let title_lower = page.title.to_lowercase();
+        let content_lower = page.compiled_truth.to_lowercase();
+        let frontmatter_lower = page.frontmatter.to_string().to_lowercase();
+
+        let mut weight = 0.0;
+        let mut hit = false;
+        for keyword in &keywords_lower {
+            if title_lower.contains(keyword) {
+                weight += 0.4; // Title matches count more
+                hit = true;
+            }
+            if content_lower.contains(keyword) {
+                weight += 0.4; // Content matches
+                hit = true;
+            }
+            if frontmatter_lower.contains(keyword) {
+                weight += 0.2; // Frontmatter matches
+                hit = true;
+            }
+        }
+        if hit {
+            lexical.push((id, weight));
+        }
+    }
+    lexical.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let lexical_ids: Vec<u64> = lexical.iter().map(|(id, _)| *id).collect();
+
+    // ── Vector path ─────────────────────────────────────────────────────
+    // Cosine similarity between the injected query embedding and each
+    // candidate's stored f32-LE embedding. Skipped entirely when no query
+    // embedding is supplied, so fusion degenerates to lexical-only.
+    let mut vector_ids: Vec<u64> = Vec::new();
+    if let Some(query_vec) = &opts.query_embedding {
+        let mut scored: Vec<(u64, f64)> = Vec::new();
+        for (&id, page) in &candidates_by_id {
+            if let Some(bytes) = &page.embedding {
+                if let Some(page_vec) = decode_embedding_le(bytes) {
+                    let cos = cosine_similarity(query_vec, &page_vec);
+                    if cos > 0.0 {
+                        scored.push((id, cos));
+                    }
+                }
+            }
+        }
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        vector_ids = scored.iter().map(|(id, _)| *id).collect();
+    }
+
+    // ── Fusion ──────────────────────────────────────────────────────────
+    // RRF-fuse the two ranked lists into a normalized 0..1 base_score. A
+    // page appearing in both lists accumulates both contributions.
+    let fused = rrf_fuse(&[lexical_ids, vector_ids], RRF_K);
+
+    let mut results = Vec::new();
+    for (id, base_score) in fused {
+        let Some(page) = candidates_by_id.get(&id) else {
+            continue;
+        };
+        if opts.min_score.map_or(false, |min| base_score < min) {
+            continue;
+        }
+
+        // Snippet: 150-char window around the first keyword hit, else the
+        // content head (vector-only matches have no keyword to anchor on).
+        let content_lower = page.compiled_truth.to_lowercase();
+        let snippet = if page.compiled_truth.is_empty() {
+            None
+        } else {
+            let first_match = keywords_lower
+                .iter()
+                .find_map(|k| content_lower.find(k))
+                .unwrap_or(0);
+            let start = first_match.saturating_sub(50);
+            let end = (start + 150).min(page.compiled_truth.len());
+            // Clamp to a char boundary so the slice never panics on UTF-8.
+            let mut s = start;
+            while s > 0 && !page.compiled_truth.is_char_boundary(s) {
+                s -= 1;
+            }
+            let mut e = end;
+            while e < page.compiled_truth.len() && !page.compiled_truth.is_char_boundary(e) {
+                e += 1;
+            }
+            Some(page.compiled_truth[s..e].to_string())
+        };
+
+        results.push(SearchResult {
+            page: (*page).clone(),
+            score: base_score,
+            base_score,
+            snippet,
+            // Rerank is a query-pipeline post-processing stage layered on
+            // top of the engine's fused results (see operation.rs query
+            // path); the engine itself never reranks, so both stamps start
+            // as None and are set later only for reordered head rows.
+            rerank_score: None,
+            reranker_delta: None,
+            salience_boost: None,
+            recency_boost: None,
+        });
+    }
+
+    // ── Post-fusion boost stages ────────────────────────────────────────
+    // Mirrors TS `runPostFusionStages` (src/core/search/hybrid.ts:282):
+    // compute the floor-threshold ONCE from the pre-boost fused scores,
+    // then apply each metadata-axis boost gated by it. Only the salience
+    // stage is migrated so far; strength is hardcoded to 'on' (k=0.15)
+    // because the search-mode system that resolves 'on'/'strong'/'off' is
+    // not ported yet.
+    //
+    // FUTURE(salience-strength-by-mode): TS resolves salience strength from
+    // the active search mode (ModeBundle). Rust has no mode system yet, so
+    // this is pinned to 'on'. registered in docs/plans/KNOWN-GAPS.md (G13).
+    if !results.is_empty() {
+        let pre_boost: Vec<f64> = results.iter().map(|r| r.base_score).collect();
+        let floor = compute_floor_threshold(&pre_boost, opts.floor_ratio);
+
+        // Salience scores are keyed by "{source_id}::{slug}"; read them via
+        // the same engine method the trait already exposes.
+        let refs: Vec<crate::types::PageRef> = results
+            .iter()
+            .map(|r| crate::types::PageRef {
+                slug: r.page.slug.clone(),
+                source_id: r.page.source_id.clone(),
+            })
+            .collect();
+        let salience = engine.get_salience_scores(&refs).await?;
+
+        for r in &mut results {
+            if !r.score.is_finite() || r.score < floor {
+                continue;
+            }
+            let key = format!("{}::{}", r.page.source_id, r.page.slug);
+            let Some(&s) = salience.get(&key) else {
+                continue;
+            };
+            if s <= 0.0 {
+                continue;
+            }
+            let factor = 1.0 + SALIENCE_BOOST_COEF_ON * (1.0 + s).ln();
+            r.score *= factor;
+            r.salience_boost = Some(factor);
+        }
+
+        // Recency stage (per-prefix half-life decay). Uses the same
+        // once-computed floor as salience so a weak-overlap tail page can't
+        // leapfrog the primary hit by stacking recency on top. The decay
+        // map is caller-resolved config (defaults + zbrain.yml + env +
+        // overrides), passed in via SearchOpts — the engine never reads env
+        // itself, staying a pure scoring machine. Dates come from the
+        // engine's own get_effective_dates; strength is pinned to 'on'
+        // (search-mode system unported — see the salience note above / G13).
+        let date_strings = engine.get_effective_dates(&refs).await?;
+        let dates_ms: std::collections::HashMap<String, i64> = date_strings
+            .into_iter()
+            .filter_map(|(k, v)| iso8601_to_unix_ms(&v).map(|ms| (k, ms)))
+            .collect();
+        let decay_map = opts
+            .recency_decay
+            .clone()
+            .unwrap_or_else(crate::recency_decay::default_recency_decay);
+        let fallback = opts
+            .recency_fallback
+            .unwrap_or(crate::recency_decay::DEFAULT_FALLBACK);
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
+        let mut rows: Vec<crate::recency_decay::RecencyRow<'_>> = results
+            .iter_mut()
+            .map(|r| {
+                let key = format!("{}::{}", r.page.source_id, r.page.slug);
+                crate::recency_decay::RecencyRow {
+                    slug: r.page.slug.as_str(),
+                    key,
+                    score: &mut r.score,
+                    recency_boost: &mut r.recency_boost,
+                }
+            })
+            .collect();
+        crate::recency_decay::apply_recency_boost(
+            &mut rows,
+            &dates_ms,
+            // Pinned to 'on': Rust has no search-mode system yet to resolve
+            // 'on'/'strong'/'off' from a ModeBundle (same gap as salience
+            // strength above). registered in docs/plans/KNOWN-GAPS.md (G13).
+            crate::recency_decay::RecencyStrength::On,
+            &decay_map,
+            fallback,
+            now_ms,
+            if floor.is_finite() { Some(floor) } else { None },
+        );
+    }
+
+    // Sort by score descending (boosts may have reordered the head).
+    results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Apply limit if set
+    if let Some(limit) = opts.limit {
+        results.truncate(limit);
+    }
+
+    Ok(results)
+}
 
 /// Returns the whitelisted SQL `ORDER BY` fragment for the given sort mode.
 /// Mirrors `PAGE_SORT_SQL` at `types.ts:332`. Engines splice this literal
@@ -812,7 +1063,10 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
     /// are ordered by relevance score (descending).
     ///
     /// Default implementation returns an empty Vec — override with actual
-    /// implementation per backend.
+    /// implementation per backend. InMemory + libsql override with real
+    /// lexical+vector fusion via `fuse_and_boost`; Postgres still falls back to
+    /// this empty default (a PG brain returns no query results).
+    /// Postgres gap registered in docs/plans/KNOWN-GAPS.md (G23).
     async fn search_pages(&self, _opts: &SearchOpts) -> crate::Result<Vec<SearchResult>> {
         Ok(Vec::new())
     }
@@ -949,6 +1203,45 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
         &self,
         refs: &[PageRef],
     ) -> crate::Result<std::collections::HashMap<String, f64>>;
+
+    // ── Salience (Phase 7C 1-3-2) ──────────────────────────────────────────
+
+    /// Bump `salience_touched_at` to now for a page identified by (slug, source_id).
+    /// Returns `true` if the page was found and bumped, `false` if no such page.
+    /// Does not bump `generation` (salience is excluded from the generation trigger
+    /// to avoid over-invalidating the query cache).
+    async fn touch_salience(&self, slug: &str, source_id: &str) -> crate::Result<bool> {
+        let _ = slug;
+        let _ = source_id;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "touch_salience not yet implemented for this engine",
+        ))
+    }
+
+    /// Salience query: pages recently touched (within `days`), ranked by
+    /// `emotional_weight * 5 + ln(1 + take_count) + recency_decay`.
+    ///
+    /// Recency decay: flat mode `1.0 / (1.0 + days_old)` where `days_old`
+    /// is computed from `updated_at`. The time window uses
+    /// `GREATEST(updated_at, COALESCE(salience_touched_at, updated_at))`
+    /// so pages bumped by `touch_salience` are included.
+    async fn get_recent_salience(
+        &self,
+        days: u32,
+        limit: u32,
+        slug_prefix: Option<&str>,
+    ) -> crate::Result<Vec<crate::types::SalienceResult>> {
+        let _ = days;
+        let _ = limit;
+        let _ = slug_prefix;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "get_recent_salience not yet implemented for this engine",
+        ))
+    }
 
     // ── Takes (Phase 7A) ──────────────────────────────────────────────────
 
@@ -1104,6 +1397,32 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
         ))
     }
 
+    /// Compute adjacency boosts for a set of page IDs within their
+    /// induced sub-graph. Returns `hits` (in-set distinct from_page_id
+    /// count) and `cross_source_hits` (distinct OTHER source_id count,
+    /// excluding the target's own source) for each input page_id. Empty
+    /// input → empty `HashMap`, no SQL.
+    ///
+    /// Mirrors TS `BrainEngine.getAdjacencyBoosts` (v0.40.4).
+    ///
+    /// **Source-scope contract**: `page_ids` MUST already be
+    /// source-scoped by the caller. This method does NOT filter by
+    /// source — cross-source leakage is impossible by construction
+    /// because any leaked-in page_id would have to also appear in the
+    /// caller's input set. TS equivalent: `hybridSearch` →
+    /// `runPostFusionStages`, which is source-scoped upstream.
+    async fn get_adjacency_boosts(
+        &self,
+        page_ids: &[u64],
+    ) -> crate::Result<std::collections::HashMap<u64, AdjacencyRow>> {
+        let _ = page_ids;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "get_adjacency_boosts not yet implemented for this engine",
+        ))
+    }
+
     // ── Facts (Phase 7B) ──────────────────────────────────────────────────
 
     /// Insert a fact with automatic supersede semantics.
@@ -1168,6 +1487,243 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
             "expire_fact not yet implemented for this engine",
         ))
     }
+
+    // ─── Minion job queue (Phase 9, slice 1-1-1 A+B) ─────────────────────────
+    //
+    // Each backend implements these with its own optimal SQL: postgres.rs uses
+    // `FOR UPDATE SKIP LOCKED`; libsql.rs uses `BEGIN IMMEDIATE`. The default
+    // impls below return Unsupported so engines that predate the queue (and
+    // the InMemory test engine) compile unchanged. See `crate::minions`.
+
+    /// Submit a job (basic insert + idempotency). If
+    /// `input.idempotency_key` matches an existing row, return that row without
+    /// inserting a second. Mirrors TS `MinionQueue.add` (A+B subset).
+    async fn enqueue_job(
+        &self,
+        input: &crate::minions::types::MinionJobInput,
+    ) -> crate::Result<crate::minions::types::MinionJob> {
+        let _ = input;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "enqueue_job not yet implemented for this engine",
+        ))
+    }
+
+    /// Fetch a job by id. `None` if not found. Mirrors TS `getJob`.
+    async fn get_job(
+        &self,
+        id: i64,
+    ) -> crate::Result<Option<crate::minions::types::MinionJob>> {
+        let _ = id;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "get_job not yet implemented for this engine",
+        ))
+    }
+
+    /// List jobs newest-first, filtered/bounded by `filters`. Mirrors TS
+    /// `getJobs`.
+    async fn get_jobs(
+        &self,
+        filters: &crate::minions::types::JobFilters,
+    ) -> crate::Result<Vec<crate::minions::types::MinionJob>> {
+        let _ = filters;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "get_jobs not yet implemented for this engine",
+        ))
+    }
+
+    /// Atomically claim the next eligible waiting job. `None` when no matching
+    /// waiting job exists. Token-fenced. Mirrors TS `claim`.
+    async fn claim_job(
+        &self,
+        lock_token: &str,
+        lock_duration_ms: i64,
+        queue: &str,
+        registered_names: &[String],
+    ) -> crate::Result<Option<crate::minions::types::MinionJob>> {
+        let _ = (lock_token, lock_duration_ms, queue, registered_names);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "claim_job not yet implemented for this engine",
+        ))
+    }
+
+    /// Mark a claimed job completed (token-fenced). `None` on token/status
+    /// mismatch. Mirrors TS `completeJob` (core transition; parent hooks are
+    /// D-layer / 1-1-3).
+    async fn complete_job(
+        &self,
+        id: i64,
+        lock_token: &str,
+        result: Option<&serde_json::Value>,
+    ) -> crate::Result<Option<crate::minions::types::MinionJob>> {
+        let _ = (id, lock_token, result);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "complete_job not yet implemented for this engine",
+        ))
+    }
+
+    /// Fail a claimed job (token-fenced) into delayed/failed/dead. `backoff_ms`
+    /// sets `delay_until` when `outcome` is `Delayed`. `None` on token/status
+    /// mismatch. Mirrors TS `failJob` (core transition; parent hooks 1-1-3).
+    async fn fail_job(
+        &self,
+        id: i64,
+        lock_token: &str,
+        error_text: &str,
+        outcome: crate::minions::types::FailOutcome,
+        backoff_ms: i64,
+    ) -> crate::Result<Option<crate::minions::types::MinionJob>> {
+        let _ = (id, lock_token, error_text, outcome, backoff_ms);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "fail_job not yet implemented for this engine",
+        ))
+    }
+
+    /// Extend the lease on an active job (worker heartbeat). `true` if renewed.
+    /// Mirrors TS `renewLock`.
+    async fn renew_job_lock(
+        &self,
+        id: i64,
+        lock_token: &str,
+        lock_duration_ms: i64,
+    ) -> crate::Result<bool> {
+        let _ = (id, lock_token, lock_duration_ms);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "renew_job_lock not yet implemented for this engine",
+        ))
+    }
+
+    /// Requeue a failed/dead job to waiting, clearing error/lock/delay. `None`
+    /// if not in a failed/dead state. Mirrors TS `retryJob`.
+    async fn retry_job(
+        &self,
+        id: i64,
+    ) -> crate::Result<Option<crate::minions::types::MinionJob>> {
+        let _ = id;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "retry_job not yet implemented for this engine",
+        ))
+    }
+
+    // ─── Minion background sweeps (Phase 9, slice 1-1-2 = C) ─────────────────
+    //
+    // Four time-driven state-machine transitions the worker/supervisor loop
+    // calls periodically. Each is the *pure* transition only (roadmap 1-1-2
+    // decision 1): the child_done inbox inserts and waiting-children parent
+    // unblock that TS folds into the timeout sweeps are deferred to the D-layer
+    // (1-1-3). Backends implement each with their own optimal SQL; the default
+    // impls return Unsupported so pre-queue engines compile unchanged.
+    //
+    // Time handling (roadmap 1-1-2 decisions 4, 6): scheduling columns are
+    // epoch-ms integers compared against now; `handle_wall_clock_timeouts`
+    // derives its threshold in-SQL (PG `EXTRACT(EPOCH ...)`, SQLite
+    // `julianday`). Tests inject past timestamps rather than sleeping.
+
+    /// Promote delayed jobs whose `delay_until` has passed back to `waiting`
+    /// (clearing delay/lock). Returns the promoted jobs. Mirrors TS
+    /// `promoteDelayed`.
+    async fn promote_delayed(
+        &self,
+    ) -> crate::Result<Vec<crate::minions::types::MinionJob>> {
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "promote_delayed not yet implemented for this engine",
+        ))
+    }
+
+    /// Sweep stalled active jobs (lease expired, `lock_until < now`). Splits by
+    /// stall budget: `stalled_counter + 1 < max_stalled` -> requeued to
+    /// `waiting`; otherwise dead-lettered. Returns both sets. Mirrors TS
+    /// `handleStalled` (pure sweep; parent hooks are D-layer / 1-1-3).
+    async fn handle_stalled(
+        &self,
+    ) -> crate::Result<crate::minions::types::StalledSweep> {
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "handle_stalled not yet implemented for this engine",
+        ))
+    }
+
+    /// Dead-letter active jobs whose per-job `timeout_at` has passed while the
+    /// lease is still held (`lock_until > now`, so a stalled job is left for
+    /// `handle_stalled` instead). Returns the timed-out jobs. Mirrors TS
+    /// `handleTimeouts` (pure sweep; parent hooks are D-layer / 1-1-3).
+    async fn handle_timeouts(
+        &self,
+    ) -> crate::Result<Vec<crate::minions::types::MinionJob>> {
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "handle_timeouts not yet implemented for this engine",
+        ))
+    }
+
+    /// Dead-letter active jobs that exceed a wall-clock runtime threshold,
+    /// regardless of lease state (catches jobs stuck while holding DB
+    /// resources, which stall sweeps skip). Threshold in ms:
+    /// `timeout_ms` set -> `timeout_ms * 2`; else
+    /// `lock_duration_ms * 2 * GREATEST(max_stalled, 1)`. Mirrors TS
+    /// `handleWallClockTimeouts` (pure sweep; parent hooks D-layer / 1-1-3).
+    async fn handle_wall_clock_timeouts(
+        &self,
+        lock_duration_ms: i64,
+    ) -> crate::Result<Vec<crate::minions::types::MinionJob>> {
+        let _ = lock_duration_ms;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "handle_wall_clock_timeouts not yet implemented for this engine",
+        ))
+    }
+
+    /// Test-support: force a job's `started_at` record column to an arbitrary
+    /// RFC-3339 timestamp. Sweep contract tests use this to synthesize a job
+    /// that started far enough in the past to trip `handle_wall_clock_timeouts`
+    /// without sleeping (roadmap 1-1-2 decision 6). Not part of the production
+    /// surface — each backend rewrites the `started_at` column in place.
+    async fn set_started_at_for_test(
+        &self,
+        id: i64,
+        started_at_rfc3339: &str,
+    ) -> crate::Result<()> {
+        let _ = (id, started_at_rfc3339);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "set_started_at_for_test not implemented for this engine",
+        ))
+    }
+
+    /// Test-support: force a job's `timeout_at` scheduling column to an
+    /// arbitrary epoch-ms value. Sweep contract tests use this to synthesize an
+    /// already-expired per-job timeout without violating the
+    /// `chk_minion_timeout_positive` CHECK (a negative `timeout_ms` on enqueue
+    /// is rejected by the SQL backends). Not part of the production surface.
+    async fn set_timeout_at_for_test(&self, id: i64, timeout_at_ms: i64) -> crate::Result<()> {
+        let _ = (id, timeout_at_ms);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "set_timeout_at_for_test not implemented for this engine",
+        ))
+    }
 }
 
 // ─── InMemoryEngine ──────────────────────────────────────────────────────────
@@ -1225,6 +1781,9 @@ pub struct InMemoryEngine {
     // Phase 7B: facts storage (in-memory, for testing)
     facts_store: Mutex<Vec<crate::types::FactRow>>,
     next_fact_id: Mutex<i64>,
+    // Phase 9 (1-1-1): minion job queue storage (in-memory, for testing)
+    minion_jobs_store: Mutex<Vec<crate::minions::types::MinionJob>>,
+    next_job_id: Mutex<i64>,
 }
 
 // ─── Tag helpers ─────────────────────────────────────────────────────────────
@@ -1278,6 +1837,9 @@ impl InMemoryEngine {
             // Phase 7B: facts storage (in-memory, for testing)
             facts_store: Mutex::new(Vec::new()),
             next_fact_id: Mutex::new(1),
+            // Phase 9 (1-1-1): minion job queue storage (in-memory, for testing)
+            minion_jobs_store: Mutex::new(Vec::new()),
+            next_job_id: Mutex::new(1),
         }
     }
 
@@ -1953,243 +2515,30 @@ impl BrainEngine for InMemoryEngine {
     }
 
     async fn search_pages(&self, opts: &SearchOpts) -> crate::Result<Vec<SearchResult>> {
-        let keywords_lower: Vec<String> =
-            opts.keywords.iter().map(|k| k.to_lowercase()).collect();
-
-        // Build the fused, pre-boost result list under the store lock in a
-        // scoped block so the (non-Send) MutexGuard is dropped before the async
-        // salience read below — a guard held across an await would make this
-        // future non-Send.
-        let mut results = {
+        // Backend-specific half: materialize the live (non-deleted),
+        // optionally source-scoped candidate pages, then hand them to the
+        // shared `fuse_and_boost` core. Cloning to an owned Vec here drops the
+        // non-Send store guard before the async boost reads await — a guard
+        // held across an await would make this future non-Send.
+        let candidates: Vec<Page> = {
             let store = self
                 .store
                 .lock()
                 .expect("InMemoryEngine store mutex poisoned");
-
-        // Candidate set after deleted / source filtering, indexed by page id so
-        // the two retrieval paths and the fusion step share one lookup.
-        let mut candidates: std::collections::HashMap<u64, &Page> =
-            std::collections::HashMap::new();
-        for page in store.iter() {
-            if page.deleted_at.is_some() {
-                continue;
-            }
-            if let Some(source_id) = &opts.source_id {
-                if page.source_id != *source_id {
-                    continue;
-                }
-            }
-            candidates.insert(page.id, page);
-        }
-
-        // ── Lexical path ────────────────────────────────────────────────────
-        // Substring match over title / compiled_truth / frontmatter. Produces a
-        // rank-ordered list of page ids (higher weighted-hit sum ranks first).
-        let mut lexical: Vec<(u64, f64)> = Vec::new();
-        for (&id, page) in &candidates {
-            let title_lower = page.title.to_lowercase();
-            let content_lower = page.compiled_truth.to_lowercase();
-            let frontmatter_lower = page.frontmatter.to_string().to_lowercase();
-
-            let mut weight = 0.0;
-            let mut hit = false;
-            for keyword in &keywords_lower {
-                if title_lower.contains(keyword) {
-                    weight += 0.4; // Title matches count more
-                    hit = true;
-                }
-                if content_lower.contains(keyword) {
-                    weight += 0.4; // Content matches
-                    hit = true;
-                }
-                if frontmatter_lower.contains(keyword) {
-                    weight += 0.2; // Frontmatter matches
-                    hit = true;
-                }
-            }
-            if hit {
-                lexical.push((id, weight));
-            }
-        }
-        lexical.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        let lexical_ids: Vec<u64> = lexical.iter().map(|(id, _)| *id).collect();
-
-        // ── Vector path ─────────────────────────────────────────────────────
-        // Cosine similarity between the injected query embedding and each
-        // candidate's stored f32-LE embedding. Skipped entirely when no query
-        // embedding is supplied, so fusion degenerates to lexical-only.
-        let mut vector_ids: Vec<u64> = Vec::new();
-        if let Some(query_vec) = &opts.query_embedding {
-            let mut scored: Vec<(u64, f64)> = Vec::new();
-            for (&id, page) in &candidates {
-                if let Some(bytes) = &page.embedding {
-                    if let Some(page_vec) = decode_embedding_le(bytes) {
-                        let cos = cosine_similarity(query_vec, &page_vec);
-                        if cos > 0.0 {
-                            scored.push((id, cos));
-                        }
-                    }
-                }
-            }
-            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-            vector_ids = scored.iter().map(|(id, _)| *id).collect();
-        }
-
-        // ── Fusion ──────────────────────────────────────────────────────────
-        // RRF-fuse the two ranked lists into a normalized 0..1 base_score. A
-        // page appearing in both lists accumulates both contributions.
-        let fused = rrf_fuse(&[lexical_ids, vector_ids], RRF_K);
-
-        let mut results = Vec::new();
-        for (id, base_score) in fused {
-            let Some(page) = candidates.get(&id) else {
-                continue;
-            };
-            if opts.min_score.map_or(false, |min| base_score < min) {
-                continue;
-            }
-
-            // Snippet: 150-char window around the first keyword hit, else the
-            // content head (vector-only matches have no keyword to anchor on).
-            let content_lower = page.compiled_truth.to_lowercase();
-            let snippet = if page.compiled_truth.is_empty() {
-                None
-            } else {
-                let first_match = keywords_lower
-                    .iter()
-                    .find_map(|k| content_lower.find(k))
-                    .unwrap_or(0);
-                let start = first_match.saturating_sub(50);
-                let end = (start + 150).min(page.compiled_truth.len());
-                // Clamp to a char boundary so the slice never panics on UTF-8.
-                let mut s = start;
-                while s > 0 && !page.compiled_truth.is_char_boundary(s) {
-                    s -= 1;
-                }
-                let mut e = end;
-                while e < page.compiled_truth.len() && !page.compiled_truth.is_char_boundary(e) {
-                    e += 1;
-                }
-                Some(page.compiled_truth[s..e].to_string())
-            };
-
-            results.push(SearchResult {
-                page: (*page).clone(),
-                score: base_score,
-                base_score,
-                snippet,
-                // Rerank is a query-pipeline post-processing stage layered on
-                // top of the engine's fused results (see operation.rs query
-                // path); the engine itself never reranks, so both stamps start
-                // as None and are set later only for reordered head rows.
-                rerank_score: None,
-                reranker_delta: None,
-                salience_boost: None,
-                recency_boost: None,
-            });
-        }
-
-            results
-        }; // store lock (and all borrows of it) dropped here
-
-        // ── Post-fusion boost stages ────────────────────────────────────────
-        // Mirrors TS `runPostFusionStages` (src/core/search/hybrid.ts:282):
-        // compute the floor-threshold ONCE from the pre-boost fused scores,
-        // then apply each metadata-axis boost gated by it. Only the salience
-        // stage is migrated so far; strength is hardcoded to 'on' (k=0.15)
-        // because the search-mode system that resolves 'on'/'strong'/'off' is
-        // not ported yet.
-        //
-        // FUTURE(salience-strength-by-mode): TS resolves salience strength from
-        // the active search mode (ModeBundle). Rust has no mode system yet, so
-        // this is pinned to 'on'. registered in docs/plans/KNOWN-GAPS.md (G13).
-        if !results.is_empty() {
-            let pre_boost: Vec<f64> = results.iter().map(|r| r.base_score).collect();
-            let floor = compute_floor_threshold(&pre_boost, opts.floor_ratio);
-
-            // Salience scores are keyed by "{source_id}::{slug}"; read them via
-            // the same engine method the trait already exposes.
-            let refs: Vec<crate::types::PageRef> = results
+            store
                 .iter()
-                .map(|r| crate::types::PageRef {
-                    slug: r.page.slug.clone(),
-                    source_id: r.page.source_id.clone(),
+                .filter(|page| {
+                    page.deleted_at.is_none()
+                        && opts
+                            .source_id
+                            .as_ref()
+                            .is_none_or(|sid| page.source_id == *sid)
                 })
-                .collect();
-            let salience = self.get_salience_scores(&refs).await?;
+                .cloned()
+                .collect()
+        }; // store lock dropped here
 
-            for r in &mut results {
-                if !r.score.is_finite() || r.score < floor {
-                    continue;
-                }
-                let key = format!("{}::{}", r.page.source_id, r.page.slug);
-                let Some(&s) = salience.get(&key) else { continue };
-                if s <= 0.0 {
-                    continue;
-                }
-                let factor = 1.0 + SALIENCE_BOOST_COEF_ON * (1.0 + s).ln();
-                r.score *= factor;
-                r.salience_boost = Some(factor);
-            }
-
-            // Recency stage (per-prefix half-life decay). Uses the same
-            // once-computed floor as salience so a weak-overlap tail page can't
-            // leapfrog the primary hit by stacking recency on top. The decay
-            // map is caller-resolved config (defaults + zbrain.yml + env +
-            // overrides), passed in via SearchOpts — the engine never reads env
-            // itself, staying a pure scoring machine. Dates come from the
-            // engine's own get_effective_dates; strength is pinned to 'on'
-            // (search-mode system unported — see the salience note above / G13).
-            let date_strings = self.get_effective_dates(&refs).await?;
-            let dates_ms: std::collections::HashMap<String, i64> = date_strings
-                .into_iter()
-                .filter_map(|(k, v)| iso8601_to_unix_ms(&v).map(|ms| (k, ms)))
-                .collect();
-            let decay_map = opts
-                .recency_decay
-                .clone()
-                .unwrap_or_else(crate::recency_decay::default_recency_decay);
-            let fallback = opts
-                .recency_fallback
-                .unwrap_or(crate::recency_decay::DEFAULT_FALLBACK);
-            let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
-            let mut rows: Vec<crate::recency_decay::RecencyRow<'_>> = results
-                .iter_mut()
-                .map(|r| {
-                    let key = format!("{}::{}", r.page.source_id, r.page.slug);
-                    crate::recency_decay::RecencyRow {
-                        slug: r.page.slug.as_str(),
-                        key,
-                        score: &mut r.score,
-                        recency_boost: &mut r.recency_boost,
-                    }
-                })
-                .collect();
-            crate::recency_decay::apply_recency_boost(
-                &mut rows,
-                &dates_ms,
-                // Pinned to 'on': Rust has no search-mode system yet to resolve
-                // 'on'/'strong'/'off' from a ModeBundle (same gap as salience
-                // strength above). registered in docs/plans/KNOWN-GAPS.md (G13).
-                crate::recency_decay::RecencyStrength::On,
-                &decay_map,
-                fallback,
-                now_ms,
-                if floor.is_finite() { Some(floor) } else { None },
-            );
-        }
-
-        // Sort by score descending (boosts may have reordered the head).
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
-
-        // Apply limit if set
-        if let Some(limit) = opts.limit {
-            results.truncate(limit);
-        }
-
-        Ok(results)
+        fuse_and_boost(self, &candidates, opts).await
     }
 
     async fn refresh_page_body(&self, args: &RefreshPageBodyArgs) -> crate::Result<()> {
@@ -2628,6 +2977,98 @@ impl BrainEngine for InMemoryEngine {
         Ok(out)
     }
 
+    // --- Phase 7C 1-3-2: Salience ---
+
+    async fn touch_salience(&self, slug: &str, source_id: &str) -> crate::Result<bool> {
+        let mut store = self
+            .store
+            .lock()
+            .expect("InMemoryEngine store mutex poisoned");
+        let now = chrono::Utc::now().to_rfc3339();
+        if let Some(page) = store.iter_mut().find(|p| p.slug == slug && p.source_id == source_id) {
+            page.salience_touched_at = Some(now);
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    async fn get_recent_salience(
+        &self,
+        days: u32,
+        limit: u32,
+        slug_prefix: Option<&str>,
+    ) -> crate::Result<Vec<crate::types::SalienceResult>> {
+        let store = self
+            .store
+            .lock()
+            .expect("InMemoryEngine store mutex poisoned");
+        let takes = self
+            .takes_store
+            .lock()
+            .expect("InMemoryEngine takes_store mutex poisoned");
+        let now = chrono::Utc::now();
+        let boundary = now - chrono::Duration::days(days as i64);
+        let boundary_str = boundary.to_rfc3339();
+
+        let effective_date = |p: &Page| -> Option<chrono::DateTime<chrono::Utc>> {
+            p.salience_touched_at
+                .as_deref()
+                .or(Some(&p.updated_at))
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok().map(|dt| dt.with_timezone(&chrono::Utc)))
+        };
+
+        let limit = limit.min(100);
+
+        let mut results: Vec<crate::types::SalienceResult> = store
+            .iter()
+            .filter(|p| p.deleted_at.is_none())
+            .filter(|p| slug_prefix.map_or(true, |pfx| p.slug.starts_with(pfx)))
+            .filter(|p| {
+                effective_date(p)
+                    .map(|dt| dt >= boundary)
+                    .unwrap_or(false)
+            })
+            .map(|p| {
+                let take_count = takes.iter().filter(|t| t.page_id == p.id && t.active).count() as u32;
+                let take_avg_weight = if take_count > 0 {
+                    let sum: f64 = takes.iter()
+                        .filter(|t| t.page_id == p.id && t.active)
+                        .map(|t| t.weight)
+                        .sum();
+                    sum / take_count as f64
+                } else {
+                    0.0
+                };
+                let ew = p.emotional_weight.unwrap_or(0.0);
+                let days_old = effective_date(p)
+                    .map(|dt| {
+                        let dur = now.signed_duration_since(dt);
+                        dur.num_milliseconds() as f64 / (86400.0 * 1000.0)
+                    })
+                    .unwrap_or(0.0);
+                let recency_decay = 1.0 / (1.0 + days_old.max(0.0));
+                let score = ew * 5.0 + (1.0 + take_count as f64).ln() + recency_decay;
+
+                crate::types::SalienceResult {
+                    slug: p.slug.clone(),
+                    source_id: p.source_id.clone(),
+                    title: p.title.clone(),
+                    page_type: p.page_type.clone(),
+                    updated_at: p.updated_at.clone(),
+                    emotional_weight: ew,
+                    take_count,
+                    take_avg_weight,
+                    score,
+                }
+            })
+            .collect();
+
+        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.truncate(limit as usize);
+        Ok(results)
+    }
+
     // --- Phase 7A: Takes ---
 
     async fn get_takes_for_page(&self, page_id: u64) -> crate::Result<Vec<Take>> {
@@ -2917,6 +3358,62 @@ impl BrainEngine for InMemoryEngine {
         Ok(counts)
     }
 
+    async fn get_adjacency_boosts(
+        &self,
+        page_ids: &[u64],
+    ) -> crate::Result<std::collections::HashMap<u64, AdjacencyRow>> {
+        if page_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let page_set: std::collections::HashSet<u64> = page_ids.iter().copied().collect();
+        let store = self.store.lock().expect("poisoned");
+        let links_store = self.links_store.lock().expect("poisoned");
+
+        // Build page_id → source_id lookup for cross_source_hits calc
+        let page_source: std::collections::HashMap<u64, String> = store
+            .iter()
+            .filter(|p| page_set.contains(&p.id))
+            .map(|p| (p.id, p.source_id.clone()))
+            .collect();
+
+        let mut result: std::collections::HashMap<u64, AdjacencyRow> = std::collections::HashMap::new();
+
+        for to_page_id in page_ids {
+            let target_source = page_source.get(to_page_id).cloned().unwrap_or_default();
+
+            // Collect distinct from_page_ids (in-set only) and their source_ids
+            let mut from_sources: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut from_count: u32 = 0;
+
+            for link in links_store.iter() {
+                if link.to_page_id == *to_page_id && page_set.contains(&link.from_page_id) {
+                    from_count += 1;
+                    // Look up source of the linking page
+                    if let Some(src) = page_source.get(&link.from_page_id) {
+                        from_sources.insert(src.clone());
+                    }
+                }
+            }
+
+            if from_count > 0 {
+                let cross_source_hits = from_sources
+                    .iter()
+                    .filter(|src| **src != target_source)
+                    .count() as u32;
+
+                result.insert(
+                    *to_page_id,
+                    AdjacencyRow {
+                        hits: from_count,
+                        cross_source_hits,
+                    },
+                );
+            }
+        }
+
+        Ok(result)
+    }
+
     async fn traverse_paths(
         &self,
         slug: &str,
@@ -2959,10 +3456,12 @@ impl BrainEngine for InMemoryEngine {
             let edges: Vec<&InternalLink> = links_store
                 .iter()
                 .filter(|l| {
-                    if dir == "out" || dir == "both" {
+                    if dir == "out" {
                         l.from_page_id == current_id
                     } else if dir == "in" {
                         l.to_page_id == current_id
+                    } else if dir == "both" {
+                        l.from_page_id == current_id || l.to_page_id == current_id
                     } else {
                         false
                     }
@@ -2973,7 +3472,13 @@ impl BrainEngine for InMemoryEngine {
                 .collect();
 
             for edge in &edges {
+                // Determine the "other" side of the edge relative to current_id.
+                // For outgoing (from→to where from=current): neighbor = to.
+                // For incoming (to→from where to=current): neighbor = from.
                 let neighbor_id = if dir == "in" {
+                    edge.from_page_id
+                } else if dir == "both" && edge.to_page_id == current_id {
+                    // Incoming edge in "both" mode: walk back to the source.
                     edge.from_page_id
                 } else {
                     edge.to_page_id
@@ -3070,7 +3575,12 @@ impl BrainEngine for InMemoryEngine {
                 .clone()
                 .unwrap_or_else(|| "medium".to_string()),
             context: input.context.clone(),
-            valid_from: input.valid_from.clone(),
+            valid_from: Some(
+                input
+                    .valid_from
+                    .clone()
+                    .unwrap_or_else(|| now.clone()),
+            ),
             valid_until: input.valid_until.clone(),
             expired_at: None,
             superseded_by: None,
@@ -3220,7 +3730,512 @@ impl BrainEngine for InMemoryEngine {
         }
     }
 
-    // --- #110: Chunks & Code Edges (slice #110) ---
+    // --- Minion job queue (Phase 9, slice 1-1-1 A+B) ---
+    //
+    // In-memory implementation of the job queue trait methods. The `Mutex`
+    // held across each method body is the InMemory analogue of the SQL
+    // backends' row-level locking: because only one method can hold the lock
+    // at a time, claim/complete/fail are atomic here for free. Scheduling
+    // columns (lock_until/delay_until/timeout_at) are epoch-ms and all
+    // `now + N ms` arithmetic happens in Rust via `now_epoch_ms()`.
+
+    async fn enqueue_job(
+        &self,
+        input: &crate::minions::types::MinionJobInput,
+    ) -> crate::Result<crate::minions::types::MinionJob> {
+        use crate::minions::types::{MinionJob, MinionJobStatus};
+
+        let mut store = self
+            .minion_jobs_store
+            .lock()
+            .expect("InMemoryEngine minion_jobs_store mutex poisoned");
+        let mut next_id = self
+            .next_job_id
+            .lock()
+            .expect("InMemoryEngine next_job_id mutex poisoned");
+
+        // Idempotency fast path: a matching non-null key returns the existing
+        // row without inserting a second (mirrors the unique partial index).
+        if let Some(ref key) = input.idempotency_key {
+            if let Some(existing) = store
+                .iter()
+                .find(|j| j.idempotency_key.as_deref() == Some(key.as_str()))
+            {
+                return Ok(existing.clone());
+            }
+        }
+
+        let now_iso = crate::time::current_utc_iso8601();
+        let now_ms = crate::time::now_epoch_ms();
+
+        // A delay sets status=delayed and delay_until = now + delay.
+        let (status, delay_until) = match input.delay {
+            Some(d) if d > 0 => (MinionJobStatus::Delayed, Some(now_ms + d)),
+            _ => (MinionJobStatus::Waiting, None),
+        };
+
+        // Per-job stall tolerance override: clamped to [1, 100]; omitted ->
+        // schema DEFAULT (5).
+        let max_stalled = input.max_stalled.map_or(5, |v| v.clamp(1, 100));
+
+        let id = *next_id;
+        *next_id += 1;
+
+        let job = MinionJob {
+            id,
+            name: input.name.clone(),
+            queue: input.queue.clone().unwrap_or_else(|| "default".to_string()),
+            status,
+            priority: input.priority.unwrap_or(0),
+            data: input.data.clone().unwrap_or_else(|| serde_json::json!({})),
+            max_attempts: input.max_attempts.unwrap_or(3),
+            attempts_made: 0,
+            attempts_started: 0,
+            backoff_type: input
+                .backoff_type
+                .unwrap_or(crate::minions::types::BackoffType::Exponential),
+            backoff_delay: input.backoff_delay.unwrap_or(1000),
+            backoff_jitter: input.backoff_jitter.unwrap_or(0.2),
+            stalled_counter: 0,
+            max_stalled,
+            lock_token: None,
+            lock_until: None,
+            delay_until,
+            parent_job_id: None,
+            on_child_fail: input
+                .on_child_fail
+                .unwrap_or(crate::minions::types::ChildFailPolicy::FailParent),
+            tokens_input: 0,
+            tokens_output: 0,
+            tokens_cache_read: 0,
+            depth: 0,
+            max_children: input.max_children,
+            timeout_ms: input.timeout_ms,
+            timeout_at: None,
+            remove_on_complete: input.remove_on_complete.unwrap_or(false),
+            remove_on_fail: input.remove_on_fail.unwrap_or(false),
+            idempotency_key: input.idempotency_key.clone(),
+            quiet_hours: None,
+            stagger_key: None,
+            result: None,
+            progress: None,
+            error_text: None,
+            stacktrace: Vec::new(),
+            created_at: now_iso.clone(),
+            started_at: None,
+            finished_at: None,
+            updated_at: now_iso,
+        };
+        store.push(job.clone());
+        Ok(job)
+    }
+
+    async fn get_job(
+        &self,
+        id: i64,
+    ) -> crate::Result<Option<crate::minions::types::MinionJob>> {
+        let store = self
+            .minion_jobs_store
+            .lock()
+            .expect("InMemoryEngine minion_jobs_store mutex poisoned");
+        Ok(store.iter().find(|j| j.id == id).cloned())
+    }
+
+    async fn get_jobs(
+        &self,
+        filters: &crate::minions::types::JobFilters,
+    ) -> crate::Result<Vec<crate::minions::types::MinionJob>> {
+        let store = self
+            .minion_jobs_store
+            .lock()
+            .expect("InMemoryEngine minion_jobs_store mutex poisoned");
+
+        let mut rows: Vec<crate::minions::types::MinionJob> = store
+            .iter()
+            .filter(|j| filters.status.is_none_or(|s| j.status == s))
+            .filter(|j| filters.queue.as_ref().is_none_or(|q| j.queue == *q))
+            .filter(|j| filters.name.as_ref().is_none_or(|n| j.name == *n))
+            .cloned()
+            .collect();
+
+        // Newest first: by id DESC (monotonic proxy for created_at DESC).
+        rows.sort_by(|a, b| b.id.cmp(&a.id));
+
+        let offset = filters.offset.unwrap_or(0).max(0) as usize;
+        if offset > 0 {
+            rows = rows.into_iter().skip(offset).collect();
+        }
+        let limit = filters.limit.unwrap_or(50).max(0) as usize;
+        rows.truncate(limit);
+
+        Ok(rows)
+    }
+
+    async fn claim_job(
+        &self,
+        lock_token: &str,
+        lock_duration_ms: i64,
+        queue: &str,
+        registered_names: &[String],
+    ) -> crate::Result<Option<crate::minions::types::MinionJob>> {
+        use crate::minions::types::MinionJobStatus;
+
+        if registered_names.is_empty() {
+            return Ok(None);
+        }
+
+        let mut store = self
+            .minion_jobs_store
+            .lock()
+            .expect("InMemoryEngine minion_jobs_store mutex poisoned");
+
+        // Select the next eligible waiting job: priority ASC, then created_at
+        // ASC (id ASC as monotonic proxy). Filtered by queue + registered name.
+        let idx = store
+            .iter()
+            .enumerate()
+            .filter(|(_, j)| {
+                j.status == MinionJobStatus::Waiting
+                    && j.queue == queue
+                    && registered_names.iter().any(|n| *n == j.name)
+            })
+            .min_by(|(_, a), (_, b)| a.priority.cmp(&b.priority).then(a.id.cmp(&b.id)))
+            .map(|(i, _)| i);
+
+        let Some(i) = idx else {
+            return Ok(None);
+        };
+
+        let now_iso = crate::time::current_utc_iso8601();
+        let now_ms = crate::time::now_epoch_ms();
+        let job = &mut store[i];
+        job.status = MinionJobStatus::Active;
+        job.lock_token = Some(lock_token.to_string());
+        job.lock_until = Some(now_ms + lock_duration_ms);
+        job.timeout_at = job.timeout_ms.map(|t| now_ms + t);
+        job.attempts_started += 1;
+        if job.started_at.is_none() {
+            job.started_at = Some(now_iso.clone());
+        }
+        job.updated_at = now_iso;
+        Ok(Some(job.clone()))
+    }
+
+    async fn complete_job(
+        &self,
+        id: i64,
+        lock_token: &str,
+        result: Option<&serde_json::Value>,
+    ) -> crate::Result<Option<crate::minions::types::MinionJob>> {
+        use crate::minions::types::MinionJobStatus;
+
+        let mut store = self
+            .minion_jobs_store
+            .lock()
+            .expect("InMemoryEngine minion_jobs_store mutex poisoned");
+
+        // Token-fenced: only an active job with the matching lock_token flips.
+        let Some(job) = store.iter_mut().find(|j| {
+            j.id == id
+                && j.status == MinionJobStatus::Active
+                && j.lock_token.as_deref() == Some(lock_token)
+        }) else {
+            return Ok(None);
+        };
+
+        let now_iso = crate::time::current_utc_iso8601();
+        job.status = MinionJobStatus::Completed;
+        job.result = result.cloned();
+        job.finished_at = Some(now_iso.clone());
+        job.lock_token = None;
+        job.lock_until = None;
+        job.updated_at = now_iso;
+        let completed = job.clone();
+
+        // remove_on_complete: drop the row after capturing the return value.
+        if completed.remove_on_complete {
+            store.retain(|j| j.id != id);
+        }
+        Ok(Some(completed))
+    }
+
+    async fn fail_job(
+        &self,
+        id: i64,
+        lock_token: &str,
+        error_text: &str,
+        outcome: crate::minions::types::FailOutcome,
+        backoff_ms: i64,
+    ) -> crate::Result<Option<crate::minions::types::MinionJob>> {
+        use crate::minions::types::{FailOutcome, MinionJobStatus};
+
+        let mut store = self
+            .minion_jobs_store
+            .lock()
+            .expect("InMemoryEngine minion_jobs_store mutex poisoned");
+
+        let Some(job) = store.iter_mut().find(|j| {
+            j.id == id
+                && j.status == MinionJobStatus::Active
+                && j.lock_token.as_deref() == Some(lock_token)
+        }) else {
+            return Ok(None);
+        };
+
+        let now_iso = crate::time::current_utc_iso8601();
+        let now_ms = crate::time::now_epoch_ms();
+        job.status = outcome.as_status();
+        job.error_text = Some(error_text.to_string());
+        job.attempts_made += 1;
+        job.stacktrace.push(error_text.to_string());
+        job.lock_token = None;
+        job.lock_until = None;
+        // Delayed retry sets delay_until; terminal outcomes set finished_at.
+        if outcome == FailOutcome::Delayed {
+            job.delay_until = Some(now_ms + backoff_ms);
+            job.finished_at = None;
+        } else {
+            job.delay_until = None;
+            job.finished_at = Some(now_iso.clone());
+        }
+        job.updated_at = now_iso;
+        let failed = job.clone();
+
+        // remove_on_fail on a terminal outcome: drop the row.
+        if outcome.is_terminal() && failed.remove_on_fail {
+            store.retain(|j| j.id != id);
+        }
+        Ok(Some(failed))
+    }
+
+    async fn renew_job_lock(
+        &self,
+        id: i64,
+        lock_token: &str,
+        lock_duration_ms: i64,
+    ) -> crate::Result<bool> {
+        use crate::minions::types::MinionJobStatus;
+
+        let mut store = self
+            .minion_jobs_store
+            .lock()
+            .expect("InMemoryEngine minion_jobs_store mutex poisoned");
+
+        if let Some(job) = store.iter_mut().find(|j| {
+            j.id == id
+                && j.status == MinionJobStatus::Active
+                && j.lock_token.as_deref() == Some(lock_token)
+        }) {
+            let now_iso = crate::time::current_utc_iso8601();
+            job.lock_until = Some(crate::time::now_epoch_ms() + lock_duration_ms);
+            job.updated_at = now_iso;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    async fn retry_job(
+        &self,
+        id: i64,
+    ) -> crate::Result<Option<crate::minions::types::MinionJob>> {
+        use crate::minions::types::MinionJobStatus;
+
+        let mut store = self
+            .minion_jobs_store
+            .lock()
+            .expect("InMemoryEngine minion_jobs_store mutex poisoned");
+
+        // Only failed/dead jobs can be requeued; clears error/lock/delay.
+        let Some(job) = store.iter_mut().find(|j| {
+            j.id == id
+                && matches!(j.status, MinionJobStatus::Failed | MinionJobStatus::Dead)
+        }) else {
+            return Ok(None);
+        };
+
+        job.status = MinionJobStatus::Waiting;
+        job.error_text = None;
+        job.lock_token = None;
+        job.lock_until = None;
+        job.delay_until = None;
+        job.finished_at = None;
+        job.updated_at = crate::time::current_utc_iso8601();
+        Ok(Some(job.clone()))
+    }
+
+    // --- Background sweeps (1-1-2 C) ---
+    //
+    // Hold the store mutex and scan the Vec. The 3 pure sweeps compare the
+    // epoch-ms scheduling columns against `now_ms`; wall-clock parses the
+    // RFC-3339 `started_at` string. Pure C-layer only: no inbox / parent
+    // unblock (D-layer, 1-1-3).
+
+    async fn promote_delayed(
+        &self,
+    ) -> crate::Result<Vec<crate::minions::types::MinionJob>> {
+        use crate::minions::types::MinionJobStatus;
+
+        let mut store = self
+            .minion_jobs_store
+            .lock()
+            .expect("InMemoryEngine minion_jobs_store mutex poisoned");
+
+        let now_ms = crate::time::now_epoch_ms();
+        let now_iso = crate::time::current_utc_iso8601();
+        let mut promoted = Vec::new();
+        for job in store.iter_mut() {
+            if job.status == MinionJobStatus::Delayed
+                && job.delay_until.is_some_and(|d| d <= now_ms)
+            {
+                job.status = MinionJobStatus::Waiting;
+                job.delay_until = None;
+                job.lock_token = None;
+                job.lock_until = None;
+                job.updated_at = now_iso.clone();
+                promoted.push(job.clone());
+            }
+        }
+        Ok(promoted)
+    }
+
+    async fn handle_stalled(
+        &self,
+    ) -> crate::Result<crate::minions::types::StalledSweep> {
+        use crate::minions::types::{MinionJobStatus, StalledSweep};
+
+        let mut store = self
+            .minion_jobs_store
+            .lock()
+            .expect("InMemoryEngine minion_jobs_store mutex poisoned");
+
+        let now_ms = crate::time::now_epoch_ms();
+        let now_iso = crate::time::current_utc_iso8601();
+        let mut sweep = StalledSweep::default();
+        for job in store.iter_mut() {
+            // Stalled = active with an expired lease.
+            if job.status != MinionJobStatus::Active
+                || !job.lock_until.is_some_and(|l| l < now_ms)
+            {
+                continue;
+            }
+            job.stalled_counter += 1;
+            job.lock_token = None;
+            job.lock_until = None;
+            job.updated_at = now_iso.clone();
+            if job.stalled_counter < job.max_stalled {
+                job.status = MinionJobStatus::Waiting;
+                sweep.requeued.push(job.clone());
+            } else {
+                job.status = MinionJobStatus::Dead;
+                job.error_text = Some("max stalled count exceeded".to_string());
+                job.finished_at = Some(now_iso.clone());
+                sweep.dead.push(job.clone());
+            }
+        }
+        Ok(sweep)
+    }
+
+    async fn handle_timeouts(
+        &self,
+    ) -> crate::Result<Vec<crate::minions::types::MinionJob>> {
+        use crate::minions::types::MinionJobStatus;
+
+        let mut store = self
+            .minion_jobs_store
+            .lock()
+            .expect("InMemoryEngine minion_jobs_store mutex poisoned");
+
+        let now_ms = crate::time::now_epoch_ms();
+        let now_iso = crate::time::current_utc_iso8601();
+        let mut dead = Vec::new();
+        for job in store.iter_mut() {
+            // Active, per-job timeout elapsed, lease still held (a stalled job
+            // with an expired lease is left for handle_stalled).
+            if job.status == MinionJobStatus::Active
+                && job.timeout_at.is_some_and(|t| t < now_ms)
+                && job.lock_until.is_some_and(|l| l > now_ms)
+            {
+                job.status = MinionJobStatus::Dead;
+                job.error_text = Some("timeout exceeded".to_string());
+                job.lock_token = None;
+                job.lock_until = None;
+                job.finished_at = Some(now_iso.clone());
+                job.updated_at = now_iso.clone();
+                dead.push(job.clone());
+            }
+        }
+        Ok(dead)
+    }
+
+    async fn handle_wall_clock_timeouts(
+        &self,
+        lock_duration_ms: i64,
+    ) -> crate::Result<Vec<crate::minions::types::MinionJob>> {
+        use crate::minions::types::MinionJobStatus;
+
+        let mut store = self
+            .minion_jobs_store
+            .lock()
+            .expect("InMemoryEngine minion_jobs_store mutex poisoned");
+
+        let now_ms = crate::time::now_epoch_ms();
+        let now_iso = crate::time::current_utc_iso8601();
+        let mut dead = Vec::new();
+        for job in store.iter_mut() {
+            if job.status != MinionJobStatus::Active {
+                continue;
+            }
+            let Some(started) = job.started_at.as_deref() else {
+                continue;
+            };
+            // Parse the RFC-3339 record column to epoch-ms; skip unparseable.
+            let Ok(started_dt) = chrono::DateTime::parse_from_rfc3339(started) else {
+                continue;
+            };
+            let elapsed_ms = now_ms - started_dt.timestamp_millis();
+            let threshold_ms = match job.timeout_ms {
+                Some(t) => t * 2,
+                None => lock_duration_ms * 2 * job.max_stalled.max(1) as i64,
+            };
+            if elapsed_ms > threshold_ms {
+                job.status = MinionJobStatus::Dead;
+                job.error_text = Some("wall-clock timeout exceeded".to_string());
+                job.lock_token = None;
+                job.lock_until = None;
+                job.finished_at = Some(now_iso.clone());
+                job.updated_at = now_iso.clone();
+                dead.push(job.clone());
+            }
+        }
+        Ok(dead)
+    }
+
+    async fn set_started_at_for_test(
+        &self,
+        id: i64,
+        started_at_rfc3339: &str,
+    ) -> crate::Result<()> {
+        let mut store = self
+            .minion_jobs_store
+            .lock()
+            .expect("InMemoryEngine minion_jobs_store mutex poisoned");
+        if let Some(job) = store.iter_mut().find(|j| j.id == id) {
+            job.started_at = Some(started_at_rfc3339.to_string());
+        }
+        Ok(())
+    }
+
+    async fn set_timeout_at_for_test(&self, id: i64, timeout_at_ms: i64) -> crate::Result<()> {
+        let mut store = self
+            .minion_jobs_store
+            .lock()
+            .expect("InMemoryEngine minion_jobs_store mutex poisoned");
+        if let Some(job) = store.iter_mut().find(|j| j.id == id) {
+            job.timeout_at = Some(timeout_at_ms);
+        }
+        Ok(())
+    }
 
     async fn upsert_chunks(
         &self,
@@ -4361,6 +5376,401 @@ mod tests {
 
         let ok = engine.expire_fact("source-b", 1).await.unwrap();
         assert!(!ok);
+    }
+
+    // ─── Minion job queue (Phase 9, slice 1-1-1 A+B) ────────────────────────
+    //
+    // These exercise the trait contract through the InMemoryEngine — the
+    // backend-blind half of the queue. The libsql/postgres backends replay the
+    // same behaviors in their own integration suites.
+
+    use crate::minions::types::{
+        BackoffType, FailOutcome, JobFilters, MinionJobInput, MinionJobStatus,
+    };
+
+    fn job_input(name: &str) -> MinionJobInput {
+        MinionJobInput {
+            name: name.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn enqueue_job_applies_schema_defaults() {
+        // new() seeds the id counter at 1 (Default derive would start at 0).
+        let engine = InMemoryEngine::new();
+        let job = engine.enqueue_job(&job_input("build")).await.unwrap();
+
+        assert_eq!(job.id, 1);
+        assert_eq!(job.name, "build");
+        assert_eq!(job.queue, "default");
+        assert_eq!(job.status, MinionJobStatus::Waiting);
+        assert_eq!(job.priority, 0);
+        assert_eq!(job.data, serde_json::json!({}));
+        assert_eq!(job.max_attempts, 3);
+        assert_eq!(job.attempts_made, 0);
+        assert_eq!(job.attempts_started, 0);
+        assert_eq!(job.backoff_type, BackoffType::Exponential);
+        assert_eq!(job.backoff_delay, 1000);
+        assert!((job.backoff_jitter - 0.2).abs() < 1e-9);
+        assert_eq!(job.max_stalled, 5);
+        assert!(job.lock_token.is_none());
+        assert!(job.lock_until.is_none());
+        assert!(job.delay_until.is_none());
+        assert!(!job.remove_on_complete);
+        assert!(!job.remove_on_fail);
+    }
+
+    #[tokio::test]
+    async fn enqueue_job_delay_sets_delayed_status() {
+        let engine = InMemoryEngine::default();
+        let before = crate::time::now_epoch_ms();
+        let input = MinionJobInput {
+            delay: Some(60_000),
+            ..job_input("later")
+        };
+        let job = engine.enqueue_job(&input).await.unwrap();
+
+        assert_eq!(job.status, MinionJobStatus::Delayed);
+        let due = job.delay_until.expect("delayed job has delay_until");
+        assert!(due >= before + 60_000, "delay_until must be ~now + delay");
+    }
+
+    #[tokio::test]
+    async fn enqueue_job_clamps_max_stalled() {
+        let engine = InMemoryEngine::default();
+        let high = engine
+            .enqueue_job(&MinionJobInput {
+                max_stalled: Some(999),
+                ..job_input("a")
+            })
+            .await
+            .unwrap();
+        assert_eq!(high.max_stalled, 100);
+
+        let low = engine
+            .enqueue_job(&MinionJobInput {
+                max_stalled: Some(0),
+                ..job_input("b")
+            })
+            .await
+            .unwrap();
+        assert_eq!(low.max_stalled, 1);
+    }
+
+    #[tokio::test]
+    async fn enqueue_job_idempotency_returns_existing_row() {
+        let engine = InMemoryEngine::default();
+        let first = engine
+            .enqueue_job(&MinionJobInput {
+                idempotency_key: Some("dedup-key".to_string()),
+                ..job_input("once")
+            })
+            .await
+            .unwrap();
+        let second = engine
+            .enqueue_job(&MinionJobInput {
+                idempotency_key: Some("dedup-key".to_string()),
+                ..job_input("once")
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(first.id, second.id, "same key returns the same row");
+        let all = engine.get_jobs(&JobFilters::default()).await.unwrap();
+        assert_eq!(all.len(), 1, "no second row inserted");
+    }
+
+    #[tokio::test]
+    async fn get_job_returns_none_for_missing() {
+        let engine = InMemoryEngine::default();
+        assert!(engine.get_job(999).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn get_jobs_filters_and_orders_newest_first() {
+        // new() seeds the id counter at 1 so the id assertions below are stable.
+        let engine = InMemoryEngine::new();
+        engine.enqueue_job(&job_input("a")).await.unwrap();
+        engine.enqueue_job(&job_input("b")).await.unwrap();
+        engine.enqueue_job(&job_input("a")).await.unwrap();
+
+        // Filter by name.
+        let only_a = engine
+            .get_jobs(&JobFilters {
+                name: Some("a".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(only_a.len(), 2);
+        // Newest first: id 3 before id 1.
+        assert_eq!(only_a[0].id, 3);
+        assert_eq!(only_a[1].id, 1);
+
+        // Limit + offset.
+        let page = engine
+            .get_jobs(&JobFilters {
+                limit: Some(1),
+                offset: Some(1),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].id, 2, "offset 1 over [3,2,1] -> id 2");
+    }
+
+    #[tokio::test]
+    async fn claim_job_is_exclusive_and_priority_ordered() {
+        let engine = InMemoryEngine::default();
+        // Higher priority number = later; lower runs first.
+        engine
+            .enqueue_job(&MinionJobInput {
+                priority: Some(5),
+                ..job_input("worker")
+            })
+            .await
+            .unwrap();
+        let hot = engine
+            .enqueue_job(&MinionJobInput {
+                priority: Some(0),
+                ..job_input("worker")
+            })
+            .await
+            .unwrap();
+
+        let names = vec!["worker".to_string()];
+        let claimed = engine
+            .claim_job("tok-1", 30_000, "default", &names)
+            .await
+            .unwrap()
+            .expect("a waiting job is claimable");
+        assert_eq!(claimed.id, hot.id, "priority 0 claimed before priority 5");
+        assert_eq!(claimed.status, MinionJobStatus::Active);
+        assert_eq!(claimed.lock_token.as_deref(), Some("tok-1"));
+        assert_eq!(claimed.attempts_started, 1);
+        assert!(claimed.started_at.is_some());
+        assert!(claimed.lock_until.is_some());
+
+        // Second worker claims the remaining job; the active one is not reclaimed.
+        let second = engine
+            .claim_job("tok-2", 30_000, "default", &names)
+            .await
+            .unwrap()
+            .expect("second waiting job");
+        assert_ne!(second.id, claimed.id);
+
+        // Nothing left to claim.
+        assert!(engine
+            .claim_job("tok-3", 30_000, "default", &names)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn claim_job_respects_queue_and_registered_names() {
+        let engine = InMemoryEngine::default();
+        engine
+            .enqueue_job(&MinionJobInput {
+                queue: Some("shell".to_string()),
+                ..job_input("run")
+            })
+            .await
+            .unwrap();
+
+        // Wrong queue.
+        assert!(engine
+            .claim_job("t", 1000, "default", &["run".to_string()])
+            .await
+            .unwrap()
+            .is_none());
+        // Unregistered name.
+        assert!(engine
+            .claim_job("t", 1000, "shell", &["other".to_string()])
+            .await
+            .unwrap()
+            .is_none());
+        // Empty registered names claims nothing.
+        assert!(engine
+            .claim_job("t", 1000, "shell", &[])
+            .await
+            .unwrap()
+            .is_none());
+        // Correct queue + name.
+        assert!(engine
+            .claim_job("t", 1000, "shell", &["run".to_string()])
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn complete_job_is_token_fenced() {
+        let engine = InMemoryEngine::default();
+        engine.enqueue_job(&job_input("w")).await.unwrap();
+        let names = vec!["w".to_string()];
+        let claimed = engine
+            .claim_job("good", 30_000, "default", &names)
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Wrong token -> None, no transition.
+        assert!(engine
+            .complete_job(claimed.id, "bad", None)
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            engine.get_job(claimed.id).await.unwrap().unwrap().status,
+            MinionJobStatus::Active
+        );
+
+        // Right token -> completed with result.
+        let done = engine
+            .complete_job(claimed.id, "good", Some(&serde_json::json!({"ok": true})))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(done.status, MinionJobStatus::Completed);
+        assert_eq!(done.result, Some(serde_json::json!({"ok": true})));
+        assert!(done.finished_at.is_some());
+        assert!(done.lock_token.is_none());
+    }
+
+    #[tokio::test]
+    async fn complete_job_remove_on_complete_drops_row() {
+        let engine = InMemoryEngine::default();
+        engine
+            .enqueue_job(&MinionJobInput {
+                remove_on_complete: Some(true),
+                ..job_input("w")
+            })
+            .await
+            .unwrap();
+        let names = vec!["w".to_string()];
+        let claimed = engine
+            .claim_job("tok", 30_000, "default", &names)
+            .await
+            .unwrap()
+            .unwrap();
+        let done = engine
+            .complete_job(claimed.id, "tok", None)
+            .await
+            .unwrap()
+            .expect("returns the completed job even though the row is dropped");
+        assert_eq!(done.status, MinionJobStatus::Completed);
+        assert!(
+            engine.get_job(claimed.id).await.unwrap().is_none(),
+            "row removed after completion"
+        );
+    }
+
+    #[tokio::test]
+    async fn fail_job_delayed_sets_backoff() {
+        let engine = InMemoryEngine::default();
+        engine.enqueue_job(&job_input("w")).await.unwrap();
+        let names = vec!["w".to_string()];
+        let claimed = engine
+            .claim_job("tok", 30_000, "default", &names)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let before = crate::time::now_epoch_ms();
+        let failed = engine
+            .fail_job(claimed.id, "tok", "boom", FailOutcome::Delayed, 5_000)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(failed.status, MinionJobStatus::Delayed);
+        assert_eq!(failed.attempts_made, 1);
+        assert_eq!(failed.error_text.as_deref(), Some("boom"));
+        assert_eq!(failed.stacktrace, vec!["boom".to_string()]);
+        assert!(failed.finished_at.is_none(), "delayed retry is not terminal");
+        assert!(failed.delay_until.unwrap() >= before + 5_000);
+    }
+
+    #[tokio::test]
+    async fn fail_job_wrong_token_is_noop() {
+        let engine = InMemoryEngine::default();
+        engine.enqueue_job(&job_input("w")).await.unwrap();
+        let names = vec!["w".to_string()];
+        let claimed = engine
+            .claim_job("tok", 30_000, "default", &names)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(engine
+            .fail_job(claimed.id, "wrong", "x", FailOutcome::Failed, 0)
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            engine.get_job(claimed.id).await.unwrap().unwrap().status,
+            MinionJobStatus::Active
+        );
+    }
+
+    #[tokio::test]
+    async fn fail_job_terminal_then_retry_requeues() {
+        let engine = InMemoryEngine::default();
+        engine.enqueue_job(&job_input("w")).await.unwrap();
+        let names = vec!["w".to_string()];
+        let claimed = engine
+            .claim_job("tok", 30_000, "default", &names)
+            .await
+            .unwrap()
+            .unwrap();
+        let failed = engine
+            .fail_job(claimed.id, "tok", "nope", FailOutcome::Failed, 0)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(failed.status, MinionJobStatus::Failed);
+        assert!(failed.finished_at.is_some());
+
+        // retry_job requeues a failed job back to waiting, clearing state.
+        let requeued = engine
+            .retry_job(claimed.id)
+            .await
+            .unwrap()
+            .expect("failed job is retryable");
+        assert_eq!(requeued.status, MinionJobStatus::Waiting);
+        assert!(requeued.error_text.is_none());
+        assert!(requeued.finished_at.is_none());
+        assert!(requeued.delay_until.is_none());
+        assert!(requeued.lock_token.is_none());
+
+        // A waiting job is not retryable (only failed/dead).
+        assert!(engine.retry_job(claimed.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn renew_job_lock_extends_active_lease_only() {
+        let engine = InMemoryEngine::default();
+        engine.enqueue_job(&job_input("w")).await.unwrap();
+        let names = vec!["w".to_string()];
+        let claimed = engine
+            .claim_job("tok", 1_000, "default", &names)
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Wrong token -> false.
+        assert!(!engine
+            .renew_job_lock(claimed.id, "bad", 30_000)
+            .await
+            .unwrap());
+        // Right token -> true, lock_until extended.
+        assert!(engine
+            .renew_job_lock(claimed.id, "tok", 30_000)
+            .await
+            .unwrap());
+        let renewed = engine.get_job(claimed.id).await.unwrap().unwrap();
+        assert!(renewed.lock_until.unwrap() >= crate::time::now_epoch_ms() + 29_000);
     }
 }
 

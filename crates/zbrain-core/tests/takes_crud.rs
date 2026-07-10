@@ -684,3 +684,168 @@ async fn libsql_get_takes_for_nonexistent_page_returns_empty() {
     assert!(takes.is_empty());
     engine.disconnect().await.expect("disconnect");
 }
+
+// ---------------------------------------------------------------------------
+// Postgres integration tests
+// ---------------------------------------------------------------------------
+//
+// Mirror the takes contract against an ephemeral pg-embed instance. Takes
+// carry a `page_id` FK, and Postgres enforces both the `pages.source_id` and
+// `takes.page_id` foreign keys (SQLite does not by default), so each test
+// seeds a source + page via the engine, then resolves the real `page_id`
+// through side-channel SQL.
+//
+// NOTE: PG has `CHECK (row_num > 0)` (migration 0012), matching the TS
+// 1-based `#row_num` display semantics; libsql lacks this CHECK and defaults
+// to 0. So PG tests below MUST use row_num >= 1. Backend divergence is
+// registered in docs/plans/KNOWN-GAPS.md (G22).
+
+async fn pg_seed_source(url: &str, id: &str) {
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(url)
+        .await
+        .expect("source seed pool");
+    sqlx::query("INSERT INTO sources (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING")
+        .bind(id)
+        .bind(id)
+        .execute(&pool)
+        .await
+        .expect("seed source");
+    pool.close().await;
+}
+
+async fn pg_page_id(url: &str, slug: &str, source_id: &str) -> i64 {
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(url)
+        .await
+        .expect("page id pool");
+    let row: (i64,) = sqlx::query_as("SELECT id FROM pages WHERE slug = $1 AND source_id = $2")
+        .bind(slug)
+        .bind(source_id)
+        .fetch_one(&pool)
+        .await
+        .expect("page must exist");
+    pool.close().await;
+    row.0
+}
+
+/// Seed a source + page on the PG engine and return the real `page_id`.
+async fn pg_seed_page(
+    engine: &zbrain_core::postgres::PostgresEngine,
+    url: &str,
+    slug: &str,
+    source: &str,
+) -> u64 {
+    pg_seed_source(url, source).await;
+    engine
+        .put_page(slug, Some(source), &libsql_note_input(slug, "body"))
+        .await
+        .expect("seed page");
+    let pid = pg_page_id(url, slug, source).await;
+    assert!(pid > 0);
+    pid as u64
+}
+
+#[tokio::test]
+async fn postgres_roundtrip_single_take() {
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    let page_id = pg_seed_page(engine, &fix.url, "pg-take", "src-1").await;
+
+    let res = engine
+        .add_takes_batch(
+            page_id,
+            &[TakeInput {
+                page_id,
+                row_num: Some(1),
+                claim: "pg-claim".to_string(),
+                kind: "take".to_string(),
+                holder: "alice".to_string(),
+                weight: 0.75,
+                since_date: None,
+                until_date: None,
+                source: None,
+                superseded_by: None,
+                active: None,
+            }],
+        )
+        .await
+        .expect("add_takes_batch");
+    assert_eq!(res.upserted, 1);
+
+    let takes = engine.get_takes_for_page(page_id).await.expect("get_takes");
+    assert_eq!(takes.len(), 1);
+    let t = &takes[0];
+    assert_eq!(t.page_id, page_id);
+    assert_eq!(t.claim, "pg-claim");
+    assert_eq!(t.holder, "alice");
+    assert!((t.weight - 0.75).abs() < 1e-9);
+    assert!(t.active);
+}
+
+#[tokio::test]
+async fn postgres_resolve_take() {
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    let page_id = pg_seed_page(engine, &fix.url, "pg-resolve", "src-1").await;
+
+    engine
+        .add_takes_batch(
+            page_id,
+            &[TakeInput {
+                page_id,
+                row_num: Some(1),
+                claim: "resolve-me".to_string(),
+                kind: "take".to_string(),
+                holder: "alice".to_string(),
+                weight: 0.5,
+                since_date: None,
+                until_date: None,
+                source: None,
+                superseded_by: None,
+                active: None,
+            }],
+        )
+        .await
+        .expect("add");
+
+    engine
+        .resolve_take(
+            page_id,
+            1,
+            &TakeResolution {
+                page_id,
+                row_num: 1,
+                quality: Some("high".to_string()),
+                outcome: Some(true),
+                evidence: Some("solid".to_string()),
+                value: Some(100.0),
+                unit: Some("pct".to_string()),
+                by: Some("bob".to_string()),
+            },
+        )
+        .await
+        .expect("resolve");
+
+    let takes = engine.get_takes_for_page(page_id).await.expect("get");
+    let t = &takes[0];
+    assert_eq!(t.resolved_quality.as_deref(), Some("high"));
+    assert_eq!(t.resolved_outcome, Some(true));
+    assert_eq!(t.resolved_evidence.as_deref(), Some("solid"));
+    assert!((t.resolved_value.unwrap() - 100.0).abs() < 1e-9);
+    assert_eq!(t.resolved_by.as_deref(), Some("bob"));
+    assert!(t.resolved_at.is_some());
+}
+
+#[tokio::test]
+async fn postgres_get_takes_for_nonexistent_page_returns_empty() {
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let takes = fix
+        .engine
+        .get_takes_for_page(99999)
+        .await
+        .expect("get_takes");
+    assert!(takes.is_empty());
+}

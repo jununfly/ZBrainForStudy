@@ -1,0 +1,332 @@
+{
+  "title": "ZBrain TS→Rust Part6: Phase 8 — AI Gateway / Providers / Models / Routing",
+  "description": "绿地迁移 src/core/ai/ (26 文件) 到 Rust。TS 是配置驱动 recipe + Vercel AI SDK; Rust 落成 trait 抽象 (rerank_client.rs 为先例)。minions(Phase 9) 单向依赖本 phase, 必须先迁。",
+  "version": 1,
+  "nodes": {
+    "1": {
+      "id": "1",
+      "label": "ZBrain TS→Rust Part6: Phase 8 — AI Gateway / Providers / Models / Routing",
+      "status": "completed",
+      "mode": "explore",
+      "parent": null,
+      "children": [
+        "1-1",
+        "1-2",
+        "1-3",
+        "1-4",
+        "1-5",
+        "1-6"
+      ],
+      "decisions": [
+        {
+          "q": "Phase 8 vs 9 施工顺序",
+          "answer": "先 Phase 8 后 Phase 9",
+          "note": "代码证据: minions/handlers/subagent.ts:52 import gateway.toolLoop, embed-backfill.ts:36 import withBudgetTracker; 反向无 import。minions→ai 单向依赖无循环, ai gateway 是被依赖方必须先迁"
+        },
+        {
+          "q": "provider 抽象落法",
+          "answer": "Rust 用 trait 多态 (非 TS 的配置驱动 recipe)",
+          "note": "TS gateway.ts(3008行) 无自定义 Provider interface, 靠 recipe 数据 + Vercel ai SDK 统一调用。Rust 无 SDK 等价物, 落成 ChatProvider trait; rerank_client.rs(RerankClient trait + 真 HTTP + fail-open) 是最成熟先例"
+        },
+        {
+          "q": "6 刀依赖顺序",
+          "answer": "数据层→resolver→trait→chat→toolLoop; embed/rerank/expand 可并行",
+          "note": "刀1-2 纯数据无IO, 刀3-6 用 mock transport 测试(TS __setChatTransportForTests 先例)。think 域是 gateway 消费者不属本 phase(G1 独立)"
+        }
+      ],
+      "notes": ""
+    },
+    "1-1": {
+      "id": "1-1",
+      "label": "Model registry + capabilities + pricing 数据层 (仿 embedding_pricing.rs static 表, 迁 recipes/capabilities/dims/types)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1",
+      "children": [],
+      "decisions": [
+        {
+          "q": "刀1 数据范围边界",
+          "answer": "只迁 Recipe 纯数据字段, hook 函数留给 1-3",
+          "note": "Recipe 混了纯数据(id/name/tier/implementation/auth_env/touchpoints+models/costs/dims/aliases/base_url_default)与行为 hook(resolveAuth/resolveOpenAICompatConfig/probe/resolveDefaultHeaders)。hook 落 Rust 是 trait/回调, 与 static 数据表混会把刀1 撞进刀3 trait 设计。纯数据 static 无 IO 易测"
+        },
+        {
+          "q": "数据层落点与孤儿碎片处理",
+          "answer": "core 下新建 ai/ 子模块目录, 吸收孤儿 embedding_pricing.rs 不留碎片",
+          "note": "证据: (1) embedding_pricing.rs 是孤儿模块——grep 全仓除自身测试+lib.rs:15 pub mod 声明外零外部调用点, lookup_pricing/estimate_cost_usd 无消费者, 取代零迁移成本; (2) 它是新 registry 真子集(仅 model/provider/price/dims 4 字段 6 条 embedding-only), 并存必致两份 model 数据源漂移; (3) zbrain-core 扁平布局 33 个 rs 平铺仅 sync/ 一个子目录, AI 基建 embedding/rerank_client/llm/embedding_pricing 全散在 core 根. 新建 ai/ 收拢+给后续5刀落脚点. 独立 crate 范围偏大(要理顺 embedding/rerank/llm 依赖割裂)不该刀1 背"
+        },
+        {
+          "q": "registry static 表形状",
+          "answer": "嵌套保真 provider-centric: Recipe{touchpoints: {chat/embedding/reranker/expansion: Option<..Touchpoint>}} 一 provider 一条",
+          "note": "TS Recipe 是嵌套 provider-centric(一 provider 一条, touchpoints 各带 models[]+capability/cost), 孤儿 pricing 是扁平 row-per-model. 主查询路径 model-resolver 按 provider 查(parseModelId->resolveRecipe), 嵌套 O(1) 拿整条; 扁平化丢失 model->touchpoint 语义归属除非硬加 kind 列; 后续刀 1-2 resolver/1-3 provider trait 都按 provider recipe 组织, 嵌套贴合; by-model pricing lookup 遍历即可(17 provider 量级线性扫零性能问题)"
+        },
+        {
+          "q": "迁移范围(一次迁多少 provider)",
+          "answer": "全迁 17 条 recipe 纯数据(3 native+14 openai-compat), contract test 兜底",
+          "note": "纯数据无复杂度递增: 剥 hook 后每条是 static 字面量, 迁 3 条与 17 条同种机械抄写, 分批省不到力; 分批给 1-2 resolver 埋返工(resolver 正确性依赖全 provider 覆盖, 部分迁必撞空洞或塞桩); 结构风险已在 Q3 关闭(嵌套保真)无需子集二次验证; 防错靠 contract test(id 唯一/touchpoint models 非空/implementation 枚举合法, 对齐 TS recipes-contract.test.ts)非分批肉眼查; 带 hook recipe(azure api-key/oauth)纯数据照迁 hook 缺口留 1-3"
+        }
+      ],
+      "notes": ""
+    },
+    "1-2": {
+      "id": "1-2",
+      "label": "model-resolver + routing (parseModelId/resolveRecipe/tier-alias/assertTouchpoint, 依赖数据层)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1",
+      "children": [
+        "1-2-1"
+      ],
+      "decisions": [
+        {
+          "q": "刀2 范围: resolver vs tier-routing 边界",
+          "answer": "只迁 model-resolver.ts 纯静态层, tier-routing 切出为 sub-node 1-2-1",
+          "note": "探索发现 routing 一词横跨两文件: model-resolver.ts(123行 4 纯函数 parseModelId/resolveRecipe/assertTouchpoint/knownProviderIds, 零 engine 耦合, extendedModels 是传入 Set 调用方构造) vs model-config.ts(325行 resolveModel/TIER_DEFAULTS/enforceSubagentCapable/enforceSubagentAnthropic, async+读 BrainEngine config models.tier.*/models.default + capability 强制)。后者 async+DB 耦合+capability 分类纠缠, 拖进刀2 会让纯数据相邻的校验器肿+违背纯层不碰 IO。tier-routing 天然属 chat 消费侧(刀4 才真需按 tier 选 model), 拆 sub-node 1-2-1 跟踪"
+        }
+      ],
+      "notes": ""
+    },
+    "1-3": {
+      "id": "1-3",
+      "label": "ChatProvider trait + 类型全保真 + OpenAI HTTP 实现 (独立 trait 非扩 LlmClient; 吸收原 1-4 chat 单调用 HTTP)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1",
+      "children": [],
+      "decisions": [
+        {
+          "q": "刀3 trait 落点/范围/保真度 (grill 3 问, 用户全拍)",
+          "answer": "Q1 新建独立 ChatProvider trait(core/ai/chat.rs)而非扩 LlmClient: LlmClient 是 Think 专用单发(system+user+context 到 string), 与 chat 多轮 messages+tool-call+blocks 不兼容, 硬扩违背 deep module, llm.rs 不动。Q2 范围含真 OpenAI HTTP 实现(照 llm.rs OpenAiClient 扩 chat/completions), 刀3 吸收原 1-4 chat 单调用 HTTP。Q3 完全保真 TS 形状: usage 4 字段(input/output/cache_read/cache_creation)+stopReason 6 枚举+blocks(text/tool-call/tool-result)+providerId/providerMetadata 全迁, 一次到位铺路刀4/5。budget tracker(TS AsyncLocalStorage 隐式)Rust 无等价, 留后; capability 门控复用刀2 assert_touchpoint。",
+          "note": ""
+        }
+      ],
+      "notes": ""
+    },
+    "1-4": {
+      "id": "1-4",
+      "label": "chat 剩余 provider (anthropic/google native) + BudgetTracker 接线 (chat trait/OpenAI HTTP 已在刀3)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1",
+      "children": [
+        "1-4-1",
+        "1-4-2",
+        "1-4-3"
+      ],
+      "decisions": [
+        {
+          "q": "1-4 三件事(anthropic/google provider + BudgetTracker)如何切分?",
+          "answer": "拆 3 个子节点",
+          "note": "provider 层(照 OpenAI 三段式 build_body/serialize/parse, 风险低机械性强)与 budget 横切编排层(chat.rs 模块文档已标记 defer, Rust 无 AsyncLocalStorage 等价 ambient store, 需独立设计决策)关注点不同, 耦合低, 混一刀 grill 会串味。各子节点独立验证独立 render。anthropic 有 subagent.ts:478 逐字样本, google 无样本照官方 REST。"
+        }
+      ],
+      "notes": ""
+    },
+    "1-5": {
+      "id": "1-5",
+      "label": "toolLoop 工具循环 (provider-agnostic tool loop, 最重, 依赖 chat)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1",
+      "children": [],
+      "decisions": [
+        {
+          "q": "tool_loop 如何获得 ChatProvider?",
+          "answer": "A: 注入 &dyn ChatProvider",
+          "note": "调用方解析一次传入; 把 provider-resolution 工厂留给刀4; loop 保持纯 deep module, 用 MockChatProvider 可无DB测试; opts.model 作为 per-turn passthrough 传入 provider.chat(ChatOpts{model,..})"
+        },
+        {
+          "q": "5个持久化回调如何跨到 Rust?",
+          "answer": "A: ToolLoopHooks trait + NoopHooks 默认impl",
+          "note": "async_trait; on_assistant_turn/on_tool_call_start(->ZbrainToolUseId)/on_tool_call_complete/on_tool_call_failed/on_heartbeat(sync). Phase9用DB写实现, 刀5测试用NoopHooks或recording mock. 保持write-BEFORE-side-effect不变量(loop await on_tool_call_start拿id再execute). NoopHooks fallback id 照抄TS inline-{turn}-{callIdx}. 拒B(async闭包Rust难写)/C(事件流反转控制流破坏write-ordering)"
+        },
+        {
+          "q": "crash-replay+ToolHandler 进刀5还是拆sub-node?",
+          "answer": "A: 单刀切, 3层全进刀5",
+          "note": "3层=(1)loop控制 (2)ToolHandler+dispatch (3)crash-replay reconciliation. 层1+2不可分. 层3replay仅~40行且结构上与dispatch循环交织(短路检查在for callIdx内execute前), 拆出会导致dispatch写两遍或落地后手术回穿, 比一次做完churn更大. 与刀2的tier-routing不同(那是独立explore), replay是exploit且物理编织. NoopHooks+MockChatProvider已让整体可无DB隔离测试. 拒B(拆1-5-1: 纸面单一职责但与代码结构对抗, false economy)"
+        }
+      ],
+      "notes": "tool_loop.rs (912行): 类型层+ToolLoopHooks trait+NoopHooks+循环体; 注入&dyn ChatProvider; 单刀切含crash-replay四分支(complete/failed/pending-nonidempotent->Unrecoverable/pending-idempotent->reexec). 14测试全绿(loop控制6/dispatch2/abort2/replay4), ai::65全绿(含openai feature). clippy: too_many_lines加justified allow, implicit_hasher保持ambient一致."
+    },
+    "1-6": {
+      "id": "1-6",
+      "label": "embed/rerank/expand 收口 (rerank 近完成去 mock, embed 去 MockProvider, expand 迁移; 可与数据层并行)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1",
+      "children": [],
+      "decisions": [
+        {
+          "q": "rerank 是否进刀6?",
+          "answer": "A: 出刀6范围, G1保持登记gap",
+          "note": "rerank_client.rs已生产完成(真ZeroEntropyRerankClient reqwest+wired CLI/QueryOperation, mock仅cfg(test)). roadmap标签'近完成去mock'偏保守-实际已done. 唯一剩G1(ThinkOperation绕过apply_reranker, FUTURE(think-rerank)@operation.rs:1591)是operation层retrieval-sharing重构(Query/Think融合共享retrieve_and_rerank helper), 属Think retrieval slice非AI-gateway provider层. 刀6=embed trap-fix+expand port. 拒B(折G1进刀6会混两层, blast radius扩到ThinkOperation)"
+        },
+        {
+          "q": "embed 如何拆 new() mock 陷阱?",
+          "answer": "A: feature-split new() + mock降test-only",
+          "note": "有embedding feature: new()委托http_provider::create_http_client(真HTTP); 无feature: 返回Err(Config'embedding feature not enabled'), 绝不静默零向量. MockEmbeddingProvider降#[cfg(test)]. TS实证印证: instantiateEmbedding(gateway.ts:1074)缺key一律throw AIConfigError+setup_hint从不返mock; mock仅test seam __setEmbedTransportForTests(gateway.ts:524). 调用点核查: new()/with_provider/MockEmbeddingProvider生产侧零调用(全在#[cfg(test)]: embedding.rs 580/594/609/637 + operation.rs 5576/5683 FixedVecProvider), CLI用from_env() operation用with_provider(test). A零破坏. batch/budget分批是embed()方法层非new()构造层且budget无ambient store(刀3 deferred), 不在本刀. 照rerank先例. 拒B(feature-gate new()签名条件变化破坏无feature调用方)/C(删new()churn测试)"
+        },
+        {
+          "q": "expand 迁移范围与落点?",
+          "answer": "3a=A(纯/安全层现做, LLM调用=trait seam+fallback, 真HTTP deferred) + 3b=A(新建ai/expand.rs单文件)",
+          "note": "3a: port sanitize_query_for_prompt+sanitize_expansion_output+CJK词数门控(MIN_WORDS=3)+dedup/cap(MAX_QUERIES=3)为纯函数(可无网测试); 定义ExpansionProvider trait(expand(query)->Vec<String>)+mock; 真结构化输出HTTP(TS generateObject+ExpansionSchema, 刀3 ChatProvider是chat seam非structured-object seam无generateObject等价)登记KNOWN-GAP待接线时补. 照刀3 defer budget先例. 3b: 新ai/expand.rs一个文件放trait+纯sanitize/gate/dedup, 与chat.rs/rerank_client.rs/tool_loop.rs同在ai/下. 拒3a-B(全port拉generateObject等价HTTP进本刀scope creep)/3a-C(跳过expand丢失安全sanitize高价值纯逻辑)/3b-B(拆ai+search两文件镜像TS布局, Rust无此必要)"
+        }
+      ],
+      "notes": ""
+    },
+    "1-2-1": {
+      "id": "1-2-1",
+      "label": "tier-routing 层 (model-config.ts resolveModel/TIER_DEFAULTS/enforceSubagentCapable/Anthropic, async+BrainEngine config 读取+capability 门控)",
+      "status": "completed",
+      "mode": "explore",
+      "parent": "1-2",
+      "children": [],
+      "decisions": [
+        {
+          "q": "Q0 config 读取注入方式",
+          "answer": "A: resolve_model 收注入的 ConfigLookup (key->Option<String>),不碰 BrainEngine trait,零 DB 耦合,纯同步可测。DB/YAML 读取由调用方(CLI/gateway/Phase9消费方)在边界完成再注入。",
+          "note": "TS 靠 engine.getConfig() 异步读 DB config 表;Rust BrainEngine trait 无 get_config,CLI get_config_value 读的是 zbrain.yml YAML 非 DB。方案B(加 trait async get_config + 建 config 表迁移 + 3后端 impl)范围爆炸且与 resolver.rs '纯静态零 engine 耦合' 定位冲突。resolver.rs 头部已明说 tier-routing async/DB-coupled 部分 lives on consumer side。"
+        },
+        {
+          "q": "Q1 ConfigLookup 形态",
+          "answer": "A: trait ConfigLookup { fn get(&self,key:&str)->Option<String>; },resolve_model 收 &dyn ConfigLookup。同步方法;调用方要读 DB 就在构造 lookup 时预取/持有快照,resolve_model 全程同步。",
+          "note": "tier-routing 按精度链逐 key 惰性查(命中即返),天然匹配 get(key)->Option<String> 访问模式。方案C全量预取与惰性语义不合(key 动态 models.tier.{tier})。trait 给统一命名契约,Phase9 接 DB 时 impl ConfigLookup 比到处传闭包清爽。async 边界干净。"
+        },
+        {
+          "q": "Q2 capability 层落点",
+          "answer": "A: 新建 ai/capabilities.rs 全量,移植 get_provider_capabilities + classify_capabilities(5档裁决 ok/degraded:no_caching/degraded:no_parallel/unusable:no_tools/unknown)。与 resolver.rs/model_config.rs 并列,mod.rs re-export。",
+          "note": "capability 分类是自洽 deep module(输入 model string 出裁决),值得独立文件+独立测试;tier-routing 消费它不拥有它。忠实复刻:supports_thinking 硬编码 false(照 TS,不读 supports_subagent_loop);supports_parallel_tools 复用 supports_tools(照 TS 注释,不用 Rust 独有的 supports_subagent_loop)。底料齐(ChatTouchpoint 字段全在)。ai/ 目录与 TS ai/ 一一对应利于 diff。"
+        },
+        {
+          "q": "Q3 warn-once 副作用",
+          "answer": "A: 照搬 budget.rs warn-once 先例(static Mutex<Option<HashSet<String>>> + reset_..._for_test seam + warn_once(key)->bool)。enforce_subagent_capable 内部保留 warn-once + eprintln,返回已修正 model id,与 TS 逐字对应。key=source:resolved。",
+          "note": "warn-once 去重本质是进程级跨调用状态,天然需 memo;budget.rs 已为完全相同模式立先例,照搬使 Phase8 内两处 warn-once 同构。enforce 返回最终 model id 语义干净,调用方无脑用。方案B(返回 verdict 让调用方 warn)偏离 TS 且多 callsite(gateway.chat/subagent/auto-think)重复 warn 文案易漂移。保留 Fix: zbrain config set 提示。"
+        },
+        {
+          "q": "Q4 命名+legacy 砍除",
+          "answer": "A: 用 ModelTier(Utility/Reasoning/Deep/Subagent, as_str 小写)避开已存在 Tier(native/openai-compat)。砍掉 legacy:不移植 deprecatedConfigKey 三级键链+emitDeprecationWarning、isAnthropicProvider、enforceSubagentAnthropic 薄包装。8级精度链移植其中7步(砍第3步deprecated键)。不登记 KNOWN-GAPS(非缺口,是有意不搬的死代码),模块 doc 一句话自解释锚点即可。",
+          "note": "AGENTS.md 宪法:无线上用户可破坏性清理不留兼容别名。deprecated键服务TS老版本升级路径(Rust全新实现无此概念);isAnthropicProvider 已被 v0.38 classifyCapabilities 取代(死门控);enforceSubagentAnthropic 是给外部TS插件shim(Rust无消费方)。迁移是清理legacy最佳时机,全量搬=把坟头搬进新房。KNOWN-GAPS只登'该有未有'的缺口,不登有意不搬的死代码以免污染清单。"
+        },
+        {
+          "q": "Q5 文件落点",
+          "answer": "A: 新建 crates/zbrain-core/src/ai/model_config.rs(ModelTier/TIER_DEFAULTS/DEFAULT_ALIASES/ConfigLookup trait/resolve_model/resolve_alias/enforce_subagent_capable),与 capabilities.rs/resolver.rs 并列,mod.rs re-export。下划线命名对齐 budget.rs/tool_loop.rs。",
+          "note": "与 TS model-config.ts+capabilities.ts 一一对应;resolver.rs 头部已把此层指向 sliced-out 到 1-2-1,新建兑现预告。塞回 resolver.rs 违背其'纯静态零engine耦合'边界声明。Phase8 收尾 ai/ 目录对称:resolver(纯静态校验)/capabilities(能力分类)/model_config(tier路由)/chat(provider+工厂)/tool_loop/expand。"
+        }
+      ],
+      "notes": "完成。新建 capabilities.rs(get_provider_capabilities 读 recipe.chat + classify_capabilities 5档裁决 ok/degraded:no_caching/degraded:no_parallel/unusable:no_tools/unknown;supports_thinking 硬编码false、parallel复用supports_tools 忠实TS;9测试)+ model_config.rs(ModelTier Utility/Reasoning/Deep/Subagent 避开已存Tier / tier_default / default_alias / ConfigLookup trait(HashMap impl) / resolve_model_alias 递归depth2断环 / resolve_model 7步精度链 / enforce_subagent_capable 照搬budget.rs warn-once;19测试)。Q0/Q1: 注入 &dyn ConfigLookup(纯同步,不碰BrainEngine trait,DB/YAML读取留边界)。Q4砍legacy:不移植 deprecatedConfigKey链/isAnthropicProvider/enforceSubagentAnthropic。关键:tier override 在 models.default 之后(TS footgun,已测)。AiConfigError::new 改 pub(crate)。resolver.rs 头部注释更新指向 model_config。验证:default ai:: 137全绿(+28)/clippy 两文件零告警(4处justified allow:struct_excessive_bools/match_same_arms/implicit_hasher + doc缩进修)/workspace build通过。UnusableNoTools+DegradedNoParallel 当前registry不可达(无 supports_tools:false recipe),注释诚实标注。seam:resolve_model 尚未接生产调用链,Phase9消费方注入真ConfigLookup(读DB config表)。"
+    },
+    "1-4-1": {
+      "id": "1-4-1",
+      "label": "Anthropic native chat provider (build_body/serialize/parse 三段式, 照 subagent.ts:478 逐字对照 + cache token + tool_use stop_reason)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-4",
+      "children": [],
+      "decisions": [
+        {
+          "q": "1-4-1 范围含 recipe->provider 工厂分派吗?",
+          "answer": "不含; 严格镜像刀3 OpenAI 范围 = 纯 provider 层",
+          "note": "只做 AnthropicChatProvider(struct + build_body/serialize_messages/serialize_tools/parse 四纯函数 + ChatProvider impl), #[cfg(feature=anthropic)] 隔离。工厂分派(TS instantiateChat switch)整层缺失(OpenAI 也没被生产实例化), 属另一层职责, 且需同时处理 google 分支(1-4-2 未落地)会逼出半成品 match。三 provider 都在后一次性缝合更干净, 大概率并入 budget 编排 1-4-3(实例化+包 budget 同属 gateway chat() 入口职责)。"
+        },
+        {
+          "q": "Anthropic stop_reason 归一化放哪?",
+          "answer": "A: 扩展 from_signals 的 anthropic_stop 分支(单一入口 SSOT)",
+          "note": "现 from_signals 第二参只判 refusal, 其余 Anthropic 原生值(end_turn/tool_use/max_tokens/stop_sequence)在两参都不命中全掉 Other -> tool_use 落 Other 会断 tool_loop 多轮循环(靠 StopReason::ToolCalls 判继续)。修: from_signals(None, Some(raw)) 认全值 tool_use->ToolCalls / end_turn+stop_sequence->End / max_tokens->Length / refusal->Refusal。归一化集中一处, 顺带修掉刀3 遗留隐性 bug(OpenAI 不走第二参故未暴露)。给 from_signals 补 Anthropic 全值单测。"
+        },
+        {
+          "q": "Anthropic 消息序列化策略?",
+          "answer": "逐消息 block 直译, 不做跨消息合并(信任上游成组); is_error 仅 true 时输出",
+          "note": "已验证 tool_loop.rs:486-491 把一 turn 全部 tool_result 塞单条 {role:User, Blocks([ToolResult...])}(与 subagent.ts N->1 一致)故无需跨消息合并。规则: ChatRole::Tool/User->wire user; Text->content 字符串; Blocks->content 数组(Text->text block / ToolCall->tool_use block input 直传 object 不 stringify / ToolResult->tool_result block, content 用 output object 则 stringify, is_error 仅 true 带); system 不进 messages(走 build_body 顶层, Q2)。纯函数 fixture 单测: 混排 assistant / tool_result user / is_error 分支。"
+        },
+        {
+          "q": "Anthropic prompt-cache cache_control 这刀做吗?",
+          "answer": "A: 这刀做全 cache_control(逐字对齐 subagent.ts)",
+          "note": "探索推翻'待定'假设: ChatOpts::cache_system 全链路已铺(CLI->tool_loop.rs:303 透传->provider 边界), recipe supports_prompt_cache=Some(true), tool_loop.rs:148 注释已写死预期'system + last tool def'。不做则 cache_system 成从 CLI 穿到 provider 最后一米被丢的死字段=真语义 gap。做法: system 用数组形式 [{type:text,text,cache_control:ephemeral}] (cache_system 时, 否则纯字符串); tools 最后一个 def 挂 cache_control:ephemeral; provider 只认自己故 supports_prompt_cache 恒 true, 实际条件简化为看 opts.cache_system。build_body_anthropic 加 cache_system=true/false 两组 fixture 断言 cache_control 有无。"
+        }
+      ],
+      "notes": "AnthropicChatProvider 落地: build_body/serialize_messages_anthropic/serialize_tools_anthropic/parse_anthropic_response 四纯函数 + ChatProvider impl(#[cfg(feature=anthropic)])。StopReason::from_signals 扩展认全 Anthropic 值(tool_use->ToolCalls/end_turn+stop_sequence->End/max_tokens->Length/refusal->Refusal)。cache_control: system 数组形式 + last tool def(cache_system 时)。x-api-key + anthropic-version header, /v1/messages。测试: default 34 / anthropic feature 36 / ai:: 全模块 96 全绿(tool_loop 未受 from_signals 改动影响)。clippy 零新告警(仅 ambient doc_markdown 与 slice3 OpenAI 同风格)。"
+    },
+    "1-4-2": {
+      "id": "1-4-2",
+      "label": "Google/Gemini native chat provider (contents/parts/functionCall 格式, 照 Gemini 官方 REST, 无 TS 逐字样本)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-4",
+      "children": [],
+      "decisions": [
+        {
+          "q": "StopReason 映射放哪",
+          "answer": "parse_gemini_response 独立 match finishReason(STOP/MAX_TOKENS/SAFETY/RECITATION/OTHER)→StopReason,并在 blocks 含 functionCall 时覆盖为 ToolCalls;不碰 from_signals",
+          "note": "Gemini 值域与 OpenAI/Anthropic 完全不同,且 tool 判定需 blocks 上下文(有 functionCall 时 finishReason 仍是 STOP)"
+        },
+        {
+          "q": "施工范围",
+          "answer": "一刀做完 Gemini native provider(serialize/parse/build_body/impl 三段式),工厂分派已在 1-4-3",
+          "note": "延续 1-4-1 provider 范式"
+        },
+        {
+          "q": "tool_call_id 合成",
+          "answer": "functionCall 无 id,合成 {name}-{index}(parse 时 index=block 序号)",
+          "note": "Gemini function calling 无 call id;确定性合成供 tool_loop/replay 用,index 消歧同 turn 同名并行调用"
+        },
+        {
+          "q": "functionResponse.response 包装",
+          "answer": "output 已是 object 直接用,否则(string/number/array/null)包 {\"result\":output}",
+          "note": "Gemini functionResponse.response 必须是 JSON object;与 Anthropic asStringIfNotObject(反方向转 string)对称"
+        },
+        {
+          "q": "auth 位置",
+          "answer": "x-goog-api-key header,不进 URL query",
+          "note": "避免 key 泄露到日志/代理;Gemini 官方支持该 header,与 Anthropic x-api-key 风格一致"
+        }
+      ],
+      "notes": "Gemini native provider 完成。chat.rs +246 行(1864→2110)。5 纯函数/struct/impl: gemini_role(Assistant→model,其余→user) / gemini_function_response(object 直用,非 object 包 {result:}) / serialize_messages_gemini(逐消息,跳 System,functionCall/functionResponse parts) / serialize_tools_gemini(单 {functionDeclarations:[]} 包装,input_schema→parameters) / gemini_finish_reason(STOP→End/MAX_TOKENS→Length/SAFETY|RECITATION→ContentFilter) / parse_gemini_response(candidates[0].content.parts,合成 {name}-{index} id,有 functionCall 覆盖 stop→ToolCalls,usage promptTokenCount/candidatesTokenCount/cachedContentTokenCount) + GeminiChatProvider(#[cfg(feature=google)],x-goog-api-key header,POST /v1beta/models/{model}:generateContent,cache_system 忽略无 prompt cache)。Cargo google feature + mod.rs re-export 3 纯函数。验证: default 46 / google 48 / 全 ai:: 108 全绿; clippy chat.rs 零告警。14 新测试(5 serialize_messages+2 serialize_tools+5 parse+2 build_body)。"
+    },
+    "1-4-3": {
+      "id": "1-4-3",
+      "label": "BudgetTracker 接线 (reserve/record + pricing 查表 + ISO 周审计 JSONL 复用 rerank_audit 先例, ambient-store 注入方式单独 grill)",
+      "status": "completed",
+      "mode": "explore",
+      "parent": "1-4",
+      "children": [],
+      "decisions": [
+        {
+          "q": "BudgetTracker 实例注入方式",
+          "answer": "显式参数 Option<&BudgetTracker>, None 时预算逻辑 no-op",
+          "note": "Rust 无 async 环境单例惯用法; 显式参数=可测试+deep module+无隐式全局态; 复刻 TS scope 外 null no-op 语义"
+        },
+        {
+          "q": "1-4-3 范围切法",
+          "answer": "一刀两块都做 (BudgetTracker + instantiateChat 工厂)",
+          "note": "两块耦合点=chat 调用链 工厂建provider->reserve->调用->record; 一起做可一次验证完整链路; Phase 8 收口"
+        },
+        {
+          "q": "超预算语义",
+          "answer": "忠实复刻延迟抛出: record 累加超cap不中断当前调用(吞掉), 下次 reserve 预检才 Err(BudgetExhausted)",
+          "note": "byte 对齐 TS _recordBudget catch 吞 TX1; 当前调用结果不丢; 超预算下次 reserve 浮现"
+        },
+        {
+          "q": "provider 工厂返回型",
+          "answer": "Result<Box<dyn ChatProvider>, AiConfigError>, 按 recipe.implementation match, feature 未开分支返 AiConfigError",
+          "note": "tool_loop 已吃 &dyn ChatProvider 天然衔接; Box 动态分派避免 enum->trait 转发样板 + feature 门控 enum 变体条件编译别扭"
+        },
+        {
+          "q": "工厂 API key 来源",
+          "answer": "env 查找器注入: instantiate_chat(recipe, model_id, env_lookup) 从 recipe.auth.required[0] 读",
+          "note": "纯函数可测试不碰 std::env; 镜像 TS cfg.env 传入; 与 resolver 纯函数风格一致"
+        },
+        {
+          "q": "budget 错误型",
+          "answer": "独立 BudgetExhausted 错误(带 reason: NoPricing/Cost/Runtime), reserve/record 返 Result<(), BudgetExhausted>",
+          "note": "预算闸门语义 != chat 传输层错误; 独立型避免 budget 模块反依赖 chat; 镜像 TS BudgetExhausted"
+        }
+      ],
+      "notes": "BudgetTracker + provider 工厂完成, Phase 8 收口。块1: 新建 crates/zbrain-core/src/budget.rs(922行含测试) - BudgetTracker(reserve/record/snapshot/assert_runtime)+BudgetExhausted(reason:Cost/Runtime/NoPricing)+3-kind pricing查表(chat读registry cost_per_1m_in/out, embed复用ai::lookup_pricing+free-local零价, rerank读reranker触点+free-local)+ISO周审计JSONL(复用rerank_audit先例, best-effort)+warn-once memo(Mutex static)+extract_usage_from_error(top/nested usage, snake/camel)。TX1(record累加后超cap Err)/TX2(有cap无pricing硬失败)/延迟抛出(record超cap返Err但不中断, 下次reserve浮现)全复刻。注入=Option<&BudgetTracker>显式参数(Mutex内部可变), None=no-op。20测试全绿。块2: chat.rs+instantiate_chat工厂(按recipe.implementation match->Box<dyn ChatProvider>, native三家feature门控未开返AiConfigError, openai-compat走OpenAiChatProvider), env_lookup闭包注入key(recipe.auth_env.required[0]), 补OpenAi/Anthropic DEFAULT_BASE_URL常量。验证: default ai::109/budget::20 + 全feature ai::115(工厂5测试)绿; clippy budget.rs+chat.rs零告警; workspace build default+全feature通过。1-4 三子节点全完成。"
+    }
+  },
+  "metadata": {
+    "created": "2026-07-09 21:32:10",
+    "updated": "2026-07-10 16:55:49",
+    "md_file": ".workbuddy/roadmaps/ZJ_ROADMAP.md"
+  },
+  "md_file": "C:/workspace/github/jununfly/zbrain/.workbuddy/roadmaps/ZJ_ROADMAP.md"
+}

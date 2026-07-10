@@ -170,9 +170,11 @@ use crate::types::OrphanPage;
 use crate::types::PageRef;
 use crate::types::PurgeResult;
 use crate::types::RefreshPageBodyArgs;
+use crate::time::current_utc_iso8601;
 use crate::types::{
-    CRMode, DuplicatePage, EffectiveDateSource, FileRow, FileSpec, GraphPath, Link,
-    LinkBatchInput, PageKind, PageVersion, RawData, Take, TakeInput, UpsertFileResult,
+    AdjacencyRow, CRMode, DuplicatePage, EffectiveDateSource, EntityCount, FactInsertStatus,
+    FactKind, FactListOpts, FactRow, FactVisibility, FactsHealth, FileRow, FileSpec, GraphPath, Link,
+    LinkBatchInput, NewFact, PageKind, PageVersion, RawData, Take, TakeInput, UpsertFileResult,
     UpsertTakesResult,
 };
 
@@ -214,6 +216,7 @@ const MIGRATION_0010: &str = include_str!("../migrations/0010_oauth_tables.sql")
 const MIGRATION_0011: &str = include_str!("../migrations/0011_sources_full_columns.sql");
 const MIGRATION_0012: &str = include_str!("../migrations/0012_takes_full_columns.sql");
 const MIGRATION_0013: &str = include_str!("../migrations/0013_facts.sql");
+const MIGRATION_0014: &str = include_str!("../migrations/0014_minion_jobs.sql");
 
 /// Global migration registry for Postgres backend. Built once at runtime first use.
 pub static POSTGRES_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
@@ -284,6 +287,11 @@ pub static POSTGRES_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 13,
         name: "facts",
         sql: MIGRATION_0013,
+    }));
+    registry.add(Box::new(PostgresMigration {
+        version: 14,
+        name: "minion_jobs",
+        sql: MIGRATION_0014,
     }));
 
     registry
@@ -1977,6 +1985,103 @@ impl BrainEngine for PostgresEngine {
         Ok(out)
     }
 
+    async fn touch_salience(&self, slug: &str, source_id: &str) -> Result<bool> {
+        let pool = self.pool()?;
+        let result = sqlx::query(
+            "UPDATE pages SET salience_touched_at = NOW() \
+             WHERE slug = $1 AND source_id = $2 AND deleted_at IS NULL",
+        )
+        .bind(slug)
+        .bind(source_id)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("touch_salience execute failed: {e}")))?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn get_recent_salience(
+        &self,
+        days: u32,
+        limit: u32,
+        slug_prefix: Option<&str>,
+    ) -> Result<Vec<crate::types::SalienceResult>> {
+        let pool = self.pool()?;
+        let now = chrono::Utc::now();
+        let boundary = now - chrono::Duration::days(days as i64);
+        let limit = limit.min(100) as i32;
+
+        let (prefix_condition, escaped_prefix) = slug_prefix
+            .map(|pfx| {
+                let escaped = pfx.replace('%', "\\%").replace('_', "\\_") + "%";
+                ("AND p.slug LIKE $3 ESCAPE '\\'", Some(escaped))
+            })
+            .unwrap_or(("", None));
+
+        // Postgres has native ln() and EXTRACT, so score is computed in SQL.
+        let sql = format!(
+            "SELECT p.slug, p.source_id, p.title, p.type, p.updated_at, \
+                    COALESCE(p.emotional_weight, 0.0) AS emotional_weight, \
+                    COUNT(DISTINCT t.id)::bigint AS take_count, \
+                    COALESCE(AVG(t.weight), 0.0) AS take_avg_weight, \
+                    COALESCE(p.emotional_weight, 0.0) * 5.0 \
+                    + ln(1 + COUNT(DISTINCT t.id)) \
+                    + 1.0 / (1.0 + GREATEST(0, EXTRACT(EPOCH FROM (NOW() - p.updated_at)) / 86400.0)) \
+                    AS score \
+             FROM pages p \
+             LEFT JOIN takes t ON t.page_id = p.id AND t.active = TRUE \
+             WHERE p.deleted_at IS NULL \
+               AND CASE WHEN p.salience_touched_at > p.updated_at \
+                        THEN p.salience_touched_at \
+                        ELSE p.updated_at END >= $1::timestamptz \
+               {prefix_condition} \
+             GROUP BY p.id, p.slug, p.source_id, p.title, p.type, p.updated_at, p.emotional_weight \
+             ORDER BY score DESC \
+             LIMIT $2"
+        );
+
+        let mut q = sqlx::query(&sql).bind(boundary).bind(limit);
+        if let Some(escaped) = escaped_prefix {
+            q = q.bind(escaped);
+        }
+
+        let rows = q
+            .fetch_all(pool)
+            .await
+            .map_err(|e| Error::engine(format!("get_recent_salience failed: {e}")))?;
+
+        let results: Vec<crate::types::SalienceResult> = rows
+            .into_iter()
+            .map(|r| {
+                let slug: String = r.try_get("slug").unwrap_or_default();
+                let source_id: String = r.try_get("source_id").unwrap_or_default();
+                let title: String = r.try_get("title").unwrap_or_default();
+                let page_type: String = r.try_get("type").unwrap_or_default();
+                let updated_at_val: chrono::DateTime<chrono::Utc> = r.try_get("updated_at").unwrap_or_default();
+                let updated_at = updated_at_val.to_rfc3339();
+                let emotional_weight: f64 = r.try_get("emotional_weight").unwrap_or(0.0);
+                let take_count: i64 = r.try_get("take_count").unwrap_or(0);
+                #[allow(clippy::cast_sign_loss)]
+                let take_count = take_count as u32;
+                let take_avg_weight: f64 = r.try_get("take_avg_weight").unwrap_or(0.0);
+                let score: f64 = r.try_get("score").unwrap_or(0.0);
+
+                crate::types::SalienceResult {
+                    slug,
+                    source_id,
+                    title,
+                    page_type,
+                    updated_at,
+                    emotional_weight,
+                    take_count,
+                    take_avg_weight,
+                    score,
+                }
+            })
+            .collect();
+
+        Ok(results)
+    }
+
     /// `find_orphan_pages` — return live pages that have no live inbound
     /// links. Mirrors TS `pglite-engine.ts` `findOrphanPages` (v0.26.5):
     ///
@@ -2378,21 +2483,1113 @@ impl BrainEngine for PostgresEngine {
         Ok(counts)
     }
 
+    async fn get_adjacency_boosts(
+        &self,
+        page_ids: &[u64],
+    ) -> Result<std::collections::HashMap<u64, AdjacencyRow>> {
+        if page_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let pool = self.pool()?;
+
+        let ids: Vec<i64> = page_ids.iter().map(|&id| id as i64).collect();
+
+        let rows = sqlx::query(
+            "WITH targets AS ( \
+               SELECT id, COALESCE(source_id, 'default') AS source_id \
+               FROM pages \
+               WHERE id = ANY($1) \
+                 AND deleted_at IS NULL \
+             ) \
+             SELECT \
+               l.to_page_id, \
+               COUNT(DISTINCT l.from_page_id)::int AS hits, \
+               COUNT(DISTINCT \
+                 CASE WHEN COALESCE(p.source_id, 'default') <> t.source_id \
+                      THEN COALESCE(p.source_id, 'default') END \
+               )::int AS cross_source_hits \
+             FROM links l \
+             JOIN pages p ON p.id = l.from_page_id AND p.deleted_at IS NULL \
+             JOIN targets t ON t.id = l.to_page_id \
+             WHERE l.from_page_id = ANY($1) \
+               AND l.to_page_id = ANY($1) \
+             GROUP BY l.to_page_id \
+             HAVING COUNT(DISTINCT l.from_page_id) >= 1",
+        )
+        .bind(&ids)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_adjacency_boosts: {e}")))?;
+
+        let mut result: std::collections::HashMap<u64, AdjacencyRow> = std::collections::HashMap::new();
+
+        for row in &rows {
+            let to_page_id: i64 = row
+                .try_get("to_page_id")
+                .map_err(|e| Error::engine(format!("decode to_page_id: {e}")))?;
+            let hits: i32 = row
+                .try_get("hits")
+                .map_err(|e| Error::engine(format!("decode hits: {e}")))?;
+            let cross_source_hits: i32 = row
+                .try_get("cross_source_hits")
+                .map_err(|e| Error::engine(format!("decode cross_source_hits: {e}")))?;
+
+            result.insert(
+                to_page_id as u64,
+                AdjacencyRow {
+                    hits: hits as u32,
+                    cross_source_hits: cross_source_hits as u32,
+                },
+            );
+        }
+
+        Ok(result)
+    }
+
+    // ─── Facts ───────────────────────────────────────────────────────────
+
+    async fn insert_fact(
+        &self,
+        source_id: &str,
+        entity_slug: &str,
+        input: &NewFact,
+    ) -> Result<FactInsertStatus> {
+        let now = current_utc_iso8601();
+        let pool = self.pool()?;
+
+        let kind = input
+            .kind
+            .as_ref()
+            .map(|k| k.to_string())
+            .unwrap_or_else(|| "fact".to_string());
+        let visibility = input
+            .visibility
+            .as_ref()
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "private".to_string());
+        let notability = input.notability.as_deref().unwrap_or("medium");
+        let valid_from = input.valid_from.clone().unwrap_or_else(|| now.clone());
+        let confidence = input.confidence.unwrap_or(1.0);
+
+        // Single CTE: dup_check → supersede_target → insert → update_old
+        // Postgres CTEs are evaluated in source order for data-modifying statements;
+        // the WHERE NOT EXISTS guard prevents INSERT when a duplicate exists.
+        let row = sqlx::query(
+            "WITH dup_check AS ( \
+                SELECT id FROM facts \
+                WHERE source_id = $1 AND entity_slug = $2 AND fact = $3 \
+                  AND kind = $4 AND expired_at IS NULL AND superseded_by IS NULL \
+                LIMIT 1 \
+             ), \
+             supersede_target AS ( \
+                SELECT id FROM facts \
+                WHERE source_id = $1 AND entity_slug = $2 AND kind = $4 \
+                  AND expired_at IS NULL AND superseded_by IS NULL \
+                  AND $12 > 0.9 \
+                LIMIT 1 \
+             ), \
+             inserted AS ( \
+                INSERT INTO facts \
+                    (source_id, entity_slug, fact, kind, visibility, notability, \
+                     context, valid_from, valid_until, source, source_session, confidence) \
+                SELECT $1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9::timestamptz, $10, $11, $12 \
+                WHERE NOT EXISTS (SELECT 1 FROM dup_check) \
+                RETURNING id \
+             ), \
+             updated AS ( \
+                UPDATE facts SET superseded_by = (SELECT id FROM inserted) \
+                WHERE id = (SELECT id FROM supersede_target) \
+                  AND EXISTS (SELECT 1 FROM inserted) \
+             ) \
+             SELECT \
+                CASE WHEN EXISTS(SELECT 1 FROM dup_check) THEN 'duplicate' \
+                     WHEN EXISTS(SELECT 1 FROM supersede_target) THEN 'superseded' \
+                     ELSE 'inserted' \
+                END AS status, \
+                COALESCE((SELECT id FROM inserted), 0) AS new_id",
+        )
+        .bind(source_id)
+        .bind(entity_slug)
+        .bind(input.fact.as_str())
+        .bind(kind.as_str())
+        .bind(visibility.as_str())
+        .bind(notability)
+        .bind(input.context.as_deref().unwrap_or(""))
+        .bind(valid_from.as_str())
+        .bind(input.valid_until.as_deref())
+        .bind(input.source.as_str())
+        .bind(input.source_session.as_deref().unwrap_or(""))
+        .bind(confidence)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| Error::engine(format!("insert_fact: {e}")))?;
+
+        let status: String = row
+            .try_get("status")
+            .map_err(|e| Error::engine(format!("insert_fact status decode: {e}")))?;
+
+        match status.as_str() {
+            "duplicate" => Ok(FactInsertStatus::Duplicate),
+            "superseded" => Ok(FactInsertStatus::Superseded),
+            _ => Ok(FactInsertStatus::Inserted),
+        }
+    }
+
+    async fn list_facts_by_entity(
+        &self,
+        source_id: &str,
+        entity_slug: &str,
+        opts: &FactListOpts,
+    ) -> Result<Vec<FactRow>> {
+        let pool = self.pool()?;
+
+        let mut builder = sqlx::QueryBuilder::new(
+            "SELECT id, source_id, entity_slug, fact, kind, visibility, \
+                    notability, context, valid_from::text AS valid_from, \
+                    valid_until::text AS valid_until, expired_at::text AS expired_at, \
+                    superseded_by::bigint AS superseded_by, \
+                    consolidated_at::text AS consolidated_at, \
+                    consolidated_into::bigint AS consolidated_into, source, \
+                    source_session, confidence, created_at::text AS created_at \
+             FROM facts \
+             WHERE source_id = ",
+        );
+        builder.push_bind(source_id);
+        builder.push(" AND entity_slug = ");
+        builder.push_bind(entity_slug);
+
+        if opts.active_only.unwrap_or(false) {
+            builder.push(" AND expired_at IS NULL AND superseded_by IS NULL");
+        }
+        if let Some(ref kinds) = opts.kinds {
+            if !kinds.is_empty() {
+                builder.push(" AND kind IN (");
+                let mut separated = builder.separated(", ");
+                for k in kinds {
+                    separated.push_bind(k.to_string());
+                }
+                separated.push_unseparated(")");
+            }
+        }
+        if let Some(ref vs) = opts.visibility {
+            if !vs.is_empty() {
+                builder.push(" AND visibility IN (");
+                let mut separated = builder.separated(", ");
+                for v in vs {
+                    separated.push_bind(v.to_string());
+                }
+                separated.push_unseparated(")");
+            }
+        }
+
+        builder.push(" ORDER BY created_at DESC");
+
+        if let Some(ref limit) = opts.limit {
+            builder.push(" LIMIT ");
+            builder.push_bind(*limit);
+        }
+        if let Some(ref offset) = opts.offset {
+            builder.push(" OFFSET ");
+            builder.push_bind(*offset);
+        }
+
+        let rows = builder
+            .build()
+            .fetch_all(pool)
+            .await
+            .map_err(|e| Error::engine(format!("list_facts_by_entity: {e}")))?;
+
+        rows.iter().map(|r| pg_row_to_fact(r)).collect()
+    }
+
+    async fn get_facts_health(&self, source_id: &str) -> Result<FactsHealth> {
+        let pool = self.pool()?;
+        let now = current_utc_iso8601();
+        let today_prefix = &now[..10];
+
+        let total_active: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM facts \
+             WHERE source_id = $1 AND expired_at IS NULL AND superseded_by IS NULL",
+        )
+        .bind(source_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_facts_health active: {e}")))?;
+
+        let total_today: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM facts \
+             WHERE source_id = $1 AND created_at >= $2::timestamptz",
+        )
+        .bind(source_id)
+        .bind(today_prefix)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_facts_health today: {e}")))?;
+
+        let total_week: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM facts \
+             WHERE source_id = $1 AND created_at >= (NOW() - INTERVAL '7 days')",
+        )
+        .bind(source_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_facts_health week: {e}")))?;
+
+        let total_expired: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM facts \
+             WHERE source_id = $1 AND expired_at IS NOT NULL",
+        )
+        .bind(source_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_facts_health expired: {e}")))?;
+
+        let total_consolidated: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM facts \
+             WHERE source_id = $1 AND consolidated_at IS NOT NULL",
+        )
+        .bind(source_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_facts_health consolidated: {e}")))?;
+
+        // Top entities by fact count
+        let top_rows = sqlx::query(
+            "SELECT entity_slug, COUNT(*)::bigint AS cnt \
+             FROM facts \
+             WHERE source_id = $1 AND entity_slug IS NOT NULL \
+             GROUP BY entity_slug \
+             ORDER BY cnt DESC \
+             LIMIT 10",
+        )
+        .bind(source_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_facts_health top: {e}")))?;
+
+        let mut top_entities = Vec::new();
+        for row in &top_rows {
+            let slug: String = row
+                .try_get("entity_slug")
+                .map_err(|e| Error::engine(format!("get_facts_health top slug: {e}")))?;
+            let count: i64 = row
+                .try_get("cnt")
+                .map_err(|e| Error::engine(format!("get_facts_health top cnt: {e}")))?;
+            top_entities.push(EntityCount {
+                entity_slug: slug,
+                count,
+            });
+        }
+
+        Ok(FactsHealth {
+            source_id: source_id.to_string(),
+            total_active,
+            total_today,
+            total_week,
+            total_expired,
+            total_consolidated,
+            top_entities,
+        })
+    }
+
+    async fn expire_fact(&self, source_id: &str, fact_id: i64) -> Result<bool> {
+        let pool = self.pool()?;
+        let now = current_utc_iso8601();
+
+        let result = sqlx::query(
+            "UPDATE facts SET expired_at = $1::timestamptz \
+             WHERE id = $2 AND source_id = $3 AND expired_at IS NULL",
+        )
+        .bind(now.as_str())
+        .bind(fact_id)
+        .bind(source_id)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("expire_fact: {e}")))?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
     async fn traverse_paths(
         &self,
-        _slug: &str,
-        _depth: Option<u32>,
-        _link_type: Option<&str>,
-        _direction: Option<&str>,
-        _source_id: Option<&str>,
+        slug: &str,
+        depth: Option<u32>,
+        link_type: Option<&str>,
+        direction: Option<&str>,
+        source_id: Option<&str>,
         _source_ids: Option<&[String]>,
     ) -> Result<Vec<GraphPath>> {
-        Err(crate::error::StructuredError::new(
-            "Unsupported",
-            "unsupported",
-            "traverse_paths not yet implemented for postgres engine",
-        ))
+        use std::collections::{HashMap, HashSet, VecDeque};
+
+        let pool = self.pool()?;
+        let max_depth = depth.unwrap_or(1);
+        let dir = direction.unwrap_or("out");
+
+        // ── Fetch all non-deleted pages → build id→slug map + find start ──
+        let page_rows = sqlx::query(
+            "SELECT id, slug, source_id FROM pages WHERE deleted_at IS NULL",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("traverse_paths pages: {e}")))?;
+
+        let mut id_to_slug: HashMap<u64, String> = HashMap::new();
+        let mut start_page_id: Option<u64> = None;
+
+        for row in &page_rows {
+            let id: i64 = row.get("id");
+            let slug_str: String = row.get("slug");
+            let source_id_str: String = row.get("source_id");
+            let id_u64 = u64::try_from(id)
+                .map_err(|_| Error::engine("traverse_paths: page id out of u64 range"))?;
+
+            id_to_slug.insert(id_u64, slug_str.clone());
+
+            if slug_str == slug
+                && (source_id.is_none()
+                    || source_id_str == source_id.unwrap_or(""))
+            {
+                start_page_id = Some(id_u64);
+            }
+        }
+
+        let Some(start_id) = start_page_id else {
+            return Ok(Vec::new());
+        };
+
+        // ── Fetch all links, keep only edges between non-deleted pages ────
+        let link_rows = sqlx::query(
+            "SELECT from_page_id, to_page_id, link_type, context FROM links",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("traverse_paths links: {e}")))?;
+
+        // (from_id, to_id, link_type, context)
+        let mut edges: Vec<(u64, u64, String, String)> = Vec::new();
+        for row in &link_rows {
+            let from_id: i64 = row.get("from_page_id");
+            let to_id: i64 = row.get("to_page_id");
+            let lt: String = row.get("link_type");
+            let ctx: String = row.get("context");
+            let from_u64 = u64::try_from(from_id)
+                .map_err(|_| Error::engine("traverse_paths: from_page_id out of u64 range"))?;
+            let to_u64 = u64::try_from(to_id)
+                .map_err(|_| Error::engine("traverse_paths: to_page_id out of u64 range"))?;
+
+            if id_to_slug.contains_key(&from_u64) && id_to_slug.contains_key(&to_u64) {
+                edges.push((from_u64, to_u64, lt, ctx));
+            }
+        }
+
+        // ── BFS traversal ─────────────────────────────────────────────────
+        let mut result: Vec<GraphPath> = Vec::new();
+        let mut visited: HashSet<u64> = HashSet::new();
+        let mut queue: VecDeque<(u64, u32)> = VecDeque::new();
+        visited.insert(start_id);
+        queue.push_back((start_id, 0));
+
+        while let Some((current_id, current_depth)) = queue.pop_front() {
+            if current_depth >= max_depth {
+                continue;
+            }
+
+            for (from_id, to_id, lt, ctx) in &edges {
+                // Direction filter
+                let is_match = match dir {
+                    "out" => *from_id == current_id,
+                    "in" => *to_id == current_id,
+                    "both" => *from_id == current_id || *to_id == current_id,
+                    _ => false,
+                };
+                if !is_match {
+                    continue;
+                }
+                // Link type filter
+                if link_type.is_some() && lt != link_type.unwrap_or("") {
+                    continue;
+                }
+
+                // Determine the neighbour (the "other" side)
+                let neighbor_id = if dir == "in" {
+                    *from_id
+                } else if dir == "both" && *to_id == current_id {
+                    *from_id
+                } else {
+                    *to_id
+                };
+
+                let (Some(from_slug), Some(to_slug)) =
+                    (id_to_slug.get(from_id), id_to_slug.get(to_id))
+                else {
+                    continue;
+                };
+
+                result.push(GraphPath {
+                    from_slug: from_slug.clone(),
+                    to_slug: to_slug.clone(),
+                    link_type: lt.clone(),
+                    context: ctx.clone(),
+                    depth: current_depth + 1,
+                });
+
+                if !visited.contains(&neighbor_id) {
+                    visited.insert(neighbor_id);
+                    queue.push_back((neighbor_id, current_depth + 1));
+                }
+            }
+        }
+
+        Ok(result)
     }
+
+    // MINION_JOB_METHODS_ANCHOR
+
+    async fn enqueue_job(
+        &self,
+        input: &crate::minions::types::MinionJobInput,
+    ) -> Result<crate::minions::types::MinionJob> {
+        use crate::minions::types::MinionJobStatus;
+
+        let pool = self.pool()?;
+
+        // Idempotency fast path: a matching non-null key returns the existing
+        // row (the unique partial index guarantees at most one).
+        if let Some(ref key) = input.idempotency_key {
+            let existing = sqlx::query(&format!(
+                "SELECT {MINION_JOB_SELECT} FROM minion_jobs WHERE idempotency_key = $1"
+            ))
+            .bind(key.as_str())
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| Error::engine(format!("enqueue_job idempotency SELECT: {e}")))?;
+            if let Some(row) = existing {
+                return pg_row_to_job(&row);
+            }
+        }
+
+        let delay_ms = input.delay.filter(|d| *d > 0);
+        let status = if delay_ms.is_some() {
+            MinionJobStatus::Delayed
+        } else {
+            MinionJobStatus::Waiting
+        };
+        let max_stalled = input.max_stalled.map_or(5, |v| v.clamp(1, 100));
+        let backoff_type = input
+            .backoff_type
+            .unwrap_or(crate::minions::types::BackoffType::Exponential);
+        let on_child_fail = input
+            .on_child_fail
+            .unwrap_or(crate::minions::types::ChildFailPolicy::FailParent);
+        let data_json = input.data.clone().unwrap_or_else(|| serde_json::json!({}));
+
+        // delay_until is TIMESTAMPTZ; compute it as now() + ($N ms) when delayed.
+        // $11 carries the delay in ms (NULL when not delayed) and the CASE turns
+        // it into an interval, matching the SQLite epoch-ms arithmetic.
+        let row = sqlx::query(&format!(
+            "INSERT INTO minion_jobs \
+                (name, queue, status, priority, data, max_attempts, backoff_type, \
+                 backoff_delay, backoff_jitter, max_stalled, delay_until, on_child_fail, \
+                 max_children, timeout_ms, remove_on_complete, remove_on_fail, idempotency_key) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, \
+                     CASE WHEN $11::bigint IS NULL THEN NULL \
+                          ELSE now() + ($11::double precision * interval '1 millisecond') END, \
+                     $12, $13, $14::int, $15, $16, $17) \
+             RETURNING {MINION_JOB_SELECT}"
+        ))
+        .bind(&input.name)
+        .bind(input.queue.clone().unwrap_or_else(|| "default".to_string()))
+        .bind(status.as_str())
+        .bind(input.priority.unwrap_or(0))
+        .bind(data_json)
+        .bind(input.max_attempts.unwrap_or(3))
+        .bind(backoff_type.as_str())
+        .bind(input.backoff_delay.unwrap_or(1000))
+        .bind(input.backoff_jitter.unwrap_or(0.2))
+        .bind(max_stalled)
+        .bind(delay_ms)
+        .bind(on_child_fail.as_str())
+        .bind(input.max_children)
+        .bind(input.timeout_ms)
+        .bind(input.remove_on_complete.unwrap_or(false))
+        .bind(input.remove_on_fail.unwrap_or(false))
+        .bind(input.idempotency_key.as_deref())
+        .fetch_one(pool)
+        .await
+        .map_err(|e| Error::engine(format!("enqueue_job INSERT: {e}")))?;
+
+        pg_row_to_job(&row)
+    }
+
+    // MINION_JOB_METHODS_ANCHOR
+
+    async fn get_job(&self, id: i64) -> Result<Option<crate::minions::types::MinionJob>> {
+        let pool = self.pool()?;
+        let row = sqlx::query(&format!(
+            "SELECT {MINION_JOB_SELECT} FROM minion_jobs WHERE id = $1"
+        ))
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_job SELECT: {e}")))?;
+        match row {
+            Some(r) => Ok(Some(pg_row_to_job(&r)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn get_jobs(
+        &self,
+        filters: &crate::minions::types::JobFilters,
+    ) -> Result<Vec<crate::minions::types::MinionJob>> {
+        let pool = self.pool()?;
+
+        // Build a dynamic WHERE with positional binds. `$idx` advances only for
+        // supplied filters so limit/offset land on the correct trailing params.
+        let mut sql = format!("SELECT {MINION_JOB_SELECT} FROM minion_jobs");
+        let mut clauses: Vec<String> = Vec::new();
+        let mut idx = 1;
+        if filters.status.is_some() {
+            clauses.push(format!("status = ${idx}"));
+            idx += 1;
+        }
+        if filters.queue.is_some() {
+            clauses.push(format!("queue = ${idx}"));
+            idx += 1;
+        }
+        if filters.name.is_some() {
+            clauses.push(format!("name = ${idx}"));
+            idx += 1;
+        }
+        if !clauses.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&clauses.join(" AND "));
+        }
+        sql.push_str(&format!(" ORDER BY id DESC LIMIT ${idx} OFFSET ${}", idx + 1));
+
+        let mut query = sqlx::query(&sql);
+        if let Some(status) = filters.status {
+            query = query.bind(status.as_str());
+        }
+        if let Some(ref queue) = filters.queue {
+            query = query.bind(queue.clone());
+        }
+        if let Some(ref name) = filters.name {
+            query = query.bind(name.clone());
+        }
+        query = query.bind(filters.limit.unwrap_or(50).max(0));
+        query = query.bind(filters.offset.unwrap_or(0).max(0));
+
+        let rows = query
+            .fetch_all(pool)
+            .await
+            .map_err(|e| Error::engine(format!("get_jobs SELECT: {e}")))?;
+        rows.iter().map(pg_row_to_job).collect()
+    }
+
+    // MINION_JOB_METHODS_ANCHOR
+
+    async fn claim_job(
+        &self,
+        lock_token: &str,
+        lock_duration_ms: i64,
+        queue: &str,
+        registered_names: &[String],
+    ) -> Result<Option<crate::minions::types::MinionJob>> {
+        if registered_names.is_empty() {
+            return Ok(None);
+        }
+
+        let pool = self.pool()?;
+
+        // Atomic claim via a CTE: the inner SELECT locks exactly one waiting row
+        // with `FOR UPDATE SKIP LOCKED` (Postgres-native equivalent of the
+        // SQLite BEGIN IMMEDIATE single-writer claim), and the UPDATE flips it to
+        // active in the same statement. lock_until / timeout_at use interval
+        // arithmetic; the RETURNING projection is decoded like every other read.
+        let sql = format!(
+            "WITH claimed AS ( \
+                SELECT id AS cid FROM minion_jobs \
+                WHERE queue = $1 AND status = 'waiting' AND name = ANY($2::text[]) \
+                ORDER BY priority ASC, created_at ASC, id ASC \
+                LIMIT 1 \
+                FOR UPDATE SKIP LOCKED \
+             ) \
+             UPDATE minion_jobs m SET \
+                status = 'active', \
+                lock_token = $3, \
+                lock_until = now() + ($4::double precision * interval '1 millisecond'), \
+                timeout_at = CASE WHEN m.timeout_ms IS NOT NULL \
+                    THEN now() + (m.timeout_ms::double precision * interval '1 millisecond') \
+                    ELSE NULL END, \
+                attempts_started = m.attempts_started + 1, \
+                started_at = COALESCE(m.started_at, now()), \
+                updated_at = now() \
+             FROM claimed \
+             WHERE m.id = claimed.cid \
+             RETURNING {MINION_JOB_SELECT}"
+        );
+
+        let row = sqlx::query(&sql)
+            .bind(queue)
+            .bind(registered_names)
+            .bind(lock_token)
+            .bind(lock_duration_ms)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| Error::engine(format!("claim_job: {e}")))?;
+        match row {
+            Some(r) => Ok(Some(pg_row_to_job(&r)?)),
+            None => Ok(None),
+        }
+    }
+
+    // MINION_JOB_METHODS_ANCHOR
+
+    async fn complete_job(
+        &self,
+        id: i64,
+        lock_token: &str,
+        result: Option<&serde_json::Value>,
+    ) -> Result<Option<crate::minions::types::MinionJob>> {
+        let pool = self.pool()?;
+
+        // Token-fenced completion: only the worker holding the current lock can
+        // complete the active job. RETURNING gives us the row (incl.
+        // remove_on_complete) so we can drop it afterwards if requested.
+        let row = sqlx::query(&format!(
+            "UPDATE minion_jobs SET status = 'completed', result = $1, \
+                finished_at = now(), lock_token = NULL, lock_until = NULL, updated_at = now() \
+             WHERE id = $2 AND status = 'active' AND lock_token = $3 \
+             RETURNING {MINION_JOB_SELECT}"
+        ))
+        .bind(result.cloned())
+        .bind(id)
+        .bind(lock_token)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::engine(format!("complete_job UPDATE: {e}")))?;
+
+        let Some(r) = row else { return Ok(None) };
+        let job = pg_row_to_job(&r)?;
+        if job.remove_on_complete {
+            sqlx::query("DELETE FROM minion_jobs WHERE id = $1")
+                .bind(id)
+                .execute(pool)
+                .await
+                .map_err(|e| Error::engine(format!("complete_job remove_on_complete: {e}")))?;
+        }
+        Ok(Some(job))
+    }
+
+    async fn fail_job(
+        &self,
+        id: i64,
+        lock_token: &str,
+        error_text: &str,
+        outcome: crate::minions::types::FailOutcome,
+        backoff_ms: i64,
+    ) -> Result<Option<crate::minions::types::MinionJob>> {
+        use crate::minions::types::FailOutcome;
+
+        let pool = self.pool()?;
+        let new_status = outcome.as_status();
+        let stacktrace = serde_json::json!([error_text]);
+
+        // Delayed retry sets delay_until = now + backoff and leaves finished_at
+        // NULL; terminal outcomes clear delay_until and stamp finished_at. The
+        // CASE arms are driven by $5 (delay flag) so a single statement covers
+        // both paths.
+        let is_delayed = outcome == FailOutcome::Delayed;
+        let row = sqlx::query(&format!(
+            "UPDATE minion_jobs SET status = $1, error_text = $2, \
+                attempts_made = attempts_made + 1, stacktrace = $3, \
+                delay_until = CASE WHEN $4 THEN now() + ($5::double precision * interval '1 millisecond') ELSE NULL END, \
+                finished_at = CASE WHEN $4 THEN NULL ELSE now() END, \
+                lock_token = NULL, lock_until = NULL, updated_at = now() \
+             WHERE id = $6 AND status = 'active' AND lock_token = $7 \
+             RETURNING {MINION_JOB_SELECT}"
+        ))
+        .bind(new_status.as_str())
+        .bind(error_text)
+        .bind(stacktrace)
+        .bind(is_delayed)
+        .bind(backoff_ms)
+        .bind(id)
+        .bind(lock_token)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::engine(format!("fail_job UPDATE: {e}")))?;
+
+        let Some(r) = row else { return Ok(None) };
+        let job = pg_row_to_job(&r)?;
+        if outcome.is_terminal() && job.remove_on_fail {
+            sqlx::query("DELETE FROM minion_jobs WHERE id = $1")
+                .bind(id)
+                .execute(pool)
+                .await
+                .map_err(|e| Error::engine(format!("fail_job remove_on_fail: {e}")))?;
+        }
+        Ok(Some(job))
+    }
+
+    // MINION_JOB_METHODS_ANCHOR
+
+    async fn renew_job_lock(
+        &self,
+        id: i64,
+        lock_token: &str,
+        lock_duration_ms: i64,
+    ) -> Result<bool> {
+        let pool = self.pool()?;
+        let result = sqlx::query(
+            "UPDATE minion_jobs SET \
+                lock_until = now() + ($1::double precision * interval '1 millisecond'), \
+                updated_at = now() \
+             WHERE id = $2 AND lock_token = $3 AND status = 'active'",
+        )
+        .bind(lock_duration_ms)
+        .bind(id)
+        .bind(lock_token)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("renew_job_lock UPDATE: {e}")))?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn retry_job(&self, id: i64) -> Result<Option<crate::minions::types::MinionJob>> {
+        let pool = self.pool()?;
+        let row = sqlx::query(&format!(
+            "UPDATE minion_jobs SET status = 'waiting', error_text = NULL, \
+                lock_token = NULL, lock_until = NULL, delay_until = NULL, \
+                finished_at = NULL, updated_at = now() \
+             WHERE id = $1 AND status IN ('failed', 'dead') \
+             RETURNING {MINION_JOB_SELECT}"
+        ))
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::engine(format!("retry_job UPDATE: {e}")))?;
+        match row {
+            Some(r) => Ok(Some(pg_row_to_job(&r)?)),
+            None => Ok(None),
+        }
+    }
+
+    // --- Background sweeps (1-1-2 C) ---
+    //
+    // Each sweep is a single `UPDATE ... RETURNING` against the TIMESTAMPTZ
+    // scheduling columns, compared to `now()`. Pure C-layer state transitions
+    // only: no inbox insert / parent unblock (D-layer, 1-1-3).
+
+    async fn promote_delayed(&self) -> Result<Vec<crate::minions::types::MinionJob>> {
+        let pool = self.pool()?;
+        let rows = sqlx::query(&format!(
+            "UPDATE minion_jobs SET status = 'waiting', delay_until = NULL, \
+                lock_token = NULL, lock_until = NULL, updated_at = now() \
+             WHERE status = 'delayed' AND delay_until IS NOT NULL AND delay_until <= now() \
+             RETURNING {MINION_JOB_SELECT}"
+        ))
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("promote_delayed UPDATE: {e}")))?;
+        rows.iter().map(pg_row_to_job).collect()
+    }
+
+    async fn handle_timeouts(&self) -> Result<Vec<crate::minions::types::MinionJob>> {
+        let pool = self.pool()?;
+        // Active, per-job timeout elapsed, lease still held. A stalled job with
+        // an expired lease (lock_until < now) is left for handle_stalled.
+        let rows = sqlx::query(&format!(
+            "UPDATE minion_jobs SET status = 'dead', error_text = 'timeout exceeded', \
+                lock_token = NULL, lock_until = NULL, finished_at = now(), updated_at = now() \
+             WHERE status = 'active' AND timeout_at IS NOT NULL AND timeout_at < now() \
+               AND lock_until IS NOT NULL AND lock_until > now() \
+             RETURNING {MINION_JOB_SELECT}"
+        ))
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("handle_timeouts UPDATE: {e}")))?;
+        rows.iter().map(pg_row_to_job).collect()
+    }
+
+    async fn handle_stalled(&self) -> Result<crate::minions::types::StalledSweep> {
+        use crate::minions::types::StalledSweep;
+
+        let pool = self.pool()?;
+
+        // Stalled candidates = active with an expired lease. Partition on
+        // `stalled_counter + 1 < max_stalled` (requeue, bump + waiting) vs
+        // `>=` (dead-letter, bump + dead + reason). Two UPDATE ... RETURNING
+        // statements mirror the InMemory/libsql grouping; the WHERE guards are
+        // disjoint so a job lands in exactly one arm within a single sweep.
+        let requeued = sqlx::query(&format!(
+            "UPDATE minion_jobs SET status = 'waiting', \
+                stalled_counter = stalled_counter + 1, \
+                lock_token = NULL, lock_until = NULL, updated_at = now() \
+             WHERE status = 'active' AND lock_until IS NOT NULL AND lock_until < now() \
+               AND stalled_counter + 1 < max_stalled \
+             RETURNING {MINION_JOB_SELECT}"
+        ))
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("handle_stalled requeue UPDATE: {e}")))?;
+
+        let dead = sqlx::query(&format!(
+            "UPDATE minion_jobs SET status = 'dead', \
+                stalled_counter = stalled_counter + 1, \
+                error_text = 'max stalled count exceeded', \
+                lock_token = NULL, lock_until = NULL, \
+                finished_at = now(), updated_at = now() \
+             WHERE status = 'active' AND lock_until IS NOT NULL AND lock_until < now() \
+               AND stalled_counter + 1 >= max_stalled \
+             RETURNING {MINION_JOB_SELECT}"
+        ))
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("handle_stalled dead UPDATE: {e}")))?;
+
+        Ok(StalledSweep {
+            requeued: requeued
+                .iter()
+                .map(pg_row_to_job)
+                .collect::<Result<Vec<_>>>()?,
+            dead: dead.iter().map(pg_row_to_job).collect::<Result<Vec<_>>>()?,
+        })
+    }
+
+    async fn handle_wall_clock_timeouts(
+        &self,
+        lock_duration_ms: i64,
+    ) -> Result<Vec<crate::minions::types::MinionJob>> {
+        let pool = self.pool()?;
+        // Threshold computed in SQL. EXTRACT(EPOCH FROM (now()-started_at))*1000
+        // = elapsed ms. CASE: timeout_ms present -> timeout_ms*2; else
+        // lock_duration_ms*2*GREATEST(max_stalled, 1). Ignores lease state —
+        // catches jobs wedged while holding a DB resource.
+        let rows = sqlx::query(&format!(
+            "UPDATE minion_jobs SET status = 'dead', \
+                error_text = 'wall-clock timeout exceeded', \
+                lock_token = NULL, lock_until = NULL, finished_at = now(), updated_at = now() \
+             WHERE status = 'active' AND started_at IS NOT NULL \
+               AND EXTRACT(EPOCH FROM (now() - started_at)) * 1000 > \
+                   CASE WHEN timeout_ms IS NOT NULL THEN timeout_ms * 2 \
+                        ELSE $1::double precision * 2 * GREATEST(max_stalled, 1) END \
+             RETURNING {MINION_JOB_SELECT}"
+        ))
+        .bind(lock_duration_ms)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("handle_wall_clock_timeouts UPDATE: {e}")))?;
+        rows.iter().map(pg_row_to_job).collect()
+    }
+
+    async fn set_started_at_for_test(&self, id: i64, started_at_rfc3339: &str) -> Result<()> {
+        let pool = self.pool()?;
+        sqlx::query("UPDATE minion_jobs SET started_at = $1::timestamptz WHERE id = $2")
+            .bind(started_at_rfc3339)
+            .bind(id as i32)
+            .execute(pool)
+            .await
+            .map_err(|e| Error::engine(format!("set_started_at_for_test UPDATE: {e}")))?;
+        Ok(())
+    }
+
+    async fn set_timeout_at_for_test(&self, id: i64, timeout_at_ms: i64) -> Result<()> {
+        let pool = self.pool()?;
+        // epoch-ms bigint -> TIMESTAMPTZ via to_timestamp(seconds).
+        sqlx::query(
+            "UPDATE minion_jobs SET timeout_at = to_timestamp($1::double precision / 1000.0) \
+             WHERE id = $2",
+        )
+        .bind(timeout_at_ms)
+        .bind(id as i32)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("set_timeout_at_for_test UPDATE: {e}")))?;
+        Ok(())
+    }
+}
+
+// ─── postgres minion job helpers ──────────────────────────────────────────
+
+/// Column projection for `minion_jobs` reads. Record columns (created_at/…)
+/// are cast `::text` so `try_get::<String>` decodes them as RFC-3339 strings
+/// (matching the SQLite TEXT columns); scheduling columns (lock_until/…) are
+/// converted to epoch-**ms** `bigint` so both backends yield `Option<i64>`.
+/// JSONB columns decode directly to `serde_json::Value`.
+const MINION_JOB_SELECT: &str = "id, name, queue, status, priority, data, \
+    max_attempts, attempts_made, attempts_started, backoff_type, backoff_delay, \
+    backoff_jitter, stalled_counter, max_stalled, lock_token, \
+    (EXTRACT(EPOCH FROM lock_until) * 1000)::bigint AS lock_until, \
+    (EXTRACT(EPOCH FROM delay_until) * 1000)::bigint AS delay_until, \
+    parent_job_id, on_child_fail, tokens_input, tokens_output, tokens_cache_read, \
+    depth, max_children, timeout_ms, \
+    (EXTRACT(EPOCH FROM timeout_at) * 1000)::bigint AS timeout_at, \
+    remove_on_complete, remove_on_fail, idempotency_key, quiet_hours, stagger_key, \
+    result, progress, error_text, stacktrace, \
+    created_at::text AS created_at, started_at::text AS started_at, \
+    finished_at::text AS finished_at, updated_at::text AS updated_at";
+
+/// Map a `minion_jobs` PgRow to a [`MinionJob`]. Column names must match the
+/// aliases in [`MINION_JOB_SELECT`]. TIMESTAMPTZ record columns arrive as
+/// `String` (cast `::text`), scheduling columns as `Option<i64>` epoch-ms, and
+/// JSONB as `serde_json::Value`.
+fn pg_row_to_job(row: &sqlx::postgres::PgRow) -> Result<crate::minions::types::MinionJob> {
+    use crate::minions::types::{BackoffType, ChildFailPolicy, MinionJob, MinionJobStatus};
+
+    macro_rules! get {
+        ($name:literal, $ty:ty) => {
+            row.try_get::<$ty, _>($name)
+                .map_err(|e| Error::engine(format!(concat!("job decode ", $name, ": {}"), e)))?
+        };
+    }
+
+    let status_str: String = get!("status", String);
+    let backoff_str: String = get!("backoff_type", String);
+    let on_child_fail_str: String = get!("on_child_fail", String);
+
+    // stacktrace is JSONB (array of strings); tolerate NULL / non-array.
+    let stacktrace: Vec<String> = match row.try_get::<Option<serde_json::Value>, _>("stacktrace") {
+        Ok(Some(v)) => serde_json::from_value(v).unwrap_or_default(),
+        _ => Vec::new(),
+    };
+
+    Ok(MinionJob {
+        id: i64::from(get!("id", i32)),
+        name: get!("name", String),
+        queue: get!("queue", String),
+        status: MinionJobStatus::parse(&status_str)
+            .ok_or_else(|| Error::engine(format!("job decode status: unknown '{status_str}'")))?,
+        priority: get!("priority", i32),
+        data: get!("data", serde_json::Value),
+        max_attempts: get!("max_attempts", i32),
+        attempts_made: get!("attempts_made", i32),
+        attempts_started: get!("attempts_started", i32),
+        backoff_type: BackoffType::parse(&backoff_str).ok_or_else(|| {
+            Error::engine(format!("job decode backoff_type: unknown '{backoff_str}'"))
+        })?,
+        backoff_delay: get!("backoff_delay", i32),
+        backoff_jitter: get!("backoff_jitter", f64),
+        stalled_counter: get!("stalled_counter", i32),
+        max_stalled: get!("max_stalled", i32),
+        lock_token: get!("lock_token", Option<String>),
+        lock_until: get!("lock_until", Option<i64>),
+        delay_until: get!("delay_until", Option<i64>),
+        parent_job_id: get!("parent_job_id", Option<i32>).map(i64::from),
+        on_child_fail: ChildFailPolicy::parse(&on_child_fail_str).ok_or_else(|| {
+            Error::engine(format!(
+                "job decode on_child_fail: unknown '{on_child_fail_str}'"
+            ))
+        })?,
+        tokens_input: i64::from(get!("tokens_input", i32)),
+        tokens_output: i64::from(get!("tokens_output", i32)),
+        tokens_cache_read: i64::from(get!("tokens_cache_read", i32)),
+        depth: get!("depth", i32),
+        max_children: get!("max_children", Option<i32>),
+        timeout_ms: get!("timeout_ms", Option<i32>).map(i64::from),
+        timeout_at: get!("timeout_at", Option<i64>),
+        remove_on_complete: get!("remove_on_complete", bool),
+        remove_on_fail: get!("remove_on_fail", bool),
+        idempotency_key: get!("idempotency_key", Option<String>),
+        quiet_hours: get!("quiet_hours", Option<serde_json::Value>),
+        stagger_key: get!("stagger_key", Option<String>),
+        result: get!("result", Option<serde_json::Value>),
+        progress: get!("progress", Option<serde_json::Value>),
+        error_text: get!("error_text", Option<String>),
+        stacktrace,
+        created_at: get!("created_at", String),
+        started_at: get!("started_at", Option<String>),
+        finished_at: get!("finished_at", Option<String>),
+        updated_at: get!("updated_at", String),
+    })
+}
+
+// ─── postgres facts helper ────────────────────────────────────────────────
+
+/// Map a Postgres PgRow to a FactRow. Column projection must match the
+/// SELECT in `list_facts_by_entity`.
+fn pg_row_to_fact(row: &sqlx::postgres::PgRow) -> Result<FactRow> {
+    fn parse_kind(s: &str) -> FactKind {
+        match s {
+            "event" => FactKind::Event,
+            "preference" => FactKind::Preference,
+            "commitment" => FactKind::Commitment,
+            "belief" => FactKind::Belief,
+            _ => FactKind::Fact,
+        }
+    }
+    fn parse_visibility(s: &str) -> FactVisibility {
+        match s {
+            "world" => FactVisibility::World,
+            _ => FactVisibility::Private,
+        }
+    }
+
+    Ok(FactRow {
+        id: row
+            .try_get("id")
+            .map_err(|e| Error::engine(format!("fact id: {e}")))?,
+        source_id: row
+            .try_get("source_id")
+            .map_err(|e| Error::engine(format!("fact source_id: {e}")))?,
+        entity_slug: row
+            .try_get("entity_slug")
+            .map_err(|e| Error::engine(format!("fact entity_slug: {e}")))?,
+        fact: row
+            .try_get("fact")
+            .map_err(|e| Error::engine(format!("fact fact: {e}")))?,
+        kind: {
+            let s: String = row
+                .try_get("kind")
+                .map_err(|e| Error::engine(format!("fact kind: {e}")))?;
+            parse_kind(&s)
+        },
+        visibility: {
+            let s: String = row
+                .try_get("visibility")
+                .map_err(|e| Error::engine(format!("fact visibility: {e}")))?;
+            parse_visibility(&s)
+        },
+        notability: row
+            .try_get("notability")
+            .map_err(|e| Error::engine(format!("fact notability: {e}")))?,
+        context: row
+            .try_get("context")
+            .map_err(|e| Error::engine(format!("fact context: {e}")))?,
+        valid_from: row
+            .try_get("valid_from")
+            .map_err(|e| Error::engine(format!("fact valid_from: {e}")))?,
+        valid_until: row
+            .try_get("valid_until")
+            .map_err(|e| Error::engine(format!("fact valid_until: {e}")))?,
+        expired_at: row
+            .try_get("expired_at")
+            .map_err(|e| Error::engine(format!("fact expired_at: {e}")))?,
+        superseded_by: row
+            .try_get("superseded_by")
+            .map_err(|e| Error::engine(format!("fact superseded_by: {e}")))?,
+        consolidated_at: row
+            .try_get("consolidated_at")
+            .map_err(|e| Error::engine(format!("fact consolidated_at: {e}")))?,
+        consolidated_into: row
+            .try_get("consolidated_into")
+            .map_err(|e| Error::engine(format!("fact consolidated_into: {e}")))?,
+        source: row
+            .try_get("source")
+            .map_err(|e| Error::engine(format!("fact source: {e}")))?,
+        source_session: row
+            .try_get("source_session")
+            .map_err(|e| Error::engine(format!("fact source_session: {e}")))?,
+        confidence: row
+            .try_get("confidence")
+            .map_err(|e| Error::engine(format!("fact confidence: {e}")))?,
+        created_at: {
+            // Postgres TIMESTAMPTZ → Option<String> via try_get
+            row.try_get("created_at")
+                .map_err(|e| Error::engine(format!("fact created_at: {e}")))?
+        },
+    })
 }
 
 fn pg_row_to_file(row: &sqlx::postgres::PgRow) -> Result<FileRow> {

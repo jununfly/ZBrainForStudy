@@ -1,9 +1,9 @@
 //! Phase 7B: Links CRUD integration tests.
 //!
 //! Covers `add_links_batch`, `remove_link`, `get_links`, `get_backlinks`,
-//! `get_backlink_counts`, and `traverse_paths` across InMemory and Libsql
-//! backends. Postgres tests stay in a separate file to keep CI costs manageable
-//! (pg-embed startup ~5-8s per test).
+//! `get_backlink_counts`, and `traverse_paths` across InMemory, Libsql, and
+//! Postgres backends. Postgres cases run against an ephemeral pg-embed
+//! instance and live at the end of this file.
 
 mod support;
 
@@ -695,27 +695,172 @@ async fn libsql_remove_link_with_link_source_filter() {
 }
 
 #[tokio::test]
-async fn libsql_traverse_paths_returns_unsupported() {
+async fn libsql_traverse_paths_basic_bfs() {
     let (engine, _tmp) = init_clean_libsql().await;
     seed_page(&engine, "alpha", "Alpha").await;
     seed_page(&engine, "bravo", "Bravo").await;
+    seed_page(&engine, "charlie", "Charlie").await;
+
+    engine
+        .add_links_batch(&[
+            li("alpha", "bravo", Some("link"), Some("a->b")),
+            li("bravo", "charlie", Some("link"), Some("b->c")),
+        ])
+        .await
+        .expect("add");
+
+    let paths = engine
+        .traverse_paths("alpha", Some(2), None, Some("out"), None, None)
+        .await
+        .expect("traverse_paths");
+
+    assert_eq!(paths.len(), 2, "two edges: a→b, b→c");
+    let ab: Vec<&GraphPath> = paths
+        .iter()
+        .filter(|p| p.from_slug == "alpha" && p.to_slug == "bravo")
+        .collect();
+    assert_eq!(ab.len(), 1);
+    assert_eq!(ab[0].depth, 1);
+    assert_eq!(ab[0].context, "a->b");
+    let bc: Vec<&GraphPath> = paths
+        .iter()
+        .filter(|p| p.from_slug == "bravo" && p.to_slug == "charlie")
+        .collect();
+    assert_eq!(bc.len(), 1);
+    assert_eq!(bc[0].depth, 2);
+    engine.disconnect().await.expect("disconnect");
+}
+
+// ---------------------------------------------------------------------------
+// Postgres integration tests
+// ---------------------------------------------------------------------------
+//
+// Mirror the core links contract against an ephemeral pg-embed instance.
+// Postgres enforces the `pages.source_id REFERENCES sources(id)` FK (SQLite
+// does not by default), so the "default" source must be seeded before
+// `seed_page` can insert pages.
+
+/// Seed the "default" source so `seed_page` satisfies the pages FK.
+async fn pg_seed_default_source(url: &str) {
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(url)
+        .await
+        .expect("source seed pool");
+    sqlx::query("INSERT INTO sources (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING")
+        .bind("default")
+        .bind("default")
+        .execute(&pool)
+        .await
+        .expect("seed default source");
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn postgres_add_links_batch_and_get_links() {
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    pg_seed_default_source(&fix.url).await;
+    seed_page(engine, "alpha", "Alpha").await;
+    seed_page(engine, "bravo", "Bravo").await;
+
+    let inserted = engine
+        .add_links_batch(&[li("alpha", "bravo", Some("link"), Some("[[bravo]]"))])
+        .await
+        .expect("add_links_batch");
+    assert_eq!(inserted, 1);
+
+    let links = engine.get_links("alpha", None).await.expect("get_links");
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].from_slug, "alpha");
+    assert_eq!(links[0].to_slug, "bravo");
+}
+
+#[tokio::test]
+async fn postgres_get_backlinks_and_counts() {
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    pg_seed_default_source(&fix.url).await;
+    seed_page(engine, "alpha", "Alpha").await;
+    seed_page(engine, "bravo", "Bravo").await;
+    seed_page(engine, "charlie", "Charlie").await;
+
+    engine
+        .add_links_batch(&[
+            li("alpha", "bravo", Some("link"), Some("a->b")),
+            li("charlie", "bravo", Some("link"), Some("c->b")),
+        ])
+        .await
+        .expect("add");
+
+    let backlinks = engine
+        .get_backlinks("bravo", None)
+        .await
+        .expect("get_backlinks");
+    assert_eq!(backlinks.len(), 2);
+
+    let counts = engine
+        .get_backlink_counts(&["bravo".to_string(), "alpha".to_string()])
+        .await
+        .expect("get_backlink_counts");
+    assert_eq!(counts.get("bravo").copied(), Some(2));
+    assert_eq!(counts.get("alpha").copied().unwrap_or(0), 0);
+}
+
+#[tokio::test]
+async fn postgres_remove_link() {
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    pg_seed_default_source(&fix.url).await;
+    seed_page(engine, "alpha", "Alpha").await;
+    seed_page(engine, "bravo", "Bravo").await;
 
     engine
         .add_links_batch(&[li("alpha", "bravo", Some("link"), Some("c"))])
         .await
         .expect("add");
+    assert_eq!(engine.get_links("alpha", None).await.unwrap().len(), 1);
 
-    let result = engine
+    engine
+        .remove_link("alpha", "bravo", Some("link"), None, None, None)
+        .await
+        .expect("remove_link");
+    assert_eq!(engine.get_links("alpha", None).await.unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn postgres_traverse_paths_basic_bfs() {
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    pg_seed_default_source(&fix.url).await;
+    seed_page(engine, "alpha", "Alpha").await;
+    seed_page(engine, "bravo", "Bravo").await;
+    seed_page(engine, "charlie", "Charlie").await;
+
+    engine
+        .add_links_batch(&[
+            li("alpha", "bravo", Some("link"), Some("a->b")),
+            li("bravo", "charlie", Some("link"), Some("b->c")),
+        ])
+        .await
+        .expect("add");
+
+    let paths = engine
         .traverse_paths("alpha", Some(2), None, Some("out"), None, None)
-        .await;
-    assert!(
-        result.is_err(),
-        "libsql traverse_paths should return Unsupported"
-    );
-    let err = result.unwrap_err().to_string();
-    assert!(
-        err.contains("Unsupported") || err.contains("unsupported"),
-        "error should mention unsupported: {err}"
-    );
-    engine.disconnect().await.expect("disconnect");
+        .await
+        .expect("traverse_paths");
+
+    assert_eq!(paths.len(), 2, "two edges: a→b, b→c");
+    let ab: Vec<&GraphPath> = paths
+        .iter()
+        .filter(|p| p.from_slug == "alpha" && p.to_slug == "bravo")
+        .collect();
+    assert_eq!(ab.len(), 1);
+    assert_eq!(ab[0].depth, 1);
+    let bc: Vec<&GraphPath> = paths
+        .iter()
+        .filter(|p| p.from_slug == "bravo" && p.to_slug == "charlie")
+        .collect();
+    assert_eq!(bc.len(), 1);
+    assert_eq!(bc[0].depth, 2);
 }

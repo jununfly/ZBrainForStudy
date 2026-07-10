@@ -8,11 +8,12 @@
 //! `docs/plans/20260526/04-plan.md`.
 
 pub mod admin_queries;
+pub mod ai;
+pub mod budget;
 pub mod chunkers;
 pub mod cjk;
 pub mod embedding;
 pub mod embedding_context;
-pub mod embedding_pricing;
 pub mod facts_fence;
 pub mod import;
 pub mod scope;
@@ -30,6 +31,7 @@ pub mod ingestion;
 pub mod libsql;
 pub mod llm;
 pub mod migration;
+pub mod minions;
 pub mod operation;
 pub mod postgres;
 pub mod progress;
@@ -51,7 +53,7 @@ pub use capture::{
 };
 pub use error::{from_std_error, Error, Result, StructuredError};
 pub use types::{
-    is_base_page_type, CRMode, DuplicatePage, EffectiveDateSource, EntityCount, FactInsertStatus,
+    is_base_page_type, AdjacencyRow, CRMode, DuplicatePage, EffectiveDateSource, EntityCount, FactInsertStatus,
     FactKind, FactListOpts, FactRow, FactVisibility, FactsHealth, FileRow, FileSpec,
     FindDuplicatePageOpts, GraphNode, GraphNodeLink, GraphPath, Link, LinkBatchInput, NewFact,
     OrphanPage, PageKind, PageRef, PageType, PurgeResult, RefreshPageBodyArgs, Take,

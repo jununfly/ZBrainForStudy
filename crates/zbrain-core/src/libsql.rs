@@ -33,17 +33,19 @@ use crate::oauth_queries::{
     UpdateClientTtlResponse,
 };
 use crate::engine::{
-    page_sort_sql, BrainEngine, CreateSourceInput, EngineConfig, EngineKind, GetPageOpts, Page,
-    PageFilters, PageInput, PageSort, ResolveSlugsOpts, SourceRow, UpdateSourceInput,
-    is_valid_source_id,
+    fuse_and_boost, page_sort_sql, BrainEngine, CreateSourceInput, EngineConfig, EngineKind,
+    GetPageOpts, Page, PageFilters, PageInput, PageSort, ResolveSlugsOpts, SearchOpts,
+    SearchResult, SourceRow, UpdateSourceInput, is_valid_source_id,
 };
 use crate::error::{Error, Result};
 use crate::migration::{Migration, MigrationRegistry};
 use crate::time::current_utc_iso8601;
 use crate::types::{
-    CRMode, DuplicatePage, EffectiveDateSource, FileRow, FileSpec, FindDuplicatePageOpts,
-    GraphPath, Link, LinkBatchInput, OrphanPage, PageKind, PageRef, PageVersion, PurgeResult,
-    RawData, RefreshPageBodyArgs, Take, TakeInput, UpsertFileResult, UpsertTakesResult,
+    CRMode, DuplicatePage, EffectiveDateSource, EntityCount, FactInsertStatus, FactKind,
+    FactListOpts, FactRow, FactVisibility, FactsHealth, FileRow, FileSpec,
+    FindDuplicatePageOpts, GraphPath, Link, LinkBatchInput, NewFact, OrphanPage, PageKind, PageRef,
+    PageVersion, PurgeResult, RawData, RefreshPageBodyArgs, Take, TakeInput, UpsertFileResult,
+    UpsertTakesResult, AdjacencyRow,
 };
 
 /// libsql-specific migration implementation. Wraps raw SQL from
@@ -115,6 +117,8 @@ const MIGRATION_0010: &str = include_str!("../migrations-sqlite/0010_sources_ful
 const MIGRATION_0012: &str = include_str!("../migrations-sqlite/0012_takes_full_columns.sql");
 /// Create `facts` table with full 27-column TS schema (PG→SQLite port).
 const MIGRATION_0013: &str = include_str!("../migrations-sqlite/0013_facts.sql");
+/// Create `minion_jobs` table — SQLite port of the BullMQ-inspired job queue.
+const MIGRATION_0014: &str = include_str!("../migrations-sqlite/0014_minion_jobs.sql");
 
 /// Legacy string array — REMOVED in favor of MigrationRegistry.
 /// Use LIBQL_MIGRATIONS instead.
@@ -205,6 +209,11 @@ pub static LIBQL_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 13,
         name: "facts",
         sql: MIGRATION_0013,
+    }));
+    registry.add(Box::new(LibsqlMigration {
+        version: 14,
+        name: "minion_jobs",
+        sql: MIGRATION_0014,
     }));
 
     registry
@@ -858,6 +867,10 @@ impl BrainEngine for LibsqlEngine {
             None
         };
 
+        // NOTE: `embedding` column is NOT written here — page-level embedding
+        // has no write path, so `pages.embedding` stays NULL and the vector
+        // half of search always degrades to lexical-only.
+        // registered in docs/plans/KNOWN-GAPS.md (G24).
         let sql = "INSERT INTO pages (\
                 source_id, slug, type, page_kind, title, compiled_truth, timeline, \
                 frontmatter, content_hash, updated_at, effective_date, \
@@ -1159,6 +1172,67 @@ impl BrainEngine for LibsqlEngine {
             }
         }
         Ok(out)
+    }
+
+    /// Real hybrid search over the libsql-backed store.
+    ///
+    /// Overrides the `BrainEngine::search_pages` trait default (which returns
+    /// an empty Vec) so the production CLI `query` path — which constructs a
+    /// `LibsqlEngine` — actually returns results instead of silently nothing.
+    ///
+    /// Backend-specific half only: materialize the live (non-deleted),
+    /// optionally source-scoped candidate pages with the full 30-column
+    /// projection (so `full_row_to_page` recovers `embedding` for the vector
+    /// path), then hand the owned `Vec<Page>` to the shared, backend-agnostic
+    /// `fuse_and_boost` core (lexical + vector RRF fusion + snippet +
+    /// salience/recency boost). InMemory and libsql therefore share one scoring
+    /// truth instead of two drifting copies.
+    ///
+    /// No candidate pre-filtering by keyword happens in SQL: like InMemory, the
+    /// lexical match is a case-insensitive substring scan done in `fuse_and_boost`
+    /// (over title / compiled_truth / frontmatter with per-field weights), which
+    /// SQL `LIKE` cannot reproduce faithfully (weighting, frontmatter JSON, the
+    /// vector path). Pulling the live candidate set into memory and fusing there
+    /// keeps parity exact. A future FTS5 / sqlite-vec push-down is possible but
+    /// out of scope (registered in docs/plans/KNOWN-GAPS.md).
+    async fn search_pages(&self, opts: &SearchOpts) -> Result<Vec<SearchResult>> {
+        let conn = self.conn().await?;
+
+        // Candidate retrieval: full 30-column projection (same column order as
+        // `full_row_to_page`), live rows only, optionally source-scoped.
+        // `(?1 IS NULL OR source_id = ?1)` leaves `None` unscoped, mirroring
+        // get_page's source filter.
+        let source_id_param = opts.source_id.as_deref();
+        let mut rows = conn
+            .query(
+                "SELECT id, slug, type, page_kind, title, compiled_truth, timeline, \
+                        frontmatter, content_hash, emotional_weight, created_at, updated_at, \
+                        deleted_at, last_retrieved_at, effective_date, effective_date_source, \
+                        import_filename, salience_touched_at, salience_score, generation, \
+                        embedding, chunker_version, source_path, source_id, source_kind, \
+                        source_uri, ingested_via, ingested_at, contextual_retrieval_mode, \
+                        corpus_generation \
+                 FROM pages \
+                 WHERE deleted_at IS NULL \
+                   AND (?1 IS NULL OR source_id = ?1)",
+                ::libsql::params![source_id_param],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("search_pages candidate query failed: {e}")))?;
+
+        let mut candidates: Vec<Page> = Vec::new();
+        loop {
+            let next = rows
+                .next()
+                .await
+                .map_err(|e| Error::engine(format!("search_pages row fetch failed: {e}")))?;
+            match next {
+                Some(row) => candidates.push(full_row_to_page(&row)?),
+                None => break,
+            }
+        }
+
+        fuse_and_boost(self, &candidates, opts).await
     }
 
     async fn resolve_slugs(&self, partial: &str, opts: &ResolveSlugsOpts) -> Result<Vec<String>> {
@@ -2247,6 +2321,121 @@ impl BrainEngine for LibsqlEngine {
         Ok(out)
     }
 
+    async fn touch_salience(&self, slug: &str, source_id: &str) -> Result<bool> {
+        let conn = self.conn().await?;
+        let sql = "UPDATE pages SET salience_touched_at = datetime('now') \
+                   WHERE slug = ?1 AND source_id = ?2 AND deleted_at IS NULL";
+        let rows_affected = conn
+            .execute(sql, ::libsql::params![slug, source_id])
+            .await
+            .map_err(|e| Error::engine(format!("touch_salience execute failed: {e}")))?;
+        Ok(rows_affected > 0)
+    }
+
+    async fn get_recent_salience(
+        &self,
+        days: u32,
+        limit: u32,
+        slug_prefix: Option<&str>,
+    ) -> Result<Vec<crate::types::SalienceResult>> {
+        let now = chrono::Utc::now();
+        let boundary = now - chrono::Duration::days(days as i64);
+        let boundary_str = boundary.to_rfc3339();
+        let limit = limit.min(100);
+
+        let conn = self.conn().await?;
+        let mut params: Vec<::libsql::Value> = Vec::new();
+        params.push(::libsql::Value::from(boundary_str.clone()));
+
+        let mut prefix_condition = String::new();
+        if let Some(pfx) = slug_prefix {
+            let escaped = pfx.replace('%', "\\%").replace('_', "\\_") + "%";
+            params.push(::libsql::Value::from(escaped));
+            prefix_condition = format!(
+                "AND p.slug LIKE ?{} ESCAPE '\\'",
+                params.len()
+            );
+        }
+
+        params.push(::libsql::Value::from(limit as i64));
+
+        let sql = format!(
+            "SELECT p.slug, p.source_id, p.title, p.type, p.updated_at, \
+                    COALESCE(p.emotional_weight, 0.0) AS emotional_weight, \
+                    COUNT(DISTINCT t.id) AS take_count, \
+                    COALESCE(AVG(t.weight), 0.0) AS take_avg_weight \
+             FROM pages p \
+             LEFT JOIN takes t ON t.page_id = p.id AND t.active = 1 \
+             WHERE p.deleted_at IS NULL \
+               AND CASE WHEN p.salience_touched_at > p.updated_at \
+                        THEN p.salience_touched_at \
+                        ELSE p.updated_at END >= ?1 \
+               {prefix_condition} \
+             GROUP BY p.id, p.slug, p.source_id, p.title, p.type, p.updated_at, p.emotional_weight \
+             ORDER BY p.updated_at DESC \
+             LIMIT ?{limit_idx}",
+            prefix_condition = prefix_condition,
+            limit_idx = params.len(),
+        );
+
+        let mut rows = conn
+            .query(&sql, ::libsql::params_from_iter(params))
+            .await
+            .map_err(|e| Error::engine(format!("get_recent_salience query failed: {e}")))?;
+
+        let mut raw: Vec<(String, String, String, String, String, f64, u32, f64)> = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("get_recent_salience row fetch failed: {e}")))?
+        {
+            let slug: String = row.get(0).map_err(|e| Error::engine(format!("decode slug: {e}")))?;
+            let source_id: String = row.get(1).map_err(|e| Error::engine(format!("decode source_id: {e}")))?;
+            let title: String = row.get(2).map_err(|e| Error::engine(format!("decode title: {e}")))?;
+            let page_type: String = row.get(3).map_err(|e| Error::engine(format!("decode type: {e}")))?;
+            let updated_at: String = row.get(4).map_err(|e| Error::engine(format!("decode updated_at: {e}")))?;
+            let emotional_weight: f64 = row.get(5).map_err(|e| Error::engine(format!("decode ew: {e}")))?;
+            let take_count_i64: i64 = row.get(6).map_err(|e| Error::engine(format!("decode take_count: {e}")))?;
+            #[allow(clippy::cast_sign_loss)]
+            let take_count = take_count_i64 as u32;
+            let take_avg_weight: f64 = row.get(7).map_err(|e| Error::engine(format!("decode take_avg: {e}")))?;
+            raw.push((slug, source_id, title, page_type, updated_at, emotional_weight, take_count, take_avg_weight));
+        }
+
+        // Compute score in Rust (libsql lacks ln() SQL function).
+        let mut results: Vec<crate::types::SalienceResult> = raw
+            .into_iter()
+            .map(|(slug, source_id, title, pt, updated_at, ew, take_count, take_avg_weight)| {
+                let days_old = chrono::DateTime::parse_from_rfc3339(&updated_at)
+                    .ok()
+                    .map(|dt| {
+                        let dur = now.signed_duration_since(dt.with_timezone(&chrono::Utc));
+                        dur.num_milliseconds() as f64 / (86400.0 * 1000.0)
+                    })
+                    .unwrap_or(0.0);
+                let recency_decay = 1.0 / (1.0 + days_old.max(0.0));
+                #[allow(clippy::cast_precision_loss)]
+                let score = ew * 5.0 + (1.0 + take_count as f64).ln() + recency_decay;
+
+                crate::types::SalienceResult {
+                    slug,
+                    source_id,
+                    title,
+                    page_type: pt,
+                    updated_at,
+                    emotional_weight: ew,
+                    take_count,
+                    take_avg_weight,
+                    score,
+                }
+            })
+            .collect();
+
+        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.truncate(limit as usize);
+        Ok(results)
+    }
+
     // --- Phase 7A: Takes ---
 
     async fn get_takes_for_page(&self, page_id: u64) -> Result<Vec<Take>> {
@@ -2609,22 +2798,1496 @@ impl BrainEngine for LibsqlEngine {
         Ok(counts)
     }
 
+    async fn get_adjacency_boosts(
+        &self,
+        page_ids: &[u64],
+    ) -> crate::Result<std::collections::HashMap<u64, AdjacencyRow>> {
+        if page_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let conn = self.conn().await?;
+
+        let value_placeholders: Vec<String> = (0..page_ids.len()).map(|i| format!("(?{})", i + 1)).collect();
+        let sql = format!(
+            "WITH input_ids(id) AS (VALUES {}) \
+             ,targets AS ( \
+               SELECT id, COALESCE(source_id, 'default') AS source_id \
+               FROM pages \
+               WHERE id IN (SELECT id FROM input_ids) \
+                 AND deleted_at IS NULL \
+             ) \
+             SELECT \
+               l.to_page_id, \
+               COUNT(DISTINCT l.from_page_id) AS hits, \
+               COUNT(DISTINCT \
+                 CASE WHEN COALESCE(p.source_id, 'default') <> t.source_id \
+                      THEN COALESCE(p.source_id, 'default') END \
+               ) AS cross_source_hits \
+             FROM links l \
+             JOIN pages p ON p.id = l.from_page_id AND p.deleted_at IS NULL \
+             JOIN targets t ON t.id = l.to_page_id \
+             WHERE l.from_page_id IN (SELECT id FROM input_ids) \
+               AND l.to_page_id IN (SELECT id FROM input_ids) \
+             GROUP BY l.to_page_id \
+             HAVING COUNT(DISTINCT l.from_page_id) >= 1",
+            value_placeholders.join(",")
+        );
+
+        let mut rows = conn
+            .query(&sql, ::libsql::params::Params::Positional(
+                page_ids.iter().map(|&id| ::libsql::Value::from(id as i64)).collect()
+            ))
+            .await
+            .map_err(|e| Error::engine(format!("get_adjacency_boosts query: {e}")))?;
+
+        let mut result: std::collections::HashMap<u64, AdjacencyRow> = std::collections::HashMap::new();
+
+        while let Some(row) = rows.next().await
+            .map_err(|e| Error::engine(format!("get_adjacency_boosts row: {e}")))?
+        {
+            let to_page_id: i64 = row.get(0)
+                .map_err(|e| Error::engine(format!("get_adjacency_boosts decode to_page_id: {e}")))?;
+            let hits: i64 = row.get(1)
+                .map_err(|e| Error::engine(format!("get_adjacency_boosts decode hits: {e}")))?;
+            let cross_source_hits: i64 = row.get(2)
+                .map_err(|e| Error::engine(format!("get_adjacency_boosts decode cross_source_hits: {e}")))?;
+
+            result.insert(
+                to_page_id as u64,
+                AdjacencyRow {
+                    hits: hits as u32,
+                    cross_source_hits: cross_source_hits as u32,
+                },
+            );
+        }
+
+        Ok(result)
+    }
+
+    // ─── Facts (Phase 7B) ──────────────────────────────────────────────────
+
+    async fn insert_fact(
+        &self,
+        source_id: &str,
+        entity_slug: &str,
+        input: &NewFact,
+    ) -> Result<FactInsertStatus> {
+        let now = current_utc_iso8601();
+        let conn = self.conn().await?;
+        let tx = conn
+            .transaction()
+            .await
+            .map_err(|e| Error::engine(format!("insert_fact begin tx: {e}")))?;
+
+        let kind = input
+            .kind
+            .as_ref()
+            .map(|k| k.to_string())
+            .unwrap_or_else(|| "fact".to_string());
+        let visibility = input
+            .visibility
+            .as_ref()
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "private".to_string());
+        let notability = input
+            .notability
+            .as_deref()
+            .unwrap_or("medium");
+
+        // Step 1: Check for exact duplicate
+        let mut dup_rows = tx
+            .query(
+                "SELECT id FROM facts \
+                 WHERE source_id = ?1 AND entity_slug = ?2 AND fact = ?3 \
+                   AND kind = ?4 AND expired_at IS NULL AND superseded_by IS NULL \
+                 LIMIT 1",
+                ::libsql::params![source_id, entity_slug, input.fact.as_str(), kind.as_str()],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("insert_fact dup check: {e}")))?;
+        if (dup_rows.next().await)
+            .map_err(|e| Error::engine(format!("insert_fact dup row: {e}")))?
+            .is_some()
+        {
+            return Ok(FactInsertStatus::Duplicate);
+        }
+
+        // Step 2: Find supersede target (only if confidence > 0.9)
+        let supersede_threshold = 0.9;
+        let supersede_target_id: Option<i64> =
+            if input.confidence.unwrap_or(1.0) > supersede_threshold {
+                let mut rows = tx
+                    .query(
+                        "SELECT id FROM facts \
+                         WHERE source_id = ?1 AND entity_slug = ?2 AND kind = ?3 \
+                           AND expired_at IS NULL AND superseded_by IS NULL \
+                         LIMIT 1",
+                        ::libsql::params![source_id, entity_slug, kind.as_str()],
+                    )
+                    .await
+                    .map_err(|e| Error::engine(format!("insert_fact supersede check: {e}")))?;
+                if let Some(row) = rows
+                    .next()
+                    .await
+                    .map_err(|e| Error::engine(format!("insert_fact supersede row: {e}")))?
+                {
+                    Some(
+                        row.get::<i64>(0)
+                            .map_err(|e| Error::engine(format!("insert_fact supersede id: {e}")))?,
+                    )
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+        let valid_from = input
+            .valid_from
+            .clone()
+            .unwrap_or_else(|| now.clone());
+
+        // Step 3: INSERT new fact
+        tx.execute(
+            "INSERT INTO facts \
+                  (source_id, entity_slug, fact, kind, visibility, notability, \
+                   context, valid_from, valid_until, source, source_session, \
+                   confidence) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            ::libsql::params![
+                source_id,
+                entity_slug,
+                input.fact.as_str(),
+                kind.as_str(),
+                visibility.as_str(),
+                notability,
+                input.context.as_deref().unwrap_or(""),
+                valid_from.as_str(),
+                input.valid_until.as_deref().unwrap_or(""),
+                input.source.as_str(),
+                input.source_session.as_deref().unwrap_or(""),
+                input.confidence.unwrap_or(1.0),
+            ],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("insert_fact INSERT: {e}")))?;
+
+        // Get new row ID
+        let mut id_rows = tx
+            .query("SELECT last_insert_rowid()", ())
+            .await
+            .map_err(|e| Error::engine(format!("insert_fact last_rowid: {e}")))?;
+        let new_id: i64 = if let Some(row) = id_rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("insert_fact last_rowid row: {e}")))?
+        {
+            row.get::<i64>(0)
+                .map_err(|e| Error::engine(format!("insert_fact last_rowid val: {e}")))?
+        } else {
+            0
+        };
+
+        // Step 4: UPDATE supersede target
+        if let Some(old_id) = supersede_target_id {
+            tx.execute(
+                "UPDATE facts SET superseded_by = ?1 WHERE id = ?2",
+                ::libsql::params![new_id, old_id],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("insert_fact supersede UPDATE: {e}")))?;
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| Error::engine(format!("insert_fact commit: {e}")))?;
+
+        if supersede_target_id.is_some() {
+            Ok(FactInsertStatus::Superseded)
+        } else {
+            Ok(FactInsertStatus::Inserted)
+        }
+    }
+
+    async fn list_facts_by_entity(
+        &self,
+        source_id: &str,
+        entity_slug: &str,
+        opts: &FactListOpts,
+    ) -> Result<Vec<FactRow>> {
+        let conn = self.conn().await?;
+
+        let mut sql = String::from(
+            "SELECT id, source_id, entity_slug, fact, kind, visibility, \
+                    notability, context, valid_from, valid_until, expired_at, \
+                    superseded_by, consolidated_at, consolidated_into, source, \
+                    source_session, confidence, created_at \
+             FROM facts \
+             WHERE source_id = ? AND entity_slug = ?",
+        );
+
+        if opts.active_only.unwrap_or(false) {
+            sql.push_str(" AND expired_at IS NULL AND superseded_by IS NULL");
+        }
+        if let Some(ref kinds) = opts.kinds {
+            if !kinds.is_empty() {
+                sql.push_str(" AND kind IN (");
+                for (i, _) in kinds.iter().enumerate() {
+                    if i > 0 {
+                        sql.push(',');
+                    }
+                    sql.push('?');
+                }
+                sql.push(')');
+            }
+        }
+        if let Some(ref vs) = opts.visibility {
+            if !vs.is_empty() {
+                sql.push_str(" AND visibility IN (");
+                for (i, _) in vs.iter().enumerate() {
+                    if i > 0 {
+                        sql.push(',');
+                    }
+                    sql.push('?');
+                }
+                sql.push(')');
+            }
+        }
+
+        sql.push_str(" ORDER BY created_at DESC");
+
+        if let Some(_limit) = opts.limit {
+            sql.push_str(" LIMIT ?");
+        }
+        if let Some(_offset) = opts.offset {
+            sql.push_str(" OFFSET ?");
+        }
+
+        let mut params: Vec<::libsql::Value> = vec![
+            ::libsql::Value::from(source_id),
+            ::libsql::Value::from(entity_slug),
+        ];
+        if let Some(ref kinds) = opts.kinds {
+            for k in kinds {
+                params.push(::libsql::Value::from(k.to_string()));
+            }
+        }
+        if let Some(ref vs) = opts.visibility {
+            for v in vs {
+                params.push(::libsql::Value::from(v.to_string()));
+            }
+        }
+        if let Some(ref limit) = opts.limit {
+            params.push(::libsql::Value::from(*limit));
+        }
+        if let Some(ref offset) = opts.offset {
+            params.push(::libsql::Value::from(*offset));
+        }
+
+        let mut rows = conn
+            .query(&sql, ::libsql::params::Params::Positional(params))
+            .await
+            .map_err(|e| Error::engine(format!("list_facts_by_entity: {e}")))?;
+
+        let mut out = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("list_facts_by_entity row: {e}")))?
+        {
+            out.push(row_to_fact(&row)?);
+        }
+        Ok(out)
+    }
+
+    async fn get_facts_health(&self, source_id: &str) -> Result<FactsHealth> {
+        let conn = self.conn().await?;
+        let now = current_utc_iso8601();
+        let today_prefix = &now[..10];
+
+        let total_active: i64 = conn
+            .query(
+                "SELECT COUNT(*) FROM facts \
+                 WHERE source_id = ?1 AND expired_at IS NULL AND superseded_by IS NULL",
+                ::libsql::params![source_id],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("get_facts_health active: {e}")))?
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("get_facts_health active row: {e}")))?
+            .map(|r| r.get::<i64>(0).unwrap_or(0))
+            .unwrap_or(0);
+
+        let total_today: i64 = conn
+            .query(
+                "SELECT COUNT(*) FROM facts \
+                 WHERE source_id = ?1 AND created_at >= ?2",
+                ::libsql::params![source_id, today_prefix],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("get_facts_health today: {e}")))?
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("get_facts_health today row: {e}")))?
+            .map(|r| r.get::<i64>(0).unwrap_or(0))
+            .unwrap_or(0);
+
+        let total_week: i64 = conn
+            .query(
+                "SELECT COUNT(*) FROM facts \
+                 WHERE source_id = ?1 AND datetime(created_at) >= datetime('now', '-7 days')",
+                ::libsql::params![source_id],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("get_facts_health week: {e}")))?
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("get_facts_health week row: {e}")))?
+            .map(|r| r.get::<i64>(0).unwrap_or(0))
+            .unwrap_or(0);
+
+        let total_expired: i64 = conn
+            .query(
+                "SELECT COUNT(*) FROM facts \
+                 WHERE source_id = ?1 AND expired_at IS NOT NULL",
+                ::libsql::params![source_id],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("get_facts_health expired: {e}")))?
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("get_facts_health expired row: {e}")))?
+            .map(|r| r.get::<i64>(0).unwrap_or(0))
+            .unwrap_or(0);
+
+        let total_consolidated: i64 = conn
+            .query(
+                "SELECT COUNT(*) FROM facts \
+                 WHERE source_id = ?1 AND consolidated_at IS NOT NULL",
+                ::libsql::params![source_id],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("get_facts_health consolidated: {e}")))?
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("get_facts_health consolidated row: {e}")))?
+            .map(|r| r.get::<i64>(0).unwrap_or(0))
+            .unwrap_or(0);
+
+        // Top entities by fact count
+        let mut top_rows = conn
+            .query(
+                "SELECT entity_slug, COUNT(*) AS cnt \
+                 FROM facts \
+                 WHERE source_id = ?1 AND entity_slug IS NOT NULL \
+                 GROUP BY entity_slug \
+                 ORDER BY cnt DESC \
+                 LIMIT 10",
+                ::libsql::params![source_id],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("get_facts_health top: {e}")))?;
+
+        let mut top_entities = Vec::new();
+        while let Some(row) = top_rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("get_facts_health top row: {e}")))?
+        {
+            let slug: String = row
+                .get(0)
+                .map_err(|e| Error::engine(format!("get_facts_health top slug: {e}")))?;
+            let count: i64 = row
+                .get(1)
+                .map_err(|e| Error::engine(format!("get_facts_health top cnt: {e}")))?;
+            top_entities.push(EntityCount {
+                entity_slug: slug,
+                count,
+            });
+        }
+
+        Ok(FactsHealth {
+            source_id: source_id.to_string(),
+            total_active,
+            total_today,
+            total_week,
+            total_expired,
+            total_consolidated,
+            top_entities,
+        })
+    }
+
+    async fn expire_fact(&self, source_id: &str, fact_id: i64) -> Result<bool> {
+        let conn = self.conn().await?;
+        let now = current_utc_iso8601();
+
+        let affected = conn
+            .execute(
+                "UPDATE facts SET expired_at = ?1 \
+                 WHERE id = ?2 AND source_id = ?3 AND expired_at IS NULL",
+                ::libsql::params![now.as_str(), fact_id, source_id],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("expire_fact: {e}")))?;
+
+        Ok(affected > 0)
+    }
+
     async fn traverse_paths(
         &self,
-        _slug: &str,
-        _depth: Option<u32>,
-        _link_type: Option<&str>,
-        _direction: Option<&str>,
-        _source_id: Option<&str>,
+        slug: &str,
+        depth: Option<u32>,
+        link_type: Option<&str>,
+        direction: Option<&str>,
+        source_id: Option<&str>,
         _source_ids: Option<&[String]>,
     ) -> Result<Vec<GraphPath>> {
-        // traverse_paths uses BFS and is complex to implement in SQL.
-        // Defer to a later slice; fall back to default (Unsupported error).
-        Err(crate::error::StructuredError::new(
-            "Unsupported",
-            "unsupported",
-            "traverse_paths not yet implemented for libsql engine",
-        ))
+        use std::collections::{HashMap, HashSet, VecDeque};
+
+        let conn = self.conn().await?;
+        let max_depth = depth.unwrap_or(1);
+        let dir = direction.unwrap_or("out");
+
+        // ── Fetch all non-deleted pages → build id→slug map + find start ──
+        let mut rows = conn
+            .query(
+                "SELECT id, slug, source_id FROM pages WHERE deleted_at IS NULL",
+                (),
+            )
+            .await
+            .map_err(|e| Error::engine(format!("traverse_paths pages query: {e}")))?;
+
+        let mut id_to_slug: HashMap<u64, String> = HashMap::new();
+        let mut start_page_id: Option<u64> = None;
+
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("traverse_paths pages row: {e}")))?
+        {
+            let id: i64 = row
+                .get(0)
+                .map_err(|e| Error::engine(format!("traverse_paths decode id: {e}")))?;
+            let slug_str: String = row
+                .get(1)
+                .map_err(|e| Error::engine(format!("traverse_paths decode slug: {e}")))?;
+            let source_id_str: String = row
+                .get(2)
+                .map_err(|e| Error::engine(format!("traverse_paths decode source_id: {e}")))?;
+            let id_u64 = u64::try_from(id)
+                .map_err(|_| Error::engine("traverse_paths: page id out of u64 range"))?;
+
+            id_to_slug.insert(id_u64, slug_str.clone());
+
+            if slug_str == slug
+                && (source_id.is_none()
+                    || source_id_str == source_id.unwrap_or(""))
+            {
+                start_page_id = Some(id_u64);
+            }
+        }
+
+        let Some(start_id) = start_page_id else {
+            return Ok(Vec::new());
+        };
+
+        // ── Fetch all links, keep only edges between non-deleted pages ────
+        let mut link_rows = conn
+            .query(
+                "SELECT from_page_id, to_page_id, link_type, context FROM links",
+                (),
+            )
+            .await
+            .map_err(|e| Error::engine(format!("traverse_paths links query: {e}")))?;
+
+        // (from_id, to_id, link_type, context)
+        let mut edges: Vec<(u64, u64, String, String)> = Vec::new();
+        while let Some(row) = link_rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("traverse_paths links row: {e}")))?
+        {
+            let from_id: i64 = row
+                .get(0)
+                .map_err(|e| Error::engine(format!("traverse_paths decode from_page_id: {e}")))?;
+            let to_id: i64 = row
+                .get(1)
+                .map_err(|e| Error::engine(format!("traverse_paths decode to_page_id: {e}")))?;
+            let lt: String = row
+                .get(2)
+                .map_err(|e| Error::engine(format!("traverse_paths decode link_type: {e}")))?;
+            let ctx: String = row
+                .get(3)
+                .map_err(|e| Error::engine(format!("traverse_paths decode context: {e}")))?;
+            let from_u64 = u64::try_from(from_id)
+                .map_err(|_| Error::engine("traverse_paths: from_page_id out of u64 range"))?;
+            let to_u64 = u64::try_from(to_id)
+                .map_err(|_| Error::engine("traverse_paths: to_page_id out of u64 range"))?;
+
+            if id_to_slug.contains_key(&from_u64) && id_to_slug.contains_key(&to_u64) {
+                edges.push((from_u64, to_u64, lt, ctx));
+            }
+        }
+
+        // ── BFS traversal ─────────────────────────────────────────────────
+        let mut result: Vec<GraphPath> = Vec::new();
+        let mut visited: HashSet<u64> = HashSet::new();
+        let mut queue: VecDeque<(u64, u32)> = VecDeque::new();
+        visited.insert(start_id);
+        queue.push_back((start_id, 0));
+
+        while let Some((current_id, current_depth)) = queue.pop_front() {
+            if current_depth >= max_depth {
+                continue;
+            }
+
+            for (from_id, to_id, lt, ctx) in &edges {
+                // Direction filter
+                let is_match = match dir {
+                    "out" => *from_id == current_id,
+                    "in" => *to_id == current_id,
+                    "both" => *from_id == current_id || *to_id == current_id,
+                    _ => false,
+                };
+                if !is_match {
+                    continue;
+                }
+                // Link type filter
+                if link_type.is_some() && lt != link_type.unwrap_or("") {
+                    continue;
+                }
+
+                // Determine the neighbour (the "other" side)
+                let neighbor_id = if dir == "in" {
+                    *from_id
+                } else if dir == "both" && *to_id == current_id {
+                    *from_id
+                } else {
+                    *to_id
+                };
+
+                let (Some(from_slug), Some(to_slug)) =
+                    (id_to_slug.get(from_id), id_to_slug.get(to_id))
+                else {
+                    continue;
+                };
+
+                result.push(GraphPath {
+                    from_slug: from_slug.clone(),
+                    to_slug: to_slug.clone(),
+                    link_type: lt.clone(),
+                    context: ctx.clone(),
+                    depth: current_depth + 1,
+                });
+
+                if !visited.contains(&neighbor_id) {
+                    visited.insert(neighbor_id);
+                    queue.push_back((neighbor_id, current_depth + 1));
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    // ─── Minion job queue (Phase 9, slice 1-1-1 A+B) ─────────────────────────
+    //
+    // SQLite port of the queue. Scheduling columns (lock_until/delay_until/
+    // timeout_at) are INTEGER epoch-ms; all `now + N ms` arithmetic happens in
+    // Rust (SQLite has no interval type). Record columns are TEXT RFC-3339,
+    // written explicitly with `current_utc_iso8601()` so the format matches the
+    // postgres backend rather than SQLite's CURRENT_TIMESTAMP. `claim_job` uses
+    // BEGIN IMMEDIATE to serialize on the write lock (single-writer analogue of
+    // PG's FOR UPDATE SKIP LOCKED).
+
+    async fn enqueue_job(
+        &self,
+        input: &crate::minions::types::MinionJobInput,
+    ) -> Result<crate::minions::types::MinionJob> {
+        use crate::minions::types::MinionJobStatus;
+
+        let conn = self.conn().await?;
+
+        // Idempotency fast path: a matching non-null key returns the existing
+        // row (the unique partial index guarantees at most one).
+        if let Some(ref key) = input.idempotency_key {
+            let mut rows = conn
+                .query(
+                    &format!(
+                        "SELECT {MINION_JOB_COLUMNS} FROM minion_jobs WHERE idempotency_key = ?1"
+                    ),
+                    ::libsql::params![key.as_str()],
+                )
+                .await
+                .map_err(|e| Error::engine(format!("enqueue_job idempotency SELECT: {e}")))?;
+            if let Some(row) = rows
+                .next()
+                .await
+                .map_err(|e| Error::engine(format!("enqueue_job idempotency row: {e}")))?
+            {
+                return libsql_row_to_job(&row);
+            }
+        }
+
+        let now_iso = current_utc_iso8601();
+        let now_ms = crate::time::now_epoch_ms();
+        let (status, delay_until) = match input.delay {
+            Some(d) if d > 0 => (MinionJobStatus::Delayed, Some(now_ms + d)),
+            _ => (MinionJobStatus::Waiting, None),
+        };
+        let max_stalled = input.max_stalled.map_or(5, |v| v.clamp(1, 100));
+        let backoff_type = input
+            .backoff_type
+            .unwrap_or(crate::minions::types::BackoffType::Exponential);
+        let on_child_fail = input
+            .on_child_fail
+            .unwrap_or(crate::minions::types::ChildFailPolicy::FailParent);
+        let data_json = input
+            .data
+            .clone()
+            .unwrap_or_else(|| serde_json::json!({}))
+            .to_string();
+
+        let params: Vec<::libsql::Value> = vec![
+            input.name.clone().into(),
+            input
+                .queue
+                .clone()
+                .unwrap_or_else(|| "default".to_string())
+                .into(),
+            status.as_str().to_string().into(),
+            i64::from(input.priority.unwrap_or(0)).into(),
+            data_json.into(),
+            i64::from(input.max_attempts.unwrap_or(3)).into(),
+            backoff_type.as_str().to_string().into(),
+            i64::from(input.backoff_delay.unwrap_or(1000)).into(),
+            input.backoff_jitter.unwrap_or(0.2).into(),
+            i64::from(max_stalled).into(),
+            delay_until.map_or(::libsql::Value::Null, ::libsql::Value::from),
+            on_child_fail.as_str().to_string().into(),
+            input
+                .max_children
+                .map_or(::libsql::Value::Null, |v| ::libsql::Value::from(i64::from(v))),
+            input
+                .timeout_ms
+                .map_or(::libsql::Value::Null, ::libsql::Value::from),
+            i64::from(input.remove_on_complete.unwrap_or(false)).into(),
+            i64::from(input.remove_on_fail.unwrap_or(false)).into(),
+            input
+                .idempotency_key
+                .clone()
+                .map_or(::libsql::Value::Null, ::libsql::Value::from),
+            now_iso.clone().into(),
+            now_iso.into(),
+        ];
+
+        conn.execute(
+            "INSERT INTO minion_jobs \
+                (name, queue, status, priority, data, max_attempts, backoff_type, \
+                 backoff_delay, backoff_jitter, max_stalled, delay_until, on_child_fail, \
+                 max_children, timeout_ms, remove_on_complete, remove_on_fail, \
+                 idempotency_key, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
+                     ?16, ?17, ?18, ?19)",
+            ::libsql::params::Params::Positional(params),
+        )
+        .await
+        .map_err(|e| Error::engine(format!("enqueue_job INSERT: {e}")))?;
+
+        let new_id = last_insert_rowid(&conn).await?;
+        self.get_job(new_id)
+            .await?
+            .ok_or_else(|| Error::engine("enqueue_job: inserted row not found"))
+    }
+
+    async fn get_job(&self, id: i64) -> Result<Option<crate::minions::types::MinionJob>> {
+        let conn = self.conn().await?;
+        let mut rows = conn
+            .query(
+                &format!("SELECT {MINION_JOB_COLUMNS} FROM minion_jobs WHERE id = ?1"),
+                ::libsql::params![id],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("get_job SELECT: {e}")))?;
+        match rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("get_job row: {e}")))?
+        {
+            Some(row) => Ok(Some(libsql_row_to_job(&row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn get_jobs(
+        &self,
+        filters: &crate::minions::types::JobFilters,
+    ) -> Result<Vec<crate::minions::types::MinionJob>> {
+        let conn = self.conn().await?;
+
+        let mut sql = format!("SELECT {MINION_JOB_COLUMNS} FROM minion_jobs");
+        let mut clauses: Vec<&str> = Vec::new();
+        let mut params: Vec<::libsql::Value> = Vec::new();
+        if let Some(status) = filters.status {
+            clauses.push("status = ?");
+            params.push(status.as_str().to_string().into());
+        }
+        if let Some(ref queue) = filters.queue {
+            clauses.push("queue = ?");
+            params.push(queue.clone().into());
+        }
+        if let Some(ref name) = filters.name {
+            clauses.push("name = ?");
+            params.push(name.clone().into());
+        }
+        if !clauses.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&clauses.join(" AND "));
+        }
+        sql.push_str(" ORDER BY id DESC LIMIT ? OFFSET ?");
+        params.push(filters.limit.unwrap_or(50).max(0).into());
+        params.push(filters.offset.unwrap_or(0).max(0).into());
+
+        let mut rows = conn
+            .query(&sql, ::libsql::params::Params::Positional(params))
+            .await
+            .map_err(|e| Error::engine(format!("get_jobs SELECT: {e}")))?;
+        let mut out = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("get_jobs row: {e}")))?
+        {
+            out.push(libsql_row_to_job(&row)?);
+        }
+        Ok(out)
+    }
+
+    async fn claim_job(
+        &self,
+        lock_token: &str,
+        lock_duration_ms: i64,
+        queue: &str,
+        registered_names: &[String],
+    ) -> Result<Option<crate::minions::types::MinionJob>> {
+        if registered_names.is_empty() {
+            return Ok(None);
+        }
+
+        let conn = self.conn().await?;
+        // BEGIN IMMEDIATE takes the write lock up front so a concurrent claimer
+        // blocks here instead of racing the SELECT→UPDATE window. Single-writer
+        // equivalent of FOR UPDATE SKIP LOCKED.
+        conn.execute("BEGIN IMMEDIATE", ())
+            .await
+            .map_err(|e| Error::engine(format!("claim_job BEGIN: {e}")))?;
+
+        let result = claim_job_locked(&conn, lock_token, lock_duration_ms, queue, registered_names)
+            .await;
+
+        match result {
+            Ok(job) => {
+                conn.execute("COMMIT", ())
+                    .await
+                    .map_err(|e| Error::engine(format!("claim_job COMMIT: {e}")))?;
+                Ok(job)
+            }
+            Err(e) => {
+                let _ = conn.execute("ROLLBACK", ()).await;
+                Err(e)
+            }
+        }
+    }
+
+    async fn complete_job(
+        &self,
+        id: i64,
+        lock_token: &str,
+        result: Option<&serde_json::Value>,
+    ) -> Result<Option<crate::minions::types::MinionJob>> {
+        let conn = self.conn().await?;
+        let now_iso = current_utc_iso8601();
+        let result_json = result.map(std::string::ToString::to_string);
+
+        let affected = conn
+            .execute(
+                "UPDATE minion_jobs SET status = 'completed', result = ?1, \
+                    finished_at = ?2, lock_token = NULL, lock_until = NULL, updated_at = ?2 \
+                 WHERE id = ?3 AND status = 'active' AND lock_token = ?4",
+                ::libsql::params![
+                    result_json.map_or(::libsql::Value::Null, ::libsql::Value::from),
+                    now_iso,
+                    id,
+                    lock_token
+                ],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("complete_job UPDATE: {e}")))?;
+        if affected == 0 {
+            return Ok(None);
+        }
+
+        let job = self
+            .get_job(id)
+            .await?
+            .ok_or_else(|| Error::engine("complete_job: row vanished after UPDATE"))?;
+        if job.remove_on_complete {
+            conn.execute("DELETE FROM minion_jobs WHERE id = ?1", ::libsql::params![id])
+                .await
+                .map_err(|e| Error::engine(format!("complete_job remove_on_complete: {e}")))?;
+        }
+        Ok(Some(job))
+    }
+
+    async fn fail_job(
+        &self,
+        id: i64,
+        lock_token: &str,
+        error_text: &str,
+        outcome: crate::minions::types::FailOutcome,
+        backoff_ms: i64,
+    ) -> Result<Option<crate::minions::types::MinionJob>> {
+        use crate::minions::types::FailOutcome;
+
+        let conn = self.conn().await?;
+        let now_iso = current_utc_iso8601();
+        let now_ms = crate::time::now_epoch_ms();
+        let new_status = outcome.as_status();
+
+        // Delayed retry sets delay_until = now + backoff; terminal outcomes set
+        // finished_at. stacktrace is a JSON array — append the error text.
+        let (delay_until, finished_at): (::libsql::Value, ::libsql::Value) =
+            if outcome == FailOutcome::Delayed {
+                ((now_ms + backoff_ms).into(), ::libsql::Value::Null)
+            } else {
+                (::libsql::Value::Null, now_iso.clone().into())
+            };
+        let stacktrace_json = serde_json::json!([error_text]).to_string();
+
+        let affected = conn
+            .execute(
+                "UPDATE minion_jobs SET status = ?1, error_text = ?2, \
+                    attempts_made = attempts_made + 1, stacktrace = ?3, \
+                    delay_until = ?4, finished_at = ?5, \
+                    lock_token = NULL, lock_until = NULL, updated_at = ?6 \
+                 WHERE id = ?7 AND status = 'active' AND lock_token = ?8",
+                ::libsql::params![
+                    new_status.as_str(),
+                    error_text,
+                    stacktrace_json,
+                    delay_until,
+                    finished_at,
+                    now_iso,
+                    id,
+                    lock_token
+                ],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("fail_job UPDATE: {e}")))?;
+        if affected == 0 {
+            return Ok(None);
+        }
+
+        let job = self
+            .get_job(id)
+            .await?
+            .ok_or_else(|| Error::engine("fail_job: row vanished after UPDATE"))?;
+        if outcome.is_terminal() && job.remove_on_fail {
+            conn.execute("DELETE FROM minion_jobs WHERE id = ?1", ::libsql::params![id])
+                .await
+                .map_err(|e| Error::engine(format!("fail_job remove_on_fail: {e}")))?;
+        }
+        Ok(Some(job))
+    }
+
+    async fn renew_job_lock(
+        &self,
+        id: i64,
+        lock_token: &str,
+        lock_duration_ms: i64,
+    ) -> Result<bool> {
+        let conn = self.conn().await?;
+        let now_iso = current_utc_iso8601();
+        let lock_until = crate::time::now_epoch_ms() + lock_duration_ms;
+        let affected = conn
+            .execute(
+                "UPDATE minion_jobs SET lock_until = ?1, updated_at = ?2 \
+                 WHERE id = ?3 AND lock_token = ?4 AND status = 'active'",
+                ::libsql::params![lock_until, now_iso, id, lock_token],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("renew_job_lock UPDATE: {e}")))?;
+        Ok(affected > 0)
+    }
+
+    async fn retry_job(&self, id: i64) -> Result<Option<crate::minions::types::MinionJob>> {
+        let conn = self.conn().await?;
+        let now_iso = current_utc_iso8601();
+        let affected = conn
+            .execute(
+                "UPDATE minion_jobs SET status = 'waiting', error_text = NULL, \
+                    lock_token = NULL, lock_until = NULL, delay_until = NULL, \
+                    finished_at = NULL, updated_at = ?1 \
+                 WHERE id = ?2 AND status IN ('failed', 'dead')",
+                ::libsql::params![now_iso, id],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("retry_job UPDATE: {e}")))?;
+        if affected == 0 {
+            return Ok(None);
+        }
+        self.get_job(id).await
+    }
+
+    // --- Background sweeps (1-1-2 C) ---
+    //
+    // Each sweep captures the affected ids first (SELECT), applies the pure
+    // C-layer state transition (UPDATE), then reselects the mutated rows.
+    // Scheduling columns are stored as INTEGER epoch-ms, compared directly
+    // against `now_ms`. No inbox / parent unblock here (D-layer, 1-1-3).
+
+    async fn promote_delayed(&self) -> Result<Vec<crate::minions::types::MinionJob>> {
+        let conn = self.conn().await?;
+        let now_ms = crate::time::now_epoch_ms();
+        let now_iso = current_utc_iso8601();
+
+        let ids = libsql_select_ids(
+            &conn,
+            "SELECT id FROM minion_jobs \
+             WHERE status = 'delayed' AND delay_until IS NOT NULL AND delay_until <= ?1",
+            ::libsql::params![now_ms],
+        )
+        .await?;
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        conn.execute(
+            "UPDATE minion_jobs SET status = 'waiting', delay_until = NULL, \
+                lock_token = NULL, lock_until = NULL, updated_at = ?1 \
+             WHERE status = 'delayed' AND delay_until IS NOT NULL AND delay_until <= ?2",
+            ::libsql::params![now_iso, now_ms],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("promote_delayed UPDATE: {e}")))?;
+
+        libsql_reselect_jobs(&conn, &ids).await
+    }
+
+    async fn handle_stalled(&self) -> Result<crate::minions::types::StalledSweep> {
+        use crate::minions::types::StalledSweep;
+
+        let conn = self.conn().await?;
+        let now_ms = crate::time::now_epoch_ms();
+        let now_iso = current_utc_iso8601();
+
+        // BEGIN IMMEDIATE grabs the write lock up front (SQLite analogue of
+        // FOR UPDATE SKIP LOCKED); mirrors the claim_job_locked precedent.
+        conn.execute("BEGIN IMMEDIATE", ())
+            .await
+            .map_err(|e| Error::engine(format!("handle_stalled BEGIN: {e}")))?;
+
+        let result = async {
+            // Stalled candidates: active with an expired lease. Partition on
+            // `stalled_counter + 1 < max_stalled` (requeue) vs `>=` (dead).
+            let requeued_ids = libsql_select_ids(
+                &conn,
+                "SELECT id FROM minion_jobs \
+                 WHERE status = 'active' AND lock_until IS NOT NULL AND lock_until < ?1 \
+                   AND stalled_counter + 1 < max_stalled",
+                ::libsql::params![now_ms],
+            )
+            .await?;
+            let dead_ids = libsql_select_ids(
+                &conn,
+                "SELECT id FROM minion_jobs \
+                 WHERE status = 'active' AND lock_until IS NOT NULL AND lock_until < ?1 \
+                   AND stalled_counter + 1 >= max_stalled",
+                ::libsql::params![now_ms],
+            )
+            .await?;
+
+            if !requeued_ids.is_empty() {
+                conn.execute(
+                    "UPDATE minion_jobs SET status = 'waiting', \
+                        stalled_counter = stalled_counter + 1, \
+                        lock_token = NULL, lock_until = NULL, updated_at = ?1 \
+                     WHERE status = 'active' AND lock_until IS NOT NULL AND lock_until < ?2 \
+                       AND stalled_counter + 1 < max_stalled",
+                    ::libsql::params![now_iso.clone(), now_ms],
+                )
+                .await
+                .map_err(|e| Error::engine(format!("handle_stalled requeue UPDATE: {e}")))?;
+            }
+            if !dead_ids.is_empty() {
+                conn.execute(
+                    "UPDATE minion_jobs SET status = 'dead', \
+                        stalled_counter = stalled_counter + 1, \
+                        error_text = 'max stalled count exceeded', \
+                        lock_token = NULL, lock_until = NULL, \
+                        finished_at = ?1, updated_at = ?1 \
+                     WHERE status = 'active' AND lock_until IS NOT NULL AND lock_until < ?2 \
+                       AND stalled_counter + 1 >= max_stalled",
+                    ::libsql::params![now_iso, now_ms],
+                )
+                .await
+                .map_err(|e| Error::engine(format!("handle_stalled dead UPDATE: {e}")))?;
+            }
+            Ok::<_, Error>((requeued_ids, dead_ids))
+        }
+        .await;
+
+        let (requeued_ids, dead_ids) = match result {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = conn.execute("ROLLBACK", ()).await;
+                return Err(e);
+            }
+        };
+
+        conn.execute("COMMIT", ())
+            .await
+            .map_err(|e| Error::engine(format!("handle_stalled COMMIT: {e}")))?;
+
+        Ok(StalledSweep {
+            requeued: libsql_reselect_jobs(&conn, &requeued_ids).await?,
+            dead: libsql_reselect_jobs(&conn, &dead_ids).await?,
+        })
+    }
+
+    async fn handle_timeouts(&self) -> Result<Vec<crate::minions::types::MinionJob>> {
+        let conn = self.conn().await?;
+        let now_ms = crate::time::now_epoch_ms();
+        let now_iso = current_utc_iso8601();
+
+        // Active, per-job timeout elapsed, lease still held. A stalled job with
+        // an expired lease (lock_until < now) is left for handle_stalled.
+        let ids = libsql_select_ids(
+            &conn,
+            "SELECT id FROM minion_jobs \
+             WHERE status = 'active' AND timeout_at IS NOT NULL AND timeout_at < ?1 \
+               AND lock_until IS NOT NULL AND lock_until > ?1",
+            ::libsql::params![now_ms],
+        )
+        .await?;
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        conn.execute(
+            "UPDATE minion_jobs SET status = 'dead', error_text = 'timeout exceeded', \
+                lock_token = NULL, lock_until = NULL, finished_at = ?1, updated_at = ?1 \
+             WHERE status = 'active' AND timeout_at IS NOT NULL AND timeout_at < ?2 \
+               AND lock_until IS NOT NULL AND lock_until > ?2",
+            ::libsql::params![now_iso, now_ms],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("handle_timeouts UPDATE: {e}")))?;
+
+        libsql_reselect_jobs(&conn, &ids).await
+    }
+
+    async fn handle_wall_clock_timeouts(
+        &self,
+        lock_duration_ms: i64,
+    ) -> Result<Vec<crate::minions::types::MinionJob>> {
+        let conn = self.conn().await?;
+        let now_iso = current_utc_iso8601();
+
+        // Threshold is computed in SQL. `started_at` is an RFC-3339 string;
+        // julianday() parses it and yields days, *86400*1000 -> elapsed ms.
+        // CASE: timeout_ms present -> timeout_ms*2; else lock_duration_ms*2*
+        // GREATEST(max_stalled, 1). Unlike handle_timeouts this ignores lease
+        // state — it catches jobs wedged while holding a DB resource.
+        let elapsed_ms = "(julianday(?1) - julianday(started_at)) * 86400000.0";
+        let threshold = "CASE WHEN timeout_ms IS NOT NULL THEN timeout_ms * 2 \
+             ELSE ?2 * 2 * MAX(max_stalled, 1) END";
+        let where_clause = format!(
+            "status = 'active' AND started_at IS NOT NULL AND {elapsed_ms} > {threshold}"
+        );
+
+        let select_sql = format!("SELECT id FROM minion_jobs WHERE {where_clause}");
+        let ids = libsql_select_ids(
+            &conn,
+            &select_sql,
+            ::libsql::params![now_iso.clone(), lock_duration_ms],
+        )
+        .await?;
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let update_sql = format!(
+            "UPDATE minion_jobs SET status = 'dead', \
+                error_text = 'wall-clock timeout exceeded', \
+                lock_token = NULL, lock_until = NULL, finished_at = ?1, updated_at = ?1 \
+             WHERE {where_clause}"
+        );
+        conn.execute(
+            &update_sql,
+            ::libsql::params![now_iso, lock_duration_ms],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("handle_wall_clock_timeouts UPDATE: {e}")))?;
+
+        libsql_reselect_jobs(&conn, &ids).await
+    }
+
+    async fn set_started_at_for_test(&self, id: i64, started_at_rfc3339: &str) -> Result<()> {
+        let conn = self.conn().await?;
+        conn.execute(
+            "UPDATE minion_jobs SET started_at = ?1 WHERE id = ?2",
+            ::libsql::params![started_at_rfc3339, id],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("set_started_at_for_test UPDATE: {e}")))?;
+        Ok(())
+    }
+
+    async fn set_timeout_at_for_test(&self, id: i64, timeout_at_ms: i64) -> Result<()> {
+        let conn = self.conn().await?;
+        conn.execute(
+            "UPDATE minion_jobs SET timeout_at = ?1 WHERE id = ?2",
+            ::libsql::params![timeout_at_ms, id],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("set_timeout_at_for_test UPDATE: {e}")))?;
+        Ok(())
+    }
+}
+
+// ─── libsql facts helpers ─────────────────────────────────────────────────
+
+/// Map a libsql Row to a FactRow. Positional column order must match
+/// the SELECT in `list_facts_by_entity`.
+fn row_to_fact(row: &::libsql::Row) -> Result<FactRow> {
+    fn parse_kind(s: &str) -> FactKind {
+        match s {
+            "event" => FactKind::Event,
+            "preference" => FactKind::Preference,
+            "commitment" => FactKind::Commitment,
+            "belief" => FactKind::Belief,
+            _ => FactKind::Fact,
+        }
+    }
+    fn parse_visibility(s: &str) -> FactVisibility {
+        match s {
+            "world" => FactVisibility::World,
+            _ => FactVisibility::Private,
+        }
+    }
+
+    Ok(FactRow {
+        id: row.get(0).map_err(|e| Error::engine(format!("fact id: {e}")))?,
+        source_id: row.get(1).map_err(|e| Error::engine(format!("fact source_id: {e}")))?,
+        entity_slug: row.get(2).map_err(|e| Error::engine(format!("fact entity_slug: {e}")))?,
+        fact: row.get(3).map_err(|e| Error::engine(format!("fact fact: {e}")))?,
+        kind: {
+            let s: String =
+                row.get(4)
+                    .map_err(|e| Error::engine(format!("fact kind: {e}")))?;
+            parse_kind(&s)
+        },
+        visibility: {
+            let s: String =
+                row.get(5)
+                    .map_err(|e| Error::engine(format!("fact visibility: {e}")))?;
+            parse_visibility(&s)
+        },
+        notability: row
+            .get(6)
+            .map_err(|e| Error::engine(format!("fact notability: {e}")))?,
+        context: row
+            .get(7)
+            .map_err(|e| Error::engine(format!("fact context: {e}")))?,
+        valid_from: row
+            .get(8)
+            .map_err(|e| Error::engine(format!("fact valid_from: {e}")))?,
+        valid_until: row
+            .get(9)
+            .map_err(|e| Error::engine(format!("fact valid_until: {e}")))?,
+        expired_at: row
+            .get(10)
+            .map_err(|e| Error::engine(format!("fact expired_at: {e}")))?,
+        superseded_by: row
+            .get(11)
+            .map_err(|e| Error::engine(format!("fact superseded_by: {e}")))?,
+        consolidated_at: row
+            .get(12)
+            .map_err(|e| Error::engine(format!("fact consolidated_at: {e}")))?,
+        consolidated_into: row
+            .get(13)
+            .map_err(|e| Error::engine(format!("fact consolidated_into: {e}")))?,
+        source: row
+            .get(14)
+            .map_err(|e| Error::engine(format!("fact source: {e}")))?,
+        source_session: row
+            .get(15)
+            .map_err(|e| Error::engine(format!("fact source_session: {e}")))?,
+        confidence: row
+            .get(16)
+            .map_err(|e| Error::engine(format!("fact confidence: {e}")))?,
+        created_at: row
+            .get(17)
+            .map_err(|e| Error::engine(format!("fact created_at: {e}")))?,
+    })
+}
+
+// ─── libsql minion job helpers ─────────────────────────────────────────────
+
+/// Column list for `minion_jobs` SELECTs. The positional order here MUST match
+/// the decode indices in [`libsql_row_to_job`].
+const MINION_JOB_COLUMNS: &str = "id, name, queue, status, priority, data, \
+    max_attempts, attempts_made, attempts_started, backoff_type, backoff_delay, \
+    backoff_jitter, stalled_counter, max_stalled, lock_token, lock_until, \
+    delay_until, parent_job_id, on_child_fail, tokens_input, tokens_output, \
+    tokens_cache_read, depth, max_children, timeout_ms, timeout_at, \
+    remove_on_complete, remove_on_fail, idempotency_key, quiet_hours, stagger_key, \
+    result, progress, error_text, stacktrace, created_at, started_at, finished_at, \
+    updated_at";
+
+/// Fetch `last_insert_rowid()` on the given connection.
+async fn last_insert_rowid(conn: &::libsql::Connection) -> Result<i64> {
+    let mut rows = conn
+        .query("SELECT last_insert_rowid()", ())
+        .await
+        .map_err(|e| Error::engine(format!("last_insert_rowid query: {e}")))?;
+    let row = rows
+        .next()
+        .await
+        .map_err(|e| Error::engine(format!("last_insert_rowid row: {e}")))?
+        .ok_or_else(|| Error::engine("last_insert_rowid returned no row"))?;
+    row.get::<i64>(0)
+        .map_err(|e| Error::engine(format!("last_insert_rowid decode: {e}")))
+}
+
+/// Map a `minion_jobs` row to a [`MinionJob`]. Positional column order MUST
+/// match [`MINION_JOB_COLUMNS`]. SQLite stores bools as INTEGER 0/1, JSON as
+/// TEXT, and scheduling columns as INTEGER epoch-ms (already the target type).
+fn libsql_row_to_job(row: &::libsql::Row) -> Result<crate::minions::types::MinionJob> {
+    use crate::minions::types::{BackoffType, ChildFailPolicy, MinionJob, MinionJobStatus};
+
+    macro_rules! get {
+        ($idx:expr, $ty:ty, $name:literal) => {
+            row.get::<$ty>($idx)
+                .map_err(|e| Error::engine(format!(concat!("job decode ", $name, ": {}"), e)))?
+        };
+    }
+
+    // JSON TEXT -> Value; malformed text degrades to the given default rather
+    // than failing the whole decode.
+    fn json_or<'a>(
+        row: &::libsql::Row,
+        idx: i32,
+        default: fn() -> serde_json::Value,
+    ) -> serde_json::Value {
+        match row.get::<Option<String>>(idx) {
+            Ok(Some(s)) => serde_json::from_str(&s).unwrap_or_else(|_| default()),
+            _ => default(),
+        }
+    }
+
+    let status_str = get!(3, String, "status");
+    let backoff_str = get!(9, String, "backoff_type");
+    let on_child_fail_str = get!(18, String, "on_child_fail");
+
+    let stacktrace: Vec<String> = match row.get::<Option<String>>(34) {
+        Ok(Some(s)) => serde_json::from_str(&s).unwrap_or_default(),
+        _ => Vec::new(),
+    };
+
+    Ok(MinionJob {
+        id: get!(0, i64, "id"),
+        name: get!(1, String, "name"),
+        queue: get!(2, String, "queue"),
+        status: MinionJobStatus::parse(&status_str)
+            .ok_or_else(|| Error::engine(format!("job decode status: unknown '{status_str}'")))?,
+        priority: get!(4, i64, "priority") as i32,
+        data: json_or(row, 5, || serde_json::json!({})),
+        max_attempts: get!(6, i64, "max_attempts") as i32,
+        attempts_made: get!(7, i64, "attempts_made") as i32,
+        attempts_started: get!(8, i64, "attempts_started") as i32,
+        backoff_type: BackoffType::parse(&backoff_str).ok_or_else(|| {
+            Error::engine(format!("job decode backoff_type: unknown '{backoff_str}'"))
+        })?,
+        backoff_delay: get!(10, i64, "backoff_delay") as i32,
+        backoff_jitter: get!(11, f64, "backoff_jitter"),
+        stalled_counter: get!(12, i64, "stalled_counter") as i32,
+        max_stalled: get!(13, i64, "max_stalled") as i32,
+        lock_token: get!(14, Option<String>, "lock_token"),
+        lock_until: get!(15, Option<i64>, "lock_until"),
+        delay_until: get!(16, Option<i64>, "delay_until"),
+        parent_job_id: get!(17, Option<i64>, "parent_job_id"),
+        on_child_fail: ChildFailPolicy::parse(&on_child_fail_str).ok_or_else(|| {
+            Error::engine(format!(
+                "job decode on_child_fail: unknown '{on_child_fail_str}'"
+            ))
+        })?,
+        tokens_input: get!(19, i64, "tokens_input"),
+        tokens_output: get!(20, i64, "tokens_output"),
+        tokens_cache_read: get!(21, i64, "tokens_cache_read"),
+        depth: get!(22, i64, "depth") as i32,
+        max_children: get!(23, Option<i64>, "max_children").map(|v| v as i32),
+        timeout_ms: get!(24, Option<i64>, "timeout_ms"),
+        timeout_at: get!(25, Option<i64>, "timeout_at"),
+        remove_on_complete: get!(26, i64, "remove_on_complete") != 0,
+        remove_on_fail: get!(27, i64, "remove_on_fail") != 0,
+        idempotency_key: get!(28, Option<String>, "idempotency_key"),
+        quiet_hours: match row.get::<Option<String>>(29) {
+            Ok(Some(s)) => serde_json::from_str(&s).ok(),
+            _ => None,
+        },
+        stagger_key: get!(30, Option<String>, "stagger_key"),
+        result: match row.get::<Option<String>>(31) {
+            Ok(Some(s)) => serde_json::from_str(&s).ok(),
+            _ => None,
+        },
+        progress: match row.get::<Option<String>>(32) {
+            Ok(Some(s)) => serde_json::from_str(&s).ok(),
+            _ => None,
+        },
+        error_text: get!(33, Option<String>, "error_text"),
+        stacktrace,
+        created_at: get!(35, String, "created_at"),
+        started_at: get!(36, Option<String>, "started_at"),
+        finished_at: get!(37, Option<String>, "finished_at"),
+        updated_at: get!(38, String, "updated_at"),
+    })
+}
+
+/// Reselect a set of jobs by id and decode them to [`MinionJob`]. Used by the
+/// background sweeps to return the post-mutation rows. Ids not found are
+/// silently skipped; the result order follows `ids`.
+async fn libsql_reselect_jobs(
+    conn: &::libsql::Connection,
+    ids: &[i64],
+) -> Result<Vec<crate::minions::types::MinionJob>> {
+    let mut out = Vec::with_capacity(ids.len());
+    for &id in ids {
+        let mut rows = conn
+            .query(
+                &format!("SELECT {MINION_JOB_COLUMNS} FROM minion_jobs WHERE id = ?1"),
+                ::libsql::params![id],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("reselect job {id}: {e}")))?;
+        if let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("reselect job {id} row: {e}")))?
+        {
+            out.push(libsql_row_to_job(&row)?);
+        }
+    }
+    Ok(out)
+}
+
+/// SELECT the ids of rows matching a WHERE clause. Small helper so the sweeps
+/// can capture the affected set before mutating (SQLite has no `UPDATE ...
+/// RETURNING` in the libsql build used here).
+async fn libsql_select_ids(
+    conn: &::libsql::Connection,
+    sql: &str,
+    params: impl ::libsql::params::IntoParams,
+) -> Result<Vec<i64>> {
+    let mut rows = conn
+        .query(sql, params)
+        .await
+        .map_err(|e| Error::engine(format!("select ids: {e}")))?;
+    let mut ids = Vec::new();
+    while let Some(row) = rows
+        .next()
+        .await
+        .map_err(|e| Error::engine(format!("select ids row: {e}")))?
+    {
+        ids.push(
+            row.get::<i64>(0)
+                .map_err(|e| Error::engine(format!("select ids decode: {e}")))?,
+        );
+    }
+    Ok(ids)
+}
+
+/// The SELECT→UPDATE claim body, run inside a `BEGIN IMMEDIATE` transaction.
+/// Picks the highest-priority (lowest number), oldest waiting job in `queue`
+/// whose name is in `registered_names`, then flips it to active with the
+/// worker's lock. Returns `None` when nothing is claimable.
+async fn claim_job_locked(
+    conn: &::libsql::Connection,
+    lock_token: &str,
+    lock_duration_ms: i64,
+    queue: &str,
+    registered_names: &[String],
+) -> Result<Option<crate::minions::types::MinionJob>> {
+    // Build the `name IN (?, ?, ...)` placeholder list.
+    let placeholders = registered_names
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(", ");
+    let select_sql = format!(
+        "SELECT id FROM minion_jobs \
+         WHERE queue = ? AND status = 'waiting' AND name IN ({placeholders}) \
+         ORDER BY priority ASC, created_at ASC, id ASC LIMIT 1"
+    );
+
+    let mut params: Vec<::libsql::Value> = Vec::with_capacity(registered_names.len() + 1);
+    params.push(queue.into());
+    for n in registered_names {
+        params.push(n.clone().into());
+    }
+
+    let mut rows = conn
+        .query(&select_sql, ::libsql::params::Params::Positional(params))
+        .await
+        .map_err(|e| Error::engine(format!("claim_job SELECT: {e}")))?;
+    let Some(row) = rows
+        .next()
+        .await
+        .map_err(|e| Error::engine(format!("claim_job SELECT row: {e}")))?
+    else {
+        return Ok(None);
+    };
+    let id: i64 = row
+        .get(0)
+        .map_err(|e| Error::engine(format!("claim_job id decode: {e}")))?;
+    // Drop the ResultSet borrow before the UPDATE reuses `conn`.
+    drop(rows);
+
+    let now_iso = current_utc_iso8601();
+    let now_ms = crate::time::now_epoch_ms();
+    let lock_until = now_ms + lock_duration_ms;
+
+    conn.execute(
+        "UPDATE minion_jobs SET \
+            status = 'active', \
+            lock_token = ?1, \
+            lock_until = ?2, \
+            timeout_at = CASE WHEN timeout_ms IS NOT NULL THEN ?3 + timeout_ms ELSE NULL END, \
+            attempts_started = attempts_started + 1, \
+            started_at = COALESCE(started_at, ?4), \
+            updated_at = ?4 \
+         WHERE id = ?5",
+        ::libsql::params![lock_token, lock_until, now_ms, now_iso, id],
+    )
+    .await
+    .map_err(|e| Error::engine(format!("claim_job UPDATE: {e}")))?;
+
+    let mut rows = conn
+        .query(
+            &format!("SELECT {MINION_JOB_COLUMNS} FROM minion_jobs WHERE id = ?1"),
+            ::libsql::params![id],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("claim_job reselect: {e}")))?;
+    match rows
+        .next()
+        .await
+        .map_err(|e| Error::engine(format!("claim_job reselect row: {e}")))?
+    {
+        Some(row) => Ok(Some(libsql_row_to_job(&row)?)),
+        None => Ok(None),
     }
 }
 

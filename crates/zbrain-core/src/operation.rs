@@ -458,6 +458,16 @@ pub struct OperationContext {
     /// it carries a live HTTP client Arc, wired at CLI/dispatch construction.
     #[serde(skip)]
     pub rerank: Option<crate::rerank_client::RerankSettings>,
+    /// Embedding client for the query pipeline's vector-retrieval path. `None`
+    /// = vector path off (the default): `QueryOperation::execute` leaves
+    /// `SearchOpts::query_embedding` unset, so hybrid search degenerates to
+    /// lexical-only. When set, the query path embeds the query text and injects
+    /// the vector so the engine can run cosine similarity against stored
+    /// `Page::embedding` blobs; embedding failure fails open to lexical-only
+    /// (never fails the search). Not serialized — it carries a live HTTP client
+    /// Arc, wired at CLI/dispatch construction, exactly like `rerank`.
+    #[serde(skip)]
+    pub embedding: Option<std::sync::Arc<crate::embedding::EmbeddingClient>>,
 }
 
 impl fmt::Debug for OperationContext {
@@ -503,6 +513,7 @@ impl OperationContext {
             source_id: "default".to_string(),
             llm_client: None,
             rerank: None,
+            embedding: None,
         }
     }
 
@@ -528,6 +539,7 @@ impl OperationContext {
             source_id: source_id.into(),
             llm_client: None,
             rerank: None,
+            embedding: None,
         }
     }
 
@@ -543,6 +555,17 @@ impl OperationContext {
     #[must_use]
     pub fn with_rerank(mut self, rerank: crate::rerank_client::RerankSettings) -> Self {
         self.rerank = Some(rerank);
+        self
+    }
+
+    /// Attach an embedding client, enabling the query pipeline's vector path.
+    /// Absent this, hybrid search runs lexical-only.
+    #[must_use]
+    pub fn with_embedding(
+        mut self,
+        embedding: std::sync::Arc<crate::embedding::EmbeddingClient>,
+    ) -> Self {
+        self.embedding = Some(embedding);
         self
     }
 
@@ -1836,13 +1859,42 @@ impl TypedOperation for QueryOperation {
         let limit = params.limit.unwrap_or(20);
         let offset = params.offset.unwrap_or(0);
 
+        // Vector path: when an embedding client is wired (ctx.embedding), embed
+        // the raw query text and inject the vector so the engine runs cosine
+        // similarity against stored Page::embedding blobs. Failure fails OPEN to
+        // lexical-only — a flaky embedding provider must never fail the search
+        // (same posture as the rerank stage below). `None` (the default) leaves
+        // the vector path off, so hybrid search degenerates to lexical-only.
+        let query_embedding = match ctx.embedding.as_ref() {
+            Some(client) => {
+                let query_text = params.query.as_deref().unwrap_or_default();
+                if query_text.is_empty() {
+                    None
+                } else {
+                    match client.embed_query(query_text).await {
+                        Ok(vec) => Some(vec),
+                        Err(e) => {
+                            // Fail open: log and continue lexical-only.
+                            if let Some(logger) = ctx.logger.as_ref() {
+                                logger.warn(&format!(
+                                    "query embedding failed, falling back to lexical-only: {e}"
+                                ));
+                            }
+                            None
+                        }
+                    }
+                }
+            }
+            None => None,
+        };
+
         let results = engine
             .search_pages(&crate::engine::SearchOpts {
                 keywords,
                 limit: Some(limit),
                 min_score: Some(0.01),
                 source_id: params.source_id.clone(),
-                query_embedding: None,
+                query_embedding,
                 floor_ratio: None,
                 recency_decay: None,
                 recency_fallback: None,
@@ -5485,6 +5537,166 @@ mod tests {
                 .map(|mut d| d.next().is_some())
                 .unwrap_or(false);
             assert!(wrote_audit, "fail-open must log an audit row");
+        }
+
+        // ──────────────────────────────────────────────────────────────────
+        // Query embedding wiring (1-3-3)
+        // ──────────────────────────────────────────────────────────────────
+
+        /// Deterministic in-process embedding provider: maps any text to a
+        /// fixed unit vector so tests exercise the vector path without a
+        /// network round-trip. `dims` is honored so `EmbeddingClient::embed`'s
+        /// dimension check passes.
+        #[derive(Debug)]
+        struct FixedVecProvider(Vec<f32>);
+        #[async_trait::async_trait]
+        impl crate::embedding::EmbeddingProvider for FixedVecProvider {
+            async fn embed(
+                &self,
+                texts: &[String],
+                _dims: usize,
+            ) -> Result<Vec<Vec<f32>>, crate::embedding::EmbeddingError> {
+                Ok(texts.iter().map(|_| self.0.clone()).collect())
+            }
+        }
+
+        /// Encode an f32 vector to the little-endian byte layout the
+        /// `Page::embedding` column stores (mirrors the engine decode path).
+        fn f32_le_bytes(v: &[f32]) -> Vec<u8> {
+            v.iter().flat_map(|f| f.to_le_bytes()).collect()
+        }
+
+        fn embedding_client(vec: Vec<f32>) -> Arc<crate::embedding::EmbeddingClient> {
+            let dims = vec.len();
+            let config = crate::embedding::EmbeddingConfig {
+                dimensions: dims,
+                api_key: "test".to_string(),
+                ..crate::embedding::EmbeddingConfig::default()
+            };
+            Arc::new(crate::embedding::EmbeddingClient::with_provider(
+                config,
+                Arc::new(FixedVecProvider(vec)),
+            ))
+        }
+
+        #[tokio::test]
+        async fn query_vector_path_surfaces_semantic_match() {
+            // Page has ZERO lexical overlap with the query keyword, but its
+            // stored embedding is colinear with what the client returns for the
+            // query. Without the vector path this returns nothing; with
+            // ctx.embedding wired the cosine hit must surface it.
+            let engine = InMemoryEngine::default();
+            engine
+                .put_page(
+                    "semantic/only",
+                    None,
+                    &PageInput {
+                        page_type: "note".to_string(),
+                        title: "Feline companions".to_string(),
+                        compiled_truth: "Domestic cats and their behaviour.".to_string(),
+                        embedding: Some(f32_le_bytes(&[1.0, 0.0, 0.0])),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+
+            let mut registry = OperationRegistry::new();
+            registry.register(QueryOperation);
+
+            // Client returns a vector colinear with the page embedding for any
+            // query, so "quantum" (no lexical hit) still matches via cosine.
+            let ctx = OperationContext::local_cli()
+                .with_engine(Arc::new(engine))
+                .with_embedding(embedding_client(vec![1.0, 0.0, 0.0]));
+
+            let out = registry
+                .dispatch_json("query", &ctx, serde_json::json!({ "query": "quantum" }))
+                .await
+                .unwrap();
+            let results = out["results"].as_array().unwrap();
+            assert_eq!(results.len(), 1, "vector path must surface the semantic match");
+            assert_eq!(results[0]["page"]["slug"].as_str().unwrap(), "semantic/only");
+        }
+
+        #[tokio::test]
+        async fn query_without_embedding_stays_lexical_only() {
+            // No ctx.embedding → the semantic-only page (no lexical overlap) is
+            // NOT found: hybrid search degenerates to lexical-only.
+            let engine = InMemoryEngine::default();
+            engine
+                .put_page(
+                    "semantic/only",
+                    None,
+                    &PageInput {
+                        page_type: "note".to_string(),
+                        title: "Feline companions".to_string(),
+                        compiled_truth: "Domestic cats and their behaviour.".to_string(),
+                        embedding: Some(f32_le_bytes(&[1.0, 0.0, 0.0])),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+
+            let mut registry = OperationRegistry::new();
+            registry.register(QueryOperation);
+            let ctx = OperationContext::local_cli().with_engine(Arc::new(engine));
+
+            let out = registry
+                .dispatch_json("query", &ctx, serde_json::json!({ "query": "quantum" }))
+                .await
+                .unwrap();
+            assert!(
+                out["results"].as_array().unwrap().is_empty(),
+                "lexical-only search must not surface a non-lexical page"
+            );
+        }
+
+        #[tokio::test]
+        async fn query_embedding_failure_fails_open_to_lexical() {
+            /// Always-error embedding provider → exercise the fail-open branch.
+            #[derive(Debug)]
+            struct FailingProvider;
+            #[async_trait::async_trait]
+            impl crate::embedding::EmbeddingProvider for FailingProvider {
+                async fn embed(
+                    &self,
+                    _texts: &[String],
+                    _dims: usize,
+                ) -> Result<Vec<Vec<f32>>, crate::embedding::EmbeddingError> {
+                    Err(crate::embedding::EmbeddingError::Provider("boom".to_string()))
+                }
+            }
+
+            // Page DOES have a lexical hit on "keyword", so lexical-only search
+            // still finds it after the embedding call errors.
+            let engine = seed_two_pages().await;
+            let mut registry = OperationRegistry::new();
+            registry.register(QueryOperation);
+
+            let config = crate::embedding::EmbeddingConfig {
+                dimensions: 3,
+                api_key: "test".to_string(),
+                ..crate::embedding::EmbeddingConfig::default()
+            };
+            let client = Arc::new(crate::embedding::EmbeddingClient::with_provider(
+                config,
+                Arc::new(FailingProvider),
+            ));
+            let ctx = OperationContext::local_cli()
+                .with_engine(Arc::new(engine))
+                .with_embedding(client);
+
+            let out = registry
+                .dispatch_json("query", &ctx, serde_json::json!({ "query": "keyword" }))
+                .await
+                .unwrap();
+            assert_eq!(
+                out["results"].as_array().unwrap().len(),
+                2,
+                "search survives embedding failure (fails open to lexical)"
+            );
         }
 
         // ──────────────────────────────────────────────────────────────────────

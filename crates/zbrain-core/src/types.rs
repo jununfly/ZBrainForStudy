@@ -399,6 +399,40 @@ pub struct GraphPath {
     pub depth: u32,
 }
 
+/// Salience query result. Returned by `BrainEngine::get_recent_salience`.
+/// Mirrors TS `SalienceResult` in `src/core/types.ts` (v0.29.1).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SalienceResult {
+    pub slug: String,
+    pub source_id: String,
+    pub title: String,
+    #[serde(rename = "type")]
+    pub page_type: PageType,
+    pub updated_at: String,
+    pub emotional_weight: f64,
+    pub take_count: u32,
+    pub take_avg_weight: f64,
+    pub score: f64,
+}
+
+/// Adjacency aggregates for a single page within a subgraph induced by
+/// an input set. Returned by `BrainEngine::getAdjacencyBoosts`. Mirrors
+/// TS `AdjacencyRow` in `src/core/types.ts` (v0.40.4).
+///
+/// Cross-source semantics (mirrors TS JSDoc D15=A):
+/// - `hits`: distinct from_page_id count, restricted to the input set.
+/// - `cross_source_hits`: distinct OTHER source_id count, restricted to
+///   the input set, EXCLUDING the target page's own source. A page in
+///   source A linked from 2 pages in source A reports 0. Linked from 1
+///   in source B + 1 in source C reports 2.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdjacencyRow {
+    pub hits: u32,
+    pub cross_source_hits: u32,
+}
+
 // ---------------------------------------------------------------------------
 // Facts domain types (Phase 7B engine layer)
 // ---------------------------------------------------------------------------

@@ -397,6 +397,28 @@ pub enum Commands {
 
     /// Capture content from files or stdin into the knowledge base
     Capture(CaptureArgs),
+
+    /// Manage facts — insert, list, health, expire
+    #[command(subcommand)]
+    Facts(FactsAction),
+
+    /// Manage links between pages
+    #[command(subcommand)]
+    Links(LinksAction),
+
+    /// Manage takes on pages
+    #[command(subcommand)]
+    Takes(TakesAction),
+
+    /// Query recently touched pages ranked by salience
+    Salience(SalienceArgs),
+
+    /// Find pages with zero inbound links
+    Orphans(OrphansArgs),
+
+    /// BFS graph traversal from a root page
+    #[command(name = "graph-query")]
+    GraphQuery(GraphQueryArgs),
 }
 
 /// Subcommands for `zbrain sources`.
@@ -511,6 +533,374 @@ pub struct CaptureArgs {
     pub slug: Option<String>,
 
     /// Output as JSON instead of human-readable
+    #[arg(long)]
+    pub json: bool,
+}
+
+// ── Facts subcommands ──────────────────────────────────────────
+
+/// Subcommands for `zbrain facts`.
+#[derive(Debug, Subcommand)]
+pub enum FactsAction {
+    /// Add a new fact for an entity (auto-supersedes high-confidence duplicates)
+    Add(FactsAddArgs),
+
+    /// List facts for an entity with optional filters
+    List(FactsListArgs),
+
+    /// Show facts health dashboard for a source
+    #[command(name = "health")]
+    Health(FactsHealthArgs),
+
+    /// Expire a fact by ID
+    Expire(FactsExpireArgs),
+}
+
+/// Arguments for `zbrain facts add`.
+#[derive(Debug, Parser)]
+pub struct FactsAddArgs {
+    /// Source ID
+    #[arg(short, long, default_value = "default")]
+    pub source: String,
+
+    /// Entity slug the fact belongs to
+    #[arg(short, long)]
+    pub entity: String,
+
+    /// The fact claim text
+    #[arg(long)]
+    pub claim: String,
+
+    /// Fact kind: event, preference, commitment, belief, fact (default: fact)
+    #[arg(long, default_value = "fact")]
+    pub kind: String,
+
+    /// Visibility: private or world (default: private)
+    #[arg(long, default_value = "private")]
+    pub visibility: String,
+
+    /// Confidence score 0.0-1.0 (default: 1.0)
+    #[arg(long, default_value = "1.0")]
+    pub confidence: f64,
+
+    /// Source citation (e.g. conversation-session-id)
+    #[arg(long)]
+    pub cite: Option<String>,
+
+    /// Additional context / provenance
+    #[arg(long)]
+    pub context: Option<String>,
+
+    /// Notability level: low, medium, high (default: medium)
+    #[arg(long, default_value = "medium")]
+    pub notability: String,
+
+    /// Valid-from date (ISO 8601)
+    #[arg(long)]
+    pub valid_from: Option<String>,
+
+    /// Valid-until date (ISO 8601)
+    #[arg(long)]
+    pub valid_until: Option<String>,
+
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `zbrain facts list`.
+#[derive(Debug, Parser)]
+pub struct FactsListArgs {
+    /// Source ID
+    #[arg(short, long, default_value = "default")]
+    pub source: String,
+
+    /// Entity slug to list facts for
+    #[arg(short, long)]
+    pub entity: String,
+
+    /// Only show active (non-expired, non-superseded) facts
+    #[arg(long)]
+    pub active_only: bool,
+
+    /// Filter by kind (can repeat: --kind event --kind fact)
+    #[arg(long)]
+    pub kind: Vec<String>,
+
+    /// Filter by visibility (can repeat: --visibility private --visibility world)
+    #[arg(long)]
+    pub visibility: Vec<String>,
+
+    /// Maximum results (default: 50)
+    #[arg(long, default_value = "50")]
+    pub limit: i64,
+
+    /// Skip first N results
+    #[arg(long, default_value = "0")]
+    pub offset: i64,
+
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `zbrain facts health`.
+#[derive(Debug, Parser)]
+pub struct FactsHealthArgs {
+    /// Source ID
+    #[arg(short, long, default_value = "default")]
+    pub source: String,
+
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `zbrain facts expire`.
+#[derive(Debug, Parser)]
+pub struct FactsExpireArgs {
+    /// Fact ID to expire
+    pub fact_id: i64,
+
+    /// Source ID
+    #[arg(short, long, default_value = "default")]
+    pub source: String,
+
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+// ── Links subcommands ──────────────────────────────────────────
+
+/// Subcommands for `zbrain links`.
+#[derive(Debug, Subcommand)]
+pub enum LinksAction {
+    /// Add links between pages (batch upsert)
+    Add(LinksAddArgs),
+
+    /// List outbound links from a page
+    List(LinksListArgs),
+
+    /// List backlinks (inbound links) to a page
+    #[command(name = "backlinks")]
+    Backlinks(LinksBacklinksArgs),
+
+    /// Remove a link
+    #[command(name = "rm")]
+    Remove(LinksRemoveArgs),
+}
+
+/// Arguments for `zbrain links add`.
+#[derive(Debug, Parser)]
+pub struct LinksAddArgs {
+    /// Source page slug (from)
+    #[arg(short, long)]
+    pub from: String,
+
+    /// Target page slug (to)
+    #[arg(short, long)]
+    pub to: String,
+
+    /// Link type: reference, mention, related, parent, child (default: reference)
+    #[arg(long, default_value = "reference")]
+    pub link_type: String,
+
+    /// Link source: markdown, frontmatter, manual, mentions (default: manual)
+    #[arg(long, default_value = "manual")]
+    pub link_source: String,
+
+    /// Additional context for the link
+    #[arg(long)]
+    pub context: Option<String>,
+
+    /// Source ID for 'from' page (default: default)
+    #[arg(long, default_value = "default")]
+    pub from_source: String,
+
+    /// Source ID for 'to' page (default: default)
+    #[arg(long, default_value = "default")]
+    pub to_source: String,
+
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `zbrain links list`.
+#[derive(Debug, Parser)]
+pub struct LinksListArgs {
+    /// Page slug to list outbound links for
+    pub slug: String,
+
+    /// Source ID (default: default)
+    #[arg(short, long, default_value = "default")]
+    pub source: String,
+
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `zbrain links backlinks`.
+#[derive(Debug, Parser)]
+pub struct LinksBacklinksArgs {
+    /// Page slug to list backlinks for
+    pub slug: String,
+
+    /// Source ID (default: default)
+    #[arg(short, long, default_value = "default")]
+    pub source: String,
+
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `zbrain links rm`.
+#[derive(Debug, Parser)]
+pub struct LinksRemoveArgs {
+    /// Source page slug (from)
+    #[arg(short, long)]
+    pub from: String,
+
+    /// Target page slug (to)
+    #[arg(short, long)]
+    pub to: String,
+
+    /// Link type to remove (omit to remove all types)
+    #[arg(long)]
+    pub link_type: Option<String>,
+
+    /// Source ID for 'from' page (default: default)
+    #[arg(long, default_value = "default")]
+    pub from_source: String,
+
+    /// Source ID for 'to' page (default: default)
+    #[arg(long, default_value = "default")]
+    pub to_source: String,
+
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+// ── Takes subcommands ──────────────────────────────────────────
+
+/// Subcommands for `zbrain takes`.
+#[derive(Debug, Subcommand)]
+pub enum TakesAction {
+    /// Add takes to a page
+    Add(TakesAddArgs),
+
+    /// List takes for a page
+    List(TakesListArgs),
+}
+
+/// Arguments for `zbrain takes add`.
+#[derive(Debug, Parser)]
+pub struct TakesAddArgs {
+    /// Page slug
+    #[arg(short, long)]
+    pub slug: String,
+
+    /// Source ID (default: default)
+    #[arg(long, default_value = "default")]
+    pub source: String,
+
+    /// Take claim text
+    #[arg(long)]
+    pub claim: String,
+
+    /// Take kind (opinion, observation, prediction, etc.)
+    #[arg(long, default_value = "opinion")]
+    pub kind: String,
+
+    /// Take holder / author name
+    #[arg(long, default_value = "cli")]
+    pub holder: String,
+
+    /// Weight 0.0-1.0 (default: 0.5)
+    #[arg(long, default_value = "0.5")]
+    pub weight: f64,
+
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `zbrain takes list`.
+#[derive(Debug, Parser)]
+pub struct TakesListArgs {
+    /// Page slug
+    pub slug: String,
+
+    /// Source ID (default: default)
+    #[arg(short, long, default_value = "default")]
+    pub source: String,
+
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `zbrain salience` command.
+///
+/// Queries recently touched pages ranked by salience score.
+#[derive(Debug, Parser)]
+pub struct SalienceArgs {
+    /// Look-back window in days (default: 7)
+    #[arg(long, default_value = "7")]
+    pub days: u32,
+
+    /// Max results to return (default: 50, max: 100)
+    #[arg(long, default_value = "50")]
+    pub limit: u32,
+
+    /// Optional slug prefix filter
+    #[arg(long)]
+    pub prefix: Option<String>,
+
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `zbrain orphans` command.
+///
+/// Finds pages with zero inbound links from live pages.
+#[derive(Debug, Parser)]
+pub struct OrphansArgs {
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `zbrain graph-query` command.
+///
+/// BFS graph traversal from a root page.
+#[derive(Debug, Parser)]
+pub struct GraphQueryArgs {
+    /// Root page slug to start traversal from
+    pub slug: String,
+
+    /// Max traversal depth (default: 1)
+    #[arg(long, default_value = "1")]
+    pub depth: u32,
+
+    /// Filter by link type (e.g. "related", "references")
+    #[arg(long = "link-type")]
+    pub link_type: Option<String>,
+
+    /// Traversal direction: out, in, or both (default: out)
+    #[arg(long, default_value = "out")]
+    pub direction: String,
+
+    /// Source ID scope (default: default)
+    #[arg(long, default_value = "default")]
+    pub source: String,
+
+    /// Output as JSON
     #[arg(long)]
     pub json: bool,
 }
@@ -856,6 +1246,12 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Commands::Sources(action) => run_sources_command(action, cli.config.as_deref(), timeout_ms).await?,
         Commands::Capture(args) => run_capture_command(args, cli.config.as_deref()).await?,
+        Commands::Facts(action) => run_facts_command(action, cli.config.as_deref()).await?,
+        Commands::Links(action) => run_links_command(action, cli.config.as_deref()).await?,
+        Commands::Takes(action) => run_takes_command(action, cli.config.as_deref()).await?,
+        Commands::Salience(args) => run_salience_command(args, cli.config.as_deref()).await?,
+        Commands::Orphans(args) => run_orphans_command(args, cli.config.as_deref()).await?,
+        Commands::GraphQuery(args) => run_graph_query_command(args, cli.config.as_deref()).await?,
     }
     Ok(())
 }
@@ -1437,6 +1833,18 @@ async fn run_operation(
                 audit_dir: resolve_audit_dir(),
                 model: None,
             });
+        }
+    }
+
+    // Wire the embedding client for the query vector path when hybrid search is
+    // enabled in config AND the API key is present in the environment (same
+    // secrets-never-in-config posture as the reranker above). Missing key with
+    // hybrid_search = leave the vector path off; hybrid search degrades to
+    // lexical-only rather than failing. This is the sole production
+    // construction site for the embedding HTTP client.
+    if config.search.hybrid_search {
+        if let Some(client) = zbrain_core::embedding::EmbeddingClient::from_env() {
+            ctx = ctx.with_embedding(std::sync::Arc::new(client));
         }
     }
 
@@ -2627,6 +3035,661 @@ fn unset_config_by_pattern(config: &mut config::Config, prefix: &str) -> anyhow:
         *config = serde_yaml::from_value(cfg_value)?;
     }
     Ok(count)
+}
+
+// ── Facts commands ──────────────────────────────────────────────
+
+/// Dispatch `zbrain facts` subcommands.
+async fn run_facts_command(action: FactsAction, config_path: Option<&Path>) -> anyhow::Result<()> {
+    match action {
+        FactsAction::Add(args) => run_facts_add(args, config_path).await?,
+        FactsAction::List(args) => run_facts_list(args, config_path).await?,
+        FactsAction::Health(args) => run_facts_health(args, config_path).await?,
+        FactsAction::Expire(args) => run_facts_expire(args, config_path).await?,
+    }
+    Ok(())
+}
+
+/// Execute `zbrain facts add`.
+async fn run_facts_add(args: FactsAddArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+    use zbrain_core::engine::{BrainEngine, EngineConfig};
+    use zbrain_core::types::NewFact;
+
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    let kind = parse_fact_kind(&args.kind)?;
+    let visibility = parse_fact_visibility(&args.visibility)?;
+
+    let input = NewFact {
+        fact: args.claim,
+        kind: Some(kind),
+        entity_slug: Some(args.entity.clone()),
+        visibility: Some(visibility),
+        context: args.context.clone(),
+        valid_from: args.valid_from.clone(),
+        valid_until: args.valid_until.clone(),
+        source: args.cite.unwrap_or_else(|| "cli".to_string()),
+        source_session: None,
+        confidence: Some(args.confidence.clamp(0.0, 1.0)),
+        notability: Some(args.notability.clone()),
+        claim_metric: None,
+        claim_value: None,
+        claim_unit: None,
+        claim_period: None,
+        event_type: None,
+    };
+
+    let status = engine.insert_fact(&args.source, &args.entity, &input).await?;
+
+    if args.json {
+        let output = serde_json::json!({
+            "status": format!("{:?}", status),
+            "entity": args.entity,
+            "source": args.source,
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!("Fact {:?} for entity '{}' in source '{}'", status, args.entity, args.source);
+    }
+
+    engine.disconnect().await?;
+    Ok(())
+}
+
+/// Execute `zbrain facts list`.
+async fn run_facts_list(args: FactsListArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+    use zbrain_core::engine::{BrainEngine, EngineConfig};
+    use zbrain_core::types::FactListOpts;
+
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    let kinds = if args.kind.is_empty() {
+        None
+    } else {
+        Some(args.kind.iter().map(|k| parse_fact_kind(k)).collect::<anyhow::Result<Vec<_>>>()?)
+    };
+
+    let visibility = if args.visibility.is_empty() {
+        None
+    } else {
+        Some(args.visibility.iter().map(|v| parse_fact_visibility(v)).collect::<anyhow::Result<Vec<_>>>()?)
+    };
+
+    let opts = FactListOpts {
+        active_only: if args.active_only { Some(true) } else { None },
+        limit: Some(args.limit),
+        offset: Some(args.offset),
+        kinds,
+        visibility,
+    };
+
+    let facts = engine.list_facts_by_entity(&args.source, &args.entity, &opts).await?;
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&facts)?);
+    } else {
+        if facts.is_empty() {
+            println!("No facts found for entity '{}' in source '{}'", args.entity, args.source);
+        } else {
+            for f in &facts {
+                let created = f.created_at.as_deref().unwrap_or("-");
+                let kind = format!("{:?}", f.kind).to_lowercase();
+                println!(
+                    "[{}] #{} {} | {} | conf={:.2} | {}",
+                    created, f.id, f.fact, kind, f.confidence, f.source
+                );
+            }
+            println!("\n{} fact(s)", facts.len());
+        }
+    }
+
+    engine.disconnect().await?;
+    Ok(())
+}
+
+/// Execute `zbrain facts health`.
+async fn run_facts_health(args: FactsHealthArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+    use zbrain_core::engine::{BrainEngine, EngineConfig};
+
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    let health = engine.get_facts_health(&args.source).await?;
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&health)?);
+    } else {
+        println!("Facts health for source '{}':", args.source);
+        println!("  active:      {}", health.total_active);
+        println!("  today:       {}", health.total_today);
+        println!("  this week:   {}", health.total_week);
+        println!("  expired:     {}", health.total_expired);
+        println!("  consolidated: {}", health.total_consolidated);
+        if !health.top_entities.is_empty() {
+            println!("  top entities:");
+            for e in &health.top_entities {
+                println!("    {} ({})", e.entity_slug, e.count);
+            }
+        }
+    }
+
+    engine.disconnect().await?;
+    Ok(())
+}
+
+/// Execute `zbrain facts expire`.
+async fn run_facts_expire(args: FactsExpireArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+    use zbrain_core::engine::{BrainEngine, EngineConfig};
+
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    let expired = engine.expire_fact(&args.source, args.fact_id).await?;
+
+    if args.json {
+        let output = serde_json::json!({
+            "expired": expired,
+            "fact_id": args.fact_id,
+            "source": args.source,
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else if expired {
+        println!("Fact #{} expired", args.fact_id);
+    } else {
+        println!("Fact #{} not found or already expired", args.fact_id);
+    }
+
+    engine.disconnect().await?;
+    Ok(())
+}
+
+// ── Links commands ──────────────────────────────────────────────
+
+/// Dispatch `zbrain links` subcommands.
+async fn run_links_command(action: LinksAction, config_path: Option<&Path>) -> anyhow::Result<()> {
+    match action {
+        LinksAction::Add(args) => run_links_add(args, config_path).await?,
+        LinksAction::List(args) => run_links_list(args, config_path).await?,
+        LinksAction::Backlinks(args) => run_links_backlinks(args, config_path).await?,
+        LinksAction::Remove(args) => run_links_remove(args, config_path).await?,
+    }
+    Ok(())
+}
+
+/// Execute `zbrain links add`.
+async fn run_links_add(args: LinksAddArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+    use zbrain_core::engine::{BrainEngine, EngineConfig};
+    use zbrain_core::types::LinkBatchInput;
+
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    let link = LinkBatchInput {
+        from_slug: args.from.clone(),
+        to_slug: args.to.clone(),
+        link_type: Some(args.link_type),
+        context: args.context.clone(),
+        link_source: Some(args.link_source),
+        origin_slug: None,
+        origin_field: None,
+        from_source_id: Some(args.from_source.clone()),
+        to_source_id: Some(args.to_source.clone()),
+        origin_source_id: None,
+    };
+
+    let added = engine.add_links_batch(&[link]).await?;
+
+    if args.json {
+        let output = serde_json::json!({
+            "added": added,
+            "from": args.from,
+            "to": args.to,
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!("{} link(s) added ({} -> {})", added, args.from, args.to);
+    }
+
+    engine.disconnect().await?;
+    Ok(())
+}
+
+/// Execute `zbrain links list`.
+async fn run_links_list(args: LinksListArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+    use zbrain_core::engine::{BrainEngine, EngineConfig};
+
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    let links = engine.get_links(&args.slug, Some(&args.source)).await?;
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&links)?);
+    } else {
+        if links.is_empty() {
+            println!("No outbound links from '{}' in source '{}'", args.slug, args.source);
+        } else {
+            for l in &links {
+                let source = l.link_source.as_deref().unwrap_or("-");
+                println!("  -> {} ({}, {})", l.to_slug, l.link_type, source);
+            }
+            println!("\n{} link(s)", links.len());
+        }
+    }
+
+    engine.disconnect().await?;
+    Ok(())
+}
+
+/// Execute `zbrain links backlinks`.
+async fn run_links_backlinks(args: LinksBacklinksArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+    use zbrain_core::engine::{BrainEngine, EngineConfig};
+
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    let backlinks = engine.get_backlinks(&args.slug, Some(&args.source)).await?;
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&backlinks)?);
+    } else {
+        if backlinks.is_empty() {
+            println!("No backlinks to '{}' in source '{}'", args.slug, args.source);
+        } else {
+            for l in &backlinks {
+                let source = l.link_source.as_deref().unwrap_or("-");
+                println!("  <- {} ({}, {})", l.from_slug, l.link_type, source);
+            }
+            println!("\n{} backlink(s)", backlinks.len());
+        }
+    }
+
+    engine.disconnect().await?;
+    Ok(())
+}
+
+/// Execute `zbrain links rm`.
+async fn run_links_remove(args: LinksRemoveArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+    use zbrain_core::engine::{BrainEngine, EngineConfig};
+
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    engine
+        .remove_link(
+            &args.from,
+            &args.to,
+            args.link_type.as_deref(),
+            None,
+            Some(&args.from_source),
+            Some(&args.to_source),
+        )
+        .await?;
+
+    if args.json {
+        let output = serde_json::json!({
+            "removed": true,
+            "from": args.from,
+            "to": args.to,
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!("Link removed: {} -> {}", args.from, args.to);
+    }
+
+    engine.disconnect().await?;
+    Ok(())
+}
+
+// ── Takes commands ──────────────────────────────────────────────
+
+/// Dispatch `zbrain takes` subcommands.
+async fn run_takes_command(action: TakesAction, config_path: Option<&Path>) -> anyhow::Result<()> {
+    match action {
+        TakesAction::Add(args) => run_takes_add(args, config_path).await?,
+        TakesAction::List(args) => run_takes_list(args, config_path).await?,
+    }
+    Ok(())
+}
+
+/// Execute `zbrain takes add`.
+async fn run_takes_add(args: TakesAddArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+    use zbrain_core::engine::{BrainEngine, EngineConfig, GetPageOpts};
+    use zbrain_core::types::TakeInput;
+
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    // Resolve slug -> page_id
+    let page = engine
+        .get_page(
+            &args.slug,
+            &GetPageOpts {
+                source_id: Some(args.source.clone()),
+                include_deleted: false,
+            },
+        )
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Page not found: {} in source {}", args.slug, args.source))?;
+
+    let take = TakeInput {
+        page_id: page.id,
+        row_num: None,
+        claim: args.claim,
+        kind: args.kind,
+        holder: args.holder,
+        weight: args.weight.clamp(0.0, 1.0),
+        since_date: None,
+        until_date: None,
+        source: Some("cli".to_string()),
+        superseded_by: None,
+        active: Some(true),
+    };
+
+    let result = engine.add_takes_batch(page.id, &[take]).await?;
+
+    if args.json {
+        let output = serde_json::json!({
+            "upserted": result.upserted,
+            "weight_clamped": result.weight_clamped,
+            "page_id": page.id,
+            "slug": args.slug,
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!(
+            "{} take(s) added to page '{}' (weight_clamped: {})",
+            result.upserted, args.slug, result.weight_clamped
+        );
+    }
+
+    engine.disconnect().await?;
+    Ok(())
+}
+
+/// Execute `zbrain takes list`.
+async fn run_takes_list(args: TakesListArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+    use zbrain_core::engine::{BrainEngine, EngineConfig, GetPageOpts};
+
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    // Resolve slug -> page_id (takes list)
+    let page = engine
+        .get_page(
+            &args.slug,
+            &GetPageOpts {
+                source_id: Some(args.source.clone()),
+                include_deleted: false,
+            },
+        )
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Page not found: {} in source {}", args.slug, args.source))?;
+
+    let takes = engine.get_takes_for_page(page.id).await?;
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&takes)?);
+    } else {
+        if takes.is_empty() {
+            println!(
+                "No takes on page '{}' (id={})",
+                args.slug, page.id
+            );
+        } else {
+            for t in &takes {
+                let active = if t.active { "" } else { " [inactive]" };
+                println!(
+                    "  #{} [{}] {} | {} | w={:.2}{}",
+                    t.row_num, t.kind, t.claim, t.holder, t.weight, active
+                );
+            }
+            println!("\n{} take(s)", takes.len());
+        }
+    }
+
+    engine.disconnect().await?;
+    Ok(())
+}
+
+// ── Helpers ─────────────────────────────────────────────────────
+
+/// Parse a fact kind string into `FactKind`.
+fn parse_fact_kind(s: &str) -> anyhow::Result<zbrain_core::types::FactKind> {
+    use zbrain_core::types::FactKind;
+    match s.to_lowercase().as_str() {
+        "event" => Ok(FactKind::Event),
+        "preference" => Ok(FactKind::Preference),
+        "commitment" => Ok(FactKind::Commitment),
+        "belief" => Ok(FactKind::Belief),
+        "fact" => Ok(FactKind::Fact),
+        other => Err(anyhow::anyhow!(
+            "Invalid fact kind '{}'. Valid: event, preference, commitment, belief, fact",
+            other
+        )),
+    }
+}
+
+/// Parse a fact visibility string into `FactVisibility`.
+fn parse_fact_visibility(s: &str) -> anyhow::Result<zbrain_core::types::FactVisibility> {
+    use zbrain_core::types::FactVisibility;
+    match s.to_lowercase().as_str() {
+        "private" => Ok(FactVisibility::Private),
+        "world" => Ok(FactVisibility::World),
+        other => Err(anyhow::anyhow!(
+            "Invalid fact visibility '{}'. Valid: private, world",
+            other
+        )),
+    }
+}
+
+/// Execute `zbrain salience` command.
+async fn run_salience_command(args: SalienceArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+    use zbrain_core::engine::{BrainEngine, EngineConfig};
+
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    let results = engine
+        .get_recent_salience(args.days, args.limit, args.prefix.as_deref())
+        .await?;
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&results)?);
+    } else {
+        if results.is_empty() {
+            println!("No salient pages found in the last {} days.", args.days);
+            return Ok(());
+        }
+        // Header
+        println!(
+            "{:<6} {:<40} {:<14} {:<14} {:<12}",
+            "Score", "Slug", "Emotion Wt", "Take Count", "Take Avg Wt"
+        );
+        println!("{}", "-".repeat(90));
+        for r in &results {
+            println!(
+                "{:<6.2} {:<40} {:<14.2} {:<14} {:<12.2}",
+                r.score, r.slug, r.emotional_weight, r.take_count, r.take_avg_weight
+            );
+        }
+        println!("\n{} pages.", results.len());
+    }
+    Ok(())
+}
+
+/// Execute `zbrain orphans` command.
+async fn run_orphans_command(args: OrphansArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+    use zbrain_core::engine::{BrainEngine, EngineConfig};
+
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    let results = engine.find_orphan_pages().await?;
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&results)?);
+    } else {
+        if results.is_empty() {
+            println!("No orphan pages found.");
+            return Ok(());
+        }
+        println!("{:<40} {:<30} {:<20}", "Slug", "Title", "Domain");
+        println!("{}", "-".repeat(95));
+        for r in &results {
+            println!(
+                "{:<40} {:<30} {:<20}",
+                r.slug,
+                r.title,
+                r.domain.as_deref().unwrap_or("-")
+            );
+        }
+        println!("\n{} orphan pages.", results.len());
+    }
+    Ok(())
+}
+
+/// Execute `zbrain graph-query` command.
+async fn run_graph_query_command(args: GraphQueryArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+    use zbrain_core::engine::{BrainEngine, EngineConfig};
+
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    let results = engine
+        .traverse_paths(
+            &args.slug,
+            Some(args.depth),
+            args.link_type.as_deref(),
+            Some(&args.direction),
+            Some(&args.source),
+            None,
+        )
+        .await?;
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&results)?);
+    } else {
+        if results.is_empty() {
+            println!(
+                "No graph traversal results from '{}' (depth={}, direction={}).",
+                args.slug, args.depth, args.direction
+            );
+            return Ok(());
+        }
+        println!(
+            "{:<5} {:<40} {:<40} {:<15}",
+            "Depth", "From", "To", "Link Type"
+        );
+        println!("{}", "-".repeat(105));
+        for r in &results {
+            println!(
+                "{:<5} {:<40} {:<40} {:<15}",
+                r.depth, r.from_slug, r.to_slug, r.link_type
+            );
+        }
+        println!(
+            "\n{} edges traversed from '{}' (depth={}, direction={}).",
+            results.len(),
+            args.slug,
+            args.depth,
+            args.direction
+        );
+    }
+    Ok(())
 }
 
 /// Resolve a `sqlite://path` database URL to a filesystem path,

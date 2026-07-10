@@ -163,7 +163,11 @@ def cmd_section(args: dict):
 def cmd_link(args: dict):
     r = Roadmap(args["positional"][0])
     r.load()
-    r.link_md_file(args["positional"][1])
+    # Store the absolute path so `render` resolves it directly. Storing a
+    # relative path here caused render to re-resolve it against the JSON's
+    # own directory (dirname(json_path) + relpath), producing a doubled path
+    # like .workbuddy/roadmaps/.workbuddy/roadmaps/ZJ_ROADMAP.md → FileNotFound.
+    r.link_md_file(os.path.abspath(args["positional"][1]))
     r.save()
     print(f"Linked to: {os.path.abspath(args['positional'][1])}")
 

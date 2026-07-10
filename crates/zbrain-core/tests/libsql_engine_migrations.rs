@@ -44,7 +44,8 @@ async fn read_version_raw(path: &std::path::Path) -> i64 {
 }
 
 /// Current migration version. Bump when new migrations are added.
-const EXPECTED_VERSION: i64 = 13;
+/// 14 = through 0014_minion_jobs (Phase 9 minion queue, roadmap 1-1-1).
+const EXPECTED_VERSION: i64 = 14;
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
 

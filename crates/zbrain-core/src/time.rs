@@ -11,6 +11,24 @@ pub fn current_utc_iso8601() -> String {
     unix_seconds_to_utc_iso8601(secs)
 }
 
+/// Current wall-clock time as Unix epoch **milliseconds**.
+///
+/// Used by the minion job queue's scheduling columns (lock_until /
+/// delay_until / timeout_at): on the SQLite backend these are stored as
+/// INTEGER epoch-ms and all `now() + N ms` arithmetic happens in Rust
+/// (SQLite has no interval type). Returns `i64` so it composes with the
+/// signed durations the queue passes around.
+#[must_use]
+pub fn now_epoch_ms() -> i64 {
+    i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock must be after Unix epoch")
+            .as_millis(),
+    )
+    .expect("current epoch milliseconds fits in i64")
+}
+
 #[must_use]
 pub fn unix_seconds_to_utc_iso8601(secs: u64) -> String {
     let days = i64::try_from(secs / 86_400).expect("current timestamp day count fits in i64");

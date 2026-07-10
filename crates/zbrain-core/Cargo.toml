@@ -51,6 +51,14 @@ zbrain-chunking = { path = "../zbrain-chunking" }
 [features]
 default = []
 openai = ["dep:reqwest"]
+# Real reqwest-backed native Anthropic Messages API chat provider. Mirrors the
+# `openai` feature: the trait/mock/pure serializers are always compiled; only
+# the live `/v1/messages` POST path needs reqwest.
+anthropic = ["dep:reqwest"]
+# Real reqwest-backed native Google Gemini generateContent chat provider.
+# Mirrors the `openai`/`anthropic` features: the pure serializers/parser are
+# always compiled; only the live `:generateContent` POST path needs reqwest.
+google = ["dep:reqwest"]
 embedding = ["dep:reqwest"]
 # Real reqwest-backed cross-encoder rerank HTTP client. The mock client and
 # the fail-open `apply_reranker` call-site logic are always compiled; only the

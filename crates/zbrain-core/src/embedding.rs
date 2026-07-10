@@ -73,12 +73,19 @@ impl EmbeddingConfigBuilder {
 #[derive(Debug)]
 pub enum EmbeddingConfigError {
     MissingField(String),
+    /// The requested embedding backend cannot be built in this binary because
+    /// the `embedding` cargo feature is disabled, so there is no HTTP provider
+    /// to construct. Surfaced by `EmbeddingClient::new` instead of silently
+    /// falling back to a zero-vector mock (which would poison the vector
+    /// index).
+    FeatureDisabled,
 }
 
 impl std::fmt::Display for EmbeddingConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::MissingField(field) => write!(f, "{} is required", field),
+            Self::FeatureDisabled => write!(f, "embedding feature not enabled"),
         }
     }
 }
@@ -124,14 +131,27 @@ pub struct EmbeddingClient {
 }
 
 impl EmbeddingClient {
+    /// Build a production embedding client from an explicit config.
+    ///
+    /// With the `embedding` feature enabled this wires the real
+    /// reqwest-backed `HttpEmbeddingProvider` (mirrors `create_http_client`).
+    /// Without the feature there is no HTTP provider to construct, so this
+    /// returns `EmbeddingConfigError::FeatureDisabled` rather than silently
+    /// installing a zero-vector mock — a silent all-zeros embedding would
+    /// poison the vector index and is never what a caller wants in
+    /// production. Tests that need a deterministic provider should use
+    /// `with_provider` (see `MockEmbeddingProvider`, test-only).
+    #[cfg(feature = "embedding")]
     pub fn new(config: EmbeddingConfig) -> Result<Self, EmbeddingError> {
-        // 暂时使用 mock provider；后续切换到真实 HTTP provider
-        let provider = Arc::new(MockEmbeddingProvider);
-        
-        Ok(Self {
-            config,
-            provider,
-        })
+        http_provider::create_http_client(config)
+    }
+
+    /// Feature-disabled variant: see the `#[cfg(feature = "embedding")]`
+    /// twin above for the rationale. Refuses loudly instead of returning a
+    /// zero-vector client.
+    #[cfg(not(feature = "embedding"))]
+    pub fn new(_config: EmbeddingConfig) -> Result<Self, EmbeddingError> {
+        Err(EmbeddingError::Config(EmbeddingConfigError::FeatureDisabled))
     }
     
     pub fn with_provider(config: EmbeddingConfig, provider: Arc<dyn EmbeddingProvider>) -> Self {
@@ -177,6 +197,29 @@ impl EmbeddingClient {
     pub async fn embed_query(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
         self.embed(text).await
     }
+
+    /// Build a production embedding client reading the API key from
+    /// `ZEROENTROPY_API_KEY`. Returns `None` when the var is unset/empty so the
+    /// caller can leave the vector path disabled (query search degrades to
+    /// lexical-only) rather than fail. Mirrors
+    /// `ZeroEntropyRerankClient::from_env` — secrets never live in the config
+    /// file, and a missing key is a soft-off, not an error.
+    ///
+    /// Gated behind the `embedding` feature because it wires the real
+    /// reqwest-backed `HttpEmbeddingProvider`; without the feature there is no
+    /// HTTP provider to construct, so query search stays lexical-only.
+    #[cfg(feature = "embedding")]
+    #[must_use]
+    pub fn from_env() -> Option<Self> {
+        let api_key = std::env::var("ZEROENTROPY_API_KEY")
+            .ok()
+            .filter(|k| !k.is_empty())?;
+        let config = EmbeddingConfig {
+            api_key,
+            ..EmbeddingConfig::default()
+        };
+        http_provider::create_http_client(config).ok()
+    }
 }
 
 #[derive(Debug)]
@@ -206,9 +249,13 @@ impl std::fmt::Display for EmbeddingError {
 
 impl std::error::Error for EmbeddingError {}
 
-// Mock provider for testing
+// Mock provider for testing. Test-only: it returns all-zero vectors, which
+// must never reach a production vector index. Not compiled into release
+// binaries. Wire it explicitly via `EmbeddingClient::with_provider`.
+#[cfg(test)]
 struct MockEmbeddingProvider;
 
+#[cfg(test)]
 #[async_trait::async_trait]
 impl EmbeddingProvider for MockEmbeddingProvider {
     async fn embed(&self, texts: &[String], dims: usize) -> Result<Vec<Vec<f32>>, EmbeddingError> {
@@ -554,7 +601,7 @@ mod tests {
             .build()
             .unwrap();
         
-        let client = EmbeddingClient::new(config).unwrap();
+        let client = EmbeddingClient::with_provider(config, Arc::new(MockEmbeddingProvider));
         let result = client.embed("Hello, world!").await.unwrap();
         
         assert_eq!(result.len(), 1280); // default dims
@@ -568,7 +615,7 @@ mod tests {
             .build()
             .unwrap();
         
-        let client = EmbeddingClient::new(config).unwrap();
+        let client = EmbeddingClient::with_provider(config, Arc::new(MockEmbeddingProvider));
         let texts = vec!["Hello".to_string(), "World".to_string()];
         let results = client.embed_batch(&texts, None).await.unwrap();
         
@@ -583,7 +630,7 @@ mod tests {
             .build()
             .unwrap();
         
-        let client = EmbeddingClient::new(config).unwrap();
+        let client = EmbeddingClient::with_provider(config, Arc::new(MockEmbeddingProvider));
         let result = client.embed_query("search query").await.unwrap();
         
         assert_eq!(result.len(), 1280);
@@ -610,9 +657,8 @@ mod tests {
             .build()
             .unwrap();
         
-        // 手动创建 client 并替换 provider
-        let mut client = EmbeddingClient::new(config).unwrap();
-        client.provider = Arc::new(BadMockProvider);
+        // 用 with_provider 直接注入返回错误维度的 provider
+        let client = EmbeddingClient::with_provider(config, Arc::new(BadMockProvider));
         
         let result = client.embed("test").await;
         assert!(result.is_err());
@@ -623,6 +669,38 @@ mod tests {
             }
             _ => panic!("Expected DimensionMismatch error"),
         }
+    }
+
+    /// Without the `embedding` feature, `new` must refuse loudly rather than
+    /// hand back a zero-vector mock client. Guards the "silent all-zeros
+    /// poisons the vector index" regression.
+    #[cfg(not(feature = "embedding"))]
+    #[test]
+    fn embedding_client_new_refuses_without_feature() {
+        let config = EmbeddingConfig::builder()
+            .api_key("sk-test-key")
+            .build()
+            .unwrap();
+
+        let result = EmbeddingClient::new(config);
+        match result {
+            Err(EmbeddingError::Config(EmbeddingConfigError::FeatureDisabled)) => {}
+            Err(other) => panic!("Expected FeatureDisabled, got {other:?}"),
+            Ok(_) => panic!("Expected FeatureDisabled error, got a client"),
+        }
+    }
+
+    /// With the `embedding` feature, `new` builds a real HTTP-backed client
+    /// (no zero-vector mock). We only assert it constructs — no network call.
+    #[cfg(feature = "embedding")]
+    #[test]
+    fn embedding_client_new_builds_http_client_with_feature() {
+        let config = EmbeddingConfig::builder()
+            .api_key("sk-test-key")
+            .build()
+            .unwrap();
+
+        assert!(EmbeddingClient::new(config).is_ok());
     }
 }
 

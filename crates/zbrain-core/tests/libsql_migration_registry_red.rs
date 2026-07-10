@@ -2,6 +2,9 @@
 //!
 //! These tests should FAIL initially because LibsqlMigration and LIBQL_MIGRATIONS
 //! don't exist yet. They should PASS after implementation.
+//!
+//! Current registry: 12 migrations (v1-10, 12, 13). v11 was intentionally
+//! skipped (reserved for a future migration).
 
 #![allow(unused)]
 
@@ -15,19 +18,19 @@ fn libsql_registry_is_exported() {
 }
 
 #[test]
-fn libsql_registry_has_ten_migrations() {
-    assert_eq!(LIBQL_MIGRATIONS.len(), 10);
+fn libsql_registry_has_twelve_migrations() {
+    assert_eq!(LIBQL_MIGRATIONS.len(), 12);
 }
 
 #[test]
-fn libsql_registry_latest_version_is_ten() {
-    assert_eq!(LIBQL_MIGRATIONS.latest_version(), 10);
+fn libsql_registry_latest_version_is_thirteen() {
+    assert_eq!(LIBQL_MIGRATIONS.latest_version(), 13);
 }
 
 #[test]
-fn libsql_registry_versions_are_1_through_10() {
+fn libsql_registry_versions_are_1_through_13_skipping_11() {
     let versions: Vec<i64> = LIBQL_MIGRATIONS.iter().map(|m| m.version()).collect();
-    assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13]);
 }
 
 #[test]
