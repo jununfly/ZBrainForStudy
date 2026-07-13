@@ -2182,6 +2182,63 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
             "get_budget_owner not yet implemented for this engine",
         ))
     }
+
+    /// Acquire a rate lease for `key` (e.g. `"anthropic:messages"`) under
+    /// `job_id`, respecting `max_concurrent`. `ttl_ms` sets the expiry from now.
+    ///
+    /// PG implementation uses `pg_advisory_xact_lock(fnv1a(key))` inside a
+    /// self-managed transaction to serialise concurrent acquires on the same
+    /// key. Other backends return `Unsupported`.
+    ///
+    /// Mirrors TS `acquireLease` (`src/core/minions/rate-leases.ts`).
+    async fn acquire_rate_lease(
+        &self,
+        key: &str,
+        job_id: i64,
+        max_concurrent: i32,
+        ttl_ms: i64,
+    ) -> crate::Result<crate::minions::types::LeaseAcquireResult> {
+        let _ = (key, job_id, max_concurrent, ttl_ms);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "acquire_rate_lease not yet implemented for this engine",
+        ))
+    }
+
+    /// Extend the expiry of lease `lease_id` by `ttl_ms` from now. Returns
+    /// `true` if the lease was still alive, `false` if it was already gone
+    /// (pruned or CASCADE-deleted).
+    ///
+    /// Mirrors TS `renewLease`.
+    async fn renew_rate_lease(
+        &self,
+        lease_id: i64,
+        ttl_ms: i64,
+    ) -> crate::Result<bool> {
+        let _ = (lease_id, ttl_ms);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "renew_rate_lease not yet implemented for this engine",
+        ))
+    }
+
+    /// Release (delete) a rate lease by id. Idempotent — deleting a missing
+    /// row is a no-op, not an error.
+    ///
+    /// Mirrors TS `releaseLease`.
+    async fn release_rate_lease(
+        &self,
+        lease_id: i64,
+    ) -> crate::Result<()> {
+        let _ = lease_id;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "release_rate_lease not yet implemented for this engine",
+        ))
+    }
 }
 
 // ─── InMemoryEngine ──────────────────────────────────────────────────────────
@@ -7476,6 +7533,35 @@ mod budget_tests {
     async fn inmem_budget_get_owner_unsupported() {
         let engine = InMemoryEngine::new();
         let result = engine.get_budget_owner(1).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not yet implemented"));
+    }
+}
+
+#[cfg(test)]
+mod rate_lease_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn inmem_acquire_rate_lease_unsupported() {
+        let engine = InMemoryEngine::new();
+        let result = engine.acquire_rate_lease("test", 1, 10, 120_000).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not yet implemented"));
+    }
+
+    #[tokio::test]
+    async fn inmem_renew_rate_lease_unsupported() {
+        let engine = InMemoryEngine::new();
+        let result = engine.renew_rate_lease(1, 120_000).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not yet implemented"));
+    }
+
+    #[tokio::test]
+    async fn inmem_release_rate_lease_unsupported() {
+        let engine = InMemoryEngine::new();
+        let result = engine.release_rate_lease(1).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not yet implemented"));
     }

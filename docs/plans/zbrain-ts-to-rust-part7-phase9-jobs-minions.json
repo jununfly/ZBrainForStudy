@@ -92,7 +92,7 @@
     "1-3": {
       "id": "1-3",
       "label": "Budget + rate leases (budget-tracker/budget-*/rate-leases.ts, 成本上限与限流)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [
@@ -518,7 +518,7 @@
     "1-3-2": {
       "id": "1-3-2",
       "label": "Engine 预算扩展: BrainEngine trait reserve_budget/refund/set_owner/halt/inherit + PG CAS 实现 + 0017 migration (ALTER minion_jobs + minion_budget_log)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-3",
       "children": [],
@@ -549,22 +549,53 @@
           "note": "测试可构造 BudgetEventRecord 验证审计表。审计失败用 tracing::warn! 对标 TS stderr warn，绝不传播"
         }
       ],
-      "notes": ""
+      "notes": "31/31 tests green. 14 PG集成(所有outcome+audit log) + 1 InMemory契约 + 6单元 + 10 migration registry. 踩坑: PG INTEGER=INT4 读i64 ColumnDecode→改读i32转i64。Reserve等于remaining→Reserved非Exhausted。0017_minion_budget.sql 双后端迁移+registry。#commit 37a5e8a"
     },
     "1-3-3": {
       "id": "1-3-3",
-      "label": "Engine 租约扩展: BrainEngine trait acquire_rate_lease/renew/release + fnv1a_64 hash + PG pg_advisory_xact_lock 实现 + 0017 migration (subagent_rate_leases 表)",
-      "status": "pending",
+      "label": "Engine 租约扩展: BrainEngine trait acquire_rate_lease/renew/release + fnv1a_64 hash + PG pg_advisory_xact_lock 实现 + 0018 migration (subagent_rate_leases 表)",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-3",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "Trait 方法签名？",
+          "answer": "A: 3核心(acquire/renew/release) + release_lease_full_job 不暴露 trait，留在 MinionQueue 层",
+          "note": "release_lease_full_job 是在 queue.ts 里的——责任在队列层而非租约层。Worker 调用时用 queue.releaseLeaseFullJob() 而非 engine.release_lease_full_job()。trait 保持纯净：acquire_rate_lease→LeaseAcquireResult, renew_rate_lease→bool(续约成功/租约已丢失), release_rate_lease→()。默认 Unsupported。"
+        },
+        {
+          "q": "并发模型——事务+advisory lock 归属？",
+          "answer": "A: acquire_rate_lease 内部自管理事务",
+          "note": "方法签名不变，调用方不传 &mut Transaction。内部 pool.begin() → pg_advisory_xact_lock → DELETE expired/COUNT/INSERT → tx.commit()。与 1-3-2 CAS UPDATE 自足风格一致。renew_rate_lease 和 release_rate_lease 无需事务——单条 UPDATE/DELETE 天然原子。xact_lock 语义保证崩溃安全：事务回滚自动释放锁。"
+        },
+        {
+          "q": "返回类型——LeaseAcquireResult？",
+          "answer": "A: Struct { acquired, lease_id, active_count, max_concurrent }",
+          "note": "直接映射 TS { acquired, leaseId?, activeCount, maxConcurrent }。与 ReservationOutcome 不同：这里字段结构一致，只是 acquired 布尔差异，enum 过度设计。结构体放 minions/types.rs。"
+        },
+        {
+          "q": "FNV-1a 64-bit 哈希实现？",
+          "answer": "A: 手写 ~10行函数，零外部依赖",
+          "note": "直接放 postgres.rs 的 impl PostgresEngine 中作为 private 关联函数（或抽到 utils 模块）。与 TS 算法逐字节一致：初始值 0xcbf29ce484222325，每字节 XOR 后乘 0x100000001b3，最后 & 0x7fffffffffffffff 去符号位转 i64。"
+        },
+        {
+          "q": "Migration 编号？",
+          "answer": "A: 新建 0018_rate_leases.sql",
+          "note": "0017 已提交且测试依赖其确定性。0018 独立建 subagent_rate_leases 表：id BIGSERIAL PK, key TEXT NOT NULL, owner_job_id BIGINT FK→minion_jobs ON DELETE CASCADE, acquired_at TIMESTAMPTZ DEFAULT now(), expires_at TIMESTAMPTZ NOT NULL + idx_rate_leases_key_expires ON (key, expires_at)。PG + SQLite 双后端迁移。"
+        },
+        {
+          "q": "测试策略？",
+          "answer": "A: PG集成测试(8场景) + 1个InMemory契约测试(3方法→Unsupported)",
+          "note": "与1-3-2模式一致。PG测试覆盖: 正常acquire/容量满/过期自动剪枝/renew成功/renew丢失/release幂等/release释放槽位/ON DELETE CASCADE。InMemory: 每个方法 assert result.is_err()。"
+        }
+      ],
+      "notes": "22/22 tests green. 9 PG集成(acquire容量内/容量满/过期剪枝/renew成功/renew丢失/release幂等/release释放槽位/CASCADE删除/fnv1a_64手写) + 1 InMemory契约 + 3单元 + 10 migration registry. 实现: acquire内部自管理事务+pg_advisory_xact_lock, renew单条UPDATE, release单条DELETE. 0018_rate_leases.sql 双后端迁移+registry."
     }
   },
   "metadata": {
     "created": "2026-07-09 21:33:13",
-    "updated": "2026-07-13 20:35:11",
+    "updated": "2026-07-13 21:37:47",
     "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART7_PHASE9_JOBS_MINIONS.md"
   }
 }

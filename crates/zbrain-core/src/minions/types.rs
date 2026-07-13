@@ -587,3 +587,24 @@ pub enum ReservationOutcome {
     OwnerDeleted,
 }
 
+// ============================================================
+// Rate leases (roadmap 1-3-3)
+// ============================================================
+
+/// Result of a rate lease acquisition attempt.
+///
+/// Always returns the same four fields regardless of outcome — the `acquired`
+/// bool distinguishes success from "full". Mirrors TS `LeaseAcquireResult`
+/// (`src/core/minions/rate-leases.ts`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LeaseAcquireResult {
+    /// Whether a lease was granted.
+    pub acquired: bool,
+    /// Lease row id (only meaningful when `acquired` is true).
+    pub lease_id: Option<i64>,
+    /// Number of active (non-expired) leases observed during acquisition.
+    pub active_count: i32,
+    /// Concurrency cap checked against.
+    pub max_concurrent: i32,
+}
+

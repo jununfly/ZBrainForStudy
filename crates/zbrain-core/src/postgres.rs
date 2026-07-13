@@ -220,6 +220,18 @@ const MIGRATION_0014: &str = include_str!("../migrations/0014_minion_jobs.sql");
 const MIGRATION_0015: &str = include_str!("../migrations/0015_minion_inbox.sql");
 const MIGRATION_0016: &str = include_str!("../migrations/0016_minion_attachments.sql");
 const MIGRATION_0017: &str = include_str!("../migrations/0017_minion_budget.sql");
+const MIGRATION_0018: &str = include_str!("../migrations/0018_rate_leases.sql");
+
+/// FNV-1a 64-bit hash of a lease key, mapped to a signed int64 for
+/// `pg_advisory_xact_lock`. Matches the TS implementation bit-for-bit.
+fn fnv1a_64(key: &str) -> i64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in key.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    (h & 0x7fff_ffff_ffff_ffff) as i64
+}
 
 /// Global migration registry for Postgres backend. Built once at runtime first use.
 pub static POSTGRES_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
@@ -310,6 +322,11 @@ pub static POSTGRES_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 17,
         name: "minion_budget",
         sql: MIGRATION_0017,
+    }));
+    registry.add(Box::new(PostgresMigration {
+        version: 18,
+        name: "rate_leases",
+        sql: MIGRATION_0018,
     }));
 
     registry
@@ -4375,6 +4392,131 @@ impl BrainEngine for PostgresEngine {
         .flatten();
 
         Ok(owner_i32.map(i64::from))
+    }
+
+    async fn acquire_rate_lease(
+        &self,
+        key: &str,
+        job_id: i64,
+        max_concurrent: i32,
+        ttl_ms: i64,
+    ) -> Result<crate::minions::types::LeaseAcquireResult> {
+        use crate::minions::types::LeaseAcquireResult;
+        let pool = self.pool()?;
+        let hash = fnv1a_64(key);
+
+        let mut tx = pool.begin().await.map_err(|e| {
+            Error::engine(format!("acquire_rate_lease: begin tx: {e}"))
+        })?;
+
+        // Advisory lock serialises concurrent acquires on the same key.
+        // xact_lock means the lock is auto-released on commit/rollback.
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(hash)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                Error::engine(format!("acquire_rate_lease: advisory lock: {e}"))
+            })?;
+
+        // Prune expired leases so crashed workers don't permanently occupy slots.
+        sqlx::query(
+            "DELETE FROM subagent_rate_leases WHERE key = $1 AND expires_at <= now()",
+        )
+        .bind(key)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            Error::engine(format!("acquire_rate_lease: delete expired: {e}"))
+        })?;
+
+        // Count active leases after pruning.
+        let active_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM subagent_rate_leases WHERE key = $1",
+        )
+        .bind(key)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| {
+            Error::engine(format!("acquire_rate_lease: count: {e}"))
+        })?;
+
+        let active_count = active_count as i32;
+
+        if active_count >= max_concurrent {
+            tx.commit().await.map_err(|e| {
+                Error::engine(format!("acquire_rate_lease: commit (full): {e}"))
+            })?;
+            return Ok(LeaseAcquireResult {
+                acquired: false,
+                lease_id: None,
+                active_count,
+                max_concurrent,
+            });
+        }
+
+        // Grant the lease.
+        let ttl_seconds = (ttl_ms as f64 / 1000.0).ceil() as i32;
+        let lease_id: i64 = sqlx::query_scalar(
+            "INSERT INTO subagent_rate_leases (key, owner_job_id, expires_at) \
+             VALUES ($1, $2, now() + make_interval(secs => $3)) RETURNING id",
+        )
+        .bind(key)
+        .bind(job_id)
+        .bind(ttl_seconds)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| {
+            Error::engine(format!("acquire_rate_lease: insert: {e}"))
+        })?;
+
+        tx.commit().await.map_err(|e| {
+            Error::engine(format!("acquire_rate_lease: commit: {e}"))
+        })?;
+
+        Ok(LeaseAcquireResult {
+            acquired: true,
+            lease_id: Some(lease_id),
+            active_count: active_count + 1,
+            max_concurrent,
+        })
+    }
+
+    async fn renew_rate_lease(
+        &self,
+        lease_id: i64,
+        ttl_ms: i64,
+    ) -> Result<bool> {
+        let pool = self.pool()?;
+        let ttl_seconds = (ttl_ms as f64 / 1000.0).ceil() as i32;
+
+        let updated: Option<i64> = sqlx::query_scalar(
+            "UPDATE subagent_rate_leases \
+             SET expires_at = now() + make_interval(secs => $1) \
+             WHERE id = $2 RETURNING id",
+        )
+        .bind(ttl_seconds)
+        .bind(lease_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::engine(format!("renew_rate_lease: {e}")))?;
+
+        Ok(updated.is_some())
+    }
+
+    async fn release_rate_lease(
+        &self,
+        lease_id: i64,
+    ) -> Result<()> {
+        let pool = self.pool()?;
+
+        sqlx::query("DELETE FROM subagent_rate_leases WHERE id = $1")
+            .bind(lease_id)
+            .execute(pool)
+            .await
+            .map_err(|e| Error::engine(format!("release_rate_lease: {e}")))?;
+
+        Ok(())
     }
 }
 
