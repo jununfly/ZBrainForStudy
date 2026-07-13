@@ -198,11 +198,79 @@
         }
       ],
       "notes": "完成(2026-07-10). 交付: types.rs 新增 StalledSweep{requeued,dead}; BrainEngine trait 新增 promote_delayed/handle_stalled/handle_timeouts/handle_wall_clock_timeouts(lock_duration_ms) + 2 test-only helper(set_started_at_for_test/set_timeout_at_for_test, 默认 Unsupported); 三后端(InMemory/Libsql/Postgres)全实现; queue.rs facade 4 薄封装; tests/minion_queue.rs 4 个 backend-agnostic contract fn × 三后端 = 12 新测试, 全量 40 passed 含真实 PG(pg-embed). 落地要点: (1) 纯 C 层, inbox/父解锁归 1-1-3 D 层. (2) InMemory 持 mutex 遍历 Vec, 3 纯 sweep 对 Option<i64> epoch-ms 整数比较, wall_clock 用 chrono parse_from_rfc3339. (3) Libsql: promote/timeouts/wall_clock 用 SELECT ids→UPDATE→reselect(libsql 无 UPDATE RETURNING), handle_stalled 用 BEGIN IMMEDIATE 包读候选+双 UPDATE(requeued<max_stalled / dead>=)+COMMIT+reselect; wall_clock 阈值 (julianday(?now)-julianday(started_at))*86400000 在 SQL 内算. (4) Postgres: 全 UPDATE...RETURNING 单语句, handle_stalled 两条 disjoint-WHERE UPDATE 复现分组, wall_clock 用 EXTRACT(EPOCH FROM now()-started_at)*1000. 关键坑: SQLite/PG 都有 chk_minion_timeout_positive CHECK(timeout_ms>0), 决策 6 原设想'负 timeout_ms 令 timeout_at<now' 在 SQL 后端被约束拒绝(InMemory 无约束掩盖了) → 改用 set_timeout_at_for_test helper 正常 claim(正 timeout_ms)后直接改写 timeout_at 列; 印证 PG/SQLite 强约束能揪出 InMemory 掩盖的 bug. julianday 对 RFC-3339 带 Z 后缀解析验证正确(libsql_handle_wall_clock_timeouts 绿), 决策 4 降级退路未触发."
+    },
+    "1-1-3": {
       "id": "1-1-3",
       "label": "D: 高级 (父子依赖 resolveParent/cancelJob 递归CTE + inbox sendMessage/readInbox + 附件CRUD + pause/resume/prune/getStats)",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "explore",
       "parent": "1-1",
+      "children": [
+        "1-1-3-1",
+        "1-1-3-2",
+        "1-1-3-3"
+      ],
+      "decisions": [
+        {
+          "q": "D 层范围大, 切片粒度?",
+          "answer": "拆 3 子节点: 1-1-3-1 父子依赖链+inbox(建 minion_inbox 表, 回改 add/complete_job/fail_job 父 hook, cancel_job 递归 CTE, resolve_parent, sweep 通知, send_message/read_inbox/read_child_completions) | 1-1-3-2 附件 CRUD(独立表 minion_attachments) | 1-1-3-3 运维(pause/resume/prune/get_stats)",
+          "note": "取证结论: 父子依赖是横跨 5 处的内聚原子链(add-parent/complete hook/fail hook/cancel/sweep 通知), 全共用 child_done+resolve_parent 语义且都依赖 minion_inbox 表, 拆开会让队列处于'父子协调半成品'不一致态, 不可再拆. 附件是物理独立表与 jobs/父子零耦合, 运维大多不依赖新表, 天然可切分. 拒整体一刀(diff 巨大难 review), 拒 inbox 再拆细(send/read 与父子 hook 写同表同批 child_done, 捆一起更内聚). 关键发现: 1-1-1 迁 complete_job/fail_job 时砍掉了整个父 hook(token rollup+child_done inbox+resolve_parent+on_child_fail 三策略), 1-1-2 砍掉 sweep 父通知 → 1-1-3-1 不是纯新增, 要回改已落地的 add/complete_job/fail_job 三后端且套事务(现有是单条 UPDATE RETURNING 无事务, 加 hook 后多语句必须原子)"
+        }
+      ],
+      "notes": ""
+    },
+    "1-1-3-1": {
+      "id": "1-1-3-1",
+      "label": "父子依赖链 + inbox: 建 minion_inbox 表 + 回改 add/complete_job/fail_job 父 hook(套事务) + cancel_job 递归 CTE + resolve_parent + sweep dead 通知 + send_message/read_inbox/read_child_completions",
+      "status": "completed",
+      "mode": "build",
+      "parent": "1-1-3",
+      "children": [],
+      "decisions": [
+        {
+          "q": "A: 回改 add/complete_job/fail_job 加父 hook 后必须多语句原子, 事务怎么套?",
+          "answer": "沿用 1-1-1 claim 岔口先例: PG 用 sqlx Transaction(pool.begin()), libsql 用 BEGIN IMMEDIATE 单 conn 串起. 两后端各自最优, 与 claim 范式一致.",
+          "note": "现有 complete_job/fail_job 是裸单条 UPDATE...RETURNING 无事务, TS 侧全套包在 engine.transaction() 里. 加回父 hook(child_done inbox + token rollup + resolve_parent + on_child_fail 三策略)后多语句必须原子. 拒统一跨后端 transaction 抽象(与现有 claim 范式不一致, 反模式已在 1-1-1 拒过)."
+        },
+        {
+          "q": "B: cancel_job 级联取消的递归 CTE 在 libsql(SQLite) 怎么落? SQLite 不支持 UPDATE...FROM CTE...RETURNING",
+          "answer": "SQLite 用 WITH RECURSIVE descendants 只读拉出所有 descendant ids(depth<100 上限) → UPDATE minion_jobs SET status='cancelled'... WHERE id IN(ids) AND status IN(非终态) RETURNING → reselect. 与 1-1-2 handle_stalled 的 SELECT ids→UPDATE→reselect 同构. PG 保持原生 WITH RECURSIVE + UPDATE RETURNING 一条 SQL.",
+          "note": "SQLite 支持 WITH RECURSIVE(只读递归), 不支持 UPDATE 直接挂 CTE+RETURNING 组合. 拆成'递归 SELECT ids'+'UPDATE WHERE IN'两步, 与 1-1-2 已落先例同构认知零负担. 拒 Rust 侧逐层递归(放弃 SQL 递归能力, N 层 N 往返更慢更脆)."
+        },
+        {
+          "q": "C: child_done payload 的 JSON 构造放哪?",
+          "answer": "Rust types.rs 定义 ChildDoneMessage struct(type/child_id/job_name/result/outcome/error) + ChildOutcome 枚举(complete/failed/dead/cancelled/timeout) + serde, serde_json::to_string 后 bind(PG bind jsonb / SQLite bind text). 与 TS 1:1.",
+          "note": "InboxMessage struct(id/job_id/sender/payload/sent_at/read_at) 也在 types.rs 补. 自动 hook sender 固定 'minions'; send_message 的 sender 是 'admin' 或父 id 字符串. 拒手拼 JSON 字符串(脆易错)."
+        },
+        {
+          "q": "D: child_done+resolve_parent 在 5 处(add-parent/complete hook/fail hook/cancel/sweep 通知)出现, resolve SQL 完全相同. 怎么组织?",
+          "answer": "抽后端内 free fn resolve_parent_locked(tx/conn, parent_id) + emit_child_done_locked(tx/conn, parent_id, msg), 5 处复用. DRY.",
+          "note": "resolve SQL 完全相同(UPDATE...status=waiting WHERE status=waiting-children AND NOT EXISTS(非终态子)). 各后端各自的 helper(PG 一套 libsql 一套, 因事务句柄类型不同). 拒各处内联(5 份重复, 改一处要同步 5 处易漏)."
+        },
+        {
+          "q": "E: contract 测试如何验证父子协调(无 sleep)?",
+          "answer": "父子链核心不变量(child 终态→父收 child_done→所有子终态时父 waiting-children→waiting)是纯状态转换不依赖时间, 直接构造父子 job 断言. backend-agnostic contract_* fn × 三后端, 与 1-1-1/1-1-2 同构. sweep dead 通知那条复用 1-1-2 的 set_started_at_for_test/set_timeout_at_for_test 时间注入 helper.",
+          "note": "覆盖: add 父翻 waiting-children + depth/max_children 校验; complete/fail hook 的 child_done+rollup+resolve+on_child_fail 三策略(fail_parent/remove_dep/ignore); cancel 递归级联; send_message/read_inbox token-fence; read_child_completions 游标. 无时间依赖零 flaky."
+        }
+      ],
+      "notes": "DONE 2026-07-09. 三后端(InMemory/libsql/postgres)各实现 6 D 层方法(cancel_job/send_message/read_inbox/read_child_completions/update_tokens/remove_child_dependency)+enqueue 父校验(depth/max_children)+complete/fail 父 hook. migration 0015 双版本(PG SERIAL/JSONB/TIMESTAMPTZ + SQLite INTEGER/TEXT). 事务: PG sqlx Transaction(pool.begin)+FOR UPDATE, libsql BEGIN IMMEDIATE 单 conn. cancel: PG 原生 WITH RECURSIVE+UPDATE RETURNING 一条 SQL, libsql 递归 SELECT ids→逐条 UPDATE→reselect. child_done emit 用 EXISTS 守卫(父非终态才 insert), fail 路径 emit 在 fail_parent UPDATE 之前. root_transitioned 标志(已终态 root cancel 返回 None). on_child_fail 三策略(fail_parent/remove_dep/ignore|continue). 58 contract 测试全绿(19+20+19). PG mirror 揪出 minion_inbox.id/job_id 是 INT4 需 ::bigint cast(经典强类型 bug). 903 lib 测试无回归."
+    },
+    "1-1-3-2": {
+      "id": "1-1-3-2",
+      "label": "附件 CRUD: 建 minion_attachments 表(独立表, BYTEA/storage_uri 二选一 CHECK + UNIQUE(job_id,filename)) + add/list/get/delete attachment",
+      "status": "pending",
+      "mode": "build",
+      "parent": "1-1-3",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-1-3-3": {
+      "id": "1-1-3-3",
+      "label": "运维: pause_job/resume_job/prune(DELETE RETURNING count)/get_stats(by_status/by_type/queue_health 三段纯读)",
+      "status": "pending",
+      "mode": "build",
+      "parent": "1-1-3",
       "children": [],
       "decisions": [],
       "notes": ""

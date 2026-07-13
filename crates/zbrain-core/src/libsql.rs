@@ -120,6 +120,9 @@ const MIGRATION_0013: &str = include_str!("../migrations-sqlite/0013_facts.sql")
 /// Create `minion_jobs` table — SQLite port of the BullMQ-inspired job queue.
 const MIGRATION_0014: &str = include_str!("../migrations-sqlite/0014_minion_jobs.sql");
 
+/// Create `minion_inbox` table — SQLite port of the sidechannel inbox (1-1-3-1).
+const MIGRATION_0015: &str = include_str!("../migrations-sqlite/0015_minion_inbox.sql");
+
 /// Legacy string array — REMOVED in favor of MigrationRegistry.
 /// Use LIBQL_MIGRATIONS instead.
 #[deprecated(note = "Use LIBQL_MIGRATIONS instead")]
@@ -214,6 +217,11 @@ pub static LIBQL_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 14,
         name: "minion_jobs",
         sql: MIGRATION_0014,
+    }));
+    registry.add(Box::new(LibsqlMigration {
+        version: 15,
+        name: "minion_inbox",
+        sql: MIGRATION_0015,
     }));
 
     registry
@@ -3449,53 +3457,145 @@ impl BrainEngine for LibsqlEngine {
             .unwrap_or_else(|| serde_json::json!({}))
             .to_string();
 
-        let params: Vec<::libsql::Value> = vec![
-            input.name.clone().into(),
-            input
-                .queue
-                .clone()
-                .unwrap_or_else(|| "default".to_string())
-                .into(),
-            status.as_str().to_string().into(),
-            i64::from(input.priority.unwrap_or(0)).into(),
-            data_json.into(),
-            i64::from(input.max_attempts.unwrap_or(3)).into(),
-            backoff_type.as_str().to_string().into(),
-            i64::from(input.backoff_delay.unwrap_or(1000)).into(),
-            input.backoff_jitter.unwrap_or(0.2).into(),
-            i64::from(max_stalled).into(),
-            delay_until.map_or(::libsql::Value::Null, ::libsql::Value::from),
-            on_child_fail.as_str().to_string().into(),
-            input
-                .max_children
-                .map_or(::libsql::Value::Null, |v| ::libsql::Value::from(i64::from(v))),
-            input
-                .timeout_ms
-                .map_or(::libsql::Value::Null, ::libsql::Value::from),
-            i64::from(input.remove_on_complete.unwrap_or(false)).into(),
-            i64::from(input.remove_on_fail.unwrap_or(false)).into(),
-            input
-                .idempotency_key
-                .clone()
-                .map_or(::libsql::Value::Null, ::libsql::Value::from),
-            now_iso.clone().into(),
-            now_iso.into(),
-        ];
-
-        conn.execute(
-            "INSERT INTO minion_jobs \
+        // D-layer (1-1-3-1): spawning under a parent must validate depth +
+        // max_children and flip the parent to waiting-children atomically with
+        // the child insert. Wrap in BEGIN IMMEDIATE (SQLite single-writer
+        // analogue of the PG `FOR UPDATE` on the parent row). Non-child inserts
+        // keep the simple non-transactional path.
+        const MAX_SPAWN_DEPTH: i64 = 5;
+        let insert_sql = "INSERT INTO minion_jobs \
                 (name, queue, status, priority, data, max_attempts, backoff_type, \
-                 backoff_delay, backoff_jitter, max_stalled, delay_until, on_child_fail, \
-                 max_children, timeout_ms, remove_on_complete, remove_on_fail, \
-                 idempotency_key, created_at, updated_at) \
+                 backoff_delay, backoff_jitter, max_stalled, delay_until, parent_job_id, \
+                 depth, on_child_fail, max_children, timeout_ms, remove_on_complete, \
+                 remove_on_fail, idempotency_key, created_at, updated_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
-                     ?16, ?17, ?18, ?19)",
-            ::libsql::params::Params::Positional(params),
-        )
-        .await
-        .map_err(|e| Error::engine(format!("enqueue_job INSERT: {e}")))?;
+                     ?16, ?17, ?18, ?19, ?20, ?21)";
 
-        let new_id = last_insert_rowid(&conn).await?;
+        let build_params = |depth: i64, parent: ::libsql::Value| -> Vec<::libsql::Value> {
+            vec![
+                input.name.clone().into(),
+                input
+                    .queue
+                    .clone()
+                    .unwrap_or_else(|| "default".to_string())
+                    .into(),
+                status.as_str().to_string().into(),
+                i64::from(input.priority.unwrap_or(0)).into(),
+                data_json.clone().into(),
+                i64::from(input.max_attempts.unwrap_or(3)).into(),
+                backoff_type.as_str().to_string().into(),
+                i64::from(input.backoff_delay.unwrap_or(1000)).into(),
+                input.backoff_jitter.unwrap_or(0.2).into(),
+                i64::from(max_stalled).into(),
+                delay_until.map_or(::libsql::Value::Null, ::libsql::Value::from),
+                parent,
+                depth.into(),
+                on_child_fail.as_str().to_string().into(),
+                input
+                    .max_children
+                    .map_or(::libsql::Value::Null, |v| ::libsql::Value::from(i64::from(v))),
+                input
+                    .timeout_ms
+                    .map_or(::libsql::Value::Null, ::libsql::Value::from),
+                i64::from(input.remove_on_complete.unwrap_or(false)).into(),
+                i64::from(input.remove_on_fail.unwrap_or(false)).into(),
+                input
+                    .idempotency_key
+                    .clone()
+                    .map_or(::libsql::Value::Null, ::libsql::Value::from),
+                now_iso.clone().into(),
+                now_iso.clone().into(),
+            ]
+        };
+
+        let new_id = if let Some(parent_id) = input.parent_job_id {
+            conn.execute("BEGIN IMMEDIATE", ())
+                .await
+                .map_err(|e| Error::engine(format!("enqueue_job(child) BEGIN: {e}")))?;
+
+            let result = async {
+                // Load parent for depth + max_children validation.
+                let parent = self.get_job(parent_id).await?.ok_or_else(|| {
+                    crate::error::StructuredError::new(
+                        "InvalidInput",
+                        "invalid_input",
+                        format!("parent_job_id {parent_id} not found"),
+                    )
+                })?;
+                let depth = i64::from(parent.depth) + 1;
+                if depth > MAX_SPAWN_DEPTH {
+                    return Err(crate::error::StructuredError::new(
+                        "InvalidInput",
+                        "invalid_input",
+                        format!("spawn depth {depth} exceeds maxSpawnDepth {MAX_SPAWN_DEPTH}"),
+                    ));
+                }
+                if let Some(cap) = parent.max_children {
+                    let live = libsql_select_ids(
+                        &conn,
+                        "SELECT id FROM minion_jobs WHERE parent_job_id = ?1 \
+                         AND status NOT IN ('completed','failed','dead','cancelled')",
+                        ::libsql::params![parent_id],
+                    )
+                    .await?
+                    .len() as i64;
+                    if live >= i64::from(cap) {
+                        return Err(crate::error::StructuredError::new(
+                            "InvalidInput",
+                            "invalid_input",
+                            format!(
+                                "parent {parent_id} already has {live} live children (max_children={cap})"
+                            ),
+                        ));
+                    }
+                }
+
+                conn.execute(
+                    insert_sql,
+                    ::libsql::params::Params::Positional(build_params(
+                        depth,
+                        ::libsql::Value::from(parent_id),
+                    )),
+                )
+                .await
+                .map_err(|e| Error::engine(format!("enqueue_job(child) INSERT: {e}")))?;
+                let child_id = last_insert_rowid(&conn).await?;
+
+                // Flip parent to waiting-children from a runnable state.
+                conn.execute(
+                    "UPDATE minion_jobs SET status = 'waiting-children', updated_at = ?1 \
+                     WHERE id = ?2 AND status IN ('waiting','active','delayed')",
+                    ::libsql::params![now_iso.clone(), parent_id],
+                )
+                .await
+                .map_err(|e| Error::engine(format!("enqueue_job(child) parent flip: {e}")))?;
+
+                Ok::<i64, Error>(child_id)
+            }
+            .await;
+
+            match result {
+                Ok(child_id) => {
+                    conn.execute("COMMIT", ())
+                        .await
+                        .map_err(|e| Error::engine(format!("enqueue_job(child) COMMIT: {e}")))?;
+                    child_id
+                }
+                Err(e) => {
+                    let _ = conn.execute("ROLLBACK", ()).await;
+                    return Err(e);
+                }
+            }
+        } else {
+            conn.execute(
+                insert_sql,
+                ::libsql::params::Params::Positional(build_params(0, ::libsql::Value::Null)),
+            )
+            .await
+            .map_err(|e| Error::engine(format!("enqueue_job INSERT: {e}")))?;
+            last_insert_rowid(&conn).await?
+        };
+
         self.get_job(new_id)
             .await?
             .ok_or_else(|| Error::engine("enqueue_job: inserted row not found"))
@@ -3610,34 +3710,96 @@ impl BrainEngine for LibsqlEngine {
         let now_iso = current_utc_iso8601();
         let result_json = result.map(std::string::ToString::to_string);
 
-        let affected = conn
-            .execute(
-                "UPDATE minion_jobs SET status = 'completed', result = ?1, \
-                    finished_at = ?2, lock_token = NULL, lock_until = NULL, updated_at = ?2 \
-                 WHERE id = ?3 AND status = 'active' AND lock_token = ?4",
-                ::libsql::params![
-                    result_json.map_or(::libsql::Value::Null, ::libsql::Value::from),
-                    now_iso,
-                    id,
-                    lock_token
-                ],
-            )
+        // Wrap the token-fenced flip + parent hook in a single writer txn so the
+        // child_done insert, token rollup, and parent resolve commit atomically
+        // with the child transition (SQLite single-writer analogue of the PG
+        // FOR UPDATE on the parent row; mirrors claim_job / handle_stalled).
+        conn.execute("BEGIN IMMEDIATE", ())
             .await
-            .map_err(|e| Error::engine(format!("complete_job UPDATE: {e}")))?;
-        if affected == 0 {
-            return Ok(None);
-        }
+            .map_err(|e| Error::engine(format!("complete_job BEGIN: {e}")))?;
 
-        let job = self
-            .get_job(id)
-            .await?
-            .ok_or_else(|| Error::engine("complete_job: row vanished after UPDATE"))?;
-        if job.remove_on_complete {
-            conn.execute("DELETE FROM minion_jobs WHERE id = ?1", ::libsql::params![id])
+        let outcome = async {
+            let affected = conn
+                .execute(
+                    "UPDATE minion_jobs SET status = 'completed', result = ?1, \
+                        finished_at = ?2, lock_token = NULL, lock_until = NULL, updated_at = ?2 \
+                     WHERE id = ?3 AND status = 'active' AND lock_token = ?4",
+                    ::libsql::params![
+                        result_json
+                            .clone()
+                            .map_or(::libsql::Value::Null, ::libsql::Value::from),
+                        now_iso.clone(),
+                        id,
+                        lock_token
+                    ],
+                )
+                .await
+                .map_err(|e| Error::engine(format!("complete_job UPDATE: {e}")))?;
+            if affected == 0 {
+                return Ok::<Option<crate::minions::types::MinionJob>, Error>(None);
+            }
+
+            let job = libsql_get_job(&conn, id)
+                .await?
+                .ok_or_else(|| Error::engine("complete_job: row vanished after UPDATE"))?;
+
+            // D-layer parent hook: roll up tokens, emit child_done, resolve.
+            if let Some(parent_id) = job.parent_job_id {
+                if job.tokens_input > 0 || job.tokens_output > 0 || job.tokens_cache_read > 0 {
+                    conn.execute(
+                        "UPDATE minion_jobs SET tokens_input = tokens_input + ?1, \
+                            tokens_output = tokens_output + ?2, \
+                            tokens_cache_read = tokens_cache_read + ?3, updated_at = ?4 \
+                         WHERE id = ?5 AND status NOT IN \
+                            ('completed','failed','dead','cancelled')",
+                        ::libsql::params![
+                            job.tokens_input,
+                            job.tokens_output,
+                            job.tokens_cache_read,
+                            now_iso.clone(),
+                            parent_id
+                        ],
+                    )
+                    .await
+                    .map_err(|e| Error::engine(format!("complete_job token rollup: {e}")))?;
+                }
+                libsql_emit_child_done(
+                    &conn,
+                    parent_id,
+                    job.id,
+                    &job.name,
+                    result.cloned().unwrap_or(serde_json::Value::Null),
+                    crate::minions::types::ChildOutcome::Complete,
+                    None,
+                )
+                .await?;
+                libsql_resolve_parent(&conn, parent_id, &now_iso).await?;
+            }
+
+            if job.remove_on_complete {
+                conn.execute(
+                    "DELETE FROM minion_jobs WHERE id = ?1",
+                    ::libsql::params![id],
+                )
                 .await
                 .map_err(|e| Error::engine(format!("complete_job remove_on_complete: {e}")))?;
+            }
+            Ok(Some(job))
         }
-        Ok(Some(job))
+        .await;
+
+        match outcome {
+            Ok(job) => {
+                conn.execute("COMMIT", ())
+                    .await
+                    .map_err(|e| Error::engine(format!("complete_job COMMIT: {e}")))?;
+                Ok(job)
+            }
+            Err(e) => {
+                let _ = conn.execute("ROLLBACK", ()).await;
+                Err(e)
+            }
+        }
     }
 
     async fn fail_job(
@@ -3648,7 +3810,7 @@ impl BrainEngine for LibsqlEngine {
         outcome: crate::minions::types::FailOutcome,
         backoff_ms: i64,
     ) -> Result<Option<crate::minions::types::MinionJob>> {
-        use crate::minions::types::FailOutcome;
+        use crate::minions::types::{ChildFailPolicy, FailOutcome};
 
         let conn = self.conn().await?;
         let now_iso = current_utc_iso8601();
@@ -3665,40 +3827,118 @@ impl BrainEngine for LibsqlEngine {
             };
         let stacktrace_json = serde_json::json!([error_text]).to_string();
 
-        let affected = conn
-            .execute(
-                "UPDATE minion_jobs SET status = ?1, error_text = ?2, \
-                    attempts_made = attempts_made + 1, stacktrace = ?3, \
-                    delay_until = ?4, finished_at = ?5, \
-                    lock_token = NULL, lock_until = NULL, updated_at = ?6 \
-                 WHERE id = ?7 AND status = 'active' AND lock_token = ?8",
-                ::libsql::params![
-                    new_status.as_str(),
-                    error_text,
-                    stacktrace_json,
-                    delay_until,
-                    finished_at,
-                    now_iso,
-                    id,
-                    lock_token
-                ],
-            )
+        // Single writer txn: the fail flip, child_done emit, and on_child_fail
+        // policy commit atomically (see complete_job for the rationale).
+        conn.execute("BEGIN IMMEDIATE", ())
             .await
-            .map_err(|e| Error::engine(format!("fail_job UPDATE: {e}")))?;
-        if affected == 0 {
-            return Ok(None);
-        }
+            .map_err(|e| Error::engine(format!("fail_job BEGIN: {e}")))?;
 
-        let job = self
-            .get_job(id)
-            .await?
-            .ok_or_else(|| Error::engine("fail_job: row vanished after UPDATE"))?;
-        if outcome.is_terminal() && job.remove_on_fail {
-            conn.execute("DELETE FROM minion_jobs WHERE id = ?1", ::libsql::params![id])
+        let result = async {
+            let affected = conn
+                .execute(
+                    "UPDATE minion_jobs SET status = ?1, error_text = ?2, \
+                        attempts_made = attempts_made + 1, stacktrace = ?3, \
+                        delay_until = ?4, finished_at = ?5, \
+                        lock_token = NULL, lock_until = NULL, updated_at = ?6 \
+                     WHERE id = ?7 AND status = 'active' AND lock_token = ?8",
+                    ::libsql::params![
+                        new_status.as_str(),
+                        error_text,
+                        stacktrace_json,
+                        delay_until,
+                        finished_at,
+                        now_iso.clone(),
+                        id,
+                        lock_token
+                    ],
+                )
+                .await
+                .map_err(|e| Error::engine(format!("fail_job UPDATE: {e}")))?;
+            if affected == 0 {
+                return Ok::<Option<crate::minions::types::MinionJob>, Error>(None);
+            }
+
+            let job = libsql_get_job(&conn, id)
+                .await?
+                .ok_or_else(|| Error::engine("fail_job: row vanished after UPDATE"))?;
+
+            // D-layer parent hook on terminal failure. Emit child_done BEFORE
+            // any parent-terminal flip (the EXISTS guard on emit would drop the
+            // message once the parent is failed), then apply on_child_fail.
+            if outcome.is_terminal() {
+                if let Some(parent_id) = job.parent_job_id {
+                    let child_outcome = if outcome == FailOutcome::Dead {
+                        crate::minions::types::ChildOutcome::Dead
+                    } else {
+                        crate::minions::types::ChildOutcome::Failed
+                    };
+                    libsql_emit_child_done(
+                        &conn,
+                        parent_id,
+                        job.id,
+                        &job.name,
+                        serde_json::Value::Null,
+                        child_outcome,
+                        Some(error_text.to_string()),
+                    )
+                    .await?;
+
+                    match job.on_child_fail {
+                        ChildFailPolicy::FailParent => {
+                            conn.execute(
+                                "UPDATE minion_jobs SET status = 'failed', \
+                                    error_text = ?1, finished_at = ?2, updated_at = ?2 \
+                                 WHERE id = ?3 AND status = 'waiting-children'",
+                                ::libsql::params![
+                                    format!("child job {} failed: {error_text}", job.id),
+                                    now_iso.clone(),
+                                    parent_id
+                                ],
+                            )
+                            .await
+                            .map_err(|e| Error::engine(format!("fail_job fail_parent: {e}")))?;
+                        }
+                        ChildFailPolicy::RemoveDep => {
+                            conn.execute(
+                                "UPDATE minion_jobs SET parent_job_id = NULL, updated_at = ?1 \
+                                 WHERE id = ?2",
+                                ::libsql::params![now_iso.clone(), job.id],
+                            )
+                            .await
+                            .map_err(|e| Error::engine(format!("fail_job remove_dep: {e}")))?;
+                            libsql_resolve_parent(&conn, parent_id, &now_iso).await?;
+                        }
+                        ChildFailPolicy::Ignore | ChildFailPolicy::Continue => {
+                            libsql_resolve_parent(&conn, parent_id, &now_iso).await?;
+                        }
+                    }
+                }
+            }
+
+            if outcome.is_terminal() && job.remove_on_fail {
+                conn.execute(
+                    "DELETE FROM minion_jobs WHERE id = ?1",
+                    ::libsql::params![id],
+                )
                 .await
                 .map_err(|e| Error::engine(format!("fail_job remove_on_fail: {e}")))?;
+            }
+            Ok(Some(job))
         }
-        Ok(Some(job))
+        .await;
+
+        match result {
+            Ok(job) => {
+                conn.execute("COMMIT", ())
+                    .await
+                    .map_err(|e| Error::engine(format!("fail_job COMMIT: {e}")))?;
+                Ok(job)
+            }
+            Err(e) => {
+                let _ = conn.execute("ROLLBACK", ()).await;
+                Err(e)
+            }
+        }
     }
 
     async fn renew_job_lock(
@@ -3955,6 +4195,323 @@ impl BrainEngine for LibsqlEngine {
         .map_err(|e| Error::engine(format!("set_timeout_at_for_test UPDATE: {e}")))?;
         Ok(())
     }
+
+    // ─── D-layer: cancellation + inbox (parent/child coordination) ──────────
+
+    async fn cancel_job(
+        &self,
+        id: i64,
+    ) -> Result<Option<crate::minions::types::MinionJob>> {
+        let conn = self.conn().await?;
+        let now_iso = current_utc_iso8601();
+
+        conn.execute("BEGIN IMMEDIATE", ())
+            .await
+            .map_err(|e| Error::engine(format!("cancel_job BEGIN: {e}")))?;
+
+        let result = async {
+            // Collect the descendant subtree via a recursive CTE (depth-capped
+            // at 100 to bound pathological cycles), then cancel only the
+            // non-terminal rows. Capturing ids first mirrors the sweeps: SQLite
+            // has no UPDATE ... RETURNING here.
+            let subtree_ids = libsql_select_ids(
+                &conn,
+                "WITH RECURSIVE subtree(id, lvl) AS ( \
+                    SELECT id, 0 FROM minion_jobs WHERE id = ?1 \
+                    UNION ALL \
+                    SELECT j.id, s.lvl + 1 FROM minion_jobs j \
+                    JOIN subtree s ON j.parent_job_id = s.id \
+                    WHERE s.lvl < 100 \
+                 ) SELECT id FROM subtree",
+                ::libsql::params![id],
+            )
+            .await?;
+            if subtree_ids.is_empty() {
+                return Ok::<Option<crate::minions::types::MinionJob>, Error>(None);
+            }
+
+            // Non-terminal rows in the subtree that will actually transition.
+            // Capture (id, parent_job_id, name) BEFORE the UPDATE so we can emit
+            // child_done + resolve after.
+            let mut affected: Vec<(i64, Option<i64>, String)> = Vec::new();
+            let mut root_transitioned = false;
+            for cid in &subtree_ids {
+                if let Some(job) = libsql_get_job(&conn, *cid).await? {
+                    if !job.status.is_terminal() {
+                        affected.push((job.id, job.parent_job_id, job.name.clone()));
+                        if job.id == id {
+                            root_transitioned = true;
+                        }
+                    }
+                }
+            }
+
+            // TS contract: an already-terminal root yields None (nothing moved).
+            if !root_transitioned {
+                return Ok(None);
+            }
+
+            for (cid, _, _) in &affected {
+                conn.execute(
+                    "UPDATE minion_jobs SET status = 'cancelled', \
+                        lock_token = NULL, lock_until = NULL, \
+                        finished_at = ?1, updated_at = ?1 \
+                     WHERE id = ?2 AND status NOT IN \
+                        ('completed','failed','dead','cancelled')",
+                    ::libsql::params![now_iso.clone(), cid],
+                )
+                .await
+                .map_err(|e| Error::engine(format!("cancel_job UPDATE: {e}")))?;
+            }
+
+            // Emit child_done(cancelled) to each affected parent, then resolve.
+            let mut parent_ids: Vec<i64> = Vec::new();
+            for (cid, parent, name) in &affected {
+                if let Some(pid) = parent {
+                    libsql_emit_child_done(
+                        &conn,
+                        *pid,
+                        *cid,
+                        name,
+                        serde_json::Value::Null,
+                        crate::minions::types::ChildOutcome::Cancelled,
+                        Some("cancelled".to_string()),
+                    )
+                    .await?;
+                    if !parent_ids.contains(pid) {
+                        parent_ids.push(*pid);
+                    }
+                }
+            }
+            for pid in parent_ids {
+                libsql_resolve_parent(&conn, pid, &now_iso).await?;
+            }
+
+            libsql_get_job(&conn, id).await
+        }
+        .await;
+
+        match result {
+            Ok(job) => {
+                conn.execute("COMMIT", ())
+                    .await
+                    .map_err(|e| Error::engine(format!("cancel_job COMMIT: {e}")))?;
+                Ok(job)
+            }
+            Err(e) => {
+                let _ = conn.execute("ROLLBACK", ()).await;
+                Err(e)
+            }
+        }
+    }
+
+    async fn send_message(
+        &self,
+        job_id: i64,
+        payload: &serde_json::Value,
+        sender: &str,
+    ) -> Result<Option<crate::minions::types::InboxMessage>> {
+        let conn = self.conn().await?;
+
+        // Target must exist and be non-terminal; sender must be 'admin' or the
+        // job's parent id string.
+        let Some(job) = libsql_get_job(&conn, job_id).await? else {
+            return Ok(None);
+        };
+        if job.status.is_terminal() {
+            return Ok(None);
+        }
+        let parent_str = job.parent_job_id.map(|p| p.to_string());
+        if sender != "admin" && Some(sender.to_string()) != parent_str {
+            return Ok(None);
+        }
+
+        let payload_json = payload.to_string();
+        let now_iso = current_utc_iso8601();
+        conn.execute(
+            "INSERT INTO minion_inbox (job_id, sender, payload, sent_at) \
+             VALUES (?1, ?2, ?3, ?4)",
+            ::libsql::params![job_id, sender, payload_json, now_iso.clone()],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("send_message INSERT: {e}")))?;
+        let msg_id = last_insert_rowid(&conn).await?;
+
+        Ok(Some(crate::minions::types::InboxMessage {
+            id: msg_id,
+            job_id,
+            sender: sender.to_string(),
+            payload: payload.clone(),
+            sent_at: now_iso,
+            read_at: None,
+        }))
+    }
+
+    async fn read_inbox(
+        &self,
+        job_id: i64,
+        lock_token: &str,
+    ) -> Result<Vec<crate::minions::types::InboxMessage>> {
+        let conn = self.conn().await?;
+
+        conn.execute("BEGIN IMMEDIATE", ())
+            .await
+            .map_err(|e| Error::engine(format!("read_inbox BEGIN: {e}")))?;
+
+        let result = async {
+            // Token fence: caller must hold the active lease.
+            let held = !libsql_select_ids(
+                &conn,
+                "SELECT id FROM minion_jobs \
+                 WHERE id = ?1 AND status = 'active' AND lock_token = ?2",
+                ::libsql::params![job_id, lock_token],
+            )
+            .await?
+            .is_empty();
+            if !held {
+                return Ok::<Vec<crate::minions::types::InboxMessage>, Error>(Vec::new());
+            }
+
+            // Capture unread ids in send order, mark them read, then reselect.
+            let unread_ids = libsql_select_ids(
+                &conn,
+                "SELECT id FROM minion_inbox \
+                 WHERE job_id = ?1 AND read_at IS NULL ORDER BY sent_at, id",
+                ::libsql::params![job_id],
+            )
+            .await?;
+            if unread_ids.is_empty() {
+                return Ok(Vec::new());
+            }
+            let now_iso = current_utc_iso8601();
+            conn.execute(
+                "UPDATE minion_inbox SET read_at = ?1 \
+                 WHERE job_id = ?2 AND read_at IS NULL",
+                ::libsql::params![now_iso, job_id],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("read_inbox mark read: {e}")))?;
+
+            let mut out = Vec::with_capacity(unread_ids.len());
+            for mid in &unread_ids {
+                if let Some(m) = libsql_get_inbox_message(&conn, *mid).await? {
+                    out.push(m);
+                }
+            }
+            Ok(out)
+        }
+        .await;
+
+        match result {
+            Ok(msgs) => {
+                conn.execute("COMMIT", ())
+                    .await
+                    .map_err(|e| Error::engine(format!("read_inbox COMMIT: {e}")))?;
+                Ok(msgs)
+            }
+            Err(e) => {
+                let _ = conn.execute("ROLLBACK", ()).await;
+                Err(e)
+            }
+        }
+    }
+
+    async fn read_child_completions(
+        &self,
+        parent_id: i64,
+        lock_token: &str,
+        since_rfc3339: Option<&str>,
+    ) -> Result<Vec<crate::minions::types::ChildDoneMessage>> {
+        let conn = self.conn().await?;
+
+        // Same token fence as read_inbox. No marking read — this is a cursor
+        // read over child_done envelopes, filtered by an optional `since`.
+        let held = !libsql_select_ids(
+            &conn,
+            "SELECT id FROM minion_jobs \
+             WHERE id = ?1 AND status = 'active' AND lock_token = ?2",
+            ::libsql::params![parent_id, lock_token],
+        )
+        .await?
+        .is_empty();
+        if !held {
+            return Ok(Vec::new());
+        }
+
+        let (sql, params): (&str, Vec<::libsql::Value>) = match since_rfc3339 {
+            Some(since) => (
+                "SELECT payload FROM minion_inbox \
+                 WHERE job_id = ?1 AND payload->>'type' = 'child_done' AND sent_at > ?2 \
+                 ORDER BY sent_at, id",
+                vec![parent_id.into(), since.to_string().into()],
+            ),
+            None => (
+                "SELECT payload FROM minion_inbox \
+                 WHERE job_id = ?1 AND payload->>'type' = 'child_done' \
+                 ORDER BY sent_at, id",
+                vec![parent_id.into()],
+            ),
+        };
+        let mut rows = conn
+            .query(sql, ::libsql::params::Params::Positional(params))
+            .await
+            .map_err(|e| Error::engine(format!("read_child_completions SELECT: {e}")))?;
+        let mut out = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("read_child_completions row: {e}")))?
+        {
+            let payload: String = row
+                .get::<String>(0)
+                .map_err(|e| Error::engine(format!("read_child_completions decode: {e}")))?;
+            if let Ok(msg) = serde_json::from_str(&payload) {
+                out.push(msg);
+            }
+        }
+        Ok(out)
+    }
+
+    async fn update_tokens(
+        &self,
+        id: i64,
+        lock_token: &str,
+        tokens: &crate::minions::types::TokenUpdate,
+    ) -> Result<bool> {
+        let conn = self.conn().await?;
+        let now_iso = current_utc_iso8601();
+        // Token-fenced: only an active job holding this lease accrues tokens.
+        let affected = conn
+            .execute(
+                "UPDATE minion_jobs SET tokens_input = tokens_input + ?1, \
+                    tokens_output = tokens_output + ?2, \
+                    tokens_cache_read = tokens_cache_read + ?3, updated_at = ?4 \
+                 WHERE id = ?5 AND status = 'active' AND lock_token = ?6",
+                ::libsql::params![
+                    tokens.input.unwrap_or(0),
+                    tokens.output.unwrap_or(0),
+                    tokens.cache_read.unwrap_or(0),
+                    now_iso,
+                    id,
+                    lock_token
+                ],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("update_tokens UPDATE: {e}")))?;
+        Ok(affected > 0)
+    }
+
+    async fn remove_child_dependency(&self, child_id: i64) -> Result<()> {
+        let conn = self.conn().await?;
+        let now_iso = current_utc_iso8601();
+        conn.execute(
+            "UPDATE minion_jobs SET parent_job_id = NULL, updated_at = ?1 WHERE id = ?2",
+            ::libsql::params![now_iso, child_id],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("remove_child_dependency UPDATE: {e}")))?;
+        Ok(())
+    }
 }
 
 // ─── libsql facts helpers ─────────────────────────────────────────────────
@@ -4154,6 +4711,133 @@ fn libsql_row_to_job(row: &::libsql::Row) -> Result<crate::minions::types::Minio
         finished_at: get!(37, Option<String>, "finished_at"),
         updated_at: get!(38, String, "updated_at"),
     })
+}
+
+/// Fetch a single job by id on a caller-supplied connection. Same decode as
+/// [`LibsqlEngine::get_job`], but takes the connection so it can run INSIDE an
+/// open transaction (reading a row the same txn just UPDATE'd). The method form
+/// acquires a fresh connection, which wouldn't see uncommitted writes.
+async fn libsql_get_job(
+    conn: &::libsql::Connection,
+    id: i64,
+) -> Result<Option<crate::minions::types::MinionJob>> {
+    let mut rows = conn
+        .query(
+            &format!("SELECT {MINION_JOB_COLUMNS} FROM minion_jobs WHERE id = ?1"),
+            ::libsql::params![id],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("libsql_get_job SELECT: {e}")))?;
+    match rows
+        .next()
+        .await
+        .map_err(|e| Error::engine(format!("libsql_get_job row: {e}")))?
+    {
+        Some(row) => Ok(Some(libsql_row_to_job(&row)?)),
+        None => Ok(None),
+    }
+}
+
+/// Fetch a single inbox message by id and decode it to [`InboxMessage`]. Used
+/// by read_inbox to reselect the rows it just marked read (SQLite has no
+/// UPDATE ... RETURNING in this build).
+async fn libsql_get_inbox_message(
+    conn: &::libsql::Connection,
+    id: i64,
+) -> Result<Option<crate::minions::types::InboxMessage>> {
+    let mut rows = conn
+        .query(
+            "SELECT id, job_id, sender, payload, sent_at, read_at \
+             FROM minion_inbox WHERE id = ?1",
+            ::libsql::params![id],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("get_inbox_message SELECT: {e}")))?;
+    match rows
+        .next()
+        .await
+        .map_err(|e| Error::engine(format!("get_inbox_message row: {e}")))?
+    {
+        Some(row) => {
+            let payload_str: String = row
+                .get::<String>(3)
+                .map_err(|e| Error::engine(format!("inbox payload decode: {e}")))?;
+            let payload: serde_json::Value =
+                serde_json::from_str(&payload_str).unwrap_or(serde_json::Value::Null);
+            Ok(Some(crate::minions::types::InboxMessage {
+                id: row
+                    .get::<i64>(0)
+                    .map_err(|e| Error::engine(format!("inbox id decode: {e}")))?,
+                job_id: row
+                    .get::<i64>(1)
+                    .map_err(|e| Error::engine(format!("inbox job_id decode: {e}")))?,
+                sender: row
+                    .get::<String>(2)
+                    .map_err(|e| Error::engine(format!("inbox sender decode: {e}")))?,
+                payload,
+                sent_at: row
+                    .get::<String>(4)
+                    .map_err(|e| Error::engine(format!("inbox sent_at decode: {e}")))?,
+                read_at: row
+                    .get::<Option<String>>(5)
+                    .map_err(|e| Error::engine(format!("inbox read_at decode: {e}")))?,
+            }))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Insert a `child_done` envelope into the parent's inbox — but only if the
+/// parent is still non-terminal (the SQL `WHERE EXISTS(... NOT IN terminal)`
+/// guard). A no-op INSERT if the parent already finished, which is why callers
+/// on the fail path must emit BEFORE flipping the parent terminal.
+async fn libsql_emit_child_done(
+    conn: &::libsql::Connection,
+    parent_id: i64,
+    child_id: i64,
+    job_name: &str,
+    result: serde_json::Value,
+    outcome: crate::minions::types::ChildOutcome,
+    error: Option<String>,
+) -> Result<()> {
+    let envelope =
+        crate::minions::types::ChildDoneMessage::new(child_id, job_name, result, outcome, error);
+    let payload = serde_json::to_value(&envelope)
+        .map_err(|e| Error::engine(format!("child_done serialize: {e}")))?
+        .to_string();
+    let now_iso = current_utc_iso8601();
+    conn.execute(
+        "INSERT INTO minion_inbox (job_id, sender, payload, sent_at) \
+         SELECT ?1, 'minions', ?2, ?3 \
+         WHERE EXISTS (SELECT 1 FROM minion_jobs \
+             WHERE id = ?1 AND status NOT IN \
+                ('completed','failed','dead','cancelled'))",
+        ::libsql::params![parent_id, payload, now_iso],
+    )
+    .await
+    .map_err(|e| Error::engine(format!("emit_child_done INSERT: {e}")))?;
+    Ok(())
+}
+
+/// Flip a parent out of `waiting-children` back to `waiting` once none of its
+/// children remain non-terminal (the SQL `resolve_parent` UPDATE). No-op unless
+/// the parent is waiting-children and all its kids are terminal.
+async fn libsql_resolve_parent(
+    conn: &::libsql::Connection,
+    parent_id: i64,
+    now_iso: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE minion_jobs SET status = 'waiting', updated_at = ?1 \
+         WHERE id = ?2 AND status = 'waiting-children' \
+           AND NOT EXISTS (SELECT 1 FROM minion_jobs child \
+               WHERE child.parent_job_id = ?2 AND child.status NOT IN \
+                  ('completed','failed','dead','cancelled'))",
+        ::libsql::params![now_iso, parent_id],
+    )
+    .await
+    .map_err(|e| Error::engine(format!("resolve_parent UPDATE: {e}")))?;
+    Ok(())
 }
 
 /// Reselect a set of jobs by id and decode them to [`MinionJob`]. Used by the

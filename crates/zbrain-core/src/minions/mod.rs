@@ -36,6 +36,6 @@ pub mod types;
 
 pub use queue::MinionQueue;
 pub use types::{
-    BackoffType, ChildFailPolicy, FailOutcome, JobFilters, MinionJob, MinionJobInput,
-    MinionJobStatus, StalledSweep,
+    BackoffType, ChildDoneKind, ChildDoneMessage, ChildFailPolicy, ChildOutcome, FailOutcome,
+    InboxMessage, JobFilters, MinionJob, MinionJobInput, MinionJobStatus, StalledSweep, TokenUpdate,
 };

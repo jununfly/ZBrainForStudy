@@ -12,7 +12,7 @@ use tempfile::NamedTempFile;
 use zbrain_core::engine::{BrainEngine, EngineConfig};
 use zbrain_core::libsql::LibsqlEngine;
 use zbrain_core::minions::types::{
-    FailOutcome, JobFilters, MinionJobInput, MinionJobStatus,
+    ChildOutcome, FailOutcome, JobFilters, MinionJobInput, MinionJobStatus, TokenUpdate,
 };
 use zbrain_core::InMemoryEngine;
 
@@ -23,6 +23,16 @@ use zbrain_core::InMemoryEngine;
 fn job(name: &str) -> MinionJobInput {
     MinionJobInput {
         name: name.to_string(),
+        ..Default::default()
+    }
+}
+
+/// A child job spawned under `parent_id`. Used by the D-layer (1-1-3-1)
+/// parent/child coordination contract tests.
+fn child(name: &str, parent_id: i64) -> MinionJobInput {
+    MinionJobInput {
+        name: name.to_string(),
+        parent_job_id: Some(parent_id),
         ..Default::default()
     }
 }
@@ -493,6 +503,239 @@ async fn contract_handle_wall_clock_timeouts(engine: &dyn BrainEngine) {
 }
 
 // ---------------------------------------------------------------------------
+// D-layer (1-1-3-1): parent/child dependencies + inbox coordination
+// ---------------------------------------------------------------------------
+
+/// Claim + complete a job by name, returning the completed row. Convenience for
+/// driving child jobs through their lifecycle in dependency tests.
+async fn claim_and_complete(engine: &dyn BrainEngine, name: &str, tok: &str) -> i64 {
+    let names = vec![name.to_string()];
+    let claimed = engine
+        .claim_job(tok, 60_000, "default", &names)
+        .await
+        .unwrap()
+        .unwrap();
+    let done = engine
+        .complete_job(claimed.id, tok, Some(&serde_json::json!({"ok": true})))
+        .await
+        .unwrap()
+        .unwrap();
+    done.id
+}
+
+/// Spawning a child flips the parent into `waiting-children`; the child records
+/// its parent link and derived depth.
+async fn contract_spawn_child_blocks_parent(engine: &dyn BrainEngine) {
+    let parent = engine.enqueue_job(&job("parent")).await.unwrap();
+    assert_eq!(parent.status, MinionJobStatus::Waiting);
+    assert_eq!(parent.depth, 0);
+
+    let kid = engine.enqueue_job(&child("kid", parent.id)).await.unwrap();
+    assert_eq!(kid.parent_job_id, Some(parent.id));
+    assert_eq!(kid.depth, 1, "child depth is parent.depth + 1");
+
+    let parent_now = engine.get_job(parent.id).await.unwrap().unwrap();
+    assert_eq!(
+        parent_now.status,
+        MinionJobStatus::WaitingChildren,
+        "parent blocks on its child"
+    );
+}
+
+/// Completing the last live child flips the parent back to `waiting` and posts a
+/// `child_done` (outcome=complete) into the parent's inbox.
+async fn contract_child_complete_resolves_parent(engine: &dyn BrainEngine) {
+    let parent = engine.enqueue_job(&job("agg")).await.unwrap();
+    let kid = engine.enqueue_job(&child("kid", parent.id)).await.unwrap();
+    assert_eq!(
+        engine.get_job(parent.id).await.unwrap().unwrap().status,
+        MinionJobStatus::WaitingChildren
+    );
+
+    let done_id = claim_and_complete(engine, "kid", "ktok").await;
+    assert_eq!(done_id, kid.id);
+
+    let parent_now = engine.get_job(parent.id).await.unwrap().unwrap();
+    assert_eq!(
+        parent_now.status,
+        MinionJobStatus::Waiting,
+        "parent unblocks once its only child is terminal"
+    );
+
+    // Parent now claims and reads its child_done inbox.
+    let names = vec!["agg".to_string()];
+    let claimed = engine
+        .claim_job("ptok", 60_000, "default", &names)
+        .await
+        .unwrap()
+        .unwrap();
+    let comps = engine
+        .read_child_completions(claimed.id, "ptok", None)
+        .await
+        .unwrap();
+    assert_eq!(comps.len(), 1, "one child_done envelope");
+    assert_eq!(comps[0].child_id, kid.id);
+    assert_eq!(comps[0].job_name, "kid");
+    assert_eq!(comps[0].effective_outcome(), ChildOutcome::Complete);
+}
+
+/// A child failing terminally with the default `fail_parent` policy marks the
+/// parent `failed` and still emits a `child_done` (outcome=failed) first.
+async fn contract_child_fail_propagates_to_parent(engine: &dyn BrainEngine) {
+    let parent = engine.enqueue_job(&job("fp")).await.unwrap();
+    let kid = engine.enqueue_job(&child("kid", parent.id)).await.unwrap();
+
+    let names = vec!["kid".to_string()];
+    let claimed = engine
+        .claim_job("ktok", 60_000, "default", &names)
+        .await
+        .unwrap()
+        .unwrap();
+    let failed = engine
+        .fail_job(claimed.id, "ktok", "boom", FailOutcome::Failed, 0)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(failed.status, MinionJobStatus::Failed);
+
+    let parent_now = engine.get_job(parent.id).await.unwrap().unwrap();
+    assert_eq!(
+        parent_now.status,
+        MinionJobStatus::Failed,
+        "fail_parent policy fails the parent"
+    );
+    assert!(parent_now
+        .error_text
+        .as_deref()
+        .unwrap_or("")
+        .contains(&kid.id.to_string()));
+
+    // The child_done(failed) envelope survives in the parent inbox even though
+    // the parent is now terminal (it was inserted before the parent flip).
+    let comps = engine.read_child_completions(parent.id, "nope", None).await;
+    // Parent isn't active/locked, so token fence returns empty — assert the fence
+    // holds rather than the payload here.
+    assert!(comps.unwrap().is_empty(), "token fence blocks unlocked read");
+}
+
+/// `cancel_job` cascades to the whole descendant subtree and emits
+/// `child_done(cancelled)` to affected parents.
+async fn contract_cancel_cascades_subtree(engine: &dyn BrainEngine) {
+    let root = engine.enqueue_job(&job("root")).await.unwrap();
+    let mid = engine.enqueue_job(&child("mid", root.id)).await.unwrap();
+    let leaf = engine.enqueue_job(&child("leaf", mid.id)).await.unwrap();
+
+    let cancelled = engine.cancel_job(root.id).await.unwrap().unwrap();
+    assert_eq!(cancelled.id, root.id);
+    assert_eq!(cancelled.status, MinionJobStatus::Cancelled);
+
+    for id in [root.id, mid.id, leaf.id] {
+        assert_eq!(
+            engine.get_job(id).await.unwrap().unwrap().status,
+            MinionJobStatus::Cancelled,
+            "descendant {id} cancelled"
+        );
+    }
+
+    // Cancelling an already-terminal job returns None.
+    assert!(engine.cancel_job(root.id).await.unwrap().is_none());
+}
+
+/// Inbox `send_message` enforces sender validation and non-terminal target;
+/// `read_inbox` is token-fenced and consumes (marks read).
+async fn contract_inbox_send_and_read(engine: &dyn BrainEngine) {
+    let j = engine.enqueue_job(&job("box")).await.unwrap();
+
+    // admin may message a non-terminal job.
+    let msg = engine
+        .send_message(j.id, &serde_json::json!({"cmd": "pause"}), "admin")
+        .await
+        .unwrap();
+    assert!(msg.is_some(), "admin send accepted");
+
+    // A bogus sender is rejected.
+    let bogus = engine
+        .send_message(j.id, &serde_json::json!({"x": 1}), "randogremlin")
+        .await
+        .unwrap();
+    assert!(bogus.is_none(), "non-admin/non-parent sender rejected");
+
+    // read_inbox is token-fenced: wrong/absent lock returns empty.
+    assert!(engine.read_inbox(j.id, "wrongtok").await.unwrap().is_empty());
+
+    // Claim to hold the lease, then read.
+    let names = vec!["box".to_string()];
+    let claimed = engine
+        .claim_job("boxtok", 60_000, "default", &names)
+        .await
+        .unwrap()
+        .unwrap();
+    let read = engine.read_inbox(claimed.id, "boxtok").await.unwrap();
+    assert_eq!(read.len(), 1, "one unread message");
+    assert_eq!(read[0].sender, "admin");
+
+    // Second read finds nothing (first read marked it consumed).
+    let read2 = engine.read_inbox(claimed.id, "boxtok").await.unwrap();
+    assert!(read2.is_empty(), "message consumed on first read");
+}
+
+/// `update_tokens` accumulates counters under the active lease fence.
+async fn contract_update_tokens_fenced(engine: &dyn BrainEngine) {
+    let j = engine.enqueue_job(&job("tok")).await.unwrap();
+    let names = vec!["tok".to_string()];
+    let claimed = engine
+        .claim_job("tt", 60_000, "default", &names)
+        .await
+        .unwrap()
+        .unwrap();
+
+    // Wrong token: no update.
+    assert!(!engine
+        .update_tokens(
+            claimed.id,
+            "badtok",
+            &TokenUpdate {
+                input: Some(5),
+                ..Default::default()
+            }
+        )
+        .await
+        .unwrap());
+
+    let ok = engine
+        .update_tokens(
+            claimed.id,
+            "tt",
+            &TokenUpdate {
+                input: Some(10),
+                output: Some(3),
+                cache_read: Some(1),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(ok);
+
+    // Accumulate again.
+    engine
+        .update_tokens(
+            claimed.id,
+            "tt",
+            &TokenUpdate {
+                input: Some(5),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    let after = engine.get_job(claimed.id).await.unwrap().unwrap();
+    assert_eq!(after.tokens_input, 15);
+    assert_eq!(after.tokens_output, 3);
+    assert_eq!(after.tokens_cache_read, 1);
+}
+
+// ---------------------------------------------------------------------------
 // InMemory
 // ---------------------------------------------------------------------------
 
@@ -547,6 +790,32 @@ async fn inmemory_handle_timeouts() {
 #[tokio::test]
 async fn inmemory_handle_wall_clock_timeouts() {
     contract_handle_wall_clock_timeouts(&InMemoryEngine::new()).await;
+}
+
+// D-layer (1-1-3-1)
+#[tokio::test]
+async fn inmemory_spawn_child_blocks_parent() {
+    contract_spawn_child_blocks_parent(&InMemoryEngine::new()).await;
+}
+#[tokio::test]
+async fn inmemory_child_complete_resolves_parent() {
+    contract_child_complete_resolves_parent(&InMemoryEngine::new()).await;
+}
+#[tokio::test]
+async fn inmemory_child_fail_propagates_to_parent() {
+    contract_child_fail_propagates_to_parent(&InMemoryEngine::new()).await;
+}
+#[tokio::test]
+async fn inmemory_cancel_cascades_subtree() {
+    contract_cancel_cascades_subtree(&InMemoryEngine::new()).await;
+}
+#[tokio::test]
+async fn inmemory_inbox_send_and_read() {
+    contract_inbox_send_and_read(&InMemoryEngine::new()).await;
+}
+#[tokio::test]
+async fn inmemory_update_tokens_fenced() {
+    contract_update_tokens_fenced(&InMemoryEngine::new()).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -629,6 +898,44 @@ async fn libsql_handle_timeouts() {
 async fn libsql_handle_wall_clock_timeouts() {
     let (engine, _tmp) = init_clean_libsql().await;
     contract_handle_wall_clock_timeouts(&engine).await;
+    engine.disconnect().await.expect("disconnect");
+}
+
+// D-layer (1-1-3-1)
+#[tokio::test]
+async fn libsql_spawn_child_blocks_parent() {
+    let (engine, _tmp) = init_clean_libsql().await;
+    contract_spawn_child_blocks_parent(&engine).await;
+    engine.disconnect().await.expect("disconnect");
+}
+#[tokio::test]
+async fn libsql_child_complete_resolves_parent() {
+    let (engine, _tmp) = init_clean_libsql().await;
+    contract_child_complete_resolves_parent(&engine).await;
+    engine.disconnect().await.expect("disconnect");
+}
+#[tokio::test]
+async fn libsql_child_fail_propagates_to_parent() {
+    let (engine, _tmp) = init_clean_libsql().await;
+    contract_child_fail_propagates_to_parent(&engine).await;
+    engine.disconnect().await.expect("disconnect");
+}
+#[tokio::test]
+async fn libsql_cancel_cascades_subtree() {
+    let (engine, _tmp) = init_clean_libsql().await;
+    contract_cancel_cascades_subtree(&engine).await;
+    engine.disconnect().await.expect("disconnect");
+}
+#[tokio::test]
+async fn libsql_inbox_send_and_read() {
+    let (engine, _tmp) = init_clean_libsql().await;
+    contract_inbox_send_and_read(&engine).await;
+    engine.disconnect().await.expect("disconnect");
+}
+#[tokio::test]
+async fn libsql_update_tokens_fenced() {
+    let (engine, _tmp) = init_clean_libsql().await;
+    contract_update_tokens_fenced(&engine).await;
     engine.disconnect().await.expect("disconnect");
 }
 
@@ -725,4 +1032,36 @@ async fn postgres_handle_timeouts() {
 async fn postgres_handle_wall_clock_timeouts() {
     let fix = support::pg_fixture::PgFixture::start().await;
     contract_handle_wall_clock_timeouts(&fix.engine).await;
+}
+
+// D-layer (1-1-3-1)
+#[tokio::test]
+async fn postgres_spawn_child_blocks_parent() {
+    let fix = support::pg_fixture::PgFixture::start().await;
+    contract_spawn_child_blocks_parent(&fix.engine).await;
+}
+#[tokio::test]
+async fn postgres_child_complete_resolves_parent() {
+    let fix = support::pg_fixture::PgFixture::start().await;
+    contract_child_complete_resolves_parent(&fix.engine).await;
+}
+#[tokio::test]
+async fn postgres_child_fail_propagates_to_parent() {
+    let fix = support::pg_fixture::PgFixture::start().await;
+    contract_child_fail_propagates_to_parent(&fix.engine).await;
+}
+#[tokio::test]
+async fn postgres_cancel_cascades_subtree() {
+    let fix = support::pg_fixture::PgFixture::start().await;
+    contract_cancel_cascades_subtree(&fix.engine).await;
+}
+#[tokio::test]
+async fn postgres_inbox_send_and_read() {
+    let fix = support::pg_fixture::PgFixture::start().await;
+    contract_inbox_send_and_read(&fix.engine).await;
+}
+#[tokio::test]
+async fn postgres_update_tokens_fenced() {
+    let fix = support::pg_fixture::PgFixture::start().await;
+    contract_update_tokens_fenced(&fix.engine).await;
 }

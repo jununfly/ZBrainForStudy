@@ -217,10 +217,11 @@ pub struct MinionJob {
 /// Submission input for `MinionQueue::add`. Mirrors the A+B-relevant subset of
 /// the TS `MinionJobInput`.
 ///
-/// Slice scope (1-1-1, decision 6): `parent_job_id` and `max_waiting` are
-/// intentionally ABSENT. Parent/child dependencies belong to the D-layer
-/// (1-1-3) and submission backpressure (`pg_advisory_xact_lock`) is a separate
-/// PG-specific design; A+B does basic insert + idempotency only.
+/// Slice scope: A+B (1-1-1) did basic insert + idempotency only. The D-layer
+/// (1-1-3-1) adds `parent_job_id` — spawning a child under a parent triggers
+/// the depth/max_children validation and flips the parent to `waiting-children`
+/// (see `enqueue_job`). Submission backpressure (`max_waiting` /
+/// `pg_advisory_xact_lock`) remains a separate, deferred PG-specific design.
 #[derive(Debug, Clone, Default)]
 pub struct MinionJobInput {
     pub name: String,
@@ -237,6 +238,11 @@ pub struct MinionJobInput {
     /// Delay in ms before the job becomes eligible. Sets status=delayed and
     /// delay_until = now + delay.
     pub delay: Option<i64>,
+    /// Parent job to spawn this job under (D-layer / 1-1-3-1). When set,
+    /// `enqueue_job` validates spawn depth + max_children against the parent
+    /// and flips the parent to `waiting-children`. `depth` is derived
+    /// (parent.depth + 1), never caller-supplied.
+    pub parent_job_id: Option<i64>,
     pub on_child_fail: Option<ChildFailPolicy>,
     pub max_children: Option<i32>,
     pub timeout_ms: Option<i64>,
@@ -307,4 +313,129 @@ impl FailOutcome {
 pub struct StalledSweep {
     pub requeued: Vec<MinionJob>,
     pub dead: Vec<MinionJob>,
+}
+
+// ============================================================
+// D-layer (roadmap 1-1-3-1): inbox / sidechannel messaging
+// ============================================================
+
+/// A persisted `minion_inbox` row. 1:1 with the TS `InboxMessage` interface
+/// (`src/core/minions/types.ts` L224-231).
+///
+/// `payload` is an arbitrary JSON envelope; the queue only introspects the
+/// `child_done` shape (see [`ChildDoneMessage`]). `sender` is `'admin'`,
+/// `'minions'` (automatic child-completion hook), or a parent job id string.
+///
+/// ## Time representation
+/// `sent_at`/`read_at` are `String` (RFC-3339 / ISO-8601) record columns —
+/// never arithmetic'd, so both backends store them as text (PG TIMESTAMPTZ read
+/// back via `to_rfc3339()`, SQLite TEXT read directly). Contrast the
+/// `minion_jobs` scheduling columns which use epoch-ms integers.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InboxMessage {
+    pub id: i64,
+    pub job_id: i64,
+    pub sender: String,
+    pub payload: Value,
+    pub sent_at: String,
+    pub read_at: Option<String>,
+}
+
+/// Terminal outcome carried by a [`ChildDoneMessage`]. Mirrors the TS
+/// `ChildOutcome` union (`types.ts` L260).
+///
+/// Serialized as a lowercase string inside the JSONB payload (`"complete"`,
+/// `"failed"`, ...), so an aggregator parent can count "N children resolved"
+/// regardless of which rail (complete/fail/cancel/timeout) each child took.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChildOutcome {
+    Complete,
+    Failed,
+    Dead,
+    Cancelled,
+    Timeout,
+}
+
+/// Auto-posted into a parent's inbox when a child reaches a terminal state.
+/// Mirrors the TS `ChildDoneMessage` interface (`types.ts` L262-275).
+///
+/// This is the only inbox payload shape the queue itself introspects (via the
+/// `idx_minion_inbox_child_done` partial index and `read_child_completions`).
+///
+/// ## Compatibility
+/// Pre-v0.15 writers only emitted this on the success path (complete) and did
+/// not set `outcome`. When `outcome` is absent on read, consumers treat the
+/// message as [`ChildOutcome::Complete`] (see [`ChildDoneMessage::effective_outcome`]).
+/// v0.15+ fail/cancel/timeout rails also emit it with the appropriate outcome,
+/// so aggregator handlers wait for N children regardless of individual result.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChildDoneMessage {
+    /// Discriminator. Always `"child_done"`; drives the partial index predicate.
+    #[serde(rename = "type")]
+    pub kind: ChildDoneKind,
+    pub child_id: i64,
+    pub job_name: String,
+    /// Child result payload; non-null on the success path, null otherwise.
+    pub result: Value,
+    /// Terminal outcome. `None` only when read from a pre-v0.15 writer that
+    /// didn't set it — treat as `Complete` via [`Self::effective_outcome`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<ChildOutcome>,
+    /// Set when `outcome != Complete`. Mirrors `minion_jobs.error_text`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// The single-variant discriminator tag for [`ChildDoneMessage::kind`].
+/// A dedicated enum (rather than a bare `String`) makes the `"child_done"`
+/// literal a compile-time constant and lets serde enforce it on deserialize.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChildDoneKind {
+    ChildDone,
+}
+
+impl ChildDoneMessage {
+    /// Build a `child_done` envelope for the given child transition. `outcome`
+    /// and `error` are always set (v0.15+ writer); `error` is `None` for the
+    /// success path.
+    #[must_use]
+    pub fn new(
+        child_id: i64,
+        job_name: impl Into<String>,
+        result: Value,
+        outcome: ChildOutcome,
+        error: Option<String>,
+    ) -> Self {
+        Self {
+            kind: ChildDoneKind::ChildDone,
+            child_id,
+            job_name: job_name.into(),
+            result,
+            outcome: Some(outcome),
+            error,
+        }
+    }
+
+    /// Outcome with the pre-v0.15 legacy fallback applied: a missing `outcome`
+    /// means the message came from an old success-only writer, so it counts as
+    /// `Complete`.
+    #[must_use]
+    pub fn effective_outcome(&self) -> ChildOutcome {
+        self.outcome.unwrap_or(ChildOutcome::Complete)
+    }
+}
+
+/// Token-count delta applied by `update_tokens`. Mirrors the TS `TokenUpdate`
+/// interface (`types.ts` L314-318). All fields optional — a caller bumps only
+/// the counters it has. Missing fields add zero.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TokenUpdate {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read: Option<i64>,
 }

@@ -1724,6 +1724,124 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
             "set_timeout_at_for_test not implemented for this engine",
         ))
     }
+
+    // ─── Minion dependency graph + inbox (Phase 9, slice 1-1-3-1 = D) ────────
+    //
+    // The parent<->child coordination layer. These methods share one atomic
+    // chain (all keyed on the same `child_done + resolve_parent` semantics and
+    // the `minion_inbox` table), so they land together:
+    //   - `cancel_job`: recursive-CTE cascade cancel + child_done + resolve.
+    //   - `send_message` / `read_inbox` / `read_child_completions`: the inbox
+    //     sidechannel, token-fenced.
+    //   - `update_tokens`: token-fenced accumulate.
+    //   - `remove_child_dependency`: null out a child's parent link.
+    // The parent hooks that `enqueue_job` / `complete_job` / `fail_job` grew in
+    // this slice (token rollup, child_done emission, on_child_fail policy,
+    // resolve_parent) are folded INTO those existing methods, not added here.
+    //
+    // Backends implement each with their own transaction + SQL; the default
+    // impls return Unsupported so pre-queue engines compile unchanged.
+
+    /// Cancel a job and its entire descendant subtree in one transaction.
+    /// Uses a recursive CTE (depth-capped at 100) to collect descendants, flips
+    /// every non-terminal one to `cancelled`, emits a `child_done`
+    /// (outcome=`cancelled`) into each affected parent's inbox, and resolves any
+    /// aggregator parent left in `waiting-children`. Returns the root job (the
+    /// cancel target), or `None` if it was already terminal / absent. Mirrors TS
+    /// `cancelJob` (`queue.ts` L382-460).
+    async fn cancel_job(
+        &self,
+        id: i64,
+    ) -> crate::Result<Option<crate::minions::types::MinionJob>> {
+        let _ = id;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "cancel_job not yet implemented for this engine",
+        ))
+    }
+
+    /// Post a sidechannel message into a job's inbox. `sender` must be `'admin'`
+    /// or the job's `parent_job_id` (as a string); any other sender is rejected
+    /// (`None`). The target job must be non-terminal. Returns the persisted row.
+    /// Mirrors TS `sendMessage` (`queue.ts` L1143-1161).
+    async fn send_message(
+        &self,
+        job_id: i64,
+        payload: &serde_json::Value,
+        sender: &str,
+    ) -> crate::Result<Option<crate::minions::types::InboxMessage>> {
+        let _ = (job_id, payload, sender);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "send_message not yet implemented for this engine",
+        ))
+    }
+
+    /// Read and consume all unread inbox messages for a job (marks `read_at`).
+    /// Token-fenced: the caller must currently hold the job's active lease
+    /// (`lock_token` matches, status `active`), else returns empty. Mirrors TS
+    /// `readInbox` (`queue.ts` L1164-1179).
+    async fn read_inbox(
+        &self,
+        job_id: i64,
+        lock_token: &str,
+    ) -> crate::Result<Vec<crate::minions::types::InboxMessage>> {
+        let _ = (job_id, lock_token);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "read_inbox not yet implemented for this engine",
+        ))
+    }
+
+    /// Read `child_done` envelopes from a parent's inbox in send order, WITHOUT
+    /// marking them read (supports repeated cursor polling). Token-fenced like
+    /// `read_inbox`. `since_rfc3339` filters to entries strictly newer than the
+    /// cursor. Mirrors TS `readChildCompletions` (`queue.ts` L1232-1262).
+    async fn read_child_completions(
+        &self,
+        parent_id: i64,
+        lock_token: &str,
+        since_rfc3339: Option<&str>,
+    ) -> crate::Result<Vec<crate::minions::types::ChildDoneMessage>> {
+        let _ = (parent_id, lock_token, since_rfc3339);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "read_child_completions not yet implemented for this engine",
+        ))
+    }
+
+    /// Accumulate token counts on an active job (adds to existing). Token-fenced
+    /// (`lock_token` matches, status `active`). Returns `true` if applied.
+    /// Mirrors TS `updateTokens` (`queue.ts` L1182-1194).
+    async fn update_tokens(
+        &self,
+        id: i64,
+        lock_token: &str,
+        tokens: &crate::minions::types::TokenUpdate,
+    ) -> crate::Result<bool> {
+        let _ = (id, lock_token, tokens);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "update_tokens not yet implemented for this engine",
+        ))
+    }
+
+    /// Sever a child's dependency on its parent (`parent_job_id = NULL`). Used
+    /// by the `remove_dep` on-child-fail policy and manual detach. Idempotent.
+    /// Mirrors TS `removeChildDependency` (`queue.ts` L1217-1222).
+    async fn remove_child_dependency(&self, child_id: i64) -> crate::Result<()> {
+        let _ = child_id;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "remove_child_dependency not yet implemented for this engine",
+        ))
+    }
 }
 
 // ─── InMemoryEngine ──────────────────────────────────────────────────────────
@@ -1784,6 +1902,9 @@ pub struct InMemoryEngine {
     // Phase 9 (1-1-1): minion job queue storage (in-memory, for testing)
     minion_jobs_store: Mutex<Vec<crate::minions::types::MinionJob>>,
     next_job_id: Mutex<i64>,
+    // Phase 9 (1-1-3-1): minion inbox storage (in-memory, for testing)
+    minion_inbox_store: Mutex<Vec<crate::minions::types::InboxMessage>>,
+    next_inbox_id: Mutex<i64>,
 }
 
 // ─── Tag helpers ─────────────────────────────────────────────────────────────
@@ -1840,6 +1961,8 @@ impl InMemoryEngine {
             // Phase 9 (1-1-1): minion job queue storage (in-memory, for testing)
             minion_jobs_store: Mutex::new(Vec::new()),
             next_job_id: Mutex::new(1),
+            minion_inbox_store: Mutex::new(Vec::new()),
+            next_inbox_id: Mutex::new(1),
         }
     }
 
@@ -1929,6 +2052,79 @@ impl InMemoryEngine {
             .find(|p| p.slug == slug && p.source_id == source_id && p.deleted_at.is_none())
         {
             page.effective_date = Some(iso8601.to_string());
+        }
+    }
+
+    // ─── Minion D-layer helpers (1-1-3-1) ───────────────────────────────────
+    //
+    // Shared building blocks for the InMemory parent/child coordination hooks,
+    // mirroring the SQL `emit_child_done` INSERT-with-EXISTS-guard and the
+    // `resolve_parent` UPDATE. The caller holds the jobs-store lock; these take
+    // it by ref so complete_job/fail_job/cancel_job compose them without
+    // re-locking (which would deadlock the std Mutex).
+
+    /// Post a `child_done` envelope into `parent_id`'s inbox, but ONLY if the
+    /// parent still exists and is non-terminal (mirrors the SQL `WHERE EXISTS
+    /// (... status NOT IN terminal)` guard). Locks the inbox store internally.
+    fn emit_child_done_inmem(
+        &self,
+        jobs: &[crate::minions::types::MinionJob],
+        parent_id: i64,
+        child_id: i64,
+        job_name: &str,
+        result: serde_json::Value,
+        outcome: crate::minions::types::ChildOutcome,
+        error: Option<String>,
+    ) {
+        let parent_open = jobs
+            .iter()
+            .any(|j| j.id == parent_id && !j.status.is_terminal());
+        if !parent_open {
+            return;
+        }
+        let envelope = crate::minions::types::ChildDoneMessage::new(
+            child_id, job_name, result, outcome, error,
+        );
+        let payload = serde_json::to_value(&envelope)
+            .expect("ChildDoneMessage serializes to JSON");
+
+        let mut inbox = self
+            .minion_inbox_store
+            .lock()
+            .expect("InMemoryEngine minion_inbox_store mutex poisoned");
+        let mut next = self
+            .next_inbox_id
+            .lock()
+            .expect("InMemoryEngine next_inbox_id mutex poisoned");
+        let msg_id = *next;
+        *next += 1;
+        inbox.push(crate::minions::types::InboxMessage {
+            id: msg_id,
+            job_id: parent_id,
+            sender: "minions".to_string(),
+            payload,
+            sent_at: crate::time::current_utc_iso8601(),
+            read_at: None,
+        });
+    }
+
+    /// Flip a parent out of `waiting-children` back to `waiting` once none of
+    /// its children remain non-terminal (mirrors the SQL `resolve_parent`
+    /// UPDATE). No-op if the parent isn't waiting-children.
+    fn resolve_parent_inmem(jobs: &mut [crate::minions::types::MinionJob], parent_id: i64) {
+        use crate::minions::types::MinionJobStatus;
+        let any_open = jobs
+            .iter()
+            .any(|j| j.parent_job_id == Some(parent_id) && !j.status.is_terminal());
+        if any_open {
+            return;
+        }
+        if let Some(parent) = jobs
+            .iter_mut()
+            .find(|j| j.id == parent_id && j.status == MinionJobStatus::WaitingChildren)
+        {
+            parent.status = MinionJobStatus::Waiting;
+            parent.updated_at = crate::time::current_utc_iso8601();
         }
     }
 }
@@ -3778,6 +3974,47 @@ impl BrainEngine for InMemoryEngine {
         // schema DEFAULT (5).
         let max_stalled = input.max_stalled.map_or(5, |v| v.clamp(1, 100));
 
+        // D-layer (1-1-3-1): parent/child spawn. Validate spawn depth +
+        // max_children against the parent, and derive this child's depth. The
+        // parent flip to `waiting-children` happens after the child is pushed.
+        // maxSpawnDepth default = 5 (TS DEFAULT_MAX_SPAWN_DEPTH).
+        const MAX_SPAWN_DEPTH: i32 = 5;
+        let mut depth = 0;
+        if let Some(parent_id) = input.parent_job_id {
+            let Some(parent) = store.iter().find(|j| j.id == parent_id) else {
+                return Err(crate::error::StructuredError::new(
+                    "InvalidInput",
+                    "invalid_input",
+                    format!("parent_job_id {parent_id} not found"),
+                ));
+            };
+            depth = parent.depth + 1;
+            if depth > MAX_SPAWN_DEPTH {
+                return Err(crate::error::StructuredError::new(
+                    "InvalidInput",
+                    "invalid_input",
+                    format!("spawn depth {depth} exceeds maxSpawnDepth {MAX_SPAWN_DEPTH}"),
+                ));
+            }
+            if let Some(cap) = parent.max_children {
+                let live = store
+                    .iter()
+                    .filter(|j| {
+                        j.parent_job_id == Some(parent_id) && !j.status.is_terminal()
+                    })
+                    .count() as i32;
+                if live >= cap {
+                    return Err(crate::error::StructuredError::new(
+                        "InvalidInput",
+                        "invalid_input",
+                        format!(
+                            "parent {parent_id} already has {live} live children (max_children={cap})"
+                        ),
+                    ));
+                }
+            }
+        }
+
         let id = *next_id;
         *next_id += 1;
 
@@ -3801,14 +4038,14 @@ impl BrainEngine for InMemoryEngine {
             lock_token: None,
             lock_until: None,
             delay_until,
-            parent_job_id: None,
+            parent_job_id: input.parent_job_id,
             on_child_fail: input
                 .on_child_fail
                 .unwrap_or(crate::minions::types::ChildFailPolicy::FailParent),
             tokens_input: 0,
             tokens_output: 0,
             tokens_cache_read: 0,
-            depth: 0,
+            depth,
             max_children: input.max_children,
             timeout_ms: input.timeout_ms,
             timeout_at: None,
@@ -3827,6 +4064,23 @@ impl BrainEngine for InMemoryEngine {
             updated_at: now_iso,
         };
         store.push(job.clone());
+
+        // Flip the parent into waiting-children now that a fresh child exists.
+        // Only from non-terminal, non-already-waiting-children states.
+        if let Some(parent_id) = input.parent_job_id {
+            if let Some(parent) = store.iter_mut().find(|j| j.id == parent_id) {
+                if matches!(
+                    parent.status,
+                    MinionJobStatus::Waiting
+                        | MinionJobStatus::Active
+                        | MinionJobStatus::Delayed
+                ) {
+                    parent.status = MinionJobStatus::WaitingChildren;
+                    parent.updated_at = crate::time::current_utc_iso8601();
+                }
+            }
+        }
+
         Ok(job)
     }
 
@@ -3952,6 +4206,35 @@ impl BrainEngine for InMemoryEngine {
         job.updated_at = now_iso;
         let completed = job.clone();
 
+        // D-layer (1-1-3-1) parent hook: roll up tokens, emit child_done, and
+        // resolve the parent if all its children are now terminal.
+        if let Some(parent_id) = completed.parent_job_id {
+            if completed.tokens_input > 0
+                || completed.tokens_output > 0
+                || completed.tokens_cache_read > 0
+            {
+                if let Some(parent) = store
+                    .iter_mut()
+                    .find(|j| j.id == parent_id && !j.status.is_terminal())
+                {
+                    parent.tokens_input += completed.tokens_input;
+                    parent.tokens_output += completed.tokens_output;
+                    parent.tokens_cache_read += completed.tokens_cache_read;
+                    parent.updated_at = crate::time::current_utc_iso8601();
+                }
+            }
+            self.emit_child_done_inmem(
+                &store,
+                parent_id,
+                completed.id,
+                &completed.name,
+                result.cloned().unwrap_or(serde_json::Value::Null),
+                crate::minions::types::ChildOutcome::Complete,
+                None,
+            );
+            Self::resolve_parent_inmem(&mut store, parent_id);
+        }
+
         // remove_on_complete: drop the row after capturing the return value.
         if completed.remove_on_complete {
             store.retain(|j| j.id != id);
@@ -3967,7 +4250,7 @@ impl BrainEngine for InMemoryEngine {
         outcome: crate::minions::types::FailOutcome,
         backoff_ms: i64,
     ) -> crate::Result<Option<crate::minions::types::MinionJob>> {
-        use crate::minions::types::{FailOutcome, MinionJobStatus};
+        use crate::minions::types::{ChildFailPolicy, FailOutcome, MinionJobStatus};
 
         let mut store = self
             .minion_jobs_store
@@ -4000,6 +4283,59 @@ impl BrainEngine for InMemoryEngine {
         }
         job.updated_at = now_iso;
         let failed = job.clone();
+
+        // D-layer (1-1-3-1) parent hook on terminal failure. Emit child_done
+        // BEFORE any parent-terminal flip (the EXISTS guard on emit would drop
+        // the message once the parent is failed), then apply on_child_fail.
+        if outcome.is_terminal() {
+            if let Some(parent_id) = failed.parent_job_id {
+                let child_outcome = if outcome == FailOutcome::Dead {
+                    crate::minions::types::ChildOutcome::Dead
+                } else {
+                    crate::minions::types::ChildOutcome::Failed
+                };
+                self.emit_child_done_inmem(
+                    &store,
+                    parent_id,
+                    failed.id,
+                    &failed.name,
+                    serde_json::Value::Null,
+                    child_outcome,
+                    Some(error_text.to_string()),
+                );
+
+                match failed.on_child_fail {
+                    ChildFailPolicy::FailParent => {
+                        if let Some(parent) = store.iter_mut().find(|j| {
+                            j.id == parent_id && j.status == MinionJobStatus::WaitingChildren
+                        }) {
+                            parent.status = MinionJobStatus::Failed;
+                            parent.error_text = Some(format!(
+                                "child job {} failed: {error_text}",
+                                failed.id
+                            ));
+                            let now = crate::time::current_utc_iso8601();
+                            parent.finished_at = Some(now.clone());
+                            parent.updated_at = now;
+                        }
+                    }
+                    ChildFailPolicy::RemoveDep => {
+                        // Drop this child's dep, then try to resolve the parent
+                        // if all OTHER kids are terminal.
+                        if let Some(this) = store.iter_mut().find(|j| j.id == failed.id) {
+                            this.parent_job_id = None;
+                            this.updated_at = crate::time::current_utc_iso8601();
+                        }
+                        Self::resolve_parent_inmem(&mut store, parent_id);
+                    }
+                    ChildFailPolicy::Ignore | ChildFailPolicy::Continue => {
+                        // Parent stays in waiting-children on siblings; the last
+                        // terminal child transitioning here still unblocks it.
+                        Self::resolve_parent_inmem(&mut store, parent_id);
+                    }
+                }
+            }
+        }
 
         // remove_on_fail on a terminal outcome: drop the row.
         if outcome.is_terminal() && failed.remove_on_fail {
@@ -4233,6 +4569,262 @@ impl BrainEngine for InMemoryEngine {
             .expect("InMemoryEngine minion_jobs_store mutex poisoned");
         if let Some(job) = store.iter_mut().find(|j| j.id == id) {
             job.timeout_at = Some(timeout_at_ms);
+        }
+        Ok(())
+    }
+
+    // ─── Minion D-layer methods (1-1-3-1) ───────────────────────────────────
+
+    async fn cancel_job(
+        &self,
+        id: i64,
+    ) -> crate::Result<Option<crate::minions::types::MinionJob>> {
+        use crate::minions::types::MinionJobStatus;
+
+        let mut store = self
+            .minion_jobs_store
+            .lock()
+            .expect("InMemoryEngine minion_jobs_store mutex poisoned");
+
+        // Collect the descendant subtree (BFS, depth-capped at 100 to match the
+        // SQL recursive CTE). Only non-terminal rows are actually cancelled.
+        let mut subtree: Vec<i64> = Vec::new();
+        let mut frontier = vec![id];
+        let mut depth = 0;
+        while !frontier.is_empty() && depth <= 100 {
+            let mut next = Vec::new();
+            for cur in frontier {
+                if !subtree.contains(&cur) {
+                    subtree.push(cur);
+                }
+                for j in store.iter() {
+                    if j.parent_job_id == Some(cur) && !subtree.contains(&j.id) {
+                        next.push(j.id);
+                    }
+                }
+            }
+            frontier = next;
+            depth += 1;
+        }
+
+        // Cancel each non-terminal row; record (child_id, parent_id, name) for
+        // child_done emission + parent resolution. Track whether the root row
+        // itself transitioned this call (TS returns the root only if it did —
+        // an already-terminal root yields None).
+        let now_iso = crate::time::current_utc_iso8601();
+        let mut affected: Vec<(i64, i64, String)> = Vec::new();
+        let mut root_transitioned = false;
+        for cid in &subtree {
+            if let Some(j) = store
+                .iter_mut()
+                .find(|j| j.id == *cid && !j.status.is_terminal())
+            {
+                j.status = MinionJobStatus::Cancelled;
+                j.lock_token = None;
+                j.lock_until = None;
+                j.finished_at = Some(now_iso.clone());
+                j.updated_at = now_iso.clone();
+                if j.id == id {
+                    root_transitioned = true;
+                }
+                if let Some(pid) = j.parent_job_id {
+                    affected.push((j.id, pid, j.name.clone()));
+                }
+            }
+        }
+
+        // If the root was already terminal (nothing cancelled at the root), the
+        // TS contract returns None.
+        if !root_transitioned {
+            return Ok(None);
+        }
+
+        // Emit child_done(cancelled) into each affected parent + resolve.
+        let mut parent_ids: Vec<i64> = Vec::new();
+        for (child_id, parent_id, name) in affected {
+            self.emit_child_done_inmem(
+                &store,
+                parent_id,
+                child_id,
+                &name,
+                serde_json::Value::Null,
+                crate::minions::types::ChildOutcome::Cancelled,
+                Some("cancelled".to_string()),
+            );
+            if !parent_ids.contains(&parent_id) {
+                parent_ids.push(parent_id);
+            }
+        }
+        for parent_id in parent_ids {
+            Self::resolve_parent_inmem(&mut store, parent_id);
+        }
+
+        Ok(store.iter().find(|j| j.id == id).cloned())
+    }
+
+    async fn send_message(
+        &self,
+        job_id: i64,
+        payload: &serde_json::Value,
+        sender: &str,
+    ) -> crate::Result<Option<crate::minions::types::InboxMessage>> {
+        let store = self
+            .minion_jobs_store
+            .lock()
+            .expect("InMemoryEngine minion_jobs_store mutex poisoned");
+
+        // Target must exist and be non-terminal.
+        let Some(job) = store.iter().find(|j| j.id == job_id) else {
+            return Ok(None);
+        };
+        if job.status.is_terminal() {
+            return Ok(None);
+        }
+        // Sender must be 'admin' or the job's parent id (as a string).
+        let parent_str = job.parent_job_id.map(|p| p.to_string());
+        if sender != "admin" && Some(sender.to_string()) != parent_str {
+            return Ok(None);
+        }
+        drop(store);
+
+        let mut inbox = self
+            .minion_inbox_store
+            .lock()
+            .expect("InMemoryEngine minion_inbox_store mutex poisoned");
+        let mut next = self
+            .next_inbox_id
+            .lock()
+            .expect("InMemoryEngine next_inbox_id mutex poisoned");
+        let msg = crate::minions::types::InboxMessage {
+            id: *next,
+            job_id,
+            sender: sender.to_string(),
+            payload: payload.clone(),
+            sent_at: crate::time::current_utc_iso8601(),
+            read_at: None,
+        };
+        *next += 1;
+        inbox.push(msg.clone());
+        Ok(Some(msg))
+    }
+
+    async fn read_inbox(
+        &self,
+        job_id: i64,
+        lock_token: &str,
+    ) -> crate::Result<Vec<crate::minions::types::InboxMessage>> {
+        use crate::minions::types::MinionJobStatus;
+
+        // Token fence: caller must hold the active lease.
+        {
+            let store = self
+                .minion_jobs_store
+                .lock()
+                .expect("InMemoryEngine minion_jobs_store mutex poisoned");
+            let held = store.iter().any(|j| {
+                j.id == job_id
+                    && j.status == MinionJobStatus::Active
+                    && j.lock_token.as_deref() == Some(lock_token)
+            });
+            if !held {
+                return Ok(Vec::new());
+            }
+        }
+
+        let mut inbox = self
+            .minion_inbox_store
+            .lock()
+            .expect("InMemoryEngine minion_inbox_store mutex poisoned");
+        let now_iso = crate::time::current_utc_iso8601();
+        let mut out = Vec::new();
+        for m in inbox.iter_mut() {
+            if m.job_id == job_id && m.read_at.is_none() {
+                m.read_at = Some(now_iso.clone());
+                out.push(m.clone());
+            }
+        }
+        Ok(out)
+    }
+
+    async fn read_child_completions(
+        &self,
+        parent_id: i64,
+        lock_token: &str,
+        since_rfc3339: Option<&str>,
+    ) -> crate::Result<Vec<crate::minions::types::ChildDoneMessage>> {
+        use crate::minions::types::MinionJobStatus;
+
+        // Same token fence as read_inbox.
+        {
+            let store = self
+                .minion_jobs_store
+                .lock()
+                .expect("InMemoryEngine minion_jobs_store mutex poisoned");
+            let held = store.iter().any(|j| {
+                j.id == parent_id
+                    && j.status == MinionJobStatus::Active
+                    && j.lock_token.as_deref() == Some(lock_token)
+            });
+            if !held {
+                return Ok(Vec::new());
+            }
+        }
+
+        let inbox = self
+            .minion_inbox_store
+            .lock()
+            .expect("InMemoryEngine minion_inbox_store mutex poisoned");
+        let mut rows: Vec<&crate::minions::types::InboxMessage> = inbox
+            .iter()
+            .filter(|m| {
+                m.job_id == parent_id
+                    && m.payload.get("type").and_then(|v| v.as_str()) == Some("child_done")
+                    && since_rfc3339.is_none_or(|since| m.sent_at.as_str() > since)
+            })
+            .collect();
+        // send order (sent_at ASC; ties broken by id for determinism).
+        rows.sort_by(|a, b| a.sent_at.cmp(&b.sent_at).then(a.id.cmp(&b.id)));
+        Ok(rows
+            .into_iter()
+            .filter_map(|m| serde_json::from_value(m.payload.clone()).ok())
+            .collect())
+    }
+
+    async fn update_tokens(
+        &self,
+        id: i64,
+        lock_token: &str,
+        tokens: &crate::minions::types::TokenUpdate,
+    ) -> crate::Result<bool> {
+        use crate::minions::types::MinionJobStatus;
+
+        let mut store = self
+            .minion_jobs_store
+            .lock()
+            .expect("InMemoryEngine minion_jobs_store mutex poisoned");
+
+        let Some(job) = store.iter_mut().find(|j| {
+            j.id == id
+                && j.status == MinionJobStatus::Active
+                && j.lock_token.as_deref() == Some(lock_token)
+        }) else {
+            return Ok(false);
+        };
+        job.tokens_input += tokens.input.unwrap_or(0);
+        job.tokens_output += tokens.output.unwrap_or(0);
+        job.tokens_cache_read += tokens.cache_read.unwrap_or(0);
+        job.updated_at = crate::time::current_utc_iso8601();
+        Ok(true)
+    }
+
+    async fn remove_child_dependency(&self, child_id: i64) -> crate::Result<()> {
+        let mut store = self
+            .minion_jobs_store
+            .lock()
+            .expect("InMemoryEngine minion_jobs_store mutex poisoned");
+        if let Some(job) = store.iter_mut().find(|j| j.id == child_id) {
+            job.parent_job_id = None;
+            job.updated_at = crate::time::current_utc_iso8601();
         }
         Ok(())
     }

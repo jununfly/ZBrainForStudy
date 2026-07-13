@@ -217,6 +217,7 @@ const MIGRATION_0011: &str = include_str!("../migrations/0011_sources_full_colum
 const MIGRATION_0012: &str = include_str!("../migrations/0012_takes_full_columns.sql");
 const MIGRATION_0013: &str = include_str!("../migrations/0013_facts.sql");
 const MIGRATION_0014: &str = include_str!("../migrations/0014_minion_jobs.sql");
+const MIGRATION_0015: &str = include_str!("../migrations/0015_minion_inbox.sql");
 
 /// Global migration registry for Postgres backend. Built once at runtime first use.
 pub static POSTGRES_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
@@ -292,6 +293,11 @@ pub static POSTGRES_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 14,
         name: "minion_jobs",
         sql: MIGRATION_0014,
+    }));
+    registry.add(Box::new(PostgresMigration {
+        version: 15,
+        name: "minion_inbox",
+        sql: MIGRATION_0015,
     }));
 
     registry
@@ -2983,6 +2989,120 @@ impl BrainEngine for PostgresEngine {
             .unwrap_or(crate::minions::types::ChildFailPolicy::FailParent);
         let data_json = input.data.clone().unwrap_or_else(|| serde_json::json!({}));
 
+        // D-layer: spawning under a parent must validate depth + max_children
+        // and flip the parent to waiting-children atomically with the child
+        // insert. A txn with `SELECT ... FOR UPDATE` on the parent row serializes
+        // concurrent spawns (the PG analogue of the SQLite BEGIN IMMEDIATE).
+        const MAX_SPAWN_DEPTH: i32 = 5;
+
+        let insert_sql = format!(
+            "INSERT INTO minion_jobs \
+                (name, queue, status, priority, data, max_attempts, backoff_type, \
+                 backoff_delay, backoff_jitter, max_stalled, delay_until, on_child_fail, \
+                 max_children, timeout_ms, remove_on_complete, remove_on_fail, \
+                 idempotency_key, parent_job_id, depth) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, \
+                     CASE WHEN $11::bigint IS NULL THEN NULL \
+                          ELSE now() + ($11::double precision * interval '1 millisecond') END, \
+                     $12, $13::int, $14, $15, $16, $17, $18, $19) \
+             RETURNING {MINION_JOB_SELECT}"
+        );
+
+        if let Some(parent_id) = input.parent_job_id {
+            let mut tx = pool
+                .begin()
+                .await
+                .map_err(|e| Error::engine(format!("enqueue_job(child) BEGIN: {e}")))?;
+
+            // Lock the parent row for the depth + max_children check.
+            let parent_row = sqlx::query(
+                "SELECT depth, max_children FROM minion_jobs WHERE id = $1 FOR UPDATE",
+            )
+            .bind(parent_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| Error::engine(format!("enqueue_job(child) parent lock: {e}")))?;
+            let Some(parent_row) = parent_row else {
+                return Err(crate::error::StructuredError::new(
+                    "InvalidInput",
+                    "invalid_input",
+                    format!("parent_job_id {parent_id} not found"),
+                ));
+            };
+            let parent_depth: i32 = parent_row
+                .try_get("depth")
+                .map_err(|e| Error::engine(format!("enqueue_job(child) depth decode: {e}")))?;
+            let parent_max_children: Option<i32> = parent_row
+                .try_get("max_children")
+                .map_err(|e| Error::engine(format!("enqueue_job(child) max_children: {e}")))?;
+            let depth = parent_depth + 1;
+            if depth > MAX_SPAWN_DEPTH {
+                return Err(crate::error::StructuredError::new(
+                    "InvalidInput",
+                    "invalid_input",
+                    format!("spawn depth {depth} exceeds maxSpawnDepth {MAX_SPAWN_DEPTH}"),
+                ));
+            }
+            if let Some(cap) = parent_max_children {
+                let live: i64 = sqlx::query_scalar(
+                    "SELECT count(*) FROM minion_jobs WHERE parent_job_id = $1 \
+                     AND status NOT IN ('completed','failed','dead','cancelled')",
+                )
+                .bind(parent_id)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|e| Error::engine(format!("enqueue_job(child) live count: {e}")))?;
+                if live >= i64::from(cap) {
+                    return Err(crate::error::StructuredError::new(
+                        "InvalidInput",
+                        "invalid_input",
+                        format!(
+                            "parent {parent_id} already has {live} live children (max_children={cap})"
+                        ),
+                    ));
+                }
+            }
+
+            let row = sqlx::query(&insert_sql)
+                .bind(&input.name)
+                .bind(input.queue.clone().unwrap_or_else(|| "default".to_string()))
+                .bind(status.as_str())
+                .bind(input.priority.unwrap_or(0))
+                .bind(data_json)
+                .bind(input.max_attempts.unwrap_or(3))
+                .bind(backoff_type.as_str())
+                .bind(input.backoff_delay.unwrap_or(1000))
+                .bind(input.backoff_jitter.unwrap_or(0.2))
+                .bind(max_stalled)
+                .bind(delay_ms)
+                .bind(on_child_fail.as_str())
+                .bind(input.max_children)
+                .bind(input.timeout_ms)
+                .bind(input.remove_on_complete.unwrap_or(false))
+                .bind(input.remove_on_fail.unwrap_or(false))
+                .bind(input.idempotency_key.as_deref())
+                .bind(parent_id)
+                .bind(depth)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|e| Error::engine(format!("enqueue_job(child) INSERT: {e}")))?;
+
+            // Flip parent to waiting-children from a runnable state.
+            sqlx::query(
+                "UPDATE minion_jobs SET status = 'waiting-children', updated_at = now() \
+                 WHERE id = $1 AND status IN ('waiting','active','delayed')",
+            )
+            .bind(parent_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| Error::engine(format!("enqueue_job(child) parent flip: {e}")))?;
+
+            tx.commit()
+                .await
+                .map_err(|e| Error::engine(format!("enqueue_job(child) COMMIT: {e}")))?;
+            return pg_row_to_job(&row);
+        }
+
         // delay_until is TIMESTAMPTZ; compute it as now() + ($N ms) when delayed.
         // $11 carries the delay in ms (NULL when not delayed) and the CASE turns
         // it into an interval, matching the SQLite epoch-ms arithmetic.
@@ -3154,9 +3274,13 @@ impl BrainEngine for PostgresEngine {
     ) -> Result<Option<crate::minions::types::MinionJob>> {
         let pool = self.pool()?;
 
-        // Token-fenced completion: only the worker holding the current lock can
-        // complete the active job. RETURNING gives us the row (incl.
-        // remove_on_complete) so we can drop it afterwards if requested.
+        // Token-fenced completion inside a txn so the parent hook (token rollup,
+        // child_done emit, resolve) commits atomically with the child flip.
+        let mut tx = pool
+            .begin()
+            .await
+            .map_err(|e| Error::engine(format!("complete_job BEGIN: {e}")))?;
+
         let row = sqlx::query(&format!(
             "UPDATE minion_jobs SET status = 'completed', result = $1, \
                 finished_at = now(), lock_token = NULL, lock_until = NULL, updated_at = now() \
@@ -3166,19 +3290,58 @@ impl BrainEngine for PostgresEngine {
         .bind(result.cloned())
         .bind(id)
         .bind(lock_token)
-        .fetch_optional(pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(|e| Error::engine(format!("complete_job UPDATE: {e}")))?;
 
-        let Some(r) = row else { return Ok(None) };
+        let Some(r) = row else {
+            tx.rollback().await.ok();
+            return Ok(None);
+        };
         let job = pg_row_to_job(&r)?;
+
+        // D-layer parent hook: roll up tokens, emit child_done, resolve.
+        if let Some(parent_id) = job.parent_job_id {
+            if job.tokens_input > 0 || job.tokens_output > 0 || job.tokens_cache_read > 0 {
+                sqlx::query(
+                    "UPDATE minion_jobs SET tokens_input = tokens_input + $1, \
+                        tokens_output = tokens_output + $2, \
+                        tokens_cache_read = tokens_cache_read + $3, updated_at = now() \
+                     WHERE id = $4 AND status NOT IN \
+                        ('completed','failed','dead','cancelled')",
+                )
+                .bind(job.tokens_input)
+                .bind(job.tokens_output)
+                .bind(job.tokens_cache_read)
+                .bind(parent_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| Error::engine(format!("complete_job token rollup: {e}")))?;
+            }
+            pg_emit_child_done(
+                &mut tx,
+                parent_id,
+                job.id,
+                &job.name,
+                result.cloned().unwrap_or(serde_json::Value::Null),
+                crate::minions::types::ChildOutcome::Complete,
+                None,
+            )
+            .await?;
+            pg_resolve_parent(&mut tx, parent_id).await?;
+        }
+
         if job.remove_on_complete {
             sqlx::query("DELETE FROM minion_jobs WHERE id = $1")
                 .bind(id)
-                .execute(pool)
+                .execute(&mut *tx)
                 .await
                 .map_err(|e| Error::engine(format!("complete_job remove_on_complete: {e}")))?;
         }
+
+        tx.commit()
+            .await
+            .map_err(|e| Error::engine(format!("complete_job COMMIT: {e}")))?;
         Ok(Some(job))
     }
 
@@ -3190,17 +3353,22 @@ impl BrainEngine for PostgresEngine {
         outcome: crate::minions::types::FailOutcome,
         backoff_ms: i64,
     ) -> Result<Option<crate::minions::types::MinionJob>> {
-        use crate::minions::types::FailOutcome;
+        use crate::minions::types::{ChildFailPolicy, FailOutcome};
 
         let pool = self.pool()?;
         let new_status = outcome.as_status();
         let stacktrace = serde_json::json!([error_text]);
 
-        // Delayed retry sets delay_until = now + backoff and leaves finished_at
-        // NULL; terminal outcomes clear delay_until and stamp finished_at. The
-        // CASE arms are driven by $5 (delay flag) so a single statement covers
-        // both paths.
+        // Txn so the fail flip + child_done emit + on_child_fail policy commit
+        // atomically. Delayed retry sets delay_until = now + backoff and leaves
+        // finished_at NULL; terminal outcomes clear delay_until and stamp
+        // finished_at. The CASE arms are driven by $4 (delay flag).
         let is_delayed = outcome == FailOutcome::Delayed;
+        let mut tx = pool
+            .begin()
+            .await
+            .map_err(|e| Error::engine(format!("fail_job BEGIN: {e}")))?;
+
         let row = sqlx::query(&format!(
             "UPDATE minion_jobs SET status = $1, error_text = $2, \
                 attempts_made = attempts_made + 1, stacktrace = $3, \
@@ -3217,19 +3385,79 @@ impl BrainEngine for PostgresEngine {
         .bind(backoff_ms)
         .bind(id)
         .bind(lock_token)
-        .fetch_optional(pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(|e| Error::engine(format!("fail_job UPDATE: {e}")))?;
 
-        let Some(r) = row else { return Ok(None) };
+        let Some(r) = row else {
+            tx.rollback().await.ok();
+            return Ok(None);
+        };
         let job = pg_row_to_job(&r)?;
+
+        // D-layer parent hook on terminal failure. Emit child_done BEFORE any
+        // parent-terminal flip (the EXISTS guard on emit would drop the message
+        // once the parent is failed), then apply on_child_fail.
+        if outcome.is_terminal() {
+            if let Some(parent_id) = job.parent_job_id {
+                let child_outcome = if outcome == FailOutcome::Dead {
+                    crate::minions::types::ChildOutcome::Dead
+                } else {
+                    crate::minions::types::ChildOutcome::Failed
+                };
+                pg_emit_child_done(
+                    &mut tx,
+                    parent_id,
+                    job.id,
+                    &job.name,
+                    serde_json::Value::Null,
+                    child_outcome,
+                    Some(error_text.to_string()),
+                )
+                .await?;
+
+                match job.on_child_fail {
+                    ChildFailPolicy::FailParent => {
+                        sqlx::query(
+                            "UPDATE minion_jobs SET status = 'failed', \
+                                error_text = $1, finished_at = now(), updated_at = now() \
+                             WHERE id = $2 AND status = 'waiting-children'",
+                        )
+                        .bind(format!("child job {} failed: {error_text}", job.id))
+                        .bind(parent_id)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(|e| Error::engine(format!("fail_job fail_parent: {e}")))?;
+                    }
+                    ChildFailPolicy::RemoveDep => {
+                        sqlx::query(
+                            "UPDATE minion_jobs SET parent_job_id = NULL, updated_at = now() \
+                             WHERE id = $1",
+                        )
+                        .bind(job.id)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(|e| Error::engine(format!("fail_job remove_dep: {e}")))?;
+                        pg_resolve_parent(&mut tx, parent_id).await?;
+                    }
+                    ChildFailPolicy::Ignore | ChildFailPolicy::Continue => {
+                        pg_resolve_parent(&mut tx, parent_id).await?;
+                    }
+                }
+            }
+        }
+
         if outcome.is_terminal() && job.remove_on_fail {
             sqlx::query("DELETE FROM minion_jobs WHERE id = $1")
                 .bind(id)
-                .execute(pool)
+                .execute(&mut *tx)
                 .await
                 .map_err(|e| Error::engine(format!("fail_job remove_on_fail: {e}")))?;
         }
+
+        tx.commit()
+            .await
+            .map_err(|e| Error::engine(format!("fail_job COMMIT: {e}")))?;
         Ok(Some(job))
     }
 
@@ -3409,6 +3637,230 @@ impl BrainEngine for PostgresEngine {
         .map_err(|e| Error::engine(format!("set_timeout_at_for_test UPDATE: {e}")))?;
         Ok(())
     }
+
+    // ─── D-layer: cancellation + inbox (parent/child coordination) ──────────
+
+    async fn cancel_job(
+        &self,
+        id: i64,
+    ) -> Result<Option<crate::minions::types::MinionJob>> {
+        let pool = self.pool()?;
+
+        let mut tx = pool
+            .begin()
+            .await
+            .map_err(|e| Error::engine(format!("cancel_job BEGIN: {e}")))?;
+
+        // Cancel the whole descendant subtree in one recursive CTE, returning
+        // the rows that actually transitioned (only non-terminal ones). The
+        // depth guard (lvl < 100) bounds pathological cycles.
+        let rows = sqlx::query(&format!(
+            "WITH RECURSIVE subtree(id, lvl) AS ( \
+                SELECT id, 0 FROM minion_jobs WHERE id = $1 \
+                UNION ALL \
+                SELECT j.id, s.lvl + 1 FROM minion_jobs j \
+                JOIN subtree s ON j.parent_job_id = s.id \
+                WHERE s.lvl < 100 \
+             ) \
+             UPDATE minion_jobs SET status = 'cancelled', \
+                lock_token = NULL, lock_until = NULL, \
+                finished_at = now(), updated_at = now() \
+             WHERE id IN (SELECT id FROM subtree) \
+               AND status NOT IN ('completed','failed','dead','cancelled') \
+             RETURNING {MINION_JOB_SELECT}"
+        ))
+        .bind(id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| Error::engine(format!("cancel_job UPDATE: {e}")))?;
+
+        let cancelled: Vec<crate::minions::types::MinionJob> =
+            rows.iter().map(pg_row_to_job).collect::<Result<_>>()?;
+
+        // TS contract: return the root only if IT transitioned this call. An
+        // already-terminal root (not in the RETURNING set) yields None.
+        let Some(root) = cancelled.iter().find(|j| j.id == id).cloned() else {
+            tx.rollback().await.ok();
+            return Ok(None);
+        };
+
+        // Emit child_done(cancelled) to each affected parent, then resolve.
+        let mut parent_ids: Vec<i64> = Vec::new();
+        for job in &cancelled {
+            if let Some(pid) = job.parent_job_id {
+                pg_emit_child_done(
+                    &mut tx,
+                    pid,
+                    job.id,
+                    &job.name,
+                    serde_json::Value::Null,
+                    crate::minions::types::ChildOutcome::Cancelled,
+                    Some("cancelled".to_string()),
+                )
+                .await?;
+                if !parent_ids.contains(&pid) {
+                    parent_ids.push(pid);
+                }
+            }
+        }
+        for pid in parent_ids {
+            pg_resolve_parent(&mut tx, pid).await?;
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| Error::engine(format!("cancel_job COMMIT: {e}")))?;
+        Ok(Some(root))
+    }
+
+    async fn send_message(
+        &self,
+        job_id: i64,
+        payload: &serde_json::Value,
+        sender: &str,
+    ) -> Result<Option<crate::minions::types::InboxMessage>> {
+        let pool = self.pool()?;
+
+        // Target must exist and be non-terminal; sender must be 'admin' or the
+        // job's parent id string.
+        let Some(job) = self.get_job(job_id).await? else {
+            return Ok(None);
+        };
+        if job.status.is_terminal() {
+            return Ok(None);
+        }
+        let parent_str = job.parent_job_id.map(|p| p.to_string());
+        if sender != "admin" && Some(sender.to_string()) != parent_str {
+            return Ok(None);
+        }
+
+        let row = sqlx::query(
+            "INSERT INTO minion_inbox (job_id, sender, payload) VALUES ($1, $2, $3) \
+             RETURNING id::bigint AS id, sent_at::text AS sent_at",
+        )
+        .bind(job_id)
+        .bind(sender)
+        .bind(payload.clone())
+        .fetch_one(pool)
+        .await
+        .map_err(|e| Error::engine(format!("send_message INSERT: {e}")))?;
+
+        Ok(Some(crate::minions::types::InboxMessage {
+            id: row
+                .try_get("id")
+                .map_err(|e| Error::engine(format!("send_message id decode: {e}")))?,
+            job_id,
+            sender: sender.to_string(),
+            payload: payload.clone(),
+            sent_at: row
+                .try_get("sent_at")
+                .map_err(|e| Error::engine(format!("send_message sent_at decode: {e}")))?,
+            read_at: None,
+        }))
+    }
+
+    async fn read_inbox(
+        &self,
+        job_id: i64,
+        lock_token: &str,
+    ) -> Result<Vec<crate::minions::types::InboxMessage>> {
+        let pool = self.pool()?;
+
+        // Token fence: caller must hold the active lease. A single statement
+        // marks + returns the unread rows guarded by an EXISTS on the lease so
+        // the fence and the consume are atomic.
+        let rows = sqlx::query(
+            "UPDATE minion_inbox SET read_at = now() \
+             WHERE job_id = $1 AND read_at IS NULL \
+               AND EXISTS (SELECT 1 FROM minion_jobs \
+                   WHERE id = $1 AND status = 'active' AND lock_token = $2) \
+             RETURNING id::bigint AS id, job_id::bigint AS job_id, sender, payload, \
+                       sent_at::text AS sent_at, read_at::text AS read_at",
+        )
+        .bind(job_id)
+        .bind(lock_token)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("read_inbox UPDATE: {e}")))?;
+
+        // Preserve send order (RETURNING order is unspecified).
+        let mut out: Vec<crate::minions::types::InboxMessage> =
+            rows.iter().map(pg_row_to_inbox).collect::<Result<_>>()?;
+        out.sort_by(|a, b| a.sent_at.cmp(&b.sent_at).then(a.id.cmp(&b.id)));
+        Ok(out)
+    }
+
+    async fn read_child_completions(
+        &self,
+        parent_id: i64,
+        lock_token: &str,
+        since_rfc3339: Option<&str>,
+    ) -> Result<Vec<crate::minions::types::ChildDoneMessage>> {
+        let pool = self.pool()?;
+
+        // Same token fence as read_inbox; no marking read. `since` filters on
+        // sent_at (parsed to TIMESTAMPTZ). Ordered by send order.
+        let rows = sqlx::query(
+            "SELECT payload FROM minion_inbox \
+             WHERE job_id = $1 AND payload->>'type' = 'child_done' \
+               AND ($3::text IS NULL OR sent_at > $3::timestamptz) \
+               AND EXISTS (SELECT 1 FROM minion_jobs \
+                   WHERE id = $1 AND status = 'active' AND lock_token = $2) \
+             ORDER BY sent_at, id",
+        )
+        .bind(parent_id)
+        .bind(lock_token)
+        .bind(since_rfc3339)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("read_child_completions SELECT: {e}")))?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let payload: serde_json::Value = row
+                .try_get("payload")
+                .map_err(|e| Error::engine(format!("read_child_completions decode: {e}")))?;
+            if let Ok(msg) = serde_json::from_value(payload) {
+                out.push(msg);
+            }
+        }
+        Ok(out)
+    }
+
+    async fn update_tokens(
+        &self,
+        id: i64,
+        lock_token: &str,
+        tokens: &crate::minions::types::TokenUpdate,
+    ) -> Result<bool> {
+        let pool = self.pool()?;
+        // Token-fenced: only an active job holding this lease accrues tokens.
+        let affected = sqlx::query(
+            "UPDATE minion_jobs SET tokens_input = tokens_input + $1, \
+                tokens_output = tokens_output + $2, \
+                tokens_cache_read = tokens_cache_read + $3, updated_at = now() \
+             WHERE id = $4 AND status = 'active' AND lock_token = $5",
+        )
+        .bind(tokens.input.unwrap_or(0))
+        .bind(tokens.output.unwrap_or(0))
+        .bind(tokens.cache_read.unwrap_or(0))
+        .bind(id)
+        .bind(lock_token)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("update_tokens UPDATE: {e}")))?;
+        Ok(affected.rows_affected() > 0)
+    }
+
+    async fn remove_child_dependency(&self, child_id: i64) -> Result<()> {
+        let pool = self.pool()?;
+        sqlx::query("UPDATE minion_jobs SET parent_job_id = NULL, updated_at = now() WHERE id = $1")
+            .bind(child_id)
+            .execute(pool)
+            .await
+            .map_err(|e| Error::engine(format!("remove_child_dependency UPDATE: {e}")))?;
+        Ok(())
+    }
 }
 
 // ─── postgres minion job helpers ──────────────────────────────────────────
@@ -3430,6 +3882,84 @@ const MINION_JOB_SELECT: &str = "id, name, queue, status, priority, data, \
     result, progress, error_text, stacktrace, \
     created_at::text AS created_at, started_at::text AS started_at, \
     finished_at::text AS finished_at, updated_at::text AS updated_at";
+
+/// Insert a `child_done` envelope into the parent's inbox — but only if the
+/// parent is still non-terminal (the `WHERE EXISTS(... NOT IN terminal)`
+/// guard). A no-op INSERT if the parent already finished, which is why callers
+/// on the fail path must emit BEFORE flipping the parent terminal.
+async fn pg_emit_child_done(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    parent_id: i64,
+    child_id: i64,
+    job_name: &str,
+    result: serde_json::Value,
+    outcome: crate::minions::types::ChildOutcome,
+    error: Option<String>,
+) -> Result<()> {
+    let envelope =
+        crate::minions::types::ChildDoneMessage::new(child_id, job_name, result, outcome, error);
+    let payload = serde_json::to_value(&envelope)
+        .map_err(|e| Error::engine(format!("child_done serialize: {e}")))?;
+    sqlx::query(
+        "INSERT INTO minion_inbox (job_id, sender, payload) \
+         SELECT $1, 'minions', $2 \
+         WHERE EXISTS (SELECT 1 FROM minion_jobs \
+             WHERE id = $1 AND status NOT IN \
+                ('completed','failed','dead','cancelled'))",
+    )
+    .bind(parent_id)
+    .bind(payload)
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| Error::engine(format!("emit_child_done INSERT: {e}")))?;
+    Ok(())
+}
+
+/// Flip a parent out of `waiting-children` back to `waiting` once none of its
+/// children remain non-terminal. No-op unless the parent is waiting-children
+/// and all its kids are terminal.
+async fn pg_resolve_parent(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    parent_id: i64,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE minion_jobs SET status = 'waiting', updated_at = now() \
+         WHERE id = $1 AND status = 'waiting-children' \
+           AND NOT EXISTS (SELECT 1 FROM minion_jobs child \
+               WHERE child.parent_job_id = $1 AND child.status NOT IN \
+                  ('completed','failed','dead','cancelled'))",
+    )
+    .bind(parent_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| Error::engine(format!("resolve_parent UPDATE: {e}")))?;
+    Ok(())
+}
+
+/// Map a `minion_inbox` PgRow to an [`InboxMessage`]. Expects columns:
+/// id, job_id, sender, payload, sent_at (::text), read_at (::text).
+fn pg_row_to_inbox(row: &sqlx::postgres::PgRow) -> Result<crate::minions::types::InboxMessage> {
+    Ok(crate::minions::types::InboxMessage {
+        id: row
+            .try_get("id")
+            .map_err(|e| Error::engine(format!("inbox id decode: {e}")))?,
+        job_id: row
+            .try_get("job_id")
+            .map_err(|e| Error::engine(format!("inbox job_id decode: {e}")))?,
+        sender: row
+            .try_get("sender")
+            .map_err(|e| Error::engine(format!("inbox sender decode: {e}")))?,
+        payload: row
+            .try_get("payload")
+            .map_err(|e| Error::engine(format!("inbox payload decode: {e}")))?,
+        sent_at: row
+            .try_get("sent_at")
+            .map_err(|e| Error::engine(format!("inbox sent_at decode: {e}")))?,
+        read_at: row
+            .try_get("read_at")
+            .map_err(|e| Error::engine(format!("inbox read_at decode: {e}")))?,
+    })
+}
 
 /// Map a `minion_jobs` PgRow to a [`MinionJob`]. Column names must match the
 /// aliases in [`MINION_JOB_SELECT`]. TIMESTAMPTZ record columns arrive as
