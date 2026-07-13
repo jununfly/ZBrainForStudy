@@ -4540,6 +4540,7 @@ impl BrainEngine for LibsqlEngine {
         }
 
         // storage_uri is always NULL for this port (inline content only).
+        // External-storage path registered in docs/plans/KNOWN-GAPS.md (G27).
         conn.execute(
             "INSERT INTO minion_attachments \
              (job_id, filename, content_type, content, size_bytes, sha256) \

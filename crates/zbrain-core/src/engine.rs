@@ -4986,6 +4986,7 @@ impl BrainEngine for InMemoryEngine {
             filename: att.filename.clone(),
             content_type: att.content_type.clone(),
             // Faithful to the TS port: inline content only, storage_uri unused.
+            // External-storage path registered in docs/plans/KNOWN-GAPS.md (G27).
             storage_uri: None,
             size_bytes: att.size_bytes,
             sha256: att.sha256.clone(),
