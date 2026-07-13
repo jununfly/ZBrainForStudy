@@ -26,9 +26,19 @@
 //! - `calculateBackoff` — `src/core/minions/backoff.ts`.
 
 pub mod backoff;
+pub mod child_supervisor;
+pub mod exit_classification;
 pub mod quiet_hours;
 pub mod rss;
+pub mod spawn_helpers;
+pub mod supervisor;
 pub mod worker;
 
 pub use backoff::calculate_backoff;
+pub use child_supervisor::{
+    calculate_supervisor_backoff, BackoffReason, ChildSupervisorEvent, ChildSupervisorOpts,
+    ChildWorkerSupervisor,
+};
+pub use exit_classification::{classify_exit, ExitClass};
+pub use spawn_helpers::{build_spawn_args, detect_tini, SpawnInvocation};
 pub use worker::{unrecoverable, MinionWorker, ProcessOutcome, UnhealthyReason, UNRECOVERABLE_KIND};

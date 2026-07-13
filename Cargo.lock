@@ -4992,6 +4992,7 @@ name = "zbrain-worker"
 version = "0.0.1"
 dependencies = [
  "async-trait",
+ "libc",
  "rand 0.8.6",
  "serde_json",
  "thiserror 1.0.69",

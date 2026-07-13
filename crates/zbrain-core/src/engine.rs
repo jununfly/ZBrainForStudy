@@ -2057,6 +2057,21 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
             "get_stats not yet implemented for this engine",
         ))
     }
+
+    /// Supervisor-level health probe on the minion jobs table. Returns live
+    /// counts of stalled (expired-lease) and waiting jobs, plus the most recent
+    /// completion timestamp. Supervisor uses this to detect stalled queues and
+    /// connection degradation. PG-only — other backends return `Unsupported`.
+    /// Mirrors TS `MinionSupervisor.healthCheck()` (`supervisor.ts`).
+    async fn health_check(
+        &self,
+    ) -> crate::Result<crate::minions::types::SupervisorHealth> {
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "health_check not yet implemented for this engine",
+        ))
+    }
 }
 
 // ─── InMemoryEngine ──────────────────────────────────────────────────────────

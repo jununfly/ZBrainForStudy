@@ -3671,6 +3671,49 @@ impl BrainEngine for PostgresEngine {
         })
     }
 
+    async fn health_check(
+        &self,
+    ) -> Result<crate::minions::types::SupervisorHealth> {
+        use crate::minions::types::SupervisorHealth;
+
+        let pool = self.pool()?;
+
+        // stalled: active jobs with expired lease (lock_until < now).
+        let stalled_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM minion_jobs \
+             WHERE status = 'active' AND lock_until IS NOT NULL AND lock_until < now()",
+        )
+        .fetch_one(pool)
+        .await
+        .map_err(|e| Error::engine(format!("health_check stalled: {e}")))?;
+
+        // waiting: jobs in waiting status (same as queue_health.waiting).
+        let waiting_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM minion_jobs WHERE status = 'waiting'",
+        )
+        .fetch_one(pool)
+        .await
+        .map_err(|e| Error::engine(format!("health_check waiting: {e}")))?;
+
+        // last_completed_at: finished_at of most recently completed job.
+        // TIMESTAMPTZ cast to RFC-3339 text.
+        let last_completed_at: Option<String> = sqlx::query_scalar(
+            "SELECT to_char(finished_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') \
+             FROM minion_jobs \
+             WHERE status = 'completed' AND finished_at IS NOT NULL \
+             ORDER BY finished_at DESC LIMIT 1",
+        )
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::engine(format!("health_check last_completed: {e}")))?;
+
+        Ok(SupervisorHealth {
+            stalled_count,
+            waiting_count,
+            last_completed_at,
+        })
+    }
+
 
     //
     // Each sweep is a single `UPDATE ... RETURNING` against the TIMESTAMPTZ

@@ -545,3 +545,22 @@ pub struct QueueHealth {
     pub stalled: i64,
 }
 
+// ============================================================
+// Supervisor health check (roadmap 1-2-5)
+// ============================================================
+
+/// Result of a supervisor-level health probe on the minion jobs table.
+/// Used by `MinionSupervisor` to detect stalled jobs, growing queues, and
+/// lack of recent completions. PG-only (other backends return `Unsupported`).
+/// Mirrors the TS `healthCheck` query in `supervisor.ts`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SupervisorHealth {
+    /// Number of active jobs with expired leases (`lock_until < now`).
+    pub stalled_count: i64,
+    /// Number of jobs currently in `waiting` status.
+    pub waiting_count: i64,
+    /// `finished_at` of the most recently completed job, or `None` if no
+    /// completed jobs exist. RFC-3339 / ISO-8601.
+    pub last_completed_at: Option<String>,
+}
+

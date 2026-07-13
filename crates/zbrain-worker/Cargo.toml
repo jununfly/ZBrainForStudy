@@ -21,9 +21,14 @@ tracing = { workspace = true }
 # `#[tokio::test]` integration tests. Unlike zbrain-core (deliberately no
 # `rt-*`), the worker crate IS the runtime owner — it's where `.cancelled()
 # .await` and the poll loop live — so pulling rt-multi-thread here is correct.
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["time", "process", "signal"] }
 # CancellationToken for building MinionJobContext (per-job `signal` + process
 # `shutdown`). default-features = false keeps it to the runtime-agnostic core.
 tokio-util = { version = "0.7", default-features = false }
 # Retry backoff jitter. Mirrors TS `Math.random()` in calculateBackoff.
 rand = "0.8"
+
+# Supervisor (1-2-5): Unix signal handling and PID-lock stale-PID detection.
+# libc is the minimal dep for kill(pid, 0) — nix would be heavier.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

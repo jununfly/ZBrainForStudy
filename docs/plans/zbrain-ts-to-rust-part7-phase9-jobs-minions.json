@@ -50,7 +50,7 @@
     "1-2": {
       "id": "1-2",
       "label": "MinionWorker + supervisor (worker.ts/supervisor.ts/child-worker-supervisor.ts, 调 gateway.toolLoop 干活)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [
@@ -412,17 +412,58 @@
     "1-2-5": {
       "id": "1-2-5",
       "label": "supervisor+child-spawn: PID 锁+spawn 'zbrain jobs work' 子进程+退避 respawn+DB 健康检查(PG-only)+ZBRAIN_SUPERVISED 联动 (依赖 1-2-3, 可与 1-2-4 并行)",
-      "status": "pending",
+      "status": "completed",
       "mode": "execute",
       "parent": "1-2",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "Supervisor crate 落点？",
+          "answer": "A: 全放 zbrain-worker，supervisor.rs 顶层 + child_supervisor.rs 可复用核",
+          "note": "与 1-2 Q2 一致：worker+supervisor 同住。ChildWorkerSupervisor 被 supervisor.ts 和 autopilot.ts 两处复用，单 crate 内部分模块即可"
+        },
+        {
+          "q": "PID 锁实现策略？",
+          "answer": "A: nix crate — kill(pid,None) 陈腐检测 + Signal 一站式，Unix 主线；Windows 降级 create_new 失败即锁占用",
+          "note": "nix 已是成熟生态，zbrain deploy target Linux server。Windows PID 文件不测活性（无 kill(pid,0) 等价语义）是可接受降级"
+        },
+        {
+          "q": "DB 健康检查如何实现？",
+          "answer": "A: BrainEngine trait 加 health_check()->Result<SupervisorHealth>，默认 Unsupported，PG-only 实现",
+          "note": "SupervisorHealth{stalled_count, waiting_count, last_completed_at}。不泄 SQL，保持 trait 抽象整洁。连续失败>=3 触发 engine.reconnect()(若 trait 有)"
+        },
+        {
+          "q": "审计/事件发射模式？",
+          "answer": "A: mpsc::Sender<SupervisorEvent>，与 1-2-4 UnhealthyReason 一致",
+          "note": "SupervisorEvent enum 10 variants。CLI rx 端写 JSONL 审计 + stderr 日志。测试直 mock channel。与 1-2-4 模式统一"
+        },
+        {
+          "q": "tini 检测策略？",
+          "answer": "A: 手写 PATH 遍历 + fs::metadata 查文件存在，零依赖",
+          "note": "detect_tini() 纯函数一次调用，缓存 Option<PathBuf>。无 shell 依赖，三行代码，不值得引 crate"
+        },
+        {
+          "q": "MinionSupervisor engine 类型？",
+          "answer": "A: Arc<dyn BrainEngine> 泛型 trait object，与 MinionWorker 一致",
+          "note": "非 PG 时 health_check 返回 Unsupported → supervisor log warn 跳过健康检查不崩溃。未来加后端实现时不需改 supervisor 签名。保持 zbrain-worker 后端中立"
+        },
+        {
+          "q": "子进程 spawn 测试策略？",
+          "answer": "A: 纯函数单测 + 集成测试用系统 binary(sleep/sh -c)模拟退出码",
+          "note": "classify_exit/backoff/detect_tini 纯函数单测。ChildWorkerSupervisor 集成测试用 sleep 0 / sh -c 'exit 1' 模拟场景。MinionSupervisor 用 InMemory mock engine。完整端到端是 1-7 职责"
+        },
+        {
+          "q": "首版是否包含 D1(稳定运行重置) + D2(干净重启预算)？",
+          "answer": "A: 首版全包含，纯函数/滑动窗口无额外依赖",
+          "note": "D1: code≠0 但运行>5min → crashCount=1。D2: 1min 内>10 次 code=0 → 1s 冷却。一个 TDD slice 覆盖完"
+        }
+      ],
+      "notes": "grill 收敛 8 决策全 A。TDD 7 文件：\n\nzbrain-core:\n- minions/types.rs: +SupervisorHealth struct\n- engine.rs: +health_check() trait(默认 Unsupported)\n- postgres.rs: +health_check() PG 实现(3 查询: stalled/waiting/last_completed)\n\nzbrain-worker 新增:\n- exit_classification.rs: classify_exit() 纯函数(4 tests)\n- spawn_helpers.rs: detect_tini() + build_spawn_args()(5 tests)\n- child_supervisor.rs: ChildWorkerSupervisor(6 tests): spawn/respawn/backoff/D1(稳定运行重置)/D2(干净重启预算)/clean exit budget cooldown\n- supervisor.rs: MinionSupervisor(4 tests): PID lock(File::create_new+kill(pid,0)陈腐检测)+信号处理+SIGTERM/SIGINT+DB健康检查 loop+ChildWorkerSupervisor 委托+ZBRAIN_SUPERVISED env + Drop 清理\n- Cargo.toml: +tokio{process,signal}+libc(unix)\n\n63 tests 全绿(40 lib + 9 consume + 6 lifecycle + 8 selfmon)。完整端到端(spawn 真实 zbrain binary)是 1-7 职责"
     }
   },
   "metadata": {
     "created": "2026-07-09 21:33:13",
-    "updated": "2026-07-13 19:26:44",
+    "updated": "2026-07-13 19:51:38",
     "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART7_PHASE9_JOBS_MINIONS.md"
   }
 }
