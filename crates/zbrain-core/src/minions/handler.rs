@@ -118,6 +118,16 @@ impl MinionJobContext {
         }
     }
 
+    /// Access the engine backing this context. Read-only; handlers that need to
+    /// call engine methods directly (e.g. building brain tools for subagent
+    /// loops) can obtain the handle here. Lease-fenced capabilities
+    /// (progress/tokens/log/is_active/read_inbox) should go through the typed
+    /// methods below.
+    #[must_use]
+    pub fn engine(&self) -> &Arc<dyn BrainEngine> {
+        &self.engine
+    }
+
     /// Update structured progress on the job. Delegates to
     /// [`BrainEngine::update_progress`], token-fenced by the lease. Mirrors the
     /// TS `context.updateProgress` (`worker.ts` L697-699).

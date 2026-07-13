@@ -33,6 +33,7 @@
 
 pub mod attachments;
 pub mod handler;
+pub mod handlers;
 pub mod queue;
 pub mod tools;
 pub mod types;

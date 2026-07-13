@@ -677,7 +677,7 @@
     "1-4-4": {
       "id": "1-4-4",
       "label": "Handler trait + MinionHandlerRegistry + Subagent handler v1",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-4",
       "children": [],
@@ -697,7 +697,7 @@
   },
   "metadata": {
     "created": "2026-07-09 21:33:13",
-    "updated": "2026-07-13 22:10:39",
+    "updated": "2026-07-13 22:15:40",
     "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART7_PHASE9_JOBS_MINIONS.md"
   }
 }
