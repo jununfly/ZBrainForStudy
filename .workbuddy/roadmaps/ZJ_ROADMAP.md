@@ -115,3 +115,32 @@
   A: A: 新建 crates/zbrain-core/src/ai/model_config.rs(ModelTier/TIER_DEFAULTS/DEFAULT_ALIASES/ConfigLookup trait/resolve_model/resolve_alias/enforce_subagent_capable),与 capabilities.rs/resolver.rs 并列,mod.rs re-export。下划线命名对齐 budget.rs/tool_loop.rs。
   > 与 TS model-config.ts+capabilities.ts 一一对应;resolver.rs 头部已把此层指向 sliced-out 到 1-2-1,新建兑现预告。塞回 resolver.rs 违背其'纯静态零engine耦合'边界声明。Phase8 收尾 ai/ 目录对称:resolver(纯静态校验)/capabilities(能力分类)/model_config(tier路由)/chat(provider+工厂)/tool_loop/expand。
 <!-- ⚠️ ROADMAP_SECTION_END -->
+
+<!-- ROADMAP_SECTION_START -->
+## ZJ Roadmap
+
+> 数据文件: `zbrain-ts-to-rust-part7-phase9-jobs-minions.json` | 最后更新: 2026-07-13 14:49:05
+
+[!][X+] 1. ZBrain TS→Rust Part7: Phase 9 — Jobs / Agents / Minions / Autopilot / Remote
+├── [ ][X+] 1-1. MinionQueue + job 持久化 (queue.ts, job 生命周期/优先级/状态; jobs CLI 是其 thin wrapper)
+│   ├── [x] 1-1-1. A+B: schema migration + Job 类型/status 枚举 + add/getJob/getJobs + claim/completeJob/failJob/renewLock/retryJob (最小可用队列, SKIP LOCKED 双后端岔口在此)
+│   ├── [x][Y+] 1-1-2. C: 后台 sweep (promoteDelayed/handleStalled/handleTimeouts/handleWallClockTimeouts, 延迟提升/停滞恢复/超时→dead)
+│   └── [~][X+] 1-1-3. D: 高级 (父子依赖 resolveParent/cancelJob 递归CTE + inbox sendMessage/readInbox + 附件CRUD + pause/resume/prune/getStats)
+├── [ ][X+] 1-2. MinionWorker + supervisor (worker.ts/supervisor.ts/child-worker-supervisor.ts, 调 gateway.toolLoop 干活)
+├── [ ][X+] 1-3. Budget + rate leases (budget-tracker/budget-*/rate-leases.ts, 成本上限与限流)
+├── [ ][X+] 1-4. Minion handlers + tools (handlers/ + tools/, 具体任务类型: subagent/embed-backfill 等)
+├── [ ][X+] 1-5. Autopilot + fanout (autopilot.ts/autopilot-fanout.ts 命令 + core)
+├── [ ][X+] 1-6. Remote execution (remote.ts 命令 + 远程 fanout, 保 PII/trust 边界)
+├── [ ][X+] 1-7. jobs/agent CLI 命令层 (jobs/jobs-watch/agent/agent-logs, thin wrapper over queue/worker)
+└── [ ][X+] 1-8. G7 收口: webhook 接入 MinionQueue (替换 zbrain-web 直写 put_page + placeholder job_id)
+
+### 当前施工：1-1-3. D: 高级 (父子依赖 resolveParent/cancelJob 递归CTE + inbox sendMessage/readInbox + 附件CRUD + pause/resume/prune/getStats)
+
+**决策：**
+- Q: D 层范围大, 切片粒度? → 拆 3 子节点: 1-1-3-1 父子依赖链+inbox(建 minion_inbox 表, 回改 add/complete_job/fail_job 父 hook, cancel_job 递归 CTE, resolve_parent, sweep 通知, send_message/read_inbox/read_child_completions) | 1-1-3-2 附件 CRUD(独立表 minion_attachments) | 1-1-3-3 运维(pause/resume/prune/get_stats) (取证结论: 父子依赖是横跨 5 处的内聚原子链(add-parent/complete hook/fail hook/cancel/sweep 通知), 全共用 child_done+resolve_parent 语义且都依赖 minion_inbox 表, 拆开会让队列处于'父子协调半成品'不一致态, 不可再拆. 附件是物理独立表与 jobs/父子零耦合, 运维大多不依赖新表, 天然可切分. 拒整体一刀(diff 巨大难 review), 拒 inbox 再拆细(send/read 与父子 hook 写同表同批 child_done, 捆一起更内聚). 关键发现: 1-1-1 迁 complete_job/fail_job 时砍掉了整个父 hook(token rollup+child_done inbox+resolve_parent+on_child_fail 三策略), 1-1-2 砍掉 sweep 父通知 → 1-1-3-1 不是纯新增, 要回改已落地的 add/complete_job/fail_job 三后端且套事务(现有是单条 UPDATE RETURNING 无事务, 加 hook 后多语句必须原子))
+
+**当前子树：**
+├── [x] 1-1-3-1. 父子依赖链 + inbox: 建 minion_inbox 表 + 回改 add/complete_job/fail_job 父 hook(套事务) + cancel_job 递归 CTE + resolve_parent + sweep dead 通知 + send_message/read_inbox/read_child_completions
+├── [x] 1-1-3-2. 附件 CRUD: 建 minion_attachments 表(独立表, BYTEA/storage_uri 二选一 CHECK + UNIQUE(job_id,filename)) + add/list/get/delete attachment
+└── [ ] 1-1-3-3. 运维: pause_job/resume_job/prune(DELETE RETURNING count)/get_stats(by_status/by_type/queue_health 三段纯读)
+<!-- ROADMAP_SECTION_END -->

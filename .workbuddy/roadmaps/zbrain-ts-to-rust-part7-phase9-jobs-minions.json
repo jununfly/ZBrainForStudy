@@ -258,12 +258,33 @@
     "1-1-3-2": {
       "id": "1-1-3-2",
       "label": "附件 CRUD: 建 minion_attachments 表(独立表, BYTEA/storage_uri 二选一 CHECK + UNIQUE(job_id,filename)) + add/list/get/delete attachment",
-      "status": "pending",
+      "status": "completed",
       "mode": "build",
       "parent": "1-1-3",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "validation 逻辑放哪: 纯函数+facade编排 vs 每后端各自 validate?",
+          "answer": "A: 纯函数 minions/attachments.rs::validate_attachment -> Result<NormalizedAttachment,String>; facade MinionQueue::add_attachment 编排(list existing filenames -> validate -> engine.insert_attachment 收已解码bytes). 三后端只写'查job存在+INSERT bytes'纯SQL, validation 零重复.",
+          "note": "忠实 TS 解耦意图(attachments.ts 拆出正为无DB单测); filename/base64/sha256 是后端无关纯CPU逻辑, 重复3次是坏味道; UNIQUE(job_id,filename)是权威兜底, 内存去重只是友好早退."
+        },
+        {
+          "q": "insert_attachment trait 签名 + bytes 所有权 + job不存在错误?",
+          "answer": "A: insert_attachment(&self, job_id: i64, att: &NormalizedAttachment) -> Result<Attachment> 收结构体引用. NormalizedAttachment.bytes = Vec<u8> (base64 decode 本就新分配buffer, 所有权归它, facade 借用给trait). job 存在性: 后端显式 SELECT id FROM minion_jobs 早退, 不存在返回 StructuredError NotFound 'job N not found'.",
+          "note": "结构体引用避免6参数错位; Vec<u8> 所有权自然; 显式SELECT忠实TS 'job N not found', 错误干净不暴露FK违约原始DB错误, 附件写入路径多一次SELECT无所谓."
+        },
+        {
+          "q": "get_attachment 返回类型 + InMemory 是否真实存bytes + storage_uri 分支?",
+          "answer": "get_attachment -> Result<Option<(Attachment, Vec<u8>)>> 元组(meta,bytes), None=notfound. 三后端: PG BYTEA->Vec<u8>, libsql BLOB->Value::Blob(Vec<u8>), InMemory 真实存bytes(Mutex<Vec<InternalAttachment>>含bytes:Vec<u8>). storage_uri: insert 只写 content bytes, storage_uri 恒NULL(忠实TS只走inline路径), 外部存储缺口登记 KNOWN-GAPS.",
+          "note": "元组两字段调用点直接解构无需新struct; InMemory不存bytes=没测到附件核心(二进制round-trip+sha256校验必须能在InMemory契约测), 忠实三后端同契约; TS addAttachment 从不写storage_uri, getAttachment content=null 返回空buffer, 外部存储是schema预留未实现."
+        },
+        {
+          "q": "SQLite 方言映射 + Attachment.created_at 类型?",
+          "answer": "方言映射按0014/0015惯例: SERIAL->INTEGER PK AUTOINCREMENT, BYTEA->BLOB, TIMESTAMPTZ DEFAULT now()->TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE/CHECK 照搬, SET STORAGE EXTERNAL 省略(PG TOAST调优SQLite无对应), idx_minion_attachments_job 两边建. Attachment.created_at = String(RFC-3339 record列不参与算术, 同InboxMessage.sent_at范式, PG to_rfc3339/SQLite读TEXT).",
+          "note": "无新岔口沿用既定方言惯例; created_at 是record列不算术, Rust一贯String即使TS是Date."
+        }
+      ],
+      "notes": "DONE 2026-07-13: 0016 migration 双方言(PG BYTEA + SQLite BLOB) + version16 三registry注册; 类型 AttachmentInput/NormalizedAttachment/Attachment(created_at String); minions/attachments.rs::validate_attachment 纯函数(10单测); facade add/list/get/delete_attachment 编排; 三后端 trait 实现. 验证: minion_queue 70/70 + attachments 10/10 全绿(含pg-embed). 洞察: 严格base64 RE 下'decode成空'分支对非空输入不可达(防御性backstop保留). storage_uri 恒NULL(inline only), 外部存储缺口代码注释reserved(待登记KNOWN-GAPS)."
     },
     "1-1-3-3": {
       "id": "1-1-3-3",
@@ -278,7 +299,7 @@
   },
   "metadata": {
     "created": "2026-07-09 21:33:13",
-    "updated": "2026-07-10 22:35:00",
+    "updated": "2026-07-13 14:49:05",
     "md_file": ".workbuddy/roadmaps/ZJ_ROADMAP.md"
   },
   "md_file": "C:/workspace/github/jununfly/zbrain/.workbuddy/roadmaps/ZJ_ROADMAP.md"

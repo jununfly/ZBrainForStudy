@@ -8,12 +8,16 @@
 
 mod support;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use tempfile::NamedTempFile;
 use zbrain_core::engine::{BrainEngine, EngineConfig};
 use zbrain_core::libsql::LibsqlEngine;
 use zbrain_core::minions::types::{
-    ChildOutcome, FailOutcome, JobFilters, MinionJobInput, MinionJobStatus, TokenUpdate,
+    AttachmentInput, ChildOutcome, FailOutcome, JobFilters, MinionJobInput, MinionJobStatus,
+    TokenUpdate,
 };
+use zbrain_core::minions::MinionQueue;
 use zbrain_core::InMemoryEngine;
 
 // ---------------------------------------------------------------------------
@@ -735,6 +739,147 @@ async fn contract_update_tokens_fenced(engine: &dyn BrainEngine) {
     assert_eq!(after.tokens_cache_read, 1);
 }
 
+// --- Attachments (1-1-3-2) ---------------------------------------------------
+
+/// Build an [`AttachmentInput`] with base64-encoded `content` bytes.
+fn attachment(filename: &str, content_type: &str, content: &[u8]) -> AttachmentInput {
+    AttachmentInput {
+        filename: filename.to_string(),
+        content_type: content_type.to_string(),
+        content_base64: BASE64.encode(content),
+    }
+}
+
+/// add → list → get bytes round-trip → delete. Exercises the full facade
+/// orchestration (validation + backend INSERT/SELECT/DELETE) and asserts the
+/// bytes + sha256 survive the round-trip intact.
+async fn contract_attachment_crud_round_trip(engine: &dyn BrainEngine) {
+    let jid = engine.enqueue_job(&job("host")).await.unwrap().id;
+    let q = MinionQueue::new(engine);
+
+    // Empty list to start.
+    assert!(q.list_attachments(jid).await.unwrap().is_empty());
+
+    // Add two attachments.
+    let payload_a = b"hello world";
+    let meta_a = q
+        .add_attachment(jid, &attachment("a.txt", "text/plain", payload_a))
+        .await
+        .unwrap();
+    assert_eq!(meta_a.job_id, jid);
+    assert_eq!(meta_a.filename, "a.txt");
+    assert_eq!(meta_a.content_type, "text/plain");
+    assert_eq!(meta_a.size_bytes, payload_a.len() as i64);
+    assert_eq!(
+        meta_a.sha256,
+        "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+    );
+    // storage_uri is always None for this port (inline content only).
+    assert_eq!(meta_a.storage_uri, None);
+
+    let payload_b = &[0u8, 159, 146, 150, 255, 1, 2, 3]; // arbitrary binary
+    q.add_attachment(jid, &attachment("b.bin", "application/octet-stream", payload_b))
+        .await
+        .unwrap();
+
+    // List returns both, metadata only, ordered created_at ASC, id ASC.
+    let listed = q.list_attachments(jid).await.unwrap();
+    assert_eq!(listed.len(), 2);
+    assert_eq!(listed[0].filename, "a.txt");
+    assert_eq!(listed[1].filename, "b.bin");
+
+    // Get bytes back exactly for both.
+    let (got_a_meta, got_a_bytes) = q.get_attachment(jid, "a.txt").await.unwrap().unwrap();
+    assert_eq!(got_a_meta.id, meta_a.id);
+    assert_eq!(got_a_bytes, payload_a);
+    let (_, got_b_bytes) = q.get_attachment(jid, "b.bin").await.unwrap().unwrap();
+    assert_eq!(got_b_bytes, payload_b);
+
+    // Missing filename → None.
+    assert!(q.get_attachment(jid, "nope.txt").await.unwrap().is_none());
+
+    // Delete a.txt → true, then gone; deleting again → false.
+    assert!(q.delete_attachment(jid, "a.txt").await.unwrap());
+    assert!(q.get_attachment(jid, "a.txt").await.unwrap().is_none());
+    assert!(!q.delete_attachment(jid, "a.txt").await.unwrap());
+    let remaining = q.list_attachments(jid).await.unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].filename, "b.bin");
+}
+
+/// A duplicate (job_id, filename) is rejected — the facade's existing-filename
+/// early-out fires before the round-trip.
+async fn contract_attachment_duplicate_rejected(engine: &dyn BrainEngine) {
+    let jid = engine.enqueue_job(&job("host")).await.unwrap().id;
+    let q = MinionQueue::new(engine);
+
+    q.add_attachment(jid, &attachment("dup.txt", "text/plain", b"one"))
+        .await
+        .unwrap();
+    let err = q
+        .add_attachment(jid, &attachment("dup.txt", "text/plain", b"two"))
+        .await
+        .unwrap_err();
+    assert!(
+        err.message.contains("already exists"),
+        "expected duplicate error, got: {}",
+        err.message
+    );
+
+    // Same filename under a DIFFERENT job is fine (dedupe is per-job).
+    let jid2 = engine.enqueue_job(&job("host2")).await.unwrap().id;
+    q.add_attachment(jid2, &attachment("dup.txt", "text/plain", b"three"))
+        .await
+        .unwrap();
+}
+
+/// Attaching to a nonexistent job → NotFound `job N not found`.
+async fn contract_attachment_job_not_found(engine: &dyn BrainEngine) {
+    let q = MinionQueue::new(engine);
+    let err = q
+        .add_attachment(999_999, &attachment("x.txt", "text/plain", b"x"))
+        .await
+        .unwrap_err();
+    assert_eq!(err.class, "NotFound");
+    assert!(
+        err.message.contains("job 999999 not found"),
+        "got: {}",
+        err.message
+    );
+}
+
+/// Validation failures surface as a `Validation` error before any INSERT.
+async fn contract_attachment_validation_rejected(engine: &dyn BrainEngine) {
+    let jid = engine.enqueue_job(&job("host")).await.unwrap().id;
+
+    // Oversize: cap the queue at 4 bytes, feed 5.
+    let q_small = MinionQueue::new(engine).with_max_attachment_bytes(4);
+    let err = q_small
+        .add_attachment(jid, &attachment("big.bin", "application/octet-stream", b"12345"))
+        .await
+        .unwrap_err();
+    assert!(
+        err.message.contains("exceeds maxBytes"),
+        "got: {}",
+        err.message
+    );
+
+    // Path-traversal filename rejected.
+    let q = MinionQueue::new(engine);
+    let err = q
+        .add_attachment(jid, &attachment("../evil", "text/plain", b"x"))
+        .await
+        .unwrap_err();
+    assert!(
+        err.message.contains("invalid characters"),
+        "got: {}",
+        err.message
+    );
+
+    // Nothing was persisted.
+    assert!(q.list_attachments(jid).await.unwrap().is_empty());
+}
+
 // ---------------------------------------------------------------------------
 // InMemory
 // ---------------------------------------------------------------------------
@@ -816,6 +961,22 @@ async fn inmemory_inbox_send_and_read() {
 #[tokio::test]
 async fn inmemory_update_tokens_fenced() {
     contract_update_tokens_fenced(&InMemoryEngine::new()).await;
+}
+#[tokio::test]
+async fn inmemory_attachment_crud_round_trip() {
+    contract_attachment_crud_round_trip(&InMemoryEngine::new()).await;
+}
+#[tokio::test]
+async fn inmemory_attachment_duplicate_rejected() {
+    contract_attachment_duplicate_rejected(&InMemoryEngine::new()).await;
+}
+#[tokio::test]
+async fn inmemory_attachment_job_not_found() {
+    contract_attachment_job_not_found(&InMemoryEngine::new()).await;
+}
+#[tokio::test]
+async fn inmemory_attachment_validation_rejected() {
+    contract_attachment_validation_rejected(&InMemoryEngine::new()).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -936,6 +1097,30 @@ async fn libsql_inbox_send_and_read() {
 async fn libsql_update_tokens_fenced() {
     let (engine, _tmp) = init_clean_libsql().await;
     contract_update_tokens_fenced(&engine).await;
+    engine.disconnect().await.expect("disconnect");
+}
+#[tokio::test]
+async fn libsql_attachment_crud_round_trip() {
+    let (engine, _tmp) = init_clean_libsql().await;
+    contract_attachment_crud_round_trip(&engine).await;
+    engine.disconnect().await.expect("disconnect");
+}
+#[tokio::test]
+async fn libsql_attachment_duplicate_rejected() {
+    let (engine, _tmp) = init_clean_libsql().await;
+    contract_attachment_duplicate_rejected(&engine).await;
+    engine.disconnect().await.expect("disconnect");
+}
+#[tokio::test]
+async fn libsql_attachment_job_not_found() {
+    let (engine, _tmp) = init_clean_libsql().await;
+    contract_attachment_job_not_found(&engine).await;
+    engine.disconnect().await.expect("disconnect");
+}
+#[tokio::test]
+async fn libsql_attachment_validation_rejected() {
+    let (engine, _tmp) = init_clean_libsql().await;
+    contract_attachment_validation_rejected(&engine).await;
     engine.disconnect().await.expect("disconnect");
 }
 
@@ -1064,4 +1249,24 @@ async fn postgres_inbox_send_and_read() {
 async fn postgres_update_tokens_fenced() {
     let fix = support::pg_fixture::PgFixture::start().await;
     contract_update_tokens_fenced(&fix.engine).await;
+}
+#[tokio::test]
+async fn postgres_attachment_crud_round_trip() {
+    let fix = support::pg_fixture::PgFixture::start().await;
+    contract_attachment_crud_round_trip(&fix.engine).await;
+}
+#[tokio::test]
+async fn postgres_attachment_duplicate_rejected() {
+    let fix = support::pg_fixture::PgFixture::start().await;
+    contract_attachment_duplicate_rejected(&fix.engine).await;
+}
+#[tokio::test]
+async fn postgres_attachment_job_not_found() {
+    let fix = support::pg_fixture::PgFixture::start().await;
+    contract_attachment_job_not_found(&fix.engine).await;
+}
+#[tokio::test]
+async fn postgres_attachment_validation_rejected() {
+    let fix = support::pg_fixture::PgFixture::start().await;
+    contract_attachment_validation_rejected(&fix.engine).await;
 }

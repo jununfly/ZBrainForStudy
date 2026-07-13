@@ -218,6 +218,7 @@ const MIGRATION_0012: &str = include_str!("../migrations/0012_takes_full_columns
 const MIGRATION_0013: &str = include_str!("../migrations/0013_facts.sql");
 const MIGRATION_0014: &str = include_str!("../migrations/0014_minion_jobs.sql");
 const MIGRATION_0015: &str = include_str!("../migrations/0015_minion_inbox.sql");
+const MIGRATION_0016: &str = include_str!("../migrations/0016_minion_attachments.sql");
 
 /// Global migration registry for Postgres backend. Built once at runtime first use.
 pub static POSTGRES_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
@@ -298,6 +299,11 @@ pub static POSTGRES_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 15,
         name: "minion_inbox",
         sql: MIGRATION_0015,
+    }));
+    registry.add(Box::new(PostgresMigration {
+        version: 16,
+        name: "minion_attachments",
+        sql: MIGRATION_0016,
     }));
 
     registry
@@ -3861,6 +3867,135 @@ impl BrainEngine for PostgresEngine {
             .map_err(|e| Error::engine(format!("remove_child_dependency UPDATE: {e}")))?;
         Ok(())
     }
+
+    // ─── Minion attachments (1-1-3-2) ────────────────────────────────────────
+
+    async fn insert_attachment(
+        &self,
+        job_id: i64,
+        att: &crate::minions::types::NormalizedAttachment,
+    ) -> Result<crate::minions::types::Attachment> {
+        let pool = self.pool()?;
+
+        // Verify the parent job exists (explicit clearer error than the FK).
+        if self.get_job(job_id).await?.is_none() {
+            return Err(Error::new(
+                "NotFound",
+                "not_found",
+                format!("job {job_id} not found"),
+            ));
+        }
+
+        // storage_uri left to its NULL default (inline content only). size_bytes
+        // and id are INT4/SERIAL → cast ::bigint so try_get::<i64> matches;
+        // created_at TIMESTAMPTZ → ::text for the RFC-3339 record string.
+        let row = sqlx::query(
+            "INSERT INTO minion_attachments \
+             (job_id, filename, content_type, content, size_bytes, sha256) \
+             VALUES ($1, $2, $3, $4, $5, $6) \
+             RETURNING id::bigint AS id, created_at::text AS created_at",
+        )
+        .bind(job_id)
+        .bind(&att.filename)
+        .bind(&att.content_type)
+        .bind(&att.bytes)
+        .bind(att.size_bytes)
+        .bind(&att.sha256)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| Error::engine(format!("insert_attachment INSERT: {e}")))?;
+
+        Ok(crate::minions::types::Attachment {
+            id: row
+                .try_get("id")
+                .map_err(|e| Error::engine(format!("insert_attachment id decode: {e}")))?,
+            job_id,
+            filename: att.filename.clone(),
+            content_type: att.content_type.clone(),
+            storage_uri: None,
+            size_bytes: att.size_bytes,
+            sha256: att.sha256.clone(),
+            created_at: row
+                .try_get("created_at")
+                .map_err(|e| Error::engine(format!("insert_attachment created_at decode: {e}")))?,
+        })
+    }
+
+    async fn list_attachment_filenames(&self, job_id: i64) -> Result<Vec<String>> {
+        let pool = self.pool()?;
+        let rows =
+            sqlx::query("SELECT filename FROM minion_attachments WHERE job_id = $1")
+                .bind(job_id)
+                .fetch_all(pool)
+                .await
+                .map_err(|e| Error::engine(format!("list_attachment_filenames: {e}")))?;
+        rows.iter()
+            .map(|row| {
+                row.try_get::<String, _>("filename")
+                    .map_err(|e| Error::engine(format!("attachment filename decode: {e}")))
+            })
+            .collect()
+    }
+
+    async fn list_attachments(
+        &self,
+        job_id: i64,
+    ) -> Result<Vec<crate::minions::types::Attachment>> {
+        let pool = self.pool()?;
+        let rows = sqlx::query(
+            "SELECT id::bigint AS id, job_id::bigint AS job_id, filename, content_type, \
+                    storage_uri, size_bytes::bigint AS size_bytes, sha256, \
+                    created_at::text AS created_at \
+             FROM minion_attachments WHERE job_id = $1 ORDER BY created_at ASC, id ASC",
+        )
+        .bind(job_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("list_attachments: {e}")))?;
+        rows.iter().map(pg_row_to_attachment).collect()
+    }
+
+    async fn get_attachment(
+        &self,
+        job_id: i64,
+        filename: &str,
+    ) -> Result<Option<(crate::minions::types::Attachment, Vec<u8>)>> {
+        let pool = self.pool()?;
+        let row = sqlx::query(
+            "SELECT id::bigint AS id, job_id::bigint AS job_id, filename, content_type, \
+                    storage_uri, size_bytes::bigint AS size_bytes, sha256, \
+                    created_at::text AS created_at, content \
+             FROM minion_attachments WHERE job_id = $1 AND filename = $2",
+        )
+        .bind(job_id)
+        .bind(filename)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_attachment: {e}")))?;
+
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let meta = pg_row_to_attachment(&row)?;
+        // content BYTEA → Vec<u8>; NULL (external-storage rows) → empty bytes.
+        let bytes: Vec<u8> = row
+            .try_get::<Option<Vec<u8>>, _>("content")
+            .map_err(|e| Error::engine(format!("attachment content decode: {e}")))?
+            .unwrap_or_default();
+        Ok(Some((meta, bytes)))
+    }
+
+    async fn delete_attachment(&self, job_id: i64, filename: &str) -> Result<bool> {
+        let pool = self.pool()?;
+        let affected =
+            sqlx::query("DELETE FROM minion_attachments WHERE job_id = $1 AND filename = $2")
+                .bind(job_id)
+                .bind(filename)
+                .execute(pool)
+                .await
+                .map_err(|e| Error::engine(format!("delete_attachment: {e}")))?;
+        Ok(affected.rows_affected() > 0)
+    }
 }
 
 // ─── postgres minion job helpers ──────────────────────────────────────────
@@ -3958,6 +4093,44 @@ fn pg_row_to_inbox(row: &sqlx::postgres::PgRow) -> Result<crate::minions::types:
         read_at: row
             .try_get("read_at")
             .map_err(|e| Error::engine(format!("inbox read_at decode: {e}")))?,
+    })
+}
+
+/// Map a `minion_attachments` PgRow to an
+/// [`Attachment`](crate::minions::types::Attachment). Column names/casts must
+/// match the SELECTs in `list_attachments`/`get_attachment`: `id`/`job_id`/
+/// `size_bytes` cast `::bigint`, `created_at` cast `::text`. An empty
+/// `storage_uri` is normalized to `None` (mirrors TS `rowToAttachment`).
+fn pg_row_to_attachment(
+    row: &sqlx::postgres::PgRow,
+) -> Result<crate::minions::types::Attachment> {
+    let storage_uri = row
+        .try_get::<Option<String>, _>("storage_uri")
+        .map_err(|e| Error::engine(format!("attachment storage_uri decode: {e}")))?
+        .filter(|s| !s.is_empty());
+    Ok(crate::minions::types::Attachment {
+        id: row
+            .try_get("id")
+            .map_err(|e| Error::engine(format!("attachment id decode: {e}")))?,
+        job_id: row
+            .try_get("job_id")
+            .map_err(|e| Error::engine(format!("attachment job_id decode: {e}")))?,
+        filename: row
+            .try_get("filename")
+            .map_err(|e| Error::engine(format!("attachment filename decode: {e}")))?,
+        content_type: row
+            .try_get("content_type")
+            .map_err(|e| Error::engine(format!("attachment content_type decode: {e}")))?,
+        storage_uri,
+        size_bytes: row
+            .try_get("size_bytes")
+            .map_err(|e| Error::engine(format!("attachment size_bytes decode: {e}")))?,
+        sha256: row
+            .try_get("sha256")
+            .map_err(|e| Error::engine(format!("attachment sha256 decode: {e}")))?,
+        created_at: row
+            .try_get("created_at")
+            .map_err(|e| Error::engine(format!("attachment created_at decode: {e}")))?,
     })
 }
 

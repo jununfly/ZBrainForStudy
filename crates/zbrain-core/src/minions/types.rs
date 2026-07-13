@@ -439,3 +439,59 @@ pub struct TokenUpdate {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_read: Option<i64>,
 }
+
+// ============================================================
+// D-layer (roadmap 1-1-3-2): per-job attachment storage
+// ============================================================
+
+/// Caller-supplied attachment payload. Mirrors the TS `AttachmentInput`
+/// interface (`src/core/minions/types.ts` L280-285). `content_base64` is
+/// base64-encoded file bytes, validated + decoded server-side by
+/// [`validate_attachment`](crate::minions::attachments::validate_attachment).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttachmentInput {
+    pub filename: String,
+    pub content_type: String,
+    /// Base64-encoded file bytes. Validated server-side.
+    pub content_base64: String,
+}
+
+/// Validated + decoded attachment, ready to persist. Produced by
+/// [`validate_attachment`](crate::minions::attachments::validate_attachment).
+/// Mirrors the TS `NormalizedAttachment` (`src/core/minions/attachments.ts`
+/// L20-26), except `bytes` is an owned `Vec<u8>` (the decoded payload) rather
+/// than a Node `Buffer`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NormalizedAttachment {
+    pub filename: String,
+    pub content_type: String,
+    pub bytes: Vec<u8>,
+    pub size_bytes: i64,
+    pub sha256: String,
+}
+
+/// A persisted `minion_attachments` row *without* inline bytes — metadata only.
+/// Mirrors the TS `Attachment` interface (`src/core/minions/types.ts` L288-297).
+/// Fetch the bytes separately with
+/// [`get_attachment`](crate::engine::BrainEngine::get_attachment).
+///
+/// `storage_uri` is always `None` for the current port: attachments only take
+/// the inline `content` channel (faithful to the TS behavior). External-storage
+/// routing is a reserved capability registered in docs/plans/KNOWN-GAPS.md.
+///
+/// ## Time representation
+/// `created_at` is `String` (RFC-3339 / ISO-8601) — a record column never used
+/// in interval arithmetic, matching [`InboxMessage::sent_at`] (PG TIMESTAMPTZ
+/// read back via `to_rfc3339()`, SQLite TEXT read directly).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attachment {
+    pub id: i64,
+    pub job_id: i64,
+    pub filename: String,
+    pub content_type: String,
+    pub storage_uri: Option<String>,
+    pub size_bytes: i64,
+    pub sha256: String,
+    pub created_at: String,
+}
+

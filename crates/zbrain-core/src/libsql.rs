@@ -123,6 +123,9 @@ const MIGRATION_0014: &str = include_str!("../migrations-sqlite/0014_minion_jobs
 /// Create `minion_inbox` table — SQLite port of the sidechannel inbox (1-1-3-1).
 const MIGRATION_0015: &str = include_str!("../migrations-sqlite/0015_minion_inbox.sql");
 
+/// Create `minion_attachments` table — SQLite port of per-job blob storage.
+const MIGRATION_0016: &str = include_str!("../migrations-sqlite/0016_minion_attachments.sql");
+
 /// Legacy string array — REMOVED in favor of MigrationRegistry.
 /// Use LIBQL_MIGRATIONS instead.
 #[deprecated(note = "Use LIBQL_MIGRATIONS instead")]
@@ -222,6 +225,11 @@ pub static LIBQL_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 15,
         name: "minion_inbox",
         sql: MIGRATION_0015,
+    }));
+    registry.add(Box::new(LibsqlMigration {
+        version: 16,
+        name: "minion_attachments",
+        sql: MIGRATION_0016,
     }));
 
     registry
@@ -4512,6 +4520,171 @@ impl BrainEngine for LibsqlEngine {
         .map_err(|e| Error::engine(format!("remove_child_dependency UPDATE: {e}")))?;
         Ok(())
     }
+
+    // ─── Minion attachments (1-1-3-2) ────────────────────────────────────────
+
+    async fn insert_attachment(
+        &self,
+        job_id: i64,
+        att: &crate::minions::types::NormalizedAttachment,
+    ) -> Result<crate::minions::types::Attachment> {
+        let conn = self.conn().await?;
+
+        // Verify the parent job exists (explicit clearer error than the FK).
+        if libsql_get_job(&conn, job_id).await?.is_none() {
+            return Err(Error::new(
+                "NotFound",
+                "not_found",
+                format!("job {job_id} not found"),
+            ));
+        }
+
+        // storage_uri is always NULL for this port (inline content only).
+        conn.execute(
+            "INSERT INTO minion_attachments \
+             (job_id, filename, content_type, content, size_bytes, sha256) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            ::libsql::params![
+                job_id,
+                att.filename.clone(),
+                att.content_type.clone(),
+                ::libsql::Value::Blob(att.bytes.clone()),
+                att.size_bytes,
+                att.sha256.clone(),
+            ],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("insert_attachment INSERT: {e}")))?;
+        let id = last_insert_rowid(&conn).await?;
+
+        // Read back created_at (DB default) for a faithful metadata row.
+        let mut rows = conn
+            .query(
+                "SELECT created_at FROM minion_attachments WHERE id = ?1",
+                ::libsql::params![id],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("insert_attachment reselect: {e}")))?;
+        let created_at: String = match rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("insert_attachment reselect row: {e}")))?
+        {
+            Some(row) => row
+                .get::<String>(0)
+                .map_err(|e| Error::engine(format!("attachment created_at: {e}")))?,
+            None => current_utc_iso8601(),
+        };
+
+        Ok(crate::minions::types::Attachment {
+            id,
+            job_id,
+            filename: att.filename.clone(),
+            content_type: att.content_type.clone(),
+            storage_uri: None,
+            size_bytes: att.size_bytes,
+            sha256: att.sha256.clone(),
+            created_at,
+        })
+    }
+
+    async fn list_attachment_filenames(&self, job_id: i64) -> Result<Vec<String>> {
+        let conn = self.conn().await?;
+        let mut rows = conn
+            .query(
+                "SELECT filename FROM minion_attachments WHERE job_id = ?1",
+                ::libsql::params![job_id],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("list_attachment_filenames: {e}")))?;
+        let mut out = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("list_attachment_filenames row: {e}")))?
+        {
+            out.push(
+                row.get::<String>(0)
+                    .map_err(|e| Error::engine(format!("attachment filename: {e}")))?,
+            );
+        }
+        Ok(out)
+    }
+
+    async fn list_attachments(
+        &self,
+        job_id: i64,
+    ) -> Result<Vec<crate::minions::types::Attachment>> {
+        let conn = self.conn().await?;
+        let mut rows = conn
+            .query(
+                "SELECT id, job_id, filename, content_type, storage_uri, size_bytes, sha256, created_at \
+                 FROM minion_attachments WHERE job_id = ?1 ORDER BY created_at ASC, id ASC",
+                ::libsql::params![job_id],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("list_attachments: {e}")))?;
+        let mut out = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("list_attachments row: {e}")))?
+        {
+            out.push(libsql_row_to_attachment(&row)?);
+        }
+        Ok(out)
+    }
+
+    async fn get_attachment(
+        &self,
+        job_id: i64,
+        filename: &str,
+    ) -> Result<Option<(crate::minions::types::Attachment, Vec<u8>)>> {
+        let conn = self.conn().await?;
+        let mut rows = conn
+            .query(
+                "SELECT id, job_id, filename, content_type, storage_uri, size_bytes, sha256, created_at, content \
+                 FROM minion_attachments WHERE job_id = ?1 AND filename = ?2",
+                ::libsql::params![job_id, filename],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("get_attachment: {e}")))?;
+        let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("get_attachment row: {e}")))?
+        else {
+            return Ok(None);
+        };
+        let meta = libsql_row_to_attachment(&row)?;
+        // content is column 8; NULL → empty bytes (external-storage rows).
+        let bytes = match row
+            .get_value(8)
+            .map_err(|e| Error::engine(format!("attachment content: {e}")))?
+        {
+            ::libsql::Value::Blob(b) => b,
+            ::libsql::Value::Null => Vec::new(),
+            ::libsql::Value::Text(s) => s.into_bytes(),
+            other => {
+                return Err(Error::engine(format!(
+                    "attachment content: unexpected column type {other:?}"
+                )))
+            }
+        };
+        Ok(Some((meta, bytes)))
+    }
+
+    async fn delete_attachment(&self, job_id: i64, filename: &str) -> Result<bool> {
+        let conn = self.conn().await?;
+        let affected = conn
+            .execute(
+                "DELETE FROM minion_attachments WHERE job_id = ?1 AND filename = ?2",
+                ::libsql::params![job_id, filename],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("delete_attachment: {e}")))?;
+        Ok(affected > 0)
+    }
 }
 
 // ─── libsql facts helpers ─────────────────────────────────────────────────
@@ -4787,7 +4960,43 @@ async fn libsql_get_inbox_message(
     }
 }
 
-/// Insert a `child_done` envelope into the parent's inbox — but only if the
+/// Map a libsql row to an [`Attachment`](crate::minions::types::Attachment)
+/// metadata struct. Positional columns must match the SELECT:
+/// `id, job_id, filename, content_type, storage_uri, size_bytes, sha256, created_at`.
+/// An empty `storage_uri` string is normalized to `None` (mirrors the TS
+/// `rowToAttachment` `(row.storage_uri as string) || null`).
+fn libsql_row_to_attachment(
+    row: &::libsql::Row,
+) -> Result<crate::minions::types::Attachment> {
+    let storage_uri = row
+        .get::<Option<String>>(4)
+        .map_err(|e| Error::engine(format!("attachment storage_uri: {e}")))?
+        .filter(|s| !s.is_empty());
+    Ok(crate::minions::types::Attachment {
+        id: row
+            .get::<i64>(0)
+            .map_err(|e| Error::engine(format!("attachment id: {e}")))?,
+        job_id: row
+            .get::<i64>(1)
+            .map_err(|e| Error::engine(format!("attachment job_id: {e}")))?,
+        filename: row
+            .get::<String>(2)
+            .map_err(|e| Error::engine(format!("attachment filename: {e}")))?,
+        content_type: row
+            .get::<String>(3)
+            .map_err(|e| Error::engine(format!("attachment content_type: {e}")))?,
+        storage_uri,
+        size_bytes: row
+            .get::<i64>(5)
+            .map_err(|e| Error::engine(format!("attachment size_bytes: {e}")))?,
+        sha256: row
+            .get::<String>(6)
+            .map_err(|e| Error::engine(format!("attachment sha256: {e}")))?,
+        created_at: row
+            .get::<String>(7)
+            .map_err(|e| Error::engine(format!("attachment created_at: {e}")))?,
+    })
+}
 /// parent is still non-terminal (the SQL `WHERE EXISTS(... NOT IN terminal)`
 /// guard). A no-op INSERT if the parent already finished, which is why callers
 /// on the fail path must emit BEFORE flipping the parent terminal.

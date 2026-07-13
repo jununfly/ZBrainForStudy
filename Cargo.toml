@@ -77,6 +77,8 @@ reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls-native-r
 # OAuth client management: UUID generation for client_id, SHA-256 for secret hashing.
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
+# Base64 decode for attachment content ingestion (minion attachment CRUD).
+base64 = "0.22"
 # Webhook HMAC-SHA256 verification
 hmac = "0.12"
 hex = "0.4"

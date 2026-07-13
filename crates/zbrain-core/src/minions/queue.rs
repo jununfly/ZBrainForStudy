@@ -11,10 +11,15 @@
 //! several trait primitives.
 
 use crate::engine::BrainEngine;
+use crate::minions::attachments::{
+    validate_attachment, AttachmentValidationOpts, DEFAULT_MAX_ATTACHMENT_BYTES,
+};
 use crate::minions::types::{
-    FailOutcome, JobFilters, MinionJob, MinionJobInput, StalledSweep,
+    Attachment, AttachmentInput, FailOutcome, JobFilters, MinionJob, MinionJobInput, StalledSweep,
 };
 use crate::Result;
+
+use std::collections::HashSet;
 
 use serde_json::Value;
 
@@ -22,13 +27,29 @@ use serde_json::Value;
 /// it is cheap to construct per-call (mirrors TS `new MinionQueue(engine)`).
 pub struct MinionQueue<'a> {
     engine: &'a dyn BrainEngine,
+    /// Attachment size cap for `add_attachment` validation. Defaults to
+    /// [`DEFAULT_MAX_ATTACHMENT_BYTES`]; override with
+    /// [`MinionQueue::with_max_attachment_bytes`] (mirrors the TS
+    /// `maxAttachmentBytes` constructor option).
+    max_attachment_bytes: i64,
 }
 
 impl<'a> MinionQueue<'a> {
     /// Wrap an engine. The engine must already be connected.
     #[must_use]
     pub fn new(engine: &'a dyn BrainEngine) -> Self {
-        Self { engine }
+        Self {
+            engine,
+            max_attachment_bytes: DEFAULT_MAX_ATTACHMENT_BYTES,
+        }
+    }
+
+    /// Override the attachment size cap (bytes). Mirrors the TS
+    /// `maxAttachmentBytes` constructor option.
+    #[must_use]
+    pub fn with_max_attachment_bytes(mut self, max_bytes: i64) -> Self {
+        self.max_attachment_bytes = max_bytes;
+        self
     }
 
     /// Submit a job. Basic insert + idempotency (decision 6): if
@@ -152,5 +173,73 @@ impl<'a> MinionQueue<'a> {
         self.engine
             .handle_wall_clock_timeouts(lock_duration_ms)
             .await
+    }
+
+    // ─── Attachments (1-1-3-2) ──────────────────────────────────────────────
+    //
+    // Per-job blob CRUD. `add_attachment` orchestrates the backend-agnostic
+    // validation (pure function) around the backend INSERT; the other three are
+    // one-line delegations. Not token-fenced (mirrors the TS surface).
+
+    /// Attach a file to a job. Validates filename safety, content-type, base64,
+    /// size cap, and duplicate filename, then persists the decoded bytes and
+    /// returns the metadata row (not the bytes — use [`get_attachment`] to
+    /// fetch). Mirrors TS `addAttachment` (`queue.ts` L1272-1306).
+    ///
+    /// The DB `UNIQUE (job_id, filename)` constraint is the authoritative
+    /// duplicate fence; the `existing_filenames` early-out here just gives a
+    /// faster, clearer error before the round-trip.
+    ///
+    /// [`get_attachment`]: MinionQueue::get_attachment
+    pub async fn add_attachment(
+        &self,
+        job_id: i64,
+        input: &AttachmentInput,
+    ) -> Result<Attachment> {
+        let existing: HashSet<String> = self
+            .engine
+            .list_attachment_filenames(job_id)
+            .await?
+            .into_iter()
+            .collect();
+
+        let normalized = validate_attachment(
+            input,
+            &AttachmentValidationOpts {
+                max_bytes: self.max_attachment_bytes,
+                existing_filenames: Some(&existing),
+            },
+        )
+        .map_err(|e| {
+            crate::error::StructuredError::new(
+                "Validation",
+                "validation",
+                format!("attachment validation failed: {e}"),
+            )
+        })?;
+
+        self.engine.insert_attachment(job_id, &normalized).await
+    }
+
+    /// List attachments for a job (metadata only, no bytes), ordered
+    /// `created_at ASC, id ASC`. Mirrors TS `listAttachments`.
+    pub async fn list_attachments(&self, job_id: i64) -> Result<Vec<Attachment>> {
+        self.engine.list_attachments(job_id).await
+    }
+
+    /// Fetch a single attachment with its bytes by (job_id, filename). `None` if
+    /// absent. Mirrors TS `getAttachment`.
+    pub async fn get_attachment(
+        &self,
+        job_id: i64,
+        filename: &str,
+    ) -> Result<Option<(Attachment, Vec<u8>)>> {
+        self.engine.get_attachment(job_id, filename).await
+    }
+
+    /// Delete an attachment by (job_id, filename). `true` if a row was removed.
+    /// Mirrors TS `deleteAttachment`.
+    pub async fn delete_attachment(&self, job_id: i64, filename: &str) -> Result<bool> {
+        self.engine.delete_attachment(job_id, filename).await
     }
 }

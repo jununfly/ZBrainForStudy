@@ -31,11 +31,13 @@
 //! land in 1-1-2 as the pure C-layer transitions; their D-layer side effects
 //! (child_done inbox inserts, waiting-children parent unblock) stay in 1-1-3.
 
+pub mod attachments;
 pub mod queue;
 pub mod types;
 
 pub use queue::MinionQueue;
 pub use types::{
-    BackoffType, ChildDoneKind, ChildDoneMessage, ChildFailPolicy, ChildOutcome, FailOutcome,
-    InboxMessage, JobFilters, MinionJob, MinionJobInput, MinionJobStatus, StalledSweep, TokenUpdate,
+    Attachment, AttachmentInput, BackoffType, ChildDoneKind, ChildDoneMessage, ChildFailPolicy,
+    ChildOutcome, FailOutcome, InboxMessage, JobFilters, MinionJob, MinionJobInput,
+    MinionJobStatus, NormalizedAttachment, StalledSweep, TokenUpdate,
 };

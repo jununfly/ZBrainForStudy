@@ -1842,6 +1842,94 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
             "remove_child_dependency not yet implemented for this engine",
         ))
     }
+
+    // ─── Minion attachments (Phase 9, slice 1-1-3-2) ─────────────────────────
+    //
+    // Per-job binary blob storage backed by the `minion_attachments` table.
+    // Unlike the inbox/dependency methods above, attachment CRUD is NOT
+    // token-fenced: it only checks job existence, not lease ownership (mirrors
+    // the TS surface, which takes no lock_token here).
+    //
+    // Validation (filename safety, size cap, base64, sha256, duplicate) is a
+    // backend-agnostic pure function
+    // ([`validate_attachment`](crate::minions::attachments::validate_attachment))
+    // orchestrated by the facade `MinionQueue::add_attachment`; the backends
+    // only verify job existence and run the INSERT of already-decoded bytes.
+
+    /// Insert a validated attachment (already decoded + hashed by the facade).
+    /// The backend verifies the parent job exists (returning a `NotFound`
+    /// `job N not found` error otherwise) and INSERTs the inline bytes, then
+    /// returns the persisted metadata row. `storage_uri` is always NULL for the
+    /// current port. Mirrors the INSERT half of TS `addAttachment`
+    /// (`queue.ts` L1272-1306).
+    async fn insert_attachment(
+        &self,
+        job_id: i64,
+        att: &crate::minions::types::NormalizedAttachment,
+    ) -> crate::Result<crate::minions::types::Attachment> {
+        let _ = (job_id, att);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "insert_attachment not yet implemented for this engine",
+        ))
+    }
+
+    /// List existing attachment filenames for a job — the facade uses this for
+    /// the friendly duplicate early-out before validation. Order is unspecified.
+    /// Mirrors the `SELECT filename` probe in TS `addAttachment`
+    /// (`queue.ts` L1284-1287).
+    async fn list_attachment_filenames(&self, job_id: i64) -> crate::Result<Vec<String>> {
+        let _ = job_id;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "list_attachment_filenames not yet implemented for this engine",
+        ))
+    }
+
+    /// List attachments for a job (metadata only, no bytes), ordered
+    /// `created_at ASC, id ASC`. Mirrors TS `listAttachments`
+    /// (`queue.ts` L1309-1318).
+    async fn list_attachments(
+        &self,
+        job_id: i64,
+    ) -> crate::Result<Vec<crate::minions::types::Attachment>> {
+        let _ = job_id;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "list_attachments not yet implemented for this engine",
+        ))
+    }
+
+    /// Fetch a single attachment with its bytes by (job_id, filename). Returns
+    /// `None` if absent. When the row exists but `content` is NULL, the bytes are
+    /// an empty vec (external-storage rows are not populated in this port).
+    /// Mirrors TS `getAttachment` (`queue.ts` L1324-1346).
+    async fn get_attachment(
+        &self,
+        job_id: i64,
+        filename: &str,
+    ) -> crate::Result<Option<(crate::minions::types::Attachment, Vec<u8>)>> {
+        let _ = (job_id, filename);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "get_attachment not yet implemented for this engine",
+        ))
+    }
+
+    /// Delete an attachment by (job_id, filename). Returns `true` if a row was
+    /// removed. Mirrors TS `deleteAttachment` (`queue.ts` L1349-1355).
+    async fn delete_attachment(&self, job_id: i64, filename: &str) -> crate::Result<bool> {
+        let _ = (job_id, filename);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "delete_attachment not yet implemented for this engine",
+        ))
+    }
 }
 
 // ─── InMemoryEngine ──────────────────────────────────────────────────────────
@@ -1905,6 +1993,19 @@ pub struct InMemoryEngine {
     // Phase 9 (1-1-3-1): minion inbox storage (in-memory, for testing)
     minion_inbox_store: Mutex<Vec<crate::minions::types::InboxMessage>>,
     next_inbox_id: Mutex<i64>,
+    // Phase 9 (1-1-3-2): minion attachment storage (in-memory, for testing).
+    // Stores the decoded bytes alongside the metadata so get_attachment returns
+    // real content (unlike a metadata-only stub).
+    minion_attachments_store: Mutex<Vec<InternalAttachment>>,
+    next_attachment_id: Mutex<i64>,
+}
+
+/// Internal in-memory attachment row: the persisted metadata plus the decoded
+/// bytes. Keyed logically by `(meta.job_id, meta.filename)`.
+#[derive(Debug, Clone)]
+struct InternalAttachment {
+    meta: crate::minions::types::Attachment,
+    bytes: Vec<u8>,
 }
 
 // ─── Tag helpers ─────────────────────────────────────────────────────────────
@@ -1963,6 +2064,9 @@ impl InMemoryEngine {
             next_job_id: Mutex::new(1),
             minion_inbox_store: Mutex::new(Vec::new()),
             next_inbox_id: Mutex::new(1),
+            // Phase 9 (1-1-3-2): minion attachment storage (in-memory, for testing)
+            minion_attachments_store: Mutex::new(Vec::new()),
+            next_attachment_id: Mutex::new(1),
         }
     }
 
@@ -4827,6 +4931,128 @@ impl BrainEngine for InMemoryEngine {
             job.updated_at = crate::time::current_utc_iso8601();
         }
         Ok(())
+    }
+
+    // ─── Minion attachments (1-1-3-2) ────────────────────────────────────────
+
+    async fn insert_attachment(
+        &self,
+        job_id: i64,
+        att: &crate::minions::types::NormalizedAttachment,
+    ) -> crate::Result<crate::minions::types::Attachment> {
+        // Verify the parent job exists (mirrors the explicit SELECT in TS
+        // addAttachment; the DB FK would also enforce this).
+        {
+            let jobs = self
+                .minion_jobs_store
+                .lock()
+                .expect("InMemoryEngine minion_jobs_store mutex poisoned");
+            if !jobs.iter().any(|j| j.id == job_id) {
+                return Err(crate::error::StructuredError::new(
+                    "NotFound",
+                    "not_found",
+                    format!("job {job_id} not found"),
+                ));
+            }
+        }
+
+        let mut store = self
+            .minion_attachments_store
+            .lock()
+            .expect("InMemoryEngine minion_attachments_store mutex poisoned");
+
+        // Authoritative duplicate fence mirroring UNIQUE(job_id, filename).
+        if store
+            .iter()
+            .any(|a| a.meta.job_id == job_id && a.meta.filename == att.filename)
+        {
+            return Err(crate::error::StructuredError::new(
+                "Conflict",
+                "conflict",
+                format!(
+                    "duplicate attachment: job {job_id} already has filename {}",
+                    att.filename
+                ),
+            ));
+        }
+
+        let mut next = self
+            .next_attachment_id
+            .lock()
+            .expect("InMemoryEngine next_attachment_id mutex poisoned");
+        let meta = crate::minions::types::Attachment {
+            id: *next,
+            job_id,
+            filename: att.filename.clone(),
+            content_type: att.content_type.clone(),
+            // Faithful to the TS port: inline content only, storage_uri unused.
+            storage_uri: None,
+            size_bytes: att.size_bytes,
+            sha256: att.sha256.clone(),
+            created_at: crate::time::current_utc_iso8601(),
+        };
+        *next += 1;
+        store.push(InternalAttachment {
+            meta: meta.clone(),
+            bytes: att.bytes.clone(),
+        });
+        Ok(meta)
+    }
+
+    async fn list_attachment_filenames(&self, job_id: i64) -> crate::Result<Vec<String>> {
+        let store = self
+            .minion_attachments_store
+            .lock()
+            .expect("InMemoryEngine minion_attachments_store mutex poisoned");
+        Ok(store
+            .iter()
+            .filter(|a| a.meta.job_id == job_id)
+            .map(|a| a.meta.filename.clone())
+            .collect())
+    }
+
+    async fn list_attachments(
+        &self,
+        job_id: i64,
+    ) -> crate::Result<Vec<crate::minions::types::Attachment>> {
+        let store = self
+            .minion_attachments_store
+            .lock()
+            .expect("InMemoryEngine minion_attachments_store mutex poisoned");
+        let mut out: Vec<crate::minions::types::Attachment> = store
+            .iter()
+            .filter(|a| a.meta.job_id == job_id)
+            .map(|a| a.meta.clone())
+            .collect();
+        // ORDER BY created_at ASC, id ASC. Insertion order tracks created_at, but
+        // sort by id for a stable tiebreak matching the SQL contract.
+        out.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+        Ok(out)
+    }
+
+    async fn get_attachment(
+        &self,
+        job_id: i64,
+        filename: &str,
+    ) -> crate::Result<Option<(crate::minions::types::Attachment, Vec<u8>)>> {
+        let store = self
+            .minion_attachments_store
+            .lock()
+            .expect("InMemoryEngine minion_attachments_store mutex poisoned");
+        Ok(store
+            .iter()
+            .find(|a| a.meta.job_id == job_id && a.meta.filename == filename)
+            .map(|a| (a.meta.clone(), a.bytes.clone())))
+    }
+
+    async fn delete_attachment(&self, job_id: i64, filename: &str) -> crate::Result<bool> {
+        let mut store = self
+            .minion_attachments_store
+            .lock()
+            .expect("InMemoryEngine minion_attachments_store mutex poisoned");
+        let before = store.len();
+        store.retain(|a| !(a.meta.job_id == job_id && a.meta.filename == filename));
+        Ok(store.len() != before)
     }
 
     async fn upsert_chunks(
