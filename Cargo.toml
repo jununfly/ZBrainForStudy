@@ -7,6 +7,7 @@ members = [
     "crates/zbrain-mcp",
     "crates/zbrain-svg",
     "crates/zbrain-chunking",
+    "crates/zbrain-worker",
 ]
 
 [workspace.package]

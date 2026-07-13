@@ -15,7 +15,8 @@ use crate::minions::attachments::{
     validate_attachment, AttachmentValidationOpts, DEFAULT_MAX_ATTACHMENT_BYTES,
 };
 use crate::minions::types::{
-    Attachment, AttachmentInput, FailOutcome, JobFilters, MinionJob, MinionJobInput, StalledSweep,
+    Attachment, AttachmentInput, FailOutcome, JobFilters, MinionJob, MinionJobInput,
+    MinionJobStatus, QueueStats, StalledSweep,
 };
 use crate::Result;
 
@@ -241,5 +242,81 @@ impl<'a> MinionQueue<'a> {
     /// Mirrors TS `deleteAttachment`.
     pub async fn delete_attachment(&self, job_id: i64, filename: &str) -> Result<bool> {
         self.engine.delete_attachment(job_id, filename).await
+    }
+
+    // ─── Ops: pause / resume / prune / stats (1-1-3-3) ──────────────────────
+    //
+    // Operator-facing lifecycle + housekeeping. pause/resume/get_stats are
+    // one-line delegations; `prune` supplies the TS default status set and
+    // 30-day cutoff when the caller omits them, then delegates.
+
+    /// Pause a waiting/active/delayed job (→ paused). `None` for any other
+    /// status. Mirrors TS `pauseJob`.
+    pub async fn pause_job(&self, id: i64) -> Result<Option<MinionJob>> {
+        self.engine.pause_job(id).await
+    }
+
+    /// Resume a paused job (→ waiting). `None` if not paused. Mirrors TS
+    /// `resumeJob`.
+    pub async fn resume_job(&self, id: i64) -> Result<Option<MinionJob>> {
+        self.engine.resume_job(id).await
+    }
+
+    /// Delete terminal jobs older than a cutoff; returns the count deleted.
+    ///
+    /// Defaults mirror TS `prune`: `older_than_rfc3339 = None` → 30 days ago,
+    /// `statuses = None` → `[completed, dead, cancelled]` (NOT `failed`, which
+    /// stays retryable). Sibling inbox/attachment rows go via the FK
+    /// `ON DELETE CASCADE`, not an explicit delete here.
+    pub async fn prune(
+        &self,
+        older_than_rfc3339: Option<&str>,
+        statuses: Option<&[MinionJobStatus]>,
+    ) -> Result<i64> {
+        const DEFAULT_PRUNE_STATUSES: &[MinionJobStatus] = &[
+            MinionJobStatus::Completed,
+            MinionJobStatus::Dead,
+            MinionJobStatus::Cancelled,
+        ];
+        let statuses = statuses.unwrap_or(DEFAULT_PRUNE_STATUSES);
+
+        // Default cutoff: now - 30 days, as an RFC-3339 UTC string matching the
+        // `updated_at` record column format.
+        let owned_cutoff;
+        let cutoff = match older_than_rfc3339 {
+            Some(s) => s,
+            None => {
+                let now_secs = (crate::time::now_epoch_ms() / 1000) as u64;
+                let thirty_days = 30 * 86_400;
+                owned_cutoff = crate::time::unix_seconds_to_utc_iso8601(
+                    now_secs.saturating_sub(thirty_days),
+                );
+                &owned_cutoff
+            }
+        };
+
+        self.engine.prune_jobs(statuses, cutoff).await
+    }
+
+    /// Queue statistics: full-table status counts, a per-name breakdown scoped
+    /// to the `since` window, and a health block (waiting/active/stalled).
+    /// Mirrors the TS golden (`src/core/minions/queue.ts` getStats).
+    ///
+    /// `since` is an RFC-3339 UTC string bounding the `by_type` window against
+    /// the `created_at` record column; defaults to now - 24h when omitted.
+    pub async fn get_stats(&self, since_rfc3339: Option<&str>) -> Result<QueueStats> {
+        let owned_since;
+        let since = match since_rfc3339 {
+            Some(s) => s,
+            None => {
+                let now_secs = (crate::time::now_epoch_ms() / 1000) as u64;
+                let one_day = 86_400;
+                owned_since =
+                    crate::time::unix_seconds_to_utc_iso8601(now_secs.saturating_sub(one_day));
+                &owned_since
+            }
+        };
+
+        self.engine.get_stats(since).await
     }
 }

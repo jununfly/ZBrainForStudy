@@ -23,6 +23,13 @@ libsql = { workspace = true }
 # process-wide. Workspace tokio already enables `sync`. No `rt-*` features
 # are pulled into the library, so callers stay free to pick any runtime.
 tokio = { workspace = true, features = ["process"] }
+# Slice 1-2-1 (Phase 9 worker contract): `CancellationToken` for the
+# MinionJobContext cooperative-cancel signals (per-job `signal` + process
+# `shutdown`). Only the `sync` feature — CancellationToken is runtime-agnostic
+# (Arc<AtomicBool> + Notify): construct / cancel / is_cancelled need no
+# executor. `.cancelled().await` (which does) is driven by the worker crate,
+# not core — so this keeps zbrain-core's no-`rt-*` runtime neutrality intact.
+tokio-util = { version = "0.7", default-features = false }
 tracing = { workspace = true }
 url = { workspace = true }
 # Slice #41: Params validation. Lightweight trait-based validation with derive support.

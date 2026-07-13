@@ -3988,9 +3988,195 @@ impl BrainEngine for LibsqlEngine {
         self.get_job(id).await
     }
 
-    // --- Background sweeps (1-1-2 C) ---
-    //
-    // Each sweep captures the affected ids first (SELECT), applies the pure
+    // --- Ops: pause / resume (1-1-3-3) ---
+
+    async fn pause_job(&self, id: i64) -> Result<Option<crate::minions::types::MinionJob>> {
+        let conn = self.conn().await?;
+        let now_iso = current_utc_iso8601();
+        let affected = conn
+            .execute(
+                "UPDATE minion_jobs SET status = 'paused', \
+                    lock_token = NULL, lock_until = NULL, updated_at = ?1 \
+                 WHERE id = ?2 AND status IN ('waiting', 'active', 'delayed')",
+                ::libsql::params![now_iso, id],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("pause_job UPDATE: {e}")))?;
+        if affected == 0 {
+            return Ok(None);
+        }
+        self.get_job(id).await
+    }
+
+    async fn resume_job(&self, id: i64) -> Result<Option<crate::minions::types::MinionJob>> {
+        let conn = self.conn().await?;
+        let now_iso = current_utc_iso8601();
+        let affected = conn
+            .execute(
+                "UPDATE minion_jobs SET status = 'waiting', \
+                    lock_token = NULL, lock_until = NULL, updated_at = ?1 \
+                 WHERE id = ?2 AND status = 'paused'",
+                ::libsql::params![now_iso, id],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("resume_job UPDATE: {e}")))?;
+        if affected == 0 {
+            return Ok(None);
+        }
+        self.get_job(id).await
+    }
+
+    async fn prune_jobs(
+        &self,
+        statuses: &[crate::minions::types::MinionJobStatus],
+        older_than_rfc3339: &str,
+    ) -> Result<i64> {
+        if statuses.is_empty() {
+            return Ok(0);
+        }
+        let conn = self.conn().await?;
+
+        // Build `status IN (?, ?, ...)` with one placeholder per status. The
+        // cutoff compares `updated_at` (TEXT RFC-3339); ISO-8601 lexical order
+        // == time order. Child rows (inbox, attachments) go via ON DELETE
+        // CASCADE (schema FKs + `PRAGMA foreign_keys = ON`).
+        let placeholders = std::iter::repeat("?")
+            .take(statuses.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "DELETE FROM minion_jobs \
+             WHERE status IN ({placeholders}) AND updated_at < ?"
+        );
+
+        let mut params: Vec<::libsql::Value> = statuses
+            .iter()
+            .map(|s| ::libsql::Value::from(s.as_str().to_string()))
+            .collect();
+        params.push(::libsql::Value::from(older_than_rfc3339.to_string()));
+
+        let affected = conn
+            .execute(&sql, params)
+            .await
+            .map_err(|e| Error::engine(format!("prune_jobs DELETE: {e}")))?;
+        Ok(affected as i64)
+    }
+
+    async fn get_stats(
+        &self,
+        since_rfc3339: &str,
+    ) -> Result<crate::minions::types::QueueStats> {
+        use crate::minions::types::{QueueHealth, QueueStats, QueueTypeStat};
+        use std::collections::BTreeMap;
+
+        let conn = self.conn().await?;
+
+        // by_status: all-time count per status.
+        let mut by_status: BTreeMap<String, i64> = BTreeMap::new();
+        let mut rows = conn
+            .query("SELECT status, count(*) FROM minion_jobs GROUP BY status", ())
+            .await
+            .map_err(|e| Error::engine(format!("get_stats by_status: {e}")))?;
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("get_stats by_status row: {e}")))?
+        {
+            let status: String = row
+                .get::<String>(0)
+                .map_err(|e| Error::engine(format!("status read: {e}")))?;
+            let count: i64 = row
+                .get::<i64>(1)
+                .map_err(|e| Error::engine(format!("count read: {e}")))?;
+            by_status.insert(status, count);
+        }
+
+        // by_type: per-name breakdown in the `since` window. SQLite has no
+        // FILTER / EXTRACT, so terminal counts use SUM(CASE ...) and the mean
+        // runtime uses AVG over (julianday(finished) - julianday(started)) days
+        // scaled to ms. AVG ignores NULLs, so the CASE yields NULL for rows
+        // missing a timestamp — matching the TS FILTER semantics. `created_at`
+        // is TEXT RFC-3339; ISO-8601 lexical order == time order.
+        let mut by_type: Vec<QueueTypeStat> = Vec::new();
+        let mut trows = conn
+            .query(
+                "SELECT name, \
+                    count(*) AS total, \
+                    SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed, \
+                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed, \
+                    SUM(CASE WHEN status = 'dead' THEN 1 ELSE 0 END) AS dead, \
+                    AVG(CASE WHEN finished_at IS NOT NULL AND started_at IS NOT NULL \
+                             THEN (julianday(finished_at) - julianday(started_at)) * 86400000.0 \
+                             ELSE NULL END) AS avg_duration_ms \
+                 FROM minion_jobs WHERE created_at >= ?1 \
+                 GROUP BY name ORDER BY total DESC, name ASC",
+                ::libsql::params![since_rfc3339],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("get_stats by_type: {e}")))?;
+        while let Some(row) = trows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("get_stats by_type row: {e}")))?
+        {
+            // AVG returns REAL (or NULL); read as Option<f64> then round to ms.
+            let avg_duration_ms = row
+                .get::<Option<f64>>(5)
+                .map_err(|e| Error::engine(format!("avg_duration read: {e}")))?
+                .map(|v| v.round() as i64);
+            by_type.push(QueueTypeStat {
+                name: row
+                    .get::<String>(0)
+                    .map_err(|e| Error::engine(format!("name read: {e}")))?,
+                total: row
+                    .get::<i64>(1)
+                    .map_err(|e| Error::engine(format!("total read: {e}")))?,
+                completed: row
+                    .get::<i64>(2)
+                    .map_err(|e| Error::engine(format!("completed read: {e}")))?,
+                failed: row
+                    .get::<i64>(3)
+                    .map_err(|e| Error::engine(format!("failed read: {e}")))?,
+                dead: row
+                    .get::<i64>(4)
+                    .map_err(|e| Error::engine(format!("dead read: {e}")))?,
+                avg_duration_ms,
+            });
+        }
+
+        // queue_health: stalled = active jobs whose epoch-ms lease has expired.
+        let now_ms = crate::time::now_epoch_ms();
+        let mut srows = conn
+            .query(
+                "SELECT count(*) FROM minion_jobs \
+                 WHERE status = 'active' AND lock_until IS NOT NULL AND lock_until < ?1",
+                ::libsql::params![now_ms],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("get_stats stalled: {e}")))?;
+        let stalled = match srows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("get_stats stalled row: {e}")))?
+        {
+            Some(row) => row
+                .get::<i64>(0)
+                .map_err(|e| Error::engine(format!("stalled read: {e}")))?,
+            None => 0,
+        };
+
+        Ok(QueueStats {
+            queue_health: QueueHealth {
+                waiting: by_status.get("waiting").copied().unwrap_or(0),
+                active: by_status.get("active").copied().unwrap_or(0),
+                stalled,
+            },
+            by_status,
+            by_type,
+        })
+    }
+
+
     // C-layer state transition (UPDATE), then reselects the mutated rows.
     // Scheduling columns are stored as INTEGER epoch-ms, compared directly
     // against `now_ms`. No inbox / parent unblock here (D-layer, 1-1-3).

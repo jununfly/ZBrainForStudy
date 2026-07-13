@@ -880,6 +880,253 @@ async fn contract_attachment_validation_rejected(engine: &dyn BrainEngine) {
     assert!(q.list_attachments(jid).await.unwrap().is_empty());
 }
 
+// --- Ops: pause / resume / prune / stats (1-1-3-3) ---------------------------
+
+/// `pause_job` accepts waiting/active/delayed (clearing any lock on the way to
+/// `paused`) and rejects everything else; `resume_job` is strict `paused ->
+/// waiting`. `waiting-children` is intentionally NOT pausable.
+async fn contract_pause_resume(engine: &dyn BrainEngine) {
+    let q = MinionQueue::new(engine);
+
+    // waiting -> paused
+    let w = engine.enqueue_job(&job("p_wait")).await.unwrap();
+    let paused = q.pause_job(w.id).await.unwrap().unwrap();
+    assert_eq!(paused.status, MinionJobStatus::Paused);
+
+    // paused -> waiting (resume), lock cleared
+    let resumed = q.resume_job(w.id).await.unwrap().unwrap();
+    assert_eq!(resumed.status, MinionJobStatus::Waiting);
+    assert!(resumed.lock_token.is_none());
+
+    // active -> paused clears the lock so the worker's abort fires
+    let names = vec!["p_active".to_string()];
+    engine.enqueue_job(&job("p_active")).await.unwrap();
+    let claimed = engine
+        .claim_job("atok", 60_000, "default", &names)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(claimed.status, MinionJobStatus::Active);
+    let paused_active = q.pause_job(claimed.id).await.unwrap().unwrap();
+    assert_eq!(paused_active.status, MinionJobStatus::Paused);
+    assert!(
+        paused_active.lock_token.is_none() && paused_active.lock_until.is_none(),
+        "pausing an active job clears the lease"
+    );
+
+    // delayed -> paused
+    let d = engine
+        .enqueue_job(&MinionJobInput {
+            delay: Some(60_000),
+            ..job("p_delay")
+        })
+        .await
+        .unwrap();
+    assert_eq!(d.status, MinionJobStatus::Delayed);
+    assert_eq!(
+        q.pause_job(d.id).await.unwrap().unwrap().status,
+        MinionJobStatus::Paused
+    );
+
+    // Terminal job is not pausable -> None.
+    let names2 = vec!["p_done".to_string()];
+    engine.enqueue_job(&job("p_done")).await.unwrap();
+    let done = engine
+        .claim_job("dtok", 60_000, "default", &names2)
+        .await
+        .unwrap()
+        .unwrap();
+    engine.complete_job(done.id, "dtok", None).await.unwrap();
+    assert!(
+        q.pause_job(done.id).await.unwrap().is_none(),
+        "completed job cannot be paused"
+    );
+
+    // resume only acts on paused: a waiting job resume is a no-op None.
+    let w2 = engine.enqueue_job(&job("p_wait2")).await.unwrap();
+    assert!(
+        q.resume_job(w2.id).await.unwrap().is_none(),
+        "resume of a non-paused job is a no-op"
+    );
+}
+
+/// `prune` deletes only terminal jobs older than the cutoff. Default status set
+/// is [completed, dead, cancelled] — `failed` is retained. A future cutoff
+/// sweeps all matching terminal jobs; a past cutoff deletes nothing.
+async fn contract_prune(engine: &dyn BrainEngine) {
+    let q = MinionQueue::new(engine);
+
+    // A completed job (terminal, in default set).
+    let names = vec!["pr_done".to_string()];
+    engine.enqueue_job(&job("pr_done")).await.unwrap();
+    let done = engine
+        .claim_job("t1", 60_000, "default", &names)
+        .await
+        .unwrap()
+        .unwrap();
+    engine.complete_job(done.id, "t1", None).await.unwrap();
+
+    // A failed job (terminal, but NOT in the default prune set).
+    let fnames = vec!["pr_fail".to_string()];
+    engine.enqueue_job(&job("pr_fail")).await.unwrap();
+    let f = engine
+        .claim_job("t2", 60_000, "default", &fnames)
+        .await
+        .unwrap()
+        .unwrap();
+    engine
+        .fail_job(f.id, "t2", "boom", FailOutcome::Failed, 0)
+        .await
+        .unwrap();
+
+    // A waiting job (non-terminal, never pruned).
+    let waiting = engine.enqueue_job(&job("pr_wait")).await.unwrap();
+
+    // Past cutoff: nothing is old enough.
+    let deleted_none = q
+        .prune(Some("2000-01-01T00:00:00Z"), None)
+        .await
+        .unwrap();
+    assert_eq!(deleted_none, 0, "past cutoff deletes nothing");
+
+    // Future cutoff: the completed job qualifies; failed + waiting do not.
+    let deleted = q.prune(Some("2999-01-01T00:00:00Z"), None).await.unwrap();
+    assert_eq!(deleted, 1, "only the completed job is pruned by default");
+    assert!(engine.get_job(done.id).await.unwrap().is_none());
+    assert!(
+        engine.get_job(f.id).await.unwrap().is_some(),
+        "failed job retained (not in default set)"
+    );
+    assert!(engine.get_job(waiting.id).await.unwrap().is_some());
+
+    // Explicit status override can target failed jobs.
+    let deleted_failed = q
+        .prune(
+            Some("2999-01-01T00:00:00Z"),
+            Some(&[MinionJobStatus::Failed]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(deleted_failed, 1, "explicit override prunes the failed job");
+    assert!(engine.get_job(f.id).await.unwrap().is_none());
+}
+
+/// Pruning a job with attachments must cascade-delete the attachment rows
+/// (FK `ON DELETE CASCADE`). Guards against the pragma/FK being silently
+/// disabled — a bare `DELETE FROM minion_jobs` would orphan attachments.
+async fn contract_prune_cascades_attachments(engine: &dyn BrainEngine) {
+    let q = MinionQueue::new(engine);
+
+    let names = vec!["pc".to_string()];
+    engine.enqueue_job(&job("pc")).await.unwrap();
+    let claimed = engine
+        .claim_job("ct", 60_000, "default", &names)
+        .await
+        .unwrap()
+        .unwrap();
+    q.add_attachment(claimed.id, &attachment("a.txt", "text/plain", b"bytes"))
+        .await
+        .unwrap();
+    engine.complete_job(claimed.id, "ct", None).await.unwrap();
+    assert_eq!(q.list_attachments(claimed.id).await.unwrap().len(), 1);
+
+    let deleted = q.prune(Some("2999-01-01T00:00:00Z"), None).await.unwrap();
+    assert_eq!(deleted, 1);
+    assert!(engine.get_job(claimed.id).await.unwrap().is_none());
+    assert!(
+        q.list_attachments(claimed.id).await.unwrap().is_empty(),
+        "attachments cascade-deleted with the job"
+    );
+}
+
+/// `get_stats` rolls up three sections matching the TS golden
+/// (`src/core/minions/queue.ts` getStats): a full-table `by_status` count, a
+/// per-`name` `by_type` breakdown scoped to the `since` window, and a
+/// `queue_health` block whose `stalled` counts active jobs with an expired
+/// lease. Backend-agnostic so all three engines agree.
+async fn contract_get_stats(engine: &dyn BrainEngine) {
+    let q = MinionQueue::new(engine);
+
+    // A completed "alpha" job (claim sets started_at, complete sets finished_at
+    // -> a measurable duration for avg_duration_ms).
+    let anames = vec!["alpha".to_string()];
+    engine.enqueue_job(&job("alpha")).await.unwrap();
+    let a = engine
+        .claim_job("t1", 60_000, "default", &anames)
+        .await
+        .unwrap()
+        .unwrap();
+    engine.complete_job(a.id, "t1", None).await.unwrap();
+
+    // A failed "beta" job.
+    let bnames = vec!["beta".to_string()];
+    engine.enqueue_job(&job("beta")).await.unwrap();
+    let b = engine
+        .claim_job("t2", 60_000, "default", &bnames)
+        .await
+        .unwrap()
+        .unwrap();
+    engine
+        .fail_job(b.id, "t2", "boom", FailOutcome::Failed, 0)
+        .await
+        .unwrap();
+
+    // A plain waiting "alpha" job.
+    engine.enqueue_job(&job("alpha")).await.unwrap();
+
+    // A stalled active job: claim with a NEGATIVE lease so lock_until < now.
+    let snames = vec!["gamma".to_string()];
+    engine.enqueue_job(&job("gamma")).await.unwrap();
+    engine
+        .claim_job("t3", -1, "default", &snames)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let stats = q.get_stats(Some("2000-01-01T00:00:00Z")).await.unwrap();
+
+    // by_status: 1 completed, 1 failed, 1 waiting, 1 active.
+    assert_eq!(stats.by_status.get("completed").copied(), Some(1));
+    assert_eq!(stats.by_status.get("failed").copied(), Some(1));
+    assert_eq!(stats.by_status.get("waiting").copied(), Some(1));
+    assert_eq!(stats.by_status.get("active").copied(), Some(1));
+
+    // by_type: alpha has 2 rows (1 completed), beta has 1 (1 failed).
+    let alpha = stats
+        .by_type
+        .iter()
+        .find(|t| t.name == "alpha")
+        .expect("alpha in by_type");
+    assert_eq!(alpha.total, 2);
+    assert_eq!(alpha.completed, 1);
+    assert!(
+        alpha.avg_duration_ms.is_some(),
+        "completed alpha job yields an avg duration"
+    );
+    let beta = stats
+        .by_type
+        .iter()
+        .find(|t| t.name == "beta")
+        .expect("beta in by_type");
+    assert_eq!(beta.total, 1);
+    assert_eq!(beta.failed, 1);
+
+    // queue_health mirrors by_status waiting/active, and counts the stalled job.
+    assert_eq!(stats.queue_health.waiting, 1);
+    assert_eq!(stats.queue_health.active, 1);
+    assert_eq!(
+        stats.queue_health.stalled, 1,
+        "the negative-lease active job is stalled"
+    );
+
+    // The `since` window excludes older rows: a far-future cutoff yields none.
+    let empty = q.get_stats(Some("2999-01-01T00:00:00Z")).await.unwrap();
+    assert!(
+        empty.by_type.is_empty(),
+        "future `since` window excludes all by_type rows"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // InMemory
 // ---------------------------------------------------------------------------
@@ -977,6 +1224,24 @@ async fn inmemory_attachment_job_not_found() {
 #[tokio::test]
 async fn inmemory_attachment_validation_rejected() {
     contract_attachment_validation_rejected(&InMemoryEngine::new()).await;
+}
+
+// Ops (1-1-3-3)
+#[tokio::test]
+async fn inmemory_pause_resume() {
+    contract_pause_resume(&InMemoryEngine::new()).await;
+}
+#[tokio::test]
+async fn inmemory_prune() {
+    contract_prune(&InMemoryEngine::new()).await;
+}
+#[tokio::test]
+async fn inmemory_prune_cascades_attachments() {
+    contract_prune_cascades_attachments(&InMemoryEngine::new()).await;
+}
+#[tokio::test]
+async fn inmemory_get_stats() {
+    contract_get_stats(&InMemoryEngine::new()).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -1121,6 +1386,32 @@ async fn libsql_attachment_job_not_found() {
 async fn libsql_attachment_validation_rejected() {
     let (engine, _tmp) = init_clean_libsql().await;
     contract_attachment_validation_rejected(&engine).await;
+    engine.disconnect().await.expect("disconnect");
+}
+
+// Ops (1-1-3-3)
+#[tokio::test]
+async fn libsql_pause_resume() {
+    let (engine, _tmp) = init_clean_libsql().await;
+    contract_pause_resume(&engine).await;
+    engine.disconnect().await.expect("disconnect");
+}
+#[tokio::test]
+async fn libsql_prune() {
+    let (engine, _tmp) = init_clean_libsql().await;
+    contract_prune(&engine).await;
+    engine.disconnect().await.expect("disconnect");
+}
+#[tokio::test]
+async fn libsql_prune_cascades_attachments() {
+    let (engine, _tmp) = init_clean_libsql().await;
+    contract_prune_cascades_attachments(&engine).await;
+    engine.disconnect().await.expect("disconnect");
+}
+#[tokio::test]
+async fn libsql_get_stats() {
+    let (engine, _tmp) = init_clean_libsql().await;
+    contract_get_stats(&engine).await;
     engine.disconnect().await.expect("disconnect");
 }
 
@@ -1269,4 +1560,26 @@ async fn postgres_attachment_job_not_found() {
 async fn postgres_attachment_validation_rejected() {
     let fix = support::pg_fixture::PgFixture::start().await;
     contract_attachment_validation_rejected(&fix.engine).await;
+}
+
+// Ops (1-1-3-3)
+#[tokio::test]
+async fn postgres_pause_resume() {
+    let fix = support::pg_fixture::PgFixture::start().await;
+    contract_pause_resume(&fix.engine).await;
+}
+#[tokio::test]
+async fn postgres_prune() {
+    let fix = support::pg_fixture::PgFixture::start().await;
+    contract_prune(&fix.engine).await;
+}
+#[tokio::test]
+async fn postgres_prune_cascades_attachments() {
+    let fix = support::pg_fixture::PgFixture::start().await;
+    contract_prune_cascades_attachments(&fix.engine).await;
+}
+#[tokio::test]
+async fn postgres_get_stats() {
+    let fix = support::pg_fixture::PgFixture::start().await;
+    contract_get_stats(&fix.engine).await;
 }

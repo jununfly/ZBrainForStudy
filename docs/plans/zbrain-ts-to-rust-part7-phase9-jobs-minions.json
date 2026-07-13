@@ -36,7 +36,7 @@
     "1-1": {
       "id": "1-1",
       "label": "MinionQueue + job 持久化 (queue.ts, job 生命周期/优先级/状态; jobs CLI 是其 thin wrapper)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [
@@ -50,12 +50,44 @@
     "1-2": {
       "id": "1-2",
       "label": "MinionWorker + supervisor (worker.ts/supervisor.ts/child-worker-supervisor.ts, 调 gateway.toolLoop 干活)",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "explore",
       "parent": "1",
-      "children": [],
-      "decisions": [],
-      "notes": ""
+      "children": [
+        "1-2-1",
+        "1-2-2",
+        "1-2-3",
+        "1-2-4",
+        "1-2-5"
+      ],
+      "decisions": [
+        {
+          "q": "并发运行时选型 + worker 落点 crate 分层?",
+          "answer": "B: worker 是 runtime-aware 消费者层, 坦然用 tokio(tokio::spawn/JoinSet/CancellationToken/time::interval), 不做无谓 runtime 抽象; zbrain-core 保持 runtime 中立(仅 tokio::sync, 不启 rt-*), 只提供 BrainEngine+MinionQueue 数据层 + MinionHandler 纯 trait 定义",
+          "note": "确认: tokio 已是全 workspace 运行时(rt-multi-thread+macros+sync+process), sqlx/pg-embed 绑 tokio; core Cargo.toml 显式注释保持 runtime-agnostic。CancellationToken≈AbortController(可层级派生 global->per-job), JoinSet≈有上限 Promise pool, time::interval≈setInterval 续锁, 迁移认知负担最小。拒 std 线程池(与 async 基座割裂, 信号/timer/取消全手搓); 拒 async-std(sqlx/libsql 兼容不如 tokio)"
+        },
+        {
+          "q": "worker 引擎物理落点 crate?",
+          "answer": "A: 新开 zbrain-worker crate, 依赖 zbrain-core(BrainEngine/MinionQueue/MinionHandler trait) + 启 tokio rt-multi-thread; worker+supervisor 同住(内聚: supervisor spawn 的子进程跑 worker.start()); zbrain-cli 的 jobs work(1-7) 做 thin wrapper 依赖它",
+          "note": "worker+supervisor 是可独立编译/测试的引擎单元, 埋进 CLI 会让集成测试背 CLI 包袱且复用受限(web/mcp 未来 in-process worker 可复用)。符合 core 已确立的 deep module 清晰边界品味。拒塞 cli(引擎与命令解析混); 拒塞 core(破坏 Q1 runtime 中立)"
+        },
+        {
+          "q": "MinionHandler trait 形状 + MinionJobContext 建模与落点?",
+          "answer": "A: MinionHandler = #[async_trait] trait{ async fn handle(&self, ctx:&MinionJobContext)->Result<Value> }, 放 zbrain-core(纯 trait 契约, 与 Q1 一致 core 不 spawn). MinionJobContext 做 concrete struct 忠实映射 TS 对象, 持 Arc<dyn BrainEngine>+job_id+数据快照+双 CancellationToken(signal/shutdown), 5 个异步能力方法(update_progress/update_tokens/log/is_active/read_inbox)impl 在其上委托 engine 回写 DB. register(name, Arc<dyn MinionHandler>) 存 HashMap. core 新引 tokio-util{sync} — CancellationToken 是 runtime-agnostic(Arc<AtomicBool>+Notify), 不破坏 core runtime 中立",
+          "note": ""
+        },
+        {
+          "q": "1-2 切分粒度与子节点边界?",
+          "answer": "5 片, 依赖单向: 1-2-1 契约层(MinionHandler trait+MinionJobContext+MinionWorkerOpts, 仅 core); 1-2-2 队列消费核(主循环 promoteDelayed->claim->launch->execute->complete/fail, 串行 concurrency=1 先通, 依赖 1-2-1); 1-2-3 并发池+锁续期+abort+graceful shutdown(JoinSet+per-job 续锁 interval+超时+SIGTERM drain 30s+global/per-job token 分离, 依赖 1-2-2); 1-2-4 自监控外围全可 flag 关(RSS parse/get/check+self-health+quiet-hours+unhealthy 事件, 依赖 1-2-3); 1-2-5 supervisor+child-spawn(PID 锁+spawn zbrain jobs work+退避 respawn+DB 健康检查 PG-only+ZBRAIN_SUPERVISED, 依赖 1-2-3 可与 1-2-4 并行). 原则每片独立 TDD/编译/验证",
+          "note": ""
+        },
+        {
+          "q": "外围功能取舍/留桩?",
+          "answer": "A: (1)lease-full 路径留桩(依赖 1-3 rate-leases 未迁)——1-2-3 fail 分支首版只做 普通失败/UnrecoverableError/退避重试, RateLeaseUnavailable 分支写 no-op 桩+KNOWN-GAPS 登记, 1-3 落地再接; (2)RSS 检测 parse_rss_from_proc_status 纯函数照迁可单测, 读取路径 Linux 走 /proc 非 Linux 返 None 降级, 整体 flag 关(maxRssMb 默认 disabled); (3)quiet-hours defer 首版做(不依赖未迁模块, quiet_hours 列已在, flag 可关); (4)self-health/unhealthy 用 mpsc::Sender<UnhealthyReason> 或 callback 替代 EventEmitter, 1-2-4 定义信号形状 1-2-5 消费. 总纲: ①留桩 ②③④首版做但全 flag 可关",
+          "note": ""
+        }
+      ],
+      "notes": "grill 收敛 5 决策(Q1 tokio/Q2 zbrain-worker crate/Q3 MinionHandler async_trait+context/Q4 5 片切分/Q5 外围 ①留桩②③④flag 做). 5 子节点 1-2-1~1-2-5 已建. TS 参照 worker.ts/supervisor.ts/child-worker-supervisor.ts. 待 /zj-tdd 从 1-2-1 起. 留桩: lease-full 依赖 1-3(实现到 1-2-3 时登记 KNOWN-GAPS)."
     },
     "1-3": {
       "id": "1-3",
@@ -202,7 +234,7 @@
     "1-1-3": {
       "id": "1-1-3",
       "label": "D: 高级 (父子依赖 resolveParent/cancelJob 递归CTE + inbox sendMessage/readInbox + 附件CRUD + pause/resume/prune/getStats)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-1",
       "children": [
@@ -289,9 +321,100 @@
     "1-1-3-3": {
       "id": "1-1-3-3",
       "label": "运维: pause_job/resume_job/prune(DELETE RETURNING count)/get_stats(by_status/by_type/queue_health 三段纯读)",
-      "status": "pending",
+      "status": "completed",
       "mode": "build",
       "parent": "1-1-3",
+      "children": [],
+      "decisions": [
+        {
+          "q": "get_stats 分层落点?",
+          "answer": "A: 单个 trait 方法 get_stats(since), 每后端各写聚合SQL",
+          "note": "与全模块分层一致, facade一行委托, 一次round-trip, 隔离PG(FILTER/EXTRACT) vs libsql方言"
+        },
+        {
+          "q": "libsql get_stats SQL?",
+          "answer": "A: 照SQLite方言重写(FILTER保留, julianday算duration, 文本比较时间), PG照抄TS",
+          "note": "avg_duration_ms用julianday(finished)-julianday(started))*86400000; FILTER若libsql不支持降级SUM(CASE); 不砍功能保两后端对等"
+        },
+        {
+          "q": "pause状态边界+waiting-children?",
+          "answer": "A: 严格照抄TS, pause仅接受waiting/active/delayed(active清lock_token/until), resume严格paused->waiting; waiting-children不可pause",
+          "note": "对齐TS减漂移; waiting-children暂停牵出resolve_parent撞paused父的一致性难题, 超范围; 该缺口登记KNOWN-GAPS"
+        },
+        {
+          "q": "prune默认状态集+时间基准?",
+          "answer": "A: 照抄TS默认[completed,dead,cancelled]+updated_at<now-30d, DELETE RETURNING计数, 可传参覆盖",
+          "note": "failed不进默认集(可retry终态要留), 破坏性操作默认保守; failed清理由调用方显式传参"
+        },
+        {
+          "q": "prune时附件/inbox清理?",
+          "answer": "A: 只DELETE minion_jobs, 靠DB CASCADE自动清子表, 不手动删",
+          "note": "两后端job_id ON DELETE CASCADE已就位(libsql已PRAGMA foreign_keys=ON), CASCADE是唯一真相源; 加libsql单测断言prune带附件job后附件行消失, 防pragma未来被误关"
+        },
+        {
+          "q": "get_stats返回类型?",
+          "answer": "A: types.rs新建QueueStats+QueueTypeStat+QueueHealth强类型struct(by_status:BTreeMap, avg_duration_ms:Option<i64>)",
+          "note": "与模块全强类型风格一致, 编译期防漂移; BTreeMap保输出顺序稳定好断言"
+        },
+        {
+          "q": "InMemoryEngine是否实现真逻辑?",
+          "answer": "A: InMemory实现真逻辑(内存Vec状态转换/过滤删除/聚合计数)",
+          "note": "InMemory是单测主力后端且队列其它方法全有真实现; 四方法纯内存可模拟; 保InMemory作trait契约参照实现完整性"
+        },
+        {
+          "q": "测试收口标准+PG mirror?",
+          "answer": "A: 三层测试(InMemory单测+libsql单测验方言/CASCADE+PG mirror集成测试验对等)",
+          "note": "方言分叉密度高(now()/时间差/FILTER), PG mirror是捕获两后端stats不对等的唯一防线; PgFixture用pg-embed自足(不需Docker/外部PG/env), 本机大概率可跑, 跑不起则gated标注CI兜底"
+        }
+      ],
+      "notes": "完成(2026-07-13, TDD red-green). 交付: types.rs 新增 QueueStats{by_status:BTreeMap<String,i64>, by_type:Vec<QueueTypeStat>, queue_health:QueueHealth}/QueueTypeStat{name,total,completed,failed,dead,avg_duration_ms:Option<i64>}/QueueHealth{waiting,active,stalled}; BrainEngine trait 新增 pause_job/resume_job/prune_jobs(statuses,older_than_rfc3339)/get_stats(since_rfc3339) 四方法(默认 Unsupported); 三后端全实现; queue.rs facade 4 薄封装(prune 默认 [completed,dead,cancelled]+now-30d, get_stats 默认 since=now-24h). tests/minion_queue.rs 新增 contract_pause_resume/contract_prune/contract_prune_cascades_attachments/contract_get_stats × 三后端 = 12 新测试, 全量 82 passed 含真实 PG(pg-embed). 落地要点: (1) prune/get_stats cutoff 比较 record 列(updated_at/created_at 是 RFC-3339 TEXT), 用 &str 签名 + 字典序=时间序, 两后端通用, 不用 epoch_ms. (2) prune 只 DELETE minion_jobs, 靠 DB ON DELETE CASCADE 清 inbox/attachments; InMemory 无 FK 手动 retain 模拟 CASCADE; contract_prune_cascades_attachments 守 pragma 不被误关. (3) get_stats 方言: PG 照抄 TS(FILTER + EXTRACT(EPOCH...)*1000), libsql 用 SUM(CASE)+AVG(julianday 差*86400000), InMemory 内存聚合+chrono parse_from_rfc3339 算时长. (4) pause 严格 waiting/active/delayed→paused(清 lock), resume 严格 paused→waiting; waiting-children 不可 pause, 与 TS pauseJob WHERE 完全一致 → 登记 KNOWN-GAPS G28(共有设计边界, 非 Rust 独有缺口). 关键坑: PG avg() 返回 NUMERIC 不是 FLOAT8, Rust Option<f64> decode 失败 → SQL 里 (avg(...) FILTER(...))::double precision 显式 cast."
+    },
+    "1-2-1": {
+      "id": "1-2-1",
+      "label": "契约层: MinionHandler trait + MinionJobContext struct(双 CancellationToken+5 能力方法委托 engine) + MinionWorkerOpts (仅 zbrain-core, 引 tokio-util{sync}+async-trait)",
+      "status": "completed",
+      "mode": "execute",
+      "parent": "1-2",
+      "children": [],
+      "decisions": [],
+      "notes": "契约层完成: handler.rs (MinionHandler trait 对象安全 + MinionJobContext 5 能力委托 engine + MinionWorkerOpts::default 对齐 TS)。8 behaviors TDD 全绿。"
+    },
+    "1-2-2": {
+      "id": "1-2-2",
+      "label": "队列消费核: worker 主循环 promoteDelayed->claim(<=concurrency)->launchJob->executeJob->complete/fail, 串行 concurrency=1 先跑通闭环 (zbrain-worker crate, 依赖 1-2-1)",
+      "status": "completed",
+      "mode": "execute",
+      "parent": "1-2",
+      "children": [],
+      "decisions": [],
+      "notes": "队列消费核完成: zbrain-worker crate 新建, backoff.rs (calculate_backoff fixed/expo/jitter) + worker.rs (MinionWorker::process_next_job: promote_delayed->claim->dispatch->complete/fail). 13 tests 全绿 (4 backoff + 9 consume). 串行 concurrency=1 闭环通. 决策: unrecoverable=StructuredError class约定, result忠实TS包装(object直存/标量包{value:x}/null->None)."
+    },
+    "1-2-3": {
+      "id": "1-2-3",
+      "label": "并发池+生命周期: JoinSet 并发上限+per-job 续锁 interval+per-job 超时+SIGTERM/SIGINT->drain 30s+global vs per-job CancellationToken 分离 (依赖 1-2-2)",
+      "status": "completed",
+      "mode": "execute",
+      "parent": "1-2",
+      "children": [],
+      "decisions": [],
+      "notes": "并发生命周期完成: run() (JoinSet 并发上限 + poll loop + drain 30s) + run_one_job (per-job lock renewal interval lockDuration/2 + per-job timeout select! + signal/shutdown 分离). 6 lifecycle tests 全绿. handle_failure 提取为 Self:: 关联函数. shutdown_token() accessor 暴露."
+    },
+    "1-2-4": {
+      "id": "1-2-4",
+      "label": "自监控外围(全可 flag 关): RSS parse_rss_from_proc_status/get_accurate_rss/check_memory_limit + self-health-check + quiet-hours defer + unhealthy 事件 (依赖 1-2-3)",
+      "status": "completed",
+      "mode": "execute",
+      "parent": "1-2",
+      "children": [],
+      "decisions": [],
+      "notes": "自监控外围完成: rss.rs (parse_rss_from_proc_status+get_accurate_rss, 8 tests), quiet_hours.rs (evaluate_quiet_hours pure fn, 9 tests), worker 自监控扩展 (check_memory_limit+RSS periodic watchdog+health check DB probe+stall detection+unhealthy mpsc channel). 8 selfmon tests 全绿. 全可 flag 关: max_rss_mb=None/0 关 RSS watchdog, health_check_interval_ms=0 关 health check. 设计决策: evaluate_quiet_hours 不绑 chrono-tz (hour 由调用方传), DB probe 用 get_job(0) 代替 executeRaw (Rust 无裸 SQL escape hatch)."
+    },
+    "1-2-5": {
+      "id": "1-2-5",
+      "label": "supervisor+child-spawn: PID 锁+spawn 'zbrain jobs work' 子进程+退避 respawn+DB 健康检查(PG-only)+ZBRAIN_SUPERVISED 联动 (依赖 1-2-3, 可与 1-2-4 并行)",
+      "status": "pending",
+      "mode": "execute",
+      "parent": "1-2",
       "children": [],
       "decisions": [],
       "notes": ""
@@ -299,8 +422,7 @@
   },
   "metadata": {
     "created": "2026-07-09 21:33:13",
-    "updated": "2026-07-13 14:49:05",
-    "md_file": ".workbuddy/roadmaps/ZJ_ROADMAP.md"
-  },
-  "md_file": "C:/workspace/github/jununfly/zbrain/.workbuddy/roadmaps/ZJ_ROADMAP.md"
+    "updated": "2026-07-13 19:26:44",
+    "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART7_PHASE9_JOBS_MINIONS.md"
+  }
 }

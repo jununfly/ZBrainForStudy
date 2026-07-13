@@ -3510,7 +3510,168 @@ impl BrainEngine for PostgresEngine {
         }
     }
 
-    // --- Background sweeps (1-1-2 C) ---
+    // --- Ops: pause / resume (1-1-3-3) ---
+
+    async fn pause_job(&self, id: i64) -> Result<Option<crate::minions::types::MinionJob>> {
+        let pool = self.pool()?;
+        let row = sqlx::query(&format!(
+            "UPDATE minion_jobs SET status = 'paused', \
+                lock_token = NULL, lock_until = NULL, updated_at = now() \
+             WHERE id = $1 AND status IN ('waiting', 'active', 'delayed') \
+             RETURNING {MINION_JOB_SELECT}"
+        ))
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::engine(format!("pause_job UPDATE: {e}")))?;
+        match row {
+            Some(r) => Ok(Some(pg_row_to_job(&r)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn resume_job(&self, id: i64) -> Result<Option<crate::minions::types::MinionJob>> {
+        let pool = self.pool()?;
+        let row = sqlx::query(&format!(
+            "UPDATE minion_jobs SET status = 'waiting', \
+                lock_token = NULL, lock_until = NULL, updated_at = now() \
+             WHERE id = $1 AND status = 'paused' \
+             RETURNING {MINION_JOB_SELECT}"
+        ))
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::engine(format!("resume_job UPDATE: {e}")))?;
+        match row {
+            Some(r) => Ok(Some(pg_row_to_job(&r)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn prune_jobs(
+        &self,
+        statuses: &[crate::minions::types::MinionJobStatus],
+        older_than_rfc3339: &str,
+    ) -> Result<i64> {
+        if statuses.is_empty() {
+            return Ok(0);
+        }
+        let pool = self.pool()?;
+
+        // `status = ANY($1::text[])` gates the terminal set; the cutoff parses
+        // the RFC-3339 string to TIMESTAMPTZ and compares against `updated_at`.
+        // Child rows (inbox, attachments) go via ON DELETE CASCADE. Count the
+        // deletions with a CTE so the return matches the other backends.
+        let status_strs: Vec<String> =
+            statuses.iter().map(|s| s.as_str().to_string()).collect();
+        let count: i64 = sqlx::query_scalar(
+            "WITH pruned AS ( \
+                 DELETE FROM minion_jobs \
+                 WHERE status = ANY($1::text[]) AND updated_at < $2::timestamptz \
+                 RETURNING id \
+             ) SELECT count(*) FROM pruned",
+        )
+        .bind(&status_strs)
+        .bind(older_than_rfc3339)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| Error::engine(format!("prune_jobs DELETE: {e}")))?;
+        Ok(count)
+    }
+
+    async fn get_stats(
+        &self,
+        since_rfc3339: &str,
+    ) -> Result<crate::minions::types::QueueStats> {
+        use crate::minions::types::{QueueHealth, QueueStats, QueueTypeStat};
+        use std::collections::BTreeMap;
+
+        let pool = self.pool()?;
+
+        // by_status: all-time count per status.
+        let mut by_status: BTreeMap<String, i64> = BTreeMap::new();
+        let status_rows =
+            sqlx::query("SELECT status, count(*) AS count FROM minion_jobs GROUP BY status")
+                .fetch_all(pool)
+                .await
+                .map_err(|e| Error::engine(format!("get_stats by_status: {e}")))?;
+        for row in &status_rows {
+            let status: String = row
+                .try_get("status")
+                .map_err(|e| Error::engine(format!("status decode: {e}")))?;
+            let count: i64 = row
+                .try_get("count")
+                .map_err(|e| Error::engine(format!("count decode: {e}")))?;
+            by_status.insert(status, count);
+        }
+
+        // by_type: per-name breakdown in the `since` window, using FILTER for
+        // terminal counts and EXTRACT(EPOCH ...) * 1000 for mean runtime (ms).
+        // Mirrors TS getStats. `created_at >= $1::timestamptz` bounds the window.
+        let type_rows = sqlx::query(
+            "SELECT name, \
+                count(*) AS total, \
+                count(*) FILTER (WHERE status = 'completed') AS completed, \
+                count(*) FILTER (WHERE status = 'failed') AS failed, \
+                count(*) FILTER (WHERE status = 'dead') AS dead, \
+                (avg(EXTRACT(EPOCH FROM (finished_at - started_at)) * 1000) \
+                    FILTER (WHERE finished_at IS NOT NULL AND started_at IS NOT NULL) \
+                )::double precision AS avg_duration_ms \
+             FROM minion_jobs WHERE created_at >= $1::timestamptz \
+             GROUP BY name ORDER BY total DESC, name ASC",
+        )
+        .bind(since_rfc3339)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_stats by_type: {e}")))?;
+        let mut by_type: Vec<QueueTypeStat> = Vec::with_capacity(type_rows.len());
+        for row in &type_rows {
+            // avg is double precision (or NULL); round to the nearest ms.
+            let avg_duration_ms = row
+                .try_get::<Option<f64>, _>("avg_duration_ms")
+                .map_err(|e| Error::engine(format!("avg_duration decode: {e}")))?
+                .map(|v| v.round() as i64);
+            by_type.push(QueueTypeStat {
+                name: row
+                    .try_get("name")
+                    .map_err(|e| Error::engine(format!("name decode: {e}")))?,
+                total: row
+                    .try_get("total")
+                    .map_err(|e| Error::engine(format!("total decode: {e}")))?,
+                completed: row
+                    .try_get("completed")
+                    .map_err(|e| Error::engine(format!("completed decode: {e}")))?,
+                failed: row
+                    .try_get("failed")
+                    .map_err(|e| Error::engine(format!("failed decode: {e}")))?,
+                dead: row
+                    .try_get("dead")
+                    .map_err(|e| Error::engine(format!("dead decode: {e}")))?,
+                avg_duration_ms,
+            });
+        }
+
+        // queue_health: stalled = active jobs with an expired lease.
+        let stalled: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM minion_jobs \
+             WHERE status = 'active' AND lock_until IS NOT NULL AND lock_until < now()",
+        )
+        .fetch_one(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_stats stalled: {e}")))?;
+
+        Ok(QueueStats {
+            queue_health: QueueHealth {
+                waiting: by_status.get("waiting").copied().unwrap_or(0),
+                active: by_status.get("active").copied().unwrap_or(0),
+                stalled,
+            },
+            by_status,
+            by_type,
+        })
+    }
+
+
     //
     // Each sweep is a single `UPDATE ... RETURNING` against the TIMESTAMPTZ
     // scheduling columns, compared to `now()`. Pure C-layer state transitions

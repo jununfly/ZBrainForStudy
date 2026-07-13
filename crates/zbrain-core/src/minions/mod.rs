@@ -32,12 +32,15 @@
 //! (child_done inbox inserts, waiting-children parent unblock) stay in 1-1-3.
 
 pub mod attachments;
+pub mod handler;
 pub mod queue;
 pub mod types;
 
+pub use handler::{MinionHandler, MinionJobContext, MinionWorkerOpts};
 pub use queue::MinionQueue;
 pub use types::{
     Attachment, AttachmentInput, BackoffType, ChildDoneKind, ChildDoneMessage, ChildFailPolicy,
     ChildOutcome, FailOutcome, InboxMessage, JobFilters, MinionJob, MinionJobInput,
-    MinionJobStatus, NormalizedAttachment, StalledSweep, TokenUpdate,
+    MinionJobStatus, NormalizedAttachment, QueueHealth, QueueStats, QueueTypeStat, StalledSweep,
+    TokenUpdate,
 };

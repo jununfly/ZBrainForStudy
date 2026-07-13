@@ -495,3 +495,53 @@ pub struct Attachment {
     pub created_at: String,
 }
 
+// ============================================================
+// D-layer (roadmap 1-1-3-3): ops — queue statistics
+// ============================================================
+
+/// Aggregate queue statistics returned by `get_stats`. Mirrors the anonymous
+/// object shape of TS `getStats` (`queue.ts` L493-543):
+/// `{ by_status, by_type, queue_health }`.
+///
+/// `by_status` is a `BTreeMap` (not `HashMap`) so serialized/iterated output is
+/// key-sorted and deterministic — tests assert on it directly, and a stable
+/// order avoids spurious diffs across backends.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueueStats {
+    /// Count of jobs per lifecycle status, across all time. Only statuses with
+    /// at least one job appear (matches the SQL `GROUP BY status`).
+    pub by_status: std::collections::BTreeMap<String, i64>,
+    /// Per-job-type breakdown within the stats time window, newest-volume
+    /// first (`ORDER BY total DESC`).
+    pub by_type: Vec<QueueTypeStat>,
+    /// Snapshot of live queue pressure.
+    pub queue_health: QueueHealth,
+}
+
+/// One row of the `by_type` breakdown: totals and terminal-outcome counts for a
+/// single job `name` within the stats time window. Mirrors the TS `by_type`
+/// element.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueueTypeStat {
+    pub name: String,
+    pub total: i64,
+    pub completed: i64,
+    pub failed: i64,
+    pub dead: i64,
+    /// Mean wall-clock runtime (`finished_at - started_at`) in milliseconds,
+    /// over jobs of this type that have both timestamps. `None` when no such
+    /// job exists (SQL `avg(...)` over an empty set is NULL). Rounded to the
+    /// nearest ms to match the TS `Math.round`.
+    pub avg_duration_ms: Option<i64>,
+}
+
+/// Live queue-pressure snapshot. `stalled` = active jobs whose lease has
+/// expired (`lock_until < now`) — distinct from `active`, which counts all
+/// active jobs regardless of lease state. Mirrors the TS `queue_health`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueueHealth {
+    pub waiting: i64,
+    pub active: i64,
+    pub stalled: i64,
+}
+

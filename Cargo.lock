@@ -4930,6 +4930,7 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-util",
  "tracing",
  "unicode-normalization",
  "url",
@@ -4984,6 +4985,20 @@ dependencies = [
  "zbrain-core",
  "zbrain-mcp",
  "zbrain-svg",
+]
+
+[[package]]
+name = "zbrain-worker"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "rand 0.8.6",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "zbrain-core",
 ]
 
 [[package]]

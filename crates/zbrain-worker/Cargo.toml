@@ -1,0 +1,29 @@
+[package]
+name = "zbrain-worker"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Minion job queue worker (consume loop, retry/backoff) for zbrain."
+
+[lints]
+workspace = true
+
+[dependencies]
+zbrain-core = { path = "../zbrain-core" }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+# Consume loop is async; needs a runtime driver for `run()` and for the
+# `#[tokio::test]` integration tests. Unlike zbrain-core (deliberately no
+# `rt-*`), the worker crate IS the runtime owner — it's where `.cancelled()
+# .await` and the poll loop live — so pulling rt-multi-thread here is correct.
+tokio = { workspace = true, features = ["time"] }
+# CancellationToken for building MinionJobContext (per-job `signal` + process
+# `shutdown`). default-features = false keeps it to the runtime-agnostic core.
+tokio-util = { version = "0.7", default-features = false }
+# Retry backoff jitter. Mirrors TS `Math.random()` in calculateBackoff.
+rand = "0.8"

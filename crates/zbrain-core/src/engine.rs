@@ -1831,6 +1831,54 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
         ))
     }
 
+    /// Set structured progress on an active job (replaces prior progress).
+    /// Token-fenced (`lock_token` matches, status `active`). Returns `true` if
+    /// applied. Backs `MinionJobContext::update_progress`; mirrors TS
+    /// `updateProgress` (`queue.ts` L1014), which the worker exposes on the
+    /// job context so handlers can report progress mid-run.
+    async fn update_progress(
+        &self,
+        id: i64,
+        lock_token: &str,
+        progress: &serde_json::Value,
+    ) -> crate::Result<bool> {
+        let _ = (id, lock_token, progress);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "update_progress not yet implemented for this engine",
+        ))
+    }
+
+    /// Append one entry to an active job's `stacktrace` log array. Token-fenced
+    /// (`lock_token` matches, status `active`). Returns `true` if applied.
+    /// Backs `MinionJobContext::log`; mirrors the TS worker's inline
+    /// `executeRaw` that does `stacktrace = COALESCE(stacktrace,'[]') || entry`
+    /// (`worker.ts` L703-711). A dedicated trait method rather than raw SQL
+    /// keeps zbrain-core free of an `execute_raw` escape hatch.
+    async fn append_log(&self, id: i64, lock_token: &str, entry: &str) -> crate::Result<bool> {
+        let _ = (id, lock_token, entry);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "append_log not yet implemented for this engine",
+        ))
+    }
+
+    /// Whether the job is still actively leased by this lock token (status
+    /// `active` AND `lock_token` matches). Backs `MinionJobContext::is_active`,
+    /// which long-running handlers poll to detect lock loss; mirrors the TS
+    /// worker's inline `SELECT id ... WHERE status='active' AND lock_token=$`
+    /// (`worker.ts` L712-718).
+    async fn is_job_active(&self, id: i64, lock_token: &str) -> crate::Result<bool> {
+        let _ = (id, lock_token);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "is_job_active not yet implemented for this engine",
+        ))
+    }
+
     /// Sever a child's dependency on its parent (`parent_job_id = NULL`). Used
     /// by the `remove_dep` on-child-fail policy and manual detach. Idempotent.
     /// Mirrors TS `removeChildDependency` (`queue.ts` L1217-1222).
@@ -1928,6 +1976,85 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
             "Unsupported",
             "unsupported",
             "delete_attachment not yet implemented for this engine",
+        ))
+    }
+
+    // ─── Minion ops (Phase 9, slice 1-1-3-3) ─────────────────────────────────
+    //
+    // Operator-facing lifecycle + housekeeping: pause/resume a single job,
+    // prune terminal jobs, and read aggregate statistics. None are token-fenced
+    // (they are admin operations, matching the TS surface). `get_stats` is a
+    // pure read; the other three are single-statement writes.
+
+    /// Pause a `waiting`/`active`/`delayed` job (→ `paused`), clearing its lock
+    /// so an active worker's abort fires and the handler stops. No-op (`None`)
+    /// for any other status. `waiting-children` is intentionally NOT pausable
+    /// (pausing an aggregator parent would strand `resolve_parent` against a
+    /// paused parent — out of scope; registered in docs/plans/KNOWN-GAPS.md).
+    /// Mirrors TS `pauseJob` (`queue.ts` L1119-1128).
+    async fn pause_job(
+        &self,
+        id: i64,
+    ) -> crate::Result<Option<crate::minions::types::MinionJob>> {
+        let _ = id;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "pause_job not yet implemented for this engine",
+        ))
+    }
+
+    /// Resume a `paused` job back to `waiting`, clearing any residual lock.
+    /// No-op (`None`) for any non-`paused` status. Mirrors TS `resumeJob`
+    /// (`queue.ts` L1131-1140).
+    async fn resume_job(
+        &self,
+        id: i64,
+    ) -> crate::Result<Option<crate::minions::types::MinionJob>> {
+        let _ = id;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "resume_job not yet implemented for this engine",
+        ))
+    }
+
+    /// Delete jobs in terminal statuses older than a cutoff; returns the count
+    /// deleted. `statuses` defaults to `[completed, dead, cancelled]` (NOT
+    /// `failed` — those stay retryable) at the facade. `older_than_rfc3339` is
+    /// compared against the `updated_at` record column (RFC-3339 text; ISO-8601
+    /// sorts lexicographically = chronologically on both backends). Sibling
+    /// `minion_inbox`/`minion_attachments` rows are removed by the
+    /// `ON DELETE CASCADE` FK, not by this method. Mirrors TS `prune`
+    /// (`queue.ts` L476-490).
+    async fn prune_jobs(
+        &self,
+        statuses: &[crate::minions::types::MinionJobStatus],
+        older_than_rfc3339: &str,
+    ) -> crate::Result<i64> {
+        let _ = (statuses, older_than_rfc3339);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "prune_jobs not yet implemented for this engine",
+        ))
+    }
+
+    /// Aggregate queue statistics. `by_status` counts every job by status
+    /// (all-time); `by_type` breaks down jobs whose `created_at` is at or after
+    /// `since_rfc3339` by name with terminal-outcome counts and mean runtime;
+    /// `queue_health` snapshots waiting/active/stalled. `since_rfc3339` compares
+    /// against the `created_at` record column (RFC-3339 text). Mirrors TS
+    /// `getStats` (`queue.ts` L493-543).
+    async fn get_stats(
+        &self,
+        since_rfc3339: &str,
+    ) -> crate::Result<crate::minions::types::QueueStats> {
+        let _ = since_rfc3339;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "get_stats not yet implemented for this engine",
         ))
     }
 }
@@ -4504,7 +4631,221 @@ impl BrainEngine for InMemoryEngine {
         Ok(Some(job.clone()))
     }
 
-    // --- Background sweeps (1-1-2 C) ---
+    // --- Ops: pause / resume (1-1-3-3) ---
+
+    async fn pause_job(
+        &self,
+        id: i64,
+    ) -> crate::Result<Option<crate::minions::types::MinionJob>> {
+        use crate::minions::types::MinionJobStatus;
+
+        let mut store = self
+            .minion_jobs_store
+            .lock()
+            .expect("InMemoryEngine minion_jobs_store mutex poisoned");
+
+        // Pausable only from waiting/active/delayed; clears the lock so an
+        // active worker's abort fires. waiting-children is intentionally out
+        // (matches TS pauseJob WHERE); registered in
+        // docs/plans/KNOWN-GAPS.md (G28).
+        let Some(job) = store.iter_mut().find(|j| {
+            j.id == id
+                && matches!(
+                    j.status,
+                    MinionJobStatus::Waiting
+                        | MinionJobStatus::Active
+                        | MinionJobStatus::Delayed
+                )
+        }) else {
+            return Ok(None);
+        };
+
+        job.status = MinionJobStatus::Paused;
+        job.lock_token = None;
+        job.lock_until = None;
+        job.updated_at = crate::time::current_utc_iso8601();
+        Ok(Some(job.clone()))
+    }
+
+    async fn resume_job(
+        &self,
+        id: i64,
+    ) -> crate::Result<Option<crate::minions::types::MinionJob>> {
+        use crate::minions::types::MinionJobStatus;
+
+        let mut store = self
+            .minion_jobs_store
+            .lock()
+            .expect("InMemoryEngine minion_jobs_store mutex poisoned");
+
+        // Strict paused -> waiting.
+        let Some(job) = store
+            .iter_mut()
+            .find(|j| j.id == id && j.status == MinionJobStatus::Paused)
+        else {
+            return Ok(None);
+        };
+
+        job.status = MinionJobStatus::Waiting;
+        job.lock_token = None;
+        job.lock_until = None;
+        job.updated_at = crate::time::current_utc_iso8601();
+        Ok(Some(job.clone()))
+    }
+
+    async fn prune_jobs(
+        &self,
+        statuses: &[crate::minions::types::MinionJobStatus],
+        older_than_rfc3339: &str,
+    ) -> crate::Result<i64> {
+        // Delete terminal jobs whose `updated_at` is older than the cutoff.
+        // `updated_at` is an RFC-3339 string; ISO-8601 lexical order == time
+        // order, so a plain `<` string compare is a valid time compare and
+        // matches the SQL backends (which also compare the text/timestamptz
+        // column). Manually cascade to inbox + attachments because the
+        // in-memory store has no DB foreign keys (the SQL backends rely on
+        // ON DELETE CASCADE).
+        let removed_ids: Vec<i64> = {
+            let mut store = self
+                .minion_jobs_store
+                .lock()
+                .expect("InMemoryEngine minion_jobs_store mutex poisoned");
+            let mut removed = Vec::new();
+            store.retain(|j| {
+                let prune = statuses.contains(&j.status)
+                    && j.updated_at.as_str() < older_than_rfc3339;
+                if prune {
+                    removed.push(j.id);
+                }
+                !prune
+            });
+            removed
+        };
+
+        if !removed_ids.is_empty() {
+            let mut inbox = self
+                .minion_inbox_store
+                .lock()
+                .expect("InMemoryEngine minion_inbox_store mutex poisoned");
+            inbox.retain(|m| !removed_ids.contains(&m.job_id));
+
+            let mut atts = self
+                .minion_attachments_store
+                .lock()
+                .expect("InMemoryEngine minion_attachments_store mutex poisoned");
+            atts.retain(|a| !removed_ids.contains(&a.meta.job_id));
+        }
+
+        Ok(removed_ids.len() as i64)
+    }
+
+    async fn get_stats(
+        &self,
+        since_rfc3339: &str,
+    ) -> crate::Result<crate::minions::types::QueueStats> {
+        use crate::minions::types::{MinionJobStatus, QueueHealth, QueueStats, QueueTypeStat};
+        use std::collections::BTreeMap;
+
+        let store = self
+            .minion_jobs_store
+            .lock()
+            .expect("InMemoryEngine minion_jobs_store mutex poisoned");
+
+        // by_status: count every job by its status label (all-time).
+        let mut by_status: BTreeMap<String, i64> = BTreeMap::new();
+        for job in store.iter() {
+            *by_status.entry(job.status.as_str().to_string()).or_insert(0) += 1;
+        }
+
+        // by_type: per-name breakdown within the `since` window. Accumulate
+        // totals + terminal counts + a running duration sum/count so we can
+        // average at the end. `created_at` is RFC-3339 text; ISO-8601 lexical
+        // order == time order, so a `>=` string compare bounds the window.
+        struct Acc {
+            total: i64,
+            completed: i64,
+            failed: i64,
+            dead: i64,
+            dur_sum_ms: i64,
+            dur_count: i64,
+        }
+        let mut types: BTreeMap<String, Acc> = BTreeMap::new();
+        for job in store.iter() {
+            if job.created_at.as_str() < since_rfc3339 {
+                continue;
+            }
+            let acc = types.entry(job.name.clone()).or_insert(Acc {
+                total: 0,
+                completed: 0,
+                failed: 0,
+                dead: 0,
+                dur_sum_ms: 0,
+                dur_count: 0,
+            });
+            acc.total += 1;
+            match job.status {
+                MinionJobStatus::Completed => acc.completed += 1,
+                MinionJobStatus::Failed => acc.failed += 1,
+                MinionJobStatus::Dead => acc.dead += 1,
+                _ => {}
+            }
+            // avg_duration: only rows with both started_at and finished_at,
+            // matching the TS `FILTER (WHERE finished_at IS NOT NULL AND
+            // started_at IS NOT NULL)`.
+            if let (Some(started), Some(finished)) =
+                (job.started_at.as_deref(), job.finished_at.as_deref())
+            {
+                if let (Ok(s), Ok(f)) = (
+                    chrono::DateTime::parse_from_rfc3339(started),
+                    chrono::DateTime::parse_from_rfc3339(finished),
+                ) {
+                    acc.dur_sum_ms += f.timestamp_millis() - s.timestamp_millis();
+                    acc.dur_count += 1;
+                }
+            }
+        }
+        // TS orders by total DESC; ties fall back to name for determinism.
+        let mut by_type: Vec<QueueTypeStat> = types
+            .into_iter()
+            .map(|(name, a)| QueueTypeStat {
+                name,
+                total: a.total,
+                completed: a.completed,
+                failed: a.failed,
+                dead: a.dead,
+                avg_duration_ms: if a.dur_count > 0 {
+                    // Round to nearest ms, matching TS Math.round.
+                    Some((a.dur_sum_ms as f64 / a.dur_count as f64).round() as i64)
+                } else {
+                    None
+                },
+            })
+            .collect();
+        by_type.sort_by(|x, y| y.total.cmp(&x.total).then_with(|| x.name.cmp(&y.name)));
+
+        // queue_health: stalled = active jobs whose lease (lock_until, epoch-ms)
+        // has expired.
+        let now_ms = crate::time::now_epoch_ms();
+        let stalled = store
+            .iter()
+            .filter(|j| {
+                j.status == MinionJobStatus::Active
+                    && j.lock_until.is_some_and(|lu| lu < now_ms)
+            })
+            .count() as i64;
+
+        Ok(QueueStats {
+            queue_health: QueueHealth {
+                waiting: by_status.get("waiting").copied().unwrap_or(0),
+                active: by_status.get("active").copied().unwrap_or(0),
+                stalled,
+            },
+            by_status,
+            by_type,
+        })
+    }
+
+
     //
     // Hold the store mutex and scan the Vec. The 3 pure sweeps compare the
     // epoch-ms scheduling columns against `now_ms`; wall-clock parses the
@@ -4919,6 +5260,65 @@ impl BrainEngine for InMemoryEngine {
         job.tokens_cache_read += tokens.cache_read.unwrap_or(0);
         job.updated_at = crate::time::current_utc_iso8601();
         Ok(true)
+    }
+
+    async fn update_progress(
+        &self,
+        id: i64,
+        lock_token: &str,
+        progress: &serde_json::Value,
+    ) -> crate::Result<bool> {
+        use crate::minions::types::MinionJobStatus;
+
+        let mut store = self
+            .minion_jobs_store
+            .lock()
+            .expect("InMemoryEngine minion_jobs_store mutex poisoned");
+
+        let Some(job) = store.iter_mut().find(|j| {
+            j.id == id
+                && j.status == MinionJobStatus::Active
+                && j.lock_token.as_deref() == Some(lock_token)
+        }) else {
+            return Ok(false);
+        };
+        job.progress = Some(progress.clone());
+        job.updated_at = crate::time::current_utc_iso8601();
+        Ok(true)
+    }
+
+    async fn append_log(&self, id: i64, lock_token: &str, entry: &str) -> crate::Result<bool> {
+        use crate::minions::types::MinionJobStatus;
+
+        let mut store = self
+            .minion_jobs_store
+            .lock()
+            .expect("InMemoryEngine minion_jobs_store mutex poisoned");
+
+        let Some(job) = store.iter_mut().find(|j| {
+            j.id == id
+                && j.status == MinionJobStatus::Active
+                && j.lock_token.as_deref() == Some(lock_token)
+        }) else {
+            return Ok(false);
+        };
+        job.stacktrace.push(entry.to_string());
+        job.updated_at = crate::time::current_utc_iso8601();
+        Ok(true)
+    }
+
+    async fn is_job_active(&self, id: i64, lock_token: &str) -> crate::Result<bool> {
+        use crate::minions::types::MinionJobStatus;
+
+        let store = self
+            .minion_jobs_store
+            .lock()
+            .expect("InMemoryEngine minion_jobs_store mutex poisoned");
+        Ok(store.iter().any(|j| {
+            j.id == id
+                && j.status == MinionJobStatus::Active
+                && j.lock_token.as_deref() == Some(lock_token)
+        }))
     }
 
     async fn remove_child_dependency(&self, child_id: i64) -> crate::Result<()> {
