@@ -30,6 +30,13 @@
 //! - Audit is best-effort: a disk-full audit never gates the LLM call, matching
 //!   [`crate::rerank_audit`]'s posture.
 //!
+//! ## BudgetAuditor trait
+//! The built-in audit writes JSONL to the filesystem directly. Callers that
+//! want to redirect audit output (test harness, metrics sink, multi-tenant log
+//! router) can inject a custom [`BudgetAuditor`] via
+//! [`BudgetTrackerOpts::auditor`]. The default is [`NoopAuditor`] which
+//! discards all audit rows; test helpers use it to avoid disk I/O.
+//!
 //! ## Pricing source
 //! Chat/rerank prices come from the `REGISTRY` touchpoints (chat: per-input +
 //! per-output USD/1M-tok; rerank/embed: single USD/1M-tok), NOT a standalone
@@ -45,7 +52,36 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Mutex;
 
-/// The three metered call kinds. Mirrors the TS `BudgetKind`.
+// ---- BudgetAuditor ----
+
+/// Sink for budget audit rows. Each row is a JSON object with `schema_version`,
+/// `ts`, `event`, and event-specific fields. The default [`NoopAuditor`]
+/// discards all rows; the filesystem auditor is the built-in
+/// `append_audit_line` path wired inside [`BudgetTracker`].
+///
+/// Object-safe: callers store `Box<dyn BudgetAuditor>` or `Arc<dyn>`.
+/// Implementations MUST be `Send + Sync` (tracker is shared across tasks).
+///
+/// # Errors
+/// The trait returns `std::io::Result` so file-based impls can signal
+/// disk-full. BudgetTracker always swallows the error — audit write failure
+/// never gates the LLM call, matching the TS posture.
+pub trait BudgetAuditor: Send + Sync {
+    fn record_audit(&self, row: &serde_json::Value) -> std::io::Result<()>;
+}
+
+/// Default auditor that discards all rows. Use in tests or when the caller
+/// doesn't care about audit persistence.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoopAuditor;
+
+impl BudgetAuditor for NoopAuditor {
+    fn record_audit(&self, _row: &serde_json::Value) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+// ---- audit types ----
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BudgetKind {
     Chat,
@@ -918,5 +954,22 @@ mod tests {
     fn extract_usage_partial_uses_fallback_for_missing_half() {
         let err = json!({ "usage": { "input_tokens": 100 } });
         assert_eq!(extract_usage_from_error(Some(&err), (1, 999)), (100, 999));
+    }
+
+    // ---- BudgetAuditor ----
+
+    #[test]
+    fn noop_auditor_discards_all_rows() {
+        let auditor = NoopAuditor;
+        // All calls succeed and return Ok.
+        assert!(auditor.record_audit(&json!({"event": "reserve"})).is_ok());
+        assert!(auditor.record_audit(&json!({"event": "record"})).is_ok());
+        assert!(auditor.record_audit(&serde_json::Value::Null).is_ok());
+    }
+
+    #[test]
+    fn noop_auditor_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<NoopAuditor>();
     }
 }

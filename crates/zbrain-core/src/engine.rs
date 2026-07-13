@@ -2072,6 +2072,116 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
             "health_check not yet implemented for this engine",
         ))
     }
+
+    // ─── Minion budget management (roadmap 1-3-2) ──────────────────────────
+
+    /// Attempt to reserve `amount_cents` from a job's remaining budget.
+    ///
+    /// Uses a CAS-style UPDATE (`WHERE budget_remaining_cents >= amount_cents`)
+    /// to guarantee correctness under concurrency without explicit transactions.
+    /// On success, an audit log row is written internally.
+    ///
+    /// Returns `Reserved` on success, or a variant indicating why the
+    /// reservation was not granted. All variants are `Ok` — a shortage is a
+    /// business decision, not an I/O error.
+    async fn reserve_budget(
+        &self,
+        job_id: i64,
+        amount_cents: i64,
+        reason: &str,
+    ) -> crate::Result<crate::minions::types::ReservationOutcome> {
+        let _ = (job_id, amount_cents, reason);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "reserve_budget not yet implemented for this engine",
+        ))
+    }
+
+    /// Refund `amount_cents` back to a job's remaining budget.
+    ///
+    /// No-op if the job has no budget. An audit log row (negative `cents_delta`)
+    /// is written internally.
+    async fn refund_budget(
+        &self,
+        job_id: i64,
+        amount_cents: i64,
+        reason: &str,
+    ) -> crate::Result<()> {
+        let _ = (job_id, amount_cents, reason);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "refund_budget not yet implemented for this engine",
+        ))
+    }
+
+    /// Set a job as its own budget owner with the given initial budget in cents.
+    ///
+    /// Sets both `budget_remaining_cents` and `budget_owner_job_id = job_id`
+    /// (self-owned). Re-setting an existing budget is allowed — the previous
+    /// remaining amount is replaced.
+    async fn set_owner_budget(
+        &self,
+        job_id: i64,
+        budget_cents: i64,
+    ) -> crate::Result<()> {
+        let _ = (job_id, budget_cents);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "set_owner_budget not yet implemented for this engine",
+        ))
+    }
+
+    /// Clear `budget_remaining_cents` (set to NULL) for all jobs in the
+    /// subtree rooted at `owner_job_id`. This effectively halts all budget
+    /// reservations for the entire job subtree.
+    ///
+    /// Returns the number of jobs whose budget was cleared.
+    async fn halt_budget_subtree(
+        &self,
+        owner_job_id: i64,
+    ) -> crate::Result<i64> {
+        let _ = owner_job_id;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "halt_budget_subtree not yet implemented for this engine",
+        ))
+    }
+
+    /// Transfer budget ownership: set `budget_owner_job_id` on `job_id` to
+    /// `new_owner_job_id`. This lets a job's spend count against a different
+    /// owner's pool (e.g., a tool call inside a parent's budget scope).
+    ///
+    /// No-op if `job_id` has no budget (`budget_owner_job_id IS NULL`).
+    async fn inherit_budget_owner(
+        &self,
+        job_id: i64,
+        new_owner_job_id: i64,
+    ) -> crate::Result<()> {
+        let _ = (job_id, new_owner_job_id);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "inherit_budget_owner not yet implemented for this engine",
+        ))
+    }
+
+    /// Return the budget owner (`budget_owner_job_id`) for a job, or `None`
+    /// if the job has no budget owner.
+    async fn get_budget_owner(
+        &self,
+        job_id: i64,
+    ) -> crate::Result<Option<i64>> {
+        let _ = job_id;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "get_budget_owner not yet implemented for this engine",
+        ))
+    }
 }
 
 // ─── InMemoryEngine ──────────────────────────────────────────────────────────
@@ -7313,5 +7423,60 @@ impl crate::token_queries::TokenQueries for InMemoryEngine {
             resource: None,
             allowed_sources: None,
         })
+    }
+}
+
+// ─── Budget management tests (1-3-2) ────────────────────────────────────────
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn inmem_budget_reserve_unsupported() {
+        let engine = InMemoryEngine::new();
+        let result = engine.reserve_budget(1, 100, "test").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not yet implemented"));
+    }
+
+    #[tokio::test]
+    async fn inmem_budget_refund_unsupported() {
+        let engine = InMemoryEngine::new();
+        let result = engine.refund_budget(1, 100, "test").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not yet implemented"));
+    }
+
+    #[tokio::test]
+    async fn inmem_budget_set_owner_unsupported() {
+        let engine = InMemoryEngine::new();
+        let result = engine.set_owner_budget(1, 1000).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not yet implemented"));
+    }
+
+    #[tokio::test]
+    async fn inmem_budget_halt_subtree_unsupported() {
+        let engine = InMemoryEngine::new();
+        let result = engine.halt_budget_subtree(1).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not yet implemented"));
+    }
+
+    #[tokio::test]
+    async fn inmem_budget_inherit_unsupported() {
+        let engine = InMemoryEngine::new();
+        let result = engine.inherit_budget_owner(1, 2).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not yet implemented"));
+    }
+
+    #[tokio::test]
+    async fn inmem_budget_get_owner_unsupported() {
+        let engine = InMemoryEngine::new();
+        let result = engine.get_budget_owner(1).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not yet implemented"));
     }
 }

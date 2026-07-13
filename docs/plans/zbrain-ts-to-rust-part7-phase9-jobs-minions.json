@@ -92,12 +92,57 @@
     "1-3": {
       "id": "1-3",
       "label": "Budget + rate leases (budget-tracker/budget-*/rate-leases.ts, 成本上限与限流)",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "explore",
       "parent": "1",
-      "children": [],
-      "decisions": [],
-      "notes": ""
+      "children": [
+        "1-3-1",
+        "1-3-2",
+        "1-3-3"
+      ],
+      "decisions": [
+        {
+          "q": "1-3 范围边界？",
+          "answer": "A: 首版核心 A+B+C（内存 BudgetTracker + job 级 DB CAS reserve + rate leases）+ 定价基础设施 + 独立 G(token-budget 零成本顺手带）。外围 D+E+旧版 F 后续子节点或 KNOWN-GAPS",
+          "note": "A: 内存 BudgetTracker（gateway 注入路径）= zbrain-budget crate。B: minions/budget-tracker（minion_jobs CAS）= zbrain-core engine trait 扩展。C: rate-leases（subagent_rate_leases + pg_advisory_xact_lock）= zbrain-core。G: token-budget 纯函数无依赖。定价表：静态 const 嵌入 zbrain-budget"
+        },
+        {
+          "q": "BudgetTracker crate 归属？",
+          "answer": "A: 新建 zbrain-budget crate。纯内存 tracker + 定价表(const) + token-budget + 审计 trait(默认 no-op)。零 DB 依赖",
+          "note": "被 gateway 引用，不依赖 zbrain-worker。zbrain-core 的 minion budget 扩展也依赖 zbrain-budget 的 BudgetExhausted 基础类型"
+        },
+        {
+          "q": "BudgetTracker 如何注入 gateway？",
+          "answer": "A: 显式参数传递。gateway fn 签加 Option<&BudgetTracker>。调用方显式传，零魔法，编译器全追踪",
+          "note": "TS AsyncLocalStorage 在 Rust 无等价物。tokio::task::LocalKey 不跨 spawn。显式参数最 Rust 惯用"
+        },
+        {
+          "q": "Job 级预算如何接入 BrainEngine？",
+          "answer": "A: trait 加方法 reserve_budget/refund_budget/set_owner_budget/halt_budget_subtree/inherit_budget_owner。PG 实现，默认 Unsupported",
+          "note": "与 1-2-5 health_check() 模式一致。保持后端中立，不泄 SQL"
+        },
+        {
+          "q": "Rate leases 实现策略？",
+          "answer": "A: BrainEngine trait 加 acquire_rate_lease/renew_rate_lease/release_rate_lease + fnv1a_64 纯函数。PG 实现，默认 Unsupported",
+          "note": "pg_advisory_xact_lock PG 专有，InMemory 永不支持，trait 默认 Unsupported 干净"
+        },
+        {
+          "q": "Token-budget 放哪？",
+          "answer": "A: zbrain-budget crate。与 BudgetTracker 同 crate，无额外依赖",
+          "note": "纯函数查 char/4 + 贪心截断，不污染 zbrain-core"
+        },
+        {
+          "q": "Schema 迁移策略？",
+          "answer": "A: 新 0017_budget_rate_leases.sql，单文件含 ALTER minion_jobs + CREATE minion_budget_log + CREATE subagent_rate_leases",
+          "note": "遵循现有顺序编号惯例，不修改已有迁移。同功能域放一个迁移文件"
+        },
+        {
+          "q": "实现分片策略？",
+          "answer": "A: 三子节点 1-3-1(zbrain-budget crate) + 1-3-2(Engine 预算扩展) + 1-3-3(Engine 租约扩展)。1-3-2+1-3-3 共享 0017 迁移",
+          "note": "1-3-1 零 DB 独立可测先做。1-3-2 依赖 1-3-1 的错误类型。1-3-3 独立于预算可并行"
+        }
+      ],
+      "notes": "grill 收敛 8 决策全 A。范围: A(内存 BudgetTracker)+B(job 级 DB CAS)+C(rate leases)+G(token-budget)。外围 D(minions/budget-meter client_id 每日)+E(enrichment/budget)+F(cycle/budget-meter legacy) 登记 KNOWN-GAPS 或后续子节点。\n\nCrate 布局:\n- zbrain-budget(新): BudgetTracker + ModelPricing/EmbeddingPricing 静态表 + token-budget pure fn + BudgetAuditor trait(默认 no-op) + BudgetExhausted error\n- zbrain-core: engine trait +reserve_budget/refund/set_owner/halt/inherit(1-3-2) + acquire_rate_lease/renew/release(1-3-3) + fnv1a_64 hash + PG impl(postgres.rs)\n- 0017 迁移: ALTER minion_jobs(D3 columns) + CREATE minion_budget_log + CREATE subagent_rate_leases\n\n注入: gateway fn 显式 Option<&BudgetTracker> 参数，不用 task-local storage。审计: trait 抽象，首版 no-op，后续接 JSONL 文件写入"
     },
     "1-4": {
       "id": "1-4",
@@ -459,11 +504,67 @@
         }
       ],
       "notes": "grill 收敛 8 决策全 A。TDD 7 文件：\n\nzbrain-core:\n- minions/types.rs: +SupervisorHealth struct\n- engine.rs: +health_check() trait(默认 Unsupported)\n- postgres.rs: +health_check() PG 实现(3 查询: stalled/waiting/last_completed)\n\nzbrain-worker 新增:\n- exit_classification.rs: classify_exit() 纯函数(4 tests)\n- spawn_helpers.rs: detect_tini() + build_spawn_args()(5 tests)\n- child_supervisor.rs: ChildWorkerSupervisor(6 tests): spawn/respawn/backoff/D1(稳定运行重置)/D2(干净重启预算)/clean exit budget cooldown\n- supervisor.rs: MinionSupervisor(4 tests): PID lock(File::create_new+kill(pid,0)陈腐检测)+信号处理+SIGTERM/SIGINT+DB健康检查 loop+ChildWorkerSupervisor 委托+ZBRAIN_SUPERVISED env + Drop 清理\n- Cargo.toml: +tokio{process,signal}+libc(unix)\n\n63 tests 全绿(40 lib + 9 consume + 6 lifecycle + 8 selfmon)。完整端到端(spawn 真实 zbrain binary)是 1-7 职责"
+    },
+    "1-3-1": {
+      "id": "1-3-1",
+      "label": "新建 zbrain-budget crate: BudgetTracker + pricing + token-budget + audit trait（零DB，纯内存）",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-3",
+      "children": [],
+      "decisions": [],
+      "notes": "发现 zbrain-core 已含完整 BudgetTracker(budget.rs, 24 tests + 定价 REGISTRY + 审计 JSONL)。无需新建 crate。本节点补两个缺口:\n\n- token_budget.rs: estimate_tokens(char/4 ceil, 与 TS text.length 语义对齐用 .chars().count()) + enforce_token_budget 泛型贪心截断(16 tests)\n- budget.rs BudgetAuditor trait + NoopAuditor: 定义 object-safe trait, NoopAuditor 零实现, Send+Sync(2 tests)\n\n总计 34 tests 全绿(16+18)。token_budget 修复 str::len() vs .chars().count() 中日韩差异——Rust 计字节, TS 计字符。"
+    },
+    "1-3-2": {
+      "id": "1-3-2",
+      "label": "Engine 预算扩展: BrainEngine trait reserve_budget/refund/set_owner/halt/inherit + PG CAS 实现 + 0017 migration (ALTER minion_jobs + minion_budget_log)",
+      "status": "in_progress",
+      "mode": "exploit",
+      "parent": "1-3",
+      "children": [],
+      "decisions": [
+        {
+          "q": "BrainEngine trait 加多少方法？",
+          "answer": "A: 全部 7 个（reserve_budget/refund_budget/set_owner_budget/halt_budget_subtree/inherit_budget_owner/get_budget_owner + log_budget_event 内部），trait 默认 Unsupported",
+          "note": "与 1-2-5 health_check() 模式一致。log_budget_event 不暴露在 trait 上——PG 实现内部调用。ReservationOutcome enum 作为返回类型。保持后端中立不泄 SQL"
+        },
+        {
+          "q": "预算耗尽错误处理模式？",
+          "answer": "A: ReservationOutcome enum 四种业务状态全是 Ok。Err 仅用于引擎错误(DB宕机)。调用方单层 match",
+          "note": "BudgetExhausted/OwnerDeleted 不算真错误只是业务状态。与 TS 语义对齐，单层 match 简洁。pub enum ReservationOutcome { Reserved{new_balance_cents,reserved_cents}, Exhausted{balance_at_attempt,requested_cents}, NoBudget, OwnerDeleted{root_owner_id} }"
+        },
+        {
+          "q": "迁移文件拆分？",
+          "answer": "A: 单文件 0017_budget_rate_leases.sql。1-3-2 先加 ALTER minion_jobs + CREATE minion_budget_log，1-3-3 追加 CREATE subagent_rate_leases",
+          "note": "列名统一用 TS 规范 cents_delta，修正 libsql.rs 的 amount_cents。mj.deleted_at 注释保留 future use，登记 KNOWN-GAPS"
+        },
+        {
+          "q": "PG reserve_budget 需要事务？",
+          "answer": "A: 两条语句不做显式事务，CAS UPDATE WHERE 子句自足原子。与 TS 行为一致",
+          "note": "CAS 不命中=race lost→Exhausted。getBudgetOwner 先读只判 OwnerDeleted/NoBudget, race 后丢失审计可接受"
+        },
+        {
+          "q": "审计事件日志类型放哪里？",
+          "answer": "A: 类型放 minions/types.rs（与 QueueHealth/SupervisorHealth 同级），审计写入 private fn 在 postgres.rs",
+          "note": "测试可构造 BudgetEventRecord 验证审计表。审计失败用 tracing::warn! 对标 TS stderr warn，绝不传播"
+        }
+      ],
+      "notes": ""
+    },
+    "1-3-3": {
+      "id": "1-3-3",
+      "label": "Engine 租约扩展: BrainEngine trait acquire_rate_lease/renew/release + fnv1a_64 hash + PG pg_advisory_xact_lock 实现 + 0017 migration (subagent_rate_leases 表)",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-3",
+      "children": [],
+      "decisions": [],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-09 21:33:13",
-    "updated": "2026-07-13 19:51:38",
+    "updated": "2026-07-13 20:35:11",
     "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART7_PHASE9_JOBS_MINIONS.md"
   }
 }

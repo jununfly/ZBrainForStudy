@@ -564,3 +564,26 @@ pub struct SupervisorHealth {
     pub last_completed_at: Option<String>,
 }
 
+// ============================================================
+// Budget management (roadmap 1-3-2)
+// ============================================================
+
+/// Outcome of a budget reservation attempt against a minion job.
+///
+/// All variants are `Ok` — a budget shortage is a business decision, not an
+/// I/O error. The caller decides whether to block, warn, or degrade based on
+/// the variant.
+///
+/// Mirrors TS `ReservationOutcome` (budget types in minion budget layer).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReservationOutcome {
+    /// Budget reserved successfully — `amount_cents` deducted from remaining.
+    Reserved,
+    /// Budget pool exhausted mid-job (remaining > 0 but < requested).
+    Exhausted,
+    /// This job has no budget at all (`budget_remaining_cents IS NULL`).
+    NoBudget,
+    /// The budget's owner job no longer exists.
+    OwnerDeleted,
+}
+

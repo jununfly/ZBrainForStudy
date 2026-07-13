@@ -42,6 +42,7 @@ pub mod sources_ops;
 pub mod sync;
 pub mod takes_fence;
 pub mod time;
+pub mod token_budget;
 pub mod types;
 pub mod url_safety;
 
@@ -104,6 +105,7 @@ pub use file_classify::{
     classify_file, detect_code_language, detect_image_format, is_markdown_path, FileType,
 };
 pub use llm::{LlmClient, LlmRequest, LlmResponse, LlmError, MockLlmClient, TokenUsage};
+pub use token_budget::{enforce_token_budget, estimate_tokens, TokenBudgetMeta};
 #[cfg(feature = "openai")]
 pub use llm::OpenAiClient;
 

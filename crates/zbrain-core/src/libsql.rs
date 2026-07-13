@@ -125,6 +125,7 @@ const MIGRATION_0015: &str = include_str!("../migrations-sqlite/0015_minion_inbo
 
 /// Create `minion_attachments` table — SQLite port of per-job blob storage.
 const MIGRATION_0016: &str = include_str!("../migrations-sqlite/0016_minion_attachments.sql");
+const MIGRATION_0017: &str = include_str!("../migrations-sqlite/0017_minion_budget.sql");
 
 /// Legacy string array — REMOVED in favor of MigrationRegistry.
 /// Use LIBQL_MIGRATIONS instead.
@@ -230,6 +231,11 @@ pub static LIBQL_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 16,
         name: "minion_attachments",
         sql: MIGRATION_0016,
+    }));
+    registry.add(Box::new(LibsqlMigration {
+        version: 17,
+        name: "minion_budget",
+        sql: MIGRATION_0017,
     }));
 
     registry

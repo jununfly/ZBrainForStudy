@@ -15,19 +15,19 @@ fn postgres_registry_is_exported() {
 }
 
 #[test]
-fn postgres_registry_has_ten_migrations() {
-    assert_eq!(POSTGRES_MIGRATIONS.len(), 10);
+fn postgres_registry_has_seventeen_migrations() {
+    assert_eq!(POSTGRES_MIGRATIONS.len(), 17);
 }
 
 #[test]
-fn postgres_registry_latest_version_is_ten() {
-    assert_eq!(POSTGRES_MIGRATIONS.latest_version(), 10);
+fn postgres_registry_latest_version_is_seventeen() {
+    assert_eq!(POSTGRES_MIGRATIONS.latest_version(), 17);
 }
 
 #[test]
-fn postgres_registry_versions_are_1_through_10() {
+fn postgres_registry_versions_are_1_through_17() {
     let versions: Vec<i64> = POSTGRES_MIGRATIONS.iter().map(|m| m.version()).collect();
-    assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]);
 }
 
 #[test]

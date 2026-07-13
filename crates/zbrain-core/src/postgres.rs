@@ -219,6 +219,7 @@ const MIGRATION_0013: &str = include_str!("../migrations/0013_facts.sql");
 const MIGRATION_0014: &str = include_str!("../migrations/0014_minion_jobs.sql");
 const MIGRATION_0015: &str = include_str!("../migrations/0015_minion_inbox.sql");
 const MIGRATION_0016: &str = include_str!("../migrations/0016_minion_attachments.sql");
+const MIGRATION_0017: &str = include_str!("../migrations/0017_minion_budget.sql");
 
 /// Global migration registry for Postgres backend. Built once at runtime first use.
 pub static POSTGRES_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
@@ -304,6 +305,11 @@ pub static POSTGRES_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 16,
         name: "minion_attachments",
         sql: MIGRATION_0016,
+    }));
+    registry.add(Box::new(PostgresMigration {
+        version: 17,
+        name: "minion_budget",
+        sql: MIGRATION_0017,
     }));
 
     registry
@@ -4201,6 +4207,175 @@ impl BrainEngine for PostgresEngine {
                 .map_err(|e| Error::engine(format!("delete_attachment: {e}")))?;
         Ok(affected.rows_affected() > 0)
     }
+
+    // ─── Minion budget management (roadmap 1-3-2) ──────────────────────────
+
+    async fn reserve_budget(
+        &self,
+        job_id: i64,
+        amount_cents: i64,
+        reason: &str,
+    ) -> Result<crate::minions::types::ReservationOutcome> {
+        use crate::minions::types::ReservationOutcome;
+        let pool = self.pool()?;
+
+        let row = sqlx::query(
+            "SELECT budget_remaining_cents, budget_owner_job_id FROM minion_jobs WHERE id = $1",
+        )
+        .bind(job_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::engine(format!("reserve_budget query: {e}")))?;
+
+        // PG stores these as INTEGER (INT4). Read as i32 then widen to i64
+        // to match the trait signature.
+        let (remaining_i32, owner_i32): (Option<i32>, Option<i32>) = match row {
+            None => return Err(Error::engine(format!("reserve_budget: job {job_id} not found"))),
+            Some(r) => (r.get(0), r.get(1)),
+        };
+
+        let remaining: Option<i64> = remaining_i32.map(i64::from);
+        let owner_id: Option<i64> = owner_i32.map(i64::from);
+
+        let remaining = match remaining {
+            None => return Ok(ReservationOutcome::NoBudget),
+            Some(r) => r,
+        };
+
+        if owner_id.is_none() {
+            return Ok(ReservationOutcome::OwnerDeleted);
+        }
+
+        if remaining < amount_cents {
+            return Ok(ReservationOutcome::Exhausted);
+        }
+
+        let affected = sqlx::query(
+            "UPDATE minion_jobs \
+             SET budget_remaining_cents = budget_remaining_cents - $1 \
+             WHERE id = $2 AND budget_remaining_cents >= $1",
+        )
+        .bind(amount_cents)
+        .bind(job_id)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("reserve_budget update: {e}")))?;
+
+        if affected.rows_affected() == 0 {
+            return Ok(ReservationOutcome::Exhausted);
+        }
+
+        if let Err(e) = self.log_budget_event(job_id, amount_cents, reason).await {
+            tracing::warn!(job_id, amount_cents, reason, error = %e, "log_budget_event failed in reserve_budget");
+        }
+
+        Ok(ReservationOutcome::Reserved)
+    }
+
+    async fn refund_budget(
+        &self,
+        job_id: i64,
+        amount_cents: i64,
+        reason: &str,
+    ) -> Result<()> {
+        let pool = self.pool()?;
+
+        sqlx::query(
+            "UPDATE minion_jobs \
+             SET budget_remaining_cents = budget_remaining_cents + $1 \
+             WHERE id = $2 AND budget_remaining_cents IS NOT NULL",
+        )
+        .bind(amount_cents)
+        .bind(job_id)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("refund_budget: {e}")))?;
+
+        if let Err(e) = self.log_budget_event(job_id, -amount_cents, reason).await {
+            tracing::warn!(job_id, amount_cents, reason, error = %e, "log_budget_event failed in refund_budget");
+        }
+
+        Ok(())
+    }
+
+    async fn set_owner_budget(
+        &self,
+        job_id: i64,
+        budget_cents: i64,
+    ) -> Result<()> {
+        let pool = self.pool()?;
+
+        sqlx::query(
+            "UPDATE minion_jobs \
+             SET budget_remaining_cents = $1, budget_owner_job_id = $2 \
+             WHERE id = $2",
+        )
+        .bind(budget_cents)
+        .bind(job_id)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("set_owner_budget: {e}")))?;
+
+        Ok(())
+    }
+
+    async fn halt_budget_subtree(
+        &self,
+        owner_job_id: i64,
+    ) -> Result<i64> {
+        let pool = self.pool()?;
+
+        let affected = sqlx::query(
+            "UPDATE minion_jobs \
+             SET budget_remaining_cents = NULL \
+             WHERE budget_owner_job_id = $1",
+        )
+        .bind(owner_job_id)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("halt_budget_subtree: {e}")))?;
+
+        Ok(affected.rows_affected() as i64)
+    }
+
+    async fn inherit_budget_owner(
+        &self,
+        job_id: i64,
+        new_owner_job_id: i64,
+    ) -> Result<()> {
+        let pool = self.pool()?;
+
+        sqlx::query(
+            "UPDATE minion_jobs \
+             SET budget_owner_job_id = $1 \
+             WHERE id = $2 AND budget_owner_job_id IS NOT NULL",
+        )
+        .bind(new_owner_job_id)
+        .bind(job_id)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("inherit_budget_owner: {e}")))?;
+
+        Ok(())
+    }
+
+    async fn get_budget_owner(
+        &self,
+        job_id: i64,
+    ) -> Result<Option<i64>> {
+        let pool = self.pool()?;
+
+        let owner_i32: Option<i32> = sqlx::query_scalar(
+            "SELECT budget_owner_job_id FROM minion_jobs WHERE id = $1",
+        )
+        .bind(job_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_budget_owner: {e}")))?
+        .flatten();
+
+        Ok(owner_i32.map(i64::from))
+    }
 }
 
 // ─── postgres minion job helpers ──────────────────────────────────────────
@@ -5227,6 +5402,30 @@ impl PostgresEngine {
             scope: scope_string,
             refresh_token,
         })
+    }
+
+    // ─── Internal budget audit logging (1-3-2) ─────────────────────────────
+
+    /// Write a row to `minion_budget_log`. This is a best-effort audit trail
+    /// — failures are returned to the caller who may `tracing::warn!` them.
+    /// `cents_delta` is positive for charges, negative for refunds.
+    async fn log_budget_event(
+        &self,
+        job_id: i64,
+        cents_delta: i64,
+        reason: &str,
+    ) -> Result<()> {
+        let pool = self.pool()?;
+        sqlx::query(
+            "INSERT INTO minion_budget_log (job_id, cents_delta, reason) VALUES ($1, $2, $3)",
+        )
+        .bind(job_id)
+        .bind(cents_delta)
+        .bind(reason)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("log_budget_event: {e}")))?;
+        Ok(())
     }
 }
 
