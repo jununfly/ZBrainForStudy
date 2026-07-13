@@ -150,8 +150,60 @@
       "status": "pending",
       "mode": "explore",
       "parent": "1",
-      "children": [],
-      "decisions": [],
+      "children": [
+        "1-4-1",
+        "1-4-2",
+        "1-4-3",
+        "1-4-4",
+        "1-4-5"
+      ],
+      "decisions": [
+        {
+          "q": "拆解粒度？",
+          "answer": "A: 按复杂度分5子节点",
+          "note": "1-4-1 Handler trait+MinionJobContext+注册机制+subagent handler, 1-4-2 Brain tools(ToolDef+brain-allowlist), 1-4-3 中复杂度(embed-backfill/contextual-reindex/shell), 1-4-4 低复杂度批量(sync/embed/lint/import/...), 1-4-5 Autopilot+phase handlers。Subagent 依赖 1-4-1+1-4-2 先行。"
+        },
+        {
+          "q": "MinionHandler trait 设计？",
+          "answer": "A: Trait object dispatch (async_trait + Box<dyn MinionHandler>)",
+          "note": "Map<String, Box<dyn MinionHandler>> 注册，与 TS Map<string, MinionHandler> 一致。MinionJobContext 不包含回调（updateProgress/updateTokens/log 等直接调 engine 方法），只持有数据 + CancellationToken(signal/shutdown_signal) + Arc<dyn BrainEngine>。"
+        },
+        {
+          "q": "MinionJobContext engine访问方式？",
+          "answer": "A: Arc<dyn BrainEngine> 直接放 context",
+          "note": "Handler 内部直接 ctx.engine.xxx(ctx.id, ...) 调用。不需要回调封装层。Worker 负责构建 context 时传入 engine 引用。"
+        },
+        {
+          "q": "Subagent handler 实现策略？",
+          "answer": "A: v1 最小闭环 — Gateway路径 + 无crash-resumability + 无自修复",
+          "note": "第一版: 解析job input → buildBrainTools → buildSystemPrompt → gateway.toolLoop → 返回SubagentResult。Crash→重头开始(job retry兜底)。消息持久化/crash-replay→1-4-1-1, 自修复→1-4-1-2, Anthropic-direct路径暂不迁移(gateway已覆盖)。"
+        },
+        {
+          "q": "ToolDef trait设计？",
+          "answer": "A: zbrain-core独立ToolDef trait + gateway适配层",
+          "note": "与TS分层一致: zbrain-core不知道gateway存在。ToolDef trait有name/description/input_schema/idempotent/usage_hint/execute。buildBrainTools从OPERATIONS列表构建Vec<Box<dyn ToolDef>>。subagent handler调用to_gateway_tool适配为gateway的ChatToolDef+ToolHandler。加新tool只需实现trait+注册OPERATIONS。"
+        },
+        {
+          "q": "Handler注册与分发机制？",
+          "answer": "A: MinionHandlerRegistry新类型包装HashMap",
+          "note": "HashMap<String, Box<dyn MinionHandler>> 注册查询。register_builtin_handlers工厂函数对应TS registerBuiltinHandlers。Worker循环中 registry.get(&job.name) 查找+分发。分离 registry 和 engine 职责——加新handler不改engine trait。"
+        },
+        {
+          "q": "测试策略？",
+          "answer": "A: 分层测试—不测LLM调用,结构+解析+tool+prompt层单元测试",
+          "note": "本次1-4-1测试: MinionHandler trait Unsupported测试/Registry register+get+names/Subagent输入解析+tool构建+system prompt单元/ToolDef.execute InMemory contract。延后: Subagent LLM集成测试→1-4-1-3, gateway stub→1-4-1-3。"
+        },
+        {
+          "q": "文件目录结构？",
+          "answer": "A: handlers/子目录+tools/子目录,扁平化各自独立文件",
+          "note": "minions/handlers/{subagent,embed_backfill,shell,lint,...}.rs 每个handler一个文件。minions/tools/{mod(ToolDef trait+buildBrainTools+适配),search,read_page,...}.rs。MinionHandlerRegistry放在handler.rs。register_builtin_handlers工厂函数放在新文件registry.rs。"
+        },
+        {
+          "q": "子节点执行顺序？",
+          "answer": "A: 1-4-2(Tools)先行→1-4-1(Registry+Subagent)→1-4-3/4/5",
+          "note": "工具是subagent前置依赖。先建ToolDef trait+第一批工具+buildBrainTools，subagent handler就能用真实工具做测试而非空列表凑数。1-4-3/4/5互不依赖，在1-4-1后任意顺序。"
+        }
+      ],
       "notes": ""
     },
     "1-5": {
@@ -591,11 +643,61 @@
         }
       ],
       "notes": "22/22 tests green. 9 PG集成(acquire容量内/容量满/过期剪枝/renew成功/renew丢失/release幂等/release释放槽位/CASCADE删除/fnv1a_64手写) + 1 InMemory契约 + 3单元 + 10 migration registry. 实现: acquire内部自管理事务+pg_advisory_xact_lock, renew单条UPDATE, release单条DELETE. 0018_rate_leases.sql 双后端迁移+registry."
+    },
+    "1-4-1": {
+      "id": "1-4-1",
+      "label": "Brain tools: ToolDef trait + buildBrainTools + brain-allowlist + to_gateway_tool 适配层",
+      "status": "completed",
+      "mode": "explore",
+      "parent": "1-4",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-4-2": {
+      "id": "1-4-2",
+      "label": "低复杂度 handlers batch: sync/embed/lint/import/extract/backlinks/...",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-4",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-4-3": {
+      "id": "1-4-3",
+      "label": "Autopilot + phase handlers: synthesize/patterns/consolidate/extract_facts/...",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-4",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-4-4": {
+      "id": "1-4-4",
+      "label": "Handler trait + MinionHandlerRegistry + Subagent handler v1",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-4",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-4-5": {
+      "id": "1-4-5",
+      "label": "中复杂度 handlers: embed-backfill + contextual-reindex + shell + 辅助",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-4",
+      "children": [],
+      "decisions": [],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-09 21:33:13",
-    "updated": "2026-07-13 21:37:47",
+    "updated": "2026-07-13 22:10:39",
     "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART7_PHASE9_JOBS_MINIONS.md"
   }
 }

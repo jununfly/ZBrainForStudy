@@ -1,7 +1,7 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust-part7-phase9-jobs-minions.json` | 最后更新: 2026-07-13 21:37:47
+> 数据文件: `zbrain-ts-to-rust-part7-phase9-jobs-minions.json` | 最后更新: 2026-07-13 21:56:47
 
 [!][X+] 1. ZBrain TS→Rust Part7: Phase 9 — Jobs / Agents / Minions / Autopilot / Remote
 ├── [x][X+] 1-1. MinionQueue + job 持久化 (queue.ts, job 生命周期/优先级/状态; jobs CLI 是其 thin wrapper)
@@ -19,6 +19,11 @@
 │   ├── [x][Y+] 1-3-2. Engine 预算扩展: BrainEngine trait reserve_budget/refund/set_owner/halt/inherit + PG CAS 实现 + 0017 migration (ALTER minion_jobs + minion_budget_log)
 │   └── [x][Y+] 1-3-3. Engine 租约扩展: BrainEngine trait acquire_rate_lease/renew/release + fnv1a_64 hash + PG pg_advisory_xact_lock 实现 + 0018 migration (subagent_rate_leases 表)
 ├── [ ][X+] 1-4. Minion handlers + tools (handlers/ + tools/, 具体任务类型: subagent/embed-backfill 等)
+│   ├── [ ][X+] 1-4-1. Brain tools: ToolDef trait + buildBrainTools + brain-allowlist
+│   ├── [ ][X+] 1-4-2. 低复杂度 handlers batch: sync/embed/lint/import/extract/backlinks/...
+│   ├── [ ][X+] 1-4-3. Autopilot + phase handlers: synthesize/patterns/consolidate/extract_facts/...
+│   ├── [ ][X+] 1-4-4. Handler trait + MinionHandlerRegistry + Subagent handler v1
+│   └── [ ][X+] 1-4-5. 中复杂度 handlers: embed-backfill + contextual-reindex + shell + 辅助
 ├── [ ][X+] 1-5. Autopilot + fanout (autopilot.ts/autopilot-fanout.ts 命令 + core)
 ├── [ ][X+] 1-6. Remote execution (remote.ts 命令 + 远程 fanout, 保 PII/trust 边界)
 ├── [ ][X+] 1-7. jobs/agent CLI 命令层 (jobs/jobs-watch/agent/agent-logs, thin wrapper over queue/worker)

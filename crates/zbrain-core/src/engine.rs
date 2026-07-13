@@ -194,7 +194,7 @@ pub enum PageSort {
 /// A single search result from `search_pages`.
 ///
 /// Contains the matched page and a relevance score (0..1, higher = more relevant).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SearchResult {
     /// The matched page
     pub page: Page,

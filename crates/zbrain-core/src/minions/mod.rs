@@ -34,6 +34,7 @@
 pub mod attachments;
 pub mod handler;
 pub mod queue;
+pub mod tools;
 pub mod types;
 
 pub use handler::{MinionHandler, MinionJobContext, MinionWorkerOpts};
