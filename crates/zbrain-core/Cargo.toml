@@ -22,7 +22,7 @@ libsql = { workspace = true }
 # the lib — to serialize the *write* portion of `LibsqlEngine::init_schema`
 # process-wide. Workspace tokio already enables `sync`. No `rt-*` features
 # are pulled into the library, so callers stay free to pick any runtime.
-tokio = { workspace = true, features = ["process"] }
+tokio = { workspace = true, features = ["process", "time"] }
 # Slice 1-2-1 (Phase 9 worker contract): `CancellationToken` for the
 # MinionJobContext cooperative-cancel signals (per-job `signal` + process
 # `shutdown`). Only the `sync` feature — CancellationToken is runtime-agnostic

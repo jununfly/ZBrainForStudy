@@ -30,3 +30,19 @@ pub mod repair_jsonb;
 pub mod subagent_aggregator;
 pub mod sync;
 pub mod sync_retry_failed;
+
+// ── 1-4-3 autopilot + phase handlers (smoke, runCycle pending) ─────────────
+pub mod autopilot_cycle;
+pub mod consolidate;
+pub mod extract_facts;
+pub mod patterns;
+pub mod recompute_emotional_weight;
+pub mod resolve_symbol_edges;
+pub mod synthesize;
+
+// ── 1-4-5 medium-complexity handlers ───────────────────────────────────────
+pub mod contextual_reindex;
+pub mod embed_backfill;
+pub mod extract_conversation_facts;
+pub mod ingest_capture;
+pub mod shell;

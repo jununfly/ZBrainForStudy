@@ -37,6 +37,20 @@ use crate::minions::handlers::subagent::SubagentHandler;
 use crate::minions::handlers::subagent_aggregator::SubagentAggregatorHandler;
 use crate::minions::handlers::sync::SyncHandler;
 use crate::minions::handlers::sync_retry_failed::SyncRetryFailedHandler;
+// 1-4-3
+use crate::minions::handlers::autopilot_cycle::AutopilotCycleHandler;
+use crate::minions::handlers::consolidate::ConsolidateHandler;
+use crate::minions::handlers::extract_facts::ExtractFactsHandler;
+use crate::minions::handlers::patterns::PatternsHandler;
+use crate::minions::handlers::recompute_emotional_weight::RecomputeEmotionalWeightHandler;
+use crate::minions::handlers::resolve_symbol_edges::ResolveSymbolEdgesHandler;
+use crate::minions::handlers::synthesize::SynthesizeHandler;
+// 1-4-5
+use crate::minions::handlers::contextual_reindex::ContextualReindexHandler;
+use crate::minions::handlers::embed_backfill::EmbedBackfillHandler;
+use crate::minions::handlers::extract_conversation_facts::ExtractConversationFactsHandler;
+use crate::minions::handlers::ingest_capture::IngestCaptureHandler;
+use crate::minions::handlers::shell::ShellHandler;
 
 /// A named collection of job handlers. Wraps a `HashMap` so the worker can
 /// resolve a handler by job name in O(1).
@@ -128,6 +142,22 @@ pub fn register_builtin_handlers(
     registry.register("subagent_aggregator", Arc::new(SubagentAggregatorHandler));
     registry.register("sync", Arc::new(SyncHandler));
     registry.register("sync-retry-failed", Arc::new(SyncRetryFailedHandler));
+
+    // ── 1-4-3 autopilot + phase handlers (smoke, runCycle pending) ────────
+    registry.register("autopilot-cycle", Arc::new(AutopilotCycleHandler));
+    registry.register("consolidate", Arc::new(ConsolidateHandler));
+    registry.register("extract_facts", Arc::new(ExtractFactsHandler));
+    registry.register("patterns", Arc::new(PatternsHandler));
+    registry.register("recompute_emotional_weight", Arc::new(RecomputeEmotionalWeightHandler));
+    registry.register("resolve_symbol_edges", Arc::new(ResolveSymbolEdgesHandler));
+    registry.register("synthesize", Arc::new(SynthesizeHandler));
+
+    // ── 1-4-5 medium-complexity handlers ──────────────────────────────────
+    registry.register("contextual_reindex_per_chunk", Arc::new(ContextualReindexHandler));
+    registry.register("embed-backfill", Arc::new(EmbedBackfillHandler));
+    registry.register("extract-conversation-facts", Arc::new(ExtractConversationFactsHandler));
+    registry.register("ingest_capture", Arc::new(IngestCaptureHandler));
+    registry.register("shell", Arc::new(ShellHandler));
 }
 
 #[cfg(test)]
@@ -156,7 +186,7 @@ mod tests {
         let mut r = MinionHandlerRegistry::new();
         register_builtin_handlers(&mut r, engine(), provider());
 
-        assert_eq!(r.len(), 16);
+        assert_eq!(r.len(), 28);
         assert!(!r.is_empty());
         assert!(r.get("subagent").is_some());
         assert!(r.get("orphans").is_some());
@@ -183,6 +213,6 @@ mod tests {
         register_builtin_handlers(&mut r, engine(), provider());
 
         let entries: Vec<_> = r.iter().collect();
-        assert_eq!(entries.len(), 16);
+        assert_eq!(entries.len(), 28);
     }
 }

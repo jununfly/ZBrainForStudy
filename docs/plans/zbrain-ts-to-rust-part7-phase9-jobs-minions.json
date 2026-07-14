@@ -147,7 +147,7 @@
     "1-4": {
       "id": "1-4",
       "label": "Minion handlers + tools (handlers/ + tools/, 具体任务类型: subagent/embed-backfill 等)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [
@@ -667,11 +667,22 @@
     "1-4-3": {
       "id": "1-4-3",
       "label": "Autopilot + phase handlers: synthesize/patterns/consolidate/extract_facts/...",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-4",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "Q1: runCycle port 策略？",
+          "answer": "A: 1-4-3 只做 7 个 handler 骨架注册 + smoke 测试，runCycle + phase 实现留到独立 cycle port 节点（不在 1-4 下）。理由：runCycle 是 5000+ 行独立子系统",
+          "note": ""
+        },
+        {
+          "q": "Q5: smoke 测试深度？",
+          "answer": "A: 纯 smoke——只验证 handler 注册 + handle() 不 panic + 返回合理 JSON。不做输入解析验证。理由：runCycle 未 port，输入格式未定，现在定义类型反而产生假契约需要后续推翻",
+          "note": ""
+        }
+      ],
       "notes": ""
     },
     "1-4-4": {
@@ -687,17 +698,33 @@
     "1-4-5": {
       "id": "1-4-5",
       "label": "中复杂度 handlers: embed-backfill + contextual-reindex + shell + 辅助",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-4",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "Q2: 实现粒度？",
+          "answer": "A: ingest_capture 完整实现（import_from_content 已 port）+ shell 基础 spawn（tokio::process::Command, timeout信号, 无 SIGTERM→SIGKILL）+ embed-backfill/contextual-reindex/extract-conversation-facts/辅助 共 4 个 smoke",
+          "note": ""
+        },
+        {
+          "q": "Q3: 精确范围修正？",
+          "answer": "A: 5 个（去掉不存在的辅助），ingest_capture + shell 完整实现 + embed-backfill/contextual-reindex/extract-conversation-facts 共 3 个 smoke。propose_takes/grade_takes 只作为 runCycle 内部 phase 存在，未注册为独立 job handler，不归入 1-4-5",
+          "note": ""
+        },
+        {
+          "q": "Q4: shell v1 基础 spawn 范围？",
+          "answer": "A: command + timeout(tokio cancel) + stdout/stderr 捕获 → {stdout, stderr, exit_code, timed_out}。cwd 固定项目根，env 透传当前进程 env（不做 allowlist），不做 streaming。~50 行核心逻辑",
+          "note": ""
+        }
+      ],
       "notes": "Q1: 4 原有 + 2 新归入 = 6 个 handler (embed-backfill, contextual-reindex, shell, extract-conversation-facts, ingest_capture, +辅助). | Q5: 单节点, shell v1 基础 spawn (SIGTERM→SIGKILL 后续补), contextual-reindex v1 不做 LLM 调起 (Haiku synopsis deferred), extract-conversation-facts v1 做 engine 侧骨架. | Q7: register_builtin_handlers 签名: engine: Arc<dyn BrainEngine>"
     }
   },
   "metadata": {
     "created": "2026-07-09 21:33:13",
-    "updated": "2026-07-14 11:13:22",
+    "updated": "2026-07-14 13:02:38",
     "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART7_PHASE9_JOBS_MINIONS.md"
   }
 }

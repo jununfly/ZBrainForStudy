@@ -30,7 +30,7 @@ pub enum ChunkSource {
 }
 
 /// 导入结果
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ImportResult {
     pub slug: String,
     pub title: Option<String>,
