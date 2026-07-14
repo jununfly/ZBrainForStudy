@@ -1,0 +1,57 @@
+# KEEP seed set for TS safe-deletion closure.
+# Everything listed here (and everything it transitively imports) is RETAINED.
+# D = ALL - closure(seeds). Deleting D cannot dangle any kept import.
+
+# --- package entrypoints (public surface / still referenced by package.json) ---
+src/core/index.ts
+
+# --- KNOWN-GAPS spec files (must keep as porting reference) ---
+src/core/search/hybrid.ts
+src/core/think/gather.ts
+src/core/search/expansion.ts
+src/core/search/intent-weights.ts
+src/core/ai/gateway.ts
+src/core/minions/queue.ts
+src/core/minions/attachments.ts
+src/commands/takes.ts
+src/commands/apply-migrations.ts
+src/core/ai/recipes/*.ts
+src/core/schema-pack/*.ts
+
+# --- Phase 10: eval / benchmark / dev-tooling sources (retain until Phase 10 decision) ---
+src/eval/**/*.ts
+src/commands/eval*.ts
+src/commands/bench*.ts
+src/commands/calibration.ts
+src/commands/claw-test.ts
+src/commands/founder-scorecard.ts
+src/commands/friction.ts
+src/commands/anomalies.ts
+src/commands/dream.ts
+src/commands/notability-eval.ts
+src/commands/routing-eval.ts
+src/commands/lsd.ts
+src/commands/brainstorm.ts
+src/core/eval/**/*.ts
+src/core/eval-shared/**/*.ts
+src/core/eval-contradictions/**/*.ts
+src/core/cross-modal-eval/**/*.ts
+src/core/claw-test/**/*.ts
+src/core/calibration/**/*.ts
+src/core/bench/**/*.ts
+src/core/brainstorm/**/*.ts
+src/core/diarize/**/*.ts
+src/core/takes-quality-eval/**/*.ts
+src/core/search/eval.ts
+
+# --- doctor health-check subsystem (G5, not migrated) ---
+# (src/commands/doctor.ts already deleted in a prior TS-retirement cut)
+src/core/source-health.ts
+src/core/brain-score-recommendations.ts
+src/core/skillpack/doctor.ts
+
+# NOTE: tests are deliberately NOT seeded. A .test.ts is a leaf (nothing imports
+# it), so it is deletion-neutral: it gets deleted together with the impl slice it
+# covers. Seeding all tests would pull the whole codebase into R (tests import
+# nearly everything) and make D empty. Test classification is handled separately
+# by the `tests` command (a test is deletable iff every file it imports is in D).
