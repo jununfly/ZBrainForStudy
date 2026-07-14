@@ -152,7 +152,7 @@ pub struct PageRef {
 /// `pglite-engine.ts:933`. Both are returned (vs just one) because the TS
 /// callers consume both — `slugs` for cascade-cleanup notifications, `count`
 /// for the audit log.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct PurgeResult {
     pub slugs: Vec<String>,
     pub count: u64,

@@ -19,8 +19,24 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::ai::chat::ChatProvider;
+use crate::engine::BrainEngine;
 use crate::minions::handler::MinionHandler;
+use crate::minions::handlers::backlinks::BacklinksHandler;
+use crate::minions::handlers::embed::EmbedHandler;
+use crate::minions::handlers::extract::ExtractHandler;
+use crate::minions::handlers::import::ImportHandler;
+use crate::minions::handlers::integrity::IntegrityHandler;
+use crate::minions::handlers::integrity_auto::IntegrityAutoHandler;
+use crate::minions::handlers::lint::LintHandler;
+use crate::minions::handlers::lint_fix::LintFixHandler;
+use crate::minions::handlers::orphans::OrphansHandler;
+use crate::minions::handlers::purge::PurgeHandler;
+use crate::minions::handlers::reindex::ReindexHandler;
+use crate::minions::handlers::repair_jsonb::RepairJsonbHandler;
 use crate::minions::handlers::subagent::SubagentHandler;
+use crate::minions::handlers::subagent_aggregator::SubagentAggregatorHandler;
+use crate::minions::handlers::sync::SyncHandler;
+use crate::minions::handlers::sync_retry_failed::SyncRetryFailedHandler;
 
 /// A named collection of job handlers. Wraps a `HashMap` so the worker can
 /// resolve a handler by job name in O(1).
@@ -80,23 +96,53 @@ impl Default for MinionHandlerRegistry {
 }
 
 /// Register every built-in minion handler into `registry`. Called once at
-/// startup. The `chat_provider` is injected for handlers that need to call
-/// the LLM (currently only the subagent handler).
+/// startup. `engine` is the primary wiring point — handlers that need
+/// engine calls get access at handle time via `ctx.engine()`. `chat_provider`
+/// is injected for handlers that call the LLM (subagent).
 ///
-/// As more handlers are built (1-4-2, 1-4-3, 1-4-5), their registration calls
+/// As more handlers are built (1-4-2, 1-4-5), their registration calls
 /// are added here.
 pub fn register_builtin_handlers(
     registry: &mut MinionHandlerRegistry,
+    engine: Arc<dyn BrainEngine>,
     chat_provider: Arc<dyn ChatProvider>,
 ) {
+    let _ = engine; // engine is available for handler construction (1-4-2 / 1-4-5)
+
     // Subagent handler v1 — gateway path (1-4-4).
     registry.register("subagent", Arc::new(SubagentHandler::new(chat_provider)));
+
+    // ── 1-4-2 low-complexity handlers ─────────────────────────────────────
+    registry.register("backlinks", Arc::new(BacklinksHandler));
+    registry.register("embed", Arc::new(EmbedHandler));
+    registry.register("extract", Arc::new(ExtractHandler));
+    registry.register("import", Arc::new(ImportHandler));
+    registry.register("integrity", Arc::new(IntegrityHandler));
+    registry.register("integrity-auto", Arc::new(IntegrityAutoHandler));
+    registry.register("lint", Arc::new(LintHandler));
+    registry.register("lint-fix", Arc::new(LintFixHandler));
+    registry.register("orphans", Arc::new(OrphansHandler));
+    registry.register("purge", Arc::new(PurgeHandler));
+    registry.register("reindex", Arc::new(ReindexHandler));
+    registry.register("repair-jsonb", Arc::new(RepairJsonbHandler));
+    registry.register("subagent_aggregator", Arc::new(SubagentAggregatorHandler));
+    registry.register("sync", Arc::new(SyncHandler));
+    registry.register("sync-retry-failed", Arc::new(SyncRetryFailedHandler));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ai::chat::MockChatProvider;
+    use crate::InMemoryEngine;
+
+    fn engine() -> Arc<dyn BrainEngine> {
+        Arc::new(InMemoryEngine::new())
+    }
+
+    fn provider() -> Arc<dyn ChatProvider> {
+        Arc::new(MockChatProvider::new("test"))
+    }
 
     #[test]
     fn registry_starts_empty() {
@@ -108,13 +154,12 @@ mod tests {
     #[test]
     fn register_and_lookup_handler() {
         let mut r = MinionHandlerRegistry::new();
-        // Use a mock chat provider so we can register the subagent handler
-        let provider = Arc::new(MockChatProvider::new("test"));
-        register_builtin_handlers(&mut r, provider);
+        register_builtin_handlers(&mut r, engine(), provider());
 
-        assert_eq!(r.len(), 1);
+        assert_eq!(r.len(), 16);
         assert!(!r.is_empty());
         assert!(r.get("subagent").is_some());
+        assert!(r.get("orphans").is_some());
         assert!(r.get("nonexistent").is_none());
     }
 
@@ -135,11 +180,9 @@ mod tests {
     #[test]
     fn iter_yields_all_entries() {
         let mut r = MinionHandlerRegistry::new();
-        let p = Arc::new(MockChatProvider::new("test"));
-        register_builtin_handlers(&mut r, p);
+        register_builtin_handlers(&mut r, engine(), provider());
 
         let entries: Vec<_> = r.iter().collect();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].0, "subagent");
+        assert_eq!(entries.len(), 16);
     }
 }

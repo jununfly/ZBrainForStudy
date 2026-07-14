@@ -657,12 +657,12 @@
     "1-4-2": {
       "id": "1-4-2",
       "label": "低复杂度 handlers batch: sync/embed/lint/import/extract/backlinks/...",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-4",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "Q1: 15 handlers (sync, sync-retry-failed, embed, lint, lint-fix, import, extract, backlinks, integrity, integrity-auto, reindex, repair-jsonb, orphans, purge, subagent_aggregator). extract-conversation-facts + ingest_capture → 1-4-5. | Q2: 手写 struct + #[async_trait], 不用宏/泛型 | Q3: 每个 handler 独立文件 handlers/{name}.rs | Q4: 内联核心逻辑, 直接调 ctx.engine() 方法 | Q6: 分层测试 — 5个 InMemory 完整测试, 10个 smoke | Q7: register_builtin_handlers 签名改为 engine: Arc<dyn BrainEngine>"
     },
     "1-4-3": {
       "id": "1-4-3",
@@ -692,12 +692,12 @@
       "parent": "1-4",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "Q1: 4 原有 + 2 新归入 = 6 个 handler (embed-backfill, contextual-reindex, shell, extract-conversation-facts, ingest_capture, +辅助). | Q5: 单节点, shell v1 基础 spawn (SIGTERM→SIGKILL 后续补), contextual-reindex v1 不做 LLM 调起 (Haiku synopsis deferred), extract-conversation-facts v1 做 engine 侧骨架. | Q7: register_builtin_handlers 签名: engine: Arc<dyn BrainEngine>"
     }
   },
   "metadata": {
     "created": "2026-07-09 21:33:13",
-    "updated": "2026-07-13 22:15:40",
+    "updated": "2026-07-14 11:13:22",
     "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART7_PHASE9_JOBS_MINIONS.md"
   }
 }
