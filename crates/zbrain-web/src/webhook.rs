@@ -7,7 +7,7 @@
 //! - Rate limit: 100 req/10s per IP
 //! - Content-type detection via X-Zbrain-Content-Type header override
 //! - Text content types only (markdown/plain/html/json) in v1
-//! - Submits an IngestionEvent for processing
+//! - Submits an `ingest_capture` MinionQueue job (worker chunks + stores)
 //!
 //! ## POST /webhooks/github
 //! - Anonymous endpoint (no OAuth token)
@@ -15,6 +15,7 @@
 //! - Filters for push events only
 //! - Source lookup by github_repo config
 //! - Branch ref matching against tracked_branch
+//! - Submits a `sync` MinionQueue job with priority -10
 
 use std::sync::Arc;
 
@@ -31,7 +32,9 @@ use serde::Serialize;
 use sha2::Sha256;
 use zbrain_core::{
     compute_content_hash, detect_content_type, is_allowed_ingest_content_type,
-    validate_ingestion_event, BrainEngine, IngestionEvent, PageInput, PageKind,
+    minions::queue::MinionQueue,
+    minions::types::MinionJobInput,
+    validate_ingestion_event, BrainEngine, IngestionEvent,
 };
 
 use crate::mcp::extract_bearer_token;
@@ -233,11 +236,10 @@ async fn ingest_handler(
             .into_response();
     }
 
-    // ── Store as a page ───────────────────────────────────────────────
-    // In TS, this submits to MinionQueue which routes to ingest_capture
-    // → importFromContent. Since MinionQueue doesn't exist in Rust yet,
-    // we store directly via put_page for functional parity.
-    // TODO: Integrate with MinionQueue when it's ported.
+    // ── Submit ingest_capture job to MinionQueue ──────────────────────
+    // Mirrors TS: MinionQueue.add('ingest_capture', { slug, content, source, ... })
+    // The worker picks up the job and calls import_from_content to chunk +
+    // store the content as brain pages.
 
     let slug = caller_slug
         .map(|s| s.to_string())
@@ -251,48 +253,44 @@ async fn ingest_handler(
             format!("inbox/{}-{}", today, hash_prefix)
         });
 
-    let page_kind = match content_type.as_str() {
-        "text/markdown" => PageKind::Markdown,
-        "text/html" => PageKind::Markdown, // HTML is stored as markdown-like
-        "application/json" => PageKind::Code,
-        _ => PageKind::Markdown,
-    };
-
-    let page_input = PageInput {
-        page_type: "note".to_string(),
-        title: slug.clone(),
-        compiled_truth: content,
-        page_kind: Some(page_kind),
-        source_kind: Some("webhook".to_string()),
-        source_uri: Some(event.source_uri.clone()),
-        ingested_via: Some("webhook".to_string()),
-        ingested_at: Some(event.received_at.clone()),
-        frontmatter: Some(serde_json::json!({
-            "ingestion_metadata": event.metadata,
-            "untrusted_payload": true,
+    let job_input = MinionJobInput {
+        name: "ingest_capture".to_string(),
+        data: Some(serde_json::json!({
+            "slug": slug,
+            "title": slug,
+            "content": content,
+            "source": source_id,
         })),
-        content_hash: Some(content_hash.clone()),
-        ..Default::default()
+        queue: None,
+        priority: None,
+        max_attempts: None,
+        backoff_type: None,
+        backoff_delay: None,
+        backoff_jitter: None,
+        max_stalled: None,
+        delay: None,
+        parent_job_id: None,
+        on_child_fail: None,
+        max_children: None,
+        timeout_ms: None,
+        remove_on_complete: None,
+        remove_on_fail: None,
+        idempotency_key: None,
     };
 
-    match state
-        .engine
-        .put_page(&slug, Some(&source_id), &page_input)
-        .await
-    {
-        Ok(_page) => {
-            let job_id = uuid::Uuid::new_v4().to_string();
-            (
-                StatusCode::ACCEPTED,
-                Json(serde_json::json!({
-                    "job_id": job_id,
-                    "content_hash": content_hash,
-                    "source_id": source_id,
-                    "message": "Accepted. Event queued for ingestion.",
-                })),
-            )
-                .into_response()
-        }
+    let queue = MinionQueue::new(state.engine.as_ref());
+
+    match queue.add(&job_input).await {
+        Ok(job) => (
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({
+                "job_id": job.id.to_string(),
+                "content_hash": content_hash,
+                "source_id": source_id,
+                "message": "Accepted. Event queued for ingestion.",
+            })),
+        )
+            .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({
@@ -504,21 +502,61 @@ async fn github_webhook_handler(
             .into_response();
     }
 
-    // ── Submit sync job ───────────────────────────────────────────────
-    // In TS, this submits a MinionQueue 'sync' job with priority -10.
-    // Since MinionQueue doesn't exist in Rust yet, we trigger a sync
-    // by creating a placeholder job_id and returning 202.
-    // TODO: Integrate with MinionQueue when it's ported.
-    let job_id = uuid::Uuid::new_v4().to_string();
+    // ── Submit sync job to MinionQueue ────────────────────────────────
+    // Mirrors TS: MinionQueue.add('sync', { sourceId, repoPath, ... }, { priority: -10 })
+    // Push-triggered sync preempts autopilot's default priority 0.
 
-    (
-        StatusCode::ACCEPTED,
-        Json(serde_json::json!({
-            "job_id": job_id,
-            "source_id": source.id,
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let idem_key = format!("sync-trigger:{}:{}", source.id, now_secs / 30);
+
+    let job_input = MinionJobInput {
+        name: "sync".to_string(),
+        data: Some(serde_json::json!({
+            "sourceId": source.id,
+            "repoPath": source.local_path,
+            "auto_embed_backfill": true,
+            "embed_reason": "sync_trigger",
         })),
-    )
-        .into_response()
+        queue: None,
+        priority: Some(-10),
+        max_attempts: None,
+        backoff_type: None,
+        backoff_delay: None,
+        backoff_jitter: None,
+        max_stalled: None,
+        delay: None,
+        parent_job_id: None,
+        on_child_fail: None,
+        max_children: None,
+        timeout_ms: None,
+        remove_on_complete: None,
+        remove_on_fail: None,
+        idempotency_key: Some(idem_key),
+    };
+
+    let queue = MinionQueue::new(state.engine.as_ref());
+
+    match queue.add(&job_input).await {
+        Ok(job) => (
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({
+                "job_id": job.id.to_string(),
+                "source_id": source.id,
+            })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": "queue_submission_failed",
+                "message": e.to_string(),
+            })),
+        )
+            .into_response(),
+    }
 }
 
 /// Get current UTC time as ISO 8601 string.
@@ -900,5 +938,94 @@ mod tests {
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+
+    #[tokio::test]
+    async fn ingest_submits_ingest_capture_job_to_queue() {
+        let engine = Arc::new(InMemoryEngine::default()) as Arc<dyn BrainEngine>;
+        let token_engine = InMemoryEngine::default();
+        let _ = token_engine
+            .exchange_client_credentials("test-client", "test-secret", Some("write"))
+            .await;
+        let tokens = token_engine
+            .exchange_client_credentials("test-client", "test-secret", Some("write"))
+            .await
+            .unwrap();
+        let state = WebhookState {
+            engine: Arc::clone(&engine),
+            token_queries: Arc::new(token_engine) as Arc<dyn zbrain_core::TokenQueries>,
+        };
+        let app = build_router(state);
+
+        let req = Request::post("/ingest")
+            .header("Authorization", format!("Bearer {}", tokens.access_token))
+            .header("content-type", "text/markdown")
+            .header("x-zbrain-slug", "test/ingest-job")
+            .body(Body::from("# Hello World\n\nSome content."))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+        let body: serde_json::Value = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .map(|b| serde_json::from_slice(&b).unwrap_or_default())
+            .unwrap_or_default();
+        assert!(body["job_id"].is_string());
+        assert!(body["content_hash"].is_string());
+
+        // Verify the job was submitted to the queue
+        let queue = zbrain_core::minions::queue::MinionQueue::new(engine.as_ref());
+        let filters = zbrain_core::minions::types::JobFilters::default();
+        let jobs = queue.get_jobs(&filters).await.unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].name, "ingest_capture");
+        assert_eq!(jobs[0].data["slug"], "test/ingest-job");
+        assert_eq!(jobs[0].data["content"], "# Hello World\n\nSome content.");
+        assert_eq!(jobs[0].data["source"], "webhook-test-client");
+    }
+
+    #[tokio::test]
+    async fn github_webhook_submits_sync_job_with_priority_neg10() {
+        let engine = test_engine_with_source();
+        let state = test_webhook_state(Arc::clone(&engine));
+        let app = build_router(state);
+
+        let payload = push_payload("owner/test-repo", "refs/heads/main");
+        let payload_bytes = serde_json::to_vec(&payload).unwrap();
+        let sig = github_sig("super-secret-key", &payload_bytes);
+        let req = Request::post("/webhooks/github")
+            .header("X-Hub-Signature-256", &sig)
+            .header("X-GitHub-Event", "push")
+            .header("content-type", "application/json")
+            .body(Body::from(payload_bytes))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+        let body: serde_json::Value = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .map(|b| serde_json::from_slice(&b).unwrap_or_default())
+            .unwrap_or_default();
+        assert!(body["job_id"].is_string());
+        assert_eq!(body["source_id"], "gh-source-1");
+
+        // Verify the sync job was submitted with priority -10
+        let queue = zbrain_core::minions::queue::MinionQueue::new(engine.as_ref());
+        let filters = zbrain_core::minions::types::JobFilters::default();
+        let jobs = queue.get_jobs(&filters).await.unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].name, "sync");
+        assert_eq!(jobs[0].priority, -10);
+        assert_eq!(jobs[0].data["sourceId"], "gh-source-1");
+        assert_eq!(jobs[0].data["auto_embed_backfill"], true);
+        assert_eq!(jobs[0].data["embed_reason"], "sync_trigger");
+        // Idempotency key should be set
+        assert!(jobs[0]
+            .idempotency_key
+            .as_ref()
+            .unwrap()
+            .starts_with("sync-trigger:gh-source-1:"));
     }
 }
