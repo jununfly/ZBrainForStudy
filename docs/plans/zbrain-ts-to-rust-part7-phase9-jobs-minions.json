@@ -822,7 +822,7 @@
     "1-5-5": {
       "id": "1-5-5",
       "label": "Daemon install/uninstall (detectInstallTarget/generateLaunchdPlist/installLaunchd/installSystemd/installCrontab/installEphemeralContainer/uninstallDaemon/writeWrapperScript)",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-5",
       "children": [],
@@ -831,6 +831,11 @@
           "q": "daemon OpenClaw 集成",
           "answer": "Option A: 包含。忠实 port detectOpenClaw + injection 逻辑(~50行额外)。理由: 1)代码量小 2)uninstallDaemon 也有对应 OpenClaw 清理逻辑, 跳过导致卸载不完整 3)detectOpenClaw 只是文件存在性检查+env var检测 4)injection 是文本操作无外部依赖。4个平台目标全部实现(运行时检测, 不用cfg gate, 和TS一致)",
           "note": "用户确认 A"
+        },
+        {
+          "q": "完成",
+          "answer": "1-5-5 完成: 38 tests. generate_wrapper_script, generate_launchd_plist, generate_systemd_unit, generate_crontab_line, generate_ephemeral_start_script, detect_install_target, detect_open_claw, should_inject_openclaw, resolve_zbrain_cli_path, show_status + path helpers. OpenClaw integration included per Q6. lib 1180 tests green. commit ac3a9ea",
+          "note": ""
         }
       ],
       "notes": ""
@@ -858,7 +863,7 @@
   },
   "metadata": {
     "created": "2026-07-09 21:33:13",
-    "updated": "2026-07-14 14:40:26",
+    "updated": "2026-07-14 14:45:04",
     "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART7_PHASE9_JOBS_MINIONS.md"
   }
 }
