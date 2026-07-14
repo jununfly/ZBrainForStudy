@@ -429,6 +429,44 @@ pub enum Commands {
     ///   zbrain autopilot --status [--json]
     ///   zbrain autopilot --once [--repo <path>]  (single tick, for testing)
     Autopilot(AutopilotArgs),
+
+    /// Remote execution — thin-client commands that round-trip through a remote MCP host.
+    ///
+    /// Usage:
+    ///   zbrain remote ping [--json] [--timeout 5m]
+    ///   zbrain remote doctor [--json]
+    #[command(subcommand)]
+    Remote(RemoteSub),
+}
+
+/// Subcommands for `zbrain remote`.
+#[derive(Debug, Subcommand)]
+pub enum RemoteSub {
+    /// Trigger an autopilot cycle on the remote host (sync + extract + embed).
+    Ping(RemotePingArgs),
+
+    /// Run brain health checks on the remote host and render the report.
+    Doctor(RemoteDoctorArgs),
+}
+
+/// Arguments for `zbrain remote ping`.
+#[derive(Debug, Parser)]
+pub struct RemotePingArgs {
+    /// Emit structured JSON instead of human output.
+    #[arg(long)]
+    pub json: bool,
+
+    /// Max wait duration (e.g. 5m, 30m, 90s). Default: 15m.
+    #[arg(long)]
+    pub max_wait: Option<String>,
+}
+
+/// Arguments for `zbrain remote doctor`.
+#[derive(Debug, Parser)]
+pub struct RemoteDoctorArgs {
+    /// Emit structured JSON instead of human output.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Arguments for `zbrain autopilot`.
@@ -1303,6 +1341,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Orphans(args) => run_orphans_command(args, cli.config.as_deref()).await?,
         Commands::GraphQuery(args) => run_graph_query_command(args, cli.config.as_deref()).await?,
         Commands::Autopilot(args) => run_autopilot_command(args, cli.config.as_deref()).await?,
+        Commands::Remote(sub) => run_remote_command(sub, cli.config.as_deref()).await?,
     }
     Ok(())
 }
@@ -4047,6 +4086,407 @@ async fn run_autopilot_command(
     Ok(())
 }
 
+// ── remote command ──────────────────────────────────────────────────────
+
+/// Parse a duration string like "5m", "30s", "1h", "90s", "500ms" into milliseconds.
+/// Returns None if the string doesn't match the expected format.
+///
+/// Mirrors TS `parseDuration` in remote.ts.
+fn parse_duration(s: &str) -> Option<u64> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+
+    // Find where the numeric part ends and the unit begins.
+    let split_idx = s
+        .find(|c: char| !c.is_ascii_digit() && c != '.')
+        .unwrap_or(s.len());
+
+    let (num_str, unit) = s.split_at(split_idx);
+    let n: f64 = num_str.parse().ok()?;
+    let unit = if unit.is_empty() { "ms" } else { unit };
+
+    let ms = match unit {
+        "ms" => n,
+        "s" => n * 1000.0,
+        "m" => n * 60_000.0,
+        "h" => n * 3_600_000.0,
+        _ => return None,
+    };
+
+    if ms < 0.0 {
+        return None;
+    }
+    Some(ms as u64)
+}
+
+/// Compute the poll interval (in milliseconds) based on elapsed time.
+///
+/// Backoff curve mirrors TS `runRemotePing`:
+///   - First 30s:   poll every 1s
+///   - Next 5m30s:  poll every 5s
+///   - After 6m:    poll every 10s
+fn compute_poll_interval(elapsed_ms: u64) -> u64 {
+    if elapsed_ms < 30_000 {
+        1_000
+    } else if elapsed_ms < 30_000 + 5 * 60_000 {
+        5_000
+    } else {
+        10_000
+    }
+}
+
+/// Unpack an MCP tool call result, extracting JSON from the content envelope.
+///
+/// MCP responses wrap the actual result in a content array:
+///   { "content": [{ "type": "text", "text": "<JSON string>" }] }
+/// or a JSON-RPC envelope:
+///   { "jsonrpc": "2.0", "result": { "content": [...] } }
+///
+/// This function drills through both layers and parses the text as JSON.
+fn unpack_tool_result(value: &serde_json::Value) -> serde_json::Value {
+    // Drill through JSON-RPC envelope if present
+    let value = value.get("result").unwrap_or(value);
+
+    // Extract content array
+    if let Some(content) = value.get("content").and_then(|c| c.as_array()) {
+        if let Some(first) = content.first() {
+            if let Some(text) = first.get("text").and_then(|t| t.as_str()) {
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(text) {
+                    return parsed;
+                }
+                // Return the text as a string value if it's not JSON
+                return serde_json::Value::String(text.to_string());
+            }
+        }
+    }
+
+    // Return as-is if no content envelope
+    value.clone()
+}
+
+/// Check if a job state is terminal.
+fn is_terminal_state(state: &str) -> bool {
+    matches!(state, "completed" | "failed" | "dead" | "cancelled")
+}
+
+/// Execute `zbrain remote` command.
+async fn run_remote_command(
+    sub: RemoteSub,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    let config_file = config_path
+        .map(PathBuf::from)
+        .or_else(config::user_config_path)
+        .ok_or_else(|| anyhow::anyhow!("Could not determine config path"))?;
+
+    let config = config::load_config_from_path(&config_file)?;
+
+    if !config::is_thin_client(&config) {
+        eprintln!(
+            "`zbrain remote` requires thin-client mode. This install has no remote_mcp config.\n\
+             Run `zbrain init --mcp-only` to set up thin-client mode, or use the local CLI directly."
+        );
+        std::process::exit(1);
+    }
+
+    match sub {
+        RemoteSub::Ping(args) => run_remote_ping(config, args).await,
+        RemoteSub::Doctor(args) => run_remote_doctor(config, args).await,
+    }
+}
+
+/// Submit an autopilot-cycle job to the remote host and poll until terminal.
+///
+/// NO `repo` arg is passed — the autopilot uses the server's configured brain
+/// repo. This sidesteps the repo-path validation issue entirely because the
+/// path is server-controlled.
+///
+/// Payload uses `data: {phases: [...]}`, NOT `params:` — the submit_job op
+/// shape takes `data`.
+async fn run_remote_ping(config: config::Config, args: RemotePingArgs) -> anyhow::Result<()> {
+    let timeout_ms = args
+        .max_wait
+        .as_deref()
+        .and_then(parse_duration)
+        .unwrap_or(15 * 60 * 1000); // default 15m
+
+    // Per-call timeout for MCP tool calls (polling interval + slack)
+    let mcp_client = mcp_client::McpClient::new(
+        config,
+        std::time::Duration::from_millis(30_000),
+    );
+
+    // Submit the autopilot-cycle job
+    let submit_result = mcp_client
+        .call_tool(
+            "submit_job",
+            serde_json::json!({
+                "name": "autopilot-cycle",
+                "data": { "phases": ["sync", "extract", "embed"] }
+            }),
+        )
+        .await;
+
+    let submitted = match submit_result {
+        Ok(res) => {
+            let data = unpack_tool_result(&res);
+            // Extract id and state from the response
+            let id = data.get("id").and_then(|v| v.as_i64());
+            let state = data
+                .get("state")
+                .and_then(|v| v.as_str())
+                .unwrap_or("queued");
+            match id {
+                Some(id) => (id, state.to_string()),
+                None => {
+                    if args.json {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "status": "error",
+                                "reason": "parse_error",
+                                "message": "submit_job response missing 'id' field",
+                                "raw": data
+                            })
+                        );
+                    } else {
+                        eprintln!("Failed to parse submit_job response: missing 'id' field");
+                    }
+                    std::process::exit(1);
+                }
+            }
+        }
+        Err(e) => {
+            let msg = format!("{e}");
+            if args.json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "status": "error",
+                        "reason": "unknown",
+                        "message": msg
+                    })
+                );
+            } else {
+                eprintln!("Failed to submit autopilot-cycle: {msg}");
+                eprintln!(
+                    "Hint: ensure the OAuth client was registered with admin scope (`--scopes read,write,admin`)."
+                );
+            }
+            std::process::exit(1);
+        }
+    };
+
+    let (job_id, initial_state) = submitted;
+
+    if !args.json {
+        eprintln!("Submitted autopilot-cycle (job #{job_id}). Polling...");
+    }
+
+    let start = std::time::Instant::now();
+    let mut attempt = 0u32;
+    let mut last_state = initial_state.clone();
+
+    loop {
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+        if elapsed_ms >= timeout_ms {
+            // Timeout
+            if args.json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "status": "error",
+                        "reason": "timeout",
+                        "job_id": job_id,
+                        "last_state": last_state,
+                        "message": format!("ping timed out after {}s; check job {} on the host.", timeout_ms / 1000, job_id),
+                    })
+                );
+            } else {
+                eprintln!(
+                    "\nping timed out after {}s. Job #{job_id} is still {last_state}.",
+                    timeout_ms / 1000
+                );
+                eprintln!("Run `zbrain jobs get {job_id}` on the host to inspect.");
+            }
+            std::process::exit(1);
+        }
+
+        let interval = compute_poll_interval(elapsed_ms);
+        tokio::time::sleep(std::time::Duration::from_millis(interval)).await;
+        attempt += 1;
+
+        // Poll get_job
+        let poll_result = mcp_client
+            .call_tool("get_job", serde_json::json!({ "id": job_id }))
+            .await;
+
+        match poll_result {
+            Ok(res) => {
+                let data = unpack_tool_result(&res);
+                let state = data
+                    .get("state")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| last_state.clone());
+
+                if state != last_state {
+                    last_state = state.clone();
+                    if !args.json {
+                        eprintln!("  job #{job_id} -> {state}");
+                    }
+                }
+
+                if is_terminal_state(&state) {
+                    let ok = state == "completed";
+                    let failed_reason = data
+                        .get("failed_reason")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+
+                    if args.json {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "status": if ok { "success" } else { "error" },
+                                "job_id": job_id,
+                                "state": state,
+                                "failed_reason": if failed_reason.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(failed_reason.to_string()) },
+                                "elapsed_ms": start.elapsed().as_millis(),
+                            })
+                        );
+                    } else {
+                        if ok {
+                            println!(
+                                "\nautopilot-cycle complete ({}s).",
+                                start.elapsed().as_secs()
+                            );
+                        } else {
+                            let reason = if failed_reason.is_empty() {
+                                String::new()
+                            } else {
+                                format!(": {failed_reason}")
+                            };
+                            println!("\nautopilot-cycle ended {state}{reason}.");
+                        }
+                    }
+                    std::process::exit(if ok { 0 } else { 1 });
+                }
+            }
+            Err(e) => {
+                // Network blip mid-poll: log and keep going
+                if !args.json {
+                    eprintln!("  poll #{attempt} failed ({e}); continuing...");
+                }
+            }
+        }
+    }
+}
+
+/// Call `run_doctor` on the remote host, render the structured DoctorReport,
+/// and exit 0/1 based on status (unhealthy -> 1, otherwise 0).
+async fn run_remote_doctor(config: config::Config, args: RemoteDoctorArgs) -> anyhow::Result<()> {
+    let mcp_client = mcp_client::McpClient::new(
+        config,
+        std::time::Duration::from_millis(60_000),
+    );
+
+    let result = mcp_client.call_tool("run_doctor", serde_json::json!({})).await;
+
+    let report = match result {
+        Ok(res) => unpack_tool_result(&res),
+        Err(e) => {
+            let msg = format!("{e}");
+            if args.json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "status": "error",
+                        "reason": "unknown",
+                        "message": msg
+                    })
+                );
+            } else {
+                eprintln!("Failed to run remote doctor: {msg}");
+                eprintln!(
+                    "Hint: run_doctor requires admin scope. Re-register the client with `--scopes read,write,admin`."
+                );
+            }
+            std::process::exit(1);
+        }
+    };
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        render_doctor_report_remote(&report);
+    }
+
+    let status = report
+        .get("status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unhealthy");
+    std::process::exit(if status == "unhealthy" { 1 } else { 0 });
+}
+
+/// Render a remote DoctorReport in human-readable form.
+fn render_doctor_report_remote(report: &serde_json::Value) {
+    println!("\nZBrain Health Check (remote host)");
+    println!("=================================");
+
+    if let Some(checks) = report.get("checks").and_then(|c| c.as_array()) {
+        for check in checks {
+            let name = check.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+            let status = check
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let message = check
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let icon = match status {
+                "ok" => "OK",
+                "warn" => "WARN",
+                "fail" => "FAIL",
+                _ => "??",
+            };
+            println!("  [{icon}] {name}: {message}");
+        }
+    }
+
+    let health_score = report
+        .get("health_score")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let status = report
+        .get("status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    println!("\nHealth score: {health_score}/100. Status: {status}.");
+
+    if status == "unhealthy" {
+        if let Some(checks) = report.get("checks").and_then(|c| c.as_array()) {
+            let fails: Vec<_> = checks
+                .iter()
+                .filter(|c| {
+                    c.get("status").and_then(|v| v.as_str()) == Some("fail")
+                })
+                .collect();
+            if !fails.is_empty() {
+                println!("\nFailures:");
+                for f in fails {
+                    let name = f.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                    let message = f.get("message").and_then(|v| v.as_str()).unwrap_or("");
+                    println!("  - {name}: {message}");
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5952,5 +6392,199 @@ mod tests {
             },
             _ => panic!("expected Autopilot"),
         }
+    }
+
+    // --- Remote CLI tests ---
+
+    #[test]
+    fn remote_ping_parses_default() {
+        let cli = Cli::try_parse_from(["zbrain", "remote", "ping"]).unwrap();
+        match cli.command {
+            Commands::Remote(RemoteSub::Ping(args)) => {
+                assert!(!args.json);
+                assert!(args.max_wait.is_none());
+            },
+            _ => panic!("expected Remote::Ping"),
+        }
+    }
+
+    #[test]
+    fn remote_ping_parses_json_and_timeout() {
+        let cli = Cli::try_parse_from([
+            "zbrain", "remote", "ping", "--json", "--max-wait", "5m",
+        ]).unwrap();
+        match cli.command {
+            Commands::Remote(RemoteSub::Ping(args)) => {
+                assert!(args.json);
+                assert_eq!(args.max_wait.as_deref(), Some("5m"));
+            },
+            _ => panic!("expected Remote::Ping"),
+        }
+    }
+
+    #[test]
+    fn remote_doctor_parses_json() {
+        let cli = Cli::try_parse_from(["zbrain", "remote", "doctor", "--json"]).unwrap();
+        match cli.command {
+            Commands::Remote(RemoteSub::Doctor(args)) => {
+                assert!(args.json);
+            },
+            _ => panic!("expected Remote::Doctor"),
+        }
+    }
+
+    #[test]
+    fn remote_doctor_parses_no_json() {
+        let cli = Cli::try_parse_from(["zbrain", "remote", "doctor"]).unwrap();
+        match cli.command {
+            Commands::Remote(RemoteSub::Doctor(args)) => {
+                assert!(!args.json);
+            },
+            _ => panic!("expected Remote::Doctor"),
+        }
+    }
+
+    // --- parse_duration tests ---
+
+    #[test]
+    fn parse_duration_seconds() {
+        assert_eq!(parse_duration("30s"), Some(30_000));
+        assert_eq!(parse_duration("90s"), Some(90_000));
+        assert_eq!(parse_duration("1s"), Some(1_000));
+    }
+
+    #[test]
+    fn parse_duration_minutes() {
+        assert_eq!(parse_duration("5m"), Some(300_000));
+        assert_eq!(parse_duration("15m"), Some(900_000));
+        assert_eq!(parse_duration("1.5m"), Some(90_000));
+    }
+
+    #[test]
+    fn parse_duration_hours() {
+        assert_eq!(parse_duration("1h"), Some(3_600_000));
+        assert_eq!(parse_duration("2h"), Some(7_200_000));
+    }
+
+    #[test]
+    fn parse_duration_milliseconds() {
+        assert_eq!(parse_duration("500ms"), Some(500));
+        assert_eq!(parse_duration("1000ms"), Some(1000));
+    }
+
+    #[test]
+    fn parse_duration_bare_number_defaults_to_ms() {
+        assert_eq!(parse_duration("500"), Some(500));
+        assert_eq!(parse_duration("1000"), Some(1000));
+    }
+
+    #[test]
+    fn parse_duration_rejects_invalid() {
+        assert_eq!(parse_duration(""), None);
+        assert_eq!(parse_duration("abc"), None);
+        assert_eq!(parse_duration("5x"), None);
+        assert_eq!(parse_duration("-5s"), None);
+    }
+
+    // --- compute_poll_interval tests ---
+
+    #[test]
+    fn poll_interval_1s_for_first_30s() {
+        assert_eq!(compute_poll_interval(0), 1_000);
+        assert_eq!(compute_poll_interval(1_000), 1_000);
+        assert_eq!(compute_poll_interval(29_000), 1_000);
+        assert_eq!(compute_poll_interval(29_999), 1_000);
+    }
+
+    #[test]
+    fn poll_interval_5s_for_30s_to_6m() {
+        assert_eq!(compute_poll_interval(30_000), 5_000);
+        assert_eq!(compute_poll_interval(120_000), 5_000);
+        assert_eq!(compute_poll_interval(300_000), 5_000);
+        assert_eq!(compute_poll_interval(329_999), 5_000);
+    }
+
+    #[test]
+    fn poll_interval_10s_after_6m() {
+        assert_eq!(compute_poll_interval(330_000), 10_000);
+        assert_eq!(compute_poll_interval(600_000), 10_000);
+        assert_eq!(compute_poll_interval(3_600_000), 10_000);
+    }
+
+    // --- is_terminal_state tests ---
+
+    #[test]
+    fn terminal_states() {
+        assert!(is_terminal_state("completed"));
+        assert!(is_terminal_state("failed"));
+        assert!(is_terminal_state("dead"));
+        assert!(is_terminal_state("cancelled"));
+    }
+
+    #[test]
+    fn non_terminal_states() {
+        assert!(!is_terminal_state("queued"));
+        assert!(!is_terminal_state("running"));
+        assert!(!is_terminal_state("waiting"));
+        assert!(!is_terminal_state(""));
+    }
+
+    // --- unpack_tool_result tests ---
+
+    #[test]
+    fn unpack_extracts_from_content_envelope() {
+        let raw = serde_json::json!({
+            "content": [{
+                "type": "text",
+                "text": "{\"id\": 42, \"state\": \"queued\"}"
+            }]
+        });
+        let result = unpack_tool_result(&raw);
+        assert_eq!(result["id"], 42);
+        assert_eq!(result["state"], "queued");
+    }
+
+    #[test]
+    fn unpack_drills_through_jsonrpc_envelope() {
+        let raw = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "content": [{
+                    "type": "text",
+                    "text": "{\"status\": \"healthy\", \"health_score\": 100}"
+                }]
+            }
+        });
+        let result = unpack_tool_result(&raw);
+        assert_eq!(result["status"], "healthy");
+        assert_eq!(result["health_score"], 100);
+    }
+
+    #[test]
+    fn unpack_returns_as_is_when_no_content() {
+        let raw = serde_json::json!({"id": 1, "state": "running"});
+        let result = unpack_tool_result(&raw);
+        assert_eq!(result["id"], 1);
+        assert_eq!(result["state"], "running");
+    }
+
+    #[test]
+    fn unpack_handles_non_json_text() {
+        let raw = serde_json::json!({
+            "content": [{
+                "type": "text",
+                "text": "plain text response"
+            }]
+        });
+        let result = unpack_tool_result(&raw);
+        assert_eq!(result, "plain text response");
+    }
+
+    #[test]
+    fn unpack_handles_empty_content_array() {
+        let raw = serde_json::json!({"content": []});
+        let result = unpack_tool_result(&raw);
+        assert!(result.is_object());
     }
 }
