@@ -209,7 +209,7 @@
     "1-5": {
       "id": "1-5",
       "label": "Autopilot + fanout (autopilot.ts/autopilot-fanout.ts 命令 + core)",
-      "status": "completed",
+      "status": "in_progress",
       "mode": "explore",
       "parent": "1",
       "children": [
@@ -738,7 +738,7 @@
     "1-5-1": {
       "id": "1-5-1",
       "label": "Autopilot fanout 纯函数 + dispatchPerSource (resolveFanoutMax/readLastFullCycleAt/isSourceStale/selectSourcesForDispatch + dispatchPerSource 含 legacy fallback)",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-5",
       "children": [],
@@ -754,7 +754,7 @@
     "1-5-2": {
       "id": "1-5-2",
       "label": "brain-score-recommendations 模块 (computeRecommendations/classifyChecks/maxReachableScore/estimateAnthropicCost + Check/RecommendationContext 类型)",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-5",
       "children": [],
@@ -780,7 +780,7 @@
     "1-5-3": {
       "id": "1-5-3",
       "label": "Cycle 模块: types + phases + runCycle 编排器 (CyclePhase/ALL_PHASES/PhaseScope/PhaseResult/CycleReport/CycleOpts + runPhaseLint/Backlinks/Sync/Extract/Embed/Orphans 等 + runCycle 主函数)",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-5",
       "children": [],
@@ -869,7 +869,7 @@
   },
   "metadata": {
     "created": "2026-07-09 21:33:13",
-    "updated": "2026-07-14 15:01:42",
+    "updated": "2026-07-14 15:05:22",
     "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART7_PHASE9_JOBS_MINIONS.md"
   }
 }
