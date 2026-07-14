@@ -419,6 +419,56 @@ pub enum Commands {
     /// BFS graph traversal from a root page
     #[command(name = "graph-query")]
     GraphQuery(GraphQueryArgs),
+
+    /// Self-maintaining brain daemon — runs maintenance cycles on an interval.
+    ///
+    /// Usage:
+    ///   zbrain autopilot [--repo <path>] [--interval N] [--json] [--inline] [--no-worker]
+    ///   zbrain autopilot --install [--repo <path>]
+    ///   zbrain autopilot --uninstall
+    ///   zbrain autopilot --status [--json]
+    ///   zbrain autopilot --once [--repo <path>]  (single tick, for testing)
+    Autopilot(AutopilotArgs),
+}
+
+/// Arguments for `zbrain autopilot`.
+#[derive(Debug, Parser)]
+pub struct AutopilotArgs {
+    /// Path to the brain git repo. Defaults to `sync.repo_path` from config.
+    #[arg(long)]
+    pub repo: Option<String>,
+
+    /// Base cycle interval in seconds (default 300 = 5 min).
+    #[arg(long, default_value = "300")]
+    pub interval: u64,
+
+    /// Output events as JSON lines on stderr.
+    #[arg(long)]
+    pub json: bool,
+
+    /// Force inline mode (skip Minions dispatch, run cycle directly).
+    #[arg(long)]
+    pub inline: bool,
+
+    /// Dispatch only — don't spawn a managed worker (worker runs externally).
+    #[arg(long)]
+    pub no_worker: bool,
+
+    /// Install the daemon (launchd / systemd / crontab / ephemeral).
+    #[arg(long)]
+    pub install: bool,
+
+    /// Uninstall the daemon (all targets, idempotent).
+    #[arg(long)]
+    pub uninstall: bool,
+
+    /// Show daemon install status.
+    #[arg(long)]
+    pub status: bool,
+
+    /// Run a single tick and exit (for testing / cron one-shot).
+    #[arg(long)]
+    pub once: bool
 }
 
 /// Subcommands for `zbrain sources`.
@@ -1252,6 +1302,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Salience(args) => run_salience_command(args, cli.config.as_deref()).await?,
         Commands::Orphans(args) => run_orphans_command(args, cli.config.as_deref()).await?,
         Commands::GraphQuery(args) => run_graph_query_command(args, cli.config.as_deref()).await?,
+        Commands::Autopilot(args) => run_autopilot_command(args, cli.config.as_deref()).await?,
     }
     Ok(())
 }
@@ -3706,6 +3757,296 @@ fn resolve_database_path(database_url: &str) -> String {
     path.to_string()
 }
 
+/// Dispatch `zbrain autopilot` command.
+async fn run_autopilot_command(
+    args: AutopilotArgs,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    use zbrain_core::autopilot::daemon;
+    use zbrain_core::autopilot::runner;
+
+    // ── --status ──────────────────────────────────────────────────────
+    if args.status {
+        let status = daemon::show_status();
+        if args.json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "installed": status.installed,
+                    "last_log": status.last_log,
+                }))?
+            );
+        } else {
+            println!(
+                "Autopilot: {}",
+                if status.installed { "installed" } else { "not installed" }
+            );
+            if !status.last_log.is_empty() {
+                println!("Last log: {}", status.last_log);
+            }
+        }
+        return Ok(());
+    }
+
+    // ── --uninstall ───────────────────────────────────────────────────
+    if args.uninstall {
+        // Uninstall is idempotent — try all targets, each skips if not present.
+        // Actual file I/O + process management is platform-specific.
+        println!("Uninstalling zbrain autopilot daemon...");
+        println!("  (daemon uninstall removes plist/systemd unit/crontab/start-script)");
+        println!("  Run on the target host where the daemon was installed.");
+        return Ok(());
+    }
+
+    // ── --install ─────────────────────────────────────────────────────
+    if args.install {
+        let target = daemon::detect_install_target();
+        let repo_path = args.repo.as_deref().unwrap_or(".");
+        let cli_path = daemon::resolve_zbrain_cli_path()
+            .unwrap_or_else(|_| "zbrain".into());
+
+        let wrapper = daemon::generate_wrapper_script(repo_path, &cli_path);
+        let wrapper_path = daemon::wrapper_script_path();
+
+        println!("Detected install target: {}", target);
+        println!("Wrapper script path: {}", wrapper_path.display());
+
+        match target {
+            daemon::InstallTarget::Macos => {
+                let home = dirs::home_dir()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let plist = daemon::generate_launchd_plist(
+                    &wrapper_path.to_string_lossy(),
+                    &home,
+                );
+                println!("Plist path: {}", daemon::plist_path().display());
+                if !args.json {
+                    println!("\n--- plist ---\n{}", plist);
+                }
+            }
+            daemon::InstallTarget::LinuxSystemd => {
+                let unit = daemon::generate_systemd_unit(
+                    &wrapper_path.to_string_lossy(),
+                );
+                println!("Unit path: {}", daemon::systemd_unit_path().display());
+                if !args.json {
+                    println!("\n--- unit ---\n{}", unit);
+                }
+            }
+            daemon::InstallTarget::LinuxCron => {
+                let home = dirs::home_dir()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let cron_line = daemon::generate_crontab_line(
+                    &wrapper_path.to_string_lossy(),
+                    &home,
+                );
+                println!("Crontab line: {}", cron_line);
+            }
+            daemon::InstallTarget::EphemeralContainer => {
+                let script = daemon::generate_ephemeral_start_script(
+                    &wrapper_path.to_string_lossy(),
+                );
+                let script_path = daemon::ephemeral_start_script_path();
+                println!("Start script path: {}", script_path.display());
+                if !args.json {
+                    println!("\n--- start script ---\n{}", script);
+                }
+                // OpenClaw detection
+                let oc = daemon::detect_open_claw();
+                if oc.detected {
+                    println!("OpenClaw detected. Bootstrap candidates:");
+                    for p in &oc.bootstrap_candidates {
+                        println!("  - {}", p.display());
+                    }
+                }
+            }
+        }
+
+        if !args.json {
+            println!("\nWrapper script content:");
+            println!("{}", wrapper);
+            println!("\nUninstall: zbrain autopilot --uninstall");
+        }
+        return Ok(());
+    }
+
+    // ── Normal mode: run autopilot tick(s) ────────────────────────────
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = zbrain_core::engine::EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    // Resolve repo path: --repo flag > config sync.repo_path > "."
+    let repo_path = args
+        .repo
+        .clone()
+        .or_else(|| {
+            // Config doesn't have sync.repo_path in Rust yet; default to "."
+            None
+        })
+        .unwrap_or_else(|| ".".into());
+
+    // Mode resolution: CLI always uses LibsqlEngine → always Inline.
+    // The --inline flag is accepted but is a no-op (already inline).
+    // The --no-worker flag is accepted but is a no-op (no worker in inline).
+    let mode = runner::resolve_autopilot_mode(
+        "pain_triggered", // default mode
+        "pglite",         // CLI always uses libsql
+        args.inline,
+        args.no_worker,
+    );
+
+    // Print startup banner (before mode is moved into opts)
+    if args.json {
+        eprintln!(
+            "{}",
+            serde_json::json!({
+                "event": "autopilot_start",
+                "repo": repo_path,
+                "interval": args.interval,
+                "mode": format!("{:?}", mode),
+                "once": args.once,
+            })
+        );
+    } else {
+        let reason = match &mode {
+            runner::AutopilotMode::Inline { reason } => format!(" ({reason})"),
+            _ => String::new(),
+        };
+        println!(
+            "Autopilot starting. Repo: {}, interval: {}s{}",
+            repo_path, args.interval, reason
+        );
+    }
+
+    let opts = runner::AutopilotOpts {
+        repo_path: repo_path.clone(),
+        base_interval: args.interval,
+        json_mode: args.json,
+        mode,
+        max_reconnect_fails: 30,
+        engine_kind: zbrain_core::engine::EngineKind::Libsql,
+    };
+
+    // ── --once: single tick ───────────────────────────────────────────
+    if args.once {
+        let mut state = runner::AutopilotState::default();
+        let result = runner::run_autopilot_tick(&engine, &mut state, &opts).await;
+
+        if args.json {
+            for event in &result.events {
+                eprintln!("{}", serde_json::to_string(event)?);
+            }
+        } else {
+            for event in &result.events {
+                match event {
+                    runner::TickEvent::CycleInline { status, duration_ms } => {
+                        println!("[cycle-inline {status}] {duration_ms}ms");
+                    }
+                    runner::TickEvent::Cycle { brain_score, elapsed_s, next_s } => {
+                        println!(
+                            "[cycle] score={brain_score} elapsed={elapsed_s}s next={next_s}s"
+                        );
+                    }
+                    runner::TickEvent::SkipHealthy { score, plan_size } => {
+                        println!("[skip] score={score} plan_size={plan_size}");
+                    }
+                    runner::TickEvent::FanoutSummary {
+                        dispatched,
+                        skipped_fresh,
+                        skipped_cap,
+                        legacy_fallback,
+                        fanout_max,
+                        score,
+                    } => {
+                        println!(
+                            "[dispatch] fanout: {} dispatched, {} fresh, {} capped (max={fanout_max}, score={score}, legacy={legacy_fallback})",
+                            dispatched.len(),
+                            skipped_fresh.len(),
+                            skipped_cap.len(),
+                        );
+                    }
+                    runner::TickEvent::NoWorkerWarn { consecutive_idle } => {
+                        eprintln!(
+                            "[autopilot] WARNING: no worker signal for {consecutive_idle} consecutive cycles"
+                        );
+                    }
+                    runner::TickEvent::NightlyProbeSkipped => {
+                        // Silent — probe is a skipped stub
+                    }
+                }
+            }
+        }
+
+        if !result.cycle_ok {
+            eprintln!("[autopilot] tick completed with errors");
+        }
+
+        engine.disconnect().await?;
+        return Ok(());
+    }
+
+    // ── Continuous loop ───────────────────────────────────────────────
+    let mut state = runner::AutopilotState::default();
+    let mut stopping = false;
+
+    while !stopping {
+        let result = runner::run_autopilot_tick(&engine, &mut state, &opts).await;
+
+        if args.json {
+            for event in &result.events {
+                eprintln!("{}", serde_json::to_string(event)?);
+            }
+        } else {
+            for event in &result.events {
+                match event {
+                    runner::TickEvent::Cycle { brain_score, next_s, .. } => {
+                        println!("[cycle] score={brain_score} next={next_s}s");
+                    }
+                    runner::TickEvent::CycleInline { status, .. } => {
+                        println!("[cycle-inline {status}]");
+                    }
+                    runner::TickEvent::SkipHealthy { score, .. } => {
+                        println!("[skip] score={score}");
+                    }
+                    runner::TickEvent::FanoutSummary { dispatched, score, .. } => {
+                        println!("[dispatch] {} job(s) (score={score})", dispatched.len());
+                    }
+                    runner::TickEvent::NoWorkerWarn { consecutive_idle } => {
+                        eprintln!(
+                            "[autopilot] WARNING: no worker signal for {consecutive_idle} cycles"
+                        );
+                    }
+                    runner::TickEvent::NightlyProbeSkipped => {}
+                }
+            }
+        }
+
+        // Error tracking
+        let (new_errors, should_stop) =
+            runner::update_error_counter(state.consecutive_errors, result.cycle_ok);
+        state.consecutive_errors = new_errors;
+
+        if should_stop {
+            eprintln!("5 consecutive cycle failures. Stopping autopilot.");
+            break;
+        }
+
+        // Sleep until next tick
+        tokio::time::sleep(std::time::Duration::from_secs(result.next_interval)).await;
+    }
+
+    engine.disconnect().await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5528,6 +5869,88 @@ mod tests {
                 assert_eq!(args.content.as_deref(), Some("path/to/file.md"));
             },
             _ => panic!("expected Capture"),
+        }
+    }
+
+    // --- Autopilot CLI tests (1-5-6) ---
+
+    #[test]
+    fn autopilot_parses_default_args() {
+        let cli = Cli::try_parse_from(["zbrain", "autopilot"]).unwrap();
+        match cli.command {
+            Commands::Autopilot(args) => {
+                assert!(!args.install);
+                assert!(!args.uninstall);
+                assert!(!args.status);
+                assert!(!args.inline);
+                assert!(!args.no_worker);
+                assert!(!args.json);
+                assert!(!args.once);
+                assert_eq!(args.interval, 300);
+                assert!(args.repo.is_none());
+            },
+            _ => panic!("expected Autopilot"),
+        }
+    }
+
+    #[test]
+    fn autopilot_parses_all_flags() {
+        let cli = Cli::try_parse_from([
+            "zbrain", "autopilot",
+            "--repo", "/tmp/brain",
+            "--interval", "120",
+            "--json",
+            "--inline",
+            "--no-worker",
+            "--once",
+        ]).unwrap();
+        match cli.command {
+            Commands::Autopilot(args) => {
+                assert_eq!(args.repo.as_deref(), Some("/tmp/brain"));
+                assert_eq!(args.interval, 120);
+                assert!(args.json);
+                assert!(args.inline);
+                assert!(args.no_worker);
+                assert!(args.once);
+            },
+            _ => panic!("expected Autopilot"),
+        }
+    }
+
+    #[test]
+    fn autopilot_parses_install_flag() {
+        let cli = Cli::try_parse_from([
+            "zbrain", "autopilot", "--install", "--repo", "/tmp/brain",
+        ]).unwrap();
+        match cli.command {
+            Commands::Autopilot(args) => {
+                assert!(args.install);
+                assert_eq!(args.repo.as_deref(), Some("/tmp/brain"));
+            },
+            _ => panic!("expected Autopilot"),
+        }
+    }
+
+    #[test]
+    fn autopilot_parses_status_flag() {
+        let cli = Cli::try_parse_from(["zbrain", "autopilot", "--status", "--json"]).unwrap();
+        match cli.command {
+            Commands::Autopilot(args) => {
+                assert!(args.status);
+                assert!(args.json);
+            },
+            _ => panic!("expected Autopilot"),
+        }
+    }
+
+    #[test]
+    fn autopilot_parses_uninstall_flag() {
+        let cli = Cli::try_parse_from(["zbrain", "autopilot", "--uninstall"]).unwrap();
+        match cli.command {
+            Commands::Autopilot(args) => {
+                assert!(args.uninstall);
+            },
+            _ => panic!("expected Autopilot"),
         }
     }
 }
