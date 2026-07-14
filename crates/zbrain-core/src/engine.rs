@@ -2239,6 +2239,20 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
             "release_rate_lease not yet implemented for this engine",
         ))
     }
+
+    /// Compute a `BrainHealth` snapshot — page counts, embed coverage,
+    /// orphan/dead-link metrics, and the composite `brain_score` (0-100).
+    ///
+    /// Mirrors TS `engine.getHealth()`. Used by autopilot's targeted-submit
+    /// path and `zbrain doctor`. The default implementation returns
+    /// "unsupported"; each backend overrides with an efficient query.
+    async fn get_health(&self) -> crate::Result<crate::autopilot::brain_score::BrainHealth> {
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "get_health not yet implemented for this engine",
+        ))
+    }
 }
 
 // ─── InMemoryEngine ──────────────────────────────────────────────────────────
@@ -2466,6 +2480,29 @@ impl InMemoryEngine {
         {
             page.effective_date = Some(iso8601.to_string());
         }
+    }
+
+    /// Direct access to the page store for tests that need to seed pages
+    /// without going through `put_page` (which requires a source_id).
+    pub fn store_for_test(&self) -> std::sync::MutexGuard<'_, Vec<Page>> {
+        self.store.lock().expect("InMemoryEngine store mutex poisoned")
+    }
+
+    /// Direct access to the chunk store for tests.
+    pub fn chunk_store_for_test(
+        &self,
+    ) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, Vec<crate::import::ChunkInput>>>
+    {
+        self.chunk_store
+            .lock()
+            .expect("InMemoryEngine chunk_store mutex poisoned")
+    }
+
+    /// Direct access to the links store for tests.
+    pub fn links_store_for_test(&self) -> std::sync::MutexGuard<'_, Vec<InternalLink>> {
+        self.links_store
+            .lock()
+            .expect("InMemoryEngine links_store mutex poisoned")
     }
 
     // ─── Minion D-layer helpers (1-1-3-1) ───────────────────────────────────
@@ -5693,6 +5730,189 @@ impl BrainEngine for InMemoryEngine {
     ) -> crate::Result<()> {
         // TODO: implement code edge deletion in InMemoryEngine
         Ok(())
+    }
+
+    async fn get_health(&self) -> crate::Result<crate::autopilot::brain_score::BrainHealth> {
+        use crate::autopilot::brain_score::{BrainHealth, MostConnectedEntry};
+
+        let store = self.store.lock().expect("InMemoryEngine store mutex poisoned");
+        let chunk_store = self.chunk_store.lock().expect("InMemoryEngine chunk_store mutex poisoned");
+        let links_store = self.links_store.lock().expect("InMemoryEngine links_store mutex poisoned");
+
+        // Live pages (not soft-deleted)
+        let live_pages: Vec<&Page> = store.iter().filter(|p| p.deleted_at.is_none()).collect();
+        let page_count = live_pages.len();
+
+        // Build id→slug map for link resolution
+        let id_to_slug: std::collections::HashMap<u64, &str> = live_pages
+            .iter()
+            .map(|p| (p.id, p.slug.as_str()))
+            .collect();
+        let live_ids: std::collections::HashSet<u64> = live_pages.iter().map(|p| p.id).collect();
+
+        // ── Chunk / embedding metrics ──────────────────────────────────
+        let mut total_chunks = 0usize;
+        let mut missing_embeddings = 0usize;
+        for chunks in chunk_store.values() {
+            for c in chunks.iter() {
+                total_chunks += 1;
+                if c.embedding.is_none() {
+                    missing_embeddings += 1;
+                }
+            }
+        }
+        let embed_coverage = if total_chunks > 0 {
+            (total_chunks - missing_embeddings) as f64 / total_chunks as f64
+        } else {
+            1.0 // no chunks → full coverage (nothing missing)
+        };
+
+        // ── Link metrics ───────────────────────────────────────────────
+        let link_count = links_store.len();
+        let dead_links = links_store
+            .iter()
+            .filter(|l| !live_ids.contains(&l.to_page_id))
+            .count();
+
+        // Orphan pages: no inbound AND no outbound links (islanded)
+        let has_inbound: std::collections::HashSet<u64> = links_store
+            .iter()
+            .map(|l| l.to_page_id)
+            .filter(|id| live_ids.contains(id))
+            .collect();
+        let has_outbound: std::collections::HashSet<u64> = links_store
+            .iter()
+            .map(|l| l.from_page_id)
+            .filter(|id| live_ids.contains(id))
+            .collect();
+        let orphan_pages = live_pages
+            .iter()
+            .filter(|p| !has_inbound.contains(&p.id) && !has_outbound.contains(&p.id))
+            .count();
+
+        // ── Timeline metrics ───────────────────────────────────────────
+        // Timeline is stored as a JSON string on Page. Non-empty array = has timeline.
+        let pages_with_timeline = live_pages
+            .iter()
+            .filter(|p| {
+                if let Ok(arr) = serde_json::from_str::<serde_json::Value>(&p.timeline) {
+                    arr.is_array() && !arr.as_array().unwrap().is_empty()
+                } else {
+                    false
+                }
+            })
+            .count();
+
+        // stale_pages: pages where updated_at < max timeline entry date.
+        // InMemory stores timeline as JSON on the page, not a separate table
+        // with created_at. Conservative: 0 stale (TS uses a separate table).
+        let stale_pages = 0usize;
+
+        // ── Entity pages (person/company) ──────────────────────────────
+        let entity_pages: Vec<&Page> = live_pages
+            .iter()
+            .copied()
+            .filter(|p| p.page_type == "person" || p.page_type == "company")
+            .collect();
+        let entity_count = entity_pages.len();
+
+        // link_coverage: entity pages with ≥1 inbound link
+        let link_coverage = if entity_count > 0 {
+            let entities_with_inbound = entity_pages
+                .iter()
+                .filter(|p| has_inbound.contains(&p.id))
+                .count();
+            entities_with_inbound as f64 / entity_count as f64
+        } else {
+            0.0
+        };
+
+        // timeline_coverage: entity pages with timeline
+        let timeline_coverage = if entity_count > 0 {
+            let entities_with_timeline = entity_pages
+                .iter()
+                .filter(|p| {
+                    if let Ok(arr) = serde_json::from_str::<serde_json::Value>(&p.timeline) {
+                        arr.is_array() && !arr.as_array().unwrap().is_empty()
+                    } else {
+                        false
+                    }
+                })
+                .count();
+            entities_with_timeline as f64 / entity_count as f64
+        } else {
+            0.0
+        };
+
+        // ── most_connected: top 5 entities by total link count ─────────
+        let mut link_counts: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
+        for l in links_store.iter() {
+            if live_ids.contains(&l.from_page_id) {
+                *link_counts.entry(l.from_page_id).or_insert(0) += 1;
+            }
+            if live_ids.contains(&l.to_page_id) {
+                *link_counts.entry(l.to_page_id).or_insert(0) += 1;
+            }
+        }
+        let mut connected: Vec<(u64, usize)> = entity_pages
+            .iter()
+            .filter_map(|p| link_counts.get(&p.id).map(|&c| (p.id, c)))
+            .collect();
+        connected.sort_by(|a, b| b.1.cmp(&a.1));
+        let most_connected: Vec<MostConnectedEntry> = connected
+            .iter()
+            .take(5)
+            .filter_map(|(id, count)| {
+                id_to_slug.get(id).map(|slug| MostConnectedEntry {
+                    slug: slug.to_string(),
+                    link_count: *count,
+                })
+            })
+            .collect();
+
+        // ── Score computation ──────────────────────────────────────────
+        // v0.37.10.0: empty brains (pageCount === 0) get FULL marks (100/100)
+        let (embed_coverage_score, link_density_score, timeline_coverage_score,
+             no_orphans_score, no_dead_links_score) = if page_count == 0 {
+            (35u32, 25u32, 15u32, 15u32, 10u32)
+        } else {
+            let link_density = (link_count as f64 / page_count as f64).min(1.0);
+            let timeline_density = (pages_with_timeline as f64 / page_count as f64).min(1.0);
+            let no_orphans = 1.0 - (orphan_pages as f64 / page_count as f64);
+            let no_dead = 1.0 - (dead_links as f64 / page_count as f64).min(1.0);
+            (
+                (embed_coverage * 35.0).round() as u32,
+                (link_density * 25.0).round() as u32,
+                (timeline_density * 15.0).round() as u32,
+                (no_orphans * 15.0).round() as u32,
+                (no_dead * 10.0).round() as u32,
+            )
+        };
+        let brain_score = BrainHealth::compute_brain_score(
+            embed_coverage_score,
+            link_density_score,
+            timeline_coverage_score,
+            no_orphans_score,
+            no_dead_links_score,
+        );
+
+        Ok(BrainHealth {
+            page_count,
+            embed_coverage,
+            stale_pages,
+            orphan_pages,
+            missing_embeddings,
+            brain_score,
+            dead_links,
+            link_coverage,
+            timeline_coverage,
+            most_connected,
+            embed_coverage_score,
+            link_density_score,
+            timeline_coverage_score,
+            no_orphans_score,
+            no_dead_links_score,
+        })
     }
 }
 

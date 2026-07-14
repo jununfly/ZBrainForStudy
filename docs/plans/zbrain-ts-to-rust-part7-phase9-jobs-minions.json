@@ -768,6 +768,11 @@
           "q": "computeRecommendations AI recipe/pricing 依赖",
           "answer": "Option B: 硬编码已知 provider 检查。embeddingProviderConfigured 硬编码 openai/zeroentropy/ollama/llama-server 四个 provider 的 auth_env 逻辑，跳过 recipe 注册表。静态 pricing 表(Anthropic+embedding)直接 port ~50行。KNOWN-GAPS 登记G26: recipe 注册表未迁移，新 provider 需手动加 match arm",
           "note": "用户选 B"
+        },
+        {
+          "q": "完成",
+          "answer": "35 tests 全绿 (23 纯函数 + 6 get_health InMemory 集成 + 6 原有)。lib 1066 tests 无回归。产物: BrainHealth struct + get_health() trait method (InMemory 实现, SQL 后端用 default) + compute_recommendations + classify_checks + max_reachable_score + estimate_anthropic_cost + embedding_provider_configured (Option B 硬编码 6 provider) + 静态 pricing 表 (Anthropic 6 model + embedding 7 model) + canonical_json + idempotency_key + RemediationStep/Check/RecommendationContext/CheckClassification 类型",
+          "note": "1-5-2 完成"
         }
       ],
       "notes": ""
@@ -843,7 +848,7 @@
   },
   "metadata": {
     "created": "2026-07-09 21:33:13",
-    "updated": "2026-07-14 13:57:59",
+    "updated": "2026-07-14 14:19:25",
     "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART7_PHASE9_JOBS_MINIONS.md"
   }
 }
