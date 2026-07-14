@@ -249,11 +249,17 @@
     "1-7": {
       "id": "1-7",
       "label": "jobs/agent CLI 命令层 (jobs/jobs-watch/agent/agent-logs, thin wrapper over queue/worker)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "1-7 实现范围",
+          "answer": "jobs 8 subcommands (submit/list/get/cancel/retry/prune/stats/work) + agent run with --follow. Work 为 stub (worker 在 zbrain-worker crate). MinionQueue::new(&engine) 直接引用 LibsqlEngine. 15 tests pass.",
+          "note": "commit e1b8bf7"
+        }
+      ],
       "notes": ""
     },
     "1-8": {
@@ -875,7 +881,7 @@
   },
   "metadata": {
     "created": "2026-07-09 21:33:13",
-    "updated": "2026-07-14 15:37:58",
+    "updated": "2026-07-14 16:03:20",
     "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART7_PHASE9_JOBS_MINIONS.md"
   }
 }
