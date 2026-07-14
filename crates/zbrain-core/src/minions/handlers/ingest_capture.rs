@@ -15,8 +15,8 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::error::StructuredError;
-use crate::minions::handler::{MinionHandler, MinionJobContext};
 use crate::import::import_from_content;
+use crate::minions::handler::{MinionHandler, MinionJobContext};
 use crate::Result;
 
 pub struct IngestCaptureHandler;
@@ -26,7 +26,13 @@ fn required_string(data: &Value, key: &str) -> Result<String> {
     data.get(key)
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
-        .ok_or_else(|| StructuredError::new("handler", "invalid_input", &format!("missing required field: {key}")))
+        .ok_or_else(|| {
+            StructuredError::new(
+                "handler",
+                "invalid_input",
+                &format!("missing required field: {key}"),
+            )
+        })
 }
 
 /// Extract an optional string field from a JSON object.
@@ -64,10 +70,17 @@ impl MinionHandler for IngestCaptureHandler {
             &content,
             &tags,
             &source,
+            // G25: import_from_content now accepts an optional embedding client.
+            // MinionJobContext does not yet carry one, so chunk embeddings are
+            // not generated on this path (chunks stored with embedding=None,
+            // vector search degrades to lexical-only). Wiring an embedding
+            // client into the minion context is a separate follow-up.
+            None,
         )
         .await?;
 
-        serde_json::to_value(&result).map_err(|e| StructuredError::new("handler", "serialize_error", &e.to_string()))
+        serde_json::to_value(&result)
+            .map_err(|e| StructuredError::new("handler", "serialize_error", &e.to_string()))
     }
 }
 
@@ -89,7 +102,8 @@ mod tests {
         let eng = engine();
         let context = MinionJobContext::new(
             Arc::clone(&eng) as Arc<dyn BrainEngine>,
-            1, "ingest_capture".into(),
+            1,
+            "ingest_capture".into(),
             json!({
                 "slug": "test-page",
                 "title": "Test Page",
@@ -98,7 +112,9 @@ mod tests {
                 "source": "capture"
             }),
             0,
-            "tok".into(), CancellationToken::new(), CancellationToken::new(),
+            "tok".into(),
+            CancellationToken::new(),
+            CancellationToken::new(),
         );
         let handler = IngestCaptureHandler;
         let result = handler.handle(&context).await.expect("should succeed");
@@ -113,10 +129,13 @@ mod tests {
         let eng = engine();
         let context = MinionJobContext::new(
             Arc::clone(&eng) as Arc<dyn BrainEngine>,
-            1, "ingest_capture".into(),
+            1,
+            "ingest_capture".into(),
             json!({"content": "hello", "source": "test"}),
             0,
-            "tok".into(), CancellationToken::new(), CancellationToken::new(),
+            "tok".into(),
+            CancellationToken::new(),
+            CancellationToken::new(),
         );
         let handler = IngestCaptureHandler;
         assert!(handler.handle(&context).await.is_err());
@@ -127,10 +146,13 @@ mod tests {
         let eng = engine();
         let context = MinionJobContext::new(
             Arc::clone(&eng) as Arc<dyn BrainEngine>,
-            1, "ingest_capture".into(),
+            1,
+            "ingest_capture".into(),
             json!({"slug": "test", "source": "test"}),
             0,
-            "tok".into(), CancellationToken::new(), CancellationToken::new(),
+            "tok".into(),
+            CancellationToken::new(),
+            CancellationToken::new(),
         );
         let handler = IngestCaptureHandler;
         assert!(handler.handle(&context).await.is_err());
@@ -141,14 +163,17 @@ mod tests {
         let eng = engine();
         let context = MinionJobContext::new(
             Arc::clone(&eng) as Arc<dyn BrainEngine>,
-            1, "ingest_capture".into(),
+            1,
+            "ingest_capture".into(),
             json!({
                 "slug": "empty",
                 "content": "",
                 "source": "test"
             }),
             0,
-            "tok".into(), CancellationToken::new(), CancellationToken::new(),
+            "tok".into(),
+            CancellationToken::new(),
+            CancellationToken::new(),
         );
         let handler = IngestCaptureHandler;
         let result = handler.handle(&context).await.expect("should succeed");
@@ -160,14 +185,17 @@ mod tests {
         let eng = engine();
         let context = MinionJobContext::new(
             Arc::clone(&eng) as Arc<dyn BrainEngine>,
-            1, "ingest_capture".into(),
+            1,
+            "ingest_capture".into(),
             json!({
                 "slug": "minimal",
                 "content": "just one line",
                 "source": "test"
             }),
             0,
-            "tok".into(), CancellationToken::new(), CancellationToken::new(),
+            "tok".into(),
+            CancellationToken::new(),
+            CancellationToken::new(),
         );
         let handler = IngestCaptureHandler;
         let result = handler.handle(&context).await.expect("should succeed");

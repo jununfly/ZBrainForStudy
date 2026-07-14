@@ -895,18 +895,19 @@ impl BrainEngine for LibsqlEngine {
             None
         };
 
-        // NOTE: `embedding` column is NOT written here — page-level embedding
-        // has no write path, so `pages.embedding` stays NULL and the vector
-        // half of search always degrades to lexical-only.
-        // registered in docs/plans/KNOWN-GAPS.md (G24).
+        // G24: `embedding` (f32-LE BLOB) IS now written here as ?20, giving the
+        // page-level vector path a write route. INSERT binds it directly; the
+        // UPDATE branch COALESCE-preserves it so an upsert with embedding=None
+        // keeps the previously stored vector (matches PageInput.embedding doc).
         let sql = "INSERT INTO pages (\
                 source_id, slug, type, page_kind, title, compiled_truth, timeline, \
                 frontmatter, content_hash, updated_at, effective_date, \
                 effective_date_source, import_filename, chunker_version, \
-                source_path, source_kind, source_uri, ingested_via, ingested_at\
+                source_path, source_kind, source_uri, ingested_via, ingested_at, \
+                embedding\
             ) VALUES (\
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, \
-                COALESCE(?14, 1), ?15, ?16, ?17, ?18, ?19\
+                COALESCE(?14, 1), ?15, ?16, ?17, ?18, ?19, ?20\
             ) ON CONFLICT(source_id, slug) DO UPDATE SET \
                 type = excluded.type, \
                 page_kind = excluded.page_kind, \
@@ -924,7 +925,8 @@ impl BrainEngine for LibsqlEngine {
                 source_kind = COALESCE(excluded.source_kind, pages.source_kind), \
                 source_uri = COALESCE(excluded.source_uri, pages.source_uri), \
                 ingested_via = COALESCE(excluded.ingested_via, pages.ingested_via), \
-                ingested_at = COALESCE(excluded.ingested_at, pages.ingested_at) \
+                ingested_at = COALESCE(excluded.ingested_at, pages.ingested_at), \
+                embedding = COALESCE(excluded.embedding, pages.embedding) \
             RETURNING id, slug, type, page_kind, title, compiled_truth, timeline, \
                 frontmatter, content_hash, emotional_weight, created_at, updated_at, \
                 deleted_at, last_retrieved_at, effective_date, effective_date_source, \
@@ -957,6 +959,7 @@ impl BrainEngine for LibsqlEngine {
                     input.source_uri.clone(),             // ?17 source_uri
                     input.ingested_via.clone(),           // ?18 ingested_via
                     ingested_at,                          // ?19 ingested_at (server-stamp)
+                    input.embedding.clone(),              // ?20 embedding (f32-LE BLOB, G24)
                 ],
             )
             .await

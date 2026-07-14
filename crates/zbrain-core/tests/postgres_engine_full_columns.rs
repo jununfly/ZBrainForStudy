@@ -4,11 +4,10 @@
 //! `postgres-engine.ts` + `pglite-engine.ts` + `schema.sql` actually enforce,
 //! which #110-b's "intentional divergence" doc-comment got wrong:
 //!
-//!   - `embedding` / `last_retrieved_at`: NOT persisted via `put_page`.
-//!     PUT accepts them in `PageInput` (write-through schema convenience) but
-//!     GET must return `None`. Source of truth: TS engines' putPage SQL has
-//!     19 columns, no `embedding`, no `last_retrieved_at`. Those columns are
-//!     written by separate code paths (embedder / retrieval-tracker).
+//!   - `last_retrieved_at`: NOT persisted via `put_page` (owned by the
+//!     retrieval-tracker path). `embedding` IS now persisted (G24: page-level
+//!     vector write path added; both engines' put_page bind the BYTEA column
+//!     and COALESCE-preserve it on upsert).
 //!
 //!   - `ingested_at`: server-stamped, not client-provided. When any of
 //!     `source_kind` / `source_uri` / `ingested_via` is present and the
@@ -69,9 +68,8 @@ fn unique_slug() -> String {
 ///   - 16 plain optionals roundtrip normally.
 ///   - `ingested_at` client-provided value is honoured (server-stamp path
 ///     covered by the next two tests).
-///   - `embedding` + `last_retrieved_at` are NOT persisted by `put_page`;
-///     PUT accepts them as a write-through schema convenience but GET
-///     must return None. (TS engines write these via separate code paths.)
+///   - `last_retrieved_at` is NOT persisted by `put_page` (retrieval-tracker
+///     path); `embedding` IS persisted (G24).
 #[tokio::test]
 async fn roundtrip_all_full_columns() {
     let fix = support::pg_fixture::PgFixture::start().await;
@@ -150,17 +148,17 @@ async fn roundtrip_all_full_columns() {
         Some("2026-05-30T00:00:00+00:00"),
         "ingested_at (client-provided)"
     );
-    // Contract (#110-c): embedding + last_retrieved_at are NOT persisted by
-    // put_page. TS engines write these via separate code paths (embedder /
-    // retrieval-tracker). PUT accepts them as a write-through schema
-    // convenience but GET must return None.
+    // Contract (G24): embedding IS now persisted by put_page (page-level
+    // vector write path). last_retrieved_at is still owned by the
+    // retrieval-tracker path and NOT persisted here.
     assert_eq!(
         page.last_retrieved_at, None,
         "last_retrieved_at must not be persisted by put_page"
     );
     assert_eq!(
-        page.embedding, None,
-        "embedding must not be persisted by put_page"
+        page.embedding,
+        Some(vec![1u8, 2, 3, 4]),
+        "embedding must be persisted by put_page (G24)"
     );
 }
 

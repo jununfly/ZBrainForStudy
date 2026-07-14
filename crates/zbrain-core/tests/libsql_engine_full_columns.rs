@@ -80,19 +80,24 @@ async fn page_column_info(path_str: &str, column: &str) -> (String, i64, Option<
 }
 
 #[tokio::test]
-async fn put_page_does_not_persist_embedding_or_last_retrieved_at() {
+async fn put_page_persists_embedding_but_not_last_retrieved_at() {
+    // G24: put_page now DOES persist caller-provided `embedding` (f32-LE blob),
+    // so the page-level vector path has a write route. `last_retrieved_at`
+    // remains owned by the retrieval-tracker path and is still NOT written here.
     let (engine, _tmp, _path_str) = init_clean_engine().await;
     let mut input = base_input();
-    input.embedding = Some(vec![1, 2, 3, 4]);
+    let emb = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
+    input.embedding = Some(emb.clone());
     input.last_retrieved_at = Some("2026-05-30T01:02:03+00:00".to_string());
 
     let inserted = engine
-        .put_page("no-write-through", None, &input)
+        .put_page("write-through", None, &input)
         .await
         .expect("put_page");
     assert_eq!(
-        inserted.embedding, None,
-        "put_page must not persist caller-provided embedding"
+        inserted.embedding,
+        Some(emb.clone()),
+        "put_page must persist caller-provided embedding (G24)"
     );
     assert_eq!(
         inserted.last_retrieved_at, None,
@@ -100,17 +105,48 @@ async fn put_page_does_not_persist_embedding_or_last_retrieved_at() {
     );
 
     let fetched = engine
-        .get_page("no-write-through", &GetPageOpts::default())
+        .get_page("write-through", &GetPageOpts::default())
         .await
         .expect("get_page")
         .expect("page must exist");
     assert_eq!(
-        fetched.embedding, None,
-        "get_page must not observe embedding written through put_page"
+        fetched.embedding,
+        Some(emb),
+        "get_page must observe embedding written through put_page (G24)"
     );
     assert_eq!(
         fetched.last_retrieved_at, None,
         "get_page must not observe last_retrieved_at written through put_page"
+    );
+
+    engine.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn put_page_embedding_none_preserves_existing_on_update() {
+    // G24: an upsert with embedding = None must NOT clobber a previously stored
+    // embedding (COALESCE-preserve semantics, matching PageInput.embedding doc).
+    let (engine, _tmp, _path_str) = init_clean_engine().await;
+    let mut input = base_input();
+    let emb = vec![9u8, 8, 7, 6];
+    input.embedding = Some(emb.clone());
+    engine
+        .put_page("preserve-emb", None, &input)
+        .await
+        .expect("put_page insert");
+
+    let mut update = base_input();
+    update.title = "updated title".to_string();
+    update.embedding = None; // must preserve
+    let updated = engine
+        .put_page("preserve-emb", None, &update)
+        .await
+        .expect("put_page update");
+    assert_eq!(updated.title, "updated title");
+    assert_eq!(
+        updated.embedding,
+        Some(emb),
+        "embedding=None on upsert must preserve the previously stored embedding"
     );
 
     engine.disconnect().await.expect("disconnect");

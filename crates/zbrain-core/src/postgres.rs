@@ -10,11 +10,11 @@
 //! three "intentional divergences" that were actually bugs; this slice fixes
 //! the PG side:
 //!
-//!   - `put_page` writes 19 columns (not 20). `embedding` and
-//!     `last_retrieved_at` are owned by separate code paths
-//!     (embedder / retrieval-tracker, ported in a later slice); `put_page`
-//!     never writes them and `get_page` always returns `None` for both,
-//!     mirroring TS `putPage` in postgres-engine.ts / pglite-engine.ts.
+//!   - `put_page` writes 20 columns. `embedding` (BYTEA, f32-LE) is written
+//!     as of G24 (page-level vector write path) and COALESCE-preserved on
+//!     upsert; `get_page`/`list_pages`/`search_pages` project it back.
+//!     `last_retrieved_at` is still owned by the retrieval-tracker path;
+//!     `put_page` never writes it and `get_page` returns `None` for it.
 //!   - `ingested_at` is server-stamped when ingestion metadata is present.
 //!     If the caller does not supply `ingested_at` and any of `source_kind`,
 //!     `source_uri`, `ingested_via` is set, the engine writes `NOW()`.
@@ -39,8 +39,8 @@ use sqlx::{PgPool, Row};
 
 use crate::engine::{
     page_sort_sql, BrainEngine, CreateSourceInput, EngineConfig, EngineKind, GetPageOpts, Page,
-    PageFilters, PageInput, PageSort, ResolveSlugsOpts, SourceRow, UpdateSourceInput,
-    is_valid_source_id,
+    PageFilters, PageInput, PageSort, ResolveSlugsOpts, SearchOpts, SearchResult, SourceRow,
+    UpdateSourceInput, fuse_and_boost, is_valid_source_id,
 };
 use crate::oauth_queries::{
     ExchangeTokens, OAuthClientInfo, OAuthQueries, RegisterClientRequest,
@@ -332,19 +332,20 @@ pub static POSTGRES_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
     registry
 });
 
-/// Full 28-column projection used by every read path (`get_page`,
+/// Full 29-column projection used by every read path (`get_page`,
 /// `list_pages`, and the `RETURNING` clause of `put_page`). Centralised so
 /// `row_to_page` and SQL stay in lock-step.
 ///
-/// `embedding` and `last_retrieved_at` are intentionally absent: they are
-/// owned by the embedder / retrieval-tracker code paths (later slice) and
-/// `get_page` always reports `None` for both — mirrors TS `putPage`.
+/// `embedding` (BYTEA, f32-LE blob) is included as of G24: `put_page` now has
+/// a write path for it, so read paths must project it back. `last_retrieved_at`
+/// remains intentionally absent — it is owned by the retrieval-tracker code
+/// path and `get_page` always reports `None` for it.
 const FULL_PAGE_PROJECTION: &str = "id, slug, type, page_kind, title, compiled_truth, timeline, \
      frontmatter, content_hash, emotional_weight, created_at, updated_at, deleted_at, \
      effective_date, effective_date_source, import_filename, \
      salience_touched_at, salience_score, generation, chunker_version, \
      source_path, source_id, source_kind, source_uri, ingested_via, ingested_at, \
-     contextual_retrieval_mode, corpus_generation";
+     contextual_retrieval_mode, corpus_generation, embedding";
 
 /// Connection-pool-backed engine for `PostgreSQL`.
 ///
@@ -905,10 +906,9 @@ impl BrainEngine for PostgresEngine {
         let pool = self.pool()?;
         let source_id = source_id.unwrap_or("default");
 
-        // Slice #110-c: 19-column INSERT mirroring TS `putPage`
-        // (postgres-engine.ts + pglite-engine.ts). `embedding` and
-        // `last_retrieved_at` are NOT written by `put_page`; the embedder
-        // and retrieval-tracker code paths own those columns (later slice).
+        // Slice #110-c + G24: 20-column INSERT mirroring TS `putPage` plus the
+        // page-level `embedding` write path. `last_retrieved_at` is still NOT
+        // written by `put_page` (owned by the retrieval-tracker path).
         //
         // `ingested_at` is server-stamped when any ingestion metadata
         // (`source_kind`, `source_uri`, `ingested_via`) is present and the
@@ -916,14 +916,15 @@ impl BrainEngine for PostgresEngine {
         // pglite-engine.ts:849.
         //
         // ON CONFLICT keeps the original `id` (BIGSERIAL) stable across
-        // re-puts within the same source. UPDATE overwrites the 17
-        // user-provided columns unconditionally.
+        // re-puts within the same source. UPDATE overwrites the user-provided
+        // columns unconditionally, except `embedding` which is COALESCE-preserved
+        // (embedding=None on upsert keeps the previously stored vector, matching
+        // PageInput.embedding doc + libsql behaviour).
         //
         // Server-managed columns NOT in this INSERT:
         //   id, created_at, updated_at, deleted_at, salience_touched_at,
         //   salience_score, generation (trigger-bumped),
-        //   contextual_retrieval_mode, corpus_generation,
-        //   embedding, last_retrieved_at.
+        //   contextual_retrieval_mode, corpus_generation, last_retrieved_at.
 
         let page_kind_str = encode_page_kind(input.page_kind.unwrap_or(PageKind::Markdown));
         let effective_date_source_str = input
@@ -957,12 +958,12 @@ impl BrainEngine for PostgresEngine {
                  source_id, slug, type, page_kind, title, compiled_truth, timeline, frontmatter, \
                  content_hash, effective_date, effective_date_source, import_filename, \
                  chunker_version, source_path, source_kind, source_uri, ingested_via, \
-                 ingested_at\
+                 ingested_at, embedding\
              ) VALUES (\
                  $1, $2, $3, $4, $5, $6, $7, $8::jsonb, \
                  $9, $10, $11, $12, \
                  $13, $14, $15, $16, $17, \
-                 $18\
+                 $18, $19\
              ) \
              ON CONFLICT ON CONSTRAINT pages_source_slug_key DO UPDATE SET \
                  type = EXCLUDED.type, \
@@ -981,6 +982,7 @@ impl BrainEngine for PostgresEngine {
                  source_uri = EXCLUDED.source_uri, \
                  ingested_via = EXCLUDED.ingested_via, \
                  ingested_at = EXCLUDED.ingested_at, \
+                 embedding = COALESCE(EXCLUDED.embedding, pages.embedding), \
                  updated_at = now() \
              RETURNING {FULL_PAGE_PROJECTION}"
         );
@@ -1004,6 +1006,7 @@ impl BrainEngine for PostgresEngine {
             .bind(input.source_uri.as_deref())
             .bind(input.ingested_via.as_deref())
             .bind(ingested_at_ts)
+            .bind(input.embedding.as_deref()) // $19 embedding (BYTEA, f32-LE, G24)
             .fetch_one(pool)
             .await
             .map_err(|e| Error::engine(format!("put_page upsert failed: {e}")))?;
@@ -1289,6 +1292,36 @@ impl BrainEngine for PostgresEngine {
             .map_err(|e| Error::engine(format!("list_pages failed: {e}")))?;
 
         rows.iter().map(row_to_page).collect()
+    }
+
+    async fn search_pages(&self, opts: &SearchOpts) -> Result<Vec<SearchResult>> {
+        // G23: real Postgres `search_pages`, mirroring the libsql slice (1-3-2)
+        // and InMemory pattern. Two halves:
+        //   1. Backend-specific: materialize live (non-deleted), optionally
+        //      source-scoped candidate pages via FULL_PAGE_PROJECTION (which now
+        //      includes `embedding` after G24, so the vector half of fusion can
+        //      actually score PG-stored vectors — not just lexical).
+        //   2. Backend-agnostic: hand candidates to the shared `fuse_and_boost`
+        //      core so PG/libsql/InMemory share a single scoring truth.
+        //
+        // No keyword pre-filter in SQL — fusion does lexical + vector scoring
+        // over the full live corpus, matching the other backends. The
+        // `($1::text IS NULL OR source_id = $1)` clause leaves `None` unscoped.
+        let pool = self.pool()?;
+        let sql = format!(
+            "SELECT {FULL_PAGE_PROJECTION} FROM pages \
+             WHERE deleted_at IS NULL \
+               AND ($1::text IS NULL OR source_id = $1)"
+        );
+        let rows = sqlx::query(&sql)
+            .bind(opts.source_id.as_deref())
+            .fetch_all(pool)
+            .await
+            .map_err(|e| Error::engine(format!("search_pages candidate query failed: {e}")))?;
+
+        let candidates: Vec<Page> = rows.iter().map(row_to_page).collect::<Result<Vec<_>>>()?;
+
+        fuse_and_boost(self, &candidates, opts).await
     }
 
     async fn add_tag(&self, slug: &str, tag: &str, source_id: Option<&str>) -> Result<()> {
@@ -4966,7 +4999,11 @@ fn row_to_page(row: &sqlx::postgres::PgRow) -> Result<Page> {
         .map_err(|e| Error::engine(format!("row decode generation: {e}")))?;
     // Engine type for `generation` is `i64` (matches PG `BIGINT` directly).
     let generation = generation_i64;
-    // `embedding` is intentionally not in the projection — always None.
+    // G24: `embedding` (BYTEA, f32-LE blob) is now in FULL_PAGE_PROJECTION and
+    // written by put_page. NULL → None (vector path degrades to lexical-only).
+    let embedding: Option<Vec<u8>> = row
+        .try_get("embedding")
+        .map_err(|e| Error::engine(format!("row decode embedding: {e}")))?;
     let chunker_version_i32: Option<i32> = row
         .try_get("chunker_version")
         .map_err(|e| Error::engine(format!("row decode chunker_version: {e}")))?;
@@ -5017,7 +5054,7 @@ fn row_to_page(row: &sqlx::postgres::PgRow) -> Result<Page> {
         salience_touched_at: salience_touched_at.map(|ts| ts.to_rfc3339()),
         salience_score,
         generation,
-        embedding: None,
+        embedding,
         chunker_version,
         source_path,
         source_id,

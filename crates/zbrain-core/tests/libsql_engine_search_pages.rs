@@ -78,7 +78,11 @@ fn keyword_opts(keywords: &[&str]) -> SearchOpts {
 async fn search_pages_finds_keyword_in_title() {
     let (engine, _tmp) = init_clean_engine().await;
     engine
-        .put_page("rust-async", None, &note_input("Rust async runtimes", "body"))
+        .put_page(
+            "rust-async",
+            None,
+            &note_input("Rust async runtimes", "body"),
+        )
         .await
         .expect("put_page");
     engine
@@ -94,7 +98,10 @@ async fn search_pages_finds_keyword_in_title() {
     // Real result, NOT the trait-default empty Vec.
     assert_eq!(results.len(), 1, "exactly one title matches 'rust'");
     assert_eq!(results[0].page.slug, "rust-async");
-    assert!(results[0].score > 0.0, "matched page must have a positive fused score");
+    assert!(
+        results[0].score > 0.0,
+        "matched page must have a positive fused score"
+    );
 }
 
 // ─── lexical hit in content ───────────────────────────────────────────────
@@ -106,7 +113,10 @@ async fn search_pages_finds_keyword_in_content() {
         .put_page(
             "topic-a",
             None,
-            &note_input("Some title", "the tokio scheduler steals work between threads"),
+            &note_input(
+                "Some title",
+                "the tokio scheduler steals work between threads",
+            ),
         )
         .await
         .expect("put_page");
@@ -152,11 +162,19 @@ async fn search_pages_filters_by_source() {
     seed_source(&engine, "alpha").await;
     seed_source(&engine, "beta").await;
     engine
-        .put_page("doc-1", Some("alpha"), &note_input("shared keyword here", "x"))
+        .put_page(
+            "doc-1",
+            Some("alpha"),
+            &note_input("shared keyword here", "x"),
+        )
         .await
         .expect("put_page alpha");
     engine
-        .put_page("doc-2", Some("beta"), &note_input("shared keyword here", "y"))
+        .put_page(
+            "doc-2",
+            Some("beta"),
+            &note_input("shared keyword here", "y"),
+        )
         .await
         .expect("put_page beta");
 
@@ -231,7 +249,7 @@ async fn search_pages_vector_path_degrades_without_embeddings() {
         .await
         .expect("put_page");
 
-    // Pages have no stored embedding (put_page doesn't write one yet). Supplying
+    // Pages carry no stored embedding here (note_input leaves it None). Supplying
     // a query embedding must NOT crash — the vector path finds no candidate with
     // a decodable embedding and fusion degenerates to lexical-only.
     let opts = SearchOpts {
@@ -241,6 +259,59 @@ async fn search_pages_vector_path_degrades_without_embeddings() {
     };
     let results = engine.search_pages(&opts).await.expect("search_pages");
 
-    assert_eq!(results.len(), 1, "lexical hit still returned despite empty vector path");
+    assert_eq!(
+        results.len(),
+        1,
+        "lexical hit still returned despite empty vector path"
+    );
     assert_eq!(results[0].page.slug, "vec-note");
+}
+
+/// Encode an f32 slice as the little-endian byte blob libsql stores.
+fn embed_le(v: &[f32]) -> Vec<u8> {
+    v.iter().flat_map(|f| f.to_le_bytes()).collect()
+}
+
+#[tokio::test]
+async fn search_pages_vector_path_active_with_stored_embedding() {
+    // G24 write-path proof: a page whose embedding was persisted via put_page is
+    // now retrievable through the vector half of fuse_and_boost. Two pages share
+    // no lexical overlap with the query keyword; only the one whose stored vector
+    // aligns with the query embedding should surface (or rank first).
+    let (engine, _tmp) = init_clean_engine().await;
+
+    let aligned = vec![1.0_f32, 0.0, 0.0, 0.0];
+    let orthogonal = vec![0.0_f32, 1.0, 0.0, 0.0];
+
+    let mut hit = note_input("alpha doc", "alpha body");
+    hit.embedding = Some(embed_le(&aligned));
+    engine
+        .put_page("vec-hit", None, &hit)
+        .await
+        .expect("put_page hit");
+
+    let mut miss = note_input("beta doc", "beta body");
+    miss.embedding = Some(embed_le(&orthogonal));
+    engine
+        .put_page("vec-miss", None, &miss)
+        .await
+        .expect("put_page miss");
+
+    // No lexical keyword match — retrieval must come purely from the vector path.
+    let opts = SearchOpts {
+        keywords: vec!["nonexistentkeyword".to_string()],
+        query_embedding: Some(aligned.clone()),
+        min_score: Some(0.0),
+        ..Default::default()
+    };
+    let results = engine.search_pages(&opts).await.expect("search_pages");
+
+    assert!(
+        !results.is_empty(),
+        "stored embedding must make the vector path produce results (G24)"
+    );
+    assert_eq!(
+        results[0].page.slug, "vec-hit",
+        "the page whose stored vector aligns with the query must rank first"
+    );
 }
