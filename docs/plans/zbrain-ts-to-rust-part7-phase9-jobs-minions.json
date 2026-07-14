@@ -843,11 +843,17 @@
     "1-5-6": {
       "id": "1-5-6",
       "label": "CLI 接线: autopilot 命令 args (--install/--uninstall/--status/--inline/--interval/--json) + dispatch 到 1-5-1~5",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-5",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "完成",
+          "answer": "1-5-6 完成: 5 CLI tests. AutopilotArgs (--repo/--interval/--json/--inline/--no-worker/--install/--uninstall/--status/--once). Handler dispatches to daemon module (install/uninstall/status) + runner::run_autopilot_tick (once + continuous loop with 5-strike circuit breaker). CLI 130 tests green. commit 80448d8",
+          "note": ""
+        }
+      ],
       "notes": ""
     },
     "1-5-7": {
@@ -863,7 +869,7 @@
   },
   "metadata": {
     "created": "2026-07-09 21:33:13",
-    "updated": "2026-07-14 14:45:04",
+    "updated": "2026-07-14 15:01:08",
     "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART7_PHASE9_JOBS_MINIONS.md"
   }
 }
