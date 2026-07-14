@@ -265,11 +265,17 @@
     "1-8": {
       "id": "1-8",
       "label": "G7 收口: webhook 接入 MinionQueue (替换 zbrain-web 直写 put_page + placeholder job_id)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "1-8 G7 收口实现",
+          "answer": "POST /ingest 替换 put_page 为 MinionQueue::add(ingest_capture, {slug, content, source, title}). POST /webhooks/github 替换 placeholder UUID 为 MinionQueue::add(sync, {sourceId, ...}, priority=-10, idempotency_key=sync-trigger:{id}:{30s}). KNOWN-GAPS G7 resolved. 2 new tests verify job in queue. 92 tests pass.",
+          "note": "commit 4706c1e"
+        }
+      ],
       "notes": ""
     },
     "1-1-1": {
@@ -881,7 +887,7 @@
   },
   "metadata": {
     "created": "2026-07-09 21:33:13",
-    "updated": "2026-07-14 16:03:20",
+    "updated": "2026-07-14 16:23:51",
     "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART7_PHASE9_JOBS_MINIONS.md"
   }
 }
