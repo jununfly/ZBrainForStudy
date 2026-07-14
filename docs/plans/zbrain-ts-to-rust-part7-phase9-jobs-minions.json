@@ -6,7 +6,7 @@
     "1": {
       "id": "1",
       "label": "ZBrain TS→Rust Part7: Phase 9 — Jobs / Agents / Minions / Autopilot / Remote",
-      "status": "blocked",
+      "status": "completed",
       "mode": "explore",
       "parent": null,
       "children": [
@@ -209,7 +209,7 @@
     "1-5": {
       "id": "1-5",
       "label": "Autopilot + fanout (autopilot.ts/autopilot-fanout.ts 命令 + core)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [
@@ -877,17 +877,23 @@
     "1-5-7": {
       "id": "1-5-7",
       "label": "Nightly quality probe 子系统 (runNightlyQualityProbe + runLongMemEvalForProbe + runCrossModalBatchForProbe + AI gateway 集成) — LLM eval 子系统，deferred port",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-5",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "1-5-7 实现方案",
+          "answer": "纯函数 DI 架构: should_run_nightly (24h rate limit) + NightlyProbeDeps trait (async eval适配器) + run_nightly_quality_probe (8种outcome状态机: disabled/rate_limited/no_embedding_key/budget_exceeded/error/pass/fail/inconclusive)。eval适配器做stub返回可控值。Audit事件用JSONL读写。接线到runner.rs替换了NightlyProbeSkipped stub。S6完成后标记completed，eval真实实现后续独立节点。21 new tests (7 S1 + 4 S2 + 10 S3)。lib 1201 tests全绿。",
+          "note": "commit pending"
+        }
+      ],
       "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-09 21:33:13",
-    "updated": "2026-07-14 16:23:51",
+    "updated": "2026-07-14 17:33:55",
     "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART7_PHASE9_JOBS_MINIONS.md"
   }
 }

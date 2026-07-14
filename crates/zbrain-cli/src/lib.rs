@@ -4134,6 +4134,8 @@ async fn run_autopilot_command(
         mode,
         max_reconnect_fails: 30,
         engine_kind: zbrain_core::engine::EngineKind::Libsql,
+        nightly_quality_probe_enabled: false,
+        nightly_probe_max_usd: 5.0,
     };
 
     // ── --once: single tick ───────────────────────────────────────────
@@ -4179,8 +4181,15 @@ async fn run_autopilot_command(
                             "[autopilot] WARNING: no worker signal for {consecutive_idle} consecutive cycles"
                         );
                     }
-                    runner::TickEvent::NightlyProbeSkipped => {
-                        // Silent — probe is a skipped stub
+                    runner::TickEvent::NightlyProbeResult {
+                        outcome,
+                        exit_code,
+                        detail,
+                    } => {
+                        eprintln!("[autopilot] nightly quality probe: {outcome} (exit={exit_code})");
+                        if let Some(d) = detail {
+                            eprintln!("[autopilot] probe detail: {d}");
+                        }
                     }
                 }
             }
@@ -4225,7 +4234,18 @@ async fn run_autopilot_command(
                             "[autopilot] WARNING: no worker signal for {consecutive_idle} cycles"
                         );
                     }
-                    runner::TickEvent::NightlyProbeSkipped => {}
+                    runner::TickEvent::NightlyProbeResult {
+                        outcome,
+                        exit_code,
+                        detail,
+                    } => {
+                        eprintln!(
+                            "[autopilot] nightly quality probe: {outcome} (exit={exit_code})"
+                        );
+                        if let Some(d) = detail {
+                            eprintln!("[autopilot] probe detail: {d}");
+                        }
+                    }
                 }
             }
         }

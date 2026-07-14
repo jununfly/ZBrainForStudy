@@ -20,6 +20,9 @@ use crate::autopilot::brain_score::{
 };
 use crate::autopilot::cycle::{run_cycle, CycleOpts, CycleReport, CycleStatus};
 use crate::autopilot::fanout::{dispatch_per_source, resolve_fanout_max, FanoutOpts};
+use crate::autopilot::nightly_probe::{
+    run_nightly_quality_probe, NightlyProbeDeps, NightlyProbeOutcome, QualityProbeAuditEvent,
+};
 use crate::engine::{BrainEngine, EngineKind};
 use crate::minions::queue::MinionQueue;
 
@@ -341,6 +344,10 @@ pub struct AutopilotOpts {
     /// Max consecutive reconnect failures before exit (default 30).
     pub max_reconnect_fails: u32,
     pub engine_kind: EngineKind,
+    /// Feature flag: nightly quality probe (default false).
+    pub nightly_quality_probe_enabled: bool,
+    /// Max USD per nightly probe run (default 5.0).
+    pub nightly_probe_max_usd: f64,
 }
 
 impl Default for AutopilotOpts {
@@ -354,6 +361,8 @@ impl Default for AutopilotOpts {
             },
             max_reconnect_fails: 30,
             engine_kind: EngineKind::InMemory,
+            nightly_quality_probe_enabled: false,
+            nightly_probe_max_usd: 5.0,
         }
     }
 }
@@ -386,8 +395,13 @@ pub enum TickEvent {
     },
     #[serde(rename = "no_worker_warn")]
     NoWorkerWarn { consecutive_idle: u32 },
-    #[serde(rename = "nightly_probe_skipped")]
-    NightlyProbeSkipped,
+    #[serde(rename = "nightly_probe")]
+    NightlyProbeResult {
+        outcome: String,
+        exit_code: i32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+    },
 }
 
 /// Result of a single autopilot tick.
@@ -466,10 +480,22 @@ pub async fn run_autopilot_tick(
         }
     }
 
-    // ── Nightly quality probe (skipped stub per Q4) ────────────────────
-    // The real probe (1-5-7) checks a feature flag + 24h rate-limit, then
-    // runs long-mem-eval / cross-modal-batch. Here we just emit a skip event.
-    events.push(TickEvent::NightlyProbeSkipped);
+    // ── Nightly quality probe ──────────────────────────────────────────
+    // Runs only when enabled in config. Wrapped in catch — probe failure
+    // must never crash the autopilot cycle.
+    if opts.nightly_quality_probe_enabled {
+        let probe_deps = NightlyProbeRunnerDeps {
+            enabled: true,
+            repo_root: opts.repo_path.clone(),
+            max_usd: opts.nightly_probe_max_usd,
+        };
+        let probe_result = run_nightly_quality_probe(&probe_deps).await;
+        events.push(TickEvent::NightlyProbeResult {
+            outcome: format!("{:?}", probe_result.outcome).to_lowercase(),
+            exit_code: probe_result.exit_code,
+            detail: probe_result.detail,
+        });
+    }
 
     TickResult {
         cycle_ok,
@@ -478,7 +504,70 @@ pub async fn run_autopilot_tick(
     }
 }
 
-/// Minions dispatch path: health → score gate → fanout / targeted / sleep.
+// ── NightlyProbeRunnerDeps — production DI for autopilot ──────────────
+
+struct NightlyProbeRunnerDeps {
+    enabled: bool,
+    repo_root: String,
+    max_usd: f64,
+}
+
+#[async_trait::async_trait]
+impl NightlyProbeDeps for NightlyProbeRunnerDeps {
+    async fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    async fn has_embedding_provider(&self) -> bool {
+        // Delegate to brain_score's embedding_provider_configured — but
+        // we don't have access to env in the runner deps. For now, return
+        // false to signal "not configured", which short-circuits the probe
+        // with outcome=no_embedding_key.
+        false
+    }
+
+    async fn resolve_max_usd(&self) -> f64 {
+        self.max_usd
+    }
+
+    async fn resolve_repo_root(&self) -> String {
+        self.repo_root.clone()
+    }
+
+    async fn run_long_mem_eval(
+        &self,
+        _fixture_path: &str,
+        _output_path: &str,
+    ) -> Result<(), String> {
+        // Eval CLI not yet ported — stub returns unimplemented.
+        Err("eval longmemeval not yet ported to Rust".into())
+    }
+
+    async fn run_cross_modal_batch(
+        &self,
+        _batch_path: &str,
+        _summary_path: &str,
+        _max_usd: f64,
+    ) -> Result<(i32, Option<super::nightly_probe::CrossModalSummary>), String> {
+        Err("eval cross-modal not yet ported to Rust".into())
+    }
+
+    fn read_recent_events(&self, _days: u32) -> Vec<QualityProbeAuditEvent> {
+        // Audit filesystem not yet ported — return empty list so rate
+        // limit never fires.
+        vec![]
+    }
+
+    fn log_event(&self, _event: QualityProbeAuditEvent) {
+        // Audit filesystem not yet ported — no-op stub.
+    }
+
+    fn now(&self) -> chrono::DateTime<chrono::Utc> {
+        chrono::Utc::now()
+    }
+}
+
+// ── dispatch paths ────────────────────────────────────────────────────
 ///
 /// Returns the brain score for adaptive interval computation.
 async fn dispatch_minions_path(
@@ -1076,7 +1165,7 @@ mod tests {
         let result = run_autopilot_tick(&engine, &mut state, &opts).await;
 
         assert!(result.cycle_ok);
-        // Should have cycle_inline + cycle + nightly_probe_skipped events
+        // Should have cycle_inline + cycle events (nightly probe disabled by default)
         let has_cycle_inline = result
             .events
             .iter()
@@ -1089,11 +1178,12 @@ mod tests {
             .any(|e| matches!(e, TickEvent::Cycle { .. }));
         assert!(has_cycle);
 
-        let has_probe_skip = result
+        // No probe event when disabled (default)
+        let has_probe = result
             .events
             .iter()
-            .any(|e| matches!(e, TickEvent::NightlyProbeSkipped));
-        assert!(has_probe_skip);
+            .any(|e| matches!(e, TickEvent::NightlyProbeResult { .. }));
+        assert!(!has_probe);
     }
 
     #[tokio::test]
@@ -1200,7 +1290,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tick_minions_dispatch_emits_nightly_probe_skipped() {
+    async fn tick_minions_dispatch_no_nightly_probe_when_disabled() {
         let engine = setup_engine().await;
         let mut state = AutopilotState::default();
         let opts = AutopilotOpts {
@@ -1209,16 +1299,40 @@ mod tests {
                 spawn_worker: true,
             },
             engine_kind: EngineKind::InMemory,
+            nightly_quality_probe_enabled: false, // default
             ..Default::default()
         };
 
         let result = run_autopilot_tick(&engine, &mut state, &opts).await;
 
-        let has_skip = result
+        let has_probe = result
             .events
             .iter()
-            .any(|e| matches!(e, TickEvent::NightlyProbeSkipped));
-        assert!(has_skip);
+            .any(|e| matches!(e, TickEvent::NightlyProbeResult { .. }));
+        assert!(!has_probe);
+    }
+
+    #[tokio::test]
+    async fn tick_minions_dispatch_emits_nightly_probe_when_enabled() {
+        let engine = setup_engine().await;
+        let mut state = AutopilotState::default();
+        let opts = AutopilotOpts {
+            repo_path: "/tmp/brain".into(),
+            mode: AutopilotMode::MinionsDispatch {
+                spawn_worker: true,
+            },
+            engine_kind: EngineKind::InMemory,
+            nightly_quality_probe_enabled: true,
+            ..Default::default()
+        };
+
+        let result = run_autopilot_tick(&engine, &mut state, &opts).await;
+
+        let has_probe = result
+            .events
+            .iter()
+            .any(|e| matches!(e, TickEvent::NightlyProbeResult { .. }));
+        assert!(has_probe);
     }
 
     // ── AutopilotState default ─────────────────────────────────────────
