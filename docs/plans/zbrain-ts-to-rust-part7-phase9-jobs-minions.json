@@ -233,11 +233,17 @@
     "1-6": {
       "id": "1-6",
       "label": "Remote execution (remote.ts 命令 + 远程 fanout, 保 PII/trust 边界)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "Completed: Ported TS remote.ts. zbrain remote ping + doctor. Thin-client gate. --max-wait avoids global --timeout clash. 4 pure functions + 20 tests. 150 CLI tests pass.",
+          "answer": "accepted",
+          "note": ""
+        }
+      ],
       "notes": ""
     },
     "1-7": {
@@ -869,7 +875,7 @@
   },
   "metadata": {
     "created": "2026-07-09 21:33:13",
-    "updated": "2026-07-14 15:05:22",
+    "updated": "2026-07-14 15:37:58",
     "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART7_PHASE9_JOBS_MINIONS.md"
   }
 }
