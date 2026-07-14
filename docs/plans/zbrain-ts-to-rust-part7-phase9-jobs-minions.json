@@ -212,8 +212,22 @@
       "status": "pending",
       "mode": "explore",
       "parent": "1",
-      "children": [],
-      "decisions": [],
+      "children": [
+        "1-5-1",
+        "1-5-2",
+        "1-5-3",
+        "1-5-4",
+        "1-5-5",
+        "1-5-6",
+        "1-5-7"
+      ],
+      "decisions": [
+        {
+          "q": "1-5 范围与子节点拆分",
+          "answer": "都做（minions-dispatch + inline fallback）。拆 6 子节点：1-5-1 fanout纯函数+dispatchPerSource / 1-5-2 brain-score-recommendations / 1-5-3 cycle模块(types+phases+runCycle) / 1-5-4 主循环+模式判定+reconnect / 1-5-5 daemon install/uninstall / 1-5-6 CLI接线。1-5-1/2/3/5可并行，1-5-4依赖1/2/3，1-5-6依赖全部",
+          "note": "用户确认拆分清晰"
+        }
+      ],
       "notes": ""
     },
     "1-6": {
@@ -720,11 +734,116 @@
         }
       ],
       "notes": "Q1: 4 原有 + 2 新归入 = 6 个 handler (embed-backfill, contextual-reindex, shell, extract-conversation-facts, ingest_capture, +辅助). | Q5: 单节点, shell v1 基础 spawn (SIGTERM→SIGKILL 后续补), contextual-reindex v1 不做 LLM 调起 (Haiku synopsis deferred), extract-conversation-facts v1 做 engine 侧骨架. | Q7: register_builtin_handlers 签名: engine: Arc<dyn BrainEngine>"
+    },
+    "1-5-1": {
+      "id": "1-5-1",
+      "label": "Autopilot fanout 纯函数 + dispatchPerSource (resolveFanoutMax/readLastFullCycleAt/isSourceStale/selectSourcesForDispatch + dispatchPerSource 含 legacy fallback)",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-5",
+      "children": [],
+      "decisions": [
+        {
+          "q": "完成",
+          "answer": "16 tests 全绿 (3 read_last_full_cycle_at + 3 is_source_stale + 4 select_sources_for_dispatch + 3 resolve_fanout_max + 3 dispatch_per_source)。lib 1031 tests 无回归。Rust 差异: resolve_fanout_max 接受 Option<&str> override (无 getConfig); list_sources+filter 替代 listAllSources({localPathOnly:true}); 跳过 maxWaiting; 跳过 emit/log callbacks",
+          "note": "1-5-1 完成"
+        }
+      ],
+      "notes": ""
+    },
+    "1-5-2": {
+      "id": "1-5-2",
+      "label": "brain-score-recommendations 模块 (computeRecommendations/classifyChecks/maxReachableScore/estimateAnthropicCost + Check/RecommendationContext 类型)",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-5",
+      "children": [],
+      "decisions": [
+        {
+          "q": "brain_score/BrainHealth 缺失依赖处理",
+          "answer": "Option A: 扩展 1-5-2 范围。BrainHealth struct + getHealth() engine trait method（三后端实现）+ computeRecommendations 作为内聚子系统（健康评估→推荐→决策）。getHealth() SQL 复用已有 engine 方法。1-5-2 从 ~400 行扩到 ~700 行，保持自包含",
+          "note": "用户确认 Option A"
+        },
+        {
+          "q": "computeRecommendations AI recipe/pricing 依赖",
+          "answer": "Option B: 硬编码已知 provider 检查。embeddingProviderConfigured 硬编码 openai/zeroentropy/ollama/llama-server 四个 provider 的 auth_env 逻辑，跳过 recipe 注册表。静态 pricing 表(Anthropic+embedding)直接 port ~50行。KNOWN-GAPS 登记G26: recipe 注册表未迁移，新 provider 需手动加 match arm",
+          "note": "用户选 B"
+        }
+      ],
+      "notes": ""
+    },
+    "1-5-3": {
+      "id": "1-5-3",
+      "label": "Cycle 模块: types + phases + runCycle 编排器 (CyclePhase/ALL_PHASES/PhaseScope/PhaseResult/CycleReport/CycleOpts + runPhaseLint/Backlinks/Sync/Extract/Embed/Orphans 等 + runCycle 主函数)",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-5",
+      "children": [],
+      "decisions": [
+        {
+          "q": "phase 实现深度",
+          "answer": "分层：编排器(types+runCycle+lock)完整实现；琐碎 phase(orphans/purge)真实实现(一行 engine 调用)；中等 phase(sync/lint/backlinks/extract/embed/extract_facts/consolidate)skipped stub(需新编排函数留回填)；LLM phase(11个)skipped stub(无 Rust 基础)。预计 500-600 行 Rust",
+          "note": "用户确认"
+        }
+      ],
+      "notes": ""
+    },
+    "1-5-4": {
+      "id": "1-5-4",
+      "label": "Autopilot 主循环 + 模式判定 + reconnect 分类 (classifyReconnectError/shouldSpawnAutopilotWorker/runAutopilot 主循环 DB健康→reconnect→dispatch→sleep + report/showStatus)",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-5",
+      "children": [],
+      "decisions": [
+        {
+          "q": "主循环三个子特性范围",
+          "answer": "用户确认, 同时创建1-5-7",
+          "note": ""
+        }
+      ],
+      "notes": ""
+    },
+    "1-5-5": {
+      "id": "1-5-5",
+      "label": "Daemon install/uninstall (detectInstallTarget/generateLaunchdPlist/installLaunchd/installSystemd/installCrontab/installEphemeralContainer/uninstallDaemon/writeWrapperScript)",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-5",
+      "children": [],
+      "decisions": [
+        {
+          "q": "daemon OpenClaw 集成",
+          "answer": "Option A: 包含。忠实 port detectOpenClaw + injection 逻辑(~50行额外)。理由: 1)代码量小 2)uninstallDaemon 也有对应 OpenClaw 清理逻辑, 跳过导致卸载不完整 3)detectOpenClaw 只是文件存在性检查+env var检测 4)injection 是文本操作无外部依赖。4个平台目标全部实现(运行时检测, 不用cfg gate, 和TS一致)",
+          "note": "用户确认 A"
+        }
+      ],
+      "notes": ""
+    },
+    "1-5-6": {
+      "id": "1-5-6",
+      "label": "CLI 接线: autopilot 命令 args (--install/--uninstall/--status/--inline/--interval/--json) + dispatch 到 1-5-1~5",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-5",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-5-7": {
+      "id": "1-5-7",
+      "label": "Nightly quality probe 子系统 (runNightlyQualityProbe + runLongMemEvalForProbe + runCrossModalBatchForProbe + AI gateway 集成) — LLM eval 子系统，deferred port",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-5",
+      "children": [],
+      "decisions": [],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-09 21:33:13",
-    "updated": "2026-07-14 13:02:38",
+    "updated": "2026-07-14 13:57:59",
     "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART7_PHASE9_JOBS_MINIONS.md"
   }
 }

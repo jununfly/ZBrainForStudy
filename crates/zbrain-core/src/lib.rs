@@ -9,6 +9,7 @@
 
 pub mod admin_queries;
 pub mod ai;
+pub mod autopilot;
 pub mod budget;
 pub mod chunkers;
 pub mod cjk;
