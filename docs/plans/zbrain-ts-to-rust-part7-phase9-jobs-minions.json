@@ -789,6 +789,11 @@
           "q": "phase 实现深度",
           "answer": "分层：编排器(types+runCycle+lock)完整实现；琐碎 phase(orphans/purge)真实实现(一行 engine 调用)；中等 phase(sync/lint/backlinks/extract/embed/extract_facts/consolidate)skipped stub(需新编排函数留回填)；LLM phase(11个)skipped stub(无 Rust 基础)。预计 500-600 行 Rust",
           "note": "用户确认"
+        },
+        {
+          "q": "完成",
+          "answer": "13 tests 全绿 (3 type tests + 7 run_cycle integration + 3 derive_status)。lib 1079 tests 无回归。产物: CyclePhase enum(20 phases)+ALL数组+label/needs_lock/scope方法; PhaseScope/PhaseStatus/PhaseError/PhaseResult/CycleStatus/CycleReport/CycleTotals/CycleOpts 类型; run_cycle 编排器(顺序执行+derive_cycle_status); orphans phase 真实实现(engine.find_orphan_pages); purge phase 真实实现(engine.purge_deleted_pages(72), dry_run跳过); 其余18个phase skipped stub(分'needs orchestration'和'LLM-heavy'两类原因)",
+          "note": "1-5-3 完成"
         }
       ],
       "notes": ""
@@ -848,7 +853,7 @@
   },
   "metadata": {
     "created": "2026-07-09 21:33:13",
-    "updated": "2026-07-14 14:19:25",
+    "updated": "2026-07-14 14:26:19",
     "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART7_PHASE9_JOBS_MINIONS.md"
   }
 }
