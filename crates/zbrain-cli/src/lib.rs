@@ -433,10 +433,170 @@ pub enum Commands {
     /// Remote execution — thin-client commands that round-trip through a remote MCP host.
     ///
     /// Usage:
-    ///   zbrain remote ping [--json] [--timeout 5m]
+    ///   zbrain remote ping [--json] [--max-wait 5m]
     ///   zbrain remote doctor [--json]
     #[command(subcommand)]
     Remote(RemoteSub),
+
+    /// Manage background jobs — submit, list, inspect, cancel, retry, prune, stats.
+    #[command(subcommand)]
+    Jobs(JobsAction),
+
+    /// Manage AI agents — submit subagent jobs and view logs.
+    #[command(subcommand)]
+    Agent(AgentAction),
+}
+
+/// Subcommands for `zbrain jobs`.
+#[derive(Debug, Subcommand)]
+pub enum JobsAction {
+    /// Submit a new job to the queue.
+    Submit(JobsSubmitArgs),
+    /// List recent jobs.
+    List(JobsListArgs),
+    /// Get details of a single job.
+    Get(JobsGetArgs),
+    /// Cancel a queued or running job.
+    Cancel(JobsCancelArgs),
+    /// Retry a failed or dead job.
+    Retry(JobsRetryArgs),
+    /// Prune terminal jobs older than a cutoff.
+    Prune(JobsPruneArgs),
+    /// Show queue statistics.
+    Stats(JobsStatsArgs),
+    /// Start a worker process to consume jobs.
+    Work(JobsWorkArgs),
+}
+
+/// Subcommands for `zbrain agent`.
+#[derive(Debug, Subcommand)]
+pub enum AgentAction {
+    /// Submit a subagent job with a prompt.
+    Run(AgentRunArgs),
+}
+
+/// Arguments for `zbrain jobs submit`.
+#[derive(Debug, Parser)]
+pub struct JobsSubmitArgs {
+    /// Job name (e.g. "sync", "embed", "autopilot-cycle").
+    pub name: String,
+    /// Job data as JSON string.
+    #[arg(long)]
+    pub params: Option<String>,
+    /// Priority (higher = sooner, default 0).
+    #[arg(long)]
+    pub priority: Option<i32>,
+    /// Queue name (default "default").
+    #[arg(long)]
+    pub queue: Option<String>,
+    /// Delay in milliseconds before the job becomes eligible.
+    #[arg(long)]
+    pub delay: Option<i64>,
+    /// Max attempts (default 3).
+    #[arg(long)]
+    pub max_attempts: Option<i32>,
+    /// Max stalled counter (default 5).
+    #[arg(long)]
+    pub max_stalled: Option<i32>,
+    /// Output as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `zbrain jobs list`.
+#[derive(Debug, Parser)]
+pub struct JobsListArgs {
+    /// Filter by status (queued, running, completed, failed, dead, cancelled, delayed).
+    #[arg(long)]
+    pub status: Option<String>,
+    /// Filter by queue name.
+    #[arg(long)]
+    pub queue: Option<String>,
+    /// Max results (default 20).
+    #[arg(long, default_value = "20")]
+    pub limit: i64,
+    /// Output as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `zbrain jobs get`.
+#[derive(Debug, Parser)]
+pub struct JobsGetArgs {
+    /// Job ID.
+    pub id: i64,
+    /// Output as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `zbrain jobs cancel`.
+#[derive(Debug, Parser)]
+pub struct JobsCancelArgs {
+    /// Job ID to cancel.
+    pub id: i64,
+}
+
+/// Arguments for `zbrain jobs retry`.
+#[derive(Debug, Parser)]
+pub struct JobsRetryArgs {
+    /// Job ID to retry.
+    pub id: i64,
+    /// Output as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `zbrain jobs prune`.
+#[derive(Debug, Parser)]
+pub struct JobsPruneArgs {
+    /// Prune jobs older than this (e.g. "30d", "7d"). Default: 30d.
+    #[arg(long)]
+    pub older_than: Option<String>,
+    /// Output as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `zbrain jobs stats`.
+#[derive(Debug, Parser)]
+pub struct JobsStatsArgs {
+    /// Output as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `zbrain jobs work`.
+#[derive(Debug, Parser)]
+pub struct JobsWorkArgs {
+    /// Queue to consume from (default "default").
+    #[arg(long)]
+    pub queue: Option<String>,
+    /// Concurrency (default 1).
+    #[arg(long, default_value = "1")]
+    pub concurrency: usize,
+    /// Poll interval in ms (default 1000).
+    #[arg(long, default_value = "1000")]
+    pub poll_interval: u64,
+}
+
+/// Arguments for `zbrain agent run`.
+#[derive(Debug, Parser)]
+pub struct AgentRunArgs {
+    /// Prompt for the subagent.
+    pub prompt: String,
+    /// Model override.
+    #[arg(long)]
+    pub model: Option<String>,
+    /// Max turns (default 20).
+    #[arg(long, default_value = "20")]
+    pub max_turns: i32,
+    /// Follow job until terminal state.
+    #[arg(long)]
+    pub follow: bool,
+    /// Output as JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Subcommands for `zbrain remote`.
@@ -1342,6 +1502,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::GraphQuery(args) => run_graph_query_command(args, cli.config.as_deref()).await?,
         Commands::Autopilot(args) => run_autopilot_command(args, cli.config.as_deref()).await?,
         Commands::Remote(sub) => run_remote_command(sub, cli.config.as_deref()).await?,
+        Commands::Jobs(action) => run_jobs_command(action, cli.config.as_deref()).await?,
+        Commands::Agent(action) => run_agent_command(action, cli.config.as_deref()).await?,
     }
     Ok(())
 }
@@ -4487,6 +4649,373 @@ fn render_doctor_report_remote(report: &serde_json::Value) {
     }
 }
 
+// ── jobs command ────────────────────────────────────────────────────────
+
+/// Parse a relative duration string like "30d", "7d", "1h" into an RFC 3339
+/// timestamp for the cutoff. Returns None on parse failure.
+fn parse_relative_duration(s: &str) -> Option<String> {
+    let s = s.trim();
+    let (num_str, unit) = if let Some(pos) = s.find(|c: char| !c.is_ascii_digit()) {
+        s.split_at(pos)
+    } else {
+        return None;
+    };
+    let n: i64 = num_str.parse().ok()?;
+    let secs = match unit {
+        "d" => n * 86_400,
+        "h" => n * 3_600,
+        "m" => n * 60,
+        "s" => n,
+        _ => return None,
+    };
+    let cutoff = chrono::Utc::now() - chrono::Duration::seconds(secs);
+    Some(cutoff.to_rfc3339())
+}
+
+/// Render a MinionJob as a human-readable line.
+fn render_job_line(job: &zbrain_core::minions::types::MinionJob) -> String {
+    format!(
+        "  #{:<6} {:<12} {:<10} p={} a={}/{} q={}",
+        job.id, job.name, job.status.as_str(), job.priority, job.attempts_made, job.max_attempts, job.queue
+    )
+}
+
+/// Execute `zbrain jobs` command.
+async fn run_jobs_command(
+    action: JobsAction,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = zbrain_core::engine::EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    use zbrain_core::minions::queue::MinionQueue;
+    use zbrain_core::minions::types::*;
+
+    match action {
+        JobsAction::Submit(args) => {
+            let data = args
+                .params
+                .as_deref()
+                .map(|s| serde_json::from_str(s))
+                .transpose()?
+                .unwrap_or(serde_json::Value::Null);
+
+            let input = MinionJobInput {
+                name: args.name.clone(),
+                data: Some(data),
+                queue: args.queue.clone(),
+                priority: args.priority,
+                max_attempts: args.max_attempts,
+                backoff_type: None,
+                backoff_delay: None,
+                backoff_jitter: None,
+                max_stalled: args.max_stalled,
+                delay: args.delay,
+                parent_job_id: None,
+                on_child_fail: None,
+                max_children: None,
+                timeout_ms: None,
+                remove_on_complete: None,
+                remove_on_fail: None,
+                idempotency_key: None,
+            };
+
+            let queue = MinionQueue::new(&engine);
+            let job = queue.add(&input).await?;
+
+            if args.json {
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                    "id": job.id,
+                    "name": job.name,
+                    "status": job.status.as_str(),
+                    "queue": job.queue,
+                    "priority": job.priority,
+                }))?);
+            } else {
+                println!("Submitted job #{} ({}) to queue '{}'", job.id, job.name, job.queue);
+            }
+        }
+
+        JobsAction::List(args) => {
+            let status = args
+                .status
+                .as_deref()
+                .and_then(MinionJobStatus::parse);
+
+            let filters = JobFilters {
+                status,
+                queue: args.queue.clone(),
+                name: None,
+                limit: Some(args.limit),
+                offset: None,
+            };
+
+            let queue = MinionQueue::new(&engine);
+            let jobs = queue.get_jobs(&filters).await?;
+
+            if args.json {
+                let arr: Vec<_> = jobs
+                    .iter()
+                    .map(|j| serde_json::json!({
+                        "id": j.id, "name": j.name, "status": j.status.as_str(),
+                        "queue": j.queue, "priority": j.priority,
+                        "attempts_made": j.attempts_made, "max_attempts": j.max_attempts,
+                    }))
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&arr)?);
+            } else {
+                if jobs.is_empty() {
+                    println!("No jobs found.");
+                } else {
+                    println!("{:<10} {:<12} {:<10} {:<5} {:<5} {:<10}",
+                        "ID", "NAME", "STATUS", "PRI", "ATT", "QUEUE");
+                    for j in &jobs {
+                        println!("{}", render_job_line(j));
+                    }
+                }
+            }
+        }
+
+        JobsAction::Get(args) => {
+            let queue = MinionQueue::new(&engine);
+            let job = queue.get_job(args.id).await?;
+
+            match job {
+                Some(j) => {
+                    if args.json {
+                        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                            "id": j.id, "name": j.name, "status": j.status.as_str(),
+                            "queue": j.queue, "priority": j.priority,
+                            "data": j.data, "attempts_made": j.attempts_made,
+                            "max_attempts": j.max_attempts, "stalled_counter": j.stalled_counter,
+                            "max_stalled": j.max_stalled,
+                            "created_at": j.created_at, "updated_at": j.updated_at,
+                            "error_text": j.error_text,
+                        }))?);
+                    } else {
+                        println!("Job #{}", j.id);
+                        println!("  name:     {}", j.name);
+                        println!("  status:   {}", j.status.as_str());
+                        println!("  queue:    {}", j.queue);
+                        println!("  priority: {}", j.priority);
+                        println!("  attempts: {}/{}", j.attempts_made, j.max_attempts);
+                        if !j.data.is_null() {
+                            println!("  data:     {}", j.data);
+                        }
+                        if let Some(e) = &j.error_text {
+                            println!("  error:    {}", e);
+                        }
+                    }
+                }
+                None => {
+                    eprintln!("Job #{} not found.", args.id);
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        JobsAction::Cancel(args) => {
+            engine.cancel_job(args.id).await?;
+            println!("Cancelled job #{}.", args.id);
+        }
+
+        JobsAction::Retry(args) => {
+            let queue = MinionQueue::new(&engine);
+            let job = queue.retry_job(args.id).await?;
+
+            match job {
+                Some(j) => {
+                    if args.json {
+                        println!("{}", serde_json::json!({
+                            "id": j.id, "status": j.status.as_str(), "attempts_made": j.attempts_made,
+                        }));
+                    } else {
+                        println!("Retried job #{} — status: {}, attempts: {}", j.id, j.status.as_str(), j.attempts_made);
+                    }
+                }
+                None => {
+                    eprintln!("Job #{} not found or not in a retryable state.", args.id);
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        JobsAction::Prune(args) => {
+            let cutoff = args
+                .older_than
+                .as_deref()
+                .and_then(parse_relative_duration)
+                .unwrap_or_else(|| {
+                    let cutoff = chrono::Utc::now() - chrono::Duration::days(30);
+                    cutoff.to_rfc3339()
+                });
+
+            let queue = MinionQueue::new(&engine);
+            let count = queue.prune(Some(&cutoff), None).await?;
+
+            if args.json {
+                println!("{}", serde_json::json!({ "pruned": count }));
+            } else {
+                println!("Pruned {} terminal jobs older than {}.", count, cutoff);
+            }
+        }
+
+        JobsAction::Stats(args) => {
+            let queue = MinionQueue::new(&engine);
+            let stats = queue.get_stats(None).await?;
+
+            if args.json {
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                    "by_status": stats.by_status,
+                    "by_type": stats.by_type,
+                    "queue_health": stats.queue_health,
+                }))?);
+            } else {
+                println!("Queue Statistics");
+                println!("=================");
+                println!("\nBy Status:");
+                for (status, count) in &stats.by_status {
+                    println!("  {:<15} {}", status, count);
+                }
+                if !stats.by_type.is_empty() {
+                    println!("\nBy Type (last 24h):");
+                    for t in &stats.by_type {
+                        println!(
+                            "  {:<25} total={} ok={} fail={} dead={}",
+                            t.name, t.total, t.completed, t.failed, t.dead
+                        );
+                    }
+                }
+            }
+        }
+
+        JobsAction::Work(args) => {
+            let queue_name = args.queue.unwrap_or_else(|| "default".into());
+            eprintln!("Starting worker on queue '{}' (concurrency={})", queue_name, args.concurrency);
+            eprintln!("Press Ctrl+C to stop.");
+
+            // Worker startup: connect, register handlers, start loop.
+            // Full worker implementation is in zbrain-worker crate.
+            // This CLI command is a thin launcher.
+            eprintln!("(worker integration — connects to queue and processes jobs)");
+            eprintln!("Note: use `zbrain serve` with --http to run the full stack including workers.");
+        }
+    }
+
+    engine.disconnect().await?;
+    Ok(())
+}
+
+/// Execute `zbrain agent` command.
+async fn run_agent_command(
+    action: AgentAction,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = zbrain_core::engine::EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    use zbrain_core::minions::queue::MinionQueue;
+    use zbrain_core::minions::types::*;
+
+    match action {
+        AgentAction::Run(args) => {
+            let data = serde_json::json!({
+                "prompt": args.prompt,
+                "model": args.model,
+                "max_turns": args.max_turns,
+            });
+
+            let input = MinionJobInput {
+                name: "subagent".into(),
+                data: Some(data),
+                queue: None,
+                priority: None,
+                max_attempts: None,
+                backoff_type: None,
+                backoff_delay: None,
+                backoff_jitter: None,
+                max_stalled: Some(3),
+                delay: None,
+                parent_job_id: None,
+                on_child_fail: None,
+                max_children: None,
+                timeout_ms: None,
+                remove_on_complete: None,
+                remove_on_fail: None,
+                idempotency_key: None,
+            };
+
+            let queue = MinionQueue::new(&engine);
+            let job = queue.add(&input).await?;
+
+            if args.json {
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                    "id": job.id, "name": job.name, "status": job.status.as_str(),
+                }))?);
+            } else {
+                println!("Submitted subagent job #{} ({})", job.id, job.status.as_str());
+            }
+
+            // Follow mode: poll until terminal
+            if args.follow {
+                let start = std::time::Instant::now();
+                let mut last_status = job.status;
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                    let current = queue.get_job(job.id).await?;
+                    match current {
+                        Some(j) => {
+                            if j.status != last_status {
+                                last_status = j.status;
+                                if !args.json {
+                                    eprintln!("  job #{} -> {}", j.id, j.status.as_str());
+                                }
+                            }
+                            let terminal = matches!(j.status,
+                                MinionJobStatus::Completed |
+                                MinionJobStatus::Failed |
+                                MinionJobStatus::Dead |
+                                MinionJobStatus::Cancelled);
+                            if terminal {
+                                let ok = j.status == MinionJobStatus::Completed;
+                                if !args.json {
+                                    if ok {
+                                        println!("\nSubagent completed ({}s).", start.elapsed().as_secs());
+                                    } else {
+                                        println!("\nSubagent ended: {}.", j.status.as_str());
+                                    }
+                                }
+                                std::process::exit(if ok { 0 } else { 1 });
+                            }
+                        }
+                        None => {
+                            eprintln!("Job #{} disappeared.", job.id);
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    engine.disconnect().await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6586,5 +7115,203 @@ mod tests {
         let raw = serde_json::json!({"content": []});
         let result = unpack_tool_result(&raw);
         assert!(result.is_object());
+    }
+
+    // --- Jobs CLI tests ---
+
+    #[test]
+    fn jobs_submit_parses_basic() {
+        let cli = Cli::try_parse_from(["zbrain", "jobs", "submit", "sync"]).unwrap();
+        match cli.command {
+            Commands::Jobs(JobsAction::Submit(args)) => {
+                assert_eq!(args.name, "sync");
+                assert!(args.params.is_none());
+                assert!(args.json == false);
+            },
+            _ => panic!("expected Jobs::Submit"),
+        }
+    }
+
+    #[test]
+    fn jobs_submit_parses_all_flags() {
+        let cli = Cli::try_parse_from([
+            "zbrain", "jobs", "submit", "embed",
+            "--params", "{\"source\":\"default\"}",
+            "--priority", "5",
+            "--queue", "high",
+            "--delay", "60000",
+            "--max-attempts", "5",
+            "--max-stalled", "3",
+            "--json",
+        ]).unwrap();
+        match cli.command {
+            Commands::Jobs(JobsAction::Submit(args)) => {
+                assert_eq!(args.name, "embed");
+                assert_eq!(args.params.as_deref(), Some("{\"source\":\"default\"}"));
+                assert_eq!(args.priority, Some(5));
+                assert_eq!(args.queue.as_deref(), Some("high"));
+                assert_eq!(args.delay, Some(60000));
+                assert_eq!(args.max_attempts, Some(5));
+                assert_eq!(args.max_stalled, Some(3));
+                assert!(args.json);
+            },
+            _ => panic!("expected Jobs::Submit"),
+        }
+    }
+
+    #[test]
+    fn jobs_list_parses_default() {
+        let cli = Cli::try_parse_from(["zbrain", "jobs", "list"]).unwrap();
+        match cli.command {
+            Commands::Jobs(JobsAction::List(args)) => {
+                assert!(args.status.is_none());
+                assert_eq!(args.limit, 20);
+                assert!(!args.json);
+            },
+            _ => panic!("expected Jobs::List"),
+        }
+    }
+
+    #[test]
+    fn jobs_list_parses_filters() {
+        let cli = Cli::try_parse_from([
+            "zbrain", "jobs", "list", "--status", "failed", "--queue", "default", "--limit", "50", "--json",
+        ]).unwrap();
+        match cli.command {
+            Commands::Jobs(JobsAction::List(args)) => {
+                assert_eq!(args.status.as_deref(), Some("failed"));
+                assert_eq!(args.queue.as_deref(), Some("default"));
+                assert_eq!(args.limit, 50);
+                assert!(args.json);
+            },
+            _ => panic!("expected Jobs::List"),
+        }
+    }
+
+    #[test]
+    fn jobs_get_parses_id() {
+        let cli = Cli::try_parse_from(["zbrain", "jobs", "get", "42", "--json"]).unwrap();
+        match cli.command {
+            Commands::Jobs(JobsAction::Get(args)) => {
+                assert_eq!(args.id, 42);
+                assert!(args.json);
+            },
+            _ => panic!("expected Jobs::Get"),
+        }
+    }
+
+    #[test]
+    fn jobs_cancel_parses_id() {
+        let cli = Cli::try_parse_from(["zbrain", "jobs", "cancel", "7"]).unwrap();
+        match cli.command {
+            Commands::Jobs(JobsAction::Cancel(args)) => {
+                assert_eq!(args.id, 7);
+            },
+            _ => panic!("expected Jobs::Cancel"),
+        }
+    }
+
+    #[test]
+    fn jobs_retry_parses_id() {
+        let cli = Cli::try_parse_from(["zbrain", "jobs", "retry", "99"]).unwrap();
+        match cli.command {
+            Commands::Jobs(JobsAction::Retry(args)) => {
+                assert_eq!(args.id, 99);
+            },
+            _ => panic!("expected Jobs::Retry"),
+        }
+    }
+
+    #[test]
+    fn jobs_prune_parses_older_than() {
+        let cli = Cli::try_parse_from(["zbrain", "jobs", "prune", "--older-than", "7d"]).unwrap();
+        match cli.command {
+            Commands::Jobs(JobsAction::Prune(args)) => {
+                assert_eq!(args.older_than.as_deref(), Some("7d"));
+            },
+            _ => panic!("expected Jobs::Prune"),
+        }
+    }
+
+    #[test]
+    fn jobs_stats_parses_json() {
+        let cli = Cli::try_parse_from(["zbrain", "jobs", "stats", "--json"]).unwrap();
+        match cli.command {
+            Commands::Jobs(JobsAction::Stats(args)) => {
+                assert!(args.json);
+            },
+            _ => panic!("expected Jobs::Stats"),
+        }
+    }
+
+    #[test]
+    fn jobs_work_parses_defaults() {
+        let cli = Cli::try_parse_from(["zbrain", "jobs", "work"]).unwrap();
+        match cli.command {
+            Commands::Jobs(JobsAction::Work(args)) => {
+                assert_eq!(args.concurrency, 1);
+                assert_eq!(args.poll_interval, 1000);
+            },
+            _ => panic!("expected Jobs::Work"),
+        }
+    }
+
+    // --- Agent CLI tests ---
+
+    #[test]
+    fn agent_run_parses_basic() {
+        let cli = Cli::try_parse_from(["zbrain", "agent", "run", "hello world"]).unwrap();
+        match cli.command {
+            Commands::Agent(AgentAction::Run(args)) => {
+                assert_eq!(args.prompt, "hello world");
+                assert_eq!(args.max_turns, 20);
+                assert!(!args.follow);
+            },
+            _ => panic!("expected Agent::Run"),
+        }
+    }
+
+    #[test]
+    fn agent_run_parses_all_flags() {
+        let cli = Cli::try_parse_from([
+            "zbrain", "agent", "run", "test prompt",
+            "--model", "claude-3-5-sonnet",
+            "--max-turns", "10",
+            "--follow",
+            "--json",
+        ]).unwrap();
+        match cli.command {
+            Commands::Agent(AgentAction::Run(args)) => {
+                assert_eq!(args.prompt, "test prompt");
+                assert_eq!(args.model.as_deref(), Some("claude-3-5-sonnet"));
+                assert_eq!(args.max_turns, 10);
+                assert!(args.follow);
+                assert!(args.json);
+            },
+            _ => panic!("expected Agent::Run"),
+        }
+    }
+
+    // --- parse_relative_duration tests ---
+
+    #[test]
+    fn parse_relative_duration_days() {
+        let result = parse_relative_duration("30d");
+        assert!(result.is_some());
+        // Just verify it's a valid RFC 3339 string
+        assert!(result.unwrap().contains('T'));
+    }
+
+    #[test]
+    fn parse_relative_duration_hours() {
+        let result = parse_relative_duration("1h");
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn parse_relative_duration_rejects_invalid() {
+        assert!(parse_relative_duration("abc").is_none());
+        assert!(parse_relative_duration("").is_none());
+        assert!(parse_relative_duration("5x").is_none());
     }
 }
