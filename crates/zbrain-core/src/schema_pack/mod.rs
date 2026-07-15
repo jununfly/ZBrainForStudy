@@ -20,3 +20,4 @@ pub mod per_source;
 pub mod pack_lock;
 pub mod trust_gate;
 pub mod load_active;
+pub mod lint_rules;

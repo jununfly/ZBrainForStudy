@@ -6,6 +6,7 @@
 
 pub mod config;
 pub mod mcp_client;
+pub mod schema_cmd;
 pub mod timeout;
 
 use anyhow::Context;
@@ -445,6 +446,10 @@ pub enum Commands {
     /// Manage AI agents — submit subagent jobs and view logs.
     #[command(subcommand)]
     Agent(AgentAction),
+
+    /// Schema pack management — inspect, validate, lint packs.
+    #[command(subcommand)]
+    Schema(schema_cmd::SchemaSubcommand),
 }
 
 /// Subcommands for `zbrain jobs`.
@@ -1504,6 +1509,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Remote(sub) => run_remote_command(sub, cli.config.as_deref()).await?,
         Commands::Jobs(action) => run_jobs_command(action, cli.config.as_deref()).await?,
         Commands::Agent(action) => run_agent_command(action, cli.config.as_deref()).await?,
+        Commands::Schema(cmd) => schema_cmd::run_schema_pack_command(cmd)?,
     }
     Ok(())
 }
@@ -2988,8 +2994,7 @@ async fn run_doctor_command(args: DoctorArgs, config_path: Option<&Path>) -> any
 /// against silent removal. TS source: src/commands/schema.ts @ 5d5b404~1.
 /// Full background: docs/plans/KNOWN-GAPS.md (G4).
 const UNMIGRATED_TS_SCHEMA_PACK_VERBS: &[&str] = &[
-    // Inspection
-    "active", "list", "show", "validate", "graph", "lint", "stats", "explain", "usage",
+    // Inspection — migrated in 1-3 (zbrain schema {active,list,show,validate,graph,lint,stats,explain,usage})
     // Activation
     "use", "downgrade", "reload",
     // Authoring
@@ -5646,7 +5651,7 @@ mod tests {
         // migrated. This constant + a FUTURE anchor comment let a later agent
         // grep the tracking point back. Guards against silent removal.
         let n = UNMIGRATED_TS_SCHEMA_PACK_VERBS.len();
-        assert_eq!(n, 32, "expected the full TS schema-pack verb taxonomy (32 verbs), got {n}");
+        assert_eq!(n, 23, "expected remaining unmigrated schema-pack verbs (23 after 1-3 inspection cutover), got {n}");
         // A couple of representative verbs must be present so a rename/typo in
         // the list is caught, not just a length change.
         assert!(UNMIGRATED_TS_SCHEMA_PACK_VERBS.contains(&"add-link-type"));
