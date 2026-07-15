@@ -2070,9 +2070,14 @@ async fn run_operation(
     if let Some(msg) = local_timeout_warning(cli_timeout_ms) {
         eprintln!("{msg}");
     }
+    // G37 fix: LibsqlEngine::connect requires EngineConfig.database_path
+    // (not database_url). Mirror run_sync_command's resolve_database_path so
+    // local put-page/get-page/query/think/list-pages/delete-page/
+    // restore-page/purge no longer fail with "requires EngineConfig.database_path".
+    let db_path = resolve_database_path(&config.database_url);
     let engine_config = zbrain_core::engine::EngineConfig {
-        database_path: None,
-        database_url: Some(config.database_url),
+        database_url: None,
+        database_path: Some(db_path),
     };
 
     let engine = zbrain_core::libsql::LibsqlEngine::new();
