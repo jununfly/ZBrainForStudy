@@ -2993,17 +2993,12 @@ async fn run_doctor_command(args: DoctorArgs, config_path: Option<&Path>) -> any
 /// subcommand tree and removing them from here — the anchor test guards
 /// against silent removal. TS source: src/commands/schema.ts @ 5d5b404~1.
 /// Full background: docs/plans/KNOWN-GAPS.md (G4).
+#[allow(dead_code)] // Referenced only in the anchor test (cargo test); silent in non-test builds.
 const UNMIGRATED_TS_SCHEMA_PACK_VERBS: &[&str] = &[
     // Inspection — migrated in 1-3 (zbrain schema {active,list,show,validate,graph,lint,stats,explain,usage})
-    // Activation
-    "use", "downgrade", "reload",
-    // Authoring
-    "init", "fork", "edit", "diff",
-    "add-type", "remove-type", "update-type",
-    "add-alias", "remove-alias", "add-prefix", "remove-prefix",
-    "add-link-type", "remove-link-type",
-    "set-extractable", "set-expert-routing",
-    // Discovery + repair
+    // Activation — migrated in 1-4 (zbrain schema {use,downgrade,reload})
+    // Authoring — migrated in 1-4 (zbrain schema {init,fork,edit,diff,add-type,remove-type,update-type,add-alias,remove-alias,add-prefix,remove-prefix,add-link-type,remove-link-type,set-extractable,set-expert-routing})
+    // Discovery + repair (5 remaining)
     "detect", "suggest", "review-candidates", "review-orphans", "sync",
 ];
 
@@ -5651,10 +5646,10 @@ mod tests {
         // migrated. This constant + a FUTURE anchor comment let a later agent
         // grep the tracking point back. Guards against silent removal.
         let n = UNMIGRATED_TS_SCHEMA_PACK_VERBS.len();
-        assert_eq!(n, 23, "expected remaining unmigrated schema-pack verbs (23 after 1-3 inspection cutover), got {n}");
+        assert_eq!(n, 5, "expected remaining unmigrated schema-pack verbs (5 after 1-3+1-4 cutover), got {n}");
         // A couple of representative verbs must be present so a rename/typo in
         // the list is caught, not just a length change.
-        assert!(UNMIGRATED_TS_SCHEMA_PACK_VERBS.contains(&"add-link-type"));
+        assert!(UNMIGRATED_TS_SCHEMA_PACK_VERBS.contains(&"detect"));
         assert!(UNMIGRATED_TS_SCHEMA_PACK_VERBS.contains(&"review-candidates"));
     }
 

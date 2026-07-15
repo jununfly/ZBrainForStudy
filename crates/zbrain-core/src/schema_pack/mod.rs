@@ -21,3 +21,6 @@ pub mod pack_lock;
 pub mod trust_gate;
 pub mod load_active;
 pub mod lint_rules;
+pub mod mutate_audit;
+pub mod mutate;
+pub mod activate;
