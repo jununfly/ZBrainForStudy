@@ -17,7 +17,8 @@
  *
  * Design: the supervisor does NOT run the worker in-process. It spawns a
  * separate child so a misbehaving handler can't take down the supervisor.
- * Same isolation pattern as autopilot.ts but standalone and reusable.
+ * Same isolation pattern as the autopilot daemon (ported to Rust) but
+ * standalone and reusable.
  *
  * Exit codes (documented in CLI --help):
  *   0 clean shutdown (SIGTERM/SIGINT received, worker drained)

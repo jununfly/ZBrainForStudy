@@ -35,7 +35,7 @@ for (const op of operations) {
 }
 
 // CLI-only commands that bypass the operation layer
-const CLI_ONLY = new Set(['reinit-pglite', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'call', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'features', 'autopilot', 'graph-query', 'jobs', 'agent', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'sources', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'repos', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'frontmatter', 'auth', 'friction', 'claw-test', 'book-mirror', 'takes', 'anomalies', 'transcripts', 'models', 'recall', 'forget', 'edges-backfill', 'cache', 'ze-switch', 'founder', 'brainstorm', 'lsd', 'capture']);
+const CLI_ONLY = new Set(['reinit-pglite', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'call', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'features', 'graph-query', 'jobs', 'agent', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'sources', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'repos', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'frontmatter', 'auth', 'friction', 'claw-test', 'book-mirror', 'takes', 'anomalies', 'transcripts', 'models', 'recall', 'forget', 'edges-backfill', 'cache', 'ze-switch', 'founder', 'brainstorm', 'lsd', 'capture']);
 // CLI-only commands whose handlers print their own --help text. These are
 // excluded from the generic short-circuit so detailed per-command and
 // per-subcommand usage stays reachable.
@@ -1257,11 +1257,6 @@ async function handleCliOnly(command: string, args: string[]) {
         await runFeatures(engine, args);
         break;
       }
-      case 'autopilot': {
-        const { runAutopilot } = await import('./commands/autopilot.ts');
-        await runAutopilot(engine, args);
-        return; // autopilot doesn't disconnect (long-running)
-      }
       case 'graph-query': {
         const { runGraphQuery } = await import('./commands/graph-query.ts');
         await runGraphQuery(engine, args);
@@ -1792,7 +1787,6 @@ TOOLS
   anomalies [--since D] [--sigma N]  v0.29: cohort-based statistical anomalies (tag, type)
   transcripts recent [--days N]      v0.29: recent raw .txt transcripts (local-only)
   dream [--dry-run] [--json]         Run the overnight maintenance cycle once (cron-friendly).
-                                     See also: autopilot --install (continuous daemon).
   check-resolvable [--json] [--fix]  Validate skill tree (reachability/MECE/DRY)
   report --type <name> --content ... Save timestamped report to brain/reports/
 
@@ -1840,7 +1834,6 @@ ADMIN
   history <slug>                     Page version history
   revert <slug> <version-id>         Revert to version
   features [--json] [--auto-fix]     Scan usage + recommend unused features
-  autopilot [--repo] [--interval N]  Self-maintaining brain daemon
   config [show|get|set] <key> [val]  Brain config
   storage status [--repo <path>]     Storage tier status and health
         [--json]                     (git-tracked vs supabase-only)

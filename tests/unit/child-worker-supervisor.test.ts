@@ -1,6 +1,7 @@
 /**
  * Tests for the shared spawn-and-respawn core used by MinionSupervisor
- * and src/commands/autopilot.ts. Pins the D1 lastExitCode-track behavior
+ * and the autopilot daemon (ported to Rust in Phase 11). Pins the D1
+ * lastExitCode-track behavior
  * and the D2 clean-restart-budget gate so future refactors can't silently
  * regress the supervisor crash-count incident this wave fixes.
  *

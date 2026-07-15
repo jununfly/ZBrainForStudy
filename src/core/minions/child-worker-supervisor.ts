@@ -3,7 +3,7 @@
  *
  * Extracted from MinionSupervisor (src/core/minions/supervisor.ts) so it can
  * be reused by both MinionSupervisor (standalone `zbrain jobs supervisor`
- * daemon) and the autopilot command (src/commands/autopilot.ts). Pre-fix
+ * daemon) and the autopilot daemon (ported to Rust in Phase 11). Pre-fix
  * those two had separate spawn loops with different crash-counting bugs;
  * this class is the single source of truth.
  *

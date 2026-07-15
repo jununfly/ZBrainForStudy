@@ -88,6 +88,11 @@
           "q": "首刀删哪些? 验证结果?",
           "answer": "首刀=think/remote/salience 三已迁移死命令,tsc零新增(76→75)+cargo绿+三命令Rust存活",
           "note": "形态2首刀落地(2026-07-15): 删 src/commands/{think,remote,salience}.ts + cli.ts 三处动态import dispatch分支(remote/salience/think)+CLI_ONLY Set移除三名。选址三满足: Rust已覆盖(zbrain --help 有三命令)+导入图安全(各仅被cli.ts动态import,零其它生产牵绊)+零测试债(零关联测试)。验证: tsc 76→75(零新增,反而清掉remote.ts原有的dangling doctor.ts import基线错误);零测试dangle;cargo build -p zbrain-cli 0.45s绿;think/remote/salience 在Rust CLI侧完好存活=删TS无损。autopilot链因被保留代码jobs.ts import不够干净,本轮跳过。其余6个已迁移命令(agent/capture/graph-query/jobs/sources+autopilot)有混合测试牵绊,留后续轮。"
+        },
+        {
+          "q": "第二轮删哪些? 如何切断保留代码依赖边?",
+          "answer": "第二轮=autopilot子系统(autopilot.ts 1143行+autopilot-fanout.ts+4测试),先提取resolveGbrainCliPath到中性cli-path.ts切断jobs.ts依赖边再删,tsc零新增(75→75)+cargo绿+autopilot Rust存活",
+          "note": "第二轮落地(2026-07-15): 用户选①先切边再删。障碍=保留代码jobs.ts L996动态import autopilot.ts的resolveGbrainCliPath()。手法: (1)提取resolveGbrainCliPath(19行,仅依赖execSync)到新中性文件src/commands/cli-path.ts(保留); (2)jobs.ts L996改引./cli-path.ts; (3)autopilot-resolve-cli.test.ts→cli-path.test.ts重命名+改引(保留,测的是保留函数); 边切断后autopilot.ts importer仅剩cli.ts(死入口)+2纯删测试。删除清单: autopilot.ts+autopilot-fanout.ts(仅被autopilot.ts+2测试import,随删)+4测试(autopilot-install/reconnect-classifier纯删; autopilot-fanout纯删; e2e fanout-postgres虽import PostgresEngine/MinionQueue但100%测fanout专属逻辑,被测对象随fanout消失故整删,PostgresEngine/MinionQueue是KEEP核心有大量其它importer不dangle)。cli.ts删autopilot dispatch分支+CLI_ONLY移除+2处help文本。清理5处悬空文字引用(child-worker-supervisor.ts/.test.ts注释,supervisor.ts注释,questions.json两处expected_files,cli-path.ts自身注释)——均改自解释不指向已删路径。验证全gate: tsc 75→75零新增; ts_dep_closure importers(autopilot.ts)=空+importers(fanout)=空零dangle; cargo build 0.79s绿; zbrain.exe autopilot --help Rust侧完整存活(--install/uninstall/status/once)。净删2151行增10行。"
         }
       ],
       "notes": ""
@@ -105,7 +110,7 @@
   },
   "metadata": {
     "created": "2026-07-15 08:44:04",
-    "updated": "2026-07-15 09:32:34",
+    "updated": "2026-07-15 09:52:27",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART9_PHASE11_PACKAGE_CUTOVER.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART9_PHASE11_PACKAGE_CUTOVER.md"

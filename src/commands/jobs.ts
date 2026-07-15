@@ -993,7 +993,7 @@ HANDLER TYPES (built in)
         process.exit(1);
       }
 
-      const { resolveGbrainCliPath } = await import('./autopilot.ts');
+      const { resolveGbrainCliPath } = await import('./cli-path.ts');
 
       const concurrency = parseInt(parseFlag(args, '--concurrency') ?? '2', 10);
       const queueName = parseFlag(args, '--queue') ?? 'default';

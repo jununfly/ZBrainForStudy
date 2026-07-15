@@ -10,7 +10,7 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { resolveGbrainCliPath } from '../../src/commands/autopilot.ts';
+import { resolveGbrainCliPath } from '../../src/commands/cli-path.ts';
 
 describe('resolveGbrainCliPath', () => {
   test('returns a non-empty string or throws with a clear install hint', () => {
