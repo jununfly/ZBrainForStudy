@@ -333,6 +333,7 @@ mod tests {
 
     #[test]
     fn sha8_produces_8_hex_chars() {
+        let _guard = crate::schema_pack::lock_schema_fs();
         let h = sha8("person");
         assert_eq!(h.len(), 8);
         assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
@@ -340,12 +341,14 @@ mod tests {
 
     #[test]
     fn sha8_is_deterministic() {
+        let _guard = crate::schema_pack::lock_schema_fs();
         assert_eq!(sha8("person"), sha8("person"));
         assert_ne!(sha8("person"), sha8("company"));
     }
 
     #[test]
     fn redact_type_returns_hash_when_not_verbose() {
+        let _guard = crate::schema_pack::lock_schema_fs();
         // Ensure verbose is off (save and restore)
         let prev = std::env::var("ZBRAIN_SCHEMA_AUDIT_VERBOSE");
         std::env::remove_var("ZBRAIN_SCHEMA_AUDIT_VERBOSE");
@@ -363,6 +366,7 @@ mod tests {
 
     #[test]
     fn redact_type_returns_plain_when_verbose() {
+        let _guard = crate::schema_pack::lock_schema_fs();
         std::env::set_var("ZBRAIN_SCHEMA_AUDIT_VERBOSE", "1");
         let (h, redacted) = redact_type("person");
         assert!(!redacted, "type should NOT be redacted when verbose");
@@ -372,6 +376,7 @@ mod tests {
 
     #[test]
     fn redact_prefix_keeps_first_segment() {
+        let _guard = crate::schema_pack::lock_schema_fs();
         assert_eq!(redact_prefix("people/"), Some("people".to_string()));
         assert_eq!(redact_prefix("wiki/concepts/"), Some("wiki".to_string()));
         assert_eq!(redact_prefix("notes/"), Some("notes".to_string()));
@@ -379,12 +384,14 @@ mod tests {
 
     #[test]
     fn redact_prefix_empty_returns_none() {
+        let _guard = crate::schema_pack::lock_schema_fs();
         assert_eq!(redact_prefix(""), None);
         assert_eq!(redact_prefix("/"), None);
     }
 
     #[test]
     fn compute_audit_path_uses_iso_week() {
+        let _guard = crate::schema_pack::lock_schema_fs();
         // 2026-01-01 is Thursday → ISO week 1 of 2026
         let dt = chrono::DateTime::parse_from_rfc3339("2026-01-01T12:00:00Z")
             .unwrap()
@@ -396,6 +403,7 @@ mod tests {
 
     #[test]
     fn compute_audit_path_week_27() {
+        let _guard = crate::schema_pack::lock_schema_fs();
         // 2026-07-01 is Wednesday → ISO week 27 of 2026
         let dt = chrono::DateTime::parse_from_rfc3339("2026-07-01T12:00:00Z")
             .unwrap()
@@ -407,6 +415,7 @@ mod tests {
 
     #[test]
     fn build_record_success_has_no_reason() {
+        let _guard = crate::schema_pack::lock_schema_fs();
         let opts = LogMutationOpts {
             op: MutationOp::AddType,
             pack: "my-pack".to_string(),
@@ -429,6 +438,7 @@ mod tests {
 
     #[test]
     fn build_record_failure_has_reason() {
+        let _guard = crate::schema_pack::lock_schema_fs();
         let opts = LogMutationOpts {
             op: MutationOp::RemoveType,
             pack: "my-pack".to_string(),
@@ -447,6 +457,7 @@ mod tests {
 
     #[test]
     fn build_record_no_type_name() {
+        let _guard = crate::schema_pack::lock_schema_fs();
         let opts = LogMutationOpts {
             op: MutationOp::AddLinkType,
             pack: "my-pack".to_string(),
@@ -465,6 +476,7 @@ mod tests {
 
     #[test]
     fn summarize_counts_by_op_and_outcome() {
+        let _guard = crate::schema_pack::lock_schema_fs();
         let records = vec![
             MutationAuditRecord {
                 ts: Utc::now().to_rfc3339(),
@@ -525,6 +537,7 @@ mod tests {
 
     #[test]
     fn summarize_empty_records() {
+        let _guard = crate::schema_pack::lock_schema_fs();
         let s = summarize_mutations(&[]);
         assert_eq!(s.total, 0);
         assert!(s.by_op.is_empty());
@@ -532,6 +545,7 @@ mod tests {
 
     #[test]
     fn mutation_op_as_str_roundtrip() {
+        let _guard = crate::schema_pack::lock_schema_fs();
         for op in [
             MutationOp::AddType,
             MutationOp::RemoveType,
@@ -556,6 +570,7 @@ mod tests {
 
     #[test]
     fn log_and_read_roundtrip_with_tempdir() {
+        let _guard = crate::schema_pack::lock_schema_fs();
         // Use a temp HOME to isolate the test
         let tmp = std::env::temp_dir().join(format!("zbrain-audit-test-{}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
@@ -602,6 +617,7 @@ mod tests {
 
     #[test]
     fn log_failure_and_read() {
+        let _guard = crate::schema_pack::lock_schema_fs();
         let tmp = std::env::temp_dir().join(format!("zbrain-audit-fail-{}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
         let prev_home = std::env::var("HOME").ok();
@@ -644,6 +660,7 @@ mod tests {
 
     #[test]
     fn read_malformed_lines_are_skipped() {
+        let _guard = crate::schema_pack::lock_schema_fs();
         let tmp = std::env::temp_dir().join(format!("zbrain-audit-malformed-{}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
         let prev_home = std::env::var("HOME").ok();

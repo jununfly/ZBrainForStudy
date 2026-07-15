@@ -137,6 +137,7 @@ mod tests {
 
     #[test]
     fn set_and_read_active_pack() {
+        let _guard = crate::schema_pack::lock_schema_fs();
         let prev_home = std::env::var("HOME").ok();
         let prev_profile = std::env::var("USERPROFILE").ok();
         let tmp = setup_temp_home();
@@ -155,6 +156,7 @@ mod tests {
 
     #[test]
     fn clear_active_pack_works() {
+        let _guard = crate::schema_pack::lock_schema_fs();
         let prev_home = std::env::var("HOME").ok();
         let prev_profile = std::env::var("USERPROFILE").ok();
         let tmp = setup_temp_home();
@@ -171,6 +173,7 @@ mod tests {
 
     #[test]
     fn get_active_pack_when_no_config() {
+        let _guard = crate::schema_pack::lock_schema_fs();
         let prev_home = std::env::var("HOME").ok();
         let prev_profile = std::env::var("USERPROFILE").ok();
         let tmp = setup_temp_home();
@@ -184,6 +187,7 @@ mod tests {
 
     #[test]
     fn set_active_pack_preserves_other_fields() {
+        let _guard = crate::schema_pack::lock_schema_fs();
         let prev_home = std::env::var("HOME").ok();
         let prev_profile = std::env::var("USERPROFILE").ok();
         let tmp = setup_temp_home();
@@ -212,6 +216,7 @@ mod tests {
 
     #[test]
     fn reload_clears_locks() {
+        let _guard = crate::schema_pack::lock_schema_fs();
         let prev_home = std::env::var("HOME").ok();
         let prev_profile = std::env::var("USERPROFILE").ok();
         let tmp = setup_temp_home();
@@ -239,6 +244,7 @@ mod tests {
 
     #[test]
     fn reload_no_lock_dir_returns_empty() {
+        let _guard = crate::schema_pack::lock_schema_fs();
         let prev_home = std::env::var("HOME").ok();
         let prev_profile = std::env::var("USERPROFILE").ok();
         let tmp = setup_temp_home();
