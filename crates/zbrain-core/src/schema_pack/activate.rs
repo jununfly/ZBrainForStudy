@@ -26,10 +26,9 @@ pub struct HomeConfig {
 }
 
 fn home_config_path() -> PathBuf {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".zbrain").join("config.json")
+    crate::paths::zbrain_home()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("config.json")
 }
 
 fn read_home_config() -> HomeConfig {
@@ -81,11 +80,8 @@ pub fn get_active_pack_from_config() -> Option<String> {
 /// If `pack_name` is `None`, clears all lock files in the lock directory.
 /// Returns the list of cleared lock file paths.
 pub fn reload_pack_cache(pack_name: Option<&str>) -> Vec<String> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| ".".into());
-    let lock_dir = PathBuf::from(home)
-        .join(".zbrain")
+    let lock_dir = crate::paths::zbrain_home()
+        .unwrap_or_else(|| PathBuf::from("."))
         .join("schema-packs")
         .join(".locks");
 

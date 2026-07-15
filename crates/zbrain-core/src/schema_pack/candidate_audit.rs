@@ -60,10 +60,9 @@ pub fn resolve_audit_dir() -> PathBuf {
             return PathBuf::from(dir);
         }
     }
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".zbrain").join("audit")
+    crate::paths::zbrain_home()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("audit")
 }
 
 /// ISO-week name `YYYY-Www` for `date`.

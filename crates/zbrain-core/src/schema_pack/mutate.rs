@@ -200,10 +200,9 @@ pub fn locate_mutable_pack_file(name: &str) -> Result<(PathBuf, PackFileFormat),
 }
 
 fn user_pack_dir() -> PathBuf {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".zbrain").join("schema-packs")
+    crate::paths::zbrain_home()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("schema-packs")
 }
 
 // ---------------------------------------------------------------------------

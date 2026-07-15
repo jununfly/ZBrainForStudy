@@ -394,10 +394,9 @@ fn write_candidate_delta(
     apply_slug: &str,
 ) -> crate::Result<()> {
     let pack_identity = active_pack.map(|p| p.name.clone()).unwrap_or_else(|| "none".to_string());
-    let dir = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .map(|h| PathBuf::from(h).join(".zbrain").join("schema-pack-deltas"))
-        .unwrap_or_else(|_| PathBuf::from(".zbrain").join("schema-pack-deltas"));
+    let dir = crate::paths::zbrain_home()
+        .unwrap_or_else(|| PathBuf::from(".zbrain"))
+        .join("schema-pack-deltas");
     std::fs::create_dir_all(&dir)
         .map_err(|e| crate::Error::new("Io", "io_error", format!("cannot create deltas dir: {e}")))?;
     let ts = chrono::Utc::now().timestamp();

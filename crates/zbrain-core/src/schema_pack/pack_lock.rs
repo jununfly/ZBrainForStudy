@@ -328,11 +328,8 @@ fn resolve_lock_path(pack_name: &str, lock_dir: Option<&Path>) -> PathBuf {
 
 fn default_lock_dir() -> PathBuf {
     // ~/.zbrain/schema-packs/.locks/
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| ".".into());
-    PathBuf::from(home)
-        .join(".zbrain")
+    crate::paths::zbrain_home()
+        .unwrap_or_else(|| PathBuf::from("."))
         .join("schema-packs")
         .join(".locks")
 }

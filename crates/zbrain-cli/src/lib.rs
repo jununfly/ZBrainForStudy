@@ -1779,9 +1779,8 @@ async fn run_sync_command(args: SyncArgs, config_path: Option<&Path>, cli_opts: 
 
     // Resolve failures_dir
     let failures_dir = args.failures_dir.clone().unwrap_or_else(|| {
-        dirs::home_dir()
+        config::zbrain_home()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join(".zbrain")
             .join("sync-failures")
     });
     std::fs::create_dir_all(&failures_dir)?;
@@ -1955,9 +1954,8 @@ async fn run_serve_http_command(
         spa_dir,
         operation_registry: build_operation_registry(),
         engine: engine as std::sync::Arc<dyn zbrain_core::BrainEngine>,
-        zbrain_home: dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".zbrain"),
+        zbrain_home: config::zbrain_home()
+            .unwrap_or_else(|| PathBuf::from(".")),
     };
 
     eprintln!("[zbrain-web] starting HTTP server on {addr}");
@@ -1983,9 +1981,8 @@ fn resolve_audit_dir() -> PathBuf {
         .filter(|s| !s.trim().is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            dirs::home_dir()
+            config::zbrain_home()
                 .unwrap_or_else(|| PathBuf::from("."))
-                .join(".zbrain")
                 .join("audit")
         })
 }
@@ -2165,9 +2162,8 @@ async fn run_sources_add(args: SourcesAddArgs, config_path: Option<&Path>) -> an
     let config = config::load_config(config_path)?;
 
     // Resolve zbrain_home (default: ~/.zbrain)
-    let zbrain_home = dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".zbrain");
+    let zbrain_home = config::zbrain_home()
+        .unwrap_or_else(|| PathBuf::from("."));
 
     // Build engine
     let db_path = resolve_database_path(&config.database_url);
@@ -2284,9 +2280,8 @@ async fn run_sources_remove(args: SourcesRemoveArgs, config_path: Option<&Path>)
 
     let config = config::load_config(config_path)?;
 
-    let zbrain_home = dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".zbrain");
+    let zbrain_home = config::zbrain_home()
+        .unwrap_or_else(|| PathBuf::from("."));
 
     let db_path = resolve_database_path(&config.database_url);
     let engine_config = EngineConfig {
@@ -2336,9 +2331,8 @@ async fn run_sources_status(args: SourcesStatusArgs, config_path: Option<&Path>)
 
     let config = config::load_config(config_path)?;
 
-    let _zbrain_home = dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".zbrain");
+    let _zbrain_home = config::zbrain_home()
+        .unwrap_or_else(|| PathBuf::from("."));
 
     let db_path = resolve_database_path(&config.database_url);
     let engine_config = EngineConfig {
@@ -2642,9 +2636,8 @@ async fn run_init_command(args: InitArgs, config_path: Option<&Path>) -> anyhow:
         .map(PathBuf::from)
         .or_else(|| config::user_config_path())
         .unwrap_or_else(|| {
-            dirs::home_dir()
+            config::zbrain_home()
                 .unwrap_or_else(|| PathBuf::from("."))
-                .join(".zbrain")
                 .join("config")
         });
 
@@ -2742,9 +2735,8 @@ async fn run_init_command(args: InitArgs, config_path: Option<&Path>) -> anyhow:
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("."))
     } else {
-        dirs::home_dir()
+        config::zbrain_home()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join(".zbrain")
     };
     let db_path = zbrain_home.join("brain.pglite");
     if let Some(parent) = db_path.parent() {
@@ -2847,9 +2839,8 @@ async fn run_doctor_command(args: DoctorArgs, config_path: Option<&Path>) -> any
     };
 
     // 2. Database connectivity check
-    let db_path = dirs::home_dir()
+    let db_path = config::zbrain_home()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".zbrain")
         .join("brain.pglite");
 
     if db_path.exists() {
@@ -3955,7 +3946,7 @@ pub(crate) fn resolve_database_path(database_url: &str) -> String {
         .strip_prefix("sqlite://")
         .unwrap_or(database_url);
     if path.starts_with('~') {
-        if let Some(home) = dirs::home_dir() {
+        if let Some(home) = config::home_root() {
             return format!("{}{}", home.display(), &path[1..]);
         }
     }
@@ -4018,6 +4009,9 @@ async fn run_autopilot_command(
 
         match target {
             daemon::InstallTarget::Macos => {
+                // Host-level install target: launchd/systemd require the real
+                // OS home (not `ZBRAIN_HOME`), so we resolve the home root
+                // directly rather than via `config::zbrain_home()`.
                 let home = dirs::home_dir()
                     .map(|p| p.to_string_lossy().into_owned())
                     .unwrap_or_default();

@@ -68,7 +68,9 @@ impl Default for SupervisorOpts {
         Self {
             concurrency: 2,
             queue: "default".to_string(),
-            pid_file: dirs_next().unwrap_or_else(|| PathBuf::from(".zbrain")).join("supervisor.pid"),
+            pid_file: zbrain_core::paths::zbrain_home()
+                .unwrap_or_else(|| PathBuf::from(".zbrain"))
+                .join("supervisor.pid"),
             max_crashes: 10,
             health_interval_ms: 60_000,
             cli_path: String::new(),
@@ -76,13 +78,6 @@ impl Default for SupervisorOpts {
             max_rss_mb: 2048,
         }
     }
-}
-
-fn dirs_next() -> Option<PathBuf> {
-    // ~/.zbrain
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(|h| PathBuf::from(h).join(".zbrain"))
 }
 
 // ─── Exit codes ──────────────────────────────────────────────────────────────

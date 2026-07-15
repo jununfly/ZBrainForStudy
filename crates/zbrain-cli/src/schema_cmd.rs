@@ -1081,8 +1081,7 @@ fn print_manifest_human(m: &SchemaPackManifest) {
 }
 
 fn user_pack_dir() -> PathBuf {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".zbrain").join("schema-packs")
+    crate::config::zbrain_home()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("schema-packs")
 }

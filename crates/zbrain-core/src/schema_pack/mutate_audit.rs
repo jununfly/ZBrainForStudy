@@ -168,11 +168,8 @@ pub fn compute_mutate_audit_path(now: Option<DateTime<Utc>>) -> PathBuf {
     let week = now.iso_week().week();
     let filename = format!("schema-mutations-{year}-W{week:02}.jsonl");
 
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| ".".into());
-    PathBuf::from(home)
-        .join(".zbrain")
+    crate::paths::zbrain_home()
+        .unwrap_or_else(|| PathBuf::from("."))
         .join("audit")
         .join(filename)
 }
