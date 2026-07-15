@@ -3,34 +3,10 @@
   "version": "0.41.14.0",
   "description": "Postgres-native personal knowledge brain with hybrid RAG search",
   "type": "module",
-  "main": "src/core/index.ts",
   "bin": {
     "zbrain": "bin/zbrain-rs.js"
   },
-  "exports": {
-    ".": "./src/core/index.ts",
-    "./engine": "./src/core/engine.ts",
-    "./types": "./src/core/types.ts",
-    "./operations": "./src/core/operations.ts",
-    "./minions": "./src/core/minions/index.ts",
-    "./engine-factory": "./src/core/engine-factory.ts",
-    "./pglite-engine": "./src/core/pglite-engine.ts",
-    "./link-extraction": "./src/core/link-extraction.ts",
-    "./import-file": "./src/core/import-file.ts",
-    "./transcription": "./src/core/transcription.ts",
-    "./embedding": "./src/core/embedding.ts",
-    "./config": "./src/core/config.ts",
-    "./markdown": "./src/core/markdown.ts",
-    "./backoff": "./src/core/backoff.ts",
-    "./search/hybrid": "./src/core/search/hybrid.ts",
-    "./search/expansion": "./src/core/search/expansion.ts",
-    "./ai/gateway": "./src/core/ai/gateway.ts",
-    "./extract": "./src/commands/extract.ts",
-    "./ingestion": "./src/core/ingestion/index.ts",
-    "./ingestion/test-harness": "./src/core/ingestion/test-harness.ts"
-  },
   "scripts": {
-    "dev": "bun run src/cli.ts",
     "build:rust": "cargo build --release -p zbrain-cli",
     "build:all": "bun run build:rust",
     "build:admin": "cd admin && bun run build",
@@ -47,7 +23,7 @@
     "check:system-of-record": "scripts/check-system-of-record.sh",
     "check:admin-scope-drift": "scripts/check-admin-scope-drift.sh",
     "check:cli-exec": "scripts/check-cli-executable.sh",
-    "check:all": "scripts/check-privacy.sh && scripts/check-proposal-pii.sh && scripts/check-test-real-names.sh && scripts/check-jsonb-pattern.sh && scripts/check-source-id-projection.sh && scripts/check-source-config-leak.sh && scripts/check-progress-to-stdout.sh && scripts/check-no-legacy-getconnection.sh && scripts/check-test-isolation.sh && scripts/check-trailing-newline.sh && scripts/check-wasm-embedded.sh && scripts/check-exports-count.sh && scripts/check-admin-build.sh && scripts/check-admin-scope-drift.sh && scripts/check-cli-executable.sh && scripts/check-skill-brain-first.sh && scripts/check-operations-filter-bypass.sh && scripts/check-gateway-routed-no-direct-anthropic.sh",
+    "check:all": "scripts/check-privacy.sh && scripts/check-proposal-pii.sh && scripts/check-test-real-names.sh && scripts/check-jsonb-pattern.sh && scripts/check-source-id-projection.sh && scripts/check-source-config-leak.sh && scripts/check-progress-to-stdout.sh && scripts/check-no-legacy-getconnection.sh && scripts/check-test-isolation.sh && scripts/check-trailing-newline.sh && scripts/check-wasm-embedded.sh && scripts/check-admin-build.sh && scripts/check-admin-scope-drift.sh && scripts/check-cli-executable.sh && scripts/check-skill-brain-first.sh && scripts/check-operations-filter-bypass.sh && scripts/check-gateway-routed-no-direct-anthropic.sh",
     "check:gateway-routed": "scripts/check-gateway-routed-no-direct-anthropic.sh",
     "check:resolver": "bun src/cli.ts check-resolvable --strict --skills-dir skills/",
     "check:skill-brain-first": "scripts/check-skill-brain-first.sh",
@@ -69,22 +45,17 @@
     "check:eval-glossary": "scripts/check-eval-glossary-fresh.sh",
     "check:test-names": "scripts/check-test-real-names.sh",
     "check:progress": "scripts/check-progress-to-stdout.sh",
-    "check:exports-count": "scripts/check-exports-count.sh",
     "check:admin-build": "scripts/check-admin-build.sh",
     "check:test-isolation": "scripts/check-test-isolation.sh",
     "check:fuzz-purity": "scripts/check-fuzz-purity.sh",
     "check:operations-filter-bypass": "scripts/check-operations-filter-bypass.sh",
-    "postinstall": "bun run scripts/postinstall.ts",
     "prepublish:clawhub": "bun run build:all",
     "publish:clawhub": "clawhub package publish . --family bundle-plugin"
   },
   "openclaw": {
     "compat": {
       "pluginApi": ">=2026.4.0"
-    },
-    "extensions": [
-      "./src/openclaw-context-engine.ts"
-    ]
+    }
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.71",
