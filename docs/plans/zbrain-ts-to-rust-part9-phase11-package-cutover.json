@@ -69,11 +69,27 @@
     "1-3": {
       "id": "1-3",
       "label": "分批删 src/core 已迁 impl(tsc 基线 diff 验证,逐 slice)",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "explore",
       "parent": "1",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "1-3 删除来源/范围/验证 gate?",
+          "answer": "来源=Roadmap已完成节点反推(系统);本轮范围=最有把握1-2子系统(小步);gate=tsc基线diff+闭包dangle校验双保险",
+          "note": "用户拍板(2026-07-15): 候选来源从 Part1-7 已 completed 的 Rust 迁移节点反推对应 TS 子系统;本轮不铺开,先删 1-2 个 Rust 覆盖最硬且导入图叶子安全的子系统跑通完整流程;每个删除 slice 删前记 tsc 基线(76 errors)删后确保不新增,并用 ts_dep_closure 反向闭包验证候选不 dangle 任何保留 impl/kept-test。方法论修正: 删除按'导入图叶子'驱动而非子系统名——src/core 内部仍是互 import 网,cutover 只切外部入口,须从叶子往里逐层剥。"
+        },
+        {
+          "q": "1-3 执行形态?",
+          "answer": "选2: 先删无混合测试牵绊的子集试水",
+          "note": "用户拍板(2026-07-15): 全局量化=KEEP闭包外160 impl 整组删零dangle,216测试碰它(83纯删+133混合)。选形态2: 本轮先从160里挑一个'关联测试全是纯删(无混合测试牵扯保留代码)'的子系统删一轮,跑通 tsc基线diff(76)+ts_dep_closure dangle校验完整gate,验证无误再扩全集+混合测试。最贴合小步最有把握原则。"
+        },
+        {
+          "q": "首刀删哪些? 验证结果?",
+          "answer": "首刀=think/remote/salience 三已迁移死命令,tsc零新增(76→75)+cargo绿+三命令Rust存活",
+          "note": "形态2首刀落地(2026-07-15): 删 src/commands/{think,remote,salience}.ts + cli.ts 三处动态import dispatch分支(remote/salience/think)+CLI_ONLY Set移除三名。选址三满足: Rust已覆盖(zbrain --help 有三命令)+导入图安全(各仅被cli.ts动态import,零其它生产牵绊)+零测试债(零关联测试)。验证: tsc 76→75(零新增,反而清掉remote.ts原有的dangling doctor.ts import基线错误);零测试dangle;cargo build -p zbrain-cli 0.45s绿;think/remote/salience 在Rust CLI侧完好存活=删TS无损。autopilot链因被保留代码jobs.ts import不够干净,本轮跳过。其余6个已迁移命令(agent/capture/graph-query/jobs/sources+autopilot)有混合测试牵绊,留后续轮。"
+        }
+      ],
       "notes": ""
     },
     "1-4": {
@@ -89,7 +105,7 @@
   },
   "metadata": {
     "created": "2026-07-15 08:44:04",
-    "updated": "2026-07-15 09:06:26",
+    "updated": "2026-07-15 09:32:34",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART9_PHASE11_PACKAGE_CUTOVER.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART9_PHASE11_PACKAGE_CUTOVER.md"
