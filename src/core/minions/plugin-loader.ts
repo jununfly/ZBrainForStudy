@@ -1,6 +1,11 @@
 /**
  * ZBRAIN_PLUGIN_PATH loader for host-repo subagent definitions (v0.15).
  *
+ * UNMIGRATED (TS→Rust): registered in docs/plans/KNOWN-GAPS.md (G36).
+ * Rust has no equivalent ZBRAIN_PLUGIN_PATH subagent-discovery loader yet.
+ * Kept (with its test) despite having no production importer so the
+ * reference implementation isn't lost before the Rust port lands.
+ *
  * Your OpenClaw (and future downstream agents) ship custom subagent defs
  * from their own repos. zbrain discovers them at worker startup via
  * ZBRAIN_PLUGIN_PATH = colon-separated absolute paths (like $PATH). Each

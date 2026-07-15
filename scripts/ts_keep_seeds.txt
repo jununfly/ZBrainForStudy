@@ -56,6 +56,13 @@ src/core/source-health.ts
 src/core/brain-score-recommendations.ts
 src/core/skillpack/doctor.ts
 
+# --- G36: ZBRAIN_PLUGIN_PATH subagent loader (not migrated to Rust) ---
+# Kept as porting reference despite zero production importers. Rust has no
+# equivalent plugin-discovery loader yet. See docs/plans/KNOWN-GAPS.md (G36).
+# Seeding it here keeps ts_dep_closure from re-flagging it (and its test)
+# as safe-to-delete on every future D recompute.
+src/core/minions/plugin-loader.ts
+
 # NOTE: tests are deliberately NOT seeded. A .test.ts is a leaf (nothing imports
 # it), so it is deletion-neutral: it gets deleted together with the impl slice it
 # covers. Seeding all tests would pull the whole codebase into R (tests import

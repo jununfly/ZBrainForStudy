@@ -9,9 +9,10 @@
  *      (synchronous, inline).
  *   2. `src/commands/reindex.ts` — `zbrain reindex --markdown` batch sweep
  *      (per-page loop, synchronous within the command process).
- *   3. `src/core/minions/handlers/contextual-reindex-per-chunk.ts` — Minion
- *      job handler for the post-upgrade-prompt-accepted backfill (async,
- *      worker-pool concurrency with global rate-leasing).
+ *   3. The `contextual_reindex_per_chunk` Minion job handler (ported to
+ *      Rust: crates/zbrain-core/src/minions/handlers/contextual_reindex.rs)
+ *      — post-upgrade-prompt-accepted backfill (async, worker-pool
+ *      concurrency with global rate-leasing).
  *
  * The service runs the D26 P0-2 two-phase build pattern. PHASE 1 collects
  * all synopses + embeddings IN MEMORY. If any chunk triggers a refusal /
