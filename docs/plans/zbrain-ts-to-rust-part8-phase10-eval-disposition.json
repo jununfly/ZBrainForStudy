@@ -1,0 +1,148 @@
+{
+  "title": "Part8 Phase10 — eval 子系统处置决策",
+  "description": "为 71 个 eval 文件分 7 个子系统做 P(port)/K(keep TS dev-tool)/D(delete) 处置决策。量化已证明删 eval 对解锁 src/core 删除贡献极小(~10 文件)，真正钥匙是 Phase11 package 入口 cutover。本 Part 只产出处置决策+依据，不含大规模 port 施工。",
+  "version": 1,
+  "nodes": {
+    "1": {
+      "id": "1",
+      "label": "Part8 Phase10 — eval 子系统处置决策",
+      "status": "completed",
+      "mode": "explore",
+      "parent": null,
+      "children": [
+        "1-1",
+        "1-2",
+        "1-3",
+        "1-4",
+        "1-5",
+        "1-6",
+        "1-7"
+      ],
+      "decisions": [
+        {
+          "q": "Phase10 净结论:eval 是否阻塞 Phase11 cutover?",
+          "answer": "不阻塞。P=3(1-1/1-2/1-6) K=4(1-3/1-4/1-5/1-7) D=0",
+          "note": "量化已证明删 eval 对解锁 src/core 删除仅释放 ~10 文件。7 子系统处置后:仅 1-6(生产 import,绑 G5 doctor)必须优先 port;1-1/1-2 有 seam 但施工延后(CI/nightly 质量门);1-3/1-4/1-5/1-7 保留 TS dev-tool,长期共存,不进 Rust 运行时也不被 package 入口 import。结论:eval 完全不在 Phase11 package 入口 cutover 的关键路径上,cutover 可独立推进。"
+        }
+      ],
+      "notes": ""
+    },
+    "1-1": {
+      "id": "1-1",
+      "label": "longmemeval 处置(有 Rust seam run_long_mem_eval + 专用 CI job)",
+      "status": "completed",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [
+        {
+          "q": "port / keep-TS / delete?",
+          "answer": "P — port(延后施工)",
+          "note": "唯一有 Rust seam run_long_mem_eval + 专用 CI job slow-eval-longmemeval + nightly 硬编码 fixture longmemeval-nightly.jsonl。是生产质量门,不能删。runner 现为 stub,决策=port,实际 port 留独立施工节点。"
+        }
+      ],
+      "notes": ""
+    },
+    "1-2": {
+      "id": "1-2",
+      "label": "cross-modal-eval 处置(有 Rust seam run_cross_modal_batch + 写 receipt)",
+      "status": "completed",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [
+        {
+          "q": "port / keep-TS / delete?",
+          "answer": "P — port(延后施工)",
+          "note": "有 Rust seam run_cross_modal_batch,nightly probe 已定义 CrossModalSummary 解析其输出。同 1-1 决策 port、施工延后。依赖 gateway provider(Part6 Phase8)。"
+        }
+      ],
+      "notes": ""
+    },
+    "1-3": {
+      "id": "1-3",
+      "label": "eval-contradictions 处置(3040 行最大块, DB 表+calibration)",
+      "status": "completed",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [
+        {
+          "q": "port / keep-TS / delete?",
+          "answer": "K — 保留 TS dev-tool",
+          "note": "3040 行最大块,无 Rust seam/无 CI/无生产 import,纯离线实验(DB 表 eval_contradictions_runs + calibration + cost-tracker)。port ROI 极低,保留为 TS 离线工具,不进 Rust 运行时、不阻塞 Phase11 cutover。"
+        }
+      ],
+      "notes": ""
+    },
+    "1-4": {
+      "id": "1-4",
+      "label": "takes-quality-eval 处置(1398 行, 写 receipt/regress)",
+      "status": "completed",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [
+        {
+          "q": "port / keep-TS / delete?",
+          "answer": "K — 保留 TS dev-tool",
+          "note": "1398 行,无 seam/CI/生产依赖,离线 receipt 基准(replay NO BRAIN + regress exit1)。保留 TS。"
+        }
+      ],
+      "notes": ""
+    },
+    "1-5": {
+      "id": "1-5",
+      "label": "code-retrieval 处置(753 行, 自带 questions.json)",
+      "status": "completed",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [
+        {
+          "q": "port / keep-TS / delete?",
+          "answer": "K — 保留 TS dev-tool",
+          "note": "753 行离线基准,自带 questions.json(9.4KB expected_files),无 seam/CI。保留 TS。"
+        }
+      ],
+      "notes": ""
+    },
+    "1-6": {
+      "id": "1-6",
+      "label": "core/eval 共享层处置(drift-watch/search-eval/json-repair, 唯一被生产 import)",
+      "status": "completed",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [
+        {
+          "q": "port / keep-TS / delete?",
+          "answer": "P — port(优先,绑 G5 doctor)",
+          "note": "唯一被生产运行时 import:drift-watch→doctor G5 eval_drift 检查、search/eval.ts→eval 命令+correctness-gate、json-repair→被 1-2/1-4 共享。Rust doctor/brain_score 已引用 eval_drift gate(lib.rs:95, brain_score.rs:611)。必须 port,与 G5 doctor 迁移绑定。注意:1-4 判 K 但共享 json-repair,port 1-6 时该 helper 需 Rust 化或 1-4 保留 TS 侧自带副本。"
+        }
+      ],
+      "notes": ""
+    },
+    "1-7": {
+      "id": "1-7",
+      "label": "eval CLI 命令层处置(4260 行 16 文件, eval-gate 做 CI gate)",
+      "status": "completed",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [
+        {
+          "q": "port / keep-TS / delete? 是否细拆 D?",
+          "answer": "K — 整体保留 TS,不拆 D",
+          "note": "16 个 eval 命令全部仍在 src/cli.ts 注册,无一是已摘除的死命令 → 无客观 D 信号。它们是 1-1~1-5 子系统的 CLI 入口派发器(eval-longmemeval→1-1, eval-cross-modal→1-2, eval-suspected-contradictions→1-3, eval-takes-quality→1-4, eval-code-retrieval→1-5, eval-run-all/gate/compare/export→CI 编排)。整体判 K:不进 Rust 运行时、不被 package 入口 import → 不阻塞 Phase11 cutover。未来若某子系统整体退役,连命令一起删,不现在孤立判 D。"
+        }
+      ],
+      "notes": ""
+    }
+  },
+  "metadata": {
+    "created": "2026-07-14 23:45:23",
+    "updated": "2026-07-15 08:37:13",
+    "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART8_PHASE10_EVAL_DISPOSITION.md"
+  }
+}
