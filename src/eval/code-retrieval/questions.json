@@ -9,7 +9,7 @@
       "kind": "callers",
       "query": "what calls performSync",
       "symbol": "performSync",
-      "expected_files": ["src/commands/sync.ts", "src/core/cycle.ts", "src/commands/jobs.ts"],
+      "expected_files": ["src/commands/sync.ts", "src/core/cycle.ts"],
       "expected_min_recall": 0.6
     },
     {
@@ -25,7 +25,7 @@
       "kind": "callers",
       "query": "what calls runCycle",
       "symbol": "runCycle",
-      "expected_files": ["src/commands/dream.ts", "src/commands/jobs.ts"],
+      "expected_files": ["src/commands/dream.ts"],
       "expected_min_recall": 0.6
     },
     {
@@ -138,7 +138,7 @@
       "kind": "blast_radius",
       "query": "what breaks if I change the signature of performSync",
       "symbol": "performSync",
-      "expected_files": ["src/commands/sync.ts", "src/core/cycle.ts", "src/commands/jobs.ts"],
+      "expected_files": ["src/commands/sync.ts", "src/core/cycle.ts"],
       "expected_min_recall": 0.5
     },
     {

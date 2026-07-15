@@ -624,21 +624,6 @@ describe('supervisor crash classifier wiring (v0.35.x)', () => {
     // Clean-exit count surfaces alongside crash count for transparency.
     expect(source).toContain('clean_exits_24h=');
   });
-
-  test('jobs.ts supervisor status uses summarizeCrashes — same wiring as doctor', async () => {
-    const source = await Bun.file(new URL('../src/commands/jobs.ts', import.meta.url)).text();
-    // Both surfaces MUST go through the shared helper. Without this, the two
-    // CLI commands report drifting crash counts (the bug class codex caught
-    // during the eng review outside-voice pass).
-    expect(source).toContain('summarizeCrashes');
-    expect(source).not.toMatch(
-      /events\.filter\([^)]*e\.event\s*===\s*'worker_exited'[^)]*\)\.length/,
-    );
-    // JSON output exposes the per-cause breakdown so dashboards/monitors can
-    // distinguish memory pressure from code bugs without re-classifying.
-    expect(source).toContain('crashes_by_cause');
-    expect(source).toContain('clean_exits_24h');
-  });
 });
 
 // v0.34.5 stub-guard observability tests (from v0.35.4.0). Doctor surfaces

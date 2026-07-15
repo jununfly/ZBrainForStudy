@@ -282,7 +282,7 @@ export class MinionWorker extends EventEmitter {
     //   2. Worker stall (event loop alive but not claiming/completing jobs)
     //
     // On failure, emits an `'unhealthy'` event with a structured reason. The
-    // CLI layer (`src/commands/jobs.ts:work`) subscribes and decides whether to
+    // CLI layer (`zbrain jobs work`, ported to Rust) subscribes and decides whether to
     // call process.exit. Library code never calls process.exit directly so
     // MinionWorker stays embeddable in non-CLI contexts (tests, other hosts).
     //
@@ -488,8 +488,8 @@ export class MinionWorker extends EventEmitter {
       }
 
       // The worker does NOT disconnect the engine: it doesn't own the
-      // engine's lifecycle. The caller (CLI handler at src/commands/jobs.ts
-      // case 'work', or a test fixture) is responsible for disconnect when
+      // engine's lifecycle. The caller (the `jobs work` CLI handler, ported
+      // to Rust, or a test fixture) is responsible for disconnect when
       // it has finished using the engine. Earlier wave's experiment of
       // calling engine.disconnect() here violated ownership and broke
       // every test that shared a single engine across multiple

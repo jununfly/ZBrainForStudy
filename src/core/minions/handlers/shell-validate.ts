@@ -2,7 +2,7 @@
  * Pre-enqueue validator for `shell` job params (v0.36.5.0).
  *
  * Called from BOTH submit surfaces BEFORE `MinionQueue.add()`:
- *   - `src/commands/jobs.ts` — `zbrain jobs submit shell` CLI handler
+ *   - the `jobs` CLI command (`zbrain jobs submit shell`, ported to Rust)
  *   - `src/core/operations.ts` — `submit_job` op handler for name='shell'
  *
  * Correctness property: a rejected payload NEVER lands in `minion_jobs.data`.

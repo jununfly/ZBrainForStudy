@@ -34,14 +34,14 @@ describe('consumer wire-up — helper used by all 3 sites (no inline filters lef
   // accidentally inlines the rule again gets caught at test time, not at
   // production-divergence time.
 
-  // v0.35.5.0: doctor.ts and jobs.ts moved from `classifyWorkerExit` (binary
-  // code-based) to `summarizeCrashes` (per-cause via `likely_cause`). The
-  // wire-up contract is "must use a shared helper, not an inline filter" —
-  // the specific helper differs by site. The supervisor's internal restart
-  // policy still uses `classifyWorkerExit` (binary is the right shape there).
+  // v0.35.5.0: doctor.ts and the jobs CLI (ported to Rust) moved from
+  // `classifyWorkerExit` (binary code-based) to `summarizeCrashes` (per-cause
+  // via `likely_cause`). The wire-up contract is "must use a shared helper,
+  // not an inline filter" — the specific helper differs by site. The
+  // supervisor's internal restart policy still uses `classifyWorkerExit`
+  // (binary is the right shape there).
   const SITES = [
     { label: 'doctor.ts', path: 'src/commands/doctor.ts', helper: 'summarizeCrashes' },
-    { label: 'jobs.ts', path: 'src/commands/jobs.ts', helper: 'summarizeCrashes' },
     { label: 'child-worker-supervisor.ts', path: 'src/core/minions/child-worker-supervisor.ts', helper: 'classifyWorkerExit' },
   ];
 
@@ -66,11 +66,6 @@ describe('consumer wire-up — helper used by all 3 sites (no inline filters lef
     expect(source).not.toMatch(/code !== 0\s*&&\s*\(?\s*\w+\s+as\s+any\s*\)?\.\s*code !== undefined/);
   });
 
-  it('jobs.ts no longer has the inline filter', () => {
-    const source = readFileSync(join(import.meta.dir, '..', 'src/commands/jobs.ts'), 'utf8');
-    expect(source).not.toMatch(/code !== 0\s*&&\s*\(?\s*\w+\s+as\s+any\s*\)?\.\s*code !== undefined/);
-  });
-
   it('child-worker-supervisor.ts uses helper to decide clean_exit vs crash branch', () => {
     const source = readFileSync(join(import.meta.dir, '..', 'src/core/minions/child-worker-supervisor.ts'), 'utf8');
     // The exit-handler branch should compare the helper result, not the raw code.
@@ -80,8 +75,8 @@ describe('consumer wire-up — helper used by all 3 sites (no inline filters lef
 
 describe('audit-log shape integration — `code: 0` event is NOT counted as a crash', () => {
   // Sanity round-trip: simulate the exact event shape that supervisor-audit
-  // writes (and that doctor + jobs read), classify it through the helper,
-  // and confirm the result. This catches future changes to the audit event
+  // writes (and that doctor + the Rust jobs command read), classify it through
+  // the helper, and confirm the result. This catches future changes to the audit event
   // shape (e.g. renaming `code` to `exit_code`) that would silently break
   // the consumers' crash counting.
   it('audit event { event: "worker_exited", code: 0, signal: null } → clean_exit', () => {

@@ -98,6 +98,11 @@
           "q": "第三轮删哪些? 混合测试如何认定随删?",
           "answer": "第三轮=graph-query+capture+agent(含agent-logs)三子系统,共4命令文件+5测试全删,tsc零新增(75→75)+cargo绿+三命令Rust存活",
           "note": "第三轮落地(2026-07-15): 删 graph-query.ts+capture.ts+agent.ts+agent-logs.ts(agent-logs仅被agent.ts+agent-cli.test引用,随agent删)+5测试。关键认定(承接autopilot e2e同逻辑): 5测试虽import保留impl(PGLiteEngine/MinionQueue/computeContentHash/protected-names)但那些只搭fixture台子,真正被测对象(runGraphQuery/runCapture/agent)随命令删除消失,故整测随删不算'改写混合测试';保留impl都是KEEP核心有大量其它importer不dangle。测试清单: graph-query.test/capture-build-content/capture-runcapture/commands/capture/agent-cli 全删。cli.ts改动=删3处dispatch(graph-query/agent/capture)+capture特有的--help pre-engine早退分支(L1112)+CLI_ONLY_SELF_HELP的'capture'条目+CLI_ONLY移除三名+3处help文本(graph-query 2行/capture section头改名+3行)。全gate绿: tsc 75→75零新增; ts_dep_closure四文件importer全空零dangle; eval questions.json无残留expected_files; cargo build 0.50s绿; zbrain.exe三命令--help Rust侧存活。净删2477行增2行。"
+        },
+        {
+          "q": "第四轮 jobs 删除? 混合测试如何区分整删/改写? cli-path 回收?",
+          "answer": "第四轮=jobs子系统(jobs.ts 1575行)+回收上轮cli-path.ts。3测试整删+4测试改写(精准摘jobs块保留其余)。tsc零新增(75→75)+cargo绿+jobs Rust存活。净删2564行",
+          "note": "第四轮落地(2026-07-15): jobs.ts已迁Rust(crates有jobs命令+register_builtin_handlers@registry.rs)。**cli-path.ts回收**: 上轮为切jobs→autopilot边而提取的中性文件,jobs删后它只剩自身测试引用,存在理由消失→连test一起删(Rust有自己CLI path解析)。**混合测试两类精准区分(本轮核心方法论)**: (A)被测对象随jobs删消失→整删: autopilot-cycle-handler/handlers(测registerBuiltinHandlers)+minions-shell-pglite(e2e测经registerBuiltinHandlers编排的shell路径;shellHandler另有minions-shell.test独立覆盖不丢); (B)主体测保留代码仅局部触jobs→改写摘除jobs块: minions.test(摘2个describe块resolveWorkerConcurrency/parseMaxWaitingFlag,保留backpressure/db等)、cycle-abort(摘1个test读jobs源码,保留worker/cycle两test)、exit-classification(SITES摘jobs站点+删jobs专项it,保留classifyWorkerExit+doctor/supervisor站点)、doctor.test(摘jobs supervisor status源码test,保留doctor test)。**运行时源码读取陷阱(dep_closure抓不到)**: 4测试用Bun.file/readFileSync读jobs.ts源码做字符串断言(非import),删文件会运行时崩,必须一并摘除。cli.ts删jobs dispatch+CLI_ONLY+整个JOBS help section(保留L1599 warning因jobs Rust侧还在)。清理questions.json 3处expected_files+4处保留代码注释(supervisor/shell-validate/shell/worker,改'ported to Rust')。全gate绿: tsc75→75零新增; importers(jobs)+importers(cli-path)双空; cargo 0.44s绿; zbrain jobs --help Rust存活。"
         }
       ],
       "notes": ""
@@ -115,7 +120,7 @@
   },
   "metadata": {
     "created": "2026-07-15 08:44:04",
-    "updated": "2026-07-15 10:03:41",
+    "updated": "2026-07-15 10:18:49",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART9_PHASE11_PACKAGE_CUTOVER.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART9_PHASE11_PACKAGE_CUTOVER.md"

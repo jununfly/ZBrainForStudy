@@ -7,8 +7,9 @@
  *
  * ENGINE: Postgres only. PGLite uses an exclusive file lock that blocks
  * any separate worker process, so `zbrain jobs supervisor` cannot work
- * against a PGLite brain — `src/commands/jobs.ts` rejects that combination
- * at the CLI layer. The health-check SQL below assumes Postgres schema.
+ * against a PGLite brain — the `jobs` CLI command (ported to Rust) rejects
+ * that combination at the CLI layer. The health-check SQL below assumes
+ * Postgres schema.
  *
  * Usage:
  *   zbrain jobs supervisor [--concurrency N] [--queue Q] [--pid-file PATH]

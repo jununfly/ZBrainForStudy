@@ -11,7 +11,7 @@
  * because the engine got disconnected behind their back.
  *
  * Final design (commit 7 of this branch): the worker leaves the engine
- * alone. The CLI handler in src/commands/jobs.ts case 'work' calls
+ * alone. The `jobs work` CLI handler (ported to Rust) calls
  * engine.disconnect() itself in its own try/finally — the CLI owns the
  * engine, so the CLI disposes of it.
  *

@@ -1781,63 +1781,6 @@ describe('MinionQueue: v0.19.1 maxWaiting — cap correctness + race (D2/H2)', (
   });
 });
 
-describe('resolveWorkerConcurrency (v0.19.1 H3): clamp + validation', () => {
-  // jobs.ts handler — tested via direct import. Warning goes to stderr;
-  // tests verify return value only, not the warning line.
-  let resolveWorkerConcurrency: (args: string[], env?: NodeJS.ProcessEnv) => number;
-  let parseMaxWaitingFlag: (args: string[]) => number | undefined;
-  beforeAll(async () => {
-    const mod = await import('../../src/commands/jobs.ts');
-    resolveWorkerConcurrency = mod.resolveWorkerConcurrency;
-    parseMaxWaitingFlag = mod.parseMaxWaitingFlag;
-  });
-
-  test('flag=4 env-unset → 4', () => {
-    expect(resolveWorkerConcurrency(['--concurrency', '4'], {} as NodeJS.ProcessEnv)).toBe(4);
-  });
-  test('flag-unset env=8 → 8', () => {
-    expect(resolveWorkerConcurrency([], { ZBRAIN_WORKER_CONCURRENCY: '8' } as NodeJS.ProcessEnv)).toBe(8);
-  });
-  test('flag=2 env=8 → 2 (flag wins)', () => {
-    expect(resolveWorkerConcurrency(['--concurrency', '2'], { ZBRAIN_WORKER_CONCURRENCY: '8' } as NodeJS.ProcessEnv)).toBe(2);
-  });
-  test('both unset → 1', () => {
-    expect(resolveWorkerConcurrency([], {} as NodeJS.ProcessEnv)).toBe(1);
-  });
-  test('garbage env "foo" → clamped to 1 (H3)', () => {
-    expect(resolveWorkerConcurrency([], { ZBRAIN_WORKER_CONCURRENCY: 'foo' } as NodeJS.ProcessEnv)).toBe(1);
-  });
-  test('env=0 → clamped to 1 (H3 — prevents silent wedge)', () => {
-    expect(resolveWorkerConcurrency([], { ZBRAIN_WORKER_CONCURRENCY: '0' } as NodeJS.ProcessEnv)).toBe(1);
-  });
-  test('env=-5 → clamped to 1 (H3)', () => {
-    expect(resolveWorkerConcurrency([], { ZBRAIN_WORKER_CONCURRENCY: '-5' } as NodeJS.ProcessEnv)).toBe(1);
-  });
-});
-
-describe('parseMaxWaitingFlag (v0.19.1 H5): CLI flag wiring', () => {
-  let parseMaxWaitingFlag: (args: string[]) => number | undefined;
-  beforeAll(async () => {
-    parseMaxWaitingFlag = (await import('../../src/commands/jobs.ts')).parseMaxWaitingFlag;
-  });
-
-  test('absent → undefined (no cap, default submit path)', () => {
-    expect(parseMaxWaitingFlag(['foo', '--params', '{}'])).toBeUndefined();
-  });
-  test('--max-waiting 2 → 2 (happy path)', () => {
-    expect(parseMaxWaitingFlag(['foo', '--max-waiting', '2'])).toBe(2);
-  });
-  test('--max-waiting 200 → clamped to 100', () => {
-    expect(parseMaxWaitingFlag(['foo', '--max-waiting', '200'])).toBe(100);
-  });
-  test('--max-waiting 0 → throws', () => {
-    expect(() => parseMaxWaitingFlag(['foo', '--max-waiting', '0'])).toThrow('positive integer');
-  });
-  test('--max-waiting abc → throws', () => {
-    expect(() => parseMaxWaitingFlag(['foo', '--max-waiting', 'abc'])).toThrow('positive integer');
-  });
-});
-
 describe('backpressure-audit (v0.19.1 Q1): JSONL on coalesce', () => {
   test('logBackpressureCoalesce writes one JSONL line per coalesce', async () => {
     const { logBackpressureCoalesce, resolveAuditDir, computeAuditFilename } =

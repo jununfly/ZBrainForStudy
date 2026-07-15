@@ -215,8 +215,8 @@ export async function shellHandler(ctx: MinionJobContext): Promise<ShellJobResul
   }
 
   // Defense-in-depth: re-run the same validator at handler pickup. The
-  // canonical call site is pre-enqueue (see src/commands/jobs.ts and
-  // src/core/operations.ts:submit_job). This re-validation catches:
+  // canonical call site is pre-enqueue (see the `jobs` CLI command, ported
+  // to Rust, and src/core/operations.ts:submit_job). This re-validation catches:
   //   (a) pre-v0.35.8.0 rows that submitted before pre-enqueue validation existed,
   //   (b) any future submit path that forgets to call validateShellJobParams,
   //   (c) drift between INHERITABLE and the worker's actual config (the
