@@ -46,6 +46,7 @@ pub mod time;
 pub mod token_budget;
 pub mod types;
 pub mod url_safety;
+pub mod schema_pack;
 
 pub use scope::{has_scope, parse_scope_string, is_allowed_scope, assert_allowed_scopes, normalize_scopes_input, InvalidScopeError, ALLOWED_SCOPES};
 pub use token_queries::{AuthInfo, TokenError, TokenQueries};
