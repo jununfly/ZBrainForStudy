@@ -21,6 +21,7 @@ pub mod import;
 pub mod scope;
 pub mod token_queries;
 pub mod calibration_queries;
+pub mod calibration;
 pub mod capture;
 pub mod file_classify;
 pub mod markdown;
