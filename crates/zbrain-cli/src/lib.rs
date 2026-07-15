@@ -1675,6 +1675,7 @@ async fn run_serve_mcp_command(args: ServeMcpArgs, _config_path: Option<&Path>) 
         GetPageOperation, ThinkOperation, QueryOperation,
         PutPageOperation, DeletePageOperation, RestorePageOperation,
         PurgeDeletedPagesOperation, ListPagesOperation,
+        TakesListOperation, TakesSearchOperation,
     };
 
     // Load config for MCP settings (rate limit)
@@ -1697,6 +1698,8 @@ async fn run_serve_mcp_command(args: ServeMcpArgs, _config_path: Option<&Path>) 
     // Build registry
     let mut registry = OperationRegistry::new();
     registry.register(GetPageOperation);
+    registry.register(TakesListOperation);
+    registry.register(TakesSearchOperation);
     registry.register(ThinkOperation);
     registry.register(QueryOperation);
     registry.register(PutPageOperation);
@@ -1730,10 +1733,12 @@ fn build_operation_registry() -> Arc<OperationRegistry> {
     use zbrain_core::operation::{
         GetPageOperation, ThinkOperation, QueryOperation, PutPageOperation,
         DeletePageOperation, RestorePageOperation, PurgeDeletedPagesOperation,
-        ListPagesOperation,
+        ListPagesOperation, TakesListOperation, TakesSearchOperation,
     };
     let mut registry = OperationRegistry::new();
     registry.register(GetPageOperation);
+    registry.register(TakesListOperation);
+    registry.register(TakesSearchOperation);
     registry.register(ThinkOperation);
     registry.register(QueryOperation);
     registry.register(PutPageOperation);
@@ -2004,6 +2009,8 @@ async fn run_operation(
     // from the canonical TypedOperation trait (not a hardcoded list).
     let mut registry = OperationRegistry::new();
     registry.register(zbrain_core::operation::GetPageOperation);
+    registry.register(zbrain_core::operation::TakesListOperation);
+    registry.register(zbrain_core::operation::TakesSearchOperation);
     registry.register(zbrain_core::operation::ThinkOperation);
     registry.register(zbrain_core::operation::QueryOperation);
     registry.register(zbrain_core::operation::PutPageOperation);
@@ -3745,7 +3752,7 @@ async fn run_takes_list(args: TakesListArgs, config_path: Option<&Path>) -> anyh
         .await?
         .ok_or_else(|| anyhow::anyhow!("Page not found: {} in source {}", args.slug, args.source))?;
 
-    let takes = engine.get_takes_for_page(page.id).await?;
+    let takes = engine.get_takes_for_page(page.id, None).await?;
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&takes)?);
@@ -6199,10 +6206,13 @@ mod tests {
             GetPageOperation, ThinkOperation, QueryOperation,
             PutPageOperation, DeletePageOperation, RestorePageOperation,
             PurgeDeletedPagesOperation, ListPagesOperation,
+            TakesListOperation, TakesSearchOperation,
         };
 
         let mut registry = OperationRegistry::new();
         registry.register(GetPageOperation);
+        registry.register(TakesListOperation);
+        registry.register(TakesSearchOperation);
         registry.register(ThinkOperation);
         registry.register(QueryOperation);
         registry.register(PutPageOperation);

@@ -44,8 +44,8 @@ use crate::types::{
     CRMode, DuplicatePage, EffectiveDateSource, EntityCount, FactInsertStatus, FactKind,
     FactListOpts, FactRow, FactVisibility, FactsHealth, FileRow, FileSpec,
     FindDuplicatePageOpts, GraphPath, Link, LinkBatchInput, NewFact, OrphanPage, PageKind, PageRef,
-    PageVersion, PurgeResult, RawData, RefreshPageBodyArgs, Take, TakeInput, UpsertFileResult,
-    UpsertTakesResult, AdjacencyRow,
+    PageVersion, PurgeResult, RawData, RefreshPageBodyArgs, Take, TakeHit, TakeInput,
+    TakesListOpts, SearchTakesOpts, UpsertFileResult, UpsertTakesResult, AdjacencyRow,
 };
 
 /// libsql-specific migration implementation. Wraps raw SQL from
@@ -440,6 +440,65 @@ impl std::fmt::Debug for LibsqlEngine {
             .field("connected", &self.db.get().is_some())
             .finish()
     }
+}
+
+/// Append a per-token takes-holder allow-list filter to a SQL query being
+/// built with `::libsql::params_from_iter`. When `allow_list` is `None`, no
+/// clause is added (trusted local caller sees all holders). When `Some(list)`,
+/// an `AND holder IN (?, ?, ...)` clause is appended with one positional param
+/// per holder (indices auto-align via `values.len()`). An empty list fails
+/// closed — a restricted token with no permitted holders sees nothing.
+///
+/// Port of the Postgres `AND ($N::text[] IS NULL OR t.holder = ANY($N))`
+/// clause; SQLite has no array `ANY`, so we expand to an `IN` list.
+fn append_takes_holder_filter(
+    sql: &mut String,
+    values: &mut Vec<::libsql::Value>,
+    allow_list: &Option<Vec<String>>,
+) {
+    match allow_list {
+        None => {}
+        Some(list) if list.is_empty() => {
+            sql.push_str(" AND 0=1");
+        }
+        Some(list) => {
+            let placeholders: Vec<String> = (0..list.len())
+                .map(|i| format!("?{}", values.len() + i + 1))
+                .collect();
+            sql.push_str(&format!(" AND holder IN ({})", placeholders.join(", ")));
+            for h in list {
+                values.push(::libsql::Value::from(h.clone()));
+            }
+        }
+    }
+}
+
+/// Map a `takes` SELECT row (21-column projection shared by
+/// `get_takes_for_page` / `list_takes`) to a [`Take`].
+fn take_from_row(row: &::libsql::Row) -> Result<Take> {
+    Ok(Take {
+        id: row.get::<i64>(0).map_err(|e| Error::engine(format!("take id: {e}")))? as u64,
+        page_id: row.get::<i64>(1).map_err(|e| Error::engine(format!("take page_id: {e}")))? as u64,
+        row_num: row.get::<i64>(2).map_err(|e| Error::engine(format!("take row_num: {e}")))? as i32,
+        claim: row.get(3).unwrap_or_default(),
+        kind: row.get(4).unwrap_or_default(),
+        holder: row.get(5).unwrap_or_default(),
+        weight: row.get::<f64>(6).unwrap_or(0.5),
+        since_date: row.get(7).unwrap_or(None),
+        until_date: row.get(8).unwrap_or(None),
+        source: row.get(9).unwrap_or(None),
+        superseded_by: row.get::<Option<i64>>(10).unwrap_or(None).map(|v| v as i32),
+        active: row.get::<i64>(11).unwrap_or(1) != 0,
+        resolved_at: row.get(12).unwrap_or(None),
+        resolved_quality: row.get(13).unwrap_or(None),
+        resolved_outcome: row.get::<Option<i64>>(14).unwrap_or(None).map(|v| v != 0),
+        resolved_evidence: row.get(15).unwrap_or(None),
+        resolved_value: row.get(16).unwrap_or(None),
+        resolved_unit: row.get(17).unwrap_or(None),
+        resolved_by: row.get(18).unwrap_or(None),
+        created_at: row.get(19).unwrap_or_default(),
+        updated_at: row.get(20).unwrap_or_default(),
+    })
 }
 
 #[async_trait]
@@ -2469,18 +2528,25 @@ impl BrainEngine for LibsqlEngine {
 
     // --- Phase 7A: Takes ---
 
-    async fn get_takes_for_page(&self, page_id: u64) -> Result<Vec<Take>> {
+    async fn get_takes_for_page(
+        &self,
+        page_id: u64,
+        takes_holders_allow_list: Option<Vec<String>>,
+    ) -> Result<Vec<Take>> {
+        let mut sql = String::from(
+            "SELECT id, page_id, row_num, claim, kind, holder, weight, \
+                    since_date, until_date, source, superseded_by, active, \
+                    resolved_at, resolved_quality, resolved_outcome, \
+                    resolved_evidence, resolved_value, resolved_unit, \
+                    resolved_by, created_at, updated_at \
+             FROM takes WHERE page_id = ?1",
+        );
+        let mut values: Vec<::libsql::Value> = vec![::libsql::Value::from(page_id as i64)];
+        append_takes_holder_filter(&mut sql, &mut values, &takes_holders_allow_list);
+        sql.push_str(" ORDER BY row_num ASC");
         let conn = self.conn().await?;
         let mut rows = conn
-            .query(
-                "SELECT id, page_id, row_num, claim, kind, holder, weight, \
-                        since_date, until_date, source, superseded_by, active, \
-                        resolved_at, resolved_quality, resolved_outcome, \
-                        resolved_evidence, resolved_value, resolved_unit, \
-                        resolved_by, created_at, updated_at \
-                 FROM takes WHERE page_id = ?1 ORDER BY row_num ASC",
-                ::libsql::params![page_id as i64],
-            )
+            .query(&sql, ::libsql::params_from_iter(values))
             .await
             .map_err(|e| Error::engine(format!("get_takes_for_page query: {e}")))?;
 
@@ -2512,6 +2578,108 @@ impl BrainEngine for LibsqlEngine {
                 resolved_by: row.get(18).unwrap_or(None),
                 created_at: row.get(19).unwrap_or_default(),
                 updated_at: row.get(20).unwrap_or_default(),
+            });
+        }
+        Ok(out)
+    }
+
+    async fn list_takes(&self, opts: &TakesListOpts) -> Result<Vec<Take>> {
+        let mut sql = String::from(
+            "SELECT id, page_id, row_num, claim, kind, holder, weight, \
+                    since_date, until_date, source, superseded_by, active, \
+                    resolved_at, resolved_quality, resolved_outcome, \
+                    resolved_evidence, resolved_value, resolved_unit, \
+                    resolved_by, created_at, updated_at \
+             FROM takes WHERE 1=1",
+        );
+        let mut values: Vec<::libsql::Value> = Vec::new();
+        if let Some(pid) = opts.page_id {
+            sql.push_str(&format!(" AND page_id = ?{}", values.len() + 1));
+            values.push(::libsql::Value::from(pid as i64));
+        }
+        if let Some(h) = &opts.holder {
+            sql.push_str(&format!(" AND holder = ?{}", values.len() + 1));
+            values.push(::libsql::Value::from(h.clone()));
+        }
+        if let Some(k) = &opts.kind {
+            sql.push_str(&format!(" AND kind = ?{}", values.len() + 1));
+            values.push(::libsql::Value::from(k.clone()));
+        }
+        if let Some(a) = opts.active {
+            sql.push_str(&format!(" AND active = ?{}", values.len() + 1));
+            values.push(::libsql::Value::from(a as i64));
+        }
+        if let Some(r) = opts.resolved {
+            if r {
+                sql.push_str(" AND resolved_at IS NOT NULL");
+            } else {
+                sql.push_str(" AND resolved_at IS NULL");
+            }
+        }
+        append_takes_holder_filter(&mut sql, &mut values, &opts.takes_holders_allow_list);
+        sql.push_str(" ORDER BY weight DESC");
+        let limit = opts.limit.unwrap_or(100) as i64;
+        let offset = opts.offset.unwrap_or(0) as i64;
+        sql.push_str(&format!(" LIMIT ?{} OFFSET ?{}", values.len() + 1, values.len() + 2));
+        values.push(::libsql::Value::from(limit));
+        values.push(::libsql::Value::from(offset));
+        let conn = self.conn().await?;
+        let mut rows = conn
+            .query(&sql, ::libsql::params_from_iter(values))
+            .await
+            .map_err(|e| Error::engine(format!("list_takes query: {e}")))?;
+        let mut out = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("list_takes row: {e}")))?
+        {
+            out.push(take_from_row(&row)?);
+        }
+        Ok(out)
+    }
+
+    async fn search_takes(&self, query: &str, opts: &SearchTakesOpts) -> Result<Vec<TakeHit>> {
+        let mut sql = String::from(
+            "SELECT t.id, t.page_id, p.slug, t.row_num, t.claim, t.kind, t.holder, t.weight \
+             FROM takes t JOIN pages p ON p.id = t.page_id \
+             WHERE t.active AND LOWER(t.claim) LIKE '%' || LOWER(?1) || '%'",
+        );
+        let mut values: Vec<::libsql::Value> = vec![::libsql::Value::from(query.to_string())];
+        append_takes_holder_filter(&mut sql, &mut values, &opts.takes_holders_allow_list);
+        sql.push_str(" ORDER BY t.weight DESC");
+        let limit = opts.limit.unwrap_or(30) as i64;
+        sql.push_str(&format!(" LIMIT ?{}", values.len() + 1));
+        values.push(::libsql::Value::from(limit));
+        let conn = self.conn().await?;
+        let mut rows = conn
+            .query(&sql, ::libsql::params_from_iter(values))
+            .await
+            .map_err(|e| Error::engine(format!("search_takes query: {e}")))?;
+        let q = query.to_lowercase();
+        let mut out = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("search_takes row: {e}")))?
+        {
+            let claim: String = row.get(4).unwrap_or_default();
+            let weight: f64 = row.get(7).unwrap_or(0.5);
+            let score = if q.is_empty() {
+                0.0
+            } else {
+                claim.to_lowercase().matches(&q).count() as f64 * (1.0 + weight)
+            };
+            out.push(TakeHit {
+                take_id: row.get::<i64>(0).map_err(|e| Error::engine(format!("take id: {e}")))? as u64,
+                page_id: row.get::<i64>(1).map_err(|e| Error::engine(format!("take page_id: {e}")))? as u64,
+                page_slug: row.get(2).unwrap_or_default(),
+                row_num: row.get::<i64>(3).map_err(|e| Error::engine(format!("take row_num: {e}")))? as i32,
+                claim,
+                kind: row.get(5).unwrap_or_default(),
+                holder: row.get(6).unwrap_or_default(),
+                weight,
+                score,
             });
         }
         Ok(out)

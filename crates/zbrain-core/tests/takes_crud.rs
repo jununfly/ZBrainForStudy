@@ -46,7 +46,7 @@ async fn inmem_roundtrip_single_take() {
     assert_eq!(res.upserted, 1);
     assert_eq!(res.weight_clamped, 0);
 
-    let takes = engine.get_takes_for_page(1).await.expect("get_takes");
+    let takes = engine.get_takes_for_page(1, None).await.expect("get_takes");
     assert_eq!(takes.len(), 1);
     let t = &takes[0];
     assert_eq!(t.page_id, 1);
@@ -78,7 +78,7 @@ async fn inmem_roundtrip_multiple_takes_ordered_by_row_num() {
         .expect("add_takes_batch");
     assert_eq!(res.upserted, 3);
 
-    let takes = engine.get_takes_for_page(1).await.expect("get_takes");
+    let takes = engine.get_takes_for_page(1, None).await.expect("get_takes");
     assert_eq!(takes.len(), 3);
     // Must be sorted by row_num
     assert_eq!(takes[0].row_num, 1);
@@ -101,8 +101,8 @@ async fn inmem_roundtrip_multi_page_isolation() {
         .await
         .expect("add for page 2");
 
-    let p1 = engine.get_takes_for_page(1).await.expect("get p1");
-    let p2 = engine.get_takes_for_page(2).await.expect("get p2");
+    let p1 = engine.get_takes_for_page(1, None).await.expect("get p1");
+    let p2 = engine.get_takes_for_page(2, None).await.expect("get p2");
     assert_eq!(p1.len(), 1);
     assert_eq!(p1[0].claim, "page-1-claim");
     assert_eq!(p2.len(), 1);
@@ -112,7 +112,7 @@ async fn inmem_roundtrip_multi_page_isolation() {
 #[tokio::test]
 async fn inmem_get_takes_for_nonexistent_page_returns_empty() {
     let engine = InMemoryEngine::new();
-    let takes = engine.get_takes_for_page(999).await.expect("get_takes");
+    let takes = engine.get_takes_for_page(999, None).await.expect("get_takes");
     assert!(takes.is_empty());
 }
 
@@ -135,7 +135,7 @@ async fn inmem_weight_clamped_to_0_1_range() {
     assert_eq!(res.upserted, 3);
     assert_eq!(res.weight_clamped, 2);
 
-    let takes = engine.get_takes_for_page(1).await.expect("get_takes");
+    let takes = engine.get_takes_for_page(1, None).await.expect("get_takes");
     assert!((takes[0].weight - 1.0).abs() < 1e-9, "over -> 1.0");
     assert!((takes[1].weight - 0.0).abs() < 1e-9, "under -> 0.0");
     assert!((takes[2].weight - 0.6).abs() < 1e-9, "valid unchanged");
@@ -166,7 +166,7 @@ async fn inmem_resolve_take_updates_fields() {
         .await
         .expect("resolve_take");
 
-    let takes = engine.get_takes_for_page(1).await.expect("get_takes");
+    let takes = engine.get_takes_for_page(1, None).await.expect("get_takes");
     let t = &takes[0];
     assert_eq!(t.resolved_quality.as_deref(), Some("high"));
     assert_eq!(t.resolved_outcome, Some(true));
@@ -488,7 +488,7 @@ async fn libsql_roundtrip_single_take() {
     assert_eq!(res.weight_clamped, 0);
 
     let takes = engine
-        .get_takes_for_page(page_id)
+        .get_takes_for_page(page_id, None)
         .await
         .expect("get_takes");
     assert_eq!(takes.len(), 1);
@@ -543,7 +543,7 @@ async fn libsql_multiple_takes_ordered() {
         .expect("add");
 
     let takes = engine
-        .get_takes_for_page(page_id)
+        .get_takes_for_page(page_id, None)
         .await
         .expect("get");
     assert_eq!(takes.len(), 2);
@@ -579,7 +579,7 @@ async fn libsql_weight_clamping() {
     assert_eq!(res.weight_clamped, 1);
 
     let takes = engine
-        .get_takes_for_page(page_id)
+        .get_takes_for_page(page_id, None)
         .await
         .expect("get");
     assert!((takes[0].weight - 1.0).abs() < 1e-9);
@@ -630,7 +630,7 @@ async fn libsql_resolve_take() {
         .expect("resolve");
 
     let takes = engine
-        .get_takes_for_page(page_id)
+        .get_takes_for_page(page_id, None)
         .await
         .expect("get");
     let t = &takes[0];
@@ -678,7 +678,7 @@ async fn libsql_resolve_nonexistent_errors() {
 async fn libsql_get_takes_for_nonexistent_page_returns_empty() {
     let (engine, _tmp) = libsql_init().await;
     let takes = engine
-        .get_takes_for_page(99999)
+        .get_takes_for_page(99999, None)
         .await
         .expect("get_takes");
     assert!(takes.is_empty());
@@ -775,7 +775,7 @@ async fn postgres_roundtrip_single_take() {
         .expect("add_takes_batch");
     assert_eq!(res.upserted, 1);
 
-    let takes = engine.get_takes_for_page(page_id).await.expect("get_takes");
+    let takes = engine.get_takes_for_page(page_id, None).await.expect("get_takes");
     assert_eq!(takes.len(), 1);
     let t = &takes[0];
     assert_eq!(t.page_id, page_id);
@@ -829,7 +829,7 @@ async fn postgres_resolve_take() {
         .await
         .expect("resolve");
 
-    let takes = engine.get_takes_for_page(page_id).await.expect("get");
+    let takes = engine.get_takes_for_page(page_id, None).await.expect("get");
     let t = &takes[0];
     assert_eq!(t.resolved_quality.as_deref(), Some("high"));
     assert_eq!(t.resolved_outcome, Some(true));
@@ -844,7 +844,7 @@ async fn postgres_get_takes_for_nonexistent_page_returns_empty() {
     let fix = support::pg_fixture::PgFixture::start().await;
     let takes = fix
         .engine
-        .get_takes_for_page(99999)
+        .get_takes_for_page(99999, None)
         .await
         .expect("get_takes");
     assert!(takes.is_empty());

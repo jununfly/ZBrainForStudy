@@ -19,7 +19,8 @@ use crate::{
     oauth_queries::{ExchangeTokens, OAuthClientInfo, OAuthQueries, RegisterClientRequest,
         RegisterClientResponse, RevokeClientResponse, UpdateClientTtlResponse},
     time::current_utc_iso8601, types::PageVersion, types::RawData, types::Take,
-    types::TakeInput, types::TakeResolution, types::UpsertTakesResult, CRMode, DuplicatePage,
+    types::TakeHit, types::TakeInput, types::TakeResolution, types::TakesListOpts,
+    types::SearchTakesOpts, types::UpsertTakesResult, CRMode, DuplicatePage,
     EffectiveDateSource, Error, EntityCount, FactInsertStatus, FactKind, FactListOpts, FactRow,
     FactVisibility, FactsHealth, FileRow, FileSpec, FindDuplicatePageOpts, GraphNode, GraphPath,
     AdjacencyRow, Link, LinkBatchInput, NewFact, OrphanPage, PageKind, PageRef, PageType, PurgeResult,
@@ -1245,14 +1246,51 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
 
     // ── Takes (Phase 7A) ──────────────────────────────────────────────────
 
-    /// Return all takes for a page, ordered by `row_num` ascending.
-    /// Mirrors TS `getTakesForPage(pageId)`.
-    async fn get_takes_for_page(&self, page_id: u64) -> crate::Result<Vec<Take>> {
-        let _ = page_id;
+    /// Return takes for a page, ordered by `row_num` ascending.
+    ///
+    /// When `takes_holders_allow_list` is `Some(list)`, only rows whose
+    /// `holder` is in `list` are returned — this is the server-side filter
+    /// backing the v0.28+ per-token visibility model. `None` returns all
+    /// holders (trusted local callers). Mirrors TS `getTakesForPage(pageId,
+    /// { takesHoldersAllowList })`.
+    async fn get_takes_for_page(
+        &self,
+        page_id: u64,
+        takes_holders_allow_list: Option<Vec<String>>,
+    ) -> crate::Result<Vec<Take>> {
+        let _ = (page_id, takes_holders_allow_list);
         Err(crate::error::StructuredError::new(
             "Unsupported",
             "unsupported",
             "get_takes_for_page not yet implemented for this engine",
+        ))
+    }
+
+    /// List takes across pages with holder/kind/active/resolved filters plus
+    /// the per-token `takes_holders_allow_list` server-side filter.
+    /// Mirrors TS `listTakes(opts)`.
+    async fn list_takes(&self, opts: &TakesListOpts) -> crate::Result<Vec<Take>> {
+        let _ = opts;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "list_takes not yet implemented for this engine",
+        ))
+    }
+
+    /// Full-text search takes by claim, honoring the per-token
+    /// `takes_holders_allow_list` server-side filter. Mirrors TS
+    /// `searchTakes(query, opts)`.
+    async fn search_takes(
+        &self,
+        query: &str,
+        opts: &SearchTakesOpts,
+    ) -> crate::Result<Vec<TakeHit>> {
+        let _ = (query, opts);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "search_takes not yet implemented for this engine",
         ))
     }
 
@@ -2579,6 +2617,19 @@ impl InMemoryEngine {
     }
 }
 
+/// Returns true if `holder` passes the per-token takes-holders allow-list
+/// filter (v0.28+ visibility model).
+///
+/// - `None` (unset) => all holders allowed (trusted local callers).
+/// - `Some(list)` => only holders present in `list` pass; a remote token
+///   restricted to a subset of holders cannot read other holders' takes.
+fn holder_allowed(holder: &str, allow_list: &Option<Vec<String>>) -> bool {
+    match allow_list {
+        None => true,
+        Some(list) => list.iter().any(|h| h == holder),
+    }
+}
+
 #[async_trait]
 impl BrainEngine for InMemoryEngine {
     fn kind(&self) -> EngineKind {
@@ -3717,14 +3768,91 @@ impl BrainEngine for InMemoryEngine {
 
     // --- Phase 7A: Takes ---
 
-    async fn get_takes_for_page(&self, page_id: u64) -> crate::Result<Vec<Take>> {
+    async fn get_takes_for_page(
+        &self,
+        page_id: u64,
+        takes_holders_allow_list: Option<Vec<String>>,
+    ) -> crate::Result<Vec<Take>> {
         let store = self
             .takes_store
             .lock()
             .expect("InMemoryEngine takes_store mutex poisoned");
-        let mut takes: Vec<_> = store.iter().filter(|t| t.page_id == page_id).cloned().collect();
+        let mut takes: Vec<_> = store
+            .iter()
+            .filter(|t| t.page_id == page_id)
+            .filter(|t| holder_allowed(&t.holder, &takes_holders_allow_list))
+            .cloned()
+            .collect();
         takes.sort_by_key(|t| t.row_num);
         Ok(takes)
+    }
+
+    async fn list_takes(&self, opts: &TakesListOpts) -> crate::Result<Vec<Take>> {
+        let store = self
+            .takes_store
+            .lock()
+            .expect("InMemoryEngine takes_store mutex poisoned");
+        let mut takes: Vec<Take> = store
+            .iter()
+            .filter(|t| opts.page_id.map(|pid| t.page_id == pid).unwrap_or(true))
+            .filter(|t| opts.holder.as_ref().map(|h| &t.holder == h).unwrap_or(true))
+            .filter(|t| opts.kind.as_ref().map(|k| &t.kind == k).unwrap_or(true))
+            .filter(|t| opts.active.map(|a| t.active == a).unwrap_or(true))
+            .filter(|t| {
+                opts.resolved
+                    .map(|r| r == t.resolved_at.is_some())
+                    .unwrap_or(true)
+            })
+            .filter(|t| holder_allowed(&t.holder, &opts.takes_holders_allow_list))
+            .cloned()
+            .collect();
+        takes.sort_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap_or(std::cmp::Ordering::Equal));
+        let offset = opts.offset.unwrap_or(0) as usize;
+        let limit = opts.limit.unwrap_or(100) as usize;
+        takes.truncate(offset + limit);
+        takes.drain(..offset.min(takes.len()));
+        Ok(takes)
+    }
+
+    async fn search_takes(&self, query: &str, opts: &SearchTakesOpts) -> crate::Result<Vec<TakeHit>> {
+        let store = self
+            .takes_store
+            .lock()
+            .expect("InMemoryEngine takes_store mutex poisoned");
+        let q = query.to_lowercase();
+        let mut hits: Vec<(f64, Take)> = store
+            .iter()
+            .filter(|t| t.active)
+            .filter(|t| holder_allowed(&t.holder, &opts.takes_holders_allow_list))
+            .filter(|t| t.claim.to_lowercase().contains(&q))
+            .map(|t| {
+                // Lightweight relevance: more query-term coverage => higher score.
+                let score = if q.is_empty() {
+                    0.0
+                } else {
+                    let hits = t.claim.to_lowercase().matches(&q).count() as f64;
+                    hits * (1.0 + t.weight)
+                };
+                (score, t.clone())
+            })
+            .collect();
+        hits.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        let limit = opts.limit.unwrap_or(30) as usize;
+        Ok(hits
+            .into_iter()
+            .take(limit)
+            .map(|(score, t)| TakeHit {
+                take_id: t.id,
+                page_id: t.page_id,
+                page_slug: String::new(),
+                row_num: t.row_num,
+                claim: t.claim,
+                kind: t.kind,
+                holder: t.holder,
+                weight: t.weight,
+                score,
+            })
+            .collect())
     }
 
     async fn add_takes_batch(

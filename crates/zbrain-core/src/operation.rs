@@ -1351,6 +1351,35 @@ pub type OperationResult<T> = std::result::Result<T, OperationError>;
 /// Mirrors the `get_page` operation in TS `operations.ts`.
 /// Exact lookup is performed first; if not found and fuzzy=true,
 /// `resolve_slugs` is used to find candidate matches.
+/// v0.28 / v0.32.2 privacy boundary for the per-token takes/facts allow-list.
+///
+/// `takes` and `facts` are rendered as markdown tables inside a page's
+/// `compiled_truth` between fence markers. A read-only remote (untrusted)
+/// MCP caller could otherwise call `get_page` / `get_versions` and recover
+/// every fence row verbatim, bypassing the row-level `takes_holders_allow_list`
+/// filter entirely.
+///
+/// When `remote` is true we strip the takes fence wholesale and strip the
+/// facts fence keeping only `world`-visibility rows (public knowledge by
+/// definition). Local CLI callers (`remote = false`) see the full fence.
+///
+/// Port of the TS `get_page` masking in `src/core/operations.ts` (the
+/// `isUntrustedReader = ctx.remote === true` branch). This closes a
+/// pre-existing takes-leak for untrusted readers.
+fn mask_fence_body(body: &mut String, remote: bool) {
+    if !remote {
+        return;
+    }
+    let stripped_takes = crate::takes_fence::strip_takes_fence(body);
+    let stripped = crate::facts_fence::strip_facts_fence(
+        &stripped_takes,
+        &crate::facts_fence::StripFactsFenceOpts {
+            keep_visibility: Some(vec![crate::types::FactVisibility::World]),
+        },
+    );
+    *body = stripped;
+}
+
 #[derive(Debug, Clone)]
 pub struct GetPageOperation;
 
@@ -1423,7 +1452,9 @@ impl TypedOperation for GetPageOperation {
         };
 
         // Step 1: Exact lookup first
-        if let Some(page) = engine.get_page(&params.slug, &get_page_opts).await? {
+        if let Some(mut page) = engine.get_page(&params.slug, &get_page_opts).await? {
+            // v0.28/0.32.2: strip takes+facts fences for untrusted readers.
+            mask_fence_body(&mut page.compiled_truth, ctx.remote);
             return Ok(GetPageOutput {
                 page,
                 resolved_slug: None,
@@ -1448,7 +1479,9 @@ impl TypedOperation for GetPageOperation {
                 }
                 1 => {
                     let resolved_slug = &candidates[0];
-                    if let Some(page) = engine.get_page(resolved_slug, &get_page_opts).await? {
+                    if let Some(mut page) = engine.get_page(resolved_slug, &get_page_opts).await? {
+                        // v0.28/0.32.2: strip takes+facts fences for untrusted readers.
+                        mask_fence_body(&mut page.compiled_truth, ctx.remote);
                         return Ok(GetPageOutput {
                             page,
                             resolved_slug: Some(resolved_slug.clone()),
@@ -2450,6 +2483,153 @@ impl TypedOperation for ListPagesOperation {
 // ──────────────────────────────────────────────────────────────────────────
 // Tests
 // ──────────────────────────────────────────────────────────────────────────
+
+// ── TakesList / TakesSearch Operations (G33: per-token holder allow-list filtering) ──
+
+/// Singleton operation for `takes_list`.
+#[derive(Debug, Clone)]
+pub struct TakesListOperation;
+
+/// Singleton operation for `takes_search`.
+#[derive(Debug, Clone)]
+pub struct TakesSearchOperation;
+
+// ── TakesList Operation (G33: per-token holder allow-list filtering) ──
+/// Parameters for `takes_list`.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct TakesListParams {
+    pub slug: Option<String>,
+    pub holder: Option<String>,
+    pub kind: Option<String>,
+    pub active: Option<bool>,
+    pub resolved: Option<bool>,
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
+}
+impl ValidateParams for TakesListParams {
+    fn validate(&self) -> OperationResult<()> {
+        Ok(())
+    }
+}
+/// Output for `takes_list`.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TakesListOutput {
+    pub takes: Vec<crate::types::Take>,
+    pub total: u64,
+}
+#[async_trait]
+impl TypedOperation for TakesListOperation {
+    type Params = TakesListParams;
+    type Output = TakesListOutput;
+    fn name(&self) -> &'static str {
+        "takes_list"
+    }
+    fn description(&self) -> &'static str {
+        "List takes across pages (or a single page by slug), filtered by holder/kind/active/resolved. A remote token's `takes_holders_allow_list` is enforced server-side as a hard holder filter (v0.28 visibility model)."
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "slug": { "type": "string", "description": "Restrict to a single page by slug" },
+                "holder": { "type": "string", "description": "Filter to this holder (world|garry|brain|<slug>)" },
+                "kind": { "type": "string", "description": "Filter to this kind (fact|take|bet|hunch)" },
+                "active": { "type": "boolean", "description": "Filter by active flag" },
+                "resolved": { "type": "boolean", "description": "Filter by resolved status" },
+                "limit": { "type": "integer", "description": "Maximum takes to return" },
+                "offset": { "type": "integer", "description": "Offset for pagination" }
+            }
+        })
+    }
+    async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let page_id = match &params.slug {
+            Some(slug) => {
+                let opts = crate::engine::GetPageOpts {
+                    source_id: Some(ctx.source_id.clone()),
+                    include_deleted: false,
+                };
+                let page = engine
+                    .get_page(slug, &opts)
+                    .await?
+                    .ok_or_else(|| OperationError::page_not_found(format!("Page not found: {slug}")))?;
+                Some(page.id)
+            }
+            None => None,
+        };
+        let opts = crate::types::TakesListOpts {
+            page_id,
+            holder: params.holder.clone(),
+            kind: params.kind.clone(),
+            active: params.active,
+            resolved: params.resolved,
+            limit: params.limit,
+            offset: params.offset,
+            // v0.28: server-side hard filter. A remote token restricted to a
+            // subset of holders can never read other holders' takes, even
+            // though the engine returns them for trusted local callers.
+            takes_holders_allow_list: ctx.takes_holders_allow_list.clone(),
+        };
+        let takes = engine.list_takes(&opts).await?;
+        let total = takes.len() as u64;
+        Ok(TakesListOutput { takes, total })
+    }
+}
+// ── TakesSearch Operation (G33: per-token holder allow-list filtering) ─
+/// Parameters for `takes_search`.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct TakesSearchParams {
+    pub query: String,
+    pub limit: Option<u32>,
+}
+impl ValidateParams for TakesSearchParams {
+    fn validate(&self) -> OperationResult<()> {
+        if self.query.trim().is_empty() {
+            return Err(OperationError::invalid_params("query must not be empty"));
+        }
+        Ok(())
+    }
+}
+/// Output for `takes_search`.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TakesSearchOutput {
+    pub hits: Vec<crate::types::TakeHit>,
+}
+#[async_trait]
+impl TypedOperation for TakesSearchOperation {
+    type Params = TakesSearchParams;
+    type Output = TakesSearchOutput;
+    fn name(&self) -> &'static str {
+        "takes_search"
+    }
+    fn description(&self) -> &'static str {
+        "Full-text search takes by claim. A remote token's `takes_holders_allow_list` is enforced server-side as a hard holder filter (v0.28 visibility model)."
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string", "description": "Substring to search in take claims" },
+                "limit": { "type": "integer", "description": "Maximum hits to return" }
+            },
+            "required": ["query"]
+        })
+    }
+    async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let opts = crate::types::SearchTakesOpts {
+            limit: params.limit,
+            // v0.28: server-side hard filter on the holder field.
+            takes_holders_allow_list: ctx.takes_holders_allow_list.clone(),
+        };
+        let hits = engine.search_takes(&params.query, &opts).await?;
+        Ok(TakesSearchOutput { hits })
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -4051,9 +4231,15 @@ mod tests {
 
         async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
             let engine = ctx.engine()?;
-            let versions = engine
+            let mut versions = engine
                 .get_versions(&params.slug, Some(&ctx.source_id))
                 .await?;
+            // v0.28/0.32.2: snapshots persist historical compiled_truth verbatim,
+            // including the takes fence, so a remote token bypassing get_page via
+            // get_versions would re-introduce the same leak across every prior version.
+            for v in &mut versions {
+                mask_fence_body(&mut v.compiled_truth, ctx.remote);
+            }
             Ok(GetVersionsOutput { versions })
         }
     }
@@ -4674,62 +4860,26 @@ mod tests {
         assert!(output["pageRefs"].as_array().unwrap().is_empty());
     }
 
-    // ── Takes List Operation (Slice #48 - Skeleton) ────────────────────────
-
-    #[derive(Debug, Clone)]
-    struct TakesListOperation;
-
-    #[derive(Debug, serde::Deserialize)]
-    #[serde(rename_all = "snake_case")]
-    struct TakesListParams {
-        slug: Option<String>,
-        limit: Option<u32>,
-        offset: Option<u32>,
-    }
-
-    impl ValidateParams for TakesListParams {
-        fn validate(&self) -> OperationResult<()> {
-            Ok(())
-        }
-    }
-
-    #[derive(Debug, serde::Serialize)]
-    #[serde(rename_all = "camelCase")]
-    struct TakesListOutput {
-        takes: Vec<serde_json::Value>,
-        total: u64,
-    }
-
-    #[async_trait]
-    impl TypedOperation for TakesListOperation {
-        type Params = TakesListParams;
-        type Output = TakesListOutput;
-
-        fn name(&self) -> &'static str {
-            "takes_list"
-        }
-
-        fn description(&self) -> &'static str {
-            "List takes for a page or across pages."
-        }
-
-        async fn execute(&self, _ctx: &OperationContext, _params: Self::Params) -> OperationResult<Self::Output> {
-            // STUB IMPLEMENTATION - Engine layer take methods TBD
-            Ok(TakesListOutput {
-                takes: vec![],
-                total: 0,
-            })
-        }
-    }
+    // ── Takes List / Search Operations (G33: per-token holder allow-list) ──
 
     #[test]
     fn registry_register_takes_list() {
         let mut registry = OperationRegistry::new();
-        registry.register(TakesListOperation);
+        registry.register(super::TakesListOperation);
 
         let op = registry.lookup("takes_list");
         assert!(op.is_some());
         assert_eq!(op.unwrap().name(), "takes_list");
+    }
+
+    #[test]
+    fn registry_register_takes_search() {
+        let mut registry = OperationRegistry::new();
+        registry.register(super::TakesSearchOperation);
+
+        let op = registry.lookup("takes_search");
+        assert!(op.is_some());
+        assert_eq!(op.unwrap().name(), "takes_search");
     }
 
     #[tokio::test]
@@ -4738,7 +4888,7 @@ mod tests {
 
         let engine = InMemoryEngine::default();
         let mut registry = OperationRegistry::new();
-        registry.register(TakesListOperation);
+        registry.register(super::TakesListOperation);
 
         let ctx = OperationContext::local_cli().with_engine(engine.into_arc());
         let params = serde_json::json!({ "limit": 10 });
@@ -4749,6 +4899,233 @@ mod tests {
         let output = result.unwrap();
         assert_eq!(output["total"], 0);
         assert!(output["takes"].as_array().unwrap().is_empty());
+    }
+
+    // ── G33 / G34 security regression tests ─────────────────────────────────
+
+    /// A realistic page `compiled_truth` carrying both a takes fence and a
+    /// facts fence (one world-visible row + one private row). Used to assert
+    /// that untrusted (remote) readers never recover the shielded content.
+    const FENCE_BODY: &str = r#"# Secret Page
+
+Intro.
+
+<!--- zbrain:takes:begin -->
+| # | claim | kind | holder | weight | since | source |
+|---|---|---|---|---|---|---|
+| 1 | Secret revenue number | take | garry | 0.9 | 2026 | private |
+<!--- zbrain:takes:end -->
+
+## Facts
+
+<!--- zbrain:facts:begin -->
+| # | claim | kind | confidence | visibility | notability | valid_from | valid_until | source | context |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | Founded Acme in 2017 | fact | 1.0 | world | high | 2017-01-01 |  | linkedin |  |
+| 2 | Prefers async over meetings | preference | 0.85 | private | medium | 2026-04-29 |  | OH |  |
+<!--- zbrain:facts:end -->
+
+Outro."#;
+
+    /// G34: a trusted (local) reader must see the full fence verbatim.
+    #[test]
+    fn mask_fence_body_local_keeps_fences() {
+        let mut body = FENCE_BODY.to_string();
+        let original = body.clone();
+        mask_fence_body(&mut body, false);
+        assert_eq!(body, original);
+        assert!(body.contains("zbrain:takes:begin"));
+        assert!(body.contains("zbrain:facts:begin"));
+        assert!(body.contains("Secret revenue number"));
+        assert!(body.contains("Prefers async over meetings"));
+    }
+
+    /// G34: an untrusted (remote) reader must lose the takes fence entirely
+    /// and the private facts row, while world-visible facts survive.
+    #[test]
+    fn mask_fence_body_remote_strips_takes_and_private_facts() {
+        let mut body = FENCE_BODY.to_string();
+        mask_fence_body(&mut body, true);
+        // takes fence fully removed (markers + content)
+        assert!(!body.contains("zbrain:takes:begin"));
+        assert!(!body.contains("zbrain:takes:end"));
+        assert!(!body.contains("Secret revenue number"));
+        // facts fence retained but private row dropped, world row kept
+        assert!(body.contains("zbrain:facts:begin"));
+        assert!(body.contains("zbrain:facts:end"));
+        assert!(body.contains("Founded Acme in 2017"));
+        assert!(!body.contains("Prefers async over meetings"));
+    }
+
+    fn mk_seed_take(id: u64, page_id: u64, claim: &str, holder: &str) -> crate::types::Take {
+        crate::types::Take {
+            id,
+            page_id,
+            row_num: id as i32,
+            claim: claim.to_string(),
+            kind: "fact".to_string(),
+            holder: holder.to_string(),
+            weight: 0.5,
+            since_date: None,
+            until_date: None,
+            source: None,
+            superseded_by: None,
+            active: true,
+            resolved_at: None,
+            resolved_quality: None,
+            resolved_outcome: None,
+            resolved_evidence: None,
+            resolved_value: None,
+            resolved_unit: None,
+            resolved_by: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    /// G33 (engine): `list_takes` applies the per-token holder allow-list as a
+    /// hard filter. `None` returns every holder; a restricted list returns
+    /// only the allowed holder's takes.
+    #[tokio::test]
+    async fn inmemory_list_takes_respects_allow_list() {
+        use crate::engine::InMemoryEngine;
+        use crate::types::{TakesListOpts, Take};
+
+        let engine = InMemoryEngine::default();
+        engine.add_take(mk_seed_take(1, 10, "world claim", "world"));
+        engine.add_take(mk_seed_take(2, 10, "garry secret", "garry"));
+        engine.add_take(mk_seed_take(3, 10, "brain secret", "brain"));
+
+        // No filter -> all three holders visible (trusted local caller).
+        let all = engine
+            .list_takes(&TakesListOpts::default())
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 3);
+
+        // Restricted allow-list -> only the allowed holder's takes.
+        let only_world = engine
+            .list_takes(&TakesListOpts {
+                takes_holders_allow_list: Some(vec!["world".to_string()]),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(only_world.len(), 1);
+        assert_eq!(only_world[0].holder, "world");
+
+        // Empty allow-list -> fail-closed, no takes visible.
+        let none = engine
+            .list_takes(&TakesListOpts {
+                takes_holders_allow_list: Some(vec![]),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(none.len(), 0);
+    }
+
+    /// G33 (engine): `search_takes` likewise honours the holder allow-list.
+    #[tokio::test]
+    async fn inmemory_search_takes_respects_allow_list() {
+        use crate::engine::InMemoryEngine;
+        use crate::types::SearchTakesOpts;
+
+        let engine = InMemoryEngine::default();
+        engine.add_take(mk_seed_take(1, 10, "shared revenue number", "world"));
+        engine.add_take(mk_seed_take(2, 10, "shared private number", "garry"));
+
+        let all = engine.search_takes("shared", &SearchTakesOpts::default()).await.unwrap();
+        assert_eq!(all.len(), 2);
+
+        let only_world = engine
+            .search_takes(
+                "shared",
+                &SearchTakesOpts {
+                    takes_holders_allow_list: Some(vec!["world".to_string()]),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(only_world.len(), 1);
+        assert_eq!(only_world[0].holder, "world");
+    }
+
+    /// G33 (op): `takes_list` hard-pushes `ctx.takes_holders_allow_list` into
+    /// the engine query. A remote token restricted to one holder can never
+    /// read other holders' takes, even though the engine holds them.
+    #[tokio::test]
+    async fn takes_list_operation_enforces_allow_list_server_side() {
+        use crate::engine::InMemoryEngine;
+
+        let engine = InMemoryEngine::default();
+        engine.add_take(mk_seed_take(1, 10, "world claim", "world"));
+        engine.add_take(mk_seed_take(2, 10, "garry secret", "garry"));
+        engine.add_take(mk_seed_take(3, 10, "brain secret", "brain"));
+
+        let mut ctx = OperationContext::local_cli().with_engine(engine.into_arc());
+        // Simulate a remote token whose token is scoped to the "world" holder.
+        ctx.takes_holders_allow_list = Some(vec!["world".to_string()]);
+
+        let params = TakesListParams {
+            slug: None,
+            holder: None,
+            kind: None,
+            active: None,
+            resolved: None,
+            limit: None,
+            offset: None,
+        };
+        let out = TakesListOperation.execute(&ctx, params).await.unwrap();
+        assert_eq!(out.takes.len(), 1);
+        assert_eq!(out.takes[0].holder, "world");
+    }
+
+    /// G34 (op e2e): `get_page` strips the takes fence and private facts for a
+    /// remote (untrusted) reader, but the local CLI reader sees everything.
+    #[tokio::test]
+    async fn get_page_remote_strips_fences_end_to_end() {
+        use crate::engine::{InMemoryEngine, PageInput};
+
+        let engine = InMemoryEngine::default();
+        let input = PageInput {
+            title: "Secret Page".to_string(),
+            compiled_truth: FENCE_BODY.to_string(),
+            ..Default::default()
+        };
+        let _ = engine.put_page("secret/page", None, &input).await.unwrap();
+
+        let mut registry = OperationRegistry::new();
+        registry.register(GetPageOperation);
+
+        // Share one engine across both readers.
+        let engine_arc = engine.into_arc();
+
+        // Remote (untrusted) reader: fences must be stripped.
+        let mut ctx_remote = OperationContext::local_cli().with_engine(engine_arc.clone());
+        ctx_remote.remote = true;
+        let params = serde_json::json!({ "slug": "secret/page" });
+        let out_remote = registry
+            .dispatch_json("get_page", &ctx_remote, params)
+            .await
+            .unwrap();
+        let truth_remote = out_remote["page"]["compiledTruth"].as_str().unwrap();
+        assert!(!truth_remote.contains("zbrain:takes:begin"));
+        assert!(!truth_remote.contains("Secret revenue number"));
+        assert!(truth_remote.contains("Founded Acme in 2017"));
+        assert!(!truth_remote.contains("Prefers async over meetings"));
+
+        // Local CLI reader: full fence retained.
+        let ctx_local = OperationContext::local_cli().with_engine(engine_arc.clone());
+        let params = serde_json::json!({ "slug": "secret/page" });
+        let out_local = registry
+            .dispatch_json("get_page", &ctx_local, params)
+            .await
+            .unwrap();
+        let truth_local = out_local["page"]["compiledTruth"].as_str().unwrap();
+        assert!(truth_local.contains("Secret revenue number"));
+        assert!(truth_local.contains("Prefers async over meetings"));
     }
 
     // ── PutRawData Operation (Slice #50 - Skeleton) ─────────────────────────

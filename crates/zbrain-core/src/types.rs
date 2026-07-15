@@ -316,6 +316,49 @@ pub struct TakeResolution {
     pub by: Option<String>,
 }
 
+/// Options for [`crate::engine::BrainEngine::list_takes`].
+///
+/// Mirrors TS `TakesListOpts`. The `takes_holders_allow_list` field is the
+/// server-side filter backing the v0.28+ per-token visibility model: when
+/// set, the engine applies `WHERE holder = ANY($allow_list)` on top of the
+/// other predicates. `None` disables the filter (trusted local callers).
+#[derive(Debug, Clone, Default)]
+pub struct TakesListOpts {
+    pub page_id: Option<u64>,
+    pub holder: Option<String>,
+    pub kind: Option<String>,
+    pub active: Option<bool>,
+    pub resolved: Option<bool>,
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
+    pub takes_holders_allow_list: Option<Vec<String>>,
+}
+
+/// Options for [`crate::engine::BrainEngine::search_takes`].
+#[derive(Debug, Clone, Default)]
+pub struct SearchTakesOpts {
+    pub limit: Option<u32>,
+    /// Per-token allow-list for the `holder` field (v0.28). When set, the
+    /// engine applies `WHERE holder = ANY($allow_list)`.
+    pub takes_holders_allow_list: Option<Vec<String>>,
+}
+
+/// A single search hit from `search_takes` (claim text match + score).
+/// Mirrors TS `TakeHit`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TakeHit {
+    pub take_id: u64,
+    pub page_id: u64,
+    pub page_slug: String,
+    pub row_num: i32,
+    pub claim: String,
+    pub kind: String,
+    pub holder: String,
+    pub weight: f64,
+    pub score: f64,
+}
+
 /// Canonical take kinds seeded from gbrain-base. Mirrors TS `TakeKind`
 /// before v0.38 opened it to `string`. The DB CHECK constraint
 /// `takes_kind_valid` enforces this closed set; the Rust layer accepts

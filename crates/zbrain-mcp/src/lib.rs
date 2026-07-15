@@ -372,11 +372,14 @@ mod tests {
         GetPageOperation, QueryOperation, ThinkOperation,
         PutPageOperation, DeletePageOperation, RestorePageOperation,
         PurgeDeletedPagesOperation, ListPagesOperation,
+        TakesListOperation, TakesSearchOperation,
     };
 
     fn make_registry() -> OperationRegistry {
         let mut reg = OperationRegistry::new();
         reg.register(GetPageOperation);
+        reg.register(TakesListOperation);
+        reg.register(TakesSearchOperation);
         reg.register(ThinkOperation);
         reg.register(QueryOperation);
         // Note: put_page, delete_page, etc. are local_only — excluded from MCP tool defs

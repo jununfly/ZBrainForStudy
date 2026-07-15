@@ -174,8 +174,8 @@ use crate::time::current_utc_iso8601;
 use crate::types::{
     AdjacencyRow, CRMode, DuplicatePage, EffectiveDateSource, EntityCount, FactInsertStatus,
     FactKind, FactListOpts, FactRow, FactVisibility, FactsHealth, FileRow, FileSpec, GraphPath, Link,
-    LinkBatchInput, NewFact, PageKind, PageVersion, RawData, Take, TakeInput, UpsertFileResult,
-    UpsertTakesResult,
+    LinkBatchInput, NewFact, PageKind, PageVersion, RawData, SearchTakesOpts, Take,
+    TakeHit, TakeInput, TakesListOpts, UpsertFileResult, UpsertTakesResult,
 };
 
 /// Postgres-specific migration implementation. Wraps raw SQL from
@@ -2203,7 +2203,11 @@ impl BrainEngine for PostgresEngine {
 
     // --- Phase 7A: Takes ---
 
-    async fn get_takes_for_page(&self, page_id: u64) -> Result<Vec<Take>> {
+    async fn get_takes_for_page(
+        &self,
+        page_id: u64,
+        takes_holders_allow_list: Option<Vec<String>>,
+    ) -> Result<Vec<Take>> {
         let pool = self.pool()?;
         let rows = sqlx::query(
             "SELECT id, page_id, row_num, claim, kind, holder, weight, \
@@ -2211,57 +2215,99 @@ impl BrainEngine for PostgresEngine {
                     resolved_at, resolved_quality, resolved_outcome, \
                     resolved_evidence, resolved_value, resolved_unit, \
                     resolved_by, created_at, updated_at \
-             FROM takes WHERE page_id = $1 ORDER BY row_num ASC",
+             FROM takes \
+             WHERE page_id = $1 \
+               AND ($2::text[] IS NULL OR holder = ANY($2::text[])) \
+             ORDER BY row_num ASC",
         )
         .bind(page_id as i64)
+        .bind(takes_holders_allow_list)
         .fetch_all(pool)
         .await
         .map_err(|e| Error::engine(format!("get_takes_for_page: {e}")))?;
 
         rows.into_iter()
+            .map(|r| take_from_row(&r))
+            .collect()
+    }
+
+    async fn list_takes(&self, opts: &TakesListOpts) -> Result<Vec<Take>> {
+        let pool = self.pool()?;
+        let rows = sqlx::query(
+            "SELECT id, page_id, row_num, claim, kind, holder, weight, \
+                    since_date, until_date, source, superseded_by, active, \
+                    resolved_at, resolved_quality, resolved_outcome, \
+                    resolved_evidence, resolved_value, resolved_unit, \
+                    resolved_by, created_at, updated_at \
+             FROM takes \
+             WHERE ($1::bigint IS NULL OR page_id = $1::bigint) \
+               AND ($2::text   IS NULL OR holder = $2::text) \
+               AND ($3::text   IS NULL OR kind = $3::text) \
+               AND ($4::boolean IS NULL OR active = $4::boolean) \
+               AND ($5::boolean IS NULL \
+                    OR ($5::boolean = true AND resolved_at IS NOT NULL) \
+                    OR ($5::boolean = false AND resolved_at IS NULL)) \
+               AND ($6::text[] IS NULL OR holder = ANY($6::text[])) \
+             ORDER BY weight DESC \
+             LIMIT $7 OFFSET $8",
+        )
+        .bind(opts.page_id.map(|v| v as i64))
+        .bind(opts.holder.clone())
+        .bind(opts.kind.clone())
+        .bind(opts.active)
+        .bind(opts.resolved)
+        .bind(opts.takes_holders_allow_list.clone())
+        .bind(opts.limit.unwrap_or(100) as i64)
+        .bind(opts.offset.unwrap_or(0) as i64)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("list_takes: {e}")))?;
+
+        rows.into_iter().map(|r| take_from_row(&r)).collect()
+    }
+
+    async fn search_takes(&self, query: &str, opts: &SearchTakesOpts) -> Result<Vec<TakeHit>> {
+        let pool = self.pool()?;
+        let rows = sqlx::query(
+            "SELECT t.id, t.page_id, p.slug, t.row_num, t.claim, t.kind, t.holder, t.weight \
+             FROM takes t JOIN pages p ON p.id = t.page_id \
+             WHERE t.active \
+               AND t.claim ILIKE '%' || $1 || '%' \
+               AND ($2::text[] IS NULL OR t.holder = ANY($2::text[])) \
+             ORDER BY t.weight DESC \
+             LIMIT $3",
+        )
+        .bind(query)
+        .bind(opts.takes_holders_allow_list.clone())
+        .bind(opts.limit.unwrap_or(30) as i64)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("search_takes: {e}")))?;
+
+        let q = query.to_lowercase();
+        Ok(rows
+            .into_iter()
             .map(|r| {
-                Ok(Take {
-                    id: r.try_get::<i64, _>("id").map(|v| v as u64)
-                        .map_err(|e| Error::engine(format!("take id: {e}")))?,
-                    page_id: r.try_get::<i64, _>("page_id").map(|v| v as u64)
-                        .map_err(|e| Error::engine(format!("take page_id: {e}")))?,
-                    row_num: r.try_get::<i32, _>("row_num")
-                        .map_err(|e| Error::engine(format!("take row_num: {e}")))?,
-                    claim: r.try_get("claim").unwrap_or_default(),
+                let claim: String = r.try_get("claim").unwrap_or_default();
+                let weight: f64 = r.try_get("weight").unwrap_or(0.5);
+                let score = if q.is_empty() {
+                    0.0
+                } else {
+                    claim.to_lowercase().matches(&q).count() as f64 * (1.0 + weight)
+                };
+                TakeHit {
+                    take_id: r.try_get::<i64, _>("id").map(|v| v as u64).unwrap_or(0),
+                    page_id: r.try_get::<i64, _>("page_id").map(|v| v as u64).unwrap_or(0),
+                    page_slug: r.try_get("slug").unwrap_or_default(),
+                    row_num: r.try_get("row_num").unwrap_or(0),
+                    claim,
                     kind: r.try_get("kind").unwrap_or_default(),
                     holder: r.try_get("holder").unwrap_or_default(),
-                    weight: r.try_get("weight").unwrap_or(0.5),
-                    since_date: r.try_get("since_date").unwrap_or(None),
-                    until_date: r.try_get("until_date").unwrap_or(None),
-                    source: r.try_get("source").unwrap_or(None),
-                    superseded_by: r.try_get::<Option<i32>, _>("superseded_by").unwrap_or(None),
-                    active: r.try_get::<bool, _>("active").unwrap_or(true),
-                    resolved_at: {
-                        let dt: Option<sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>> =
-                            r.try_get("resolved_at").unwrap_or(None);
-                        dt.map(|ts| ts.to_rfc3339())
-                    },
-                    resolved_quality: r.try_get("resolved_quality").unwrap_or(None),
-                    resolved_outcome: r.try_get("resolved_outcome").unwrap_or(None),
-                    resolved_evidence: r.try_get("resolved_evidence").unwrap_or(None),
-                    resolved_value: r.try_get("resolved_value").unwrap_or(None),
-                    resolved_unit: r.try_get("resolved_unit").unwrap_or(None),
-                    resolved_by: r.try_get("resolved_by").unwrap_or(None),
-                    created_at: {
-                        let dt: sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc> =
-                            r.try_get("created_at")
-                                .map_err(|e| Error::engine(format!("take created_at: {e}")))?;
-                        dt.to_rfc3339()
-                    },
-                    updated_at: {
-                        let dt: sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc> =
-                            r.try_get("updated_at")
-                                .map_err(|e| Error::engine(format!("take updated_at: {e}")))?;
-                        dt.to_rfc3339()
-                    },
-                })
+                    weight,
+                    score,
+                }
             })
-            .collect()
+            .collect())
     }
 
     async fn add_takes_batch(
@@ -4624,6 +4670,54 @@ async fn pg_resolve_parent(
     .await
     .map_err(|e| Error::engine(format!("resolve_parent UPDATE: {e}")))?;
     Ok(())
+}
+
+/// Map a `takes` PgRow (21-column projection) to a [`Take`].
+fn take_from_row(r: &sqlx::postgres::PgRow) -> Result<Take> {
+    Ok(Take {
+        id: r.try_get::<i64, _>("id")
+            .map(|v| v as u64)
+            .map_err(|e| Error::engine(format!("take id: {e}")))?,
+        page_id: r
+            .try_get::<i64, _>("page_id")
+            .map(|v| v as u64)
+            .map_err(|e| Error::engine(format!("take page_id: {e}")))?,
+        row_num: r
+            .try_get::<i32, _>("row_num")
+            .map_err(|e| Error::engine(format!("take row_num: {e}")))?,
+        claim: r.try_get("claim").unwrap_or_default(),
+        kind: r.try_get("kind").unwrap_or_default(),
+        holder: r.try_get("holder").unwrap_or_default(),
+        weight: r.try_get("weight").unwrap_or(0.5),
+        since_date: r.try_get("since_date").unwrap_or(None),
+        until_date: r.try_get("until_date").unwrap_or(None),
+        source: r.try_get("source").unwrap_or(None),
+        superseded_by: r.try_get::<Option<i32>, _>("superseded_by").unwrap_or(None),
+        active: r.try_get::<bool, _>("active").unwrap_or(true),
+        resolved_at: {
+            let dt: Option<sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>> =
+                r.try_get("resolved_at").unwrap_or(None);
+            dt.map(|ts| ts.to_rfc3339())
+        },
+        resolved_quality: r.try_get("resolved_quality").unwrap_or(None),
+        resolved_outcome: r.try_get("resolved_outcome").unwrap_or(None),
+        resolved_evidence: r.try_get("resolved_evidence").unwrap_or(None),
+        resolved_value: r.try_get("resolved_value").unwrap_or(None),
+        resolved_unit: r.try_get("resolved_unit").unwrap_or(None),
+        resolved_by: r.try_get("resolved_by").unwrap_or(None),
+        created_at: {
+            let dt: sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc> = r
+                .try_get("created_at")
+                .map_err(|e| Error::engine(format!("take created_at: {e}")))?;
+            dt.to_rfc3339()
+        },
+        updated_at: {
+            let dt: sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc> = r
+                .try_get("updated_at")
+                .map_err(|e| Error::engine(format!("take updated_at: {e}")))?;
+            dt.to_rfc3339()
+        },
+    })
 }
 
 /// Map a `minion_inbox` PgRow to an [`InboxMessage`]. Expects columns:

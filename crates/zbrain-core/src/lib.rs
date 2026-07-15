@@ -61,7 +61,8 @@ pub use types::{
     FactKind, FactListOpts, FactRow, FactVisibility, FactsHealth, FileRow, FileSpec,
     FindDuplicatePageOpts, GraphNode, GraphNodeLink, GraphPath, Link, LinkBatchInput, NewFact,
     OrphanPage, PageKind, PageRef, PageType, PurgeResult, RefreshPageBodyArgs, Take,
-    TakeInput, TakeResolution, UpsertFileResult, UpsertTakesResult, ALL_PAGE_TYPES,
+    TakeInput, TakeHit, TakeResolution, TakesListOpts, SearchTakesOpts, UpsertFileResult,
+    UpsertTakesResult, ALL_PAGE_TYPES,
 };
 pub use engine::{BrainEngine, CreateSourceInput, InMemoryEngine, Page, PageInput, PageFilters, SearchOpts, SearchResult, GetPageOpts, ResolveSlugsOpts, SourceRow, UpdateSourceInput};
 pub use admin_queries::{
