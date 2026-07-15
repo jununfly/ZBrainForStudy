@@ -22,7 +22,7 @@
 
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { PostgresEngine } from '../../../src/core/postgres-engine.ts';
-import { runSources } from '../../../src/commands/sources.ts';
+import { addSource, removeSource } from '../../../src/core/sources-ops.ts';
 import { performSync } from '../../../src/commands/sync.ts';
 import { runStorageBackfill } from '../../../src/commands/migrations/v0_18_0-storage-backfill.ts';
 import type { StorageBackend } from '../../../src/core/storage.ts';
@@ -166,7 +166,7 @@ describeE2E('v0.18.0 multi-source — composite UNIQUE semantics on real Postgre
     const conn = getConn();
     // Create a second source.
     const engine = getEngine();
-    await runSources(engine as unknown as Parameters<typeof runSources>[0], ['add', 'wiki', '--federated']);
+    await addSource(engine as unknown as Parameters<typeof addSource>[0], { id: 'wiki', federated: true });
 
     // Insert the same slug under 'default' (via putPage) and 'wiki' (raw INSERT).
     await engine.putPage('topics/ai', {
@@ -247,7 +247,7 @@ describeE2E('v0.18.0 multi-source — cascade delete covers every dependent row'
     // Build a fully populated source: page, chunks, timeline entries,
     // links, a file row. Then remove the source and verify nothing
     // for that source survives.
-    await runSources(engine as unknown as Parameters<typeof runSources>[0], ['add', 'cascadetest', '--federated']);
+    await addSource(engine as unknown as Parameters<typeof addSource>[0], { id: 'cascadetest', federated: true });
 
     // Page under cascadetest
     await conn.unsafe(
@@ -302,7 +302,7 @@ describeE2E('v0.18.0 multi-source — cascade delete covers every dependent row'
 
     // Remove the source.
     // v0.26.5: populated sources require --confirm-destructive; --yes alone is rejected.
-    await runSources(engine as unknown as Parameters<typeof runSources>[0], ['remove', 'cascadetest', '--confirm-destructive']);
+    await removeSource(engine as unknown as Parameters<typeof removeSource>[0], { id: 'cascadetest', confirmDestructive: true });
 
     // Everything for that source is gone.
     expect((await conn.unsafe(`SELECT COUNT(*)::int AS n FROM pages WHERE source_id = 'cascadetest'`))[0].n).toBe(0);
@@ -351,9 +351,9 @@ describeE2E('v0.18.0 multi-source — sync --source routes through sources table
     // Register a source with a bogus path (we're not actually walking a
     // repo — this test asserts that performSync correctly RESOLVES the
     // source row vs hitting the global config).
-    await runSources(engine as unknown as Parameters<typeof runSources>[0], [
-      'add', 'syncsrc', '--path', '/nonexistent/syncsrc/path', '--no-federated',
-    ]);
+    await addSource(engine as unknown as Parameters<typeof addSource>[0], {
+      id: 'syncsrc', localPath: '/nonexistent/syncsrc/path', federated: false,
+    });
 
     // Also set a DIFFERENT path in the global config so we can verify
     // sourceId actually disambiguates.
@@ -430,37 +430,10 @@ describeE2E('v0.18.0 multi-source — sources table surface', () => {
     // rows from prior test runs can shadow this INSERT via ON CONFLICT
     // DO NOTHING. Delete first, then create.
     await conn.unsafe(`DELETE FROM sources WHERE id = 'isolatedsrc'`);
-    await runSources(engine as unknown as Parameters<typeof runSources>[0], ['add', 'isolatedsrc']);
+    await addSource(engine as unknown as Parameters<typeof addSource>[0], { id: 'isolatedsrc' });
     const iso = await conn.unsafe(`SELECT config FROM sources WHERE id = 'isolatedsrc'`);
     const isoConfig = typeof iso[0].config === 'string' ? JSON.parse(iso[0].config) : iso[0].config;
     expect(isoConfig.federated).toBeUndefined();  // omitted → isolated-by-default
-  });
-
-  test('federate / unfederate flips config.federated on real DB', async () => {
-    const conn = getConn();
-    const engine = getEngine();
-
-    await runSources(engine as unknown as Parameters<typeof runSources>[0], ['federate', 'isolatedsrc']);
-    let row = await conn.unsafe(`SELECT config FROM sources WHERE id = 'isolatedsrc'`);
-    let config = typeof row[0].config === 'string' ? JSON.parse(row[0].config) : row[0].config;
-    expect(config.federated).toBe(true);
-
-    await runSources(engine as unknown as Parameters<typeof runSources>[0], ['unfederate', 'isolatedsrc']);
-    row = await conn.unsafe(`SELECT config FROM sources WHERE id = 'isolatedsrc'`);
-    config = typeof row[0].config === 'string' ? JSON.parse(row[0].config) : row[0].config;
-    expect(config.federated).toBe(false);
-  });
-
-  test('rename changes name, id stays stable', async () => {
-    const conn = getConn();
-    const engine = getEngine();
-
-    await runSources(engine as unknown as Parameters<typeof runSources>[0], [
-      'rename', 'isolatedsrc', 'My Isolated Source',
-    ]);
-    const row = await conn.unsafe(`SELECT id, name FROM sources WHERE id = 'isolatedsrc'`);
-    expect(row[0].id).toBe('isolatedsrc');
-    expect(row[0].name).toBe('My Isolated Source');
   });
 });
 

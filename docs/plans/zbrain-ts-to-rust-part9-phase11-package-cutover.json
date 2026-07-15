@@ -103,6 +103,11 @@
           "q": "第四轮 jobs 删除? 混合测试如何区分整删/改写? cli-path 回收?",
           "answer": "第四轮=jobs子系统(jobs.ts 1575行)+回收上轮cli-path.ts。3测试整删+4测试改写(精准摘jobs块保留其余)。tsc零新增(75→75)+cargo绿+jobs Rust存活。净删2564行",
           "note": "第四轮落地(2026-07-15): jobs.ts已迁Rust(crates有jobs命令+register_builtin_handlers@registry.rs)。**cli-path.ts回收**: 上轮为切jobs→autopilot边而提取的中性文件,jobs删后它只剩自身测试引用,存在理由消失→连test一起删(Rust有自己CLI path解析)。**混合测试两类精准区分(本轮核心方法论)**: (A)被测对象随jobs删消失→整删: autopilot-cycle-handler/handlers(测registerBuiltinHandlers)+minions-shell-pglite(e2e测经registerBuiltinHandlers编排的shell路径;shellHandler另有minions-shell.test独立覆盖不丢); (B)主体测保留代码仅局部触jobs→改写摘除jobs块: minions.test(摘2个describe块resolveWorkerConcurrency/parseMaxWaitingFlag,保留backpressure/db等)、cycle-abort(摘1个test读jobs源码,保留worker/cycle两test)、exit-classification(SITES摘jobs站点+删jobs专项it,保留classifyWorkerExit+doctor/supervisor站点)、doctor.test(摘jobs supervisor status源码test,保留doctor test)。**运行时源码读取陷阱(dep_closure抓不到)**: 4测试用Bun.file/readFileSync读jobs.ts源码做字符串断言(非import),删文件会运行时崩,必须一并摘除。cli.ts删jobs dispatch+CLI_ONLY+整个JOBS help section(保留L1599 warning因jobs Rust侧还在)。清理questions.json 3处expected_files+4处保留代码注释(supervisor/shell-validate/shell/worker,改'ported to Rust')。全gate绿: tsc75→75零新增; importers(jobs)+importers(cli-path)双空; cargo 0.44s绿; zbrain jobs --help Rust存活。"
+        },
+        {
+          "q": "第五轮: 如何删 sources 子系统(9混合测试)?",
+          "answer": "git rm sources.ts(命令层)+3整删测试(sources/sources-set-cr-mode/repos-alias,被测对象=runSources本身)。改写6个B类: 4个fixture-only(drift/sync-sole/tx/pfs)把runSources(['add'..])换addSource(engine,{id,localPath?,federated?}); integration+e2e删federate/unfederate/rename测试块(命令层独有无sources-ops等价)+add/remove换addSource/removeSource。cli.ts删3处dispatch+CLI_ONLY移除sources&repos+THIN_CLIENT set&hint+timeout special-case+help。清理3处注释(改'ported to Rust')+leak白名单。sources-ops.ts是保留底层API(CLI+MCP共用)。gate: tsc75->75/零dangle/cargo绿/zbrain sources --help存活",
+          "note": "第五轮删除,净删约?行"
         }
       ],
       "notes": ""
@@ -120,7 +125,7 @@
   },
   "metadata": {
     "created": "2026-07-15 08:44:04",
-    "updated": "2026-07-15 10:18:49",
+    "updated": "2026-07-15 10:41:13",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART9_PHASE11_PACKAGE_CUTOVER.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART9_PHASE11_PACKAGE_CUTOVER.md"

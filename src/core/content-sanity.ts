@@ -11,7 +11,7 @@
  *   - `src/commands/doctor.ts` — surfaces historical inventory via
  *     `oversized_pages`, `scraper_junk_pages`, and
  *     `content_sanity_audit_recent` checks.
- *   - `src/commands/sources.ts` `audit` subcommand — dry-run scan of a
+ *   - `zbrain sources audit` subcommand (ported to Rust) — dry-run scan of a
  *     source repo's `local_path` reporting would-blocks + size
  *     distribution without touching the DB.
  *

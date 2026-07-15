@@ -21,7 +21,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { PGLiteEngine } from '../../src/core/pglite-engine.ts';
-import { runSources } from '../../src/commands/sources.ts';
+import { addSource } from '../../src/core/sources-ops.ts';
 import { findMisroutedPages } from '../../src/core/multi-source-drift.ts';
 
 let engine: PGLiteEngine;
@@ -68,8 +68,8 @@ describe('findMisroutedPages — heuristic correctness', () => {
     seedFile(root, 'people/alice.md');
     seedFile(root, 'people/bob.md');
 
-    // Register the source via runSources, then update local_path directly.
-    await runSources(engine, ['add', 'src-case2', '--no-federated']);
+    // Register the source via sources-ops, then update local_path directly.
+    await addSource(engine, { id: 'src-case2', federated: false });
     await engine.executeRaw(
       `UPDATE sources SET local_path = $1 WHERE id = $2`,
       [root, 'src-case2'],
@@ -88,7 +88,7 @@ describe('findMisroutedPages — heuristic correctness', () => {
     seedFile(root, 'people/charlie.md');
     seedFile(root, 'people/dana.md');
 
-    await runSources(engine, ['add', 'src-case3', '--no-federated']);
+    await addSource(engine, { id: 'src-case3', federated: false });
     await engine.executeRaw(
       `UPDATE sources SET local_path = $1 WHERE id = $2`,
       [root, 'src-case3'],
@@ -113,7 +113,7 @@ describe('findMisroutedPages — heuristic correctness', () => {
     const root = makeTmpRoot('case4');
     seedFile(root, 'topics/widget.md');
 
-    await runSources(engine, ['add', 'src-case4', '--no-federated']);
+    await addSource(engine, { id: 'src-case4', federated: false });
     await engine.executeRaw(
       `UPDATE sources SET local_path = $1 WHERE id = $2`,
       [root, 'src-case4'],
@@ -159,7 +159,7 @@ describe('findMisroutedPages — heuristic correctness', () => {
     const root = makeTmpRoot('case7');
     seedFile(root, 'topics/mdx-page.mdx');
 
-    await runSources(engine, ['add', 'src-case7', '--no-federated']);
+    await addSource(engine, { id: 'src-case7', federated: false });
     await engine.executeRaw(
       `UPDATE sources SET local_path = $1 WHERE id = $2`,
       [root, 'src-case7'],

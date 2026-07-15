@@ -1,7 +1,8 @@
 /**
  * zbrain sources-ops — pure async functions for source-management operations
- * (v0.28). Extracted from src/commands/sources.ts so the CLI handlers and the
- * MCP ops (sources_add / list / remove / status) share one implementation.
+ * (v0.28). Originally extracted from the TS sources command (now ported to
+ * Rust) so the CLI handlers and the MCP ops (sources_add / list / remove /
+ * status) share one implementation.
  *
  * Atomicity contract for addSource with --url (D3, eng-review):
  *

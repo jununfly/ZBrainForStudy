@@ -19,7 +19,7 @@ import { execSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { PGLiteEngine } from '../../src/core/pglite-engine.ts';
-import { runSources } from '../../src/commands/sources.ts';
+import { addSource } from '../../src/core/sources-ops.ts';
 import { resetPgliteState } from './helpers/reset-pglite.ts';
 
 let engine: PGLiteEngine;
@@ -71,7 +71,7 @@ describe('#1434 — runSync auto-routes to sole_non_default source', () => {
     // local_path is required for tier 5.5 to fire — point at the synthetic
     // git repo so resolveSourceWithTier sees one non-default source with
     // a local_path AND falls through brain_default (unset).
-    await runSources(engine, ['add', 'studiovault', '--path', repoPath, '--no-federated']);
+    await addSource(engine, { id: 'studiovault', localPath: repoPath, federated: false });
     const { runSync } = await import('../../src/commands/sync.ts');
 
     // Capture stderr to verify the nudge fires.
@@ -124,7 +124,7 @@ describe('#1434 — runSync auto-routes to sole_non_default source', () => {
   }, 60_000);
 
   test('explicit --source overrides auto-routing (no nudge)', async () => {
-    await runSources(engine, ['add', 'studiovault', '--path', repoPath, '--no-federated']);
+    await addSource(engine, { id: 'studiovault', localPath: repoPath, federated: false });
     const { runSync } = await import('../../src/commands/sync.ts');
 
     const origWrite = process.stderr.write.bind(process.stderr);
@@ -165,8 +165,8 @@ describe('#1434 — runSync auto-routes to sole_non_default source', () => {
     // Both need local_path to be counted by the sole_non_default helper.
     // Pre-existing helper filters local_path IS NOT NULL.
     const secondRepo = mkdtempSync(join(tmpdir(), 'zbrain-snd-routing-second-'));
-    await runSources(engine, ['add', 'studiovault', '--path', repoPath, '--no-federated']);
-    await runSources(engine, ['add', 'second-vault', '--path', secondRepo, '--no-federated']);
+    await addSource(engine, { id: 'studiovault', localPath: repoPath, federated: false });
+    await addSource(engine, { id: 'second-vault', localPath: secondRepo, federated: false });
     const { runSync } = await import('../../src/commands/sync.ts');
 
     const origWrite = process.stderr.write.bind(process.stderr);

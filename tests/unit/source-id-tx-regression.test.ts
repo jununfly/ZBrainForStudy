@@ -31,7 +31,7 @@
 
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { PGLiteEngine } from '../../src/core/pglite-engine.ts';
-import { runSources } from '../../src/commands/sources.ts';
+import { addSource } from '../../src/core/sources-ops.ts';
 import { importFromContent } from '../../src/core/import-file.ts';
 
 let engine: PGLiteEngine;
@@ -42,7 +42,7 @@ beforeAll(async () => {
   await engine.initSchema();
   // Add the second source up-front; tests below assume both 'default' and
   // 'testsrc' exist.
-  await runSources(engine, ['add', 'testsrc', '--no-federated']);
+  await addSource(engine, { id: 'testsrc', federated: false });
 }, 60_000);
 
 afterAll(async () => {

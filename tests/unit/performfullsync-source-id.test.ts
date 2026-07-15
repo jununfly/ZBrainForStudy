@@ -32,7 +32,7 @@ import { execSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { PGLiteEngine } from '../../src/core/pglite-engine.ts';
-import { runSources } from '../../src/commands/sources.ts';
+import { addSource } from '../../src/core/sources-ops.ts';
 import { resetPgliteState } from './helpers/reset-pglite.ts';
 
 let engine: PGLiteEngine;
@@ -52,7 +52,7 @@ describe('performFullSync threads sourceId end-to-end', () => {
     engine = new PGLiteEngine();
     await engine.connect({});
     await engine.initSchema();
-    await runSources(engine, ['add', 'testsrc-pfs', '--no-federated']);
+    await addSource(engine, { id: 'testsrc-pfs', federated: false });
   }, 60_000);
 
   afterAll(async () => {
@@ -64,7 +64,7 @@ describe('performFullSync threads sourceId end-to-end', () => {
     // resetPgliteState clears pages but doesn't drop the source row; re-add only if missing
     const sources = await engine.executeRaw<{ id: string }>(`SELECT id FROM sources WHERE id = 'testsrc-pfs'`);
     if (sources.length === 0) {
-      await runSources(engine, ['add', 'testsrc-pfs', '--no-federated']);
+      await addSource(engine, { id: 'testsrc-pfs', federated: false });
     }
 
     repoPath = mkdtempSync(join(tmpdir(), 'zbrain-pfs-'));

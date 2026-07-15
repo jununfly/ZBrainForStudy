@@ -18,7 +18,7 @@
 
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { PGLiteEngine } from '../../src/core/pglite-engine.ts';
-import { runSources } from '../../src/commands/sources.ts';
+import { addSource, removeSource } from '../../src/core/sources-ops.ts';
 import { resolveSourceId } from '../../src/core/source-resolver.ts';
 
 let engine: PGLiteEngine;
@@ -79,8 +79,8 @@ describe('v0.18.0 — putPage implicitly writes to default source', () => {
 
 describe('v0.18.0 — composite UNIQUE allows same-slug across sources', () => {
   test('same slug in two different sources coexists (regression: Codex critical)', async () => {
-    // Insert a second source via sources CLI.
-    await runSources(engine, ['add', 'testsrc', '--no-federated']);
+    // Insert a second source via sources-ops.
+    await addSource(engine, { id: 'testsrc', federated: false });
 
     // Sanity: default already has this slug from the previous test.
     // Now write the same slug under testsrc via raw INSERT (putPage only
@@ -119,35 +119,6 @@ describe('v0.18.0 — composite UNIQUE allows same-slug across sources', () => {
   });
 });
 
-describe('v0.18.0 — sources CLI manipulates the sources table', () => {
-  test('sources federate flips config.federated true', async () => {
-    await runSources(engine, ['federate', 'testsrc']);
-    const rows = await engine.executeRaw<{ config: string | Record<string, unknown> }>(
-      `SELECT config FROM sources WHERE id = 'testsrc'`,
-    );
-    const config = typeof rows[0].config === 'string' ? JSON.parse(rows[0].config) : rows[0].config;
-    expect(config.federated).toBe(true);
-  });
-
-  test('sources unfederate flips config.federated false', async () => {
-    await runSources(engine, ['unfederate', 'testsrc']);
-    const rows = await engine.executeRaw<{ config: string | Record<string, unknown> }>(
-      `SELECT config FROM sources WHERE id = 'testsrc'`,
-    );
-    const config = typeof rows[0].config === 'string' ? JSON.parse(rows[0].config) : rows[0].config;
-    expect(config.federated).toBe(false);
-  });
-
-  test('sources rename changes name but keeps id immutable', async () => {
-    await runSources(engine, ['rename', 'testsrc', 'Test Source']);
-    const rows = await engine.executeRaw<{ id: string; name: string }>(
-      `SELECT id, name FROM sources WHERE id = 'testsrc'`,
-    );
-    expect(rows[0].id).toBe('testsrc');
-    expect(rows[0].name).toBe('Test Source');
-  });
-});
-
 describe('v0.18.0 — source resolution priority (integration)', () => {
   test('explicit --source flag wins when the source exists', async () => {
     const id = await resolveSourceId(engine, 'testsrc');
@@ -182,7 +153,7 @@ describe('v0.18.0 — sources remove cascades to pages', () => {
     expect(before[0].n).toBeGreaterThan(0);
 
     // v0.26.5: populated sources require --confirm-destructive; --yes alone is rejected.
-    await runSources(engine, ['remove', 'testsrc', '--confirm-destructive']);
+    await removeSource(engine, { id: 'testsrc', confirmDestructive: true });
 
     const after = await engine.executeRaw<{ n: number }>(
       `SELECT COUNT(*)::int AS n FROM pages WHERE source_id = 'testsrc'`,

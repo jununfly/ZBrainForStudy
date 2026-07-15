@@ -35,7 +35,7 @@ for (const op of operations) {
 }
 
 // CLI-only commands that bypass the operation layer
-const CLI_ONLY = new Set(['reinit-pglite', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'call', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'features', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'sources', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'repos', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'frontmatter', 'auth', 'friction', 'claw-test', 'book-mirror', 'takes', 'anomalies', 'transcripts', 'models', 'recall', 'forget', 'edges-backfill', 'cache', 'ze-switch', 'founder', 'brainstorm', 'lsd']);
+const CLI_ONLY = new Set(['reinit-pglite', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'call', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'features', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'frontmatter', 'auth', 'friction', 'claw-test', 'book-mirror', 'takes', 'anomalies', 'transcripts', 'models', 'recall', 'forget', 'edges-backfill', 'cache', 'ze-switch', 'founder', 'brainstorm', 'lsd']);
 // CLI-only commands whose handlers print their own --help text. These are
 // excluded from the generic short-circuit so detailed per-command and
 // per-subcommand usage stays reachable.
@@ -728,13 +728,12 @@ const THIN_CLIENT_REFUSED_COMMANDS = new Set([
   'repair-jsonb', 'orphans', 'integrity',
   // v0.31.1 (CDX-2 op coverage matrix): more local-only commands
   'dream', 'transcripts', 'storage',
-  // v0.31.1 CDX-2 audit: takes/sources have multiple subcommands; some
-  // (takes_list/takes_search, sources_list/sources_status) have MCP
-  // equivalents and others are file-system bound (takes mutate commands
-  // edit local .md files). v0.31.1 refuses both at the top level with a
-  // hint pointing at the routable MCP tools; per-subcommand splits are
-  // a v0.31.x follow-up TODO.
-  'takes', 'sources',
+  // v0.31.1 CDX-2 audit: takes has multiple subcommands; some
+  // (takes_list/takes_search) have MCP equivalents and others are
+  // file-system bound (takes mutate commands edit local .md files).
+  // v0.31.1 refuses at the top level with a hint pointing at the routable
+  // MCP tools; per-subcommand splits are a v0.31.x follow-up TODO.
+  'takes',
   // v0.32 thin-client routing audit (Codex round 2 findings #2, #4):
   // - `pages` purge-deleted is admin+localOnly (operations.ts:856-864)
   // - `files` list / file_url MCP ops are localOnly (operations.ts:1769-1879)
@@ -768,7 +767,6 @@ const THIN_CLIENT_REFUSE_HINTS: Record<string, string> = {
   transcripts: 'transcripts is server-private (raw chat exports stay on the host). Read transcripts on the host machine.',
   storage: 'storage operates on the local repo on disk. Run on the host.',
   takes: 'takes mutate subcommands edit local .md files; routing the read subcommands lands in v0.31.x. For now: use `takes_list` and `takes_search` MCP tools from your agent, or run on the host.',
-  sources: 'sources commands manage local DB + config rows. Per-subcommand thin-client routing lands in v0.31.x. For now: use `sources_list` / `sources_status` MCP tools, or run on the host.',
   // v0.32 audit additions
   pages: '`pages purge-deleted` is admin+localOnly (hard-deletes from the local DB). Run on the host.',
   files: '`files list` and `files url` MCP ops are localOnly (paths live on the host filesystem). Use `zbrain files` on the host machine.',
@@ -1104,13 +1102,12 @@ async function handleCliOnly(command: string, args: string[]) {
   // covers connectEngine (so a hung schema probe / PgBouncer freeze actually
   // surfaces a timeout) AND the dispatch body (so a wedged runSearch /
   // runList honors the same deadline).
-  // Per-command default: search 30s, sources list 10s. User --timeout=Ns wins.
+  // Per-command default: search 30s. User --timeout=Ns wins.
   // Other commands (import, embed, doctor, etc.) keep their existing
   // unbounded connect — destructive / long-running commands shouldn't get
   // a default kill switch.
   const readOnlyDefaultTimeoutMs =
     command === 'search' ? 30_000 :
-    command === 'sources' && (args[0] === 'list' || args[0] === undefined) ? 10_000 :
     null;
   const cliOptsResolved = getCliOptions();
   const userTimeoutMs = cliOptsResolved.timeoutMs;
@@ -1391,11 +1388,6 @@ async function handleCliOnly(command: string, args: string[]) {
         await runNotabilityEval({ cmd: subcmd, flags, engine, repoPath });
         break;
       }
-      case 'sources': {
-        const { runSources } = await import('./commands/sources.ts');
-        await runSources(engine, args);
-        break;
-      }
       case 'pages': {
         // v0.26.5: page-level operator commands (purge-deleted escape hatch).
         const { runPages } = await import('./commands/pages.ts');
@@ -1457,18 +1449,6 @@ async function handleCliOnly(command: string, args: string[]) {
         await runCodeCallees(engine, args);
         break;
       }
-      case 'repos': {
-        // v0.19.0: `zbrain repos ...` is an alias into the v0.18.0 sources
-        // subsystem. The repos abstraction (Garry's OpenClaw baseline) was
-        // redundant with sources and carried per-user config state that
-        // couldn't participate in federation / RLS / multi-tenancy. We
-        // keep the alias so scripts like `zbrain repos add .` keep
-        // working, with a nudge toward the canonical command.
-        console.error('[zbrain] Note: "repos" is an alias for "sources" as of v0.19.0. Prefer `zbrain sources <subcommand>`.');
-        const { runSources } = await import('./commands/sources.ts');
-        await runSources(engine, args);
-        break;
-      }
     }
   } finally {
     await engine.disconnect();
@@ -1477,7 +1457,7 @@ async function handleCliOnly(command: string, args: string[]) {
 
 /**
  * v0.41.6.0 D3: dispatch helper for the read-only commands that take a
- * default wallclock timeout (`zbrain search`, `zbrain sources list`).
+ * default wallclock timeout (`zbrain search`).
  * Keeps the timeout-wrap site in main() small and the per-command
  * dispatch logic colocated for easy extension. Pure dispatcher; no engine
  * lifecycle (caller owns connect/disconnect).
@@ -1487,11 +1467,6 @@ async function dispatchReadOnlyCommand(engine: BrainEngine, command: string, arg
     case 'search': {
       const { runSearch } = await import('./commands/search.ts');
       await runSearch(engine, args);
-      return;
-    }
-    case 'sources': {
-      const { runSources } = await import('./commands/sources.ts');
-      await runSources(engine, args);
       return;
     }
     default:
@@ -1757,12 +1732,8 @@ BRAIN (ideate / explore — v0.37/v0.38)
         [--save|--no-save] [--limit N]    rewarding far-from-obvious + axiomatic inversions
 
 SOURCES (multi-repo / multi-brain)
-  sources list                       Show registered sources
-  sources add <id> --path <p>        Register a source (id = short name, e.g. 'wiki')
-  sources remove <id>                Remove a source + its pages
   sync --all                         Sync all sources with a local_path
   sync --source <id>                 Sync one specific source
-  repos ...                          DEPRECATED alias for 'sources' (v0.19.0)
 
 CODE INDEXING (v0.19.0 / v0.20.0 Cathedral II)
   code-def <symbol> [--lang l]       Find the definition of a symbol across code pages

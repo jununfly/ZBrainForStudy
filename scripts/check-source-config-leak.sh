@@ -26,7 +26,6 @@ FOUND=0
 # Whitelist:
 #   - src/core/source-config-redact.ts itself (defines the redactor)
 #   - src/core/sources-load.ts (returns raw rows; callers redact)
-#   - src/commands/sources.ts runFederate/runWebhook* (mutators write raw)
 #   - src/core/migrate.ts (DDL data references not serialization)
 #   - src/core/sources-ops.ts (CLI feedback prints structured fields, not raw config)
 #   - tests/unit/ (tests are allowed to introspect raw config)
@@ -71,7 +70,6 @@ fi
 FILTERED=$(echo "$CANDIDATES" | \
   grep -v 'src/core/source-config-redact.ts' | \
   grep -v 'src/core/sources-load.ts' | \
-  grep -v 'src/commands/sources.ts' | \
   grep -v 'src/core/migrate.ts' | \
   grep -v 'src/core/sources-ops.ts' | \
   grep -v 'src/commands/init.ts' | \
