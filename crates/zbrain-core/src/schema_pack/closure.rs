@@ -10,6 +10,8 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
+use sha2::{Digest, Sha256};
+
 use super::manifest::SchemaPackManifest;
 
 /// Maximum BFS depth for alias closure resolution.
@@ -249,6 +251,39 @@ pub fn expand_closure(
     result
 }
 
+// ---------------------------------------------------------------------------
+// computeAliasClosureHash
+// ---------------------------------------------------------------------------
+
+/// Compute a deterministic hash of the alias closure for a manifest.
+///
+/// Builds the alias graph, expands closure for every page type (sorted),
+/// serializes the result as canonical JSON (BTreeMap = sorted keys), then
+/// takes SHA-256 first 8 bytes (16 hex chars).
+///
+/// **Note**: This takes 8 bytes (16 hex), while `compute_manifest_sha8`
+/// takes 4 bytes (8 hex). Do not unify.
+pub fn compute_alias_closure_hash(manifest: &SchemaPackManifest) -> Result<String, AliasCycleError> {
+    let graph = build_alias_graph(manifest)?;
+
+    let mut all_types: Vec<&String> = manifest.page_types.iter().map(|pt| &pt.name).collect();
+    all_types.sort();
+
+    // BTreeMap ensures sorted key order in JSON output (matches JS insertion-order).
+    let mut resolved: std::collections::BTreeMap<&str, Vec<String>> = std::collections::BTreeMap::new();
+    for t in &all_types {
+        let mut opts = ExpandClosureOpts::default();
+        resolved.insert(t.as_str(), expand_closure(t, &graph, &mut opts));
+    }
+
+    let canonical = serde_json::to_string(&resolved).unwrap_or_default();
+    let mut hasher = Sha256::new();
+    hasher.update(canonical.as_bytes());
+    let result = hasher.finalize();
+    // First 8 bytes → 16 hex chars
+    Ok(hex::encode(&result[..8]))
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -458,5 +493,46 @@ mod tests {
         };
         expand_closure("A", &g, &mut opts);
         assert!(exceeded.get(), "depth cap callback should fire for 6-node chain");
+    }
+
+    // ---- compute_alias_closure_hash -------------------------------------
+
+    #[test]
+    fn closure_hash_deterministic() {
+        let m = make_manifest(vec![
+            PageTypeDefinition {
+                name: "person".into(),
+                primitive: PackPrimitive::Entity,
+                aliases: vec!["researcher".into()],
+                ..Default::default()
+            },
+            PageTypeDefinition {
+                name: "note".into(),
+                primitive: PackPrimitive::Concept,
+                ..Default::default()
+            },
+        ]);
+        let h1 = compute_alias_closure_hash(&m).unwrap();
+        let h2 = compute_alias_closure_hash(&m).unwrap();
+        assert_eq!(h1, h2, "hash must be deterministic");
+        assert_eq!(h1.len(), 16, "hash must be 16 hex chars (8 bytes)");
+    }
+
+    #[test]
+    fn closure_hash_changes_with_aliases() {
+        let m1 = make_manifest(vec![PageTypeDefinition {
+            name: "person".into(),
+            primitive: PackPrimitive::Entity,
+            ..Default::default()
+        }]);
+        let m2 = make_manifest(vec![PageTypeDefinition {
+            name: "person".into(),
+            primitive: PackPrimitive::Entity,
+            aliases: vec!["researcher".into()],
+            ..Default::default()
+        }]);
+        let h1 = compute_alias_closure_hash(&m1).unwrap();
+        let h2 = compute_alias_closure_hash(&m2).unwrap();
+        assert_ne!(h1, h2, "different alias graphs must have different hashes");
     }
 }

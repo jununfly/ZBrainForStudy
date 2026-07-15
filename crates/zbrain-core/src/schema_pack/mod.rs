@@ -15,3 +15,8 @@ pub mod manifest;
 pub mod primitives;
 pub mod closure;
 pub mod loader;
+pub mod registry;
+pub mod per_source;
+pub mod pack_lock;
+pub mod trust_gate;
+pub mod load_active;

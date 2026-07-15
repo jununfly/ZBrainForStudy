@@ -166,9 +166,10 @@ pub struct SchemaPackManifest {
     /// Minimum zbrain version required to load this pack.
     #[serde(default = "default_zbrain_min_version")]
     pub zbrain_min_version: String,
-    /// Parent pack name (or null for full override).
+    /// Parent pack name (None = full override, no parent).
+    /// Defaults to Some("zbrain-base") when field is missing.
     #[serde(default = "default_extends")]
-    pub extends: String,
+    pub extends: Option<String>,
     /// Selective borrow of types/link_types from another pack.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub borrow_from: Vec<BorrowFromEntry>,
@@ -221,8 +222,8 @@ fn default_zbrain_min_version() -> String {
     "0.38.0".to_string()
 }
 
-fn default_extends() -> String {
-    "zbrain-base".to_string()
+fn default_extends() -> Option<String> {
+    Some("zbrain-base".to_string())
 }
 
 fn default_takes_kinds() -> Vec<String> {
@@ -403,7 +404,7 @@ mod tests {
         assert_eq!(m.description, "");
         assert!(m.page_types.is_empty());
         assert!(m.link_types.is_empty());
-        assert_eq!(m.extends, "zbrain-base");
+        assert_eq!(m.extends, Some("zbrain-base".to_string()));
     }
 
     #[test]
@@ -490,7 +491,7 @@ mod tests {
         assert!(m.license.is_none());
         assert!(m.homepage.is_none());
         assert_eq!(m.zbrain_min_version, "0.38.0");
-        assert_eq!(m.extends, "zbrain-base");
+        assert_eq!(m.extends, Some("zbrain-base".to_string()));
         assert!(m.borrow_from.is_empty());
         assert_eq!(m.takes_kinds, vec!["fact", "take", "bet", "hunch"]);
         assert!(m.phases.is_none());
