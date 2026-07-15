@@ -6,7 +6,7 @@
     "1": {
       "id": "1",
       "label": "Part9 Phase11 — package 入口 cutover + src/core 删除",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": null,
       "children": [
@@ -69,7 +69,7 @@
     "1-3": {
       "id": "1-3",
       "label": "分批删 src/core 已迁 impl(tsc 基线 diff 验证,逐 slice)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [],
@@ -120,17 +120,23 @@
     "1-4": {
       "id": "1-4",
       "label": "final cutover 收尾(typecheck 脚本处置 + CHANGELOG + 残留 TS 决策)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "1-4收尾: typecheck/tsconfig/CHANGELOG/assert脚手架如何处置?",
+          "answer": "删assert脚手架; typecheck改baseline硬gate(冻结64既有error只阻新增); tsconfig保留; CHANGELOG已reset无需动; 残留TS 1300+文件是迁移中间态由gate守护",
+          "note": "用户拍板选'保留硬gate+建基线'。关键认知修正: 1-1原倾向'1-4删typecheck'是基于cutover=彻底移除JS库身份语境,但现实残留TS仍1300+(src529+tests/unit783),TS单测仍bun test实跑,迁移远未完成→不能删typecheck。手法: 新增scripts/typecheck-baseline.sh(归一化去行列号+comm -13只阻新增/comm -23提示已修复)+scripts/tsc-baseline.txt(64行冻结基线,44 TS2307悬空import已删init/doctor/config.ts + 20 TS7006隐式any,全doctor测试簇既有债)。package.json typecheck->baseline gate, 加typecheck:raw和typecheck:update-baseline。verify+ci-local经bun run typecheck自动继承。gate双向自测通过(注入TS7006变红/清理转绿)。cargo绿+help存活。这与1-3 baseline diff手法一脉相承。64既有error随TS迁移推进应只减不增。"
+        }
+      ],
       "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-15 08:44:04",
-    "updated": "2026-07-15 11:01:33",
+    "updated": "2026-07-15 11:29:49",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART9_PHASE11_PACKAGE_CUTOVER.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART9_PHASE11_PACKAGE_CUTOVER.md"
