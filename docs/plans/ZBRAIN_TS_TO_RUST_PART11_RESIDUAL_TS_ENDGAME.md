@@ -44,7 +44,7 @@ eval_drift 已迁（首端口，端到端模式验证完成）：Rust zbrain_cor
 │   ├── [ ][Y+] 1-5-2. 基础健康类检查迁移 (embedding_health / sync_freshness / federation_health)
 │   ├── [ ][Y+] 1-5-3. 配置模式类检查迁移 (search_mode / resolver_health / schema_packs)
 │   ├── [x][Y+] 1-5-4. 内容一致性类检查迁移 (skill_conformance / frontmatter_integrity / eval_drift)
-│   ├── [~][Y+] 1-5-5. 评分类检查迁移 (brain_score / takes_weight_grid)
+│   ├── [x][Y+] 1-5-5. 评分类检查迁移 (brain_score / takes_weight_grid)
 │   └── [ ][Y+] 1-5-6. doctor 收尾 (删 TS doctor + 缩 typecheck 基线 + 锚点常量清空)
 ├── [ ][X+] 1-6. 孤儿命令迁移 (~20 命令：whoknows/brainstorm/dream/publish/models/providers/...)
 ├── [ ][X+] 1-7. search core 模块补齐 (C 类，src/core/search 23 文件)
@@ -54,8 +54,25 @@ eval_drift 已迁（首端口，端到端模式验证完成）：Rust zbrain_cor
 └── [ ][X+] 1-11. A 类已迁 TS 删除 (minions/ai/ingestion/cycle + 命令)
 ```
 
-### 🔨 当前施工: 1-5-5. 评分类检查迁移 (brain_score / takes_weight_grid)
-**Status:** `in_progress` | **Mode:** `exploit`
+### 🔨 当前施工: 1-5. doctor 11 项健康检查迁移 (G5)
+**Status:** `in_progress` | **Mode:** `explore`
 
-takes_weight_grid 已迁（2026-07-15，refined 顺序第二端口）：Rust zbrain_core::takes_fence::check_takes_weight_grid 用 list_takes 公共 API 翻页扫描全表(默认 limit 100,分页 PAGE=10000)、is_off_grid(weight) 判定 0.05 网格(容差 1e-3,对应 migration v48)+ 2 e2e 测试(空表→Ok'No takes yet';比例 0.0196→Warn / 0.1667→Fail) → 接线 doctor runner(在 engine 已连接块内,因需 DB;reranker_health/eval_drift 是 engine-free 在 disconnect 后)替换 NotImplemented → 从 UNMIGRATED 移除 + 加 takes_weight_grid_is_no_longer_unmigrated 守卫测试 → typecheck 不变(takes-fence.ts 是活代码,doctor.ts 已删,无死代码可删)。刻意不用 engine.execute_raw(引擎 trait 故意不放逃生舱,engine.rs:1896)。brain_score 待迁(autopilot/brain_score.rs 已存在)。
+**决策记录:**
+- Q: 1-5 doctor 内部拆法?
+  A: 聚类拆 6 子节点：1-5-1 探查+tracer bullet(定位 11 检查 TS 实现与 Rust 依赖、确认 runner 入口) → 1-5-2 基础健康类(embedding/sync_freshness/federation) → 1-5-3 配置模式类(search_mode/resolver/schema_packs) → 1-5-4 内容一致性类(skill_conformance/frontmatter/eval_drift) → 1-5-5 评分类(brain_score/takes_weight_grid) → 1-5-6 收尾(删 TS doctor+缩 typecheck 基线+锚点清空)。每聚类内逐 check 迁完立即从 UNMIGRATED_TS_DOCTOR_CHECKS 锚点移除。
+  > 用户 2026-07-15 决策
+- Q: doctor 检查逻辑落点?
+  A: 镜像 reranker_health 模式：检查逻辑放 zbrain_core 对应领域模块（embedding→embedding 模块、config→config、DB/engine→engine），lib.rs doctor runner 只组装 DoctorCheck+计分。逻辑可单测可复用、与既有分层一致。
+  > 用户 2026-07-15 决策
+- Q: doctor 端口顺序 refinement?
+  A: 先迁最低风险：eval_drift(纯死代码 FS/git,无活命令依赖)+takes_weight_grid(Rust takes_fence.rs 已存在)打头验证端到端模式；再迁活命令镜像类(resolver/skill_conformance/frontmatter/sync_freshness/federation/embedding/search_mode)；schema_packs 最后(被 G38 纠缠,须与 schema_pack 信任门同步)。跨聚类挑最低风险项先打,不严格按 1-5-2→1-5-5 顺序。
+  > 用户未明确,agent 提议(基于 tracer bullet 结论)
+
+**子节点:**
+- [x] 1-5-1. doctor 探查 + tracer bullet (定位 11 检查 TS 实现与 Rust 依赖、确认 runner 入口)
+- [ ] 1-5-2. 基础健康类检查迁移 (embedding_health / sync_freshness / federation_health)
+- [ ] 1-5-3. 配置模式类检查迁移 (search_mode / resolver_health / schema_packs)
+- [x] 1-5-4. 内容一致性类检查迁移 (skill_conformance / frontmatter_integrity / eval_drift)
+- [x] 1-5-5. 评分类检查迁移 (brain_score / takes_weight_grid)
+- [ ] 1-5-6. doctor 收尾 (删 TS doctor + 缩 typecheck 基线 + 锚点常量清空)
 <!-- ⚠️ ROADMAP_SECTION_END -->

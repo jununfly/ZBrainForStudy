@@ -212,12 +212,12 @@
     "1-5-5": {
       "id": "1-5-5",
       "label": "评分类检查迁移 (brain_score / takes_weight_grid)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-5",
       "children": [],
       "decisions": [],
-      "notes": "takes_weight_grid 已迁（2026-07-15，refined 顺序第二端口）：Rust zbrain_core::takes_fence::check_takes_weight_grid 用 list_takes 公共 API 翻页扫描全表(默认 limit 100,分页 PAGE=10000)、is_off_grid(weight) 判定 0.05 网格(容差 1e-3,对应 migration v48)+ 2 e2e 测试(空表→Ok'No takes yet';比例 0.0196→Warn / 0.1667→Fail) → 接线 doctor runner(在 engine 已连接块内,因需 DB;reranker_health/eval_drift 是 engine-free 在 disconnect 后)替换 NotImplemented → 从 UNMIGRATED 移除 + 加 takes_weight_grid_is_no_longer_unmigrated 守卫测试 → typecheck 不变(takes-fence.ts 是活代码,doctor.ts 已删,无死代码可删)。刻意不用 engine.execute_raw(引擎 trait 故意不放逃生舱,engine.rs:1896)。brain_score 待迁(autopilot/brain_score.rs 已存在)。"
+      "notes": "takes_weight_grid 已迁（2026-07-15，refined 顺序第二端口，见上）。brain_score 已迁（2026-07-15，收尾端口）：Rust zbrain_core::autopilot::brain_score::brain_score_doctor_check(health) 纯函数——3-tier 阈值(>=70 ok/>=50 warn/else fail)+ 5 组件分解 message(embed/35 links/25 timeline/15 orphans/15 dead-links/10,仅 <100 时展开,满分保持单行)。合并了 TS 原'简单 checkBrainScore' + 'Bug11 分解'两套重复 push 同一 name 的 latent bug 为单一权威检查。接线 doctor runner：在 engine 已连接块内调 engine.get_health().await,Err→warn'Could not compute'。锚点 8→7,加 brain_score_is_no_longer_unmigrated 守卫(brain_score.rs 内 4 单测覆盖三档+满分)。UNMIGRATED 常量现余 7 项(embedding_health/sync_freshness/search_mode/federation_health/schema_packs/resolver_health/frontmatter_integrity),锚点测试带宽改 7..=12。"
     },
     "1-5-6": {
       "id": "1-5-6",

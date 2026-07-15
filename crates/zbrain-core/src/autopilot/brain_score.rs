@@ -64,6 +64,48 @@ impl BrainHealth {
     }
 }
 
+/// Doctor-report severity for the `brain_score` composite check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrainScoreDoctorStatus {
+    Ok,
+    Warn,
+    Fail,
+}
+
+/// Build the `brain_score` doctor check payload from a health snapshot.
+///
+/// Pure: engine I/O (calling `BrainEngine::get_health`) lives in the caller.
+/// Mirrors the TS doctor `checkBrainScore` (src/commands/doctor.ts): a 3-tier
+/// threshold (>=70 ok, >=50 warn, else fail) that surfaces which component
+/// contributed the deficit — the per-component breakdown the TS "Bug 11"
+/// enhancement added, shown only when the score is < 100 so a perfect brain
+/// stays on one line. The TS source pushed the simple check and the breakdown
+/// as two separate blocks (a latent duplicate-name bug); this folds both into
+/// a single authoritative check.
+pub fn brain_score_doctor_check(health: &BrainHealth) -> (BrainScoreDoctorStatus, String) {
+    let score = health.brain_score;
+    let status = if score >= 70 {
+        BrainScoreDoctorStatus::Ok
+    } else if score >= 50 {
+        BrainScoreDoctorStatus::Warn
+    } else {
+        BrainScoreDoctorStatus::Fail
+    };
+    let message = if score < 100 {
+        format!(
+            "Brain score {score}/100 (embed {}/35, links {}/25, timeline {}/15, orphans {}/15, dead-links {}/10)",
+            health.embed_coverage_score,
+            health.link_density_score,
+            health.timeline_coverage_score,
+            health.no_orphans_score,
+            health.no_dead_links_score,
+        )
+    } else {
+        "Brain score 100/100".to_string()
+    };
+    (status, message)
+}
+
 // ── Pricing tables ─────────────────────────────────────────────────────
 
 /// USD per 1M tokens for an Anthropic chat model.
@@ -1264,6 +1306,82 @@ mod tests {
             assert_eq!(h.most_connected.len(), 1);
             assert_eq!(h.most_connected[0].slug, "alice");
             assert_eq!(h.most_connected[0].link_count, 1);
+        }
+
+        // ── doctor check representation ───────────────────────────────
+        fn sample_health(
+            embed: u32,
+            links: u32,
+            timeline: u32,
+            orphans: u32,
+            dead_links: u32,
+        ) -> BrainHealth {
+            let brain_score =
+                BrainHealth::compute_brain_score(embed, links, timeline, orphans, dead_links);
+            BrainHealth {
+                page_count: 0,
+                embed_coverage: 0.0,
+                stale_pages: 0,
+                orphan_pages: 0,
+                missing_embeddings: 0,
+                brain_score,
+                dead_links: 0,
+                link_coverage: 0.0,
+                timeline_coverage: 0.0,
+                most_connected: vec![],
+                embed_coverage_score: embed,
+                link_density_score: links,
+                timeline_coverage_score: timeline,
+                no_orphans_score: orphans,
+                no_dead_links_score: dead_links,
+            }
+        }
+
+        #[test]
+        fn doctor_brain_score_perfect_is_single_line() {
+            // All five components maxed → 100/100, one-line message.
+            let h = sample_health(35, 25, 15, 15, 10);
+            let (status, message) = brain_score_doctor_check(&h);
+            assert_eq!(status, BrainScoreDoctorStatus::Ok);
+            assert_eq!(message, "Brain score 100/100");
+        }
+
+        #[test]
+        fn doctor_brain_score_ok_tier_shows_breakdown() {
+            // 70-99 → ok, but still shows which component is short.
+            // embed 35 + links 25 + timeline 15 + orphans 15 + dead-links 0 = 90.
+            let h = sample_health(35, 25, 15, 15, 0);
+            let (status, message) = brain_score_doctor_check(&h);
+            assert_eq!(status, BrainScoreDoctorStatus::Ok);
+            assert_eq!(
+                message,
+                "Brain score 90/100 (embed 35/35, links 25/25, timeline 15/15, orphans 15/15, dead-links 0/10)"
+            );
+        }
+
+        #[test]
+        fn doctor_brain_score_warn_tier() {
+            // 50-69 → warn (e.g. missing the orphan and dead-link components).
+            // 35 + 25 + 15 + 0 + 0 = 75 → still ok; drop a bit more: 35+25+0+0+0=60.
+            let h = sample_health(35, 25, 0, 0, 0);
+            let (status, message) = brain_score_doctor_check(&h);
+            assert_eq!(status, BrainScoreDoctorStatus::Warn);
+            assert_eq!(
+                message,
+                "Brain score 60/100 (embed 35/35, links 25/25, timeline 0/15, orphans 0/15, dead-links 0/10)"
+            );
+        }
+
+        #[test]
+        fn doctor_brain_score_fail_tier() {
+            // < 50 → fail (a genuinely unhealthy brain). 35+0+0+0+0 = 35.
+            let h = sample_health(35, 0, 0, 0, 0);
+            let (status, message) = brain_score_doctor_check(&h);
+            assert_eq!(status, BrainScoreDoctorStatus::Fail);
+            assert_eq!(
+                message,
+                "Brain score 35/100 (embed 35/35, links 0/25, timeline 0/15, orphans 0/15, dead-links 0/10)"
+            );
         }
     }
 }

@@ -92,7 +92,6 @@ const UNMIGRATED_TS_DOCTOR_CHECKS: &[(&str, &str)] = &[
     ("schema_packs", "schema pack presence / drift"),
     ("resolver_health", "resolver conformance, check-resolvable mirror"),
     ("frontmatter_integrity", "bounded frontmatter scan, partial-state surfacing"),
-    ("brain_score", "5-component brain-health composite"),
 ];
 
 /// Composite health score (0-100), mirroring TS `outputResults`:
@@ -2910,6 +2909,40 @@ async fn run_doctor_command(args: DoctorArgs, config_path: Option<&Path>) -> any
                     }
                 }
 
+                // 3c. Brain score composite (needs the live engine). Pull a
+                // health snapshot via `get_health()` and fold the 3-tier
+                // threshold + per-component breakdown into one check. Mirrors
+                // the TS `checkBrainScore` (src/commands/doctor.ts), which
+                // pushed a simple 3-tier check and a "Bug 11" breakdown as two
+                // blocks (a latent duplicate-name bug) — this produces the
+                // single authoritative check.
+                match engine.get_health().await {
+                    Ok(health) => {
+                        let (status, message) =
+                            zbrain_core::autopilot::brain_score::brain_score_doctor_check(&health);
+                        let check = match status {
+                            zbrain_core::autopilot::brain_score::BrainScoreDoctorStatus::Ok => {
+                                DoctorCheck::ok("brain_score", &message)
+                            }
+                            zbrain_core::autopilot::brain_score::BrainScoreDoctorStatus::Warn => {
+                                DoctorCheck::warn("brain_score", &message)
+                            }
+                            zbrain_core::autopilot::brain_score::BrainScoreDoctorStatus::Fail => {
+                                DoctorCheck::fail("brain_score", &message)
+                            }
+                        };
+                        checks.push(check);
+                    }
+                    Err(e) => {
+                        // get_health() returns Err only on unsupported engines;
+                        // surface as warn so a healthy brain never hard-fails.
+                        checks.push(DoctorCheck::warn(
+                            "brain_score",
+                            &format!("Could not compute: {e}"),
+                        ));
+                    }
+                }
+
                 engine.disconnect().await?;
             }
             Err(e) => {
@@ -5471,8 +5504,8 @@ mod tests {
         // subsystem is migrated, its entry moves out into a real check.
         let n = UNMIGRATED_TS_DOCTOR_CHECKS.len();
         assert!(
-            (8..=12).contains(&n),
-            "expected 8-12 subsystem-aggregated entries, got {n}"
+            (7..=12).contains(&n),
+            "expected 7-12 subsystem-aggregated entries, got {n}"
         );
     }
 
@@ -5536,6 +5569,23 @@ mod tests {
                 .iter()
                 .any(|(name, _)| *name == "skill_conformance"),
             "skill_conformance is a real check now; it must not appear in UNMIGRATED_TS_DOCTOR_CHECKS"
+        );
+    }
+
+    #[test]
+    fn brain_score_is_no_longer_unmigrated() {
+        // Migration hard-trace: `brain_score` moved OUT of the UNMIGRATED
+        // stand-in list into a real doctor check that pulls a health snapshot
+        // via `BrainEngine::get_health()` and folds the 3-tier threshold +
+        // per-component breakdown into one check (see
+        // zbrain_core::autopilot::brain_score::brain_score_doctor_check).
+        // Mirrors the TS `checkBrainScore` (src/commands/doctor.ts). Guards
+        // against a later agent re-adding it to the not-implemented band.
+        assert!(
+            !UNMIGRATED_TS_DOCTOR_CHECKS
+                .iter()
+                .any(|(name, _)| *name == "brain_score"),
+            "brain_score is a real check now; it must not appear in UNMIGRATED_TS_DOCTOR_CHECKS"
         );
     }
 
