@@ -41,11 +41,11 @@ eval_drift 已迁（首端口，端到端模式验证完成）：Rust zbrain_cor
 ├── [ ][X+] 1-4. output 模块迁移 (src/core/output 9 文件)
 ├── [~][X+] 1-5. doctor 11 项健康检查迁移 (G5)
 │   ├── [x][X+] 1-5-1. doctor 探查 + tracer bullet (定位 11 检查 TS 实现与 Rust 依赖、确认 runner 入口)
-│   ├── [ ][Y+] 1-5-2. 基础健康类检查迁移 (embedding_health / sync_freshness / federation_health)
-│   ├── [ ][Y+] 1-5-3. 配置模式类检查迁移 (search_mode / resolver_health / schema_packs)
+│   ├── [!][Y+] 1-5-2. 基础健康类检查迁移 (embedding_health / sync_freshness / federation_health)
+│   ├── [!][Y+] 1-5-3. 配置模式类检查迁移 (search_mode / resolver_health / schema_packs)
 │   ├── [x][Y+] 1-5-4. 内容一致性类检查迁移 (skill_conformance / frontmatter_integrity / eval_drift)
 │   ├── [x][Y+] 1-5-5. 评分类检查迁移 (brain_score / takes_weight_grid)
-│   └── [ ][Y+] 1-5-6. doctor 收尾 (删 TS doctor + 缩 typecheck 基线 + 锚点常量清空)
+│   └── [!][Y+] 1-5-6. doctor 收尾 (删 TS doctor + 缩 typecheck 基线 + 锚点常量清空)
 ├── [ ][X+] 1-6. 孤儿命令迁移 (~20 命令：whoknows/brainstorm/dream/publish/models/providers/...)
 ├── [ ][X+] 1-7. search core 模块补齐 (C 类，src/core/search 23 文件)
 ├── [ ][X+] 1-8. facts core 模块补齐 (C 类，src/core/facts 13 文件)
@@ -67,12 +67,15 @@ eval_drift 已迁（首端口，端到端模式验证完成）：Rust zbrain_cor
 - Q: doctor 端口顺序 refinement?
   A: 先迁最低风险：eval_drift(纯死代码 FS/git,无活命令依赖)+takes_weight_grid(Rust takes_fence.rs 已存在)打头验证端到端模式；再迁活命令镜像类(resolver/skill_conformance/frontmatter/sync_freshness/federation/embedding/search_mode)；schema_packs 最后(被 G38 纠缠,须与 schema_pack 信任门同步)。跨聚类挑最低风险项先打,不严格按 1-5-2→1-5-5 顺序。
   > 用户未明确,agent 提议(基于 tracer bullet 结论)
+- Q: doctor 切片剩余 7 项全被未迁基建阻塞，是否继续硬啃？
+  A: 封顶：可移植子集(reranker_health+eval_drift+takes_weight_grid+skill_conformance+brain_score 共 5 项)已完成；剩余 7 项各自登记 KNOWN-GAP G39-G45 并标注缺的具体基建，不把 6 个基建项目藏进 doctor 检查。1-5 暂停于 blocked 子节点，待对应基建切片落地后由各自 G-gap 接手。
+  > 违反 Part11 铁律(每切片自带解缠、不吸收语义偏差)。
 
 **子节点:**
 - [x] 1-5-1. doctor 探查 + tracer bullet (定位 11 检查 TS 实现与 Rust 依赖、确认 runner 入口)
-- [ ] 1-5-2. 基础健康类检查迁移 (embedding_health / sync_freshness / federation_health)
-- [ ] 1-5-3. 配置模式类检查迁移 (search_mode / resolver_health / schema_packs)
+- [!] 1-5-2. 基础健康类检查迁移 (embedding_health / sync_freshness / federation_health)
+- [!] 1-5-3. 配置模式类检查迁移 (search_mode / resolver_health / schema_packs)
 - [x] 1-5-4. 内容一致性类检查迁移 (skill_conformance / frontmatter_integrity / eval_drift)
 - [x] 1-5-5. 评分类检查迁移 (brain_score / takes_weight_grid)
-- [ ] 1-5-6. doctor 收尾 (删 TS doctor + 缩 typecheck 基线 + 锚点常量清空)
+- [!] 1-5-6. doctor 收尾 (删 TS doctor + 缩 typecheck 基线 + 锚点常量清空)
 <!-- ⚠️ ROADMAP_SECTION_END -->
