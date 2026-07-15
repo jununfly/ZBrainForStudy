@@ -1,0 +1,84 @@
+{
+  "title": "Part9 Phase11 — package 入口 cutover + src/core 删除",
+  "description": "解除 package.json 对 TS src/core 的公共 API pin(main+20 exports+openclaw.extensions),这是解锁整个 src/core(1337 文件闭包)删除的唯一钥匙。前提已核实:零真实消费者(admin/src/tests 无 import,未发布 npm,openclaw 引用已悬空)。唯一 CI 防线 check-exports-count.sh(EXPECTED_COUNT=20)需同步处理,配套 public-exports.test.ts 已不存在。",
+  "version": 1,
+  "nodes": {
+    "1": {
+      "id": "1",
+      "label": "Part9 Phase11 — package 入口 cutover + src/core 删除",
+      "status": "in_progress",
+      "mode": "explore",
+      "parent": null,
+      "children": [
+        "1-1",
+        "1-2",
+        "1-3",
+        "1-4"
+      ],
+      "decisions": [
+        {
+          "q": "cutover 目标形态?",
+          "answer": "A — 彻底移除 JS 库身份,zbrain 只做 Rust CLI 分发包",
+          "note": "前提已核实零真实消费者(子代理 agent-78d088de):admin(name=gbrain-admin,不依赖 zbrain)/src/tests 均无实 import(仅 2 处 JSDoc 注释);未发布 npm(无 private/publishConfig/files,发布走 clawhub);openclaw.extensions 指向的 src/openclaw-context-engine.ts 已在 e643d86 删除=悬空;实际 openclaw.plugin.json 走 bin/zbrain-rs.js serve-mcp 不碰 TS。JS 库入口是迁移残留非产品需求,彻底移除是终局。"
+        },
+        {
+          "q": "删除范围边界/施工节奏?",
+          "answer": "分两刀:先 cutover(改配置零删除),再依赖闭包重算 D 分批删 src",
+          "note": "cutover 与大规模删除风险性质不同(改配置 vs 删代码),分刀各自验证易回滚,符合 PRD 逐 slice 纪律。第一刀只改 package.json+清 exports guard+清悬空引用,不删任何 src。之后以缩减后的 KEEP 种子(仅 KNOWN-GAPS spec + Phase10 判 K 的 eval + doctor 子系统)重算 D,分批 git rm + tsc 基线 diff 验证(复用 e643d86 手法)。"
+        }
+      ],
+      "notes": ""
+    },
+    "1-1": {
+      "id": "1-1",
+      "label": "package.json cutover(改 main/exports/scripts + 清 exports CI guard + 清悬空引用)",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1",
+      "children": [],
+      "decisions": [
+        {
+          "q": "1-1 精确动作 + typecheck 去留?",
+          "answer": "纯配置 cutover;typecheck 保留但降级为非 gate,最终 1-4 才删",
+          "note": "1-1 是配置改造,不被 TS typecheck 绑架。动作:(a) 删 package.json main + 整个 exports 块 + openclaw.extensions(悬空) + scripts.postinstall(悬空 postinstall.ts) + scripts.dev(指向将删的 src/cli.ts);(b) 删 scripts/check-exports-count.sh + 从 check:all 移除调用(唯一硬 guard,配套 public-exports.test.ts 已不存在);(c) typecheck 脚本保留但不进 CI gate,留作 1-3 删除期的基线 diff 工具,1-4 收尾时删;(d) 验证 cargo build 绿 + zbrain --help 冒烟,不看 tsc。"
+        }
+      ],
+      "notes": "cutover 前提: 零真实消费者已核实(agent-78d088de)。悬空引用清单: openclaw-context-engine.ts / postinstall.ts / minions/index.ts / transcription.ts / backoff.ts 已在 e643d86 删除但 package.json 仍引用。exports 20 条全部指向 src TS,无消费者。"
+    },
+    "1-2": {
+      "id": "1-2",
+      "label": "重算 KEEP 种子 + 依赖闭包 D(cutover 后新种子集)",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-3": {
+      "id": "1-3",
+      "label": "分批删 src/core 已迁 impl(tsc 基线 diff 验证,逐 slice)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-4": {
+      "id": "1-4",
+      "label": "final cutover 收尾(typecheck 脚本处置 + CHANGELOG + 残留 TS 决策)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    }
+  },
+  "metadata": {
+    "created": "2026-07-15 08:44:04",
+    "updated": "2026-07-15 08:49:52",
+    "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART9_PHASE11_PACKAGE_CUTOVER.md"
+  }
+}
