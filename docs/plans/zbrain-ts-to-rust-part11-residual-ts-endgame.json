@@ -1,0 +1,238 @@
+{
+  "title": "Part11 — 残留 TS 收尾 (综合容器)",
+  "description": "收容 TS->Rust 迁移所有残留工作：B类真待迁(skillpack/eval/calibration/output/doctor/孤儿命令) + C类部分覆盖(search/facts/think) + G38 schema-pack TS删除尾 + A类已迁TS删除。排除 D类(G36 有意保留)。按子系统切片组织。",
+  "version": 1,
+  "nodes": {
+    "1": {
+      "id": "1",
+      "label": "Part11 — 残留 TS 收尾 (综合容器)",
+      "status": "in_progress",
+      "mode": "explore",
+      "parent": null,
+      "children": [
+        "1-1",
+        "1-2",
+        "1-3",
+        "1-4",
+        "1-5",
+        "1-6",
+        "1-7",
+        "1-8",
+        "1-9",
+        "1-10",
+        "1-11"
+      ],
+      "decisions": [
+        {
+          "q": "Part11 边界与内部结构?",
+          "answer": "综合容器，按子系统切片。收容 B+C+G38尾+A类删除，排除 D类(G36 有意保留)。每个待迁子系统一个 top-level node，G38尾与 A类删除各单列。",
+          "note": "用户 2026-07-15 决策"
+        },
+        {
+          "q": "Part11 纠缠破局策略?",
+          "answer": "每切片自带解缠：沿用 schema_pack 模式（先迁 Rust 替代 → 消除对本子系统 TS 的 import → 再删 TS）。G38 尾(1-10)不独立硬关，随消费方切片(import/sync/whoknows/artifact/calibration/eval-schema-authoring 等)各自端口而自然消解。",
+          "note": "用户 2026-07-15 决策"
+        }
+      ],
+      "notes": ""
+    },
+    "1-1": {
+      "id": "1-1",
+      "label": "skillpack / skillify 迁移 (27+ 文件 Schema/Subagent 包)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-2": {
+      "id": "1-2",
+      "label": "eval 一族迁移 (~20 eval-* 命令 + src/eval + core/eval)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-3": {
+      "id": "1-3",
+      "label": "calibration 算法迁移 (10 文件，当前仅 DB 层)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-4": {
+      "id": "1-4",
+      "label": "output 模块迁移 (src/core/output 9 文件)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-5": {
+      "id": "1-5",
+      "label": "doctor 11 项健康检查迁移 (G5)",
+      "status": "in_progress",
+      "mode": "explore",
+      "parent": "1",
+      "children": [
+        "1-5-1",
+        "1-5-2",
+        "1-5-3",
+        "1-5-4",
+        "1-5-5",
+        "1-5-6"
+      ],
+      "decisions": [
+        {
+          "q": "1-5 doctor 内部拆法?",
+          "answer": "聚类拆 6 子节点：1-5-1 探查+tracer bullet(定位 11 检查 TS 实现与 Rust 依赖、确认 runner 入口) → 1-5-2 基础健康类(embedding/sync_freshness/federation) → 1-5-3 配置模式类(search_mode/resolver/schema_packs) → 1-5-4 内容一致性类(skill_conformance/frontmatter/eval_drift) → 1-5-5 评分类(brain_score/takes_weight_grid) → 1-5-6 收尾(删 TS doctor+缩 typecheck 基线+锚点清空)。每聚类内逐 check 迁完立即从 UNMIGRATED_TS_DOCTOR_CHECKS 锚点移除。",
+          "note": "用户 2026-07-15 决策"
+        },
+        {
+          "q": "doctor 检查逻辑落点?",
+          "answer": "镜像 reranker_health 模式：检查逻辑放 zbrain_core 对应领域模块（embedding→embedding 模块、config→config、DB/engine→engine），lib.rs doctor runner 只组装 DoctorCheck+计分。逻辑可单测可复用、与既有分层一致。",
+          "note": "用户 2026-07-15 决策"
+        },
+        {
+          "q": "doctor 端口顺序 refinement?",
+          "answer": "先迁最低风险：eval_drift(纯死代码 FS/git,无活命令依赖)+takes_weight_grid(Rust takes_fence.rs 已存在)打头验证端到端模式；再迁活命令镜像类(resolver/skill_conformance/frontmatter/sync_freshness/federation/embedding/search_mode)；schema_packs 最后(被 G38 纠缠,须与 schema_pack 信任门同步)。跨聚类挑最低风险项先打,不严格按 1-5-2→1-5-5 顺序。",
+          "note": "用户未明确,agent 提议(基于 tracer bullet 结论)"
+        }
+      ],
+      "notes": ""
+    },
+    "1-6": {
+      "id": "1-6",
+      "label": "孤儿命令迁移 (~20 命令：whoknows/brainstorm/dream/publish/models/providers/...)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-7": {
+      "id": "1-7",
+      "label": "search core 模块补齐 (C 类，src/core/search 23 文件)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-8": {
+      "id": "1-8",
+      "label": "facts core 模块补齐 (C 类，src/core/facts 13 文件)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-9": {
+      "id": "1-9",
+      "label": "think core 模块补齐 (C 类，src/core/think 7 文件)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-10": {
+      "id": "1-10",
+      "label": "G38 schema-pack TS 删除尾 (gate=operations.ts 移植)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [],
+      "notes": "G38 尾不独立硬关：随消费方切片(import/sync/whoknows/artifact/calibration/eval-schema-authoring 等)各自端口而消解。各消费方切片在其'消除本子系统 TS 活引用'步骤中一并移除对 schema-pack 的 import。全部消费方迁完后此节点标记 resolved。"
+    },
+    "1-11": {
+      "id": "1-11",
+      "label": "A 类已迁 TS 删除 (minions/ai/ingestion/cycle + 命令)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-5-1": {
+      "id": "1-5-1",
+      "label": "doctor 探查 + tracer bullet (定位 11 检查 TS 实现与 Rust 依赖、确认 runner 入口)",
+      "status": "completed",
+      "mode": "explore",
+      "parent": "1-5",
+      "children": [],
+      "decisions": [],
+      "notes": "Tracer bullet 映射(11 检查 → TS 实现 → 活/死 → Rust 落点):\n- embedding_health: postgres-engine.ts:getHealth(活,features/sources)+provider段(死) → embedding.rs+engine.rs\n- sync_freshness: postgres-engine.ts:getHealth(活,sources status)+source-health.ts → sources_ops.rs+engine.rs\n- search_mode: search/mode.ts+config.ts(活,search命令) → engine.rs/search\n- federation_health: source-health.ts(活,sources status,与sync_freshness共享) → sources_ops.rs\n- schema_packs: schema-pack/*+operations.ts(活,search选包;G38纠缠) → schema_pack/*(已存在)\n- resolver_health: check-resolvable.ts(活命令镜像) → 新 resolver 模块\n- skill_conformance: skillpack-check.ts(活命令镜像) → 新 skillpack 模块\n- frontmatter_integrity: lint.ts+frontmatter.ts(活命令镜像) → markdown.rs/lint\n- eval_drift: eval/drift-watch.ts(纯死代码,无importer) → 新 eval/drift 模块\n- brain_score: postgres-engine.ts:getHealth 5分量(活,features/autopilot) → autopilot/brain_score.rs(已存在)\n- takes_weight_grid: takes-fence.ts(活,takes命令;Rust takes_fence.rs已存在) → takes_fence.rs\n结论: 5项(resolver/skill_conformance/frontmatter/federation/sync_freshness)是活命令镜像,删旧doctor包裹不影响;最简单=eval_drift(死,纯FS/git)+takes_weight_grid(Rust已存在);唯一G38纠缠=schema_packs。"
+    },
+    "1-5-2": {
+      "id": "1-5-2",
+      "label": "基础健康类检查迁移 (embedding_health / sync_freshness / federation_health)",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-5",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-5-3": {
+      "id": "1-5-3",
+      "label": "配置模式类检查迁移 (search_mode / resolver_health / schema_packs)",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-5",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-5-4": {
+      "id": "1-5-4",
+      "label": "内容一致性类检查迁移 (skill_conformance / frontmatter_integrity / eval_drift)",
+      "status": "in_progress",
+      "mode": "exploit",
+      "parent": "1-5",
+      "children": [],
+      "decisions": [],
+      "notes": "eval_drift 已迁（首端口，端到端模式验证完成）：Rust zbrain_core::eval_drift 模块(matches_watch_pattern/files_drifted_since/watched_files_drifted/eval_drift_status + 3 单测) → 接线 lib.rs doctor runner 替换 NotImplemented → 从 UNMIGRATED_TS_DOCTOR_CHECKS 锚点移除 + 加 eval_drift_is_no_longer_unmigrated 守卫测试 → 删 TS drift-watch.ts + tests/unit/drift-watch.test.ts(死代码,无活 importer) → typecheck 绿(64 inherited,无新增)。**教训**：删 TS 模块须同时 grep tests/unit/ 的锚点测试(不止 src/)，否则留 TS2307 新错误。待 skill_conformance / frontmatter_integrity。"
+    },
+    "1-5-5": {
+      "id": "1-5-5",
+      "label": "评分类检查迁移 (brain_score / takes_weight_grid)",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-5",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-5-6": {
+      "id": "1-5-6",
+      "label": "doctor 收尾 (删 TS doctor + 缩 typecheck 基线 + 锚点常量清空)",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-5",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    }
+  },
+  "metadata": {
+    "created": "2026-07-15 18:52:44",
+    "updated": "2026-07-15 19:26:58",
+    "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
+  }
+}

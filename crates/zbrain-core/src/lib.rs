@@ -15,6 +15,7 @@ pub mod chunkers;
 pub mod cjk;
 pub mod embedding;
 pub mod embedding_context;
+pub mod eval_drift;
 pub mod facts_fence;
 pub mod import;
 pub mod scope;

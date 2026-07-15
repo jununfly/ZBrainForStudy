@@ -93,7 +93,6 @@ const UNMIGRATED_TS_DOCTOR_CHECKS: &[(&str, &str)] = &[
     ("resolver_health", "resolver conformance, check-resolvable mirror"),
     ("skill_conformance", "skillpack-check, RESOLVER.md conformance"),
     ("frontmatter_integrity", "bounded frontmatter scan, partial-state surfacing"),
-    ("eval_drift", "whoknows eval regression, calibration profile staleness"),
     ("brain_score", "5-component brain-health composite"),
     ("takes_weight_grid", "takes.weight 0.05 grid integrity"),
 ];
@@ -2926,6 +2925,24 @@ async fn run_doctor_command(args: DoctorArgs, config_path: Option<&Path>) -> any
         }
     }
 
+    // 5b. eval_drift: retrieval-path code changed since last eval.
+    // Engine-free: runs `git diff --name-only` against the curated
+    // RETRIEVAL_WATCH_PATTERNS allowlist. Best-effort (no git / no repo ⇒
+    // clean). Mirrors the TS `eval_drift` check (src/core/eval/drift-watch.ts):
+    // warn when any watched file drifted in the working tree since HEAD.
+    {
+        let repo_root = std::env::current_dir().unwrap_or_default();
+        let (status, message) = zbrain_core::eval_drift::eval_drift_status(&repo_root, None);
+        match status {
+            zbrain_core::eval_drift::EvalDriftStatus::Ok => {
+                checks.push(DoctorCheck::ok("eval_drift", &message));
+            }
+            zbrain_core::eval_drift::EvalDriftStatus::Warn => {
+                checks.push(DoctorCheck::warn("eval_drift", &message));
+            }
+        }
+    }
+
     // 6. Traceability: surface TS doctor checks not yet migrated to Rust (Q2).
     // These are `not-implemented` — visible but excluded from health_score /
     // status / exit code, so a later agent cannot mistake doctor for complete.
@@ -5416,6 +5433,21 @@ mod tests {
                 .iter()
                 .any(|(name, _)| *name == "reranker_health"),
             "reranker_health is a real check now; it must not appear in UNMIGRATED_TS_DOCTOR_CHECKS"
+        );
+    }
+
+    #[test]
+    fn eval_drift_is_no_longer_unmigrated() {
+        // Migration hard-trace (1-5-4, first ported check): `eval_drift` moved
+        // OUT of the UNMIGRATED stand-in list into a real doctor check (runs
+        // `git diff --name-only` against RETRIEVAL_WATCH_PATTERNS, fail-open).
+        // Guards against a later agent re-adding it to the not-implemented
+        // band and silently regressing the real check back to a placeholder.
+        assert!(
+            !UNMIGRATED_TS_DOCTOR_CHECKS
+                .iter()
+                .any(|(name, _)| *name == "eval_drift"),
+            "eval_drift is a real check now; it must not appear in UNMIGRATED_TS_DOCTOR_CHECKS"
         );
     }
 
