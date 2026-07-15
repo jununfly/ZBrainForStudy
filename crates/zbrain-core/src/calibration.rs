@@ -1143,6 +1143,9 @@ mod tests {
         // Only wiki/companies/people/ are kept as-is; other slug-like hints
         // (deals/) fall back to None, matching TS resolveDomainPrefix.
         assert_eq!(resolve_domain_prefix(Some("deals/2024")), None);
+        // Any trailing-slash value is kept as-is (the `ends_with('/')`
+        // branch), NOT only the whitelisted wiki/companies/people prefixes.
+        assert_eq!(resolve_domain_prefix(Some("deals/2024/")), Some("deals/2024/".to_string()));
         assert_eq!(resolve_domain_prefix(Some("companies")), None);
     }
 
@@ -1362,10 +1365,18 @@ mod tests {
             reasoning: None,
         };
         let entry = build_learning_entry(&e);
-        // The 300-char claim is truncated to 200 chars + ellipsis, so the
-        // original 300-'a' run must NOT survive into the insight.
-        assert!(!entry.insight.contains(&"a".repeat(250)));
-        assert!(entry.insight.contains('…'));
+        // TS buildLearningEntry: `claim.slice(0, 200) + '…'` — the 300-char
+        // claim is truncated to EXACTLY 200 chars followed by the ellipsis.
+        // Pin both bounds so a regression (over/under-truncating) fails.
+        let run_200 = format!("{}…", "a".repeat(200));
+        assert!(
+            entry.insight.contains(&run_200),
+            "claim should be truncated to exactly 200 'a's + ellipsis"
+        );
+        assert!(
+            !entry.insight.contains(&"a".repeat(201)),
+            "claim must not retain 201+ consecutive 'a's"
+        );
     }
 
     #[test]
