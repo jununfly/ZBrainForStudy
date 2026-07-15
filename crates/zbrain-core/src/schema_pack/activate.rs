@@ -115,32 +115,12 @@ pub fn reload_pack_cache(pack_name: Option<&str>) -> Vec<String> {
 mod tests {
     use super::*;
 
-    fn setup_temp_home() -> PathBuf {
-        let tmp = std::env::temp_dir().join(format!("zbrain-activate-test-{}", std::process::id()));
-        std::fs::create_dir_all(&tmp).unwrap();
-        let prev_home = std::env::var("HOME").ok();
-        let prev_profile = std::env::var("USERPROFILE").ok();
-        std::env::set_var("HOME", &tmp);
-        std::env::set_var("USERPROFILE", &tmp);
-        // Store prev values in a static for cleanup — simpler: just return tmp
-        tmp
-    }
-
-    fn restore_home(prev_home: Option<String>, prev_profile: Option<String>) {
-        if let Some(h) = prev_home {
-            std::env::set_var("HOME", h);
-        }
-        if let Some(p) = prev_profile {
-            std::env::set_var("USERPROFILE", p);
-        }
-    }
+    // Each test injects an isolated `~/.zbrain` via `ScopedTestHome` (thread-local,
+    // no global env mutation), so the suite runs fully in parallel.
 
     #[test]
     fn set_and_read_active_pack() {
-        let _guard = crate::schema_pack::lock_schema_fs();
-        let prev_home = std::env::var("HOME").ok();
-        let prev_profile = std::env::var("USERPROFILE").ok();
-        let tmp = setup_temp_home();
+        let _home = crate::paths::ScopedTestHome::new();
 
         set_active_pack("my-custom-pack").unwrap();
         let active = get_active_pack_from_config();
@@ -149,48 +129,30 @@ mod tests {
         // Verify file exists
         let config_path = home_config_path();
         assert!(config_path.exists());
-
-        let _ = std::fs::remove_dir_all(&tmp);
-        restore_home(prev_home, prev_profile);
     }
 
     #[test]
     fn clear_active_pack_works() {
-        let _guard = crate::schema_pack::lock_schema_fs();
-        let prev_home = std::env::var("HOME").ok();
-        let prev_profile = std::env::var("USERPROFILE").ok();
-        let tmp = setup_temp_home();
+        let _home = crate::paths::ScopedTestHome::new();
 
         set_active_pack("my-pack").unwrap();
         assert!(get_active_pack_from_config().is_some());
 
         clear_active_pack().unwrap();
         assert!(get_active_pack_from_config().is_none());
-
-        let _ = std::fs::remove_dir_all(&tmp);
-        restore_home(prev_home, prev_profile);
     }
 
     #[test]
     fn get_active_pack_when_no_config() {
-        let _guard = crate::schema_pack::lock_schema_fs();
-        let prev_home = std::env::var("HOME").ok();
-        let prev_profile = std::env::var("USERPROFILE").ok();
-        let tmp = setup_temp_home();
+        let _home = crate::paths::ScopedTestHome::new();
 
         // No config file exists
         assert!(get_active_pack_from_config().is_none());
-
-        let _ = std::fs::remove_dir_all(&tmp);
-        restore_home(prev_home, prev_profile);
     }
 
     #[test]
     fn set_active_pack_preserves_other_fields() {
-        let _guard = crate::schema_pack::lock_schema_fs();
-        let prev_home = std::env::var("HOME").ok();
-        let prev_profile = std::env::var("USERPROFILE").ok();
-        let tmp = setup_temp_home();
+        let _home = crate::paths::ScopedTestHome::new();
 
         // Write a config with an extra field
         let config_path = home_config_path();
@@ -209,20 +171,14 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(json["schema_pack"], "new-pack");
         assert_eq!(json["other_field"], "value");
-
-        let _ = std::fs::remove_dir_all(&tmp);
-        restore_home(prev_home, prev_profile);
     }
 
     #[test]
     fn reload_clears_locks() {
-        let _guard = crate::schema_pack::lock_schema_fs();
-        let prev_home = std::env::var("HOME").ok();
-        let prev_profile = std::env::var("USERPROFILE").ok();
-        let tmp = setup_temp_home();
+        let _home = crate::paths::ScopedTestHome::new();
 
         // Create a lock dir with some lock files
-        let lock_dir = tmp.join(".zbrain").join("schema-packs").join(".locks");
+        let lock_dir = _home.zbrain_dir().join("schema-packs").join(".locks");
         std::fs::create_dir_all(&lock_dir).unwrap();
         std::fs::write(lock_dir.join("my-pack.lock"), "{}").unwrap();
         std::fs::write(lock_dir.join("other-pack.lock"), "{}").unwrap();
@@ -237,22 +193,13 @@ mod tests {
         let cleared = reload_pack_cache(Some("my-pack"));
         assert_eq!(cleared.len(), 1);
         assert!(cleared[0].contains("my-pack.lock"));
-
-        let _ = std::fs::remove_dir_all(&tmp);
-        restore_home(prev_home, prev_profile);
     }
 
     #[test]
     fn reload_no_lock_dir_returns_empty() {
-        let _guard = crate::schema_pack::lock_schema_fs();
-        let prev_home = std::env::var("HOME").ok();
-        let prev_profile = std::env::var("USERPROFILE").ok();
-        let tmp = setup_temp_home();
+        let _home = crate::paths::ScopedTestHome::new();
 
         let cleared = reload_pack_cache(None);
         assert!(cleared.is_empty());
-
-        let _ = std::fs::remove_dir_all(&tmp);
-        restore_home(prev_home, prev_profile);
     }
 }

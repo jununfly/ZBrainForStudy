@@ -131,9 +131,60 @@ fn sha8(s: &str) -> String {
 
 /// Whether verbose (non-redacted) mode is enabled.
 fn is_verbose() -> bool {
+    #[cfg(test)]
+    {
+        if let Some(v) = test_verbose::current() {
+            return v;
+        }
+    }
     std::env::var("ZBRAIN_SCHEMA_AUDIT_VERBOSE")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
+}
+
+/// Per-thread override for the audit verbose flag (tests only).
+///
+/// Mirrors [`crate::paths::ScopedTestHome`]: instead of toggling the global
+/// `ZBRAIN_SCHEMA_AUDIT_VERBOSE` env var (which races across parallel tests),
+/// tests inject the flag on their own thread via [`ScopedAuditVerbose`].
+#[cfg(test)]
+pub(crate) mod test_verbose {
+    use std::cell::Cell;
+
+    thread_local! {
+        static OVERRIDE: Cell<Option<bool>> = const { Cell::new(None) };
+    }
+
+    pub(crate) fn current() -> Option<bool> {
+        OVERRIDE.with(Cell::get)
+    }
+
+    pub(super) fn set(v: bool) {
+        OVERRIDE.with(|c| c.set(Some(v)));
+    }
+
+    pub(super) fn clear() {
+        OVERRIDE.with(|c| c.set(None));
+    }
+}
+
+/// RAII guard injecting the audit verbose flag for the current thread.
+#[cfg(test)]
+pub(crate) struct ScopedAuditVerbose;
+
+#[cfg(test)]
+impl ScopedAuditVerbose {
+    pub(crate) fn new(verbose: bool) -> Self {
+        test_verbose::set(verbose);
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for ScopedAuditVerbose {
+    fn drop(&mut self) {
+        test_verbose::clear();
+    }
 }
 
 /// Redact a type name: sha8 unless verbose.
@@ -257,10 +308,13 @@ pub fn read_recent_mutations(days_back: Option<u32>) -> Vec<MutationAuditRecord>
     let days = days_back.unwrap_or(30);
     let cutoff = Utc::now() - chrono::Duration::days(days as i64);
 
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| ".".into());
-    let audit_dir = PathBuf::from(home).join(".zbrain").join("audit");
+    // Resolve through the single source of truth so reads match writes
+    // (`compute_mutate_audit_path` also uses `zbrain_home`). This honors
+    // `ZBRAIN_HOME` and the thread-local test override, and fixes a latent bug
+    // where reads bypassed `ZBRAIN_HOME` while writes respected it.
+    let audit_dir = crate::paths::zbrain_home()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("audit");
 
     let mut records = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&audit_dir) {
@@ -333,7 +387,6 @@ mod tests {
 
     #[test]
     fn sha8_produces_8_hex_chars() {
-        let _guard = crate::schema_pack::lock_schema_fs();
         let h = sha8("person");
         assert_eq!(h.len(), 8);
         assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
@@ -341,42 +394,29 @@ mod tests {
 
     #[test]
     fn sha8_is_deterministic() {
-        let _guard = crate::schema_pack::lock_schema_fs();
         assert_eq!(sha8("person"), sha8("person"));
         assert_ne!(sha8("person"), sha8("company"));
     }
 
     #[test]
     fn redact_type_returns_hash_when_not_verbose() {
-        let _guard = crate::schema_pack::lock_schema_fs();
-        // Ensure verbose is off (save and restore)
-        let prev = std::env::var("ZBRAIN_SCHEMA_AUDIT_VERBOSE");
-        std::env::remove_var("ZBRAIN_SCHEMA_AUDIT_VERBOSE");
-
+        let _verbose = ScopedAuditVerbose::new(false);
         let (h, redacted) = redact_type("person");
         assert!(redacted, "type should be redacted when not verbose");
         assert_eq!(h.len(), 8);
         assert_ne!(h, "person");
-
-        // Restore
-        if let Ok(v) = prev {
-            std::env::set_var("ZBRAIN_SCHEMA_AUDIT_VERBOSE", v);
-        }
     }
 
     #[test]
     fn redact_type_returns_plain_when_verbose() {
-        let _guard = crate::schema_pack::lock_schema_fs();
-        std::env::set_var("ZBRAIN_SCHEMA_AUDIT_VERBOSE", "1");
+        let _verbose = ScopedAuditVerbose::new(true);
         let (h, redacted) = redact_type("person");
         assert!(!redacted, "type should NOT be redacted when verbose");
         assert_eq!(h, "person");
-        std::env::remove_var("ZBRAIN_SCHEMA_AUDIT_VERBOSE");
     }
 
     #[test]
     fn redact_prefix_keeps_first_segment() {
-        let _guard = crate::schema_pack::lock_schema_fs();
         assert_eq!(redact_prefix("people/"), Some("people".to_string()));
         assert_eq!(redact_prefix("wiki/concepts/"), Some("wiki".to_string()));
         assert_eq!(redact_prefix("notes/"), Some("notes".to_string()));
@@ -384,14 +424,12 @@ mod tests {
 
     #[test]
     fn redact_prefix_empty_returns_none() {
-        let _guard = crate::schema_pack::lock_schema_fs();
         assert_eq!(redact_prefix(""), None);
         assert_eq!(redact_prefix("/"), None);
     }
 
     #[test]
     fn compute_audit_path_uses_iso_week() {
-        let _guard = crate::schema_pack::lock_schema_fs();
         // 2026-01-01 is Thursday → ISO week 1 of 2026
         let dt = chrono::DateTime::parse_from_rfc3339("2026-01-01T12:00:00Z")
             .unwrap()
@@ -403,7 +441,6 @@ mod tests {
 
     #[test]
     fn compute_audit_path_week_27() {
-        let _guard = crate::schema_pack::lock_schema_fs();
         // 2026-07-01 is Wednesday → ISO week 27 of 2026
         let dt = chrono::DateTime::parse_from_rfc3339("2026-07-01T12:00:00Z")
             .unwrap()
@@ -415,7 +452,7 @@ mod tests {
 
     #[test]
     fn build_record_success_has_no_reason() {
-        let _guard = crate::schema_pack::lock_schema_fs();
+        let _verbose = ScopedAuditVerbose::new(false);
         let opts = LogMutationOpts {
             op: MutationOp::AddType,
             pack: "my-pack".to_string(),
@@ -426,7 +463,6 @@ mod tests {
             new_sha8: Some("def67890".to_string()),
             batch_id: None,
         };
-        std::env::remove_var("ZBRAIN_SCHEMA_AUDIT_VERBOSE");
         let record = build_record(&opts, MutationOutcome::Success, None);
         assert_eq!(record.pack, "my-pack");
         assert_eq!(record.outcome, MutationOutcome::Success);
@@ -438,7 +474,6 @@ mod tests {
 
     #[test]
     fn build_record_failure_has_reason() {
-        let _guard = crate::schema_pack::lock_schema_fs();
         let opts = LogMutationOpts {
             op: MutationOp::RemoveType,
             pack: "my-pack".to_string(),
@@ -457,7 +492,6 @@ mod tests {
 
     #[test]
     fn build_record_no_type_name() {
-        let _guard = crate::schema_pack::lock_schema_fs();
         let opts = LogMutationOpts {
             op: MutationOp::AddLinkType,
             pack: "my-pack".to_string(),
@@ -476,7 +510,6 @@ mod tests {
 
     #[test]
     fn summarize_counts_by_op_and_outcome() {
-        let _guard = crate::schema_pack::lock_schema_fs();
         let records = vec![
             MutationAuditRecord {
                 ts: Utc::now().to_rfc3339(),
@@ -537,7 +570,6 @@ mod tests {
 
     #[test]
     fn summarize_empty_records() {
-        let _guard = crate::schema_pack::lock_schema_fs();
         let s = summarize_mutations(&[]);
         assert_eq!(s.total, 0);
         assert!(s.by_op.is_empty());
@@ -545,7 +577,6 @@ mod tests {
 
     #[test]
     fn mutation_op_as_str_roundtrip() {
-        let _guard = crate::schema_pack::lock_schema_fs();
         for op in [
             MutationOp::AddType,
             MutationOp::RemoveType,
@@ -570,15 +601,9 @@ mod tests {
 
     #[test]
     fn log_and_read_roundtrip_with_tempdir() {
-        let _guard = crate::schema_pack::lock_schema_fs();
-        // Use a temp HOME to isolate the test
-        let tmp = std::env::temp_dir().join(format!("zbrain-audit-test-{}", std::process::id()));
-        std::fs::create_dir_all(&tmp).unwrap();
-        let prev_home = std::env::var("HOME").ok();
-        let prev_profile = std::env::var("USERPROFILE").ok();
-        std::env::set_var("HOME", &tmp);
-        std::env::set_var("USERPROFILE", &tmp);
-        std::env::remove_var("ZBRAIN_SCHEMA_AUDIT_VERBOSE");
+        // Isolated home via thread-local injection (no global env mutation).
+        let _home = crate::paths::ScopedTestHome::new();
+        let _verbose = ScopedAuditVerbose::new(false);
 
         let opts = LogMutationOpts {
             op: MutationOp::AddType,
@@ -604,26 +629,11 @@ mod tests {
         assert_eq!(r.actor, "tests/unit");
         assert_eq!(r.prev_sha8.as_deref(), Some("aaaa1111"));
         assert_eq!(r.new_sha8.as_deref(), Some("bbbb2222"));
-
-        // Cleanup
-        let _ = std::fs::remove_dir_all(&tmp);
-        if let Some(h) = prev_home {
-            std::env::set_var("HOME", h);
-        }
-        if let Some(p) = prev_profile {
-            std::env::set_var("USERPROFILE", p);
-        }
     }
 
     #[test]
     fn log_failure_and_read() {
-        let _guard = crate::schema_pack::lock_schema_fs();
-        let tmp = std::env::temp_dir().join(format!("zbrain-audit-fail-{}", std::process::id()));
-        std::fs::create_dir_all(&tmp).unwrap();
-        let prev_home = std::env::var("HOME").ok();
-        let prev_profile = std::env::var("USERPROFILE").ok();
-        std::env::set_var("HOME", &tmp);
-        std::env::set_var("USERPROFILE", &tmp);
+        let _home = crate::paths::ScopedTestHome::new();
 
         let opts = LogMutationFailureOpts {
             base: LogMutationOpts {
@@ -647,26 +657,11 @@ mod tests {
             .collect();
         assert_eq!(failures.len(), 1);
         assert_eq!(failures[0].reason.as_deref(), Some("PACK_READONLY"));
-
-        // Cleanup
-        let _ = std::fs::remove_dir_all(&tmp);
-        if let Some(h) = prev_home {
-            std::env::set_var("HOME", h);
-        }
-        if let Some(p) = prev_profile {
-            std::env::set_var("USERPROFILE", p);
-        }
     }
 
     #[test]
     fn read_malformed_lines_are_skipped() {
-        let _guard = crate::schema_pack::lock_schema_fs();
-        let tmp = std::env::temp_dir().join(format!("zbrain-audit-malformed-{}", std::process::id()));
-        std::fs::create_dir_all(&tmp).unwrap();
-        let prev_home = std::env::var("HOME").ok();
-        let prev_profile = std::env::var("USERPROFILE").ok();
-        std::env::set_var("HOME", &tmp);
-        std::env::set_var("USERPROFILE", &tmp);
+        let _home = crate::paths::ScopedTestHome::new();
 
         // Write a file with mixed valid/invalid lines
         let path = compute_mutate_audit_path(Some(Utc::now()));
@@ -694,14 +689,5 @@ mod tests {
 
         let records = read_recent_mutations(Some(1));
         assert_eq!(records.len(), 2, "should skip malformed lines, keep valid ones");
-
-        // Cleanup
-        let _ = std::fs::remove_dir_all(&tmp);
-        if let Some(h) = prev_home {
-            std::env::set_var("HOME", h);
-        }
-        if let Some(p) = prev_profile {
-            std::env::set_var("USERPROFILE", p);
-        }
     }
 }

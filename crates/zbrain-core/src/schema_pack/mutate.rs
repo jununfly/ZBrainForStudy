@@ -799,12 +799,13 @@ mod tests {
     use std::io::Write;
 
     /// Create a temp pack file for testing.
+    ///
+    /// Resolves through `crate::paths::zbrain_home()` (the single source of
+    /// truth) so it lands in the caller's `ScopedTestHome`, exactly where the
+    /// production `locate_mutable_pack_file` will look for it.
     fn setup_test_pack(pack_name: &str, manifest: &SchemaPackManifest) -> PathBuf {
-        let home = std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .unwrap_or_else(|_| std::env::temp_dir().to_str().unwrap().to_string());
-        let dir = PathBuf::from(home)
-            .join(".zbrain")
+        let dir = crate::paths::zbrain_home()
+            .unwrap_or_else(|| PathBuf::from("."))
             .join("schema-packs")
             .join(pack_name);
         std::fs::create_dir_all(&dir).unwrap();
@@ -814,13 +815,11 @@ mod tests {
         path
     }
 
-    /// Cleanup a test pack.
+    /// Cleanup a test pack. (Redundant when a `ScopedTestHome` guard is in
+    /// scope — it removes the whole home on drop — but kept for clarity.)
     fn cleanup_test_pack(pack_name: &str) {
-        let home = std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .unwrap_or_else(|_| std::env::temp_dir().to_str().unwrap().to_string());
-        let dir = PathBuf::from(home)
-            .join(".zbrain")
+        let dir = crate::paths::zbrain_home()
+            .unwrap_or_else(|| PathBuf::from("."))
             .join("schema-packs")
             .join(pack_name);
         let _ = std::fs::remove_dir_all(&dir);
@@ -860,7 +859,7 @@ mod tests {
 
     #[test]
     fn bundled_pack_rejected() {
-        let _guard = crate::schema_pack::lock_schema_fs();
+        let _home = crate::paths::ScopedTestHome::new();
         let err = locate_mutable_pack_file("zbrain-base").unwrap_err();
         assert_eq!(err.code, MutationErrorCode::PackReadonly);
         assert!(err.message.contains("read-only"));
@@ -868,21 +867,21 @@ mod tests {
 
     #[test]
     fn recommended_pack_rejected() {
-        let _guard = crate::schema_pack::lock_schema_fs();
+        let _home = crate::paths::ScopedTestHome::new();
         let err = locate_mutable_pack_file("zbrain-recommended").unwrap_err();
         assert_eq!(err.code, MutationErrorCode::PackReadonly);
     }
 
     #[test]
     fn non_existent_pack_not_found() {
-        let _guard = crate::schema_pack::lock_schema_fs();
+        let _home = crate::paths::ScopedTestHome::new();
         let err = locate_mutable_pack_file("nonexistent-pack-xyz").unwrap_err();
         assert_eq!(err.code, MutationErrorCode::PackNotFound);
     }
 
     #[test]
     fn locate_finds_yaml_pack() {
-        let _guard = crate::schema_pack::lock_schema_fs();
+        let _home = crate::paths::ScopedTestHome::new();
         let name = "test-locate-yaml";
         setup_test_pack(name, &test_manifest());
         let (path, fmt) = locate_mutable_pack_file(name).unwrap();
@@ -893,7 +892,7 @@ mod tests {
 
     #[test]
     fn write_and_read_roundtrip() {
-        let _guard = crate::schema_pack::lock_schema_fs();
+        let _home = crate::paths::ScopedTestHome::new();
         let m = test_manifest();
         let tmp = std::env::temp_dir().join("zbrain-write-test.yaml");
         write_pack_manifest(&tmp, &m, PackFileFormat::Yaml).unwrap();
@@ -905,7 +904,7 @@ mod tests {
 
     #[test]
     fn check_no_references_clean() {
-        let _guard = crate::schema_pack::lock_schema_fs();
+        let _home = crate::paths::ScopedTestHome::new();
         let m = test_manifest();
         assert!(check_no_references(&m, "person").is_none());
         assert!(check_no_references(&m, "note").is_none());
@@ -913,7 +912,7 @@ mod tests {
 
     #[test]
     fn check_no_references_alias() {
-        let _guard = crate::schema_pack::lock_schema_fs();
+        let _home = crate::paths::ScopedTestHome::new();
         let mut m = test_manifest();
         // "note" type has alias "person"
         m.page_types[1].aliases.push("person".to_string());
@@ -924,7 +923,7 @@ mod tests {
 
     #[test]
     fn check_no_references_enrichable() {
-        let _guard = crate::schema_pack::lock_schema_fs();
+        let _home = crate::paths::ScopedTestHome::new();
         let mut m = test_manifest();
         m.enrichable_types
             .push(manifest::EnrichableType {
@@ -938,7 +937,7 @@ mod tests {
 
     #[test]
     fn add_type_succeeds() {
-        let _guard = crate::schema_pack::lock_schema_fs();
+        let _home = crate::paths::ScopedTestHome::new();
         let name = "test-add-type";
         setup_test_pack(name, &test_manifest());
         let result = add_type_to_pack(
@@ -967,7 +966,7 @@ mod tests {
 
     #[test]
     fn add_type_duplicate_fails() {
-        let _guard = crate::schema_pack::lock_schema_fs();
+        let _home = crate::paths::ScopedTestHome::new();
         let name = "test-add-dup";
         setup_test_pack(name, &test_manifest());
         let err = add_type_to_pack(
@@ -986,7 +985,7 @@ mod tests {
 
     #[test]
     fn remove_type_succeeds() {
-        let _guard = crate::schema_pack::lock_schema_fs();
+        let _home = crate::paths::ScopedTestHome::new();
         let name = "test-remove-type";
         setup_test_pack(name, &test_manifest());
         let result = remove_type_from_pack(name, "note", &MutateOpts::default());
@@ -1001,7 +1000,7 @@ mod tests {
 
     #[test]
     fn remove_type_not_found() {
-        let _guard = crate::schema_pack::lock_schema_fs();
+        let _home = crate::paths::ScopedTestHome::new();
         let name = "test-remove-missing";
         setup_test_pack(name, &test_manifest());
         let err = remove_type_from_pack(name, "nonexistent", &MutateOpts::default()).unwrap_err();
@@ -1011,7 +1010,7 @@ mod tests {
 
     #[test]
     fn remove_type_still_referenced() {
-        let _guard = crate::schema_pack::lock_schema_fs();
+        let _home = crate::paths::ScopedTestHome::new();
         let name = "test-remove-ref";
         let mut m = test_manifest();
         m.page_types[1].aliases.push("person".to_string());
@@ -1024,7 +1023,7 @@ mod tests {
 
     #[test]
     fn update_type_succeeds() {
-        let _guard = crate::schema_pack::lock_schema_fs();
+        let _home = crate::paths::ScopedTestHome::new();
         let name = "test-update-type";
         setup_test_pack(name, &test_manifest());
         let result = update_type_on_pack(
@@ -1051,7 +1050,7 @@ mod tests {
 
     #[test]
     fn add_alias_idempotent() {
-        let _guard = crate::schema_pack::lock_schema_fs();
+        let _home = crate::paths::ScopedTestHome::new();
         let name = "test-add-alias";
         setup_test_pack(name, &test_manifest());
         add_alias_to_type(name, "person", "individual", &MutateOpts::default()).unwrap();
@@ -1073,7 +1072,7 @@ mod tests {
 
     #[test]
     fn remove_alias_idempotent() {
-        let _guard = crate::schema_pack::lock_schema_fs();
+        let _home = crate::paths::ScopedTestHome::new();
         let name = "test-remove-alias";
         let mut m = test_manifest();
         m.page_types[0].aliases.push("individual".to_string());
@@ -1096,7 +1095,7 @@ mod tests {
 
     #[test]
     fn add_prefix_idempotent() {
-        let _guard = crate::schema_pack::lock_schema_fs();
+        let _home = crate::paths::ScopedTestHome::new();
         let name = "test-add-prefix";
         setup_test_pack(name, &test_manifest());
         add_prefix_to_type(name, "person", "people/", &MutateOpts::default()).unwrap();
@@ -1126,7 +1125,7 @@ mod tests {
 
     #[test]
     fn remove_prefix() {
-        let _guard = crate::schema_pack::lock_schema_fs();
+        let _home = crate::paths::ScopedTestHome::new();
         let name = "test-remove-prefix";
         setup_test_pack(name, &test_manifest());
         remove_prefix_from_type(name, "person", "people/", &MutateOpts::default()).unwrap();
@@ -1144,7 +1143,7 @@ mod tests {
 
     #[test]
     fn add_link_type_succeeds() {
-        let _guard = crate::schema_pack::lock_schema_fs();
+        let _home = crate::paths::ScopedTestHome::new();
         let name = "test-add-link";
         setup_test_pack(name, &test_manifest());
         let result = add_link_type_to_pack(
@@ -1166,7 +1165,7 @@ mod tests {
 
     #[test]
     fn add_link_type_duplicate_fails() {
-        let _guard = crate::schema_pack::lock_schema_fs();
+        let _home = crate::paths::ScopedTestHome::new();
         let name = "test-add-link-dup";
         setup_test_pack(name, &test_manifest());
         let err = add_link_type_to_pack(
@@ -1184,7 +1183,7 @@ mod tests {
 
     #[test]
     fn remove_link_type_succeeds() {
-        let _guard = crate::schema_pack::lock_schema_fs();
+        let _home = crate::paths::ScopedTestHome::new();
         let name = "test-remove-link";
         setup_test_pack(name, &test_manifest());
         let result = remove_link_type_from_pack(name, "mentions", &MutateOpts::default());
@@ -1198,7 +1197,7 @@ mod tests {
 
     #[test]
     fn set_extractable_delegates_to_update() {
-        let _guard = crate::schema_pack::lock_schema_fs();
+        let _home = crate::paths::ScopedTestHome::new();
         let name = "test-set-extractable";
         setup_test_pack(name, &test_manifest());
         set_extractable_on_type(name, "person", true, &MutateOpts::default()).unwrap();
@@ -1216,7 +1215,7 @@ mod tests {
 
     #[test]
     fn set_expert_routing_delegates_to_update() {
-        let _guard = crate::schema_pack::lock_schema_fs();
+        let _home = crate::paths::ScopedTestHome::new();
         let name = "test-set-expert";
         setup_test_pack(name, &test_manifest());
         set_expert_routing_on_type(name, "note", true, &MutateOpts::default()).unwrap();
@@ -1234,7 +1233,7 @@ mod tests {
 
     #[test]
     fn mutation_type_not_found_in_operations() {
-        let _guard = crate::schema_pack::lock_schema_fs();
+        let _home = crate::paths::ScopedTestHome::new();
         let name = "test-op-not-found";
         setup_test_pack(name, &test_manifest());
         let err = add_alias_to_type(name, "nonexistent", "x", &MutateOpts::default()).unwrap_err();

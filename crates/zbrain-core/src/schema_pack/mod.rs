@@ -30,37 +30,16 @@ pub mod redos_guard;
 pub mod discovery;
 
 // ---------------------------------------------------------------------------
-// Test-serialization guard for `~/.zbrain` file-I/O tests
+// Test isolation for `~/.zbrain` file-I/O tests
 // ---------------------------------------------------------------------------
 //
-// Several `schema_pack` sub-module tests (`mutate`, `activate`, `mutate_audit`)
-// mutate the process-global `HOME`/`USERPROFILE` env vars and read/write the
-// shared `~/.zbrain` directory. `cargo test` runs tests in the same binary in
-// parallel by default, so these tests race on the global env + filesystem and
-// fail nondeterministically (e.g. `PackNotFound`, reading stray audit records).
+// `schema_pack` sub-module tests (`mutate`, `activate`, `mutate_audit`) read and
+// write the `~/.zbrain` directory. They used to isolate it by mutating the
+// process-global `HOME`/`USERPROFILE` env vars, which forced the whole suite to
+// run serially (behind a process-wide mutex) to avoid races.
 //
-// This mirrors the existing process-wide `SCHEMA_INIT_LOCK` pattern used by
-// `LibsqlEngine::init_schema`: a single static mutex that every file-I/O test
-// acquires for its whole duration, so at most one schema-pack test touches
-// `~/.zbrain` at a time. Pure (in-memory) tests may also acquire it harmlessly.
-//
-// See also `crates/zbrain-core/src/paths.rs` note: the schema-pack suite is
-// run single-threaded by design; this guard enforces that under any test
-// configuration.
-
-#[cfg(test)]
-pub(crate) static SCHEMA_FS_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
-
-/// Acquire the schema-pack filesystem serialization guard.
-///
-/// Returns a guard that releases the lock when dropped (end of the calling
-/// test). Poison-tolerant: a panicking test leaves the mutex poisoned, but the
-/// next acquirer recovers via `into_inner` rather than deadlocking the suite.
-#[cfg(test)]
-pub(crate) fn lock_schema_fs() -> std::sync::MutexGuard<'static, ()> {
-    match SCHEMA_FS_LOCK.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    }
-}
+// That serialization is gone: each test now injects a private `~/.zbrain` root
+// on its own thread via `crate::paths::ScopedTestHome`, and audit verbosity via
+// `mutate_audit::ScopedAuditVerbose`. Because cargo runs each test on its own
+// thread, the thread-local overrides give every test a fully isolated home with
+// zero cross-test interference — the suite runs in parallel with no lock.
