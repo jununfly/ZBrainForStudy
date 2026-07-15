@@ -9,18 +9,31 @@
       "status": "pending",
       "mode": "explore",
       "parent": null,
-      "children": ["1-1", "1-2", "1-3", "1-4", "1-5", "1-6"],
+      "children": [
+        "1-1",
+        "1-2",
+        "1-3",
+        "1-4",
+        "1-5",
+        "1-6"
+      ],
       "decisions": [],
       "notes": "G4 resolution. TS schema-pack = 26 source files (~4929 lines) in src/core/schema-pack/ + ~20 test files. Command layer (schema.ts, 1166 lines) already deleted in Phase11. Rust has NO schema_pack module; PageType in engine.rs is just String. 32 verbs across 4 groups: Inspection(9) + Activation(3) + Authoring(15) + Discovery/repair(5). Migration must build Rust core first, wire CLI verbs, then delete TS (gated on operations.ts consumer status)."
     },
     "1-1": {
       "id": "1-1",
       "label": "数据模型基础 (manifest-v1 + loader + primitives + closure)",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "implementation-complete",
+          "answer": "4 modules: manifest(12 tests)+primitives(6 tests)+closure(10 tests)+loader(9 tests)=37 total. DfsColor moved to module level for dfs_detect scope. Rc<Cell<bool>> for 'static callback in depth_cap test. serde_yaml replaces TS hand-rolled mini-YAML parser.",
+          "note": ""
+        }
+      ],
       "notes": "Port the schema-pack data model to Rust crates/zbrain-core/src/schema_pack/:\n- manifest-v1.ts (295 lines) -> SchemaPackManifest struct with serde validation (page_types, link_types, frontmatter_links, takes_kinds, enrichable_types, filing_rules, phases, calibration_domains). Pack identity = name@version+sha8.\n- primitives.ts (90 lines) -> PackPrimitive enum (entity|media|temporal|annotation|concept) + getPrimitiveDefaults.\n- loader.ts (268 lines) -> YAML/JSON file sniffing + hand-written YAML mini-parser -> manifest validation.\n- closure.ts (180 lines) -> AliasGraph BFS closure (depth cap 4, symmetric per declaration, cycle detection).\nKey: PACK_PRIMITIVES closed enum, zod schema -> serde derive + custom validation. SCHEMA_PACK_API_VERSION constant."
     },
     "1-2": {
@@ -76,8 +89,8 @@
   },
   "metadata": {
     "created": "2026-07-15 11:48:46",
-    "updated": "2026-07-15 11:48:46",
-    "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART10_PHASE12_SCHEMA_PACK.md"
+    "updated": "2026-07-15 13:00:20",
+    "md_file": "ZBRAIN_TS_TO_RUST_PART10_PHASE12_SCHEMA_PACK.md"
   },
-  "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART10_PHASE12_SCHEMA_PACK.md"
+  "md_file": "ZBRAIN_TS_TO_RUST_PART10_PHASE12_SCHEMA_PACK.md"
 }
