@@ -59,7 +59,7 @@
     "1-3": {
       "id": "1-3",
       "label": "calibration 算法迁移 (10 文件，当前仅 DB 层)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [
@@ -245,17 +245,17 @@
     "1-3-1": {
       "id": "1-3-1",
       "label": "calibration 纯函数 port (Phase 1: 零依赖纯函数)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-3",
       "children": [],
       "decisions": [],
-      "notes": "Phase 1 第一刀完成(2026-07-15)：templates.ts(5 builder + VOICE_GATE_MODES const 模式契约) + recall-footer.ts(build_recall_calibration_footer) 已迁 zbrain_core::calibration，16 单测全绿。footer 用独立 RecallFooterProfile 输入结构(只取 total_resolved/brier/pattern_statements 三字段)，不碰共享 DB 类型 CalibrationProfileRow(缺 total_resolved)。剩余纯函数待迁：voice-gate.parseJudgeOutput(+DEFAULT_RUBRICS) / take-forecast.resolveDomainPrefix+computeForecast / cross-brain.canReadMountsForCtx+attributionSuffix / nudge.takeDomainHint+evaluateNudgeRule / gstack.buildLearningEntry+defaultGstackWriter / think-ab.formatAbReport。Phase 2 engine/LLM 支撑(async 读引擎 + LLM 调用：gateVoice/runAbTrial/forecastForTake/batchForecast/queryAcrossBrains/aggregateDomainScorecards/nudge 的 checkCooldown 等/writeIncorrectResolution/undoWave)留 G-gap，不藏基建进纯函数层。"
+      "notes": "Port全部6文件纯函数: voice-gate(parseJudgeOutput+rubrics) / take-forecast(resolveDomainPrefix+computeForecast) / cross-brain(canReadMountsForCtx+attributionSuffix) / nudge(takeDomainHint+evaluateNudgeRule) / gstack(buildLearningEntry+default_gstack_writer) / think-ab(formatAbReport).50 calibration tests全绿。default_gstack_writer为I/O边界，Phase2引擎/LLM支撑另立gap。"
     }
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-15 20:58:05",
+    "updated": "2026-07-15 21:34:13",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
