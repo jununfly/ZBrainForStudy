@@ -94,7 +94,6 @@ const UNMIGRATED_TS_DOCTOR_CHECKS: &[(&str, &str)] = &[
     ("skill_conformance", "skillpack-check, RESOLVER.md conformance"),
     ("frontmatter_integrity", "bounded frontmatter scan, partial-state surfacing"),
     ("brain_score", "5-component brain-health composite"),
-    ("takes_weight_grid", "takes.weight 0.05 grid integrity"),
 ];
 
 /// Composite health score (0-100), mirroring TS `outputResults`:
@@ -2870,6 +2869,28 @@ async fn run_doctor_command(args: DoctorArgs, config_path: Option<&Path>) -> any
                     }
                 }
 
+                // 3b. Takes weight-grid integrity (needs the live engine).
+                // Engine-free helpers (reranker_health / eval_drift) run below
+                // after disconnect; this one must stay inside the connected
+                // scope. Mirrors the TS `takesWeightGridCheck` (src/commands/
+                // doctor.ts): pages through all takes and flags off-0.05-grid
+                // weights. Uses the public `list_takes` API — no raw SQL.
+                {
+                    let (status, message) =
+                        zbrain_core::takes_fence::check_takes_weight_grid(&engine).await;
+                    match status {
+                        zbrain_core::takes_fence::TakesWeightGridStatus::Ok => {
+                            checks.push(DoctorCheck::ok("takes_weight_grid", &message));
+                        }
+                        zbrain_core::takes_fence::TakesWeightGridStatus::Warn => {
+                            checks.push(DoctorCheck::warn("takes_weight_grid", &message));
+                        }
+                        zbrain_core::takes_fence::TakesWeightGridStatus::Fail => {
+                            checks.push(DoctorCheck::fail("takes_weight_grid", &message));
+                        }
+                    }
+                }
+
                 engine.disconnect().await?;
             }
             Err(e) => {
@@ -5448,6 +5469,21 @@ mod tests {
                 .iter()
                 .any(|(name, _)| *name == "eval_drift"),
             "eval_drift is a real check now; it must not appear in UNMIGRATED_TS_DOCTOR_CHECKS"
+        );
+    }
+
+    #[test]
+    fn takes_weight_grid_is_no_longer_unmigrated() {
+        // Migration hard-trace (1-5-4, second ported check): `takes_weight_grid`
+        // moved OUT of the UNMIGRATED stand-in list into a real doctor check
+        // (pages all takes via `list_takes`, flags off-0.05-grid weights).
+        // Mirrors the TS `takesWeightGridCheck` (src/commands/doctor.ts). Guards
+        // against a later agent re-adding it to the not-implemented band.
+        assert!(
+            !UNMIGRATED_TS_DOCTOR_CHECKS
+                .iter()
+                .any(|(name, _)| *name == "takes_weight_grid"),
+            "takes_weight_grid is a real check now; it must not appear in UNMIGRATED_TS_DOCTOR_CHECKS"
         );
     }
 

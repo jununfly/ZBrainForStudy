@@ -23,6 +23,8 @@
 //! `strip_strikethrough`, `escape_fence_cell`) are defined here. When
 //! `facts-fence` lands in Phase 7B, extract them into a `fence_shared` module.
 
+use crate::engine::BrainEngine;
+use crate::types::TakesListOpts;
 use regex::Regex;
 use std::collections::HashSet;
 use std::sync::LazyLock;
@@ -239,6 +241,107 @@ pub fn normalize_weight_for_storage(raw: Option<f64>) -> WeightResult {
         weight: (w * 20.0).round() / 20.0,
         clamped,
     }
+}
+
+// ── Doctor: takes.weight 0.05-grid integrity ────────────────────────────────
+
+/// Status for [`check_takes_weight_grid`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TakesWeightGridStatus {
+    Ok,
+    Warn,
+    Fail,
+}
+
+/// True when `weight` is off the 0.05 grid beyond the migration-v48 tolerance
+/// (1e-3). The 0.05 grid spacing is 5e-2; float32 storage noise is ~1e-7, so
+/// anything beyond 1e-3 is a genuine off-grid value, not a rounding artifact.
+/// Non-finite weights count as off-grid.
+///
+/// Mirrors the SQL predicate in TS `takesWeightGridCheck`
+/// (`src/commands/doctor.ts`): `abs(weight - ROUND(weight * 20) / 20) > 0.001`.
+pub fn is_off_grid(weight: f64) -> bool {
+    if !weight.is_finite() {
+        return true;
+    }
+    let on_grid = (weight * 20.0).round() / 20.0;
+    (weight - on_grid).abs() > 1e-3
+}
+
+/// Doctor check: takes.weight 0.05-grid integrity.
+///
+/// Faithful port of TS `takesWeightGridCheck` (`src/commands/doctor.ts`, deleted
+/// in the TS→Rust cutover). Uses the public `list_takes` API rather than a raw
+/// SQL probe — the `BrainEngine` trait deliberately omits an `execute_raw`
+/// escape hatch (see `engine.rs`). `list_takes` defaults to a 100-row limit, so
+/// this pages through the whole table to compute the ratio over all takes.
+///
+/// Classification mirrors TS:
+///   - 0 takes total         → Ok("No takes yet")
+///   - off_grid/total > 0.10 → Fail
+///   - off_grid/total > 0.01 → Warn
+///   - else                  → Ok
+pub async fn check_takes_weight_grid(engine: &dyn BrainEngine) -> (TakesWeightGridStatus, String) {
+    const PAGE: u32 = 10_000;
+    let mut total: u64 = 0;
+    let mut off_grid: u64 = 0;
+    let mut offset: u32 = 0;
+    loop {
+        let opts = TakesListOpts {
+            limit: Some(PAGE),
+            offset: Some(offset),
+            ..Default::default()
+        };
+        let takes = match engine.list_takes(&opts).await {
+            Ok(t) => t,
+            Err(e) => {
+                return (
+                    TakesWeightGridStatus::Warn,
+                    format!("Could not check takes weight grid: {e}"),
+                );
+            }
+        };
+        let n = takes.len() as u64;
+        for t in &takes {
+            if is_off_grid(t.weight) {
+                off_grid += 1;
+            }
+        }
+        total += n;
+        if n < PAGE as u64 {
+            break;
+        }
+        offset += PAGE;
+    }
+
+    if total == 0 {
+        return (TakesWeightGridStatus::Ok, "No takes yet".to_string());
+    }
+    let ratio = off_grid as f64 / total as f64;
+    if ratio > 0.10 {
+        return (
+            TakesWeightGridStatus::Fail,
+            format!(
+                "{off_grid}/{total} takes off the 0.05 grid ({:.1}%). Fix: zbrain apply-migrations --yes",
+                ratio * 100.0
+            ),
+        );
+    }
+    if ratio > 0.01 {
+        return (
+            TakesWeightGridStatus::Warn,
+            format!(
+                "{off_grid}/{total} takes off the 0.05 grid ({:.1}%). Fix: zbrain apply-migrations --yes",
+                ratio * 100.0
+            ),
+        );
+    }
+    let msg = if off_grid == 0 {
+        format!("{total} take(s) on grid")
+    } else {
+        format!("{total} take(s) on grid ({off_grid} within tolerance)")
+    };
+    (TakesWeightGridStatus::Ok, msg)
 }
 
 // ── Since/Until parser ──────────────────────────────────────────────────────
@@ -813,6 +916,111 @@ mod tests {
         let r = normalize_weight_for_storage(Some(f64::NAN));
         assert_eq!(r.weight, 0.5);
         assert!(r.clamped);
+    }
+
+    // ── takes_weight_grid doctor check ──────────────────────────────────────
+
+    #[test]
+    fn is_off_grid_on_grid_values() {
+        // Exact 0.05-grid points stay on-grid.
+        assert!(!is_off_grid(0.0));
+        assert!(!is_off_grid(1.0));
+        assert!(!is_off_grid(0.05));
+        assert!(!is_off_grid(0.10));
+        assert!(!is_off_grid(0.15));
+        assert!(!is_off_grid(0.75));
+        assert!(!is_off_grid(0.5));
+        // Float32 storage noise stays within the 1e-3 tolerance of a grid point.
+        assert!(!is_off_grid(0.5001)); // 0.0001 from 0.50
+        assert!(!is_off_grid(0.0505)); // 0.0005 from 0.05
+    }
+
+    #[test]
+    fn is_off_grid_detects_drift() {
+        // 0.07 is 0.02 from 0.05 (not a grid multiple) -> off-grid.
+        assert!(is_off_grid(0.07));
+        assert!(is_off_grid(0.073));
+        assert!(is_off_grid(0.52)); // 0.02 from 0.50
+        assert!(is_off_grid(0.123)); // 0.023 from 0.10
+        assert!(is_off_grid(0.54)); // 0.01 from 0.55, still > 1e-3 tolerance
+    }
+
+    #[test]
+    fn is_off_grid_non_finite() {
+        assert!(is_off_grid(f64::NAN));
+        assert!(is_off_grid(f64::INFINITY));
+        assert!(is_off_grid(f64::NEG_INFINITY));
+    }
+
+    // ── check_takes_weight_grid e2e ──────────────────────────────────────────
+
+    fn on_grid_take() -> crate::types::TakeInput {
+        crate::types::TakeInput {
+            page_id: 1,
+            row_num: Some(1),
+            claim: "c".into(),
+            kind: "fact".into(),
+            holder: "world".into(),
+            weight: 0.5,
+            since_date: None,
+            until_date: None,
+            source: None,
+            superseded_by: None,
+            active: Some(true),
+        }
+    }
+
+    fn off_grid_take(weight: f64) -> crate::types::TakeInput {
+        crate::types::TakeInput {
+            page_id: 1,
+            row_num: Some(1),
+            claim: "c".into(),
+            kind: "fact".into(),
+            holder: "world".into(),
+            weight,
+            since_date: None,
+            until_date: None,
+            source: None,
+            superseded_by: None,
+            active: Some(true),
+        }
+    }
+
+    #[tokio::test]
+    async fn check_takes_weight_grid_empty_is_ok() {
+        use crate::engine::BrainEngine;
+        let engine = crate::InMemoryEngine::default();
+        let (status, msg) = check_takes_weight_grid(&engine).await;
+        assert_eq!(status, TakesWeightGridStatus::Ok);
+        assert_eq!(msg, "No takes yet");
+    }
+
+    #[tokio::test]
+    async fn check_takes_weight_grid_classifies_by_ratio() {
+        use crate::engine::BrainEngine;
+        let engine = crate::InMemoryEngine::default();
+
+        // 5 on-grid takes -> Ok("... on grid").
+        for _ in 0..5 {
+            engine.add_takes_batch(1, &[on_grid_take()]).await.unwrap();
+        }
+        let (status, msg) = check_takes_weight_grid(&engine).await;
+        assert_eq!(status, TakesWeightGridStatus::Ok, "msg={msg}");
+        assert!(msg.contains("on grid"), "msg={msg}");
+
+        // +45 on-grid + 1 off-grid (0.073) = 51 total, 1 off (ratio 0.0196) -> Warn.
+        let batch: Vec<_> = (0..45).map(|_| on_grid_take()).collect();
+        engine.add_takes_batch(1, &batch).await.unwrap();
+        engine.add_takes_batch(1, &[off_grid_take(0.073)]).await.unwrap();
+        let (status, msg) = check_takes_weight_grid(&engine).await;
+        assert_eq!(status, TakesWeightGridStatus::Warn, "msg={msg}");
+
+        // +9 more off-grid (0.52) = 60 total, 10 off (ratio 0.1667) -> Fail.
+        for _ in 0..9 {
+            engine.add_takes_batch(1, &[off_grid_take(0.52)]).await.unwrap();
+        }
+        let (status, msg) = check_takes_weight_grid(&engine).await;
+        assert_eq!(status, TakesWeightGridStatus::Fail, "msg={msg}");
     }
 
     // ── Holder grammar ─────────────────────────────────────────────────────

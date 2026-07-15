@@ -212,12 +212,12 @@
     "1-5-5": {
       "id": "1-5-5",
       "label": "评分类检查迁移 (brain_score / takes_weight_grid)",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "exploit",
       "parent": "1-5",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "takes_weight_grid 已迁（2026-07-15，refined 顺序第二端口）：Rust zbrain_core::takes_fence::check_takes_weight_grid 用 list_takes 公共 API 翻页扫描全表(默认 limit 100,分页 PAGE=10000)、is_off_grid(weight) 判定 0.05 网格(容差 1e-3,对应 migration v48)+ 2 e2e 测试(空表→Ok'No takes yet';比例 0.0196→Warn / 0.1667→Fail) → 接线 doctor runner(在 engine 已连接块内,因需 DB;reranker_health/eval_drift 是 engine-free 在 disconnect 后)替换 NotImplemented → 从 UNMIGRATED 移除 + 加 takes_weight_grid_is_no_longer_unmigrated 守卫测试 → typecheck 不变(takes-fence.ts 是活代码,doctor.ts 已删,无死代码可删)。刻意不用 engine.execute_raw(引擎 trait 故意不放逃生舱,engine.rs:1896)。brain_score 待迁(autopilot/brain_score.rs 已存在)。"
     },
     "1-5-6": {
       "id": "1-5-6",
@@ -232,7 +232,8 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-15 19:26:58",
+    "updated": "2026-07-15 19:53:15",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
-  }
+  },
+  "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
 }
