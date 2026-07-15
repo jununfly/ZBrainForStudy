@@ -91,7 +91,6 @@ const UNMIGRATED_TS_DOCTOR_CHECKS: &[(&str, &str)] = &[
     ("federation_health", "federated source sync, mount reachability"),
     ("schema_packs", "schema pack presence / drift"),
     ("resolver_health", "resolver conformance, check-resolvable mirror"),
-    ("skill_conformance", "skillpack-check, RESOLVER.md conformance"),
     ("frontmatter_integrity", "bounded frontmatter scan, partial-state surfacing"),
     ("brain_score", "5-component brain-health composite"),
 ];
@@ -2822,6 +2821,26 @@ async fn run_init_migrate_only(args: &InitArgs, config_file: &Path) -> anyhow::R
 /// - Migration status verification
 /// - Network connectivity check (for providers)
 ///
+/// Discover the agent skills directory for the `skill_conformance` doctor
+/// check. Mirrors the spirit of the TS `autoDetectSkillsDirReadOnly`: walk up
+/// from the cwd looking for a `skills/manifest.json`, then fall back to
+/// `<zbrain_home>/skills`. OpenClaw-workspace specific resolution is omitted —
+/// ZBrain has no OpenClaw concept.
+fn detect_skills_dir() -> Option<std::path::PathBuf> {
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        let mut p = Some(cwd.as_path());
+        while let Some(dir) = p {
+            candidates.push(dir.join("skills"));
+            p = dir.parent();
+        }
+    }
+    if let Some(home) = zbrain_core::paths::zbrain_home() {
+        candidates.push(home.join("skills"));
+    }
+    candidates.into_iter().find(|d| d.join("manifest.json").exists())
+}
+
 /// Returns exit code 0 if all checks pass, non-zero otherwise.
 async fn run_doctor_command(args: DoctorArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
     if !args.json {
@@ -2960,6 +2979,22 @@ async fn run_doctor_command(args: DoctorArgs, config_path: Option<&Path>) -> any
             }
             zbrain_core::eval_drift::EvalDriftStatus::Warn => {
                 checks.push(DoctorCheck::warn("eval_drift", &message));
+            }
+        }
+    }
+
+    // 5c. Skill conformance: filesystem-only (no DB needed). Migrated from the
+    // TS `checkSkillConformance` doctor check. The TS original resolved the
+    // skills dir via the resolver (still-unmigrated slice); here we discover it
+    // from the cwd walk-up + zbrain home so the check is self-contained.
+    if let Some(skills_dir) = detect_skills_dir() {
+        let (status, message) = zbrain_core::skill_conformance::check_skill_conformance(&skills_dir);
+        match status {
+            zbrain_core::skill_conformance::SkillConformanceStatus::Ok => {
+                checks.push(DoctorCheck::ok("skill_conformance", &message));
+            }
+            zbrain_core::skill_conformance::SkillConformanceStatus::Warn => {
+                checks.push(DoctorCheck::warn("skill_conformance", &message));
             }
         }
     }
@@ -5484,6 +5519,23 @@ mod tests {
                 .iter()
                 .any(|(name, _)| *name == "takes_weight_grid"),
             "takes_weight_grid is a real check now; it must not appear in UNMIGRATED_TS_DOCTOR_CHECKS"
+        );
+    }
+
+    #[test]
+    fn skill_conformance_is_no_longer_unmigrated() {
+        // Migration hard-trace: `skill_conformance` moved OUT of the
+        // UNMIGRATED stand-in list into a real filesystem check
+        // (zbrain_core::skill_conformance::check_skill_conformance — reads
+        // skills/manifest.json, verifies each skill file exists + starts with
+        // `---` frontmatter). Mirrors the TS `checkSkillConformance`
+        // (src/commands/doctor.ts). Guards against a later agent re-adding it
+        // to the not-implemented band.
+        assert!(
+            !UNMIGRATED_TS_DOCTOR_CHECKS
+                .iter()
+                .any(|(name, _)| *name == "skill_conformance"),
+            "skill_conformance is a real check now; it must not appear in UNMIGRATED_TS_DOCTOR_CHECKS"
         );
     }
 

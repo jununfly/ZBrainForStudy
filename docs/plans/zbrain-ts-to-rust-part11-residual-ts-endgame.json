@@ -202,12 +202,12 @@
     "1-5-4": {
       "id": "1-5-4",
       "label": "内容一致性类检查迁移 (skill_conformance / frontmatter_integrity / eval_drift)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-5",
       "children": [],
       "decisions": [],
-      "notes": "eval_drift 已迁（首端口，端到端模式验证完成）：Rust zbrain_core::eval_drift 模块(matches_watch_pattern/files_drifted_since/watched_files_drifted/eval_drift_status + 3 单测) → 接线 lib.rs doctor runner 替换 NotImplemented → 从 UNMIGRATED_TS_DOCTOR_CHECKS 锚点移除 + 加 eval_drift_is_no_longer_unmigrated 守卫测试 → 删 TS drift-watch.ts + tests/unit/drift-watch.test.ts(死代码,无活 importer) → typecheck 绿(64 inherited,无新增)。**教训**：删 TS 模块须同时 grep tests/unit/ 的锚点测试(不止 src/)，否则留 TS2307 新错误。待 skill_conformance / frontmatter_integrity。"
+      "notes": "eval_drift 已迁（首端口）：zbrain_core::eval_drift 模块 + 3 单测 → 接线 doctor runner → 删 TS drift-watch.ts + test → typecheck 绿。**skill_conformance 已迁（2026-07-15 第三端口）**：Rust zbrain_core::skill_conformance::check_skill_conformance(skills_dir) 1:1 镜像 TS checkSkillConformance（读 manifest.json，逐个 skill.path 检查文件存在 + 以 `---` 开头 frontmatter），纯文件系统无 engine 依赖；4 单测（missing/unparseable/all-pass/mixed-failures 全绿）。cli 用 detect_skills_dir() 自发现（cwd 向上 + zbrain_home()/skills，不依赖未迁 resolver），接 5c 检查块；锚点 9→8 + skill_conformance_is_no_longer_unmigrated 守卫测试。**frontmatter_integrity 阻塞（不硬搬）**：依赖 TS scanBrainSources(engine) 全源 frontmatter 扫描，Rust 侧完全无等价物（markdown.rs 仅单文件解析，无遍历 source 目录扫描 + timeout 部分状态能力）；硬搬会重复 frontmatter 扫描基础设施 slice 且引入 engine.execute_raw 逃生舱（trait 故意不放）。诚实保留锚点项 + 登记 G39（解缠路径：先迁 frontmatter 扫描基础设施，属 source/frontmatter 扫描切片）。1-5-4 完成（两项实装 + 一项记录阻塞）。**教训**：删 TS 模块须同时 grep tests/unit/ 锚点测试。"
     },
     "1-5-5": {
       "id": "1-5-5",
