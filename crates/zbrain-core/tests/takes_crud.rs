@@ -206,7 +206,7 @@ async fn inmem_resolve_nonexistent_returns_error() {
 #[tokio::test]
 async fn inmem_scorecard_empty_returns_zeros() {
     let engine = InMemoryEngine::new();
-    let sc: TakesScorecard = engine.get_scorecard("alice").await.expect("get_scorecard");
+    let sc: TakesScorecard = engine.get_scorecard("alice", None).await.expect("get_scorecard");
     assert_eq!(sc.resolved, 0);
     assert_eq!(sc.brier, 0.0);
     assert_eq!(sc.accuracy, 0.0);
@@ -239,7 +239,7 @@ async fn inmem_scorecard_single_resolved_correct() {
         .await
         .expect("resolve");
 
-    let sc: TakesScorecard = engine.get_scorecard("alice").await.expect("get_scorecard");
+    let sc: TakesScorecard = engine.get_scorecard("alice", None).await.expect("get_scorecard");
     assert_eq!(sc.resolved, 1);
     assert_eq!(sc.correct, 1);
     assert_eq!(sc.incorrect, 0);
@@ -273,7 +273,7 @@ async fn inmem_scorecard_single_resolved_incorrect() {
         .await
         .expect("resolve");
 
-    let sc: TakesScorecard = engine.get_scorecard("alice").await.expect("get_scorecard");
+    let sc: TakesScorecard = engine.get_scorecard("alice", None).await.expect("get_scorecard");
     assert_eq!(sc.resolved, 1);
     assert_eq!(sc.correct, 0);
     assert_eq!(sc.incorrect, 1);
@@ -316,7 +316,7 @@ async fn inmem_scorecard_multiple_mixed() {
     engine.resolve_take(1, 1, &resolve(1, false)).await.expect("resolve 1");
     engine.resolve_take(1, 2, &resolve(2, true)).await.expect("resolve 2");
 
-    let sc: TakesScorecard = engine.get_scorecard("alice").await.expect("get_scorecard");
+    let sc: TakesScorecard = engine.get_scorecard("alice", None).await.expect("get_scorecard");
     assert_eq!(sc.resolved, 3);
     assert_eq!(sc.correct, 2);
     assert_eq!(sc.incorrect, 1);
@@ -361,11 +361,11 @@ async fn inmem_scorecard_filters_by_holder() {
     engine.resolve_take(1, 0, &resolve(0, true)).await.expect("resolve alice");
     engine.resolve_take(1, 1, &resolve(1, false)).await.expect("resolve bob");
 
-    let sc_alice = engine.get_scorecard("alice").await.expect("alice");
+    let sc_alice = engine.get_scorecard("alice", None).await.expect("alice");
     assert_eq!(sc_alice.resolved, 1, "alice should see 1 resolved take");
     assert_eq!(sc_alice.correct, 1);
 
-    let sc_bob = engine.get_scorecard("bob").await.expect("bob");
+    let sc_bob = engine.get_scorecard("bob", None).await.expect("bob");
     assert_eq!(sc_bob.resolved, 1, "bob should see 1 resolved take");
     assert_eq!(sc_bob.incorrect, 1);
 }
@@ -379,7 +379,7 @@ async fn inmem_scorecard_ignores_unresolved() {
         .expect("add");
     // NOT resolved — should not appear in scorecard
 
-    let sc: TakesScorecard = engine.get_scorecard("alice").await.expect("get_scorecard");
+    let sc: TakesScorecard = engine.get_scorecard("alice", None).await.expect("get_scorecard");
     assert_eq!(sc.resolved, 0);
 }
 

@@ -75,7 +75,13 @@ pub struct PatternDetail {
 #[async_trait]
 pub trait CalibrationQueries: Debug + Send + Sync {
     /// Aggregated scoring stats from resolved takes.
-    async fn get_scorecard(&self, holder: &str) -> Result<TakesScorecard>;
+    ///
+    /// `domain_prefix` scopes the scorecard to a calibration domain (via
+    /// `take_domain_assignments`); `None` returns the holder's overall
+    /// scorecard. Mirrors the TS `getScorecard({ holder, domainPrefix })`
+    /// surface so `forecastForTake`/`batchForecast` can fetch bucketed
+    /// scorecards.
+    async fn get_scorecard(&self, holder: &str, domain_prefix: Option<&str>) -> Result<TakesScorecard>;
 
     /// Confidence-bucket accuracy curve.
     async fn get_calibration_curve(&self, holder: &str) -> Result<Vec<CalibrationBucket>>;
@@ -112,7 +118,7 @@ mod tests {
     #[tokio::test]
     async fn contract_get_scorecard_returns_zeros() {
         let engine = make_engine();
-        let result = engine.get_scorecard("garry").await.unwrap();
+        let result = engine.get_scorecard("garry", None).await.unwrap();
         assert_eq!(result.resolved, 0);
         assert_eq!(result.brier, 0.0);
         assert_eq!(result.accuracy, 0.0);

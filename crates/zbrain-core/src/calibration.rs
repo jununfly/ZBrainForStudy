@@ -11,7 +11,7 @@
 //! roadmap JSON is a temporary working file and will be cleared on completion,
 //! so comments must stay self-explanatory.
 
-use crate::calibration_queries::{CalibrationProfileRow, TakesScorecard};
+use crate::calibration_queries::{CalibrationProfileRow, CalibrationQueries, TakesScorecard};
 use serde::Serialize;
 use std::io::ErrorKind as IoErrorKind;
 use std::process::Command;
@@ -438,6 +438,74 @@ pub fn compute_forecast(
         bucket_domain,
         insufficient_data,
     }
+}
+
+// ── engine-backed forecast wrappers (take-forecast.ts: forecastForTake + batchForecast) ──
+
+/// Input to `forecast_for_take` / `batch_forecast`. Mirrors `TakeForecastInput`.
+pub struct TakeForecastInput {
+    /// Take's holder, e.g. 'garry' or 'people/charlie-example'.
+    pub holder: String,
+    /// Optional domain hint (e.g. 'macro', 'companies/foo'). When present and
+    /// it resolves to a slug prefix, the forecast scopes to that domain's bucket.
+    pub domain: Option<String>,
+    /// The conviction-weight of the new take in [0,1].
+    pub conviction: f64,
+}
+
+/// Zero scorecard used for the fail-open fallback when an engine read errors.
+fn zero_scorecard() -> TakesScorecard {
+    TakesScorecard {
+        resolved: 0,
+        brier: 0.0,
+        accuracy: 0.0,
+        correct: 0,
+        incorrect: 0,
+        partial_rate: 0.0,
+    }
+}
+
+/// Engine-backed forecast for a single take. Mirrors `forecastForTake`:
+/// resolves the domain hint, fetches the overall + (optional) bucketed
+/// scorecard via `CalibrationQueries`, then delegates the math to the pure
+/// `compute_forecast`. Fail-open — an engine error falls back to a zero
+/// scorecard so the surfaced blurb never hard-fails on a transient read error.
+pub async fn forecast_for_take<C: CalibrationQueries + ?Sized>(
+    engine: &C,
+    input: &TakeForecastInput,
+) -> TakeForecast {
+    let overall = engine
+        .get_scorecard(&input.holder, None)
+        .await
+        .unwrap_or_else(|_| zero_scorecard());
+    let bucket = match &input.domain {
+        Some(domain) => match resolve_domain_prefix(Some(domain)) {
+            Some(prefix) => Some(
+                engine
+                    .get_scorecard(&input.holder, Some(&prefix))
+                    .await
+                    .unwrap_or_else(|_| zero_scorecard()),
+            ),
+            None => None,
+        },
+        None => None,
+    };
+    compute_forecast(&overall, bucket.as_ref(), input.domain.as_deref())
+}
+
+/// Batched forecast over many takes. Mirrors `batchForecast` — one engine
+/// round-trip per input (memoization across `(holder, domain)` is a later
+/// optimization; the output is identical either way). See `forecast_for_take`
+/// for per-take semantics.
+pub async fn batch_forecast<C: CalibrationQueries + ?Sized>(
+    engine: &C,
+    inputs: &[TakeForecastInput],
+) -> Vec<TakeForecast> {
+    let mut out = Vec::with_capacity(inputs.len());
+    for input in inputs {
+        out.push(forecast_for_take(engine, input).await);
+    }
+    out
 }
 
 // ── cross-brain calibration query semantics (cross-brain.ts: canReadMountsForCtx + attributionSuffix) ──
@@ -1490,5 +1558,165 @@ mod tests {
         };
         let out = format_ab_report(&r, 30);
         assert!(!out.contains("win rate"));
+    }
+
+    // ── engine-backed forecast wrappers ──────────────────────────────────
+
+    use crate::calibration_queries::{CalibrationBucket, PatternDetail};
+    use std::collections::HashMap;
+
+    /// Minimal mock implementing `CalibrationQueries`. Keyed on
+    /// `(holder, domain_or_empty)` so tests can seed overall + bucketed
+    /// scorecards independently. Only `get_scorecard` is meaningful; the
+    /// other trait methods return empty/None.
+    #[derive(Debug, Default)]
+    struct FakeCalibrationEngine {
+        scorecards: HashMap<(String, String), TakesScorecard>,
+    }
+
+    impl FakeCalibrationEngine {
+        fn seed(&mut self, holder: &str, domain: Option<&str>, sc: TakesScorecard) {
+            self.scorecards
+                .insert((holder.to_string(), domain.unwrap_or("").to_string()), sc);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl CalibrationQueries for FakeCalibrationEngine {
+        async fn get_scorecard(
+            &self,
+            holder: &str,
+            domain_prefix: Option<&str>,
+        ) -> crate::error::Result<TakesScorecard> {
+            Ok(self
+                .scorecards
+                .get(&(holder.to_string(), domain_prefix.unwrap_or("").to_string()))
+                .cloned()
+                .unwrap_or_else(zero_scorecard))
+        }
+
+        async fn get_calibration_curve(
+            &self,
+            _holder: &str,
+        ) -> crate::error::Result<Vec<CalibrationBucket>> {
+            Ok(vec![])
+        }
+
+        async fn get_latest_profile(
+            &self,
+            _holder: &str,
+        ) -> crate::error::Result<Option<CalibrationProfileRow>> {
+            Ok(None)
+        }
+
+        async fn get_pattern_detail(
+            &self,
+            _holder: &str,
+            _pattern_index: usize,
+        ) -> crate::error::Result<Option<PatternDetail>> {
+            Ok(None)
+        }
+    }
+
+    fn sc(resolved: i64, brier: f64) -> TakesScorecard {
+        TakesScorecard {
+            resolved,
+            brier,
+            accuracy: 0.0,
+            correct: 0,
+            incorrect: 0,
+            partial_rate: 0.0,
+        }
+    }
+
+    #[tokio::test]
+    async fn forecast_for_take_no_domain_uses_overall() {
+        let mut eng = FakeCalibrationEngine::default();
+        eng.seed("garry", None, sc(8, 0.15));
+        let f = forecast_for_take(
+            &eng,
+            &TakeForecastInput { holder: "garry".into(), domain: None, conviction: 0.7 },
+        )
+        .await;
+        // n=8 ≥ MIN_BUCKET_N so we get a forecast; bucket falls back to overall.
+        assert_eq!(f.bucket_domain, "overall");
+        assert_eq!(f.bucket_n, 8);
+        assert!(!f.insufficient_data);
+        assert_eq!(f.predicted_brier, Some(0.15));
+        assert_eq!(f.overall_brier, 0.15);
+    }
+
+    #[tokio::test]
+    async fn forecast_for_take_domain_prefix_uses_bucket() {
+        let mut eng = FakeCalibrationEngine::default();
+        eng.seed("garry", None, sc(20, 0.20));
+        // A slug-prefix domain ("companies/") IS resolved → bucketed lookup.
+        eng.seed("garry", Some("companies/"), sc(6, 0.10));
+        let f = forecast_for_take(
+            &eng,
+            &TakeForecastInput {
+                holder: "garry".into(),
+                domain: Some("companies/".into()),
+                conviction: 0.9,
+            },
+        )
+        .await;
+        assert_eq!(f.bucket_domain, "companies/");
+        assert_eq!(f.bucket_n, 6);
+        assert_eq!(f.predicted_brier, Some(0.10));
+        // overall_brier still comes from the unbucketed scorecard.
+        assert_eq!(f.overall_brier, 0.20);
+    }
+
+    #[tokio::test]
+    async fn forecast_for_take_freeform_domain_falls_back_to_overall() {
+        let mut eng = FakeCalibrationEngine::default();
+        eng.seed("garry", None, sc(9, 0.22));
+        // 'macro' is a free-form hint (no slug prefix, no trailing '/') →
+        // resolve_domain_prefix returns None → no bucketed lookup, but the
+        // bucket_domain label still reflects the caller's hint.
+        let f = forecast_for_take(
+            &eng,
+            &TakeForecastInput {
+                holder: "garry".into(),
+                domain: Some("macro".into()),
+                conviction: 0.5,
+            },
+        )
+        .await;
+        assert_eq!(f.bucket_domain, "macro");
+        assert_eq!(f.bucket_n, 9);
+        assert_eq!(f.predicted_brier, Some(0.22));
+    }
+
+    #[tokio::test]
+    async fn forecast_for_take_insufficient_data_when_below_min() {
+        let mut eng = FakeCalibrationEngine::default();
+        eng.seed("garry", None, sc(4, 0.30)); // n=4 < MIN_BUCKET_N(5)
+        let f = forecast_for_take(
+            &eng,
+            &TakeForecastInput { holder: "garry".into(), domain: None, conviction: 0.6 },
+        )
+        .await;
+        assert!(f.insufficient_data);
+        assert_eq!(f.predicted_brier, None);
+        assert_eq!(f.bucket_n, 4);
+    }
+
+    #[tokio::test]
+    async fn batch_forecast_maps_each_input() {
+        let mut eng = FakeCalibrationEngine::default();
+        eng.seed("garry", None, sc(10, 0.12));
+        eng.seed("alice", None, sc(3, 0.40));
+        let inputs = vec![
+            TakeForecastInput { holder: "garry".into(), domain: None, conviction: 0.8 },
+            TakeForecastInput { holder: "alice".into(), domain: None, conviction: 0.5 },
+        ];
+        let out = batch_forecast(&eng, &inputs).await;
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].predicted_brier, Some(0.12));
+        assert!(!out[0].insufficient_data);
+        assert_eq!(out[1].predicted_brier, None); // n=3 < 5
+        assert!(out[1].insufficient_data);
     }
 }

@@ -7604,7 +7604,14 @@ impl crate::admin_queries::AdminQueries for InMemoryEngine {
 /// In-memory calibration queries — computed from in-memory takes store.
 #[async_trait]
 impl CalibrationQueries for InMemoryEngine {
-    async fn get_scorecard(&self, holder: &str) -> crate::error::Result<TakesScorecard> {
+    async fn get_scorecard(
+        &self,
+        holder: &str,
+        _domain_prefix: Option<&str>,
+    ) -> crate::error::Result<TakesScorecard> {
+        // The in-memory engine does not model `take_domain_assignments`, so
+        // `domain_prefix` is ignored here — domain-scoped scorecards require a
+        // relational store (Libsql/Postgres). This is the overall scorecard.
         let store = self
             .takes_store
             .lock()

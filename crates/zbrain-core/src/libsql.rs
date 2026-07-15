@@ -6457,24 +6457,45 @@ fn decode_cr_mode(value: &str) -> Result<CRMode> {
 #[async_trait]
 impl CalibrationQueries for LibsqlEngine {
     /// Aggregated scoring stats from resolved takes.
-    async fn get_scorecard(&self, holder: &str) -> Result<TakesScorecard> {
+    async fn get_scorecard(&self, holder: &str, domain_prefix: Option<&str>) -> Result<TakesScorecard> {
         let conn = self.conn().await?;
 
         // Graceful degradation: `takes` table may not exist in current Rust schema.
-        let result = conn
-            .query(
-                "SELECT \
-                        COUNT(*) as resolved, \
-                        AVG(brier) as brier, \
-                        AVG(CASE WHEN resolution = 'correct' THEN 1.0 ELSE 0.0 END) as accuracy, \
-                        SUM(CASE WHEN resolution = 'correct' THEN 1 ELSE 0 END) as correct, \
-                        SUM(CASE WHEN resolution = 'incorrect' THEN 1 ELSE 0 END) as incorrect, \
-                        AVG(CASE WHEN partial_resolution IS NOT NULL THEN 1.0 ELSE 0.0 END) as partial_rate \
-                 FROM takes \
-                 WHERE holder = ?1 AND resolved_at IS NOT NULL",
-                ::libsql::params![holder],
-            )
-            .await;
+        // When `domain_prefix` is set, scope to a calibration domain via
+        // `take_domain_assignments` (mirrors TS getScorecard({holder, domainPrefix})).
+        let result = match domain_prefix {
+            Some(domain) => {
+                conn.query(
+                    "SELECT \
+                            COUNT(*) as resolved, \
+                            AVG(brier) as brier, \
+                            AVG(CASE WHEN resolution = 'correct' THEN 1.0 ELSE 0.0 END) as accuracy, \
+                            SUM(CASE WHEN resolution = 'correct' THEN 1 ELSE 0 END) as correct, \
+                            SUM(CASE WHEN resolution = 'incorrect' THEN 1 ELSE 0 END) as incorrect, \
+                            AVG(CASE WHEN partial_resolution IS NOT NULL THEN 1.0 ELSE 0.0 END) as partial_rate \
+                     FROM takes t \
+                     JOIN take_domain_assignments a ON a.take_id = t.id \
+                     WHERE t.holder = ?1 AND t.resolved_at IS NOT NULL AND a.domain = ?2",
+                    ::libsql::params![holder, domain],
+                )
+                .await
+            }
+            None => {
+                conn.query(
+                    "SELECT \
+                            COUNT(*) as resolved, \
+                            AVG(brier) as brier, \
+                            AVG(CASE WHEN resolution = 'correct' THEN 1.0 ELSE 0.0 END) as accuracy, \
+                            SUM(CASE WHEN resolution = 'correct' THEN 1 ELSE 0 END) as correct, \
+                            SUM(CASE WHEN resolution = 'incorrect' THEN 1 ELSE 0 END) as incorrect, \
+                            AVG(CASE WHEN partial_resolution IS NOT NULL THEN 1.0 ELSE 0.0 END) as partial_rate \
+                     FROM takes \
+                     WHERE holder = ?1 AND resolved_at IS NOT NULL",
+                    ::libsql::params![holder],
+                )
+                .await
+            }
+        };
 
         match result {
             Err(e) => {

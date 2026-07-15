@@ -37,8 +37,10 @@ eval_drift 已迁（首端口，端到端模式验证完成）：Rust zbrain_cor
 [~][X+] 1. Part11 — 残留 TS 收尾 (综合容器)
 ├── [ ][X+] 1-1. skillpack / skillify 迁移 (27+ 文件 Schema/Subagent 包)
 ├── [ ][X+] 1-2. eval 一族迁移 (~20 eval-* 命令 + src/eval + core/eval)
-├── [x][X+] 1-3. calibration 算法迁移 (10 文件，当前仅 DB 层)
-│   └── [x][Y+] 1-3-1. calibration 纯函数 port (Phase 1: 零依赖纯函数)
+├── [~][X+] 1-3. calibration 算法迁移 (10 文件，当前仅 DB 层)
+│   ├── [x][Y+] 1-3-1. calibration 纯函数 port (Phase 1: 零依赖纯函数)
+│   ├── [x][Y+] 1-3-2. calibration engine-read 子集 (forecastForTake + batchForecast + get_scorecard domain_prefix)
+│   └── [!][X+] 1-3-3. calibration Phase 2 engine/LLM 支撑（queryAcrossBrains/aggregateDomainScorecards/undoWave/gateVoice/runAbTrial）
 ├── [ ][X+] 1-4. output 模块迁移 (src/core/output 9 文件)
 ├── [~][X+] 1-5. doctor 11 项健康检查迁移 (G5)
 │   ├── [x][X+] 1-5-1. doctor 探查 + tracer bullet (定位 11 检查 TS 实现与 Rust 依赖、确认 runner 入口)
@@ -55,28 +57,20 @@ eval_drift 已迁（首端口，端到端模式验证完成）：Rust zbrain_cor
 └── [ ][X+] 1-11. A 类已迁 TS 删除 (minions/ai/ingestion/cycle + 命令)
 ```
 
-### 🔨 当前施工: 1-5. doctor 11 项健康检查迁移 (G5)
+### 🔨 当前施工: 1-3. calibration 算法迁移 (10 文件，当前仅 DB 层)
 **Status:** `in_progress` | **Mode:** `explore`
 
+calibration 算法补齐：Rust 已有 calibration_queries.rs(DB 层) + web admin；待补 TS src/core/calibration 10 文件算法。2026-07-15 pivot 自 doctor 封顶后选此——领域自包含、边界清晰、不与 doctor 基建阻塞重叠。先探查 TS 算法边界与 Rust 缺口，再定整体 port 或按函数切片。
+
 **决策记录:**
-- Q: 1-5 doctor 内部拆法?
-  A: 聚类拆 6 子节点：1-5-1 探查+tracer bullet(定位 11 检查 TS 实现与 Rust 依赖、确认 runner 入口) → 1-5-2 基础健康类(embedding/sync_freshness/federation) → 1-5-3 配置模式类(search_mode/resolver/schema_packs) → 1-5-4 内容一致性类(skill_conformance/frontmatter/eval_drift) → 1-5-5 评分类(brain_score/takes_weight_grid) → 1-5-6 收尾(删 TS doctor+缩 typecheck 基线+锚点清空)。每聚类内逐 check 迁完立即从 UNMIGRATED_TS_DOCTOR_CHECKS 锚点移除。
-  > 用户 2026-07-15 决策
-- Q: doctor 检查逻辑落点?
-  A: 镜像 reranker_health 模式：检查逻辑放 zbrain_core 对应领域模块（embedding→embedding 模块、config→config、DB/engine→engine），lib.rs doctor runner 只组装 DoctorCheck+计分。逻辑可单测可复用、与既有分层一致。
-  > 用户 2026-07-15 决策
-- Q: doctor 端口顺序 refinement?
-  A: 先迁最低风险：eval_drift(纯死代码 FS/git,无活命令依赖)+takes_weight_grid(Rust takes_fence.rs 已存在)打头验证端到端模式；再迁活命令镜像类(resolver/skill_conformance/frontmatter/sync_freshness/federation/embedding/search_mode)；schema_packs 最后(被 G38 纠缠,须与 schema_pack 信任门同步)。跨聚类挑最低风险项先打,不严格按 1-5-2→1-5-5 顺序。
-  > 用户未明确,agent 提议(基于 tracer bullet 结论)
-- Q: doctor 切片剩余 7 项全被未迁基建阻塞，是否继续硬啃？
-  A: 封顶：可移植子集(reranker_health+eval_drift+takes_weight_grid+skill_conformance+brain_score 共 5 项)已完成；剩余 7 项各自登记 KNOWN-GAP G39-G45 并标注缺的具体基建，不把 6 个基建项目藏进 doctor 检查。1-5 暂停于 blocked 子节点，待对应基建切片落地后由各自 G-gap 接手。
-  > 违反 Part11 铁律(每切片自带解缠、不吸收语义偏差)。
+- Q: calibration 10 文件(1802 行)怎么切？
+  A: 分阶段：Phase 1 先 port 纯函数(templates 5 builder / recall-footer / 纯解析器 parseJudgeOutput / 纯数学 computeForecast+resolveDomainPrefix / 纯规则 takeDomainHint+evaluateNudgeRule+buildLearningEntry / formatAbReport)，自包含可单测；Phase 2 再啃 engine/LLM 支撑(async 读引擎 + LLM 调用)，重 LLM 项(voice-gate gateVoice / think-ab runAbTrial)留 G-gap。
+  > 与 doctor 切片同构：纯函数子集是便宜镜像，engine/LLM 子集是基建。不整体 port 避免大爆炸。
+- Q: Phase 2 calibration 怎么切？全子集都卡在 engine trait 扩展或 LLM，非干净切片
+  A: 不开大 Phase 2；开 1-3-2 = engine-read 子集（forecastForTake+batchForecast+get_scorecard domain_prefix），其余（mount 解析/execute_raw/LLM）留后续节点或登记 gap
 
 **子节点:**
-- [x] 1-5-1. doctor 探查 + tracer bullet (定位 11 检查 TS 实现与 Rust 依赖、确认 runner 入口)
-- [!] 1-5-2. 基础健康类检查迁移 (embedding_health / sync_freshness / federation_health)
-- [!] 1-5-3. 配置模式类检查迁移 (search_mode / resolver_health / schema_packs)
-- [x] 1-5-4. 内容一致性类检查迁移 (skill_conformance / frontmatter_integrity / eval_drift)
-- [x] 1-5-5. 评分类检查迁移 (brain_score / takes_weight_grid)
-- [!] 1-5-6. doctor 收尾 (删 TS doctor + 缩 typecheck 基线 + 锚点常量清空)
+- [x] 1-3-1. calibration 纯函数 port (Phase 1: 零依赖纯函数)
+- [x] 1-3-2. calibration engine-read 子集 (forecastForTake + batchForecast + get_scorecard domain_prefix)
+- [!] 1-3-3. calibration Phase 2 engine/LLM 支撑（queryAcrossBrains/aggregateDomainScorecards/undoWave/gateVoice/runAbTrial）
 <!-- ⚠️ ROADMAP_SECTION_END -->
