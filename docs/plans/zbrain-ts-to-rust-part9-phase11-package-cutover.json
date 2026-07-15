@@ -53,12 +53,18 @@
     "1-2": {
       "id": "1-2",
       "label": "重算 KEEP 种子 + 依赖闭包 D(cutover 后新种子集)",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "cutover 后重算闭包 D,src/core 是否已解锁删除?",
+          "answer": "已解锁,但删除目标须由 Rust 覆盖驱动,非闭包自动 D 集",
+          "note": "量化实验(commit 6230c95 后): (A)空种子 D=1347全部→证明 cutover 后无硬 pin,src/core 已彻底解锁; (B)只留 doctor 3 种子 R=1336(test=799+impl=537),D=11; (C)完整新种子集(移除已死的 index.ts) D=1。根因: ts_dep_closure 的 fixpoint 折叠规则(任何 import>=1 保留 impl 的 kept-test 也保留→它 import 的 impl 全拉回 R),而几乎每个 src/core impl 都有 TS 测试,测试网把整个 core 缠住,故 D 恒近 0。eval 块几乎不额外 pin(去 eval D 1→11,与 Phase10 一致)。关键修正: ts_dep_closure 的 D 自动集在 TS 测试在场时不能用作删除目标枚举器,只能用作'给定候选 slice 验证不 dangle'。1-3 删除主线改为 Rust-覆盖驱动的成对删除(impl+其 TS 测试 slice),闭包工具退居 dangle 校验角色。"
+        }
+      ],
+      "notes": "cutover 解锁验证完成(空种子 D=1347)。删除目标模型修正: Rust-覆盖驱动成对删除,闭包工具做 dangle 校验。种子文件已注释 index.ts 为何不再 seed。"
     },
     "1-3": {
       "id": "1-3",
@@ -83,7 +89,7 @@
   },
   "metadata": {
     "created": "2026-07-15 08:44:04",
-    "updated": "2026-07-15 08:59:44",
+    "updated": "2026-07-15 09:06:26",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART9_PHASE11_PACKAGE_CUTOVER.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART9_PHASE11_PACKAGE_CUTOVER.md"
