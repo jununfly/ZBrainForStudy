@@ -65,7 +65,7 @@
     "1-4": {
       "id": "1-4",
       "label": "Activation + authoring verbs (3+15=18 mutating verbs)",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1",
       "children": [],
@@ -95,7 +95,7 @@
   },
   "metadata": {
     "created": "2026-07-15 11:48:46",
-    "updated": "2026-07-15 13:32:28",
+    "updated": "2026-07-15 13:58:13",
     "md_file": "ZBRAIN_TS_TO_RUST_PART10_PHASE12_SCHEMA_PACK.md"
   },
   "md_file": "ZBRAIN_TS_TO_RUST_PART10_PHASE12_SCHEMA_PACK.md"
