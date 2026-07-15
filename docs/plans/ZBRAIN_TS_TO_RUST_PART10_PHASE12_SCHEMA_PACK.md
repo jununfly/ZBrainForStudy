@@ -21,7 +21,7 @@
 ```
 [ ][X+] 1. Part10 Phase12 — Schema-Pack 迁移 (G4)
 ├── [x][Y+] 1-1. 数据模型基础 (manifest-v1 + loader + primitives + closure)
-├── [ ][Y+] 1-2. Registry + resolution engine (7-tier chain + cache + extends BFS)
+├── [x][Y+] 1-2. Registry + resolution engine (7-tier chain + cache + extends BFS)
 ├── [ ][Y+] 1-3. Inspection verbs (9 read-only, tracer bullet end-to-end)
 ├── [ ][Y+] 1-4. Activation + authoring verbs (3+15=18 mutating verbs)
 ├── [ ][Y+] 1-5. Discovery + repair verbs (5 verbs)

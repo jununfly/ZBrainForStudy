@@ -39,11 +39,17 @@
     "1-2": {
       "id": "1-2",
       "label": "Registry + resolution engine (7-tier chain + cache + extends BFS)",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "implementation-complete",
+          "answer": "6 modules: registry(23 tests)+per_source(12)+pack_lock(12)+trust_gate(9)+load_active(4)=62 new tests. 99 total schema_pack tests. manifest.rs extends changed String→Option<String>. closure.rs added compute_alias_closure_hash (8 bytes/16 hex). load_by_path skipped in load_active_pack (ResolvePackOpts requires 'static, acceptable for initial port). Windows is_pid_alive defaults to true (conservative).",
+          "note": ""
+        }
+      ],
       "notes": "Port the pack loading/resolution engine:\n- registry.ts (336 lines) -> 7-tier resolution chain (CLI opt -> env -> per-source DB -> brain DB -> config -> ~/.zbrain -> default zbrain-base). Stat-TTL cache (~1000ms, env override). Extends-chain BFS (warn at 4, hard cap 8). Cascade invalidation on mtime change.\n- load-active.ts (197 lines) -> loadActivePack boundary helper (resolution chain + disk load + extends chain + process cache).\n- best-effort.ts (59 lines) -> loadActivePackBestEffort (graceful fallback).\n- op-trust-gate.ts (130 lines) -> validateSchemaPackTrustGate (remote/MCP callers cannot pass schema_pack opt).\n- per-source.ts (102 lines) -> buildPerSourceBindings + buildSourceClosureCte (federated read per-source pack filtering).\n- pack-lock.ts (298 lines) -> per-pack file lock (O_CREAT|O_EXCL + stale detection + TTL refresh).\nDepends on 1-1 (manifest, closure)."
     },
     "1-3": {
@@ -89,7 +95,7 @@
   },
   "metadata": {
     "created": "2026-07-15 11:48:46",
-    "updated": "2026-07-15 13:00:20",
+    "updated": "2026-07-15 13:17:48",
     "md_file": "ZBRAIN_TS_TO_RUST_PART10_PHASE12_SCHEMA_PACK.md"
   },
   "md_file": "ZBRAIN_TS_TO_RUST_PART10_PHASE12_SCHEMA_PACK.md"
