@@ -35,7 +35,7 @@ for (const op of operations) {
 }
 
 // CLI-only commands that bypass the operation layer
-const CLI_ONLY = new Set(['reinit-pglite', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'call', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'features', 'graph-query', 'jobs', 'agent', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'sources', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'repos', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'frontmatter', 'auth', 'friction', 'claw-test', 'book-mirror', 'takes', 'anomalies', 'transcripts', 'models', 'recall', 'forget', 'edges-backfill', 'cache', 'ze-switch', 'founder', 'brainstorm', 'lsd', 'capture']);
+const CLI_ONLY = new Set(['reinit-pglite', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'call', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'features', 'jobs', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'sources', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'repos', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'frontmatter', 'auth', 'friction', 'claw-test', 'book-mirror', 'takes', 'anomalies', 'transcripts', 'models', 'recall', 'forget', 'edges-backfill', 'cache', 'ze-switch', 'founder', 'brainstorm', 'lsd']);
 // CLI-only commands whose handlers print their own --help text. These are
 // excluded from the generic short-circuit so detailed per-command and
 // per-subcommand usage stays reachable.
@@ -48,12 +48,6 @@ const CLI_ONLY_SELF_HELP = new Set([
   'models',
   'cache',
   'brainstorm', 'lsd',
-  // v0.39.3.0 WARN-5: capture's detailed HELP constant
-  // (src/commands/capture.ts:90+) was unreachable because the dispatcher's
-  // generic short-circuit (printCliOnlyHelp at :204-208) fired before
-  // runCapture saw --help. brainstorm + lsd were already in the set;
-  // capture was the holdout.
-  'capture',
   // v0.37 fix wave (Lane D.4 + CDX2-12): sync's --no-embed flag was
   // unreachable via help because the dispatcher's generic CLI-only
   // short-circuit fired before runSync could print its own usage block.
@@ -1104,17 +1098,6 @@ async function handleCliOnly(command: string, args: string[]) {
     return;
   }
 
-  // v0.39.3.0 WARN-5: same pattern for `capture --help`. CLI_ONLY_SELF_HELP
-  // now includes 'capture' so the generic short-circuit at :101 stays out
-  // of the way, but the dispatch case at :1229 still needs an engine. The
-  // pre-engine-bind branch here exposes the HELP constant without requiring
-  // a configured brain (fresh-tmpdir parity with brainstorm/lsd/sync).
-  if (command === 'capture' && (args.includes('--help') || args.includes('-h'))) {
-    const { runCapture } = await import('./commands/capture.ts');
-    await runCapture(null, args);
-    return;
-  }
-
   // v0.41.6.0 D3 (per outside-voice F1): connect-time + dispatch-time wallclock
   // timeouts for read-only commands whose hang would otherwise spin at 100% CPU
   // (the production "10-day zombie zbrain search ping" bug class). The wrap
@@ -1227,11 +1210,6 @@ async function handleCliOnly(command: string, args: string[]) {
         await runJobs(engine, args);
         break;
       }
-      case 'agent': {
-        const { runAgent } = await import('./commands/agent.ts');
-        await runAgent(engine, args);
-        break;
-      }
       case 'book-mirror': {
         const { runBookMirrorCmd } = await import('./commands/book-mirror.ts');
         await runBookMirrorCmd(engine, args);
@@ -1255,11 +1233,6 @@ async function handleCliOnly(command: string, args: string[]) {
       case 'features': {
         const { runFeatures } = await import('./commands/features.ts');
         await runFeatures(engine, args);
-        break;
-      }
-      case 'graph-query': {
-        const { runGraphQuery } = await import('./commands/graph-query.ts');
-        await runGraphQuery(engine, args);
         break;
       }
       case 'reconcile-links': {
@@ -1307,12 +1280,6 @@ async function handleCliOnly(command: string, args: string[]) {
       case 'anomalies': {
         const { runAnomalies } = await import('./commands/anomalies.ts');
         await runAnomalies(engine, args);
-        break;
-      }
-      // v0.38 — Capture: single human-facing entrypoint for ingestion.
-      case 'capture': {
-        const { runCapture } = await import('./commands/capture.ts');
-        await runCapture(engine, args);
         break;
       }
       case 'edges-backfill': {
@@ -1761,8 +1728,6 @@ LINKS
   unlink <from> <to>                 Remove link
   backlinks <slug>                   Incoming links
   graph <slug> [--depth N]           Traverse link graph (returns nodes)
-  graph-query <slug> [--type T]      Edge-based traversal with type/direction filters
-        [--depth N] [--direction in|out|both]
 
 TAGS
   tags <slug>                        List tags
@@ -1790,10 +1755,7 @@ TOOLS
   check-resolvable [--json] [--fix]  Validate skill tree (reachability/MECE/DRY)
   report --type <name> --content ... Save timestamped report to brain/reports/
 
-BRAIN (capture / ideate / explore — v0.37/v0.38)
-  capture [content] [--file PATH]    Single entrypoint for getting content into the brain
-        [--stdin] [--slug s] [--type t]   Inline content / file / stdin; writes to inbox/ by default
-        [--source ID] [--quiet|--json]    Multi-source brains: route to a non-default source
+BRAIN (ideate / explore — v0.37/v0.38)
   brainstorm <question> [--json]     Bisociation idea generator (hybrid search + far-set + judge)
         [--save|--no-save] [--limit N]
   lsd <question> [--json]            Lateral Synaptic Drift: inverted-judge brainstorm
