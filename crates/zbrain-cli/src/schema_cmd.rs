@@ -1,4 +1,5 @@
-//! `zbrain schema` subcommand — 27 verbs (9 inspection + 3 activation + 15 authoring).
+//! `zbrain schema` subcommand — 32 verbs (9 inspection + 3 activation +
+//! 15 authoring + 5 discovery/repair).
 //!
 //! Tracer bullet: first end-to-end CLI → core → DB slice for schema-pack.
 //!
@@ -7,15 +8,20 @@
 //! Authoring verbs: init, fork, edit, diff, add-type, remove-type, update-type,
 //!   add-alias, remove-alias, add-prefix, remove-prefix,
 //!   add-link-type, remove-link-type, set-extractable, set-expert-routing.
+//! Discovery/repair verbs: detect, suggest, review-candidates, review-orphans, sync.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use clap::Subcommand;
+use zbrain_core::engine::{BrainEngine, EngineConfig};
+use zbrain_core::libsql::LibsqlEngine;
 use zbrain_core::schema_pack::{
     activate,
+    discovery,
     lint_rules,
     loader::load_pack_from_string,
-    manifest::{self, PackPrimitive, SchemaPackManifest},
+    manifest::{PackPrimitive, SchemaPackManifest},
     mutate,
     registry,
 };
@@ -245,10 +251,80 @@ pub enum SchemaSubcommand {
         #[arg(action = clap::ArgAction::Set)]
         value: bool,
     },
+
+    // -- Discovery / repair verbs (5) --
+
+    /// Cluster a source's pages by slug prefix and derive a candidate pack
+    Detect {
+        /// Source ID to scan
+        #[arg(long, default_value = "default")]
+        source: String,
+        /// Minimum pages per prefix to count as a cluster
+        #[arg(long)]
+        min_pages: Option<usize>,
+        /// Maximum number of types to propose
+        #[arg(long)]
+        max_types: Option<usize>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Produce schema suggestions from detected clusters (hermetic heuristic)
+    Suggest {
+        /// Source ID to scan
+        #[arg(long, default_value = "default")]
+        source: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// List candidate types from a source and whether they're in the active pack
+    ReviewCandidates {
+        /// Source ID to scan
+        #[arg(long, default_value = "default")]
+        source: String,
+        /// Write a candidate delta file for this slug (opt-in)
+        #[arg(long)]
+        apply: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// List untyped (orphan) pages in a source
+    ReviewOrphans {
+        /// Source ID to scan
+        #[arg(long, default_value = "default")]
+        source: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Backfill page_type from the active pack's path prefixes (dry-run default)
+    Sync {
+        /// Source ID to scan (omit to use "default")
+        #[arg(long)]
+        source: Option<String>,
+        /// Actually apply the backfill (default: dry-run)
+        #[arg(long)]
+        apply: bool,
+        /// Max pages to patch per prefix
+        #[arg(long, default_value = "1000")]
+        batch_size: usize,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Run a `zbrain schema` subcommand.
-pub fn run_schema_pack_command(cmd: SchemaSubcommand) -> anyhow::Result<()> {
+pub async fn run_schema_pack_command(
+    cmd: SchemaSubcommand,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
     match cmd {
         SchemaSubcommand::Active => run_active(),
         SchemaSubcommand::List => run_list(),
@@ -283,6 +359,18 @@ pub fn run_schema_pack_command(cmd: SchemaSubcommand) -> anyhow::Result<()> {
         SchemaSubcommand::RemoveLinkType { pack, name } => run_remove_link_type(&pack, &name),
         SchemaSubcommand::SetExtractable { pack, type_name, value } => run_set_extractable(&pack, &type_name, value),
         SchemaSubcommand::SetExpertRouting { pack, type_name, value } => run_set_expert_routing(&pack, &type_name, value),
+        // Discovery / repair
+        SchemaSubcommand::Detect { source, min_pages, max_types, json } => {
+            run_detect(config_path, &source, min_pages, max_types, json).await
+        }
+        SchemaSubcommand::Suggest { source, json } => run_suggest(config_path, &source, json).await,
+        SchemaSubcommand::ReviewCandidates { source, apply, json } => {
+            run_review_candidates(config_path, &source, apply.as_deref(), json).await
+        }
+        SchemaSubcommand::ReviewOrphans { source, json } => run_review_orphans(config_path, &source, json).await,
+        SchemaSubcommand::Sync { source, apply, batch_size, json } => {
+            run_sync(config_path, source.as_deref(), apply, batch_size, json).await
+        }
     }
 }
 
@@ -708,6 +796,209 @@ fn run_set_expert_routing(pack: &str, type_name: &str, value: bool) -> anyhow::R
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     println!("Set expert_routing={value} on type \"{type_name}\" in pack \"{pack}\"");
     println!("  sha8: {} → {}", result.prev_sha8, result.new_sha8);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Discovery / repair verb handlers (engine-backed, SQL-free)
+// ---------------------------------------------------------------------------
+
+/// Connect a libsql engine using the same DB resolution as `zbrain sync`.
+async fn connect_engine(config_path: Option<&Path>) -> anyhow::Result<Arc<dyn BrainEngine>> {
+    let config = crate::config::load_config(config_path)?;
+    let db_path = crate::resolve_database_path(&config.database_url);
+    let engine_config = EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+    Ok(Arc::new(engine) as Arc<dyn BrainEngine>)
+}
+
+/// Resolve the active pack manifest (built-in or user) for the current tier.
+fn resolve_active_manifest() -> anyhow::Result<SchemaPackManifest> {
+    let env_var = std::env::var("ZBRAIN_SCHEMA_PACK").ok().filter(|s| !s.is_empty());
+    let home_config = activate::get_active_pack_from_config();
+    let input = registry::ResolutionInput {
+        env_var,
+        home_config,
+        remote: false,
+        ..Default::default()
+    };
+    let result = registry::resolve_active_pack_name(&input);
+    load_pack(Some(result.pack_name.as_str()))
+}
+
+async fn run_detect(
+    config_path: Option<&Path>,
+    source: &str,
+    min_pages: Option<usize>,
+    max_types: Option<usize>,
+    json: bool,
+) -> anyhow::Result<()> {
+    let engine = connect_engine(config_path).await?;
+    let opts = discovery::DetectOpts {
+        min_pages_per_prefix: min_pages.unwrap_or(5),
+        max_types: max_types.unwrap_or(50),
+    };
+    let result = discovery::run_detect(&*engine, source, opts).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        println!("Detected in source \"{source}\":");
+        println!(
+            "  pages: {} (typed: {}, untyped: {})",
+            result.total_pages, result.typed_pages, result.untyped_pages
+        );
+        if result.prefixes.is_empty() {
+            println!("  No prefix clusters met the thresholds.");
+        } else {
+            println!("  Candidate clusters:");
+            for c in &result.prefixes {
+                println!(
+                    "    {}/ → type `{}` ({} pages, sample types: {})",
+                    c.prefix.trim_end_matches('/'),
+                    c.suggested_type,
+                    c.page_count,
+                    if c.sample_types.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        c.sample_types.join(", ")
+                    }
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn run_suggest(config_path: Option<&Path>, source: &str, json: bool) -> anyhow::Result<()> {
+    let engine = connect_engine(config_path).await?;
+    let opts = discovery::DetectOpts::default();
+    let result = discovery::run_suggest(
+        &*engine,
+        source,
+        opts,
+        None::<fn(&discovery::DetectResult) -> Vec<discovery::Suggestion>>,
+    )
+    .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        println!("Suggestions for source \"{source}\":");
+        if result.suggestions.is_empty() {
+            println!("  None.");
+        } else {
+            for s in &result.suggestions {
+                println!("  [{}] {} (confidence {:.2})", s.kind, s.summary, s.confidence);
+                for ev in &s.evidence {
+                    println!("      - {ev}");
+                }
+            }
+        }
+        println!("  notes: {}", result.notes.join("; "));
+    }
+    Ok(())
+}
+
+async fn run_review_candidates(
+    config_path: Option<&Path>,
+    source: &str,
+    apply: Option<&str>,
+    json: bool,
+) -> anyhow::Result<()> {
+    let engine = connect_engine(config_path).await?;
+    let active = resolve_active_manifest()?;
+    let opts = discovery::DetectOpts::default();
+    let result = discovery::run_review_candidates(&*engine, source, Some(&active), apply, opts).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        println!("Candidate review for source \"{source}\" (active pack: {}):", active.name);
+        if result.candidates.is_empty() {
+            println!("  No candidates.");
+        } else {
+            for c in &result.candidates {
+                let mark = if c.in_active_pack { "in pack" } else { "NEW" };
+                println!("  {}/ → `{}` ({}, {})", c.prefix.trim_end_matches('/'), c.suggested_type, mark, c.page_count);
+            }
+        }
+        if let Some(applied) = &result.applied {
+            println!("  wrote candidate delta for slug `{applied}`");
+        }
+    }
+    Ok(())
+}
+
+async fn run_review_orphans(config_path: Option<&Path>, source: &str, json: bool) -> anyhow::Result<()> {
+    let engine = connect_engine(config_path).await?;
+    let result = discovery::run_review_orphans(&*engine, source).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        println!("Orphans in source \"{source}\" (untyped pages, capped at 1000):");
+        if result.orphans.is_empty() {
+            println!("  None — all pages are typed.");
+        } else {
+            for o in &result.orphans {
+                println!("  {}", o.slug);
+            }
+            if result.orphan_count == 1000 {
+                println!("  ... (truncated at 1000)");
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn run_sync(
+    config_path: Option<&Path>,
+    source: Option<&str>,
+    apply: bool,
+    batch_size: usize,
+    json: bool,
+) -> anyhow::Result<()> {
+    let engine = connect_engine(config_path).await?;
+    let active = resolve_active_manifest()?;
+    let result = discovery::run_sync_core(&*engine, source, Some(&active), apply, batch_size).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        let mode = if result.apply { "APPLY" } else { "dry-run" };
+        println!(
+            "Schema sync ({mode}) for pack \"{}\" (source: {}):",
+            result.pack_identity.as_deref().unwrap_or("none"),
+            source.unwrap_or("default")
+        );
+        if result.per_prefix.is_empty() {
+            println!("  No path-prefix rules in active pack.");
+        } else {
+            for p in &result.per_prefix {
+                if p.dead_prefix {
+                    println!(
+                        "  `{}` ← {}: no matches (dead prefix)",
+                        p.type_name, p.prefix
+                    );
+                } else if apply {
+                    println!(
+                        "  `{}` ← {}: applied {} / {}",
+                        p.type_name, p.prefix, p.applied, p.would_apply
+                    );
+                } else {
+                    println!("  `{}` ← {}: would apply {}", p.type_name, p.prefix, p.would_apply);
+                }
+            }
+        }
+        println!(
+            "  total: would apply {}, applied {}",
+            result.total_would_apply, result.total_applied
+        );
+        if !apply && result.total_would_apply > 0 {
+            println!("  (re-run with --apply to backfill page_type)");
+        }
+    }
     Ok(())
 }
 

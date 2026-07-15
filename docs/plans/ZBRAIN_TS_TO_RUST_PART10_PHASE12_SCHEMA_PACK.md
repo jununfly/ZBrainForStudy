@@ -24,7 +24,7 @@
 ├── [x][Y+] 1-2. Registry + resolution engine (7-tier chain + cache + extends BFS)
 ├── [x][Y+] 1-3. Inspection verbs (9 read-only, tracer bullet end-to-end)
 ├── [x][Y+] 1-4. Activation + authoring verbs (3+15=18 mutating verbs)
-├── [ ][Y+] 1-5. Discovery + repair verbs (5 verbs)
+├── [x][Y+] 1-5. Discovery + repair verbs (5 verbs)
 └── [ ][X+] 1-6. Consumer rewiring + TS deletion (resolve G4)
 ```
 

@@ -24,3 +24,7 @@ pub mod lint_rules;
 pub mod mutate_audit;
 pub mod mutate;
 pub mod activate;
+pub mod type_accessors;
+pub mod candidate_audit;
+pub mod redos_guard;
+pub mod discovery;

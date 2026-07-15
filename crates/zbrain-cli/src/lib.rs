@@ -354,8 +354,9 @@ pub enum Commands {
 
     /// Print database schema SQL (DDL for the selected backend).
     ///
-    /// Renamed from `schema`: the bare `schema` name is reserved for a future
-    /// port of the TS schema-pack manager (see UNMIGRATED_TS_SCHEMA_PACK_VERBS).
+    /// Named `schema-sql` to disambiguate from the bare `schema` subcommand,
+    /// which now hosts the full 32-verb schema-pack manager (migrated 1-1..1-5;
+    /// G4 resolved — see UNMIGRATED_TS_SCHEMA_PACK_VERBS).
     #[command(name = "schema-sql")]
     SchemaSql(SchemaArgs),
 
@@ -1509,7 +1510,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Remote(sub) => run_remote_command(sub, cli.config.as_deref()).await?,
         Commands::Jobs(action) => run_jobs_command(action, cli.config.as_deref()).await?,
         Commands::Agent(action) => run_agent_command(action, cli.config.as_deref()).await?,
-        Commands::Schema(cmd) => schema_cmd::run_schema_pack_command(cmd)?,
+        Commands::Schema(cmd) => schema_cmd::run_schema_pack_command(cmd, cli.config.as_deref()).await?,
     }
     Ok(())
 }
@@ -2986,20 +2987,18 @@ async fn run_doctor_command(args: DoctorArgs, config_path: Option<&Path>) -> any
 
 /// FUTURE(schema-pack): the TS `zbrain schema` command was a 1166-line
 /// schema-pack manager (Schema Cathedral v3) exposing the 32-verb taxonomy
-/// below; none of it is migrated. The Rust DDL dumper was renamed
-/// `schema` -> `schema-sql` to free up the `schema` name for that port.
-/// This constant is the hard grep anchor (`UNMIGRATED_TS_SCHEMA_PACK_VERBS`);
-/// migrating the manager means wiring these verbs under a new `schema`
-/// subcommand tree and removing them from here — the anchor test guards
-/// against silent removal. TS source: src/commands/schema.ts @ 5d5b404~1.
-/// Full background: docs/plans/KNOWN-GAPS.md (G4).
+/// below. As of 2026-07-15 **all 32 verbs are migrated** across roadmap
+/// Part10 Phase12 nodes 1-1..1-5 (inspection 1-3, activation+authoring 1-4,
+/// discovery+repair 1-5). G4 (residual TS schema-pack) is RESOLVED.
+///
+/// This constant is the closed-out tracking point (`UNMIGRATED_TS_SCHEMA_PACK_VERBS`):
+/// it is now empty. The anchor test guards against silent re-introduction of
+/// un-migrated TS verbs — if a verb is ever found un-migrated again, re-list
+/// it here and update the test. TS source: src/commands/schema.ts @ 5d5b404~1.
+/// Full background: docs/plans/KNOWN-GAPS.md (G4, resolved).
 #[allow(dead_code)] // Referenced only in the anchor test (cargo test); silent in non-test builds.
 const UNMIGRATED_TS_SCHEMA_PACK_VERBS: &[&str] = &[
-    // Inspection — migrated in 1-3 (zbrain schema {active,list,show,validate,graph,lint,stats,explain,usage})
-    // Activation — migrated in 1-4 (zbrain schema {use,downgrade,reload})
-    // Authoring — migrated in 1-4 (zbrain schema {init,fork,edit,diff,add-type,remove-type,update-type,add-alias,remove-alias,add-prefix,remove-prefix,add-link-type,remove-link-type,set-extractable,set-expert-routing})
-    // Discovery + repair (5 remaining)
-    "detect", "suggest", "review-candidates", "review-orphans", "sync",
+    // All 32 verbs migrated (1-1..1-5). Empty = G4 resolved.
 ];
 
 /// Execute `zbrain schema-sql` command.
@@ -3946,7 +3945,7 @@ async fn run_graph_query_command(args: GraphQueryArgs, config_path: Option<&Path
 
 /// Resolve a `sqlite://path` database URL to a filesystem path,
 /// expanding `~` to the home directory.
-fn resolve_database_path(database_url: &str) -> String {
+pub(crate) fn resolve_database_path(database_url: &str) -> String {
     let path = database_url
         .strip_prefix("sqlite://")
         .unwrap_or(database_url);
@@ -5642,15 +5641,12 @@ mod tests {
     #[test]
     fn unmigrated_ts_schema_pack_verbs_are_anchored() {
         // Hard trace (mirrors doctor's UNMIGRATED_TS_DOCTOR_CHECKS): the TS
-        // `schema` command was a 34-verb schema-pack manager, none of which is
-        // migrated. This constant + a FUTURE anchor comment let a later agent
-        // grep the tracking point back. Guards against silent removal.
+        // `schema` command was a 32-verb schema-pack manager. As of 2026-07-15
+        // all verbs are migrated (1-1..1-5) and G4 is resolved, so the list is
+        // empty. This test guards against silent removal of the tracking point
+        // AND against re-introducing un-migrated verbs without updating it.
         let n = UNMIGRATED_TS_SCHEMA_PACK_VERBS.len();
-        assert_eq!(n, 5, "expected remaining unmigrated schema-pack verbs (5 after 1-3+1-4 cutover), got {n}");
-        // A couple of representative verbs must be present so a rename/typo in
-        // the list is caught, not just a length change.
-        assert!(UNMIGRATED_TS_SCHEMA_PACK_VERBS.contains(&"detect"));
-        assert!(UNMIGRATED_TS_SCHEMA_PACK_VERBS.contains(&"review-candidates"));
+        assert_eq!(n, 0, "all schema-pack verbs should be migrated (G4 resolved); found {n} un-migrated");
     }
 
     #[tokio::test]

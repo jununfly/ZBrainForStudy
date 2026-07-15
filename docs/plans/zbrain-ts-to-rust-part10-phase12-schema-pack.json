@@ -75,11 +75,17 @@
     "1-5": {
       "id": "1-5",
       "label": "Discovery + repair verbs (5 verbs)",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "Discovery verbs: SQL vs memory-based engine strategy?",
+          "answer": "Memory-based (no execute_raw): pull pages via list_pages, cluster in Rust, backfill via put_page patch.",
+          "note": "BrainEngine trait deliberately has no execute_raw (engine.rs:1858). User chose memory-based 2026-07-15. This also resolved G4 (all 32 schema verbs migrated)."
+        }
+      ],
       "notes": "Port discovery/repair modules + wire 5 CLI verbs:\n- detect.ts (177 lines) -> SQL-driven heuristic clustering, derive candidate manifest from brain data.\n- suggest.ts (131 lines) -> LLM-enhanced detect refinement (hermetic-by-default).\n- review.ts (132 lines) -> review-candidates (disk re-derivation) + review-orphans.\n- sync.ts (216 lines) -> runSyncCore (backfill pages.type by path_prefix, dry-run default, chunked UPDATE).\n- candidate-audit.ts (142 lines) -> logCandidate, readRecentCandidates, computeIsoWeekName.\n- redos-guard.ts (139 lines) -> PageRegexBudget, runRegexBounded (ReDoS protection for link inference).\n- expert-types.ts (62 lines), extractable.ts (52 lines), enrichable.ts (51 lines), link-inference.ts (114 lines) -> type accessor helpers.\nCLI verbs: detect, suggest, review-candidates, review-orphans, sync.\nRemove last 5 entries from UNMIGRATED_TS_SCHEMA_PACK_VERBS (constant should be empty -> delete it + anchor test).\nDepends on 1-1 through 1-4."
     },
     "1-6": {
@@ -95,7 +101,7 @@
   },
   "metadata": {
     "created": "2026-07-15 11:48:46",
-    "updated": "2026-07-15 13:58:13",
+    "updated": "2026-07-15 14:45:52",
     "md_file": "ZBRAIN_TS_TO_RUST_PART10_PHASE12_SCHEMA_PACK.md"
   },
   "md_file": "ZBRAIN_TS_TO_RUST_PART10_PHASE12_SCHEMA_PACK.md"
