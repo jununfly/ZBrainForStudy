@@ -6,7 +6,7 @@
     "1": {
       "id": "1",
       "label": "Part10 Phase12 — Schema-Pack 迁移 (G4)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": null,
       "children": [
@@ -91,17 +91,23 @@
     "1-6": {
       "id": "1-6",
       "label": "Consumer rewiring + TS deletion (resolve G4)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "Can we delete all 26 TS schema-pack core files, or must some stay until operations.ts migration?",
+          "answer": "Keep all 26 files KEEP-seeded + register sub-gap G38; do NOT touch operations.ts. G4 functional migration already complete (Rust 32-verb CLI, 1-1..1-5).",
+          "note": "ts_dep_closure.py proves 26 files are all in R (retained): operations.ts (4243-line hub, pulled by un-migrated KEEP seeds calibration/dream/takes/ai-gateway/minions) + cycle/import/sync/whoknows/artifact still import them. TS CLI (src/cli.ts) and TS MCP (src/mcp/server.ts) are dead (Rust replaced them), so operations.ts's 4 schema ops + put_page threading are effectively dead code, but the hub can't be deleted yet. User chose keep+sub-gap 2026-07-15. TS 32-verb CLI (src/commands/schema.ts) already absent."
+        }
+      ],
       "notes": "Delete TS schema-pack (26 files, ~4929 lines) + resolve G4 in KNOWN-GAPS.\nGATE: TS schema-pack consumers must be handled first:\n- operations.ts (4243 lines, 12+ dynamic imports) — heaviest consumer. If still TS at this point, either port schema-pack-consuming operations to Rust OR keep TS schema-pack as thin shim calling Rust (FFI not available in TS; instead the operations that use schema-pack must be individually ported or the schema-pack TS files kept until operations.ts is ported).\n- cycle/ (3 files) — loadActivePack calls during cycle execution.\n- commands/ (4 files) — eval-schema-authoring, import, sync, whoknows.\n- calibration/ (1 file) — type imports only.\n- artifact/ (1 file) — type imports + manifest validation.\nDecision needed at this node: can we delete all 26 TS files, or must some stay until operations.ts migration? Use Phase11 ts_dep_closure method to verify.\nIf operations.ts still consumes schema-pack: either (a) port those operations first, or (b) keep schema-pack TS as KEEP seed + register sub-gap. Resolve G4 only when constant is empty + TS files deleted.\nUpdate typecheck baseline (shrink by any schema-pack-related errors).\nDepends on 1-1 through 1-5."
     }
   },
   "metadata": {
     "created": "2026-07-15 11:48:46",
-    "updated": "2026-07-15 14:45:52",
+    "updated": "2026-07-15 15:05:52",
     "md_file": "ZBRAIN_TS_TO_RUST_PART10_PHASE12_SCHEMA_PACK.md"
   },
   "md_file": "ZBRAIN_TS_TO_RUST_PART10_PHASE12_SCHEMA_PACK.md"

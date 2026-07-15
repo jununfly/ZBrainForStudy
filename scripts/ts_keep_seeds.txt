@@ -22,6 +22,16 @@ src/core/minions/attachments.ts
 src/commands/takes.ts
 src/commands/apply-migrations.ts
 src/core/ai/recipes/*.ts
+# --- schema-pack core: NOT porting reference anymore (Rust has full 32-verb
+#     CLI since Part10 Phase12 1-1..1-5). Retained because operations.ts (4243-line
+#     shared hub, pulled in by un-migrated KEEP seeds calibration/dream/takes/
+#     ai-gateway/minions) still imports these 26 files. TS CLI (src/cli.ts) and TS
+#     MCP (src/mcp/server.ts) are dead (Rust replaced them), so operations.ts's 4
+#     schema ops + put_page threading are effectively dead code, but the hub can't
+#     be deleted yet. Delete these 26 files only after operations.ts + its
+#     schema-pack consumers (cycle/import/sync/whoknows/artifact) port to Rust.
+#     Tracked by KNOWN-GAPS G38. Decision 2026-07-15: keep + sub-gap, don't touch
+#     operations.ts.
 src/core/schema-pack/*.ts
 
 # --- Phase 10: eval / benchmark / dev-tooling sources (retain until Phase 10 decision) ---
