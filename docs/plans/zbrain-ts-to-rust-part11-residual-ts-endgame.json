@@ -109,7 +109,7 @@
     "1-5": {
       "id": "1-5",
       "label": "doctor 11 项健康检查迁移 (G5)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [
@@ -140,6 +140,11 @@
           "q": "doctor 切片剩余 7 项全被未迁基建阻塞，是否继续硬啃？",
           "answer": "封顶：可移植子集(reranker_health+eval_drift+takes_weight_grid+skill_conformance+brain_score 共 5 项)已完成；剩余 7 项各自登记 KNOWN-GAP G39-G45 并标注缺的具体基建，不把 6 个基建项目藏进 doctor 检查。1-5 暂停于 blocked 子节点，待对应基建切片落地后由各自 G-gap 接手。",
           "note": "违反 Part11 铁律(每切片自带解缠、不吸收语义偏差)。"
+        },
+        {
+          "q": "doctor 是否继续迁移剩余 6 项锚点检查?",
+          "answer": "否 — 封顶：剩余 6 项(G39-G45 除 G42)各自阻塞于独立未迁基建, 登记为已知缺口, 不藏基建进 doctor; 锚点保留为 CI 守卫; pivot 1-6",
+          "note": "2026-07-16 与用户 grill 共识: doctor 干净切片期已结束(sync_freshness 是最后一个零新依赖切片), 剩余全需新基建或巨型(resolver_health 350+行)。G42(sync_freshness)已证伪 execute_raw 前提并迁完。"
         }
       ],
       "notes": ""
@@ -147,10 +152,12 @@
     "1-6": {
       "id": "1-6",
       "label": "孤儿命令迁移 (~20 命令：whoknows/brainstorm/dream/publish/models/providers/...)",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "explore",
       "parent": "1",
-      "children": [],
+      "children": [
+        "1-6-1"
+      ],
       "decisions": [],
       "notes": ""
     },
@@ -220,22 +227,30 @@
     "1-5-2": {
       "id": "1-5-2",
       "label": "基础健康类检查迁移 (embedding_health / sync_freshness / federation_health)",
-      "status": "blocked",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-5",
-      "children": [],
-      "decisions": [],
-      "notes": "基础健康类 3 项全阻塞于独立未迁基建：embedding_health(G41, 缺 configured-model getter) / sync_freshness(G42, engine.execute_raw 禁令 engine.rs:1896) / federation_health(G43, 源指标基建 computeAllSourceMetrics 无)。2026-07-15 封顶决策：不藏基建进 doctor，各登记 G41-G43，pivot 其他子系统。"
+      "children": [
+        "1-5-2-1"
+      ],
+      "decisions": [
+        {
+          "q": "sync_freshness 是否撞 G42 execute_raw 禁令 (原 blocked 前提)?",
+          "answer": "否 — list_sources 提供 typed 替代, 零 trait 扩展, 不引入 execute_raw",
+          "note": "推翻 1-5-2 原 blocked 前提: federation_health 同样可 engine-read; 仅 embedding_health 需 provider 网络烟测(高复杂)。基础健康类不再全组阻塞。"
+        }
+      ],
+      "notes": "sync_freshness(1-5-2-1)已完成(G42 resolved, 证伪 execute_raw 前提); federation_health→G43 gap(需 computeAllSourceMetrics 基建); embedding_health→G41 gap(需 provider getter)。基础健康类封顶: 1 项已迁, 2 项登记缺口。"
     },
     "1-5-3": {
       "id": "1-5-3",
       "label": "配置模式类检查迁移 (search_mode / resolver_health / schema_packs)",
-      "status": "blocked",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-5",
       "children": [],
       "decisions": [],
-      "notes": "配置模式类 3 项全阻塞：search_mode(G40, search-mode 系统未迁 G13 + trait 无 getConfig/listConfigKeys) / resolver_health(G45, check-resolvable.ts 未迁) / schema_packs(G44, operations.ts G38 尾消费者未迁)。封顶决策：各登记 G40/G44/G45。"
+      "notes": "配置模式类封顶: search_mode→G40 gap(缺 getConfig/listConfigKeys trait + mode 系统); resolver_health→G45 gap(350+行 check-resolvable); schema_packs→G44 gap(operations.ts 未迁 G38)。三项均登记已知缺口, 不藏基建进 doctor。"
     },
     "1-5-4": {
       "id": "1-5-4",
@@ -260,12 +275,18 @@
     "1-5-6": {
       "id": "1-5-6",
       "label": "doctor 收尾 (删 TS doctor + 缩 typecheck 基线 + 锚点常量清空)",
-      "status": "blocked",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-5",
       "children": [],
-      "decisions": [],
-      "notes": "收尾(删 TS doctor + 缩 typecheck 基线 + 锚点清空)被剩余 7 锚点项门控——锚点须等 G39-G45 全解才能清空。TS doctor 早已删，typecheck 已改 baseline gate(64 冻结)。现状：锚点 7 项诚实 not-implemented，待基建切片接手后逐一带出。"
+      "decisions": [
+        {
+          "q": "doctor 收尾时锚点常量如何处理?",
+          "answer": "保留 UNMIGRATED_TS_DOCTOR_CHECKS 作 CI 防漂移守卫 + 6 项登记 KNOWN-GAPS(G39-G45 除 G42); 不清空锚点",
+          "note": "用户 grill 选择: 保留锚点+登记缺口。TS doctor 已删(5d5b404), 缩 typecheck 基线未做但非阻塞。"
+        }
+      ],
+      "notes": "doctor 收尾(重 scoped): TS doctor 已删(5d5b404); 锚点常量 UNMIGRATED_TS_DOCTOR_CHECKS 保留为 CI 防漂移守卫(6 项), 不清空; 6 项登记 KNOWN-GAPS G39-G45(除 G42 resolved)。缩 typecheck 基线未做但非阻塞项。"
     },
     "1-3-1": {
       "id": "1-3-1",
@@ -391,11 +412,31 @@
         }
       ],
       "notes": ""
+    },
+    "1-5-2-1": {
+      "id": "1-5-2-1",
+      "label": "sync_freshness 纯分类迁移 (list_sources + 确定性阈值, 零 trait 扩展)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-5-2",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-1": {
+      "id": "1-6-1",
+      "label": "孤儿命令审计 (TS 活 dispatch ~50 vs Rust 已注册, 分类 trivial-delete / real-migrate)",
+      "status": "in_progress",
+      "mode": "explore",
+      "parent": "1-6",
+      "children": [],
+      "decisions": [],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-16 15:07:27",
+    "updated": "2026-07-16 16:00:42",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"

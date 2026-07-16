@@ -45,6 +45,7 @@ pub mod rerank_audit;
 pub mod rerank_client;
 pub mod sources_ops;
 pub mod sync;
+pub mod sync_freshness;
 pub mod takes_fence;
 pub mod time;
 pub mod token_budget;

@@ -86,7 +86,6 @@ impl DoctorCheck {
 /// registered in docs/plans/KNOWN-GAPS.md (G5).
 const UNMIGRATED_TS_DOCTOR_CHECKS: &[(&str, &str)] = &[
     ("embedding_health", "embedding provider reachability, embedding column, coverage backfill"),
-    ("sync_freshness", "per-source lag, unacked parse failures, federated staleness"),
     ("search_mode", "search modes overrides, mode drift"),
     ("federation_health", "federated source sync, mount reachability"),
     ("schema_packs", "schema pack presence / drift"),
@@ -2943,6 +2942,53 @@ async fn run_doctor_command(args: DoctorArgs, config_path: Option<&Path>) -> any
                     }
                 }
 
+                // 3d. Sync freshness (needs the live engine). Pull the source
+                // list via the typed `list_sources` API — no raw SQL — and fold
+                // the per-source lag into one worst-of check. Mirrors the TS
+                // `checkSyncFreshness` (src/commands/doctor.ts): federated
+                // sources (local_path set) whose last_sync_at has gone stale are
+                // flagged warn (>24h) or fail (>72h). Thresholds are env-
+                // overridable; the classifier is pure with an injected `now_ms`.
+                match engine.list_sources(false).await {
+                    Ok(sources) => {
+                        let warn_hours = zbrain_core::sync_freshness::resolve_freshness_hours(
+                            zbrain_core::sync_freshness::ENV_WARN_HOURS,
+                            zbrain_core::sync_freshness::DEFAULT_WARN_HOURS,
+                        );
+                        let fail_hours = zbrain_core::sync_freshness::resolve_freshness_hours(
+                            zbrain_core::sync_freshness::ENV_FAIL_HOURS,
+                            zbrain_core::sync_freshness::DEFAULT_FAIL_HOURS,
+                        );
+                        let (status, message) =
+                            zbrain_core::sync_freshness::classify_sync_freshness(
+                                &sources,
+                                zbrain_core::time::now_epoch_ms(),
+                                warn_hours,
+                                fail_hours,
+                            );
+                        let check = match status {
+                            zbrain_core::sync_freshness::SyncFreshnessStatus::Ok => {
+                                DoctorCheck::ok("sync_freshness", &message)
+                            }
+                            zbrain_core::sync_freshness::SyncFreshnessStatus::Warn => {
+                                DoctorCheck::warn("sync_freshness", &message)
+                            }
+                            zbrain_core::sync_freshness::SyncFreshnessStatus::Fail => {
+                                DoctorCheck::fail("sync_freshness", &message)
+                            }
+                        };
+                        checks.push(check);
+                    }
+                    Err(e) => {
+                        // Mirrors the TS catch: surface as warn so a transient
+                        // list failure never hard-fails an otherwise healthy brain.
+                        checks.push(DoctorCheck::warn(
+                            "sync_freshness",
+                            &format!("Could not check sync freshness: {e}"),
+                        ));
+                    }
+                }
+
                 engine.disconnect().await?;
             }
             Err(e) => {
@@ -5491,7 +5537,7 @@ mod tests {
         let checks = vec![
             DoctorCheck::ok("config", "m"),
             DoctorCheck::not_implemented("embedding_health", "covers N sub-checks"),
-            DoctorCheck::not_implemented("sync_freshness", "covers N sub-checks"),
+            DoctorCheck::not_implemented("search_mode", "covers N sub-checks"),
         ];
         assert_eq!(doctor_status(&checks), "healthy");
         assert_eq!(doctor_health_score(&checks), 100);
@@ -5504,8 +5550,8 @@ mod tests {
         // subsystem is migrated, its entry moves out into a real check.
         let n = UNMIGRATED_TS_DOCTOR_CHECKS.len();
         assert!(
-            (7..=12).contains(&n),
-            "expected 7-12 subsystem-aggregated entries, got {n}"
+            (6..=12).contains(&n),
+            "expected 6-12 subsystem-aggregated entries, got {n}"
         );
     }
 
@@ -5522,6 +5568,23 @@ mod tests {
                 .iter()
                 .any(|(name, _)| *name == "reranker_health"),
             "reranker_health is a real check now; it must not appear in UNMIGRATED_TS_DOCTOR_CHECKS"
+        );
+    }
+
+    #[test]
+    fn sync_freshness_is_no_longer_unmigrated() {
+        // Migration hard-trace: `sync_freshness` moved OUT of the UNMIGRATED
+        // stand-in list into a real doctor check (pulls the source list via the
+        // typed `list_sources` API — no raw SQL — and folds per-source lag into
+        // a worst-of warn/fail with env-overridable thresholds). Mirrors the TS
+        // `checkSyncFreshness` (src/commands/doctor.ts). Guards against a later
+        // agent re-adding it to the not-implemented band and silently
+        // regressing the real check back to a placeholder.
+        assert!(
+            !UNMIGRATED_TS_DOCTOR_CHECKS
+                .iter()
+                .any(|(name, _)| *name == "sync_freshness"),
+            "sync_freshness is a real check now; it must not appear in UNMIGRATED_TS_DOCTOR_CHECKS"
         );
     }
 
