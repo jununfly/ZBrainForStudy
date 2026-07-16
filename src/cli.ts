@@ -803,15 +803,6 @@ async function handleCliOnly(command: string, args: string[]) {
     }
   }
 
-  // Commands that don't need a database connection
-  // NOTE: init is now implemented in Rust
-  // See crates/zbrain-cli/src/lib.rs
-  // These commands are routed to the Rust binary via npm bin entry
-  if (command === 'init') {
-    console.error(`\`zbrain ${command}\` is now implemented in Rust.`);
-    console.error('Please run the Rust CLI directly or ensure your npm bin links are updated.');
-    process.exit(1);
-  }
   // v0.37 fix wave (deferred TODO, shipped): one-command wipe-and-reinit.
   // Spawns its own engine internally so no pre-bound engine needed.
   if (command === 'reinit-pglite') {
@@ -951,13 +942,6 @@ async function handleCliOnly(command: string, args: string[]) {
     await runSkillpackCheck(args);
     return;
   }
-  // NOTE: doctor is now implemented in Rust
-  // See crates/zbrain-cli/src/lib.rs
-  if (command === 'doctor') {
-    console.error(`\`zbrain doctor\` is now implemented in Rust.`);
-    console.error('Please run the Rust CLI directly or ensure your npm bin links are updated.');
-    process.exit(1);
-  }
 
   if (command === 'ze-switch') {
     // v0.36.0.0 — manual ZE-default switch lever. Owns its own engine lifecycle
@@ -1072,18 +1056,6 @@ async function handleCliOnly(command: string, args: string[]) {
     }
   }
 
-  // v0.37 fix wave (Lane D.4 + CDX2-12): short-circuit `zbrain sync --help`
-  // BEFORE the engine bind. runSync has its own --help branch but can't
-  // reach it without an engine — which means a user running `--help` from
-  // a fresh tmpdir with no config gets a no-such-config error instead of
-  // help text. Importing runSync without the engine + passing null works
-  // because runSync's --help path doesn't touch the engine argument.
-  if (command === 'sync' && (args.includes('--help') || args.includes('-h'))) {
-    const { runSync } = await import('./commands/sync.ts');
-    await runSync(null as any, args);
-    return;
-  }
-
   // v0.41.6.0 D3 (per outside-voice F1): connect-time + dispatch-time wallclock
   // timeouts for read-only commands whose hang would otherwise spin at 100% CPU
   // (the production "10-day zombie zbrain search ping" bug class). The wrap
@@ -1163,13 +1135,6 @@ async function handleCliOnly(command: string, args: string[]) {
         await runEmbed(engine, args);
         break;
       }
-      // NOTE: config is now implemented in Rust - see crates/zbrain-cli/src/lib.rs
-      case 'config': {
-        console.error(`\`zbrain config\` is now implemented in Rust.`);
-        console.error('Please run the Rust CLI directly or ensure your npm bin links are updated.');
-        process.exit(1);
-      }
-      // doctor is handled before connectEngine() above - now implemented in Rust
       case 'migrate': {
         const { runMigrateEngine } = await import('./commands/migrate-engine.ts');
         await runMigrateEngine(engine, args);
