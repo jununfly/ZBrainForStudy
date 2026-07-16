@@ -32,6 +32,11 @@
           "q": "Part11 纠缠破局策略?",
           "answer": "每切片自带解缠：沿用 schema_pack 模式（先迁 Rust 替代 → 消除对本子系统 TS 的 import → 再删 TS）。G38 尾(1-10)不独立硬关，随消费方切片(import/sync/whoknows/artifact/calibration/eval-schema-authoring 等)各自端口而自然消解。",
           "note": "用户 2026-07-15 决策"
+        },
+        {
+          "q": "下一刀选哪个子系统 (grill 2026-07-16)?",
+          "answer": "1-4 output 模块",
+          "note": "纠缠最低(全仓仅1个外部 importer integrity.ts)；可复用 calibration 分层打法(纯子集+engine-read+infra Phase2)；不碰 LLM/execute_raw。更正: 1-6 孤儿命令节点非过时——6 命令 cli.ts 全有 live dispatch, Rust 全无, 是真实重迁移工作。"
         }
       ],
       "notes": ""
@@ -84,11 +89,20 @@
     "1-4": {
       "id": "1-4",
       "label": "output 模块迁移 (src/core/output 9 文件)",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "explore",
       "parent": "1",
-      "children": [],
-      "decisions": [],
+      "children": [
+        "1-4-1",
+        "1-4-2"
+      ],
+      "decisions": [
+        {
+          "q": "output 首刀粒度?",
+          "answer": "B: 4 validators 全切 (citation+triple-hr 纯字符串 + link+back-link engine-read)",
+          "note": "validators 是自洽完整子概念(同一 PageValidator 契约)。citation(180)+triple-hr(97)=纯字符串零 engine; link(150,getPage)+back-link(51,getLinks)=只读 engine, 复用 1-3-2 打法, trait 只读方法已存在无需扩。scaffold/slug-registry/writer(infra) 留后续。"
+        }
+      ],
       "notes": ""
     },
     "1-5": {
@@ -289,11 +303,31 @@
       "children": [],
       "decisions": [],
       "notes": "各项阻塞于未迁 Rust 基建（与 doctor 剩余项同源，不硬搬）：queryAcrossBrains 需 mount 解析 API；aggregateDomainScorecards + undoWave 需 engine.execute_raw（BrainEngine trait 故意不放逃生舱，engine.rs:1896）；gateVoice + runAbTrial 需 LLM 接线（crates/zbrain-core/src/ai/ 客户端已存在，待编排）。nudge checkCooldown/writeIncorrectResolution 亦需持久化写路径。待相应基建切片就绪后开工。"
+    },
+    "1-4-1": {
+      "id": "1-4-1",
+      "label": "output page validators port (citation + triple-hr 纯字符串 + link + back-link engine-read)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-4",
+      "children": [],
+      "decisions": [],
+      "notes": "新建 zbrain_core::output_validators (837+行)。4 validator 忠实 port: citation+triple-hr 纯字符串 (无 regex 引擎, 手写扫描等价 CITATION_RE/looksFactual/splitParagraphs); link+back-link 用 &dyn BrainEngine 只读 get_page/get_links (复用 1-3-2 engine-read 打法, 零 trait 扩展)。31 单测全绿 (含 pure + InMemoryEngine e2e), 全 lib 1496 passed, core+cli build 干净。本切片纯加法: TS validators/ 暂不删 (writer.ts 编排器 + integrity.ts 仍 import, 待 writer/integrity port 切片自然解缠)。"
+    },
+    "1-4-2": {
+      "id": "1-4-2",
+      "label": "output writer/scaffold/slug-registry infra port + TS validators/ 删除 (解缠 integrity.ts)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-4",
+      "children": [],
+      "decisions": [],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-15 22:32:57",
+    "updated": "2026-07-16 11:35:21",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"

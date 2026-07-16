@@ -37,6 +37,7 @@ pub mod llm;
 pub mod migration;
 pub mod minions;
 pub mod operation;
+pub mod output_validators;
 pub mod postgres;
 pub mod progress;
 pub mod recency_decay;

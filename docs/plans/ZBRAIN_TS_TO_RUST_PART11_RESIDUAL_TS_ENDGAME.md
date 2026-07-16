@@ -41,7 +41,9 @@ eval_drift 已迁（首端口，端到端模式验证完成）：Rust zbrain_cor
 │   ├── [x][Y+] 1-3-1. calibration 纯函数 port (Phase 1: 零依赖纯函数)
 │   ├── [x][Y+] 1-3-2. calibration engine-read 子集 (forecastForTake + batchForecast + get_scorecard domain_prefix)
 │   └── [!][X+] 1-3-3. calibration Phase 2 engine/LLM 支撑（queryAcrossBrains/aggregateDomainScorecards/undoWave/gateVoice/runAbTrial）
-├── [ ][X+] 1-4. output 模块迁移 (src/core/output 9 文件)
+├── [~][X+] 1-4. output 模块迁移 (src/core/output 9 文件)
+│   ├── [x][Y+] 1-4-1. output page validators port (citation + triple-hr 纯字符串 + link + back-link engine-read)
+│   └── [ ][X+] 1-4-2. output writer/scaffold/slug-registry infra port + TS validators/ 删除 (解缠 integrity.ts)
 ├── [~][X+] 1-5. doctor 11 项健康检查迁移 (G5)
 │   ├── [x][X+] 1-5-1. doctor 探查 + tracer bullet (定位 11 检查 TS 实现与 Rust 依赖、确认 runner 入口)
 │   ├── [!][Y+] 1-5-2. 基础健康类检查迁移 (embedding_health / sync_freshness / federation_health)
