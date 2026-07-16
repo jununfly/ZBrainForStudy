@@ -20,6 +20,21 @@ into one of four buckets:
 Run:  python docs/plans/scripts/audit-orphan-commands.py
 Emits markdown to stdout and (optionally) writes docs/plans/1-6-orphan-audit.md
 when given --write.
+
+CORRECTION (2026-07-16, 1-6-3 PARITY_GATE pass):
+  This original classifier bucketed TRIVIAL_DELETE purely by command *semantics*
+  ("is it a dev/diagnostic tool?") and did NOT check test references. The
+  PARITY_GATE pass (docs/plans/scripts/audit-trivial-deps.py) found that most
+  TRIVIAL_DELETE candidates still have TEST references — test files directly
+  `import` the command module's exported functions as library units. Deleting
+  those modules breaks the tests, so they are NOT trivially deletable; they
+  belong with 1-6-4 REAL_MIGRATE (port + migrate/retire the tests alongside the
+  Rust port). Truly zero-dep deletions found: cache / claw-test / report.
+  Also corrected below: discovery / network / parse are NOT commands — they were
+  mis-scraped from a RemoteMcpError.reason switch (cli.ts ~324-365). `call` is a
+  ghost CLI_ONLY entry with no handler (removed from the set, nothing to delete).
+  The real deletion gate is: zero src refs AND zero test refs AND (for
+  RUST_OWNED) real non-stub Rust coverage.
 """
 
 import sys
@@ -104,37 +119,44 @@ add("skillpack", "RUST_OWNED", "schema", "Rust Schema group supersedes TS skillp
 add("skillpack-check", "RUST_OWNED", "schema", "Rust Schema validate/lint supersede skillpack-check.")
 
 # --- TRIVIAL_DELETE: pure dev/diagnostic utility, no domain value to port ---
+# NOTE: see CORRECTION in module docstring. Only cache/claw-test/report are
+# truly zero-dep. The rest carry TEST references (tests import the module's
+# exported functions) and must migrate with 1-6-4, not delete here.
 for cmd, why in [
-    ("lint", "Code linting dev tool."),
-    ("upgrade", "Self-update shim."),
-    ("post-upgrade", "Post-update hook shim."),
-    ("check-update", "Update availability check."),
-    ("reinit-pglite", "Dev wipe-and-reinit (pglite-era; Rust uses libsql/postgres)."),
-    ("apply-migrations", "DB migration runner (Rust runs migrations internally)."),
-    ("repair-jsonb", "Dev JSONB repair utility."),
-    ("report", "Diagnostic report generator."),
-    ("smoke-test", "Dev smoke test."),
-    ("claw-test", "Dev claw test harness."),
-    ("ze-switch", "Unknown dev toggle (ze- prefix)."),
-    ("check-backlinks", "TS-only backlink check (Rust Links covers backlinks)."),
-    ("cache", "Cache ops dev utility."),
-    ("friction", "Unknown dev/diagnostic tool."),
-    ("lsd", "Unknown dev listing tool."),
-    ("founder", "Unknown dev tool."),
-    ("files", "File listing utility."),
-    ("parse", "Unknown parse utility."),
-    ("network", "Network connectivity diagnostic."),
-    ("discovery", "Network discovery diagnostic."),
-    ("anomalies", "Anomaly detection diagnostic (TS-only)."),
-    ("transcripts", "Transcript ops (TS-only diagnostic)."),
-    ("book-mirror", "Book mirroring dev tool."),
-    ("call", "Unknown CLI_ONLY entry; no handler found."),
-    ("integrations", "Integration listing (TS-only dev)."),
-    ("frontmatter", "Frontmatter ops (TS-only; Rust has no equivalent yet)."),
-    ("mounts", "Mount-engine dev ops (TS-only)."),
-    ("cache", "Cache ops dev utility."),
+    ("lint", "Code linting dev tool. [1-6-3 gate: 4 test refs -> 1-6-4]"),
+    ("upgrade", "Self-update shim. [1-6-3 gate: 4 test refs -> 1-6-4]"),
+    ("post-upgrade", "Post-update hook shim (upgrade.ts). [4 test refs -> 1-6-4]"),
+    ("check-update", "Update availability check. [2 test refs -> 1-6-4]"),
+    ("reinit-pglite", "Dev wipe-and-reinit. [3 test refs + embedding-dim-check.ts hint -> 1-6-4]"),
+    ("apply-migrations", "DB migration runner. [10 test refs -> 1-6-4]"),
+    ("repair-jsonb", "Dev JSONB repair utility. [2 test refs -> 1-6-4]"),
+    ("report", "Diagnostic report generator. [1-6-3 gate: zero-dep, DELETED @1-6-3]"),
+    ("smoke-test", "Dev smoke test (inline handler, no module). [defer -> 1-6-4]"),
+    ("claw-test", "Dev claw test harness (CLI shell). [1-6-3 gate: zero-dep, DELETED @1-6-3]"),
+    ("ze-switch", "Manual ZE-default switch lever. [1 test ref -> 1-6-4]"),
+    ("check-backlinks", "TS-only backlink check. [3 test refs -> 1-6-4]"),
+    ("cache", "Cache ops dev utility. [1-6-3 gate: zero-dep, DELETED @1-6-3]"),
+    ("friction", "Friction-log dev tool. [2 test refs -> 1-6-4]"),
+    ("lsd", "LSD ideation (re-exports brainstorm.ts). [re-export dep -> 1-6-4]"),
+    ("founder", "Founder scorecard. [2 test refs -> 1-6-4]"),
+    ("files", "File listing utility. [1 test ref -> 1-6-4]"),
+    ("anomalies", "Anomaly detection. [operations.ts op-shadow (find_anomalies) -> 1-6-4]"),
+    ("transcripts", "Transcript ops. [operations.ts op-shadow (get_recent_transcripts) -> 1-6-4]"),
+    ("book-mirror", "Book mirroring dev tool. [1 test ref -> 1-6-4]"),
+    ("integrations", "Integration listing. [4 test refs -> 1-6-4]"),
+    ("frontmatter", "Frontmatter ops. [2 test refs -> 1-6-4]"),
+    ("mounts", "Mount-engine dev ops. [6 test refs -> 1-6-4]"),
 ]:
     add(cmd, "TRIVIAL_DELETE", "", why)
+
+# --- NON_COMMAND: mis-scraped entries that are NOT CLI commands ---
+for cmd, why in [
+    ("discovery", "NOT a command — RemoteMcpError.reason switch case (cli.ts ~328)."),
+    ("network", "NOT a command — RemoteMcpError.reason switch case (cli.ts ~341)."),
+    ("parse", "NOT a command — RemoteMcpError.reason switch case (cli.ts ~363)."),
+    ("call", "Ghost CLI_ONLY entry, no handler. Removed from CLI_ONLY @1-6-3."),
+]:
+    add(cmd, "NON_COMMAND", "", why)
 
 # --- REAL_MIGRATE: real domain functionality, no Rust equivalent ---
 for cmd, why in [
@@ -205,7 +227,7 @@ def main():
         counts[cat] = counts.get(cat, 0) + 1
     lines.append("## Summary")
     lines.append("")
-    for cat in ["RUST_OWNED", "TRIVIAL_DELETE", "REAL_MIGRATE", "PARITY_REVIEW"]:
+    for cat in ["RUST_OWNED", "TRIVIAL_DELETE", "REAL_MIGRATE", "PARITY_REVIEW", "NON_COMMAND"]:
         lines.append(f"- **{cat}**: {counts.get(cat, 0)}")
     lines.append(f"- **Total classified**: {len(C)}")
     lines.append("")
@@ -215,7 +237,7 @@ def main():
     lines.append("| Command | Category | Rust equivalent | Rationale |")
     lines.append("|---------|----------|-----------------|-----------|")
     # stable order: by category then name
-    order = {"RUST_OWNED": 0, "PARITY_REVIEW": 1, "TRIVIAL_DELETE": 2, "REAL_MIGRATE": 3}
+    order = {"RUST_OWNED": 0, "PARITY_REVIEW": 1, "TRIVIAL_DELETE": 2, "REAL_MIGRATE": 3, "NON_COMMAND": 4}
     for cmd in sorted(C.keys(), key=lambda c: (order[C[c][0]], c)):
         cat, rust, why = C[cmd]
         r = rust or "—"

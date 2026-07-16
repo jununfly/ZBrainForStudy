@@ -35,7 +35,7 @@ for (const op of operations) {
 }
 
 // CLI-only commands that bypass the operation layer
-const CLI_ONLY = new Set(['reinit-pglite', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'call', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'features', 'apply-migrations', 'skillpack-check', 'resolvers', 'integrity', 'repair-jsonb', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'frontmatter', 'auth', 'friction', 'claw-test', 'book-mirror', 'anomalies', 'transcripts', 'models', 'recall', 'forget', 'edges-backfill', 'cache', 'ze-switch', 'founder', 'brainstorm', 'lsd']);
+const CLI_ONLY = new Set(['reinit-pglite', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'import', 'export', 'files', 'embed', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'features', 'apply-migrations', 'skillpack-check', 'resolvers', 'integrity', 'repair-jsonb', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'frontmatter', 'auth', 'friction', 'book-mirror', 'anomalies', 'transcripts', 'models', 'recall', 'forget', 'edges-backfill', 'ze-switch', 'founder', 'brainstorm', 'lsd']);
 // CLI-only commands whose handlers print their own --help text. These are
 // excluded from the generic short-circuit so detailed per-command and
 // per-subcommand usage stays reachable.
@@ -46,7 +46,6 @@ const CLI_ONLY_SELF_HELP = new Set([
   'integrations', 'friction',
   'frontmatter', 'check-resolvable',
   'models',
-  'cache',
   'brainstorm', 'lsd',
   // v0.37 fix wave (Lane D.4 + CDX2-12): sync's --no-embed flag was
   // unreachable via help because the dispatcher's generic CLI-only
@@ -886,14 +885,6 @@ async function handleCliOnly(command: string, args: string[]) {
     await runMounts(args);
     return;
   }
-  if (command === 'cache') {
-    // v0.32.x search-lite: semantic query cache management. Dispatch the
-    // subcommand handler (stats / clear / prune); the handler opens its
-    // own engine connection.
-    const { runCache } = await import('./commands/cache.ts');
-    await runCache(args);
-    return;
-  }
   if (command === 'routing-eval') {
     const { runRoutingEvalCli } = await import('./commands/routing-eval.ts');
     await runRoutingEvalCli(args);
@@ -909,15 +900,6 @@ async function handleCliOnly(command: string, args: string[]) {
   if (command === 'friction') {
     const { runFriction } = await import('./commands/friction.ts');
     process.exit(runFriction(args));
-  }
-  if (command === 'claw-test') {
-    const { runClawTest } = await import('./commands/claw-test.ts');
-    process.exit(await runClawTest(args));
-  }
-  if (command === 'report') {
-    const { runReport } = await import('./commands/report.ts');
-    await runReport(args);
-    return;
   }
   if (command === 'apply-migrations') {
     // Does not need connectEngine — each phase (schema, smoke, host-rewrite)
@@ -1651,7 +1633,6 @@ TOOLS
   transcripts recent [--days N]      v0.29: recent raw .txt transcripts (local-only)
   dream [--dry-run] [--json]         Run the overnight maintenance cycle once (cron-friendly).
   check-resolvable [--json] [--fix]  Validate skill tree (reachability/MECE/DRY)
-  report --type <name> --content ... Save timestamped report to brain/reports/
 
 BRAIN (ideate / explore — v0.37/v0.38)
   brainstorm <question> [--json]     Bisociation idea generator (hybrid search + far-set + judge)
