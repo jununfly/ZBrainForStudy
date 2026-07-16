@@ -3859,6 +3859,186 @@ impl BrainEngine for PostgresEngine {
         })
     }
 
+    async fn get_health(&self) -> Result<crate::autopilot::brain_score::BrainHealth> {
+        use crate::autopilot::brain_score::{BrainHealth, MostConnectedEntry};
+
+        let pool = self.pool()?;
+
+        // Backend-model note (see BrainStats docs / KNOWN-GAPS G24, G46):
+        // no content_chunks / timeline_entries tables — embedding coverage is
+        // page-level (one BLOB per page, G24), timeline is a JSON-array text
+        // column parsed Rust-side. Soft-deleted pages excluded (deleted_at IS
+        // NULL), matching InMemory `live_pages`; dead_links is deleted-aware.
+        // orphan_pages = islanded (no inbound AND no outbound link). Mirrors
+        // the libsql `get_health` and InMemory engine.rs semantics.
+
+        let page_count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM pages WHERE deleted_at IS NULL")
+                .fetch_one(pool)
+                .await
+                .map_err(|e| Error::engine(format!("get_health page_count: {e}")))?;
+
+        let missing_embeddings: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pages WHERE deleted_at IS NULL AND embedding IS NULL",
+        )
+        .fetch_one(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_health missing_embeddings: {e}")))?;
+
+        let link_count: i64 = sqlx::query_scalar("SELECT count(*) FROM links")
+            .fetch_one(pool)
+            .await
+            .map_err(|e| Error::engine(format!("get_health link_count: {e}")))?;
+
+        let dead_links: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM links l \
+             WHERE NOT EXISTS (SELECT 1 FROM pages p \
+               WHERE p.id = l.to_page_id AND p.deleted_at IS NULL)",
+        )
+        .fetch_one(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_health dead_links: {e}")))?;
+
+        let orphan_pages: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pages p WHERE p.deleted_at IS NULL \
+               AND NOT EXISTS (SELECT 1 FROM links l WHERE l.to_page_id = p.id) \
+               AND NOT EXISTS (SELECT 1 FROM links l WHERE l.from_page_id = p.id)",
+        )
+        .fetch_one(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_health orphan_pages: {e}")))?;
+
+        let entity_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pages \
+             WHERE deleted_at IS NULL AND type IN ('person', 'company')",
+        )
+        .fetch_one(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_health entity_count: {e}")))?;
+
+        let entities_with_inbound: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pages e WHERE e.deleted_at IS NULL \
+               AND e.type IN ('person', 'company') \
+               AND EXISTS (SELECT 1 FROM links l WHERE l.to_page_id = e.id)",
+        )
+        .fetch_one(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_health entities_with_inbound: {e}")))?;
+
+        // Timeline (Rust-side JSON parse): a page "has timeline" iff its
+        // JSON-array string column is a non-empty array.
+        let timeline_rows = sqlx::query_as::<_, (String, String)>(
+            "SELECT type, timeline FROM pages WHERE deleted_at IS NULL",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_health timeline: {e}")))?;
+        let mut pages_with_timeline = 0i64;
+        let mut entities_with_timeline = 0i64;
+        for (ty, tl) in &timeline_rows {
+            let has_tl = matches!(
+                serde_json::from_str::<serde_json::Value>(tl),
+                Ok(serde_json::Value::Array(ref a)) if !a.is_empty()
+            );
+            if has_tl {
+                pages_with_timeline += 1;
+                if ty == "person" || ty == "company" {
+                    entities_with_timeline += 1;
+                }
+            }
+        }
+
+        // most_connected: top 5 entities by (in + out) link count, excluding
+        // zero-link entities. Deterministic tie-break by slug.
+        let connected_rows = sqlx::query_as::<_, (String, i64)>(
+            "SELECT slug, lc FROM ( \
+               SELECT p.slug AS slug, \
+                      (SELECT count(*) FROM links l \
+                         WHERE l.from_page_id = p.id OR l.to_page_id = p.id) AS lc \
+               FROM pages p \
+               WHERE p.deleted_at IS NULL AND p.type IN ('person', 'company') \
+             ) sub WHERE lc > 0 \
+             ORDER BY lc DESC, slug ASC LIMIT 5",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_health most_connected: {e}")))?;
+        let most_connected: Vec<MostConnectedEntry> = connected_rows
+            .into_iter()
+            .map(|(slug, lc)| MostConnectedEntry {
+                slug,
+                link_count: lc.max(0) as usize,
+            })
+            .collect();
+
+        // ── Derived ratios ────────────────────────────────────────────────
+        let embedded_pages = (page_count - missing_embeddings).max(0);
+        let embed_coverage = if page_count > 0 {
+            embedded_pages as f64 / page_count as f64
+        } else {
+            1.0
+        };
+        let link_coverage = if entity_count > 0 {
+            entities_with_inbound as f64 / entity_count as f64
+        } else {
+            0.0
+        };
+        let timeline_coverage = if entity_count > 0 {
+            entities_with_timeline as f64 / entity_count as f64
+        } else {
+            0.0
+        };
+
+        // ── Score computation (mirrors InMemory / libsql) ─────────────────
+        let (
+            embed_coverage_score,
+            link_density_score,
+            timeline_coverage_score,
+            no_orphans_score,
+            no_dead_links_score,
+        ) = if page_count == 0 {
+            (35u32, 25u32, 15u32, 15u32, 10u32)
+        } else {
+            let pc = page_count as f64;
+            let link_density = (link_count as f64 / pc).min(1.0);
+            let timeline_density = (pages_with_timeline as f64 / pc).min(1.0);
+            let no_orphans = 1.0 - (orphan_pages as f64 / pc);
+            let no_dead = 1.0 - (dead_links as f64 / pc).min(1.0);
+            (
+                (embed_coverage * 35.0).round() as u32,
+                (link_density * 25.0).round() as u32,
+                (timeline_density * 15.0).round() as u32,
+                (no_orphans * 15.0).round() as u32,
+                (no_dead * 10.0).round() as u32,
+            )
+        };
+        let brain_score = BrainHealth::compute_brain_score(
+            embed_coverage_score,
+            link_density_score,
+            timeline_coverage_score,
+            no_orphans_score,
+            no_dead_links_score,
+        );
+
+        Ok(BrainHealth {
+            page_count: page_count.max(0) as usize,
+            embed_coverage,
+            stale_pages: 0,
+            orphan_pages: orphan_pages.max(0) as usize,
+            missing_embeddings: missing_embeddings.max(0) as usize,
+            brain_score,
+            dead_links: dead_links.max(0) as usize,
+            link_coverage,
+            timeline_coverage,
+            most_connected,
+            embed_coverage_score,
+            link_density_score,
+            timeline_coverage_score,
+            no_orphans_score,
+            no_dead_links_score,
+        })
+    }
+
     async fn health_check(
         &self,
     ) -> Result<crate::minions::types::SupervisorHealth> {

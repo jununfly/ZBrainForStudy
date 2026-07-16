@@ -4456,6 +4456,206 @@ impl BrainEngine for LibsqlEngine {
         })
     }
 
+    async fn get_health(&self) -> Result<crate::autopilot::brain_score::BrainHealth> {
+        use crate::autopilot::brain_score::{BrainHealth, MostConnectedEntry};
+
+        let conn = self.conn().await?;
+
+        // ── Scalar metrics in one round-trip ──────────────────────────────
+        // Backend-model note (see BrainStats docs / KNOWN-GAPS G24, G46):
+        // the Rust production schema has NO content_chunks / timeline_entries
+        // tables. So embedding coverage is computed at the PAGE level (one
+        // embedding BLOB per page, G24) rather than TS's chunk level, and
+        // timeline lives as a JSON-array string column parsed Rust-side below.
+        // Everything else mirrors the InMemory `get_health` (engine.rs) and
+        // the TS `getHealth` (pglite-engine.ts) semantics:
+        //   * page_count / entity counts exclude soft-deleted pages
+        //     (deleted_at IS NULL) — matches InMemory `live_pages`.
+        //   * dead_links = links whose target page is missing OR soft-deleted
+        //     (deleted-aware, matching InMemory `live_ids`; slightly stricter
+        //     than TS which ignores deleted_at).
+        //   * orphan_pages = islanded: no inbound AND no outbound link.
+        let row = conn
+            .query(
+                "SELECT \
+                   (SELECT COUNT(*) FROM pages WHERE deleted_at IS NULL), \
+                   (SELECT COUNT(*) FROM pages WHERE deleted_at IS NULL AND embedding IS NULL), \
+                   (SELECT COUNT(*) FROM links), \
+                   (SELECT COUNT(*) FROM links l \
+                      WHERE NOT EXISTS (SELECT 1 FROM pages p \
+                        WHERE p.id = l.to_page_id AND p.deleted_at IS NULL)), \
+                   (SELECT COUNT(*) FROM pages p WHERE p.deleted_at IS NULL \
+                      AND NOT EXISTS (SELECT 1 FROM links l WHERE l.to_page_id = p.id) \
+                      AND NOT EXISTS (SELECT 1 FROM links l WHERE l.from_page_id = p.id)), \
+                   (SELECT COUNT(*) FROM pages \
+                      WHERE deleted_at IS NULL AND type IN ('person', 'company')), \
+                   (SELECT COUNT(*) FROM pages e WHERE e.deleted_at IS NULL \
+                      AND e.type IN ('person', 'company') \
+                      AND EXISTS (SELECT 1 FROM links l WHERE l.to_page_id = e.id))",
+                (),
+            )
+            .await
+            .map_err(|e| Error::engine(format!("get_health scalars: {e}")))?
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("get_health scalars row: {e}")))?;
+
+        let (
+            page_count,
+            missing_embeddings,
+            link_count,
+            dead_links,
+            orphan_pages,
+            entity_count,
+            entities_with_inbound,
+        ) = match row {
+            Some(r) => (
+                r.get::<i64>(0).unwrap_or(0),
+                r.get::<i64>(1).unwrap_or(0),
+                r.get::<i64>(2).unwrap_or(0),
+                r.get::<i64>(3).unwrap_or(0),
+                r.get::<i64>(4).unwrap_or(0),
+                r.get::<i64>(5).unwrap_or(0),
+                r.get::<i64>(6).unwrap_or(0),
+            ),
+            None => (0, 0, 0, 0, 0, 0, 0),
+        };
+
+        // ── Timeline metrics (Rust-side JSON parse) ───────────────────────
+        // timeline is a JSON-array string per page; a page "has timeline" iff
+        // that array is non-empty. Count both all live pages and entity pages.
+        let (pages_with_timeline, entities_with_timeline) = {
+            let mut all = 0i64;
+            let mut entity = 0i64;
+            let mut rows = conn
+                .query(
+                    "SELECT type, timeline FROM pages WHERE deleted_at IS NULL",
+                    (),
+                )
+                .await
+                .map_err(|e| Error::engine(format!("get_health timeline: {e}")))?;
+            while let Some(r) = rows
+                .next()
+                .await
+                .map_err(|e| Error::engine(format!("get_health timeline row: {e}")))?
+            {
+                let ty: String = r.get::<String>(0).unwrap_or_default();
+                let tl: String = r.get::<String>(1).unwrap_or_default();
+                let has_tl = matches!(
+                    serde_json::from_str::<serde_json::Value>(&tl),
+                    Ok(serde_json::Value::Array(ref a)) if !a.is_empty()
+                );
+                if has_tl {
+                    all += 1;
+                    if ty == "person" || ty == "company" {
+                        entity += 1;
+                    }
+                }
+            }
+            (all, entity)
+        };
+
+        // ── most_connected: top 5 entities by (in + out) link count ───────
+        // Excludes entities with zero links (matches InMemory's filter_map on
+        // the link-count map). Deterministic tie-break by slug.
+        let most_connected = {
+            let mut out: Vec<MostConnectedEntry> = Vec::new();
+            let mut rows = conn
+                .query(
+                    "SELECT slug, lc FROM ( \
+                       SELECT p.slug AS slug, \
+                              (SELECT COUNT(*) FROM links l \
+                                 WHERE l.from_page_id = p.id OR l.to_page_id = p.id) AS lc \
+                       FROM pages p \
+                       WHERE p.deleted_at IS NULL AND p.type IN ('person', 'company') \
+                     ) WHERE lc > 0 \
+                     ORDER BY lc DESC, slug ASC LIMIT 5",
+                    (),
+                )
+                .await
+                .map_err(|e| Error::engine(format!("get_health most_connected: {e}")))?;
+            while let Some(r) = rows.next().await.map_err(|e| {
+                Error::engine(format!("get_health most_connected row: {e}"))
+            })? {
+                let slug: String = r.get::<String>(0).unwrap_or_default();
+                let lc: i64 = r.get::<i64>(1).unwrap_or(0);
+                out.push(MostConnectedEntry {
+                    slug,
+                    link_count: lc.max(0) as usize,
+                });
+            }
+            out
+        };
+
+        // ── Derived ratios ────────────────────────────────────────────────
+        let embedded_pages = (page_count - missing_embeddings).max(0);
+        let embed_coverage = if page_count > 0 {
+            embedded_pages as f64 / page_count as f64
+        } else {
+            1.0 // empty brain → nothing to embed (matches InMemory)
+        };
+        let link_coverage = if entity_count > 0 {
+            entities_with_inbound as f64 / entity_count as f64
+        } else {
+            0.0
+        };
+        let timeline_coverage = if entity_count > 0 {
+            entities_with_timeline as f64 / entity_count as f64
+        } else {
+            0.0
+        };
+
+        // ── Score computation (mirrors InMemory engine.rs) ────────────────
+        // v0.37.10.0: empty brains (page_count == 0) get FULL marks (100/100).
+        let (
+            embed_coverage_score,
+            link_density_score,
+            timeline_coverage_score,
+            no_orphans_score,
+            no_dead_links_score,
+        ) = if page_count == 0 {
+            (35u32, 25u32, 15u32, 15u32, 10u32)
+        } else {
+            let pc = page_count as f64;
+            let link_density = (link_count as f64 / pc).min(1.0);
+            let timeline_density = (pages_with_timeline as f64 / pc).min(1.0);
+            let no_orphans = 1.0 - (orphan_pages as f64 / pc);
+            let no_dead = 1.0 - (dead_links as f64 / pc).min(1.0);
+            (
+                (embed_coverage * 35.0).round() as u32,
+                (link_density * 25.0).round() as u32,
+                (timeline_density * 15.0).round() as u32,
+                (no_orphans * 15.0).round() as u32,
+                (no_dead * 10.0).round() as u32,
+            )
+        };
+        let brain_score = BrainHealth::compute_brain_score(
+            embed_coverage_score,
+            link_density_score,
+            timeline_coverage_score,
+            no_orphans_score,
+            no_dead_links_score,
+        );
+
+        Ok(BrainHealth {
+            page_count: page_count.max(0) as usize,
+            embed_coverage,
+            stale_pages: 0, // no timeline_entries table (matches InMemory)
+            orphan_pages: orphan_pages.max(0) as usize,
+            missing_embeddings: missing_embeddings.max(0) as usize,
+            brain_score,
+            dead_links: dead_links.max(0) as usize,
+            link_coverage,
+            timeline_coverage,
+            most_connected,
+            embed_coverage_score,
+            link_density_score,
+            timeline_coverage_score,
+            no_orphans_score,
+            no_dead_links_score,
+        })
+    }
+
 
     // C-layer state transition (UPDATE), then reselects the mutated rows.
     // Scheduling columns are stored as INTEGER epoch-ms, compared directly
