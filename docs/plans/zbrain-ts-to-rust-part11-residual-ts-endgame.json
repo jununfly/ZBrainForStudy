@@ -591,18 +591,24 @@
     },
     "1-6-4-5": {
       "id": "1-6-4-5",
-      "label": "get_health 生产后端 (libsql + postgres): 补 BrainEngine::get_health override — page/embed_coverage/dead_links/orphan/timeline_coverage/link_coverage/most_connected + 5分量brain_score(0-100), SQL 查询照 get_brain_stats 基建(scalar_count/links/timeline). 解 G48: 硬阻塞 features 死命令 + doctor brain_score 软降级 + autopilot targeted-submit. 三后端对齐单测钉 wire, 空brain=100/100 边界",
-      "status": "in_progress",
+      "label": "get_health 生产后端 (libsql + postgres) 完成: 两后端 override BrainEngine::get_health (libsql 单round-trip scalar子查询+Rust侧timeline JSON解析+most_connected top5; postgres sqlx query_scalar/query_as). 后端保真度对齐InMemory/TS: page-level embed coverage(G24)/stale_pages=0(无timeline_entries表)/dead_links deleted-aware/orphan=islanded/空brain=100/100. 集成测试 libsql 6 + postgres 6(pg-embed) 全绿, core lib 1537 全绿. 端到端: zbrain features 活 + doctor brain_score 实算(不再降级). 解 G48",
+      "status": "completed",
       "mode": "build",
       "parent": "1-6-4",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "get_health 生产后端后端保真度如何对齐(TS用content_chunks/timeline_entries表, Rust生产后端无这两表)?",
+          "answer": "照 Rust 存储模型 + InMemory 基准, 不照抄 TS SQL",
+          "note": "TS getHealth SQL 依赖 content_chunks(embed coverage)/timeline_entries(stale_pages,timeline coverage), 但 Rust 生产后端无这两表(G24 一页一向量BLOB / G46 timeline是pages上JSON字符串). 决定: embed_coverage 走 page-level(embedded pages/total, 同 get_brain_stats 代理); stale_pages=0(无 timeline_entries.created_at 可比, 同 InMemory 保守); timeline coverage 走 Rust 侧解析 pages.timeline JSON; dead_links deleted-aware(比 TS 严, 对齐 InMemory live_ids); orphan=islanded(no in AND no out, 同 TS); 空brain=100/100(v0.37.10.0). 三后端单测钉死同结果"
+        }
+      ],
       "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-16 20:35:00",
+    "updated": "2026-07-16 20:46:42",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
