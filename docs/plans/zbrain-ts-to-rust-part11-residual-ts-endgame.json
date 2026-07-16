@@ -151,12 +151,16 @@
     },
     "1-6": {
       "id": "1-6",
-      "label": "孤儿命令迁移 (~20 命令：whoknows/brainstorm/dream/publish/models/providers/...)",
+      "label": "孤儿命令迁移 (审计: 83 唯一活命令 = RUST_OWNED 17 / TRIVIAL_DELETE 27 / REAL_MIGRATE 33 / PARITY_REVIEW 6)",
       "status": "in_progress",
       "mode": "explore",
       "parent": "1",
       "children": [
-        "1-6-1"
+        "1-6-1",
+        "1-6-2",
+        "1-6-3",
+        "1-6-4",
+        "1-6-5"
       ],
       "decisions": [],
       "notes": ""
@@ -426,8 +430,48 @@
     "1-6-1": {
       "id": "1-6-1",
       "label": "孤儿命令审计 (TS 活 dispatch ~50 vs Rust 已注册, 分类 trivial-delete / real-migrate)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
+      "parent": "1-6",
+      "children": [],
+      "decisions": [],
+      "notes": "审计完成: docs/plans/1-6-orphan-audit.md + 可复跑脚本 docs/plans/scripts/audit-orphan-commands.py。83 唯一活命令分类: RUST_OWNED 17(删TS壳,过对等闸门) / TRIVIAL_DELETE 27(纯dev/诊断,整删) / REAL_MIGRATE 33(真实功能,待port) / PARITY_REVIEW 6(需确认Rust覆盖)。"
+    },
+    "1-6-2": {
+      "id": "1-6-2",
+      "label": "RUST_OWNED 壳清理 (删TS副本, 过1-6-5对等闸门: config/query/search/get-page/list-pages/sync/takes/orphans/import/reconcile-links/skillpack/schema/init/doctor)",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-6",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-3": {
+      "id": "1-6-3",
+      "label": "TRIVIAL_DELETE 批 (纯dev/诊断工具整删: lint/upgrade/reinit-pglite/apply-migrations/repair-jsonb/report/smoke-test/claw-test/ze-switch/check-backlinks/cache/friction/lsd/founder/files/parse/network/discovery/anomalies/transcripts/book-mirror/call/integrations/frontmatter/mounts)",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-6",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-4": {
+      "id": "1-6-4",
+      "label": "REAL_MIGRATE 批 (33真实功能待port, 按域拆sub-slice: memory=recall/forget; model/provider=models/providers; content=extract/embed/export; resolver=resolvers/integrity/routing-eval/check-resolvable/skillify; code-intel=code-*/reindex-*/backfill; misc=whoknows/brainstorm/dream/auth/eval/features/migrate/storage/calibration/notability-eval)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-6",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-5": {
+      "id": "1-6-5",
+      "label": "PARITY_GATE (删除任何TS命令前: 确认零src引用+零test引用+真Rust覆盖非stub; 1-6-2/1-6-3共用)",
+      "status": "pending",
+      "mode": "exploit",
       "parent": "1-6",
       "children": [],
       "decisions": [],
@@ -436,7 +480,7 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-16 16:00:42",
+    "updated": "2026-07-16 16:12:59",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
