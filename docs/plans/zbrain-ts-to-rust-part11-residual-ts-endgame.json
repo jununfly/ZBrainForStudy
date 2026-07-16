@@ -440,12 +440,12 @@
     "1-6-2": {
       "id": "1-6-2",
       "label": "RUST_OWNED 壳清理 (删TS副本, 过1-6-5对等闸门: config/query/search/get-page/list-pages/sync/takes/orphans/import/reconcile-links/skillpack/schema/init/doctor)",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "exploit",
       "parent": "1-6",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "Batch 1 完成(schema/takes/orphans/skillpack, commit 5d4780c): takes.ts 整删-624行; schema/orphans/skillpack 移除 cli.ts 分发(模块保留). 验证: bun --check OK + cli-options 28过. 剩余13个 RUST_OWNED 被测试闸门挡(init/doctor/sync/config/cli.test.ts+heavy)或缠operations共享层(query/search/get_page/list_pages/think/reconcile-links), 需先迁测试依赖到Rust二进制."
     },
     "1-6-3": {
       "id": "1-6-3",
@@ -480,7 +480,7 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-16 16:12:59",
+    "updated": "2026-07-16 16:37:59",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
