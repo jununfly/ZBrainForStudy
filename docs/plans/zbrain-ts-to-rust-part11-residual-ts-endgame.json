@@ -455,12 +455,18 @@
     },
     "1-6-3": {
       "id": "1-6-3",
-      "label": "TRIVIAL_DELETE 批 (纯dev/诊断工具整删: lint/upgrade/reinit-pglite/apply-migrations/repair-jsonb/report/smoke-test/claw-test/ze-switch/check-backlinks/cache/friction/lsd/founder/files/parse/network/discovery/anomalies/transcripts/book-mirror/call/integrations/frontmatter/mounts)",
-      "status": "pending",
+      "label": "TRIVIAL_DELETE 批 [已收口: 真零依赖仅3个 cache/claw-test/report 已整删; 原审计宣称27为过度分类, 20个带test_refs命令归1-6-4, discovery/network/parse非命令+call幽灵条目已从审计剔除]",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-6",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "1-6-3 TRIVIAL_DELETE 真实可删范围有多大?",
+          "answer": "只有3个真零依赖(cache/claw-test/report)可整删; 原审计宣称27个是过度分类",
+          "note": "PARITY_GATE(audit-trivial-deps.py)逐条验证: 门槛=零src引用+零test引用. 原审计只按'语义是否dev工具'分类, 未查test. 实际23个TRIVIAL候选中20个仍有test_refs(测试直接import模块导出函数当库单元测: apply-migrations 10, mounts 6, integrations/lint/upgrade 4, check-backlinks/reinit-pglite 3, founder/friction/frontmatter/check-update/repair-jsonb 2...), 删模块破坏测试. 另: discovery/network/parse非命令(是RemoteMcpError.reason switch case, 审计脚本误采), call是幽灵条目无handler. 结论: 3个零依赖已删(commit), 20个带test依赖命令归1-6-4随Rust迁移+测试一并处理(不轻易删测试). 同构1-11-2 minions教训: A类纯删除已耗尽无零引用叶子."
+        }
+      ],
       "notes": ""
     },
     "1-6-4": {
@@ -470,7 +476,13 @@
       "mode": "explore",
       "parent": "1-6",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "从1-6-3归入的带test依赖命令有哪些, 为何不能纯删?",
+          "answer": "20个原审计误分为TRIVIAL_DELETE的命令实为带test_refs, 须随Rust迁移+测试一并处理, 正式并入1-6-4范围",
+          "note": "PARITY_GATE验证: 这些命令的模块导出函数被单元测试直接import当库单元测, 纯删破坏测试. 清单(test_refs数): apply-migrations(10) mounts(6) integrations/lint/upgrade(4) check-backlinks/reinit-pglite(3) founder/friction/frontmatter/check-update/repair-jsonb(2) files/book-mirror/ze-switch(1). 另: lsd是brainstorm的re-export薄封装; anomalies/transcripts有op-shadow(operations.ts里find_anomalies/get_recent_transcripts带cliHints); smoke-test为inline实现. 迁移策略: 随对应Rust功能port完成后, 连同TS测试一并迁移或删除, 不提前裸删CLI薄封装."
+        }
+      ],
       "notes": ""
     },
     "1-6-5": {
@@ -486,7 +498,8 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-16 17:52:49",
+    "updated": "2026-07-16 18:47:51",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
-  }
+  },
+  "md_file": "ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
 }
