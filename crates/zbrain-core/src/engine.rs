@@ -2291,6 +2291,22 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
             "get_health not yet implemented for this engine",
         ))
     }
+
+    /// Brain content counters (page/chunk/embedding/link/tag/timeline totals
+    /// plus a per-type page breakdown). Mirrors TS `engine.getStats()` →
+    /// `BrainStats`. Distinct from the admin `get_stats` (dashboard `Stats`)
+    /// and the minions `get_stats(since)` (`QueueStats`) — this is the
+    /// brain-content view consumed by the `stats` operation, the CLI banner,
+    /// and the `features` recommender. See `BrainStats` docs for the
+    /// backend-sourcing caveats. Default is `Unsupported`; real backends
+    /// override.
+    async fn get_brain_stats(&self) -> crate::Result<crate::admin_queries::BrainStats> {
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "get_brain_stats not yet implemented for this engine",
+        ))
+    }
 }
 
 // ─── InMemoryEngine ──────────────────────────────────────────────────────────
@@ -6042,6 +6058,74 @@ impl BrainEngine for InMemoryEngine {
             no_dead_links_score,
         })
     }
+
+    async fn get_brain_stats(&self) -> crate::Result<crate::admin_queries::BrainStats> {
+        use crate::admin_queries::BrainStats;
+
+        let store = self.store.lock().expect("InMemoryEngine store mutex poisoned");
+        let chunk_store = self
+            .chunk_store
+            .lock()
+            .expect("InMemoryEngine chunk_store mutex poisoned");
+        let links_store = self
+            .links_store
+            .lock()
+            .expect("InMemoryEngine links_store mutex poisoned");
+
+        let live_pages: Vec<&Page> = store.iter().filter(|p| p.deleted_at.is_none()).collect();
+        let page_count = live_pages.len() as i64;
+
+        // InMemory has a real chunk store, so it counts actual chunks and
+        // actual per-chunk embeddings (higher fidelity than the libsql/postgres
+        // page-level proxy — see BrainStats docs).
+        let mut chunk_count = 0i64;
+        let mut embedded_count = 0i64;
+        for chunks in chunk_store.values() {
+            for c in chunks.iter() {
+                chunk_count += 1;
+                if c.embedding.is_some() {
+                    embedded_count += 1;
+                }
+            }
+        }
+
+        let link_count = links_store.len() as i64;
+
+        // Distinct tags across live pages (tags live in frontmatter).
+        let mut tags: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for p in &live_pages {
+            for t in page_tags(p) {
+                tags.insert(t);
+            }
+        }
+        let tag_count = tags.len() as i64;
+
+        // timeline is a JSON-array string per page → sum of array lengths.
+        let mut timeline_entry_count = 0i64;
+        for p in &live_pages {
+            if let Ok(Value::Array(arr)) = serde_json::from_str::<Value>(&p.timeline) {
+                timeline_entry_count += arr.len() as i64;
+            }
+        }
+
+        // pages_by_type mirrors TS: grouped over ALL pages (no soft-delete
+        // filter), unlike page_count which excludes soft-deleted.
+        let mut pages_by_type: std::collections::BTreeMap<String, i64> =
+            std::collections::BTreeMap::new();
+        for p in store.iter() {
+            *pages_by_type.entry(p.page_type.clone()).or_insert(0) += 1;
+        }
+
+        Ok(BrainStats {
+            page_count,
+            chunk_count,
+            embedded_count,
+            link_count,
+            tag_count,
+            timeline_entry_count,
+            pages_by_type,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -7919,5 +8003,180 @@ mod rate_lease_tests {
         let result = engine.release_rate_lease(1).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not yet implemented"));
+    }
+
+    // ── get_brain_stats (1-6-4-2) ──────────────────────────────────────
+
+    /// Build a PageInput with a given type, compiled_truth, timeline JSON and
+    /// tags, defaulting everything else.
+    fn brain_stats_page(
+        page_type: &str,
+        compiled_truth: &str,
+        timeline: Option<&str>,
+        tags: &[&str],
+    ) -> PageInput {
+        let frontmatter = if tags.is_empty() {
+            None
+        } else {
+            Some(serde_json::json!({ "tags": tags }))
+        };
+        PageInput {
+            page_type: page_type.to_string(),
+            title: "T".to_string(),
+            compiled_truth: compiled_truth.to_string(),
+            timeline: timeline.map(ToString::to_string),
+            frontmatter,
+            content_hash: None,
+            page_kind: None,
+            effective_date: None,
+            effective_date_source: None,
+            import_filename: None,
+            chunker_version: None,
+            source_path: None,
+            source_kind: None,
+            source_uri: None,
+            ingested_via: None,
+            ingested_at: None,
+            last_retrieved_at: None,
+            embedding: None,
+        }
+    }
+
+    fn chunk(index: usize, text: &str, embedded: bool) -> crate::import::ChunkInput {
+        crate::import::ChunkInput {
+            chunk_index: index,
+            chunk_text: text.to_string(),
+            chunk_source: crate::import::ChunkSource::CompiledTruth,
+            embedding: if embedded { Some(vec![0.1, 0.2]) } else { None },
+            token_count: None,
+            language: None,
+            symbol_name: None,
+            symbol_type: None,
+            start_line: None,
+            end_line: None,
+            parent_symbol_path: vec![],
+            symbol_name_qualified: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn brain_stats_empty_engine_is_all_zero() {
+        let engine = InMemoryEngine::new();
+        let s = engine.get_brain_stats().await.unwrap();
+        assert_eq!(s.page_count, 0);
+        assert_eq!(s.chunk_count, 0);
+        assert_eq!(s.embedded_count, 0);
+        assert_eq!(s.link_count, 0);
+        assert_eq!(s.tag_count, 0);
+        assert_eq!(s.timeline_entry_count, 0);
+        assert!(s.pages_by_type.is_empty());
+    }
+
+    #[tokio::test]
+    async fn brain_stats_counts_pages_tags_timeline_by_type() {
+        let engine = InMemoryEngine::new();
+        engine
+            .put_page(
+                "a",
+                Some("default"),
+                &brain_stats_page("note", "body a", Some("[{\"e\":1},{\"e\":2}]"), &["x", "y"]),
+            )
+            .await
+            .unwrap();
+        engine
+            .put_page(
+                "b",
+                Some("default"),
+                &brain_stats_page("guide", "body b", Some("[{\"e\":3}]"), &["y", "z"]),
+            )
+            .await
+            .unwrap();
+        engine
+            .put_page(
+                "c",
+                Some("default"),
+                &brain_stats_page("note", "body c", None, &[]),
+            )
+            .await
+            .unwrap();
+
+        let s = engine.get_brain_stats().await.unwrap();
+        assert_eq!(s.page_count, 3);
+        // timeline: 2 + 1 + 0 = 3
+        assert_eq!(s.timeline_entry_count, 3);
+        // distinct tags across pages: x, y, z = 3
+        assert_eq!(s.tag_count, 3);
+        // pages_by_type over ALL pages: note=2, guide=1
+        assert_eq!(s.pages_by_type.get("note"), Some(&2));
+        assert_eq!(s.pages_by_type.get("guide"), Some(&1));
+    }
+
+    #[tokio::test]
+    async fn brain_stats_counts_chunks_and_embeddings() {
+        let engine = InMemoryEngine::new();
+        engine
+            .put_page("p", Some("default"), &brain_stats_page("note", "x", None, &[]))
+            .await
+            .unwrap();
+        engine
+            .upsert_chunks(
+                "p",
+                &[chunk(0, "c0", true), chunk(1, "c1", false), chunk(2, "c2", true)],
+            )
+            .await
+            .unwrap();
+
+        let s = engine.get_brain_stats().await.unwrap();
+        assert_eq!(s.chunk_count, 3);
+        assert_eq!(s.embedded_count, 2);
+    }
+
+    #[tokio::test]
+    async fn brain_stats_counts_links() {
+        let engine = InMemoryEngine::new();
+        for slug in ["a", "b"] {
+            engine
+                .put_page(slug, Some("default"), &brain_stats_page("note", "x", None, &[]))
+                .await
+                .unwrap();
+        }
+        engine
+            .add_links_batch(&[LinkBatchInput {
+                from_slug: "a".to_string(),
+                to_slug: "b".to_string(),
+                link_type: None,
+                context: None,
+                link_source: None,
+                origin_slug: None,
+                origin_field: None,
+                from_source_id: None,
+                to_source_id: None,
+                origin_source_id: None,
+            }])
+            .await
+            .unwrap();
+
+        let s = engine.get_brain_stats().await.unwrap();
+        assert_eq!(s.link_count, 1);
+    }
+
+    #[tokio::test]
+    async fn brain_stats_excludes_soft_deleted_from_page_count_but_not_pages_by_type() {
+        let engine = InMemoryEngine::new();
+        engine
+            .put_page("live", Some("default"), &brain_stats_page("note", "x", None, &[]))
+            .await
+            .unwrap();
+        engine
+            .put_page("gone", Some("default"), &brain_stats_page("note", "x", None, &[]))
+            .await
+            .unwrap();
+        engine.delete_page("gone", Some("default")).await.unwrap();
+
+        let s = engine.get_brain_stats().await.unwrap();
+        // page_count excludes soft-deleted
+        assert_eq!(s.page_count, 1);
+        // pages_by_type mirrors TS: groups over ALL pages (includes soft-deleted)
+        assert_eq!(s.pages_by_type.get("note"), Some(&2));
     }
 }

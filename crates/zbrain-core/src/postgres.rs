@@ -3773,6 +3773,92 @@ impl BrainEngine for PostgresEngine {
         })
     }
 
+    async fn get_brain_stats(&self) -> Result<crate::admin_queries::BrainStats> {
+        use crate::admin_queries::BrainStats;
+        use std::collections::BTreeMap;
+
+        let pool = self.pool()?;
+
+        let page_count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM pages WHERE deleted_at IS NULL")
+                .fetch_one(pool)
+                .await
+                .map_err(|e| Error::engine(format!("get_brain_stats page_count: {e}")))?;
+
+        // No content_chunks table in Rust — approximate chunk_count as live
+        // pages carrying non-empty compiled_truth. Registered in
+        // docs/plans/KNOWN-GAPS.md (G46).
+        let chunk_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pages \
+             WHERE compiled_truth IS NOT NULL AND compiled_truth != '' AND deleted_at IS NULL",
+        )
+        .fetch_one(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_brain_stats chunk_count: {e}")))?;
+
+        // embedded_count: page-level embedding (G24) — live pages with a vector.
+        let embedded_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pages WHERE embedding IS NOT NULL AND deleted_at IS NULL",
+        )
+        .fetch_one(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_brain_stats embedded_count: {e}")))?;
+
+        let link_count: i64 = sqlx::query_scalar("SELECT count(*) FROM links")
+            .fetch_one(pool)
+            .await
+            .map_err(|e| Error::engine(format!("get_brain_stats link_count: {e}")))?;
+
+        let tag_count: i64 =
+            sqlx::query_scalar("SELECT count(DISTINCT tag) FROM page_tags")
+                .fetch_one(pool)
+                .await
+                .map_err(|e| Error::engine(format!("get_brain_stats tag_count: {e}")))?;
+
+        // timeline is a JSON-array text column; sum array lengths on the Rust
+        // side (no timeline_entries table).
+        let timeline_rows =
+            sqlx::query_scalar::<_, String>("SELECT timeline FROM pages WHERE deleted_at IS NULL")
+                .fetch_all(pool)
+                .await
+                .map_err(|e| Error::engine(format!("get_brain_stats timeline: {e}")))?;
+        let mut timeline_entry_count = 0i64;
+        for tl in &timeline_rows {
+            if let Ok(serde_json::Value::Array(arr)) =
+                serde_json::from_str::<serde_json::Value>(tl)
+            {
+                timeline_entry_count += arr.len() as i64;
+            }
+        }
+
+        // pages_by_type mirrors TS: grouped over ALL pages (no soft-delete
+        // filter). Only page_count above excludes soft-deleted.
+        let type_rows = sqlx::query("SELECT type, count(*) AS count FROM pages GROUP BY type")
+            .fetch_all(pool)
+            .await
+            .map_err(|e| Error::engine(format!("get_brain_stats pages_by_type: {e}")))?;
+        let mut pages_by_type: BTreeMap<String, i64> = BTreeMap::new();
+        for row in &type_rows {
+            let ty: String = row
+                .try_get("type")
+                .map_err(|e| Error::engine(format!("get_brain_stats type decode: {e}")))?;
+            let cnt: i64 = row
+                .try_get("count")
+                .map_err(|e| Error::engine(format!("get_brain_stats type count decode: {e}")))?;
+            pages_by_type.insert(ty, cnt);
+        }
+
+        Ok(BrainStats {
+            page_count,
+            chunk_count,
+            embedded_count,
+            link_count,
+            tag_count,
+            timeline_entry_count,
+            pages_by_type,
+        })
+    }
+
     async fn health_check(
         &self,
     ) -> Result<crate::minions::types::SupervisorHealth> {

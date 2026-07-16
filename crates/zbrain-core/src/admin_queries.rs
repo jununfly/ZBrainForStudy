@@ -34,6 +34,38 @@ pub struct FullStats {
     pub engine_ok: bool,
 }
 
+/// Brain content counters, mirroring TS `BrainStats` (`src/core/types.ts`).
+///
+/// Wire fields are **snake_case** (unlike the camelCase admin `Stats`/`FullStats`
+/// above) because the TS `BrainStats` interface — consumed by the `stats`
+/// operation and the CLI banner — uses snake_case keys. Do NOT add
+/// `rename_all` here or the wire contract breaks.
+///
+/// Backend-sourcing caveats (Rust storage differs from the TS `content_chunks`
+/// / `timeline_entries` tables; registered in `docs/plans/KNOWN-GAPS.md` (G46)):
+///   - `chunk_count`: Rust has **no `content_chunks` table**. Production
+///     backends (libsql/postgres) approximate it as the count of live pages
+///     that carry non-empty `compiled_truth` (same proxy as `get_full_stats`).
+///     `InMemoryEngine` has a real chunk store and counts actual chunks.
+///   - `embedded_count`: production backends store **one embedding per page**
+///     (G24), so this is the count of live pages whose `embedding` is set;
+///     `InMemoryEngine` counts real chunks whose embedding is set.
+///   - `timeline_entry_count`: `timeline` is a JSON-array string on each page
+///     (no separate table), so the count is the sum of array lengths over
+///     live pages.
+///   - `pages_by_type`: mirrors TS exactly — grouped over **all** pages with
+///     no soft-delete filter (only `page_count` excludes soft-deleted).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BrainStats {
+    pub page_count: i64,
+    pub chunk_count: i64,
+    pub embedded_count: i64,
+    pub link_count: i64,
+    pub tag_count: i64,
+    pub timeline_entry_count: i64,
+    pub pages_by_type: std::collections::BTreeMap<String, i64>,
+}
+
 /// Early-warning indicators: tokens expiring soon, elevated error rate.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]

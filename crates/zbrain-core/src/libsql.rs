@@ -20,7 +20,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::admin_queries::{
-    AdminQueries, AgentClientSpend, AgentInfo, ApiKey, BudgetOwner, ErrorClusterCount,
+    AdminQueries, AgentClientSpend, AgentInfo, ApiKey, BrainStats, BudgetOwner, ErrorClusterCount,
     FullStats, HealthIndicators, JobTypeSummary, Paginated, QueueHealth, RequestLogEntry,
     RequestLogFilters, Stats, WatchSnapshot,
 };
@@ -4356,6 +4356,103 @@ impl BrainEngine for LibsqlEngine {
             },
             by_status,
             by_type,
+        })
+    }
+
+    async fn get_brain_stats(&self) -> Result<BrainStats> {
+        let conn = self.conn().await?;
+
+        // Small helper: run a single-column integer count query.
+        async fn scalar_count(conn: &::libsql::Connection, sql: &str) -> Result<i64> {
+            let v = conn
+                .query(sql, ())
+                .await
+                .map_err(|e| Error::engine(format!("get_brain_stats count: {e}")))?
+                .next()
+                .await
+                .map_err(|e| Error::engine(format!("get_brain_stats count row: {e}")))?
+                .map(|r| r.get::<i64>(0))
+                .transpose()
+                .map_err(|e| Error::engine(format!("get_brain_stats count decode: {e}")))?
+                .unwrap_or(0);
+            Ok(v)
+        }
+
+        let page_count =
+            scalar_count(&conn, "SELECT COUNT(*) FROM pages WHERE deleted_at IS NULL").await?;
+
+        // No content_chunks table in Rust — approximate chunk_count as live
+        // pages carrying non-empty compiled_truth (same proxy as
+        // get_full_stats). Registered in docs/plans/KNOWN-GAPS.md (G46).
+        let chunk_count = scalar_count(
+            &conn,
+            "SELECT COUNT(*) FROM pages \
+             WHERE compiled_truth IS NOT NULL AND compiled_truth != '' AND deleted_at IS NULL",
+        )
+        .await?;
+
+        // embedded_count: page-level embedding (G24) — live pages whose
+        // embedding BLOB is set.
+        let embedded_count = scalar_count(
+            &conn,
+            "SELECT COUNT(*) FROM pages WHERE embedding IS NOT NULL AND deleted_at IS NULL",
+        )
+        .await?;
+
+        let link_count = scalar_count(&conn, "SELECT COUNT(*) FROM links").await?;
+
+        let tag_count =
+            scalar_count(&conn, "SELECT COUNT(DISTINCT tag) FROM page_tags").await?;
+
+        // timeline is a JSON-array string per page; sum array lengths on the
+        // Rust side (no timeline_entries table).
+        let timeline_entry_count = {
+            let mut total = 0i64;
+            let mut rows = conn
+                .query("SELECT timeline FROM pages WHERE deleted_at IS NULL", ())
+                .await
+                .map_err(|e| Error::engine(format!("get_brain_stats timeline: {e}")))?;
+            while let Some(row) = rows
+                .next()
+                .await
+                .map_err(|e| Error::engine(format!("get_brain_stats timeline row: {e}")))?
+            {
+                let tl: String = row.get::<String>(0).unwrap_or_default();
+                if let Ok(serde_json::Value::Array(arr)) =
+                    serde_json::from_str::<serde_json::Value>(&tl)
+                {
+                    total += arr.len() as i64;
+                }
+            }
+            total
+        };
+
+        // pages_by_type mirrors TS: grouped over ALL pages (no soft-delete
+        // filter). page_count above is the only soft-delete-excluding count.
+        let mut pages_by_type: std::collections::BTreeMap<String, i64> =
+            std::collections::BTreeMap::new();
+        {
+            let mut rows = conn
+                .query("SELECT type, COUNT(*) FROM pages GROUP BY type", ())
+                .await
+                .map_err(|e| Error::engine(format!("get_brain_stats pages_by_type: {e}")))?;
+            while let Some(row) = rows.next().await.map_err(|e| {
+                Error::engine(format!("get_brain_stats pages_by_type row: {e}"))
+            })? {
+                let ty: String = row.get::<String>(0).unwrap_or_default();
+                let cnt: i64 = row.get::<i64>(1).unwrap_or(0);
+                pages_by_type.insert(ty, cnt);
+            }
+        }
+
+        Ok(BrainStats {
+            page_count,
+            chunk_count,
+            embedded_count,
+            link_count,
+            tag_count,
+            timeline_entry_count,
+            pages_by_type,
         })
     }
 
