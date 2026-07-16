@@ -35,14 +35,14 @@ for (const op of operations) {
 }
 
 // CLI-only commands that bypass the operation layer
-const CLI_ONLY = new Set(['reinit-pglite', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'call', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'features', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'frontmatter', 'auth', 'friction', 'claw-test', 'book-mirror', 'takes', 'anomalies', 'transcripts', 'models', 'recall', 'forget', 'edges-backfill', 'cache', 'ze-switch', 'founder', 'brainstorm', 'lsd']);
+const CLI_ONLY = new Set(['reinit-pglite', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'call', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'features', 'apply-migrations', 'skillpack-check', 'resolvers', 'integrity', 'repair-jsonb', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'frontmatter', 'auth', 'friction', 'claw-test', 'book-mirror', 'anomalies', 'transcripts', 'models', 'recall', 'forget', 'edges-backfill', 'cache', 'ze-switch', 'founder', 'brainstorm', 'lsd']);
 // CLI-only commands whose handlers print their own --help text. These are
 // excluded from the generic short-circuit so detailed per-command and
 // per-subcommand usage stays reachable.
 const CLI_ONLY_SELF_HELP = new Set([
   'upgrade', 'post-upgrade', 'check-update',
   'embed',
-  'skillpack', 'skillpack-check',
+  'skillpack-check',
   'integrations', 'friction',
   'frontmatter', 'check-resolvable',
   'models',
@@ -725,15 +725,9 @@ function formatResult(opName: string, result: unknown): string {
  */
 const THIN_CLIENT_REFUSED_COMMANDS = new Set([
   'sync', 'embed', 'extract', 'extract-conversation-facts', 'migrate', 'apply-migrations',
-  'repair-jsonb', 'orphans', 'integrity',
+  'repair-jsonb', 'integrity',
   // v0.31.1 (CDX-2 op coverage matrix): more local-only commands
   'dream', 'transcripts', 'storage',
-  // v0.31.1 CDX-2 audit: takes has multiple subcommands; some
-  // (takes_list/takes_search) have MCP equivalents and others are
-  // file-system bound (takes mutate commands edit local .md files).
-  // v0.31.1 refuses at the top level with a hint pointing at the routable
-  // MCP tools; per-subcommand splits are a v0.31.x follow-up TODO.
-  'takes',
   // v0.32 thin-client routing audit (Codex round 2 findings #2, #4):
   // - `pages` purge-deleted is admin+localOnly (operations.ts:856-864)
   // - `files` list / file_url MCP ops are localOnly (operations.ts:1769-1879)
@@ -810,10 +804,10 @@ async function handleCliOnly(command: string, args: string[]) {
   }
 
   // Commands that don't need a database connection
-  // NOTE: init and schema are now implemented in Rust
+  // NOTE: init is now implemented in Rust
   // See crates/zbrain-cli/src/lib.rs
   // These commands are routed to the Rust binary via npm bin entry
-  if (command === 'schema' || command === 'init') {
+  if (command === 'init') {
     console.error(`\`zbrain ${command}\` is now implemented in Rust.`);
     console.error('Please run the Rust CLI directly or ensure your npm bin links are updated.');
     process.exit(1);
@@ -921,12 +915,6 @@ async function handleCliOnly(command: string, args: string[]) {
     // `args` here is subArgs (command already stripped by caller), so
     // args[0] is the subcommand (scaffold|check).
     await runSkillify(args);
-    return;
-  }
-  if (command === 'skillpack') {
-    const { runSkillpack } = await import('./commands/skillpack.ts');
-    // subArgs already has `skillpack` stripped; args[0] is the subcommand.
-    await runSkillpack(args);
     return;
   }
   if (command === 'friction') {
@@ -1330,11 +1318,6 @@ async function handleCliOnly(command: string, args: string[]) {
         // v0.32.3 search-lite — `zbrain search modes/stats/tune`.
         const { runSearch } = await import('./commands/search.ts');
         await runSearch(engine, args);
-        break;
-      }
-      case 'takes': {
-        const { runTakes } = await import('./commands/takes.ts');
-        await runTakes(engine, args);
         break;
       }
       case 'founder': {
