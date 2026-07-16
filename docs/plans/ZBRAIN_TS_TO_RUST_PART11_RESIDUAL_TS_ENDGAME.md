@@ -77,7 +77,7 @@ calibration 算法补齐：Rust 已有 calibration_queries.rs(DB 层) + web admi
 │   ├── [x][X+] 1-6-1. 孤儿命令审计 (TS 活 dispatch ~50 vs Rust 已注册, 分类 trivial-delete / real-migrate)
 │   ├── [x][Y+] 1-6-2. RUST_OWNED 壳清理 (删TS副本, 过1-6-5对等闸门: config/query/search/get-page/list-pages/sync/takes/orphans/import/reconcile-links/skillpack/schema/init/doctor)
 │   ├── [x][Y+] 1-6-3. TRIVIAL_DELETE 批 [已收口: 真零依赖仅3个 cache/claw-test/report 已整删; 原审计宣称27为过度分类, 20个带test_refs命令归1-6-4, discovery/network/parse非命令+call幽灵条目已从审计剔除]
-│   ├── [ ][X+] 1-6-4. REAL_MIGRATE 批 (33真实功能待port, 按域拆sub-slice: memory=recall/forget; model/provider=models/providers; content=extract/embed/export; resolver=resolvers/integrity/routing-eval/check-resolvable/skillify; code-intel=code-*/reindex-*/backfill; misc=whoknows/brainstorm/dream/auth/eval/features/migrate/storage/calibration/notability-eval)
+│   ├── [ ][X+] 1-6-4. REAL_MIGRATE 孤儿命令批 [去重后: 移出 skillify->1-1 / eval族->1-2 / calibration->1-3 / dream->1-12 / extract·export·integrity->1-4; 真孤儿=code-intel(code-*·reindex*·edges-backfill·backfill) + memory(recall·forget) + models·providers + whoknows·brainstorm·auth·features·storage·migrate·publish·extract-conversation-facts·resolvers·check-resolvable + 20个1-6-3归入带test命令]
 │   └── [ ][Y+] 1-6-5. PARITY_GATE (删除任何TS命令前: 确认零src引用+零test引用+真Rust覆盖非stub; 1-6-2/1-6-3共用)
 ├── [ ][X+] 1-7. search core 模块补齐 (C 类，src/core/search 23 文件)
 ├── [ ][X+] 1-8. facts core 模块补齐 (C 类，src/core/facts 13 文件)
