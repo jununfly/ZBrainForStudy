@@ -472,7 +472,7 @@
     "1-6-4": {
       "id": "1-6-4",
       "label": "REAL_MIGRATE 孤儿命令批 [去重后: 移出 skillify->1-1 / eval族->1-2 / calibration->1-3 / dream->1-12 / extract·export·integrity->1-4; 真孤儿=code-intel(code-*·reindex*·edges-backfill·backfill) + memory(recall·forget) + models·providers + whoknows·brainstorm·auth·features·storage·migrate·publish·extract-conversation-facts·resolvers·check-resolvable + 20个1-6-3归入带test命令]",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "explore",
       "parent": "1-6",
       "children": [
@@ -554,8 +554,8 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-16 19:38:53",
+    "updated": "2026-07-16 19:45:32",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
-  "md_file": "ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
+  "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
 }
