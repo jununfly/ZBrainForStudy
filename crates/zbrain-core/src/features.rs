@@ -1,21 +1,18 @@
 //! Feature-recommendation engine (ported from `src/commands/features.ts`).
 //!
-//! Scope of this module: the **pure, side-effect-free** half of the TS
-//! `features` command — the scanner that turns brain health/stats + configured
-//! secrets into a list of recommendations, plus the `should_pitch` decline
-//! filter. These need no `BrainEngine` and no disk IO, so they are exercised by
-//! plain unit tests with dependency-injected inputs.
+//! Scope of this module: the **pure recommendation engine** — the scanner that
+//! turns brain health/stats + configured secrets into a list of
+//! recommendations (`recommend_features`), the `should_pitch` decline filter,
+//! plus small side-effecting seams the CLI needs: `feature-offers.json`
+//! load/save and the two human/JSON output formatters. The scanner itself
+//! stays pure (DI inputs, no `BrainEngine`, no disk); the persistence and
+//! formatting helpers are thin and independently unit-tested.
 //!
 //! Deliberately NOT ported here:
-//!   * `feature-offers.json` persistence (load/save) — file IO, belongs to the
-//!     CLI wiring slice.
-//!   * `execute_auto_fix` — dispatches to `embed`/`extract` commands which have
-//!     no Rust CLI equivalent yet.
-//!   * `engine.get_stats()` returning `BrainStats` — Rust `BrainEngine` has no
-//!     `BrainStats` accessor yet (the existing `get_stats` methods return admin
-//!     `Stats` / minions `QueueStats`). Callers must build `BrainStatsSnapshot`
-//!     from whatever source is available; wiring the real engine accessor is a
-//!     separate prerequisite slice.
+//!   * `execute_auto_fix` — dispatches to `embed --stale` / `extract
+//!     links|timeline`, which have no Rust CLI equivalent yet. Both the
+//!     auto-fix dispatch AND the `accepted`-ledger bookkeeping it drives are a
+//!     separate slice, blocked on those commands existing.
 //!
 //! Note: no roadmap node number is referenced in comments on purpose — the
 //! Part11 roadmap JSON is a temporary working file cleared on completion, so
@@ -339,6 +336,109 @@ pub fn pitchable<'a>(
         .collect()
 }
 
+// ── Persistence (feature-offers.json) ──────────────────────────────────────
+//
+// Mirrors `loadOffers`/`saveOffers` in features.ts. The file lives at
+// `~/.zbrain/feature-offers.json`; both load and save are best-effort (a
+// missing/corrupt file yields defaults; a write failure is swallowed), exactly
+// like the TS original. Path resolution goes through `crate::paths::zbrain_home`
+// — NOT `dirs::home_dir` — because on Windows the latter ignores `$HOME`/
+// `ZBRAIN_HOME` and would break `ScopedTestHome`-based tests.
+
+/// Absolute path to `~/.zbrain/feature-offers.json`, or `None` when no home
+/// dir can be resolved.
+pub fn offers_path() -> Option<std::path::PathBuf> {
+    crate::paths::zbrain_home().map(|h| h.join("feature-offers.json"))
+}
+
+/// Load the decline/accept ledger. Returns `FeatureOffers::default()` when the
+/// file is absent or unparseable (best-effort, matching TS `loadOffers`).
+pub fn load_offers() -> FeatureOffers {
+    offers_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+/// Persist the ledger (best-effort). Creates `~/.zbrain` if needed and writes
+/// pretty JSON. Any IO/serialization error is swallowed, matching TS
+/// `saveOffers`'s `catch { /* best-effort */ }`.
+pub fn save_offers(offers: &FeatureOffers) {
+    let Some(path) = offers_path() else { return };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string_pretty(offers) {
+        let _ = std::fs::write(&path, json);
+    }
+}
+
+// ── Output formatting ──────────────────────────────────────────────────────
+
+/// The `--json` wire shape, mirroring TS exactly:
+/// `{ version, scan_ts, brain_score, recommendations }`. `scan_ts` is an ISO-8601
+/// timestamp stamped by the CLI at emit time (the pure scanner never fabricates
+/// clock values), so it is injected here rather than living on
+/// `FeatureScanResult`. Serialize-only (it borrows recs), so no `Deserialize`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct FeatureScanReport<'a> {
+    pub version: &'a str,
+    pub scan_ts: String,
+    pub brain_score: u32,
+    pub recommendations: Vec<&'a FeatureRecommendation>,
+}
+
+impl<'a> FeatureScanReport<'a> {
+    /// Build a report from a scan, its pitchable subset, and a CLI-supplied
+    /// timestamp.
+    pub fn new(
+        scan: &'a FeatureScanResult,
+        pitchable: Vec<&'a FeatureRecommendation>,
+        scan_ts: String,
+    ) -> Self {
+        FeatureScanReport {
+            version: &scan.version,
+            scan_ts,
+            brain_score: scan.brain_score,
+            recommendations: pitchable,
+        }
+    }
+}
+
+/// Render the human-readable report. Verbatim port of the console output in
+/// `runFeatures`: a `Brain score` header, a `DATA QUALITY` block (P1), and an
+/// `UNUSED FEATURES` block (P2). `recs` is the already-pitchable subset.
+///
+/// Returns the full multi-line string (no trailing newline). The caller is
+/// responsible for the "nothing to recommend" case and the `--auto-fix` hint
+/// line, which depend on runtime state the formatter shouldn't own.
+pub fn render_human(scan: &FeatureScanResult, recs: &[&FeatureRecommendation]) -> String {
+    let mut out = format!("\nBrain score: {}/100\n", scan.brain_score);
+
+    let p1: Vec<&&FeatureRecommendation> =
+        recs.iter().filter(|r| r.priority == FeaturePriority::P1).collect();
+    let p2: Vec<&&FeatureRecommendation> =
+        recs.iter().filter(|r| r.priority == FeaturePriority::P2).collect();
+
+    if !p1.is_empty() {
+        out.push_str("\nDATA QUALITY (fix these first):\n");
+        for rec in &p1 {
+            out.push_str(&format!("  {}: {}\n", rec.title, rec.pitch));
+            out.push_str(&format!("    Fix: {}\n", rec.command));
+        }
+    }
+
+    if !p2.is_empty() {
+        out.push_str("\nUNUSED FEATURES:\n");
+        for rec in &p2 {
+            out.push_str(&format!("  {}: {}\n", rec.title, rec.pitch));
+            out.push_str(&format!("    Try: {}\n", rec.command));
+        }
+    }
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -620,5 +720,129 @@ mod tests {
         assert_eq!(v["id"], "missing-embeddings");
         assert_eq!(v["priority"], 1);
         assert_eq!(v["auto_fixable"], true);
+    }
+
+    // ── Persistence round-trip ─────────────────────────────────────────────
+
+    #[test]
+    fn load_offers_returns_default_when_file_absent() {
+        let _home = crate::paths::ScopedTestHome::new();
+        let offers = load_offers();
+        assert_eq!(offers, FeatureOffers::default());
+        assert!(offers.declined.is_empty());
+        assert!(offers.accepted.is_empty());
+    }
+
+    #[test]
+    fn save_then_load_offers_round_trips() {
+        let _home = crate::paths::ScopedTestHome::new();
+        let mut offers = FeatureOffers::default();
+        offers.last_version = "1.4.0".into();
+        offers.last_scan = "2026-07-16T00:00:00.000Z".into();
+        offers.declined.insert(
+            "zero-links".into(),
+            OfferStamp { at: "2026-07-16".into(), version: "1.4.0".into() },
+        );
+        save_offers(&offers);
+
+        let loaded = load_offers();
+        assert_eq!(loaded, offers);
+        assert_eq!(loaded.declined["zero-links"].version, "1.4.0");
+    }
+
+    #[test]
+    fn saved_offers_file_uses_ts_camelcase_wire() {
+        let _home = crate::paths::ScopedTestHome::new();
+        let mut offers = FeatureOffers::default();
+        offers.last_version = "1.5.0".into();
+        offers.last_scan = "2026-07-16T12:00:00.000Z".into();
+        save_offers(&offers);
+
+        let raw = std::fs::read_to_string(offers_path().unwrap()).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        // TS `feature-offers.json` uses camelCase for these two keys.
+        assert_eq!(v["lastVersion"], "1.5.0");
+        assert_eq!(v["lastScan"], "2026-07-16T12:00:00.000Z");
+        assert!(v.get("declined").is_some());
+        assert!(v.get("accepted").is_some());
+    }
+
+    #[test]
+    fn load_offers_tolerates_corrupt_file() {
+        let _home = crate::paths::ScopedTestHome::new();
+        let path = offers_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "{not valid json").unwrap();
+        // Best-effort: corrupt file yields defaults, never panics.
+        assert_eq!(load_offers(), FeatureOffers::default());
+    }
+
+    // ── Output formatting ──────────────────────────────────────────────────
+
+    fn rec(id: &str, priority: FeaturePriority, auto_fixable: bool) -> FeatureRecommendation {
+        FeatureRecommendation {
+            id: id.into(),
+            priority,
+            title: format!("Title {id}"),
+            pitch: format!("Pitch {id}"),
+            command: format!("zbrain {id}"),
+            auto_fixable,
+        }
+    }
+
+    #[test]
+    fn render_human_groups_p1_under_data_quality_and_p2_under_unused() {
+        let scan = FeatureScanResult {
+            version: "1.4.0".into(),
+            brain_score: 72,
+            recommendations: vec![
+                rec("missing-embeddings", FeaturePriority::P1, true),
+                rec("zero-links", FeaturePriority::P2, true),
+            ],
+        };
+        let recs: Vec<&FeatureRecommendation> = scan.recommendations.iter().collect();
+        let out = render_human(&scan, &recs);
+
+        assert!(out.contains("Brain score: 72/100"));
+        // P1 goes under DATA QUALITY with a "Fix:" line.
+        let dq = out.find("DATA QUALITY (fix these first):").unwrap();
+        let uf = out.find("UNUSED FEATURES:").unwrap();
+        assert!(dq < uf, "DATA QUALITY block must precede UNUSED FEATURES");
+        assert!(out.contains("    Fix: zbrain missing-embeddings"));
+        // P2 goes under UNUSED FEATURES with a "Try:" line.
+        assert!(out.contains("    Try: zbrain zero-links"));
+    }
+
+    #[test]
+    fn render_human_omits_empty_blocks() {
+        // Only P2 present → no DATA QUALITY header.
+        let scan = FeatureScanResult {
+            version: "1.4.0".into(),
+            brain_score: 90,
+            recommendations: vec![rec("no-sync", FeaturePriority::P2, false)],
+        };
+        let recs: Vec<&FeatureRecommendation> = scan.recommendations.iter().collect();
+        let out = render_human(&scan, &recs);
+        assert!(!out.contains("DATA QUALITY"));
+        assert!(out.contains("UNUSED FEATURES:"));
+    }
+
+    #[test]
+    fn scan_report_json_shape_matches_ts() {
+        let scan = FeatureScanResult {
+            version: "1.4.0".into(),
+            brain_score: 80,
+            recommendations: vec![rec("dead-links", FeaturePriority::P1, false)],
+        };
+        let pitch: Vec<&FeatureRecommendation> = scan.recommendations.iter().collect();
+        let report =
+            FeatureScanReport::new(&scan, pitch, "2026-07-16T00:00:00.000Z".into());
+        let v = serde_json::to_value(&report).unwrap();
+        // TS `--json` shape: { version, scan_ts, brain_score, recommendations }.
+        assert_eq!(v["version"], "1.4.0");
+        assert_eq!(v["scan_ts"], "2026-07-16T00:00:00.000Z");
+        assert_eq!(v["brain_score"], 80);
+        assert_eq!(v["recommendations"][0]["id"], "dead-links");
+        assert_eq!(v["recommendations"][0]["priority"], 1);
     }
 }

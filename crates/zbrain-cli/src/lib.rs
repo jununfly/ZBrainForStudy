@@ -344,6 +344,9 @@ pub enum Commands {
     /// Validate installation and connectivity
     Doctor(DoctorArgs),
 
+    /// Scan brain usage and recommend unused features
+    Features(FeaturesArgs),
+
     /// Manage configuration values
     Config(ConfigArgs),
 
@@ -1298,6 +1301,20 @@ pub struct DoctorArgs {
     pub json: bool,
 }
 
+/// Arguments for `zbrain features` command.
+///
+/// Scans brain health/stats and recommends unused features. `--auto-fix` is
+/// deliberately NOT offered yet: it would dispatch to `embed --stale` /
+/// `extract links|timeline`, which have no Rust CLI equivalent. Exposing a
+/// no-op flag would be a lying interface, so auto-fix wiring is a separate
+/// slice, blocked on those commands existing.
+#[derive(Debug, Parser)]
+pub struct FeaturesArgs {
+    /// Emit the scan as JSON (for agents) instead of human-readable output.
+    #[arg(long)]
+    pub json: bool,
+}
+
 /// Arguments for `zbrain config` command and its subcommands.
 #[derive(Debug, Parser)]
 pub struct ConfigArgs {
@@ -1473,6 +1490,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Commands::Init(args) => run_init_command(args, cli.config.as_deref()).await?,
         Commands::Doctor(args) => run_doctor_command(args, cli.config.as_deref()).await?,
+        Commands::Features(args) => run_features_command(args, cli.config.as_deref()).await?,
         Commands::Config(args) => run_config_command(args, cli.config.as_deref()).await?,
         Commands::SchemaSql(args) => run_schema_command(args)?,
         Commands::GetPage(args) => run_get_page_command(args, cli.config.as_deref(), timeout_ms).await?,
@@ -3139,6 +3157,101 @@ async fn run_doctor_command(args: DoctorArgs, config_path: Option<&Path>) -> any
 
     Ok(())
 }
+
+/// Execute `zbrain features` — scan brain health/stats and recommend unused
+/// features. This is the CLI wiring around the pure `zbrain_core::features`
+/// engine: it builds the DI `FeatureScanInputs` from the live engine
+/// (`get_health` + `get_brain_stats`), the environment (secret presence), and
+/// config (`sync.default_repo`), then renders human or `--json` output and
+/// updates the `feature-offers.json` scan stamps.
+///
+/// Auto-fix is intentionally absent (see `FeaturesArgs` doc): the recommended
+/// `embed`/`extract` commands have no Rust equivalent yet, so a `--auto-fix`
+/// flag would be a no-op lie.
+async fn run_features_command(args: FeaturesArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+    use zbrain_core::features;
+
+    // Build the engine the same way doctor does: home PGLite DB via libsql.
+    let db_path = config::zbrain_home()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("brain.pglite");
+    let engine_config = zbrain_core::engine::EngineConfig {
+        database_path: Some(db_path.to_string_lossy().to_string()),
+        database_url: None,
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+
+    let health = engine.get_health().await?;
+    let stats = engine.get_brain_stats().await?;
+
+    // Resolve sync repo from config, mirroring the `sync` command
+    // (`config.sync.default_repo`). Note the TS key was `sync.repo_path`; the
+    // Rust config field is `sync.default_repo` — same meaning, different name.
+    let sync_repo = config::load_config(config_path)
+        .ok()
+        .and_then(|c| c.sync.and_then(|s| s.default_repo))
+        .map(|p| p.to_string_lossy().to_string());
+
+    // `secret_present`: the one place we read the real environment. A secret
+    // counts as configured only when present AND non-empty (matches TS
+    // `process.env[s]` truthiness — empty string is falsy).
+    fn secret_present(key: &str) -> bool {
+        std::env::var(key).map(|v| !v.is_empty()).unwrap_or(false)
+    }
+
+    let version = env!("CARGO_PKG_VERSION").to_string();
+    let inputs = features::FeatureScanInputs {
+        health: features::HealthSnapshot {
+            missing_embeddings: health.missing_embeddings as u64,
+            dead_links: health.dead_links as u64,
+            embed_coverage: health.embed_coverage,
+            brain_score: health.brain_score,
+        },
+        stats: features::BrainStatsSnapshot {
+            page_count: stats.page_count.max(0) as u64,
+            link_count: stats.link_count.max(0) as u64,
+            timeline_entry_count: stats.timeline_entry_count.max(0) as u64,
+        },
+        secret_present,
+        sync_repo,
+        version: version.clone(),
+    };
+
+    let scan = features::recommend_features(&inputs);
+    let mut offers = features::load_offers();
+    let pitchable = features::pitchable(&scan, &offers);
+
+    let scan_ts = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+
+    if args.json {
+        let report = features::FeatureScanReport::new(&scan, pitchable, scan_ts.clone());
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else if pitchable.is_empty() {
+        println!(
+            "\nBrain score: {}/100. All features adopted. Nothing to recommend.",
+            scan.brain_score
+        );
+    } else {
+        print!("{}", features::render_human(&scan, &pitchable));
+        // TTY-only hint to run auto-fix. Auto-fix itself is not implemented yet
+        // (blocked on embed/extract commands), so we only surface it when a
+        // human is watching, matching TS behavior sans the actual fix path.
+        if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            println!("Run 'zbrain features' regularly to track brain health.");
+        }
+    }
+
+    // Persist scan stamps (best-effort). `accepted`/`declined` bookkeeping is
+    // driven by auto-fix, which is a separate slice; here we only record that a
+    // scan happened.
+    offers.last_version = scan.version.clone();
+    offers.last_scan = scan_ts;
+    features::save_offers(&offers);
+
+    Ok(())
+}
+
 
 /// FUTURE(schema-pack): the TS `zbrain schema` command was a 1166-line
 /// schema-pack manager (Schema Cathedral v3) exposing the 32-verb taxonomy

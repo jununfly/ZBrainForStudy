@@ -478,7 +478,9 @@
       "children": [
         "1-6-4-1",
         "1-6-4-2",
-        "1-6-4-3"
+        "1-6-4-3",
+        "1-6-4-4",
+        "1-6-4-5"
       ],
       "decisions": [
         {
@@ -543,9 +545,55 @@
     },
     "1-6-4-3": {
       "id": "1-6-4-3",
-      "label": "features CLI 接线 + auto-fix (待 BrainStats getStats 前置 + embed/extract 命令就绪后; 接 Features clap 命令 + feature-offers.json 持久化)",
-      "status": "pending",
+      "label": "features CLI 接线完成 (zbrain features [--json]): clap 命令注册 + engine自建 + get_brain_stats/get_health 喂 recommend_features + feature-offers.json 持久化(camelCase wire) + render_human 分组(P1 DATA QUALITY/P2 UNUSED); core 22 lib测绿, CLI 编译+help+--json smoke过. 端到端smoke揭示 get_health 生产后端缺失->拆1-6-4-5",
+      "status": "completed",
       "mode": "explore",
+      "parent": "1-6-4",
+      "children": [],
+      "decisions": [
+        {
+          "q": "auto-fix 范围怎么切? embed/extract CLI 命令 Rust 侧完全不存在(clap enum 无 Embed/Extract, 仅底层 embedding.rs 生成向量能力)",
+          "answer": "选A: 本slice只做 扫描+推荐+feature-offers.json持久化+CLI接线(zbrain features [--json]); auto-fix 是跨命令依赖(embed=embedding批处理+budget, extract=内容提取子系统)不该由features承担建命令责任",
+          "note": "features保持深而薄. --auto-fix 不在本slice实现, 拆新sub-node 1-6-4-4 承载(blocked on embed/extract CLI命令). 本slice --auto-fix flag 先不暴露(更干净, 避免打印not-implemented的假接口)"
+        },
+        {
+          "q": "FeatureScanInputs 4个非纯字段 CLI层怎么喂?",
+          "answer": "health<-engine.get_health()->BrainHealth(missing_embeddings/dead_links/embed_coverage/brain_score 直取); stats<-engine.get_brain_stats()->BrainStats(前置1-6-4-2已就绪); secret_present<-|k| env::var(k).map(|v|!v.is_empty()).unwrap_or(false)(注意空串算未配置, 对齐TS truthy); sync_repo<-config::load_config().sync.default_repo",
+          "note": "无get_config trait方法(config是纯文件操作). 复用sync命令现成模式(lib.rs:1756 config::load_config + config.sync.and_then(default_repo)). 映射差异登记: TS用config key sync.repo_path, Rust config字段是 sync.default_repo"
+        },
+        {
+          "q": "feature-offers.json wire格式与持久化落点?",
+          "answer": "FeatureOffers已Serialize/Deserialize+camelCase rename(lastVersion/lastScan)+declined/accepted map(OfferStamp{at,version})+serde(default)容错; 完全对齐TS. 照 schema_pack/activate.rs:28-49 范例读写",
+          "note": "路径 paths::zbrain_home().join(feature-offers.json)(勿用dirs::home_dir, Windows忽略$HOME). load容错default+save create_dir_all+to_string_pretty. 本slice实现load_offers/save_offers, 但accepted记账属auto-fix(1-6-4-4), 本slice只写lastVersion/lastScan+读declined供should_pitch"
+        },
+        {
+          "q": "输出格式保真度 + featuresTeaserForDoctor 迁不迁?",
+          "answer": "(a)1:1复刻TS两套输出: human-readable(Brain score X/100 + DATA QUALITY/UNUSED FEATURES 分组)+ --json({version,scan_ts,brain_score,recommendations}); auto_fix_results字段本slice无auto-fix自然省略; scan_ts是CLI层盖的时间戳. (b)teaser不迁, 登记G47留doctor收尾",
+          "note": "teaser是doctor命令功能非features; Rust doctor(1-5已封顶)无此teaser(grep零命中). 已登记KNOWN-GAPS G47(推荐: features.rs加teaser_for_doctor(&HealthSnapshot)->Option<String>纯函数, doctor handler调)"
+        },
+        {
+          "q": "端到端 smoke 揭示 get_health 生产后端(libsql/postgres)缺失=features死命令, 如何处置?",
+          "answer": "拆独立节点 1-6-4-5, 当场紧接做",
+          "note": "get_health 是横切基建(features/doctor/autopilot 三消费者), 本就该独立节点非 features 接线范围; 但因它让 features 死命令+优先级高, 1-6-4-3 收口为CLI接线完成(代码层落盘,core 22测绿+CLI编译smoke过)后立即接做 1-6-4-5. 对齐 1-6-4-2 对生产死路的零容忍. 登记 G48(tracked)"
+        }
+      ],
+      "notes": ""
+    },
+    "1-6-4-4": {
+      "id": "1-6-4-4",
+      "label": "features auto-fix 接线 [BLOCKED: 依赖 Rust embed --stale + extract links/timeline CLI 命令, 二者均未建(clap enum无Embed/Extract, 仅底层embedding.rs); 待其各自成节点落地后回接 execute_auto_fix + --auto-fix flag + accepted 记账]",
+      "status": "blocked",
+      "mode": "explore",
+      "parent": "1-6-4",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-4-5": {
+      "id": "1-6-4-5",
+      "label": "get_health 生产后端 (libsql + postgres): 补 BrainEngine::get_health override — page/embed_coverage/dead_links/orphan/timeline_coverage/link_coverage/most_connected + 5分量brain_score(0-100), SQL 查询照 get_brain_stats 基建(scalar_count/links/timeline). 解 G48: 硬阻塞 features 死命令 + doctor brain_score 软降级 + autopilot targeted-submit. 三后端对齐单测钉 wire, 空brain=100/100 边界",
+      "status": "in_progress",
+      "mode": "build",
       "parent": "1-6-4",
       "children": [],
       "decisions": [],
@@ -554,7 +602,7 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-16 19:45:32",
+    "updated": "2026-07-16 20:35:00",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
