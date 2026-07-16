@@ -1,7 +1,7 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-07-16 17:36:13
+> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-07-16 17:52:49
 
 [~][X+] 1. Part11 — 残留 TS 收尾 (综合容器)
 ├── [ ][X+] 1-1. skillpack / skillify 迁移 (27+ 文件 Schema/Subagent 包)
@@ -22,7 +22,7 @@
 │   └── [x][Y+] 1-5-6. doctor 收尾 (删 TS doctor + 缩 typecheck 基线 + 锚点常量清空)
 ├── [~][X+] 1-6. 孤儿命令迁移 (审计: 83 唯一活命令 = RUST_OWNED 17 / TRIVIAL_DELETE 27 / REAL_MIGRATE 33 / PARITY_REVIEW 6)
 │   ├── [x][X+] 1-6-1. 孤儿命令审计 (TS 活 dispatch ~50 vs Rust 已注册, 分类 trivial-delete / real-migrate)
-│   ├── [~][Y+] 1-6-2. RUST_OWNED 壳清理 (删TS副本, 过1-6-5对等闸门: config/query/search/get-page/list-pages/sync/takes/orphans/import/reconcile-links/skillpack/schema/init/doctor)
+│   ├── [x][Y+] 1-6-2. RUST_OWNED 壳清理 (删TS副本, 过1-6-5对等闸门: config/query/search/get-page/list-pages/sync/takes/orphans/import/reconcile-links/skillpack/schema/init/doctor)
 │   ├── [ ][Y+] 1-6-3. TRIVIAL_DELETE 批 (纯dev/诊断工具整删: lint/upgrade/reinit-pglite/apply-migrations/repair-jsonb/report/smoke-test/claw-test/ze-switch/check-backlinks/cache/friction/lsd/founder/files/parse/network/discovery/anomalies/transcripts/book-mirror/call/integrations/frontmatter/mounts)
 │   ├── [ ][X+] 1-6-4. REAL_MIGRATE 批 (33真实功能待port, 按域拆sub-slice: memory=recall/forget; model/provider=models/providers; content=extract/embed/export; resolver=resolvers/integrity/routing-eval/check-resolvable/skillify; code-intel=code-*/reindex-*/backfill; misc=whoknows/brainstorm/dream/auth/eval/features/migrate/storage/calibration/notability-eval)
 │   └── [ ][Y+] 1-6-5. PARITY_GATE (删除任何TS命令前: 确认零src引用+零test引用+真Rust覆盖非stub; 1-6-2/1-6-3共用)
@@ -35,9 +35,18 @@
 │   └── [!][X+] 1-11-2. minions 纯删除探查 [BLOCKED: minions 100% 测试耦合, 无零引用叶子; A类纯删除已耗尽]
 └── [!][X+] 1-12. cycle 大迁移 (runCycle 2057行主循环 + 20 phase 全未迁, Rust autopilot/cycle.rs 仅骨架 stub) — B类真迁移主战场
 
-### 当前施工：1-6-2. RUST_OWNED 壳清理 (删TS副本, 过1-6-5对等闸门: config/query/search/get-page/list-pages/sync/takes/orphans/import/reconcile-links/skillpack/schema/init/doctor)
+### 当前施工：1-3. calibration 算法迁移 (10 文件，当前仅 DB 层)
 
-已清理(commit 2554f8f Batch2 + c5d07ed A类): A类死壳4个(init/doctor/config/sync--help stub); B/C类不可达dispatch 4个(reconcile-links/orphans/search/pages - 均非CLI_ONLY或走dispatchReadOnlyCommand, handleCliOnly分支是死代码); 测试重定向(cli.test/doctor.test spawn src/cli.ts -> bin/zbrain-rs.js); 僵尸THIN_CLIENT hint+help文本清理. 剩余真实活dispatch待Rust对等后删: sync/import/skillpack-check(CLI_ONLY活handler) + cliOps共享层(query/get_page/list_pages/think). bun --check OK.
+calibration 算法补齐：Rust 已有 calibration_queries.rs(DB 层) + web admin；待补 TS src/core/calibration 10 文件算法。2026-07-15 pivot 自 doctor 封顶后选此——领域自包含、边界清晰、不与 doctor 基建阻塞重叠。先探查 TS 算法边界与 Rust 缺口，再定整体 port 或按函数切片。
+
+**决策：**
+- Q: calibration 10 文件(1802 行)怎么切？ → 分阶段：Phase 1 先 port 纯函数(templates 5 builder / recall-footer / 纯解析器 parseJudgeOutput / 纯数学 computeForecast+resolveDomainPrefix / 纯规则 takeDomainHint+evaluateNudgeRule+buildLearningEntry / formatAbReport)，自包含可单测；Phase 2 再啃 engine/LLM 支撑(async 读引擎 + LLM 调用)，重 LLM 项(voice-gate gateVoice / think-ab runAbTrial)留 G-gap。 (与 doctor 切片同构：纯函数子集是便宜镜像，engine/LLM 子集是基建。不整体 port 避免大爆炸。)
+- Q: Phase 2 calibration 怎么切？全子集都卡在 engine trait 扩展或 LLM，非干净切片 → 不开大 Phase 2；开 1-3-2 = engine-read 子集（forecastForTake+batchForecast+get_scorecard domain_prefix），其余（mount 解析/execute_raw/LLM）留后续节点或登记 gap
+
+**当前子树：**
+├── [x][Y+] 1-3-1. calibration 纯函数 port (Phase 1: 零依赖纯函数)
+├── [x][Y+] 1-3-2. calibration engine-read 子集 (forecastForTake + batchForecast + get_scorecard domain_prefix)
+└── [!][X+] 1-3-3. calibration Phase 2 engine/LLM 支撑（queryAcrossBrains/aggregateDomainScorecards/undoWave/gateVoice/runAbTrial）
 <!-- ROADMAP_SECTION_END -->
 
 <!-- ⚠️ ROADMAP_SECTION_START -->

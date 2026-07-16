@@ -440,12 +440,18 @@
     "1-6-2": {
       "id": "1-6-2",
       "label": "RUST_OWNED 壳清理 (删TS副本, 过1-6-5对等闸门: config/query/search/get-page/list-pages/sync/takes/orphans/import/reconcile-links/skillpack/schema/init/doctor)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-6",
       "children": [],
-      "decisions": [],
-      "notes": "已清理(commit 2554f8f Batch2 + c5d07ed A类): A类死壳4个(init/doctor/config/sync--help stub); B/C类不可达dispatch 4个(reconcile-links/orphans/search/pages - 均非CLI_ONLY或走dispatchReadOnlyCommand, handleCliOnly分支是死代码); 测试重定向(cli.test/doctor.test spawn src/cli.ts -> bin/zbrain-rs.js); 僵尸THIN_CLIENT hint+help文本清理. 剩余真实活dispatch待Rust对等后删: sync/import/skillpack-check(CLI_ONLY活handler) + cliOps共享层(query/get_page/list_pages/think). bun --check OK."
+      "decisions": [
+        {
+          "q": "剩余 RUST_OWNED 命令(sync/import/skillpack-check/query/get_page/list_pages/think) 的 TS dispatch 能否删?",
+          "answer": "不能删, 本节点收口于纯死壳清理",
+          "note": "PARITY_GATE验证: (1)sync/import有活e2e测试spawn src/cli.ts (sync-lock-recovery.test.ts runCli['sync'..]测break-lock/SIGTERM; mechanical.test.ts spawn 'import', DATABASE_URL设置时真跑); (2)runSync/runImport/performSync有真实src调用者(reinit-pglite/cycle.ts:761/operations.ts:2017/sync内部调import); (3)query/get_page/list_pages/think无专属dispatch case走通用cliOps+formatResult共享层, 删=删operations.ts整层(C类核心迁移); (4)skillpack-check Rust无覆盖是真正待迁. 1-6-2纯死壳已清完(A类4+B/C不可达4=8个)."
+        }
+      ],
+      "notes": "收口(commit c5d07ed A类 + 2554f8f B/C类, PARITY_GATE验证见decision): 纯死壳共清8个 — A类4(init/doctor/config/sync--help stub) + B/C不可达dispatch 4(reconcile-links/orphans/search/pages). 剩余 RUST_OWNED 命令均有真实依赖不能删: sync/import(活e2e测试spawn src/cli.ts + src调用者cycle/operations/reinit); query/get_page/list_pages/think(走通用cliOps+formatResult共享层, 属operations.ts整层迁移=C类核心); skillpack-check(Rust无覆盖, 真正待迁). 本节点范围=壳清理已达边界."
     },
     "1-6-3": {
       "id": "1-6-3",
@@ -480,7 +486,7 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-16 17:36:13",
+    "updated": "2026-07-16 17:52:49",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   }
 }
