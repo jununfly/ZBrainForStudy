@@ -56,8 +56,10 @@ eval_drift 已迁（首端口，端到端模式验证完成）：Rust zbrain_cor
 ├── [ ][X+] 1-8. facts core 模块补齐 (C 类，src/core/facts 13 文件)
 ├── [ ][X+] 1-9. think core 模块补齐 (C 类，src/core/think 7 文件)
 ├── [ ][X+] 1-10. G38 schema-pack TS 删除尾 (gate=operations.ts 移植)
-└── [x][X+] 1-11. A 类已迁 TS 删除 (minions/ai/ingestion/cycle + 命令)
-    └── [x][X+] 1-11-1. ingestion A类闭合簇删除 (src/core/ingestion 10文件 + ingest-capture.ts + 测试；Rust ingestion.rs/sync/import.rs/ingest_capture.rs 已覆盖)
+├── [~][X+] 1-11. A 类已迁 TS 删除 (minions/ai/ingestion/cycle + 命令)
+│   ├── [x][X+] 1-11-1. ingestion A类闭合簇删除 (src/core/ingestion 10文件 + ingest-capture.ts + 测试；Rust ingestion.rs/sync/import.rs/ingest_capture.rs 已覆盖)
+│   └── [!][X+] 1-11-2. minions 纯删除探查 [BLOCKED: minions 100% 测试耦合, 无零引用叶子; A类纯删除已耗尽]
+└── [!][X+] 1-12. cycle 大迁移 (runCycle 2057行主循环 + 20 phase 全未迁, Rust autopilot/cycle.rs 仅骨架 stub) — B类真迁移主战场
 ```
 
 ### 🔨 当前施工: 1-3. calibration 算法迁移 (10 文件，当前仅 DB 层)

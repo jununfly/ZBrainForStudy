@@ -26,9 +26,10 @@ Rust 侧已成型，TS 端是迁移残留，理论上可随验证逐步删除（
 |---|---|
 | `src/core/minions`(37) | `crates/zbrain-core/src/minions/`（handler/queue/tools + 28 handlers）✅ |
 | `src/core/ai`(26) | `crates/zbrain-core/src/ai/`（9 文件）✅ |
-| `src/core/ingestion`(9) | `ingestion.rs` + `sync/import.rs` ✅ |
-| `src/core/cycle`(21) | `autopilot/cycle.rs` ✅ |
+| ~~`src/core/ingestion`(9)~~ | ~~`ingestion.rs` + `sync/import.rs`~~ ✅ **已删（1-11-1，2026-07-16）** |
 | 命令：`takes`/`search`(→query)/`facts`/`sync`/`orphans`/`embed`/`extract`/`lint`/`integrity`/`backlinks`/`reindex*`/`jobs-watch`/`report`/`recall`/`init-mode-picker`/`storage`/`migrate-engine` | Rust CLI 27 命令 + minion handlers ✅ |
+
+> **⚠️ 2026-07-16 误判修正**：原表把 `src/core/cycle`(21) 列为 A 类「`autopilot/cycle.rs` ✅ 已实现」是**错误**。实测：`cycle.ts` 主文件 2057 行（runCycle 主循环 + phase dispatch）+ `cycle/` 20 个 phase 文件；Rust `autopilot/cycle.rs`(745行) 仅 dispatch 骨架，20 个业务 phase 全是 `not_implemented`/`not_migrated` stub（extract_facts/patterns/consolidate/recompute_emotional_weight/synthesize handler 均 49 行 skeleton），**0/20 真正迁移**，runCycle 主循环未等价实现。6 个活消费者硬依赖未迁 phase（dream→runCycle、calibration→calibration-profile、v0_28_0→extract-takes、backfill-registry→emotional-weight、transcripts→transcript-discovery、pglite/postgres-engine→anomaly）。**cycle 应归 B 类真待迁移**（见 §3 B 类补记）。选刀教训：A 类判定必须实测 Rust handler 是否为 stub，不能只看文件是否存在。
 
 Rust CLI 27 顶层命令（`crates/zbrain-cli/src/lib.rs` `enum Commands` L344）：
 `init doctor config schema-sql get-page think query put-page delete-page restore-page purge-deleted-pages list-pages serve-mcp serve sync sources capture facts links takes salience orphans graph-query autopilot remote jobs agent`
@@ -46,6 +47,7 @@ Rust CLI 27 顶层命令（`crates/zbrain-cli/src/lib.rs` `enum Commands` L344�
 | `takes-quality-eval`(10) | 10 | Rust 无 |
 | `calibration`(10) | 10 | 仅 `calibration_queries.rs` DB 层 + web admin，无算法 |
 | `src/core/output`(9) | 9 | Rust 无对应模块 |
+| `src/core/cycle` 主循环 + phases | **2057行 + 20 phase** | Rust `autopilot/cycle.rs` 仅骨架，20 phase 全 stub，0/20 迁移（2026-07-16 从 A 类修正过来）；含 dream 命令依赖的 runCycle 主循环 |
 | doctor 11 项健康检查 | — | **G5** + `UNMIGRATED_TS_DOCTOR_CHECKS`（lib.rs:86）+ 锚点测试 |
 | 其它命令：`whoknows`/`routing-eval`/`notability-eval`/`frontmatter*`/`publish`/`bench-publish`/`brainstorm`/`dream`/`models`/`providers`/`mounts`/`integrations`/`auth`/`upgrade`/`check-update`/`book-mirror`/`founder-scorecard`/`friction`/`anomalies`/`code-callees·callers·def·refs`/`resolvers`/`transcripts`/`pages`/`files`/`backfill`/`edges-backfill`/`apply-migrations`/`reconcile-links`/`repair-jsonb`/`features`/`lsd`/`ze-switch`/`claw-test` | — | Rust 无 |
 
