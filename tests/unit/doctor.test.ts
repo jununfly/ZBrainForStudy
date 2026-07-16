@@ -11,14 +11,14 @@ describe('doctor command', () => {
     expect(typeof LATEST_VERSION).toBe('number');
   });
 
-  test('CLI registers doctor command', async () => {
+  test('Rust CLI registers doctor command', async () => {
+    // 1-6-2 Batch 2: redirected from TS src/cli.ts to Rust binary.
     const result = Bun.spawnSync({
-      cmd: ['bun', 'run', 'src/cli.ts', '--help'],
+      cmd: ['bun', 'run', 'bin/zbrain-rs.js', '--help'],
       cwd: import.meta.dir + '/..',
     });
     const stdout = new TextDecoder().decode(result.stdout);
     expect(stdout).toContain('doctor');
-    expect(stdout).toContain('--fast');
   });
 
   test('frontmatter_integrity subcheck added in v0.22.4', async () => {

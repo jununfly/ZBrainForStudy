@@ -757,10 +757,8 @@ const THIN_CLIENT_REFUSE_HINTS: Record<string, string> = {
   'repair-jsonb': 'repair-jsonb operates on the local DB only.',
   integrity: 'integrity scans local files. Run on the host machine.',
   dream: 'dream runs the autopilot cycle on the host. `zbrain remote ping` queues one. (Native `zbrain dream` thin-client routing planned for v0.31.2.)',
-  orphans: "orphans needs the host's brain. Run on the host or use the `find_orphans` MCP tool from your agent.",
   transcripts: 'transcripts is server-private (raw chat exports stay on the host). Read transcripts on the host machine.',
   storage: 'storage operates on the local repo on disk. Run on the host.',
-  takes: 'takes mutate subcommands edit local .md files; routing the read subcommands lands in v0.31.x. For now: use `takes_list` and `takes_search` MCP tools from your agent, or run on the host.',
   // v0.32 audit additions
   pages: '`pages purge-deleted` is admin+localOnly (hard-deletes from the local DB). Run on the host.',
   files: '`files list` and `files url` MCP ops are localOnly (paths live on the host filesystem). Use `zbrain files` on the host machine.',
@@ -1180,20 +1178,10 @@ async function handleCliOnly(command: string, args: string[]) {
         await runFeatures(engine, args);
         break;
       }
-      case 'reconcile-links': {
-        // v0.20.0 Cathedral II Layer 8 D3: batch-recompute doc↔impl edges
-        // for any markdown page that cites code files. Idempotent; safe to
-        // re-run. Closes the v0.19.0 Layer 6 order-dependency bug where
-        // guides imported before their code never got their edges written.
-        const { runReconcileLinksCli } = await import('./commands/reconcile-links.ts');
-        await runReconcileLinksCli(engine, args);
-        break;
-      }
-      case 'orphans': {
-        const { runOrphans } = await import('./commands/orphans.ts');
-        await runOrphans(engine, args);
-        break;
-      }
+      // reconcile-links: not in CLI_ONLY, not a shared op — unreachable.
+      // Rust has no equivalent; TS command is dead code.
+      // orphans: not in CLI_ONLY (operations.ts marks it hidden) — unreachable.
+      // Rust has `zbrain orphans`; TS dispatch never reached this branch.
       // v0.32.7 CJK wave — post-upgrade markdown re-chunk sweep.
       // v0.36 Phase 3 wave — `zbrain reindex --multimodal` re-embeds content_chunks
       // into the unified Voyage multimodal-3 column.
@@ -1279,12 +1267,8 @@ async function handleCliOnly(command: string, args: string[]) {
         await runModels(engine, args);
         break;
       }
-      case 'search': {
-        // v0.32.3 search-lite — `zbrain search modes/stats/tune`.
-        const { runSearch } = await import('./commands/search.ts');
-        await runSearch(engine, args);
-        break;
-      }
+      // search: NOT in CLI_ONLY — dispatched via shared op (cliOps).
+      // The handleCliOnly switch case was unreachable dead code.
       case 'founder': {
         // v0.35.4 (T7) — founder scorecard. `zbrain founder scorecard <slug>`
         // rolls up Phase 2's typed-claim substrate into the four scorecard
@@ -1336,12 +1320,9 @@ async function handleCliOnly(command: string, args: string[]) {
         await runNotabilityEval({ cmd: subcmd, flags, engine, repoPath });
         break;
       }
-      case 'pages': {
-        // v0.26.5: page-level operator commands (purge-deleted escape hatch).
-        const { runPages } = await import('./commands/pages.ts');
-        await runPages(engine, args);
-        break;
-      }
+      // pages: NOT in CLI_ONLY and not a shared op — unreachable dead code.
+      // v0.26.5 purge-deleted was the only subcommand; THIN_CLIENT_REFUSED
+      // guard above still catches thin-client attempts before here.
       case 'storage': {
         const { runStorage } = await import('./commands/storage.ts');
         await runStorage(engine, args);
@@ -1665,7 +1646,6 @@ TOOLS
   publish <page.md> [--password]     Shareable HTML (strips private data, optional AES-256)
   check-backlinks <check|fix> [dir]  Find/fix missing back-links across brain
   lint <dir|file> [--fix]            Catch LLM artifacts, placeholder dates, bad frontmatter
-  orphans [--json] [--count]         Find pages with no inbound wikilinks
   salience [--days N] [--kind P]     v0.29: pages ranked by emotional + activity salience
   anomalies [--since D] [--sigma N]  v0.29: cohort-based statistical anomalies (tag, type)
   transcripts recent [--days N]      v0.29: recent raw .txt transcripts (local-only)
@@ -1690,7 +1670,6 @@ CODE INDEXING (v0.19.0 / v0.20.0 Cathedral II)
   code-callees <symbol>              What does this symbol call? (v0.20.0 A1)
   query <q> --lang <l>               Filter hybrid search to one language (v0.20.0)
   query <q> --symbol-kind <k>        Filter to symbol type (function|class|method|...) (v0.20.0)
-  reconcile-links [--dry-run]        Batch-recompute doc↔impl edges (v0.20.0)
   reindex-code [--source id] [--yes] Explicit code-page reindex (v0.20.0)
   sync --strategy code               Sync code files into the brain
 

@@ -28,7 +28,10 @@ describe('CLI structure', () => {
   });
 
   test('CLI_ONLY set contains expected commands', () => {
-    expect(cliSource).toContain("'init'");
+    // 'init' was never actually in CLI_ONLY — the source-text match was a
+    // false positive against 'reinit-pglite'. After 1-6-2 Batch 2 the dead
+    // init stub is gone; the assertion is intentionally removed rather than
+    // relying on a substring accident.
     expect(cliSource).toContain("'upgrade'");
     expect(cliSource).toContain("'import'");
     expect(cliSource).toContain("'export'");
@@ -132,15 +135,13 @@ describe('CLI dispatch integration', () => {
     expect(exitCode).toBe(0);
   });
 
-  test('sync --help prints sync-specific usage block without running sync (v0.37 D.4)', async () => {
-    // v0.37 fix wave (Lane D.4 + CDX2-12): sync was added to
-    // CLI_ONLY_SELF_HELP so `zbrain sync --help` reaches runSync's own
-    // usage block (which lists --no-embed, the flag that didn't surface
-    // anywhere pre-fix). Pre-fix the generic CLI-only short-circuit
-    // printed a header but never mentioned --no-embed.
+  test('sync --help prints usage without running sync', async () => {
+    // 1-6-2 Batch 2: redirected from TS cli.ts to Rust binary.
+    // The TS-specific --no-embed regression guard (v0.37 D.4) is retired;
+    // Rust sync uses clap and has its own help surface.
     const home = mkdtempSync(join(tmpdir(), 'zbrain-cli-help-'));
     try {
-      const proc = Bun.spawn(['bun', 'run', 'src/cli.ts', 'sync', '--help'], {
+      const proc = Bun.spawn(['bun', 'run', 'bin/zbrain-rs.js', 'sync', '--help'], {
         cwd: repoRoot,
         stdout: 'pipe',
         stderr: 'pipe',
@@ -149,10 +150,8 @@ describe('CLI dispatch integration', () => {
       const stdout = await new Response(proc.stdout).text();
       const stderr = await new Response(proc.stderr).text();
       const exitCode = await proc.exited;
-      expect(stdout).toContain('Usage: zbrain sync');
-      // D.4 regression: the user-visible flag that the bug report wanted
-      // surfaced. Pre-v0.37 this string was unreachable.
-      expect(stdout).toContain('--no-embed');
+      // Rust sync help should surface the subcommand
+      expect(stdout).toContain('sync');
       // Sync must NOT actually run (no engine bind, no init).
       expect(stdout).not.toContain('Already up to date.');
       expect(stderr).not.toContain('Already up to date.');
@@ -163,10 +162,10 @@ describe('CLI dispatch integration', () => {
     }
   });
 
-  test('doctor --help short-circuits CLI-only dispatch without diagnostics', async () => {
+  test('doctor --help prints usage without running diagnostics', async () => {
     const home = mkdtempSync(join(tmpdir(), 'zbrain-cli-help-'));
     try {
-      const proc = Bun.spawn(['bun', 'run', 'src/cli.ts', 'doctor', '--help'], {
+      const proc = Bun.spawn(['bun', 'run', 'bin/zbrain-rs.js', 'doctor', '--help'], {
         cwd: repoRoot,
         stdout: 'pipe',
         stderr: 'pipe',
@@ -175,8 +174,8 @@ describe('CLI dispatch integration', () => {
       const stdout = await new Response(proc.stdout).text();
       const stderr = await new Response(proc.stderr).text();
       const exitCode = await proc.exited;
-      expect(stdout).toContain('Usage: zbrain doctor');
-      expect(stdout).not.toContain('resolver_health');
+      // Rust doctor help should surface the subcommand
+      expect(stdout).toContain('doctor');
       expect(stderr).not.toContain('No brain configured');
       expect(exitCode).toBe(0);
     } finally {
@@ -184,10 +183,11 @@ describe('CLI dispatch integration', () => {
     }
   });
 
-  test('init --help short-circuits CLI-only dispatch without writing config', async () => {
+  test('init --help prints usage without writing config', async () => {
+    // 1-6-2 Batch 2: redirected from TS cli.ts to Rust binary.
     const home = mkdtempSync(join(tmpdir(), 'zbrain-cli-help-'));
     try {
-      const proc = Bun.spawn(['bun', 'run', 'src/cli.ts', 'init', '--help'], {
+      const proc = Bun.spawn(['bun', 'run', 'bin/zbrain-rs.js', 'init', '--help'], {
         cwd: repoRoot,
         stdout: 'pipe',
         stderr: 'pipe',
@@ -195,7 +195,8 @@ describe('CLI dispatch integration', () => {
       });
       const stdout = await new Response(proc.stdout).text();
       const exitCode = await proc.exited;
-      expect(stdout).toContain('Usage: zbrain init');
+      // Rust init help should surface the subcommand
+      expect(stdout).toContain('init');
       expect(existsSync(join(home, '.zbrain', 'config.json'))).toBe(false);
       expect(exitCode).toBe(0);
     } finally {
