@@ -1,7 +1,7 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-07-16 16:37:59
+> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-07-16 17:36:13
 
 [~][X+] 1. Part11 — 残留 TS 收尾 (综合容器)
 ├── [ ][X+] 1-1. skillpack / skillify 迁移 (27+ 文件 Schema/Subagent 包)
@@ -37,7 +37,7 @@
 
 ### 当前施工：1-6-2. RUST_OWNED 壳清理 (删TS副本, 过1-6-5对等闸门: config/query/search/get-page/list-pages/sync/takes/orphans/import/reconcile-links/skillpack/schema/init/doctor)
 
-Batch 1 完成(schema/takes/orphans/skillpack, commit 5d4780c): takes.ts 整删-624行; schema/orphans/skillpack 移除 cli.ts 分发(模块保留). 验证: bun --check OK + cli-options 28过. 剩余13个 RUST_OWNED 被测试闸门挡(init/doctor/sync/config/cli.test.ts+heavy)或缠operations共享层(query/search/get_page/list_pages/think/reconcile-links), 需先迁测试依赖到Rust二进制.
+已清理(commit 2554f8f Batch2 + c5d07ed A类): A类死壳4个(init/doctor/config/sync--help stub); B/C类不可达dispatch 4个(reconcile-links/orphans/search/pages - 均非CLI_ONLY或走dispatchReadOnlyCommand, handleCliOnly分支是死代码); 测试重定向(cli.test/doctor.test spawn src/cli.ts -> bin/zbrain-rs.js); 僵尸THIN_CLIENT hint+help文本清理. 剩余真实活dispatch待Rust对等后删: sync/import/skillpack-check(CLI_ONLY活handler) + cliOps共享层(query/get_page/list_pages/think). bun --check OK.
 <!-- ROADMAP_SECTION_END -->
 
 <!-- ⚠️ ROADMAP_SECTION_START -->
