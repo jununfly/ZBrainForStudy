@@ -196,10 +196,12 @@
     "1-11": {
       "id": "1-11",
       "label": "A 类已迁 TS 删除 (minions/ai/ingestion/cycle + 命令)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
-      "children": [],
+      "children": [
+        "1-11-1"
+      ],
       "decisions": [],
       "notes": ""
     },
@@ -316,18 +318,40 @@
     },
     "1-4-2": {
       "id": "1-4-2",
-      "label": "output writer/scaffold/slug-registry infra port + TS validators/ 删除 (解缠 integrity.ts)",
-      "status": "pending",
+      "label": "output infra port + TS 删除 [BLOCKED: BrainWriter 撞逃生舱禁令 + 消费者 integrity.ts/operations.ts 未迁]",
+      "status": "blocked",
       "mode": "explore",
       "parent": "1-4",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "1-4-2 探查结论：能整体 port+删 TS 吗?",
+          "answer": "否，架构阻塞。(1) BrainWriter 核心=engine.transaction+executeRaw(advisory lock)，Rust engine 刻意消除(engine.rs:1896/2119 内部自管理事务+CAS幂等SQL)，无对应抽象。(2) writer/scaffold/slug-registry 唯一非测试消费者=integrity.ts(773行,Rust仅stub not_implemented)；post-write 唯一消费者=operations.ts:873(4243行未迁)。删 TS 被上游未迁大消费者卡死。scaffold.ts(236)纯函数可加法 port，但用户选 C=不做加法、重新 grill 选刀。",
+          "note": "engine-read validators(1-4-1)已迁完并有独立价值。output infra 层需等 integrity+operations 迁移才能收口。"
+        }
+      ],
+      "notes": ""
+    },
+    "1-11-1": {
+      "id": "1-11-1",
+      "label": "ingestion A类闭合簇删除 (src/core/ingestion 10文件 + ingest-capture.ts + 测试；Rust ingestion.rs/sync/import.rs/ingest_capture.rs 已覆盖)",
+      "status": "completed",
+      "mode": "explore",
+      "parent": "1-11",
+      "children": [],
+      "decisions": [
+        {
+          "q": "删除边界与安全性?",
+          "answer": "闭合A类簇整体删除。边界:(1)src/core/ingestion/全10文件(daemon/dedup/skillpack-load/test-harness/types/sources4)。(2)src/core/minions/handlers/ingest-capture.ts=死代码,无src生产调用者(仅测试引用),Rust ingest_capture.rs已注册覆盖。(3)连带删tests/unit/ingestion/*(13)+tests/unit/e2e/{ingestion-roundtrip,capture-generation-regression}.test.ts。安全性:operations.ts(handler registry)不引用ingest-capture(仅动态import shell-*);types唯一外部消费者是ingest-capture.ts自身(同批删,无断链)。Rust侧ingestion.rs+sync/import.rs+ingest_capture.rs全覆盖。删后跑typecheck baseline(error只减不增)。",
+          "note": "区别于1-4-2:此簇Rust已全覆盖且无未迁上游消费者,是Phase11'已迁才删'手法,纯删除零迁移风险。"
+        }
+      ],
       "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-16 11:35:21",
+    "updated": "2026-07-16 14:25:41",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
