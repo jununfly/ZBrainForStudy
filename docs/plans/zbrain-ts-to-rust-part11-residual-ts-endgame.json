@@ -528,11 +528,17 @@
     "1-6-4-2": {
       "id": "1-6-4-2",
       "label": "前置: 补 Rust engine BrainStats getStats (page_count/chunk_count/embedded_count/link_count/tag_count/timeline_entry_count/pages_by_type 三后端) — features CLI端到端与其他孤儿命令共用",
-      "status": "blocked",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6-4",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "补 Rust BrainStats getStats 如何处理 Rust 无 content_chunks/timeline_entries 表?",
+          "answer": "新增 get_brain_stats(非复用同名 admin/minions get_stats), 生产后端用 page-level 代理映射 chunk/embedded/timeline, InMemory 用真 chunk_store 精确计数, 差异登记 G46",
+          "note": "engine.rs 名字 get_stats 已被 minions QueueStats + admin Stats 占用, 故新增 get_brain_stats trait 方法(default Unsupported). BrainStats 放 admin_queries.rs, snake_case wire(TS BrainStats 是 snake_case, 不加 camelCase rename). 映射: page_count=pages WHERE deleted_at IS NULL; link_count=links; tag_count=DISTINCT tag FROM page_tags(libsql/pg)/frontmatter tags(InMemory); timeline_entry_count=取timeline字符串Rust侧serde解析sum array len(无timeline_entries表, 非JSON字符串→0); pages_by_type=GROUP BY type 无soft-delete filter(镜像TS). 关键后端差异: Rust无content_chunks表, embedding是pages单列BLOB(G24一页一向量), 故libsql/postgres chunk_count代理=live pages非空compiled_truth(同get_full_stats先例), embedded_count代理=live pages非空embedding; InMemory有真chunk_store逐chunk精确计数(保真度更高). 另发现libsql delete_page是硬删/soft_delete_page才软删(测试用后者). 5 InMemory单测+6 libsql临时库集成测试全绿, core lib 1530测全绿. G46登记双向指针."
+        }
+      ],
       "notes": ""
     },
     "1-6-4-3": {
@@ -548,7 +554,7 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-16 19:10:14",
+    "updated": "2026-07-16 19:38:53",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
