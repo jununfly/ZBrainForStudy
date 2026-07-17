@@ -22,7 +22,9 @@ libsql = { workspace = true }
 # the lib — to serialize the *write* portion of `LibsqlEngine::init_schema`
 # process-wide. Workspace tokio already enables `sync`. No `rt-*` features
 # are pulled into the library, so callers stay free to pick any runtime.
-tokio = { workspace = true, features = ["process", "time"] }
+# `macros` is needed by the resolver slices (tokio::select! / tokio::pin! in
+# url_reachable); it does not pull an executor.
+tokio = { workspace = true, features = ["process", "time", "macros"] }
 # Slice 1-2-1 (Phase 9 worker contract): `CancellationToken` for the
 # MinionJobContext cooperative-cancel signals (per-job `signal` + process
 # `shutdown`). Only the `sync` feature — CancellationToken is runtime-agnostic
@@ -82,6 +84,10 @@ embedding = ["dep:reqwest"]
 # the fail-open `apply_reranker` call-site logic are always compiled; only the
 # live ZeroEntropy POST path needs reqwest.
 rerank = ["dep:reqwest"]
+# Resolver live transports: reqwest-backed HttpClient + tokio::net DNS
+# resolver for url_reachable / x_api. The trait + Mock clients + the resolver
+# logic are always compiled; only the live network paths need this feature.
+resolvers = ["dep:reqwest", "tokio/net"]
 
 [dev-dependencies]
 tokio = { workspace = true }

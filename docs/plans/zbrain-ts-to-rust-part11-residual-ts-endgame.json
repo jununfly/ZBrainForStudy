@@ -922,6 +922,16 @@
           "q": "x-api 缺 token 的错误码（更正前条笔误）",
           "answer": "更正：TS ResolverErrorCode 无 'config' 变体；x-api 缺 token 时实际映射为 ResolverError(Unavailable)（TS 测试 resolvers.test.ts:461 断言 'unavailable'），available() 同样返回 false。前条 'ResolverError(Config)' 为笔误，以本条为准。",
           "note": ""
+        },
+        {
+          "q": "abort 信号怎么落地（url_reachable 实测修正）?",
+          "answer": "UrlReachableResolver 在 resolve() 最开头用 biased tokio::select 先查 req.context.abort.notified()，预触发则立即返回 ResolverError(Aborted)（忠实 TS checkReachable 开头检查，且避免与 mock 同步 ready 的 transport future 竞态）。逐跳循环内仍用 select 兼听 abort 处理 in-flight 取消。ResolverContext.abort: Arc<Notify>，defaults 到独立未触发 Notify。",
+          "note": ""
+        },
+        {
+          "q": "DNS rebinding 防御",
+          "answer": "url_reachable 忠实 port TS checkDnsRebinding：新增 url_safety::is_private_addr(IP)（判定 RFC1918/metadata/CGNAT/link-local/loopback/ULA 等私有范围），对解析出的 A/AAAA 逐条检查；命中即阻断。IP literal 跳过 DNS（is_internal_url 已挡私有）。DnsResolver trait 默认 mock 空、live 用 tokio::net::lookup_host（无新依赖）。",
+          "note": ""
         }
       ],
       "notes": ""
@@ -939,7 +949,7 @@
     "1-6-4-10-2": {
       "id": "1-6-4-10-2",
       "label": "url-reachable resolver port (HEAD 检查 + SSRF 防护, 复用 url_safety::is_internal_url)",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-6-4-10",
       "children": [],
@@ -969,7 +979,7 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-17 19:26:16",
+    "updated": "2026-07-17 20:52:14",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"

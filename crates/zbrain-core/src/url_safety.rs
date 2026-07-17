@@ -80,6 +80,35 @@ fn hostname_to_octets(hostname: &str) -> Option<[u8; 4]> {
     None
 }
 
+/// Classify an [`std::net::IpAddr`] (v4 or v6) as internal/private/reserved.
+///
+/// Mirrors the union of checks the TS `checkDnsRebinding` applies to resolved
+/// A/AAAA records: v4 private ranges, v6 loopback/unspecified/link-local/ULA,
+/// and IPv4-mapped v6. Reused by the `url_reachable` resolver's DNS-rebinding
+/// defense so the SSRF surface lives in exactly one place.
+pub fn is_private_addr(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            is_private_ipv4(&[o[0], o[1], o[2], o[3]])
+        }
+        std::net::IpAddr::V6(v6) => {
+            if v6.is_loopback() || v6.is_unspecified() {
+                return true;
+            }
+            let s = v6.to_string().to_lowercase();
+            if s.starts_with("fe80:") || s.starts_with("fc") || s.starts_with("fd") {
+                return true;
+            }
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                let o = v4.octets();
+                return is_private_ipv4(&[o[0], o[1], o[2], o[3]]);
+            }
+            false
+        }
+    }
+}
+
 /// Classify an IPv4 address as internal/private/reserved.
 pub fn is_private_ipv4(octets: &[u8; 4]) -> bool {
     let [a, b, _c, _d] = *octets;

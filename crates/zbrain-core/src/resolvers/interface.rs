@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use serde_json::Value as Json;
+use tokio::sync::Notify;
 
 // ---------------------------------------------------------------------------
 // Cost tiers
@@ -109,6 +110,10 @@ pub struct ResolverContext {
     /// Resolves a secret by name (e.g. "X_API_BEARER_TOKEN"). Provided by a
     /// closure so it is injectable in tests. Mirrors `ctx.secret()` in TS.
     pub secret: Arc<dyn Fn(&str) -> Option<String> + Send + Sync>,
+    /// Shared abort switch. Mirrors `ctx.signal` (AbortSignal) in TS. Resolvers
+    /// race their in-flight transport against this; the live `HttpClient`
+    /// honors it directly. Defaults to a fresh, never-fired `Notify`.
+    pub abort: Arc<Notify>,
 }
 
 impl ResolverContext {
@@ -120,6 +125,7 @@ impl ResolverContext {
             remote: false,
             deadline: None,
             secret: Arc::new(|_| None),
+            abort: Arc::new(Notify::new()),
         }
     }
 

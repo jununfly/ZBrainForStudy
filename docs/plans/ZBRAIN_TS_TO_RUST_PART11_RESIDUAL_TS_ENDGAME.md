@@ -59,7 +59,7 @@ calibration 算法补齐：Rust 已有 calibration_queries.rs(DB 层) + web admi
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-07-17 19:26:16
+> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-07-17 20:52:14
 
 [~][X+] 1. Part11 — 残留 TS 收尾 (综合容器)
 ├── [ ][X+] 1-1. skillpack / skillify 迁移 (27+ 文件 Schema/Subagent 包)
@@ -104,10 +104,12 @@ calibration 算法补齐：Rust 已有 calibration_queries.rs(DB 层) + web admi
 - Q: 测试策略? → TDD 垂直切片，忠实 port TS 717 行 resolvers.test.ts 的离线部分：registry 契约(单例/重复/过滤/错误码) + url-reachable(SSRF localhost/RFC1918/metadata、重定向逐跳、HEAD→GET 回退、AbortError) + x-api(纯函数 computeBackoffMs、available、非法 handle、零/单/多候选置信度分桶、401/403/500/429 错误码、关键字注入防护) 全部用 MockHttpClient。CI 防漂移锚点(若有)同步清空。
 - Q: resolver 注册与 secret 读取模型 + feature 门控? → register_builtin_resolvers() 总是注册 url-reachable + x-handle-to-tweet 两个 resolver(镜像 TS)。ResolverContext.secret(name)->Option<String> 由闭包/struct 提供：运行时读 env X_API_BEARER_TOKEN + config，测试注入返回 token 的闭包。x-api resolve 无 token -> ResolverError(Config)。模块常编译；仅 ReqwestHttpClient + live register 路径在 resolvers feature 后；MockHttpClient 无条件编译供测试。
 - Q: x-api 缺 token 的错误码（更正前条笔误） → 更正：TS ResolverErrorCode 无 'config' 变体；x-api 缺 token 时实际映射为 ResolverError(Unavailable)（TS 测试 resolvers.test.ts:461 断言 'unavailable'），available() 同样返回 false。前条 'ResolverError(Config)' 为笔误，以本条为准。
+- Q: abort 信号怎么落地（url_reachable 实测修正）? → UrlReachableResolver 在 resolve() 最开头用 biased tokio::select 先查 req.context.abort.notified()，预触发则立即返回 ResolverError(Aborted)（忠实 TS checkReachable 开头检查，且避免与 mock 同步 ready 的 transport future 竞态）。逐跳循环内仍用 select 兼听 abort 处理 in-flight 取消。ResolverContext.abort: Arc<Notify>，defaults 到独立未触发 Notify。
+- Q: DNS rebinding 防御 → url_reachable 忠实 port TS checkDnsRebinding：新增 url_safety::is_private_addr(IP)（判定 RFC1918/metadata/CGNAT/link-local/loopback/ULA 等私有范围），对解析出的 A/AAAA 逐条检查；命中即阻断。IP literal 跳过 DNS（is_internal_url 已挡私有）。DnsResolver trait 默认 mock 空、live 用 tokio::net::lookup_host（无新依赖）。
 
 **当前子树：**
 ├── [x][Y+] 1-6-4-10-1. Resolver SDK 核心 (Resolver trait + ResolverRegistry + 类型 + ResolverError)
-├── [ ][Y+] 1-6-4-10-2. url-reachable resolver port (HEAD 检查 + SSRF 防护, 复用 url_safety::is_internal_url)
+├── [x][Y+] 1-6-4-10-2. url-reachable resolver port (HEAD 检查 + SSRF 防护, 复用 url_safety::is_internal_url)
 ├── [ ][Y+] 1-6-4-10-3. x-api handle-to-tweet resolver (HttpClient trait + ReqwestHttpClient[resolvers feature] + Bearer + 429 退避 + 打分纯函数)
 └── [ ][Y+] 1-6-4-10-4. resolvers CLI 接线 (list [--json/--cost/--backend] + describe <id>) + E2E smoke
 <!-- ROADMAP_SECTION_END -->
