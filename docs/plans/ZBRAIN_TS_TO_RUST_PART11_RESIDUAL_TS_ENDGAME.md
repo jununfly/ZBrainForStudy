@@ -59,7 +59,7 @@ calibration 算法补齐：Rust 已有 calibration_queries.rs(DB 层) + web admi
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-07-17 22:18:43
+> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-07-17 22:56:29
 
 [~][X+] 1. Part11 — 残留 TS 收尾 (综合容器)
 ├── [ ][X+] 1-1. skillpack / skillify 迁移 (27+ 文件 Schema/Subagent 包)
@@ -93,5 +93,5 @@ calibration 算法补齐：Rust 已有 calibration_queries.rs(DB 层) + web admi
 │   └── [!][X+] 1-11-2. minions 纯删除探查 [BLOCKED: minions 100% 测试耦合, 无零引用叶子; A类纯删除已耗尽]
 └── [!][X+] 1-12. cycle 大迁移 (runCycle 2057行主循环 + 20 phase 全未迁, Rust autopilot/cycle.rs 仅骨架 stub) — B类真迁移主战场
 
-### 当前施工：1-6-4-11-2. find_anomalies 引擎方法 (BrainEngine trait + Libsql SQL 方言 + InMemory 计算)
+### 当前施工：1-6-4-11-3. find_anomalies Postgres 后端 SQL (generate_series / date_trunc / array_agg)
 <!-- ROADMAP_SECTION_END -->

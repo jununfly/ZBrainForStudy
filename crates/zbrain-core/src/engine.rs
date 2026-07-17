@@ -1206,6 +1206,30 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
     /// soft-deleted rows.
     async fn find_orphan_pages(&self) -> crate::Result<Vec<OrphanPage>>;
 
+    /// Statistical anomalies in recent page activity, grouped by cohort
+    /// (`tag` / `type`). Mirrors TS `engine.findAnomalies`:
+    ///
+    /// * Builds a densified per-cohort daily count baseline over
+    ///   `[since - lookback_days, since)` and a target-day count snapshot.
+    /// * Delegates the threshold math to [`crate::anomaly::compute_anomalies_from_buckets`].
+    ///
+    /// The three backends rewrite the SQL per dialect (Libsql recursive date
+    /// CTE + `substr`/`json_group_array`; Postgres `generate_series`/`date_trunc`/
+    /// `array_agg`; InMemory in-Rust) but share
+    /// [`crate::anomaly::resolve_anomaly_windows`] for identical window semantics.
+    ///
+    /// Default impl returns `Unsupported` so a backend can defer the port
+    /// (Postgres lands in a later slice); override to implement.
+    async fn find_anomalies(
+        &self,
+        opts: crate::anomaly::AnomaliesOpts,
+    ) -> crate::Result<Vec<crate::anomaly::AnomalyResult>> {
+        let _ = opts;
+        Err(crate::Error::unsupported(
+            "find_anomalies not yet implemented for this backend",
+        ))
+    }
+
     // — Batch timestamps / scores (3) —
     /// Resolve `slug` → `COALESCE(updated_at, created_at)` for many slugs at
     /// once. Mirrors TS `getPageTimestamps`, including deleted-row visibility:
@@ -3790,6 +3814,99 @@ impl BrainEngine for InMemoryEngine {
             .collect();
         orphans.sort_by(|a, b| a.slug.cmp(&b.slug));
         Ok(orphans)
+    }
+
+    /// `find_anomalies` — InMemory computes the densified baseline + target-day
+    /// snapshot in Rust (no SQL). Mirrors the TS `findAnomalies` algorithm:
+    /// zero-fill every window day per cohort so rare cohorts don't get
+    /// sparse-day-biased baselines.
+    async fn find_anomalies(
+        &self,
+        opts: crate::anomaly::AnomaliesOpts,
+    ) -> crate::Result<Vec<crate::anomaly::AnomalyResult>> {
+        use crate::anomaly::{
+            compute_anomalies_from_buckets, resolve_anomaly_windows, CohortDayRow,
+            CohortKind, CohortTodayRow,
+        };
+        use std::collections::{HashMap, HashSet};
+
+        let (_baseline_from, baseline_to, _today_from, today_to, window_days, sigma, limit) =
+            resolve_anomaly_windows(&opts)?;
+        let baseline_from_day = window_days.first().map(String::as_str).unwrap_or("");
+        let today_day = baseline_to.get(..10).unwrap_or("");
+        let today_end_day = today_to.get(..10).unwrap_or("");
+
+        let store = self
+            .store
+            .lock()
+            .expect("InMemoryEngine store mutex poisoned");
+
+        // ((kind, value), day) -> distinct slugs touched that day.
+        let mut baseline_cells: HashMap<((CohortKind, String), String), HashSet<String>> =
+            HashMap::new();
+        // (kind, value) -> distinct slugs touched on the target day.
+        let mut today_cells: HashMap<(CohortKind, String), HashSet<String>> = HashMap::new();
+
+        for page in store.iter() {
+            if page.deleted_at.is_some() {
+                continue;
+            }
+            let day = page.updated_at.get(..10).unwrap_or("");
+            let in_baseline = day >= baseline_from_day && day < today_day;
+            let is_today = day >= today_day && day < today_end_day;
+            if !in_baseline && !is_today {
+                continue;
+            }
+            let slug = page.slug.clone();
+            let cohorts: Vec<(CohortKind, String)> = std::iter::once((CohortKind::Type, page.page_type.clone()))
+                .chain(page_tags(page).into_iter().map(|t| (CohortKind::Tag, t)))
+                .collect();
+            for (kind, value) in cohorts {
+                if in_baseline {
+                    baseline_cells
+                        .entry(((kind, value.clone()), day.to_string()))
+                        .or_default()
+                        .insert(slug.clone());
+                }
+                if is_today {
+                    today_cells.entry((kind, value)).or_default().insert(slug.clone());
+                }
+            }
+        }
+
+        // Densify: for each cohort present in baseline, emit a CohortDayRow for
+        // every window day (zero-filled where inactive).
+        let mut seen_cohorts: HashSet<(CohortKind, String)> = HashSet::new();
+        for ((kind, value), _) in baseline_cells.keys() {
+            seen_cohorts.insert((kind.clone(), value.clone()));
+        }
+        let mut baseline: Vec<CohortDayRow> = Vec::new();
+        for (kind, value) in seen_cohorts {
+            for d in &window_days {
+                let count = baseline_cells
+                    .get(&((kind.clone(), value.clone()), d.clone()))
+                    .map(HashSet::len)
+                    .unwrap_or(0);
+                baseline.push(CohortDayRow {
+                    cohort_kind: kind,
+                    cohort_value: value.clone(),
+                    day: d.clone(),
+                    count: count as i64,
+                });
+            }
+        }
+
+        let today: Vec<CohortTodayRow> = today_cells
+            .into_iter()
+            .map(|((kind, value), slugs)| CohortTodayRow {
+                cohort_kind: kind,
+                cohort_value: value,
+                count: slugs.len() as i64,
+                page_slugs: slugs.into_iter().collect(),
+            })
+            .collect();
+
+        Ok(compute_anomalies_from_buckets(&baseline, &today, sigma, limit))
     }
 
     /// `get_page_timestamps` — key = slug, value = `COALESCE(updated_at,

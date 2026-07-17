@@ -2237,6 +2237,244 @@ impl BrainEngine for LibsqlEngine {
         Ok(out)
     }
 
+    /// `find_anomalies` — Libsql (SQLite dialect) rewrite of the TS Postgres
+    /// `findAnomalies` SQL. Key dialect differences:
+    /// * `generate_series` → recursive `date()` CTE for zero-filled days.
+    /// * `date_trunc('day', …)` → `substr(updated_at, 1, 10)` (RFC3339 `Z` form).
+    /// * `array_agg(DISTINCT slug)` → `json_group_array(DISTINCT slug)`.
+    ///
+    /// `?1`/`?2` are `YYYY-MM-DD` date-only bounds for the recursive CTE;
+    /// `?3`/`?4` are full RFC3339 `…Z` bounds for the `updated_at` range filter
+    /// (matching the stored format, so lexicographic compare is chronological).
+    ///
+    /// NOTE: SQLite caps recursive CTE depth (~1000); this matches the default
+    /// `lookback_days=30` comfortably but a pathological `--lookback-days`
+    /// beyond the limit would error — same spirit as the PG `generate_series`.
+    async fn find_anomalies(
+        &self,
+        opts: crate::anomaly::AnomaliesOpts,
+    ) -> crate::Result<Vec<crate::anomaly::AnomalyResult>> {
+        use crate::anomaly::{
+            compute_anomalies_from_buckets, resolve_anomaly_windows, CohortDayRow,
+            CohortKind, CohortTodayRow,
+        };
+
+        let (baseline_from, baseline_to, today_from, today_to, _window_days, sigma, limit) =
+            resolve_anomaly_windows(&opts)?;
+        let baseline_start_day = _window_days.first().map(String::as_str).unwrap_or("");
+        let since_day = baseline_to.get(..10).unwrap_or("");
+
+        let conn = self.conn().await?;
+
+        // ---- tag baseline (densified) ----
+        let tag_baseline_sql = "
+            WITH RECURSIVE days(d) AS (
+                SELECT date(?1)
+                UNION ALL
+                SELECT date(d, '+1 day')
+                FROM days
+                WHERE d < date(?2)
+            ),
+            cohort_keys AS (
+                SELECT DISTINCT t.tag AS cohort_value
+                FROM page_tags t
+                JOIN pages p ON p.id = t.page_id
+                WHERE p.updated_at >= ?3 AND p.updated_at < ?4 AND p.deleted_at IS NULL
+            ),
+            touched AS (
+                SELECT t.tag AS cohort_value,
+                       substr(p.updated_at, 1, 10) AS day,
+                       COUNT(DISTINCT p.id) AS cnt
+                FROM page_tags t
+                JOIN pages p ON p.id = t.page_id
+                WHERE p.updated_at >= ?3 AND p.updated_at < ?4 AND p.deleted_at IS NULL
+                GROUP BY 1, 2
+            )
+            SELECT cd.cohort_value AS cohort_value, d.d AS day, COALESCE(t.cnt, 0) AS count
+            FROM cohort_keys cd
+            CROSS JOIN days d
+            LEFT JOIN touched t ON t.cohort_value = cd.cohort_value AND t.day = d.d";
+        let mut tag_baseline_rows = conn
+            .query(
+                tag_baseline_sql,
+                ::libsql::params![
+                    baseline_start_day,
+                    since_day,
+                    baseline_from.clone(),
+                    baseline_to.clone()
+                ],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("find_anomalies tag baseline query failed: {e}")))?;
+        let mut baseline: Vec<CohortDayRow> = Vec::new();
+        while let Some(row) = tag_baseline_rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("find_anomalies tag baseline fetch failed: {e}")))?
+        {
+            let cohort_value: String = row
+                .get(0)
+                .map_err(|e| Error::engine(format!("decode tag baseline cohort_value: {e}")))?;
+            let day: String = row
+                .get(1)
+                .map_err(|e| Error::engine(format!("decode tag baseline day: {e}")))?;
+            let count: i64 = row
+                .get(2)
+                .map_err(|e| Error::engine(format!("decode tag baseline count: {e}")))?;
+            baseline.push(CohortDayRow {
+                cohort_kind: CohortKind::Tag,
+                cohort_value,
+                day,
+                count,
+            });
+        }
+
+        // ---- type baseline (densified) ----
+        let type_baseline_sql = "
+            WITH RECURSIVE days(d) AS (
+                SELECT date(?1)
+                UNION ALL
+                SELECT date(d, '+1 day')
+                FROM days
+                WHERE d < date(?2)
+            ),
+            cohort_keys AS (
+                SELECT DISTINCT p.type AS cohort_value
+                FROM pages p
+                WHERE p.updated_at >= ?3 AND p.updated_at < ?4 AND p.deleted_at IS NULL
+            ),
+            touched AS (
+                SELECT p.type AS cohort_value,
+                       substr(p.updated_at, 1, 10) AS day,
+                       COUNT(DISTINCT p.id) AS cnt
+                FROM pages p
+                WHERE p.updated_at >= ?3 AND p.updated_at < ?4 AND p.deleted_at IS NULL
+                GROUP BY 1, 2
+            )
+            SELECT cd.cohort_value AS cohort_value, d.d AS day, COALESCE(t.cnt, 0) AS count
+            FROM cohort_keys cd
+            CROSS JOIN days d
+            LEFT JOIN touched t ON t.cohort_value = cd.cohort_value AND t.day = d.d";
+        let mut type_baseline_rows = conn
+            .query(
+                type_baseline_sql,
+                ::libsql::params![
+                    baseline_start_day,
+                    since_day,
+                    baseline_from.clone(),
+                    baseline_to.clone()
+                ],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("find_anomalies type baseline query failed: {e}")))?;
+        while let Some(row) = type_baseline_rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("find_anomalies type baseline fetch failed: {e}")))?
+        {
+            let cohort_value: String = row
+                .get(0)
+                .map_err(|e| Error::engine(format!("decode type baseline cohort_value: {e}")))?;
+            let day: String = row
+                .get(1)
+                .map_err(|e| Error::engine(format!("decode type baseline day: {e}")))?;
+            let count: i64 = row
+                .get(2)
+                .map_err(|e| Error::engine(format!("decode type baseline count: {e}")))?;
+            baseline.push(CohortDayRow {
+                cohort_kind: CohortKind::Type,
+                cohort_value,
+                day,
+                count,
+            });
+        }
+
+        // ---- today (tag + type) ----
+        let parse_slugs = |raw: Option<String>| -> Vec<String> {
+            match raw {
+                Some(ref js) => serde_json::from_str::<Vec<String>>(js).unwrap_or_default(),
+                None => Vec::new(),
+            }
+        };
+
+        let mut today: Vec<CohortTodayRow> = Vec::new();
+
+        let tag_today_sql = "
+            SELECT t.tag AS cohort_value,
+                   COUNT(DISTINCT p.id) AS count,
+                   json_group_array(DISTINCT p.slug) AS slugs
+            FROM page_tags t
+            JOIN pages p ON p.id = t.page_id
+            WHERE p.updated_at >= ?1 AND p.updated_at < ?2 AND p.deleted_at IS NULL
+            GROUP BY 1";
+        let mut tag_today_rows = conn
+            .query(
+                tag_today_sql,
+                ::libsql::params![today_from.clone(), today_to.clone()],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("find_anomalies tag today query failed: {e}")))?;
+        while let Some(row) = tag_today_rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("find_anomalies tag today fetch failed: {e}")))?
+        {
+            let cohort_value: String = row
+                .get(0)
+                .map_err(|e| Error::engine(format!("decode tag today cohort_value: {e}")))?;
+            let count: i64 = row
+                .get(1)
+                .map_err(|e| Error::engine(format!("decode tag today count: {e}")))?;
+            let slugs: Option<String> = row
+                .get(2)
+                .map_err(|e| Error::engine(format!("decode tag today slugs: {e}")))?;
+            today.push(CohortTodayRow {
+                cohort_kind: CohortKind::Tag,
+                cohort_value,
+                count,
+                page_slugs: parse_slugs(slugs),
+            });
+        }
+
+        let type_today_sql = "
+            SELECT p.type AS cohort_value,
+                   COUNT(DISTINCT p.id) AS count,
+                   json_group_array(DISTINCT p.slug) AS slugs
+            FROM pages p
+            WHERE p.updated_at >= ?1 AND p.updated_at < ?2 AND p.deleted_at IS NULL
+            GROUP BY 1";
+        let mut type_today_rows = conn
+            .query(
+                type_today_sql,
+                ::libsql::params![today_from, today_to],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("find_anomalies type today query failed: {e}")))?;
+        while let Some(row) = type_today_rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("find_anomalies type today fetch failed: {e}")))?
+        {
+            let cohort_value: String = row
+                .get(0)
+                .map_err(|e| Error::engine(format!("decode type today cohort_value: {e}")))?;
+            let count: i64 = row
+                .get(1)
+                .map_err(|e| Error::engine(format!("decode type today count: {e}")))?;
+            let slugs: Option<String> = row
+                .get(2)
+                .map_err(|e| Error::engine(format!("decode type today slugs: {e}")))?;
+            today.push(CohortTodayRow {
+                cohort_kind: CohortKind::Type,
+                cohort_value,
+                count,
+                page_slugs: parse_slugs(slugs),
+            });
+        }
+
+        Ok(compute_anomalies_from_buckets(&baseline, &today, sigma, limit))
+    }
+
     async fn get_all_slugs(
         &self,
         source_id: Option<&str>,

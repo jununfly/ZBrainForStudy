@@ -34,7 +34,7 @@ pub struct CohortTodayRow {
 }
 
 /// Which facet a cohort is grouped by.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CohortKind {
     Tag,
@@ -152,6 +152,79 @@ pub fn compute_anomalies_from_buckets(
 /// in tags or `PageType` values.
 pub fn cohort_key(kind: CohortKind, value: &str) -> String {
     format!("{}\u{1f}{}", kind.as_str(), value)
+}
+
+/// Default cap on anomalies returned (matches TS `computeAnomaliesFromBuckets`
+/// default `limit = 20`).
+pub const DEFAULT_ANOMALY_LIMIT: usize = 20;
+
+/// Options for `BrainEngine::find_anomalies`. Mirrors TS `AnomaliesOpts`.
+#[derive(Debug, Clone, Default)]
+pub struct AnomaliesOpts {
+    /// Target day (YYYY-MM-DD). Defaults to today (UTC).
+    pub since: Option<String>,
+    /// Baseline window in days. Defaults to 30. Clamped to >= 1.
+    pub lookback_days: Option<u32>,
+    /// Sigma threshold multiplier. Defaults to 3.0.
+    pub sigma: Option<f64>,
+}
+
+/// Resolved date windows for `find_anomalies`.
+///
+/// Returns, in order:
+/// * `baseline_from` — full RFC3339 `YYYY-MM-DDTHH:MM:SSZ` lower bound
+///   (inclusive) of the baseline window, matching the stored `updated_at` format.
+/// * `baseline_to` — exclusive upper bound of the baseline window (= target day).
+/// * `today_from` — inclusive lower bound of the target day.
+/// * `today_to` — exclusive upper bound of the target day (= target day + 1).
+/// * `window_days` — every `YYYY-MM-DD` in `[baseline_start, target_day)`,
+///   used to zero-fill the densified baseline so rare cohorts don't get
+///   sparse-day-biased baselines (codex C4#6, same as the TS SQL `CROSS JOIN days`).
+/// * `sigma` — effective threshold (default 3.0).
+/// * `limit` — effective cap (default [`DEFAULT_ANOMALY_LIMIT`]).
+///
+/// All three engine backends (Libsql, InMemory, Postgres) share this resolver
+/// so the window semantics are identical across dialects.
+pub fn resolve_anomaly_windows(
+    opts: &AnomaliesOpts,
+) -> crate::Result<(String, String, String, String, Vec<String>, f64, usize)> {
+    use chrono::{Duration, NaiveDate, Utc};
+
+    let sigma = opts.sigma.unwrap_or(3.0);
+    let lookback = std::cmp::max(1, opts.lookback_days.unwrap_or(30)) as i64;
+    let since = match &opts.since {
+        Some(s) => NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|e| {
+            crate::Error::new(
+                "InvalidArgument",
+                "invalid_argument",
+                format!("invalid --since {s}: {e}"),
+            )
+        })?,
+        None => Utc::now().date_naive(),
+    };
+    let since_end = since + Duration::days(1);
+    let baseline_start = since - Duration::days(lookback);
+
+    let day_str = |d: NaiveDate| d.format("%Y-%m-%d").to_string();
+    let iso_midnight = |d: NaiveDate| format!("{}T00:00:00Z", day_str(d));
+
+    let baseline_from = iso_midnight(baseline_start);
+    let baseline_to = iso_midnight(since);
+    let today_from = iso_midnight(since);
+    let today_to = iso_midnight(since_end);
+    let window_days: Vec<String> = (0..lookback as u32)
+        .map(|i| day_str(baseline_start + Duration::days(i as i64)))
+        .collect();
+
+    Ok((
+        baseline_from,
+        baseline_to,
+        today_from,
+        today_to,
+        window_days,
+        sigma,
+        DEFAULT_ANOMALY_LIMIT,
+    ))
 }
 
 #[cfg(test)]
