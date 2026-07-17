@@ -1294,6 +1294,66 @@ impl BrainEngine for PostgresEngine {
         rows.iter().map(row_to_page).collect()
     }
 
+    async fn list_stale_pages(&self) -> Result<Vec<Page>> {
+        let pool = self.pool()?;
+        let rows = sqlx::query(
+            "SELECT id, slug, type, page_kind, title, compiled_truth, timeline, \
+                    frontmatter, content_hash, emotional_weight, created_at, updated_at, \
+                    deleted_at, last_retrieved_at, effective_date, effective_date_source, \
+                    import_filename, salience_touched_at, salience_score, generation, \
+                    embedding, chunker_version, source_path, source_id, source_kind, \
+                    source_uri, ingested_via, ingested_at, contextual_retrieval_mode, \
+                    corpus_generation \
+             FROM pages \
+             WHERE deleted_at IS NULL AND embedding IS NULL \
+             ORDER BY slug",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("list_stale_pages query: {e}")))?;
+        rows.iter().map(row_to_page).collect()
+    }
+
+    async fn put_page_embedding(
+        &self,
+        slug: &str,
+        source_id: &str,
+        embedding: Vec<u8>,
+    ) -> Result<()> {
+        let pool = self.pool()?;
+        sqlx::query(
+            "UPDATE pages SET embedding = $1 \
+             WHERE slug = $2 AND source_id = $3 AND deleted_at IS NULL",
+        )
+        .bind(embedding)
+        .bind(slug)
+        .bind(source_id)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("put_page_embedding failed: {e}")))?;
+        Ok(())
+    }
+
+    async fn set_page_timeline(
+        &self,
+        slug: &str,
+        source_id: &str,
+        timeline: String,
+    ) -> Result<()> {
+        let pool = self.pool()?;
+        sqlx::query(
+            "UPDATE pages SET timeline = $1 \
+             WHERE slug = $2 AND source_id = $3 AND deleted_at IS NULL",
+        )
+        .bind(timeline)
+        .bind(slug)
+        .bind(source_id)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("set_page_timeline failed: {e}")))?;
+        Ok(())
+    }
+
     async fn search_pages(&self, opts: &SearchOpts) -> Result<Vec<SearchResult>> {
         // G23: real Postgres `search_pages`, mirroring the libsql slice (1-3-2)
         // and InMemory pattern. Two halves:

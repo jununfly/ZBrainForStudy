@@ -2353,6 +2353,77 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
             "get_brain_stats not yet implemented for this engine",
         ))
     }
+
+    /// Enumerate live pages whose embedding has not been computed yet
+    /// (`embedding IS NULL AND deleted_at IS NULL`). Powers `features
+    /// --auto-fix`'s `embed --stale` step: the caller re-embeds each returned
+    /// page and writes the vector back via [`BrainEngine::put_page_embedding`].
+    ///
+    /// Mirrors the `missing_embeddings` count in [`BrainEngine::get_health`]
+    /// but returns the actual rows (not just a count), and excludes
+    /// soft-deleted pages. Real backends override with a single indexed
+    /// `WHERE` scan; the default is `Unsupported`.
+    async fn list_stale_pages(&self) -> crate::Result<Vec<Page>> {
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "list_stale_pages not yet implemented for this engine",
+        ))
+    }
+
+    /// Surgically write a page-level embedding (page-level vector, G24) without
+    /// touching any other column. Used by `embed --stale` to backfill vectors
+    /// for pages whose `embedding` is currently NULL.
+    async fn put_page_embedding(
+        &self,
+        _slug: &str,
+        _source_id: &str,
+        _embedding: Vec<u8>,
+    ) -> crate::Result<()> {
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "put_page_embedding not yet implemented for this engine",
+        ))
+    }
+
+    /// Surgically overwrite a page's `timeline` TEXT column without reading or
+    /// rewriting the rest of the row.
+    async fn set_page_timeline(
+        &self,
+        _slug: &str,
+        _source_id: &str,
+        _timeline: String,
+    ) -> crate::Result<()> {
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "set_page_timeline not yet implemented for this engine",
+        ))
+    }
+
+    /// Append a single entry to a page's `timeline` TEXT column. Default impl
+    /// reads the page, parses the existing timeline, appends, and writes back
+    /// via `set_page_timeline`. Backends may override for a single SQL round-trip.
+    async fn add_timeline_entry(
+        &self,
+        slug: &str,
+        source_id: &str,
+        entry: &str,
+    ) -> crate::Result<()> {
+        let current = match self.get_page(slug, &GetPageOpts::default()).await {
+            Ok(Some(p)) => p.timeline,
+            _ => String::new(),
+        };
+        let mut lines: Vec<String> = current
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| l.to_string())
+            .collect();
+        lines.push(entry.to_string());
+        let next = lines.join("\n");
+        self.set_page_timeline(slug, source_id, next).await
+    }
 }
 
 // ─── InMemoryEngine ──────────────────────────────────────────────────────────
@@ -3013,6 +3084,71 @@ impl BrainEngine for InMemoryEngine {
             pages.truncate(limit);
         }
         Ok(pages)
+    }
+
+    async fn list_stale_pages(&self) -> crate::Result<Vec<Page>> {
+        let store = self
+            .store
+            .lock()
+            .expect("InMemoryEngine store mutex poisoned");
+        let stale: Vec<Page> = store
+            .iter()
+            .filter(|p| p.deleted_at.is_none() && p.embedding.is_none())
+            .cloned()
+            .collect();
+        Ok(stale)
+    }
+
+    async fn put_page_embedding(
+        &self,
+        slug: &str,
+        source_id: &str,
+        embedding: Vec<u8>,
+    ) -> crate::Result<()> {
+        let mut store = self
+            .store
+            .lock()
+            .expect("InMemoryEngine store mutex poisoned");
+        match store
+            .iter_mut()
+            .find(|p| p.slug == slug && p.source_id == source_id)
+        {
+            Some(p) => {
+                p.embedding = Some(embedding);
+                Ok(())
+            }
+            None => Err(crate::error::StructuredError::new(
+                "NotFound",
+                "not_found",
+                &format!("page not found: {source_id}::{slug}"),
+            )),
+        }
+    }
+
+    async fn set_page_timeline(
+        &self,
+        slug: &str,
+        source_id: &str,
+        timeline: String,
+    ) -> crate::Result<()> {
+        let mut store = self
+            .store
+            .lock()
+            .expect("InMemoryEngine store mutex poisoned");
+        match store
+            .iter_mut()
+            .find(|p| p.slug == slug && p.source_id == source_id)
+        {
+            Some(p) => {
+                p.timeline = timeline;
+                Ok(())
+            }
+            None => Err(crate::error::StructuredError::new(
+                "NotFound",
+                "not_found",
+                &format!("page not found: {source_id}::{slug}"),
+            )),
+        }
     }
 
     async fn resolve_slugs(

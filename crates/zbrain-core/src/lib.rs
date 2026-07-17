@@ -54,6 +54,7 @@ pub mod types;
 pub mod url_safety;
 pub mod whoknows;
 pub mod integrity;
+pub mod markdown_links;
 pub mod schema_pack;
 pub mod paths;
 

@@ -472,7 +472,7 @@
     "1-6-4": {
       "id": "1-6-4",
       "label": "REAL_MIGRATE 孤儿命令批 [去重后: 移出 skillify->1-1 / eval族->1-2 / calibration->1-3 / dream->1-12 / extract·export·integrity->1-4; 真孤儿=code-intel(code-*·reindex*·edges-backfill·backfill) + memory(recall·forget) + models·providers + whoknows·brainstorm·auth·features·storage·migrate·publish·extract-conversation-facts·resolvers·check-resolvable + 20个1-6-3归入带test命令]",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6",
       "children": [
@@ -583,13 +583,44 @@
     },
     "1-6-4-4": {
       "id": "1-6-4-4",
-      "label": "features auto-fix 接线 [BLOCKED: 依赖 Rust embed --stale + extract links/timeline CLI 命令, 二者均未建(clap enum无Embed/Extract, 仅底层embedding.rs); 待其各自成节点落地后回接 execute_auto_fix + --auto-fix flag + accepted 记账]",
-      "status": "blocked",
-      "mode": "explore",
+      "label": "features auto-fix 引擎地基 (page-level: list_stale_pages + put_page_embedding + add_timeline_entry + link 解析器)",
+      "status": "completed",
+      "mode": "exploit",
       "parent": "1-6-4",
-      "children": [],
-      "decisions": [],
-      "notes": ""
+      "children": [
+        "1-6-4-4-1",
+        "1-6-4-4-2",
+        "1-6-4-4-3",
+        "1-6-4-4-4"
+      ],
+      "decisions": [
+        {
+          "q": "范围：本刀(1-6-4-4)建多大？",
+          "answer": "引擎地基先行：本刀只补 count_stale_chunks + chunk embedding 回写 + add_timeline_entry 三后端引擎方法，库函数(embed_stale/extract_links/extract_timeline)与 features --auto-fix 接线拆到后续子节点",
+          "note": ""
+        },
+        {
+          "q": "建模：embed --stale/extract timeline 用哪种模型？",
+          "answer": "Rust-native page-level: embed --stale=枚举null-embedding页→EmbeddingClient→put_page回写页面向量; extract timeline=追加pages.timeline TEXT(add_timeline_entry 三后端); extract links=现有add_links_batch; 不触发schema迁移. chunk-level(建content_chunks/timeline_entries表+chunk embed+chunk搜索重架构+health重算+存量回填)是独立epic, 不塞进本刀.",
+          "note": ""
+        },
+        {
+          "q": "embed --stale 的枚举与写回机制？",
+          "answer": "专用引擎方法: 新增 list_stale_pages(SQL WHERE embedding IS NULL AND deleted_at IS NULL, 与 get_health 同源) + put_page_embedding(slug, source_id, embedding: Vec<u8>)(单条 UPDATE pages SET embedding=? WHERE (source_id,slug)). 外科手术式, 不重写整页. 三后端各实现.",
+          "note": ""
+        },
+        {
+          "q": "add_timeline_entry 智能程度？",
+          "answer": "智能 trait 方法 add_timeline_entry(slug, source_id, date, summary, detail): get_page→纯函数解析现有 timeline(移植TS解析器)→插入/追加条目→put_page(timeline). 贴合 TS engine.addTimelineEntry 语义; 三后端经 get_page+put_page 实现.",
+          "note": ""
+        },
+        {
+          "q": "节点结构：1-6-4-4 怎么拆？",
+          "answer": "地基=父节点本体+4行为子节点: 1-6-4-4 本身承载引擎地基(list_stale_pages+put_page_embedding+add_timeline_entry+link解析器); 子节点 1-6-4-4-1 embed_stale库函数 / 1-6-4-4-2 extract_links库函数 / 1-6-4-4-3 extract_timeline库函数 / 1-6-4-4-4 features --auto-fix CLI接线. 不做独立embed/extract CLI.",
+          "note": ""
+        }
+      ],
+      "notes": "ENGINE FOUNDATION COMPLETE 2026-07-17 TDD. list_stale_pages + put_page_embedding(Vec<u8> surgical UPDATE) + add_timeline_entry(trait default get->append->set_page_timeline, 3-backend surgical UPDATE timeline TEXT) + extract_markdown_links pure parser(9 unit tests). Tests: inmemory(2)+libsql(4)+postgres(3)=9 integration passed. Sub-nodes 1-6-4-4-1..4 pending for library-function+CLI wiring. chunk-level modeling is a separate epic."
     },
     "1-6-4-5": {
       "id": "1-6-4-5",
@@ -638,11 +669,51 @@
         }
       ],
       "notes": ""
+    },
+    "1-6-4-4-1": {
+      "id": "1-6-4-4-1",
+      "label": "embed_stale 库函数 (枚举 stale 页→EmbeddingClient→put_page_embedding)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-6-4-4",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-4-4-2": {
+      "id": "1-6-4-4-2",
+      "label": "extract_links 库函数 (link 解析器→add_links_batch)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-6-4-4",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-4-4-3": {
+      "id": "1-6-4-4-3",
+      "label": "extract_timeline 库函数 (timeline 解析器→add_timeline_entry)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-6-4-4",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-4-4-4": {
+      "id": "1-6-4-4-4",
+      "label": "features --auto-fix CLI 接线 (execute_auto_fix + accepted 记账 + --json auto_fix_results)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-6-4-4",
+      "children": [],
+      "decisions": [],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-17 11:15:02",
+    "updated": "2026-07-17 14:30:40",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"

@@ -1264,6 +1264,71 @@ impl BrainEngine for LibsqlEngine {
         Ok(out)
     }
 
+    async fn list_stale_pages(&self) -> Result<Vec<Page>> {
+        let conn = self.conn().await?;
+        let mut rows = conn
+            .query(
+                "SELECT id, slug, type, page_kind, title, compiled_truth, timeline, \
+                        frontmatter, content_hash, emotional_weight, created_at, updated_at, \
+                        deleted_at, last_retrieved_at, effective_date, effective_date_source, \
+                        import_filename, salience_touched_at, salience_score, generation, \
+                        embedding, chunker_version, source_path, source_id, source_kind, \
+                        source_uri, ingested_via, ingested_at, contextual_retrieval_mode, \
+                        corpus_generation \
+                 FROM pages \
+                 WHERE deleted_at IS NULL AND embedding IS NULL \
+                 ORDER BY slug",
+                ::libsql::params![],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("list_stale_pages query failed: {e}")))?;
+
+        let mut out = Vec::new();
+        loop {
+            let next = rows
+                .next()
+                .await
+                .map_err(|e| Error::engine(format!("list_stale_pages row fetch failed: {e}")))?;
+            match next {
+                Some(row) => out.push(full_row_to_page(&row)?),
+                None => break,
+            }
+        }
+        Ok(out)
+    }
+
+    async fn put_page_embedding(
+        &self,
+        slug: &str,
+        source_id: &str,
+        embedding: Vec<u8>,
+    ) -> Result<()> {
+        let conn = self.conn().await?;
+        conn.execute(
+            "UPDATE pages SET embedding = ? WHERE slug = ? AND source_id = ? AND deleted_at IS NULL",
+            ::libsql::params![embedding, slug, source_id],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("put_page_embedding failed: {e}")))?;
+        Ok(())
+    }
+
+    async fn set_page_timeline(
+        &self,
+        slug: &str,
+        source_id: &str,
+        timeline: String,
+    ) -> Result<()> {
+        let conn = self.conn().await?;
+        conn.execute(
+            "UPDATE pages SET timeline = ? WHERE slug = ? AND source_id = ? AND deleted_at IS NULL",
+            ::libsql::params![timeline, slug, source_id],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("set_page_timeline failed: {e}")))?;
+        Ok(())
+    }
+
     /// Real hybrid search over the libsql-backed store.
     ///
     /// Overrides the `BrainEngine::search_pages` trait default (which returns
