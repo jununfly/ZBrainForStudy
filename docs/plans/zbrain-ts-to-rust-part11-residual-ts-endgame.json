@@ -1046,7 +1046,7 @@
     "1-6-4-11-3": {
       "id": "1-6-4-11-3",
       "label": "find_anomalies Postgres 后端 SQL (generate_series / date_trunc / array_agg)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6-4-11",
       "children": [],
@@ -1056,7 +1056,7 @@
     "1-6-4-11-4": {
       "id": "1-6-4-11-4",
       "label": "anomalies CLI 接线 (flags + thin-client call_remote_tool 回退 + 输出) + 删 TS 命令",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "explore",
       "parent": "1-6-4-11",
       "children": [],
@@ -1066,7 +1066,7 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-17 22:56:29",
+    "updated": "2026-07-17 23:19:04",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"

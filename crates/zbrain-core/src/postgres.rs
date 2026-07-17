@@ -2261,6 +2261,187 @@ impl BrainEngine for PostgresEngine {
         Ok(out)
     }
 
+    async fn find_anomalies(
+        &self,
+        opts: crate::anomaly::AnomaliesOpts,
+    ) -> crate::Result<Vec<crate::anomaly::AnomalyResult>> {
+        use crate::anomaly::{
+            compute_anomalies_from_buckets, resolve_anomaly_windows, CohortDayRow, CohortKind,
+            CohortTodayRow,
+        };
+        let pool = self.pool()?;
+        let (baseline_from, baseline_to, _today_from, today_to, _window_days, sigma, limit) =
+            resolve_anomaly_windows(&opts)?;
+
+        // --- Tag cohort baseline (densified via generate_series CROSS JOIN) ---
+        let tag_baseline_sql = "
+            WITH days AS (
+                SELECT day::date FROM generate_series(
+                    $1::date, $2::date - interval '1 day', '1 day'::interval
+                ) AS day
+            ),
+            cohort_keys AS (
+                SELECT DISTINCT pt.tag FROM page_tags pt
+                    JOIN pages p ON p.id = pt.page_id
+                 WHERE p.updated_at >= $1::timestamptz
+                   AND p.updated_at <  $2::timestamptz
+            ),
+            touched AS (
+                SELECT pt.tag,
+                       date_trunc('day', p.updated_at)::date AS day,
+                       COUNT(DISTINCT p.id) AS cnt
+                  FROM page_tags pt JOIN pages p ON p.id = pt.page_id
+                 WHERE p.updated_at >= $1::timestamptz
+                   AND p.updated_at <  $2::timestamptz
+                 GROUP BY 1, 2
+            )
+            SELECT ck.tag AS cohort_value, d.day::text AS day,
+                   COALESCE(t.cnt, 0)::int AS count
+              FROM cohort_keys ck CROSS JOIN days d
+              LEFT JOIN touched t ON t.tag = ck.tag AND t.day = d.day";
+        let tb = sqlx::query(tag_baseline_sql)
+            .bind(&baseline_from)
+            .bind(&baseline_to)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| Error::engine(format!("find_anomalies tag baseline: {e}")))?;
+        let mut baseline: Vec<CohortDayRow> = Vec::with_capacity(tb.len());
+        for r in tb {
+            let cohort_value: String = r
+                .try_get("cohort_value")
+                .map_err(|e| Error::engine(format!("tag baseline decode cohort_value: {e}")))?;
+            let day: String = r
+                .try_get("day")
+                .map_err(|e| Error::engine(format!("tag baseline decode day: {e}")))?;
+            let count: i32 = r
+                .try_get("count")
+                .map_err(|e| Error::engine(format!("tag baseline decode count: {e}")))?;
+            baseline.push(CohortDayRow {
+                cohort_kind: CohortKind::Tag,
+                cohort_value,
+                day,
+                count: count as i64,
+            });
+        }
+
+        // --- Type cohort baseline ---
+        let type_baseline_sql = "
+            WITH days AS (
+                SELECT day::date FROM generate_series(
+                    $1::date, $2::date - interval '1 day', '1 day'::interval
+                ) AS day
+            ),
+            cohort_keys AS (
+                SELECT DISTINCT p.type FROM pages p
+                 WHERE p.updated_at >= $1::timestamptz
+                   AND p.updated_at <  $2::timestamptz
+            ),
+            touched AS (
+                SELECT p.type,
+                       date_trunc('day', p.updated_at)::date AS day,
+                       COUNT(DISTINCT p.id) AS cnt
+                  FROM pages p
+                 WHERE p.updated_at >= $1::timestamptz
+                   AND p.updated_at <  $2::timestamptz
+                 GROUP BY 1, 2
+            )
+            SELECT ck.type AS cohort_value, d.day::text AS day,
+                   COALESCE(t.cnt, 0)::int AS count
+              FROM cohort_keys ck CROSS JOIN days d
+              LEFT JOIN touched t ON t.type = ck.type AND t.day = d.day";
+        let tb2 = sqlx::query(type_baseline_sql)
+            .bind(&baseline_from)
+            .bind(&baseline_to)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| Error::engine(format!("find_anomalies type baseline: {e}")))?;
+        for r in tb2 {
+            let cohort_value: String = r
+                .try_get("cohort_value")
+                .map_err(|e| Error::engine(format!("type baseline decode cohort_value: {e}")))?;
+            let day: String = r
+                .try_get("day")
+                .map_err(|e| Error::engine(format!("type baseline decode day: {e}")))?;
+            let count: i32 = r
+                .try_get("count")
+                .map_err(|e| Error::engine(format!("type baseline decode count: {e}")))?;
+            baseline.push(CohortDayRow {
+                cohort_kind: CohortKind::Type,
+                cohort_value,
+                day,
+                count: count as i64,
+            });
+        }
+
+        // --- Today's window counts + slugs ---
+        let tag_today_sql = "
+            SELECT pt.tag AS cohort_value,
+                   COUNT(DISTINCT p.id)::int AS count,
+                   array_agg(DISTINCT p.slug) AS slugs
+              FROM page_tags pt JOIN pages p ON p.id = pt.page_id
+             WHERE p.updated_at >= $1::timestamptz
+               AND p.updated_at <  $2::timestamptz
+             GROUP BY 1";
+        let tt = sqlx::query(tag_today_sql)
+            .bind(&baseline_to)
+            .bind(&today_to)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| Error::engine(format!("find_anomalies tag today: {e}")))?;
+        let mut today: Vec<CohortTodayRow> = Vec::with_capacity(tt.len());
+        for r in tt {
+            let cohort_value: String = r
+                .try_get("cohort_value")
+                .map_err(|e| Error::engine(format!("tag today decode cohort_value: {e}")))?;
+            let count: i32 = r
+                .try_get("count")
+                .map_err(|e| Error::engine(format!("tag today decode count: {e}")))?;
+            let slugs: Option<Vec<String>> = r
+                .try_get("slugs")
+                .map_err(|e| Error::engine(format!("tag today decode slugs: {e}")))?;
+            today.push(CohortTodayRow {
+                cohort_kind: CohortKind::Tag,
+                cohort_value,
+                count: count as i64,
+                page_slugs: slugs.unwrap_or_default(),
+            });
+        }
+
+        let type_today_sql = "
+            SELECT p.type AS cohort_value,
+                   COUNT(DISTINCT p.id)::int AS count,
+                   array_agg(DISTINCT p.slug) AS slugs
+              FROM pages p
+             WHERE p.updated_at >= $1::timestamptz
+               AND p.updated_at <  $2::timestamptz
+             GROUP BY 1";
+        let tt2 = sqlx::query(type_today_sql)
+            .bind(&baseline_to)
+            .bind(&today_to)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| Error::engine(format!("find_anomalies type today: {e}")))?;
+        for r in tt2 {
+            let cohort_value: String = r
+                .try_get("cohort_value")
+                .map_err(|e| Error::engine(format!("type today decode cohort_value: {e}")))?;
+            let count: i32 = r
+                .try_get("count")
+                .map_err(|e| Error::engine(format!("type today decode count: {e}")))?;
+            let slugs: Option<Vec<String>> = r
+                .try_get("slugs")
+                .map_err(|e| Error::engine(format!("type today decode slugs: {e}")))?;
+            today.push(CohortTodayRow {
+                cohort_kind: CohortKind::Type,
+                cohort_value,
+                count: count as i64,
+                page_slugs: slugs.unwrap_or_default(),
+            });
+        }
+
+        Ok(compute_anomalies_from_buckets(&baseline, &today, sigma, limit))
+    }
+
     // --- Phase 7A: Takes ---
 
     async fn get_takes_for_page(
