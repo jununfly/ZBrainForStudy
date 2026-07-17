@@ -472,7 +472,7 @@
     "1-6-4": {
       "id": "1-6-4",
       "label": "REAL_MIGRATE 孤儿命令批 [去重后: 移出 skillify->1-1 / eval族->1-2 / calibration->1-3 / dream->1-12 / extract·export·integrity->1-4; 真孤儿=code-intel(code-*·reindex*·edges-backfill·backfill) + memory(recall·forget) + models·providers + whoknows·brainstorm·auth·features·storage·migrate·publish·extract-conversation-facts·resolvers·check-resolvable + 20个1-6-3归入带test命令]",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6",
       "children": [
@@ -584,7 +584,7 @@
     "1-6-4-4": {
       "id": "1-6-4-4",
       "label": "features auto-fix 引擎地基 (page-level: list_stale_pages + put_page_embedding + add_timeline_entry + link 解析器)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-6-4",
       "children": [
@@ -620,7 +620,7 @@
           "note": ""
         }
       ],
-      "notes": "ENGINE FOUNDATION COMPLETE 2026-07-17 TDD. list_stale_pages + put_page_embedding(Vec<u8> surgical UPDATE) + add_timeline_entry(trait default get->append->set_page_timeline, 3-backend surgical UPDATE timeline TEXT) + extract_markdown_links pure parser(9 unit tests). Tests: inmemory(2)+libsql(4)+postgres(3)=9 integration passed. Sub-nodes 1-6-4-4-1..4 pending for library-function+CLI wiring. chunk-level modeling is a separate epic."
+      "notes": "ALL 4 CHILDREN COMPLETE (1-6-4-4-1 embed_stale / 1-6-4-4-2 extract_links / 1-6-4-4-3 extract_timeline / 1-6-4-4-4 CLI wiring). Page-level features --auto-fix fully migrated to Rust. E2E smoke green."
     },
     "1-6-4-5": {
       "id": "1-6-4-5",
@@ -703,17 +703,17 @@
     "1-6-4-4-4": {
       "id": "1-6-4-4-4",
       "label": "features --auto-fix CLI 接线 (execute_auto_fix + accepted 记账 + --json auto_fix_results)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6-4-4",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "DONE. CLI wiring: FeaturesArgs.auto_fix + run_features_command auto-fix branch + run_auto_fix dispatch + AutoFixResults struct. E2E smoke vs seeded libsql brain: links_created=1, timeline_entries_added=1, embedded=0 (no ZEROENTROPY_API_KEY), embedding_enabled=false; idempotent re-run links=0/timeline=0; offer ledger recorded missing-embeddings accepted. JSON --auto_fix field well-formed."
     }
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-17 15:21:31",
+    "updated": "2026-07-17 15:35:18",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"

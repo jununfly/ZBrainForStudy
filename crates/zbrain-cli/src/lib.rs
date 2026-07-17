@@ -1319,6 +1319,12 @@ pub struct FeaturesArgs {
     /// Emit the scan as JSON (for agents) instead of human-readable output.
     #[arg(long)]
     pub json: bool,
+
+    /// Run the recommended auto-fixable actions (re-embed stale pages,
+    /// extract links, extract timeline entries) directly instead of only
+    /// reporting them. Idempotent — safe to re-run.
+    #[arg(long)]
+    pub auto_fix: bool,
 }
 
 /// Arguments for `zbrain whoknows` — expert-routing query.
@@ -3223,9 +3229,10 @@ async fn run_doctor_command(args: DoctorArgs, config_path: Option<&Path>) -> any
 /// config (`sync.default_repo`), then renders human or `--json` output and
 /// updates the `feature-offers.json` scan stamps.
 ///
-/// Auto-fix is intentionally absent (see `FeaturesArgs` doc): the recommended
-/// `embed`/`extract` commands have no Rust equivalent yet, so a `--auto-fix`
-/// flag would be a no-op lie.
+/// Auto-fix (via `--auto-fix`) dispatches to the page-level auto-fix library
+/// functions in `zbrain_core::auto_fix`, the Rust analog of the TS
+/// `executeAutoFix`. The recommended `embed`/`extract` commands now have Rust
+/// equivalents, so `--auto-fix` performs real work.
 async fn run_features_command(args: FeaturesArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
     use zbrain_core::features;
 
@@ -3282,9 +3289,33 @@ async fn run_features_command(args: FeaturesArgs, config_path: Option<&Path>) ->
 
     let scan_ts = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
 
+    // `--auto-fix`: run the recommended, idempotent fix actions, then record
+    // the auto-fixable recommendations as accepted in the ledger.
+    let auto_fix = if args.auto_fix {
+        let result = run_auto_fix(&engine).await?;
+        for rec in &scan.recommendations {
+            if rec.auto_fixable {
+                offers.accepted.insert(
+                    rec.id.clone(),
+                    features::OfferStamp {
+                        at: scan_ts.clone(),
+                        version: scan.version.clone(),
+                    },
+                );
+            }
+        }
+        Some(result)
+    } else {
+        None
+    };
+
     if args.json {
         let report = features::FeatureScanReport::new(&scan, pitchable, scan_ts.clone());
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        let mut value = serde_json::to_value(&report)?;
+        if let Some(af) = &auto_fix {
+            value["auto_fix"] = serde_json::to_value(af)?;
+        }
+        println!("{}", serde_json::to_string_pretty(&value)?);
     } else if pitchable.is_empty() {
         println!(
             "\nBrain score: {}/100. All features adopted. Nothing to recommend.",
@@ -3292,22 +3323,80 @@ async fn run_features_command(args: FeaturesArgs, config_path: Option<&Path>) ->
         );
     } else {
         print!("{}", features::render_human(&scan, &pitchable));
-        // TTY-only hint to run auto-fix. Auto-fix itself is not implemented yet
-        // (blocked on embed/extract commands), so we only surface it when a
-        // human is watching, matching TS behavior sans the actual fix path.
         if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
             println!("Run 'zbrain features' regularly to track brain health.");
         }
     }
 
-    // Persist scan stamps (best-effort). `accepted`/`declined` bookkeeping is
-    // driven by auto-fix, which is a separate slice; here we only record that a
-    // scan happened.
+    if let Some(af) = &auto_fix {
+        if args.json {
+            // already included in the JSON above.
+        } else if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            println!("\nAuto-fix applied:");
+            println!("  links created: {}", af.links_created);
+            println!("  timeline entries added: {}", af.timeline_entries_added);
+            if af.embedding_enabled {
+                println!("  pages embedded: {}", af.embedded);
+            } else {
+                println!(
+                    "  pages embedded: 0 (embedding not configured — set ZEROENTROPY_API_KEY)"
+                );
+            }
+        }
+    }
+
+    // Persist scan stamps + accepted ledger (best-effort).
     offers.last_version = scan.version.clone();
     offers.last_scan = scan_ts;
     features::save_offers(&offers);
 
     Ok(())
+}
+
+/// Outcome of running the auto-fix dispatch, surfaced in both human and
+/// `--json` output.
+#[derive(Debug, serde::Serialize)]
+struct AutoFixResults {
+    /// Whether the embedding client was available (ZEROENTROPY_API_KEY set).
+    pub embedding_enabled: bool,
+    /// Pages re-embedded via `embed_stale` (0 when embedding disabled).
+    pub embedded: usize,
+    /// Outgoing links created via `extract_links`.
+    pub links_created: usize,
+    /// Timeline entries appended via `extract_timeline`.
+    pub timeline_entries_added: usize,
+}
+
+/// Page-level auto-fix dispatch (Rust analog of TS `executeAutoFix`): extract
+/// links and timeline entries from page bodies, and — when an embedding
+/// client is configured — re-embed stale pages. All three operations are
+/// idempotent, so re-running is safe.
+async fn run_auto_fix(
+    engine: &dyn zbrain_core::engine::BrainEngine,
+) -> anyhow::Result<AutoFixResults> {
+    use zbrain_core::auto_fix::{
+        embed_stale, extract_links, extract_timeline, EmbedStaleOpts, ExtractLinksOpts,
+        ExtractTimelineOpts,
+    };
+    use zbrain_core::embedding::EmbeddingClient;
+
+    let links = extract_links(engine, &ExtractLinksOpts::default()).await?;
+    let timeline = extract_timeline(engine, &ExtractTimelineOpts::default()).await?;
+
+    let (embedding_enabled, embedded) = match EmbeddingClient::from_env() {
+        Some(client) => {
+            let res = embed_stale(engine, &client, &EmbedStaleOpts::default()).await?;
+            (true, res.embedded)
+        }
+        None => (false, 0),
+    };
+
+    Ok(AutoFixResults {
+        embedding_enabled,
+        embedded,
+        links_created: links.links_created,
+        timeline_entries_added: timeline.entries_added,
+    })
 }
 
 /// `zbrain whoknows <topic>` — expert-routing query.
