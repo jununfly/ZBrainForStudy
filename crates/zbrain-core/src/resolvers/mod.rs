@@ -13,6 +13,7 @@ pub mod http;
 pub mod interface;
 pub mod registry;
 pub mod url_reachable;
+pub mod x_api;
 
 pub use dns::{DnsError, DnsResolver, MockDnsResolver};
 pub use http::{
@@ -27,6 +28,7 @@ pub use registry::{
     ResolverResolveOpts, ResolverSummary,
 };
 pub use url_reachable::UrlReachableResolver;
+pub use x_api::XHandleToTweetResolver;
 
 #[cfg(feature = "resolvers")]
 pub use dns::TokioDnsResolver;

@@ -24,6 +24,7 @@ pub enum HttpMethod {
 
 /// A single HTTP request issued by a resolver. Faithful to the subset of
 /// `fetch(init)` the resolvers need.
+#[derive(Clone)]
 pub struct HttpRequest {
     pub url: String,
     pub method: HttpMethod,
@@ -75,6 +76,16 @@ pub enum HttpClientError {
     Timeout,
     /// DNS / connection-refused / TLS / 5xx-streaming failure.
     Transport(String),
+}
+
+impl std::fmt::Display for HttpClientError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Aborted => f.write_str("client aborted"),
+            Self::Timeout => f.write_str("request timed out"),
+            Self::Transport(s) => write!(f, "transport error: {s}"),
+        }
+    }
 }
 
 /// Injectable HTTP client. Mirrors the `fetch` boundary that the TS resolvers

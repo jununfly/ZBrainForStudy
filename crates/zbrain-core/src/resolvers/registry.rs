@@ -19,6 +19,10 @@ use super::interface::{
     Resolver, ResolverContext, ResolverCost, ResolverError, ResolverErrorCode, ResolverRequest,
     ResolverResult,
 };
+use super::{
+    dns::DnsResolver, http::HttpClient, url_reachable::UrlReachableResolver,
+    x_api::XHandleToTweetResolver,
+};
 
 /// Filter for [`ResolverRegistry::list`]. Mirrors TS `ResolverListFilter`.
 #[derive(Debug, Clone, Default)]
@@ -144,6 +148,20 @@ impl ResolverRegistry {
     /// Number of registered resolvers.
     pub fn size(&self) -> usize {
         self.resolvers.len()
+    }
+
+    /// Register the two built-in resolvers: `url_reachable` and
+    /// `x_handle_to_tweet`. The caller injects the HTTP + DNS clients, so this
+    /// is fully offline-testable; production passes the reqwest-backed
+    /// `ReqwestHttpClient` + `LiveDnsResolver` (behind the `resolvers` feature).
+    /// Mirrors `src/cli/.../resolvers.ts` wiring `registerBuiltinResolvers`.
+    pub fn register_builtin_resolvers(
+        &mut self,
+        http: Arc<dyn HttpClient>,
+        dns: Arc<dyn DnsResolver>,
+    ) {
+        self.register(Arc::new(UrlReachableResolver::new(http.clone(), dns))).ok();
+        self.register(Arc::new(XHandleToTweetResolver::new(http))).ok();
     }
 }
 
