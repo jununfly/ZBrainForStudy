@@ -8,6 +8,7 @@
 //! `docs/plans/20260526/04-plan.md`.
 
 pub mod admin_queries;
+pub mod anomaly;
 pub mod ai;
 pub mod autopilot;
 pub mod budget;
@@ -78,6 +79,7 @@ pub use types::{
     UpsertTakesResult, ALL_PAGE_TYPES,
 };
 pub use engine::{BrainEngine, CreateSourceInput, InMemoryEngine, Page, PageInput, PageFilters, SearchOpts, SearchResult, GetPageOpts, ResolveSlugsOpts, SourceRow, UpdateSourceInput};
+pub use anomaly::{AnomalyResult, CohortDayRow, CohortKind, CohortTodayRow, compute_anomalies_from_buckets, mean_stddev, cohort_key};
 pub use admin_queries::{
     AdminQueries, AgentClientSpend, AgentInfo, ApiKey, BudgetOwner, ErrorClusterCount, FullStats,
     HealthIndicators, JobTypeSummary, Paginated, QueueHealth, RequestLogEntry, RequestLogFilters,
