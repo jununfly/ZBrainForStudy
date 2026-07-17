@@ -483,7 +483,8 @@
         "1-6-4-5",
         "1-6-4-6",
         "1-6-4-7",
-        "1-6-4-8"
+        "1-6-4-8",
+        "1-6-4-9"
       ],
       "decisions": [
         {
@@ -791,11 +792,87 @@
       "children": [],
       "decisions": [],
       "notes": ""
+    },
+    "1-6-4-9": {
+      "id": "1-6-4-9",
+      "label": "publish 命令迁移 (make_shareable + render_markdown + encrypt + generate_html + CLI 接线)",
+      "status": "completed",
+      "mode": "build",
+      "parent": "1-6-4",
+      "children": [
+        "1-6-4-9-1",
+        "1-6-4-9-2",
+        "1-6-4-9-3",
+        "1-6-4-9-4"
+      ],
+      "decisions": [
+        {
+          "q": "markdown 渲染方式?",
+          "answer": "服务端 pulldown-cmark 渲染成静态 HTML, 去掉 TS 的 marked.js 浏览器端渲染. 用户 2026-07-17 选定 'Rust 渲染' 方案.",
+          "note": "有意分叉: 无客户端渲染器"
+        },
+        {
+          "q": "加密明文是什么?",
+          "answer": "加密已渲染 HTML (非原始 markdown), 浏览器侧只做 innerHTML=sanitizeHtml(decrypt(...)), 全程无 JS 渲染器. wire format(AES-256-GCM, PBKDF2 100k SHA-256, salt16/iv12, ct||authTag) 与 TS encryptContent 兼容, 内嵌 DECRYPT_JS 无需改.",
+          "note": "parity 验证: node 按同算法解密得到 <h1> 等已渲染标签"
+        },
+        {
+          "q": "新增 crate?",
+          "answer": "zbrain-core 增 aes-gcm + pbkdf2(+hmac) + pulldown-cmark 三依赖(rand/sha2/base64/regex 已存在). 打破 clean-orphan '不加新 crate' 惯例, 但 publish 是唯一当下可迁项(resolvers/check-resolvable 被未迁底层 core 阻塞).",
+          "note": ""
+        },
+        {
+          "q": "密码/标题语义?",
+          "answer": "--password 无值->generate_password(16) 自动生成并打印; 有值->原样使用; 缺->明文. title 从 raw(清洗前)页 H1 提取(与 TS 一致, frontmatter 用 --- 非 #). 缺输入文件 exit 1.",
+          "note": ""
+        }
+      ],
+      "notes": ""
+    },
+    "1-6-4-9-1": {
+      "id": "1-6-4-9-1",
+      "label": "publish content stripping (make_shareable regex pipeline, parity with TS)",
+      "status": "completed",
+      "mode": "build",
+      "parent": "1-6-4-9",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-4-9-2": {
+      "id": "1-6-4-9-2",
+      "label": "markdown render + encrypt/decrypt (pulldown-cmark render, AES-256-GCM + PBKDF2 100k)",
+      "status": "completed",
+      "mode": "build",
+      "parent": "1-6-4-9",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-4-9-3": {
+      "id": "1-6-4-9-3",
+      "label": "generate_html (static HTML template, password overlay, encrypted vars)",
+      "status": "completed",
+      "mode": "build",
+      "parent": "1-6-4-9",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-4-9-4": {
+      "id": "1-6-4-9-4",
+      "label": "publish CLI 接线 (zbrain publish [--password] [--title] [--out]) + E2E smoke",
+      "status": "completed",
+      "mode": "build",
+      "parent": "1-6-4-9",
+      "children": [],
+      "decisions": [],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-17 16:40:07",
+    "updated": "2026-07-17 18:24:16",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"

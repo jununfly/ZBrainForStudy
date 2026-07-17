@@ -57,6 +57,7 @@ pub mod integrity;
 pub mod markdown_links;
 pub mod auto_fix;
 pub mod storage_status;
+pub mod publish;
 pub mod schema_pack;
 pub mod paths;
 

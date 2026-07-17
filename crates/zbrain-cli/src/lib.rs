@@ -356,6 +356,9 @@ pub enum Commands {
     /// Report storage tiering statistics for the brain repo
     Storage(StorageArgs),
 
+    /// Generate a self-contained, shareable HTML file from a brain markdown page
+    Publish(PublishArgs),
+
     /// Manage configuration values
     Config(ConfigArgs),
 
@@ -1354,6 +1357,30 @@ pub struct StorageArgs {
     pub json: bool,
 }
 
+/// Arguments for `zbrain publish` — generate a self-contained shareable HTML
+/// file from a brain markdown page (Rust port of `src/commands/publish.ts`,
+/// with markdown rendered server-side via pulldown-cmark instead of shipping
+/// `marked.js` to the browser).
+#[derive(Debug, Parser)]
+pub struct PublishArgs {
+    /// Path to the brain markdown page to publish.
+    #[arg(required = true)]
+    pub input: PathBuf,
+
+    /// Password-protect the output with AES-256-GCM. With no value, a random
+    /// password is auto-generated and printed; with a value, that value is used.
+    #[arg(long, num_args = 0..=1, default_missing_value = "")]
+    pub password: Option<String>,
+
+    /// Override the document title (defaults to the first H1 in the page).
+    #[arg(long)]
+    pub title: Option<String>,
+
+    /// Output HTML file (defaults to `<input-stem>.html` next to the input).
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+}
+
 /// Arguments for `zbrain whoknows` — expert-routing query.
 ///
 /// Returns ranked person/company pages by expertise depth (hybrid-search
@@ -1583,6 +1610,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Whoknows(args) => run_whoknows_command(args, cli.config.as_deref()).await?,
         Commands::Integrity(args) => run_integrity_command(args, cli.config.as_deref()).await?,
         Commands::Storage(args) => run_storage_command(args, cli.config.as_deref()).await?,
+        Commands::Publish(args) => run_publish_command(args).await?,
         Commands::Config(args) => run_config_command(args, cli.config.as_deref()).await?,
         Commands::SchemaSql(args) => run_schema_command(args)?,
         Commands::GetPage(args) => run_get_page_command(args, cli.config.as_deref(), timeout_ms).await?,
@@ -3489,6 +3517,78 @@ async fn run_storage_command(
             "{}",
             zbrain_core::storage_status::format_storage_status_human(&result)
         );
+    }
+    Ok(())
+}
+
+/// `zbrain publish <page.md>` — generate a self-contained, shareable HTML file.
+///
+/// Reads the markdown page, strips private/internal data (`make_shareable`),
+/// extracts the title (or uses `--title`), renders markdown to static HTML
+/// server-side (pulldown-cmark), optionally AES-256-GCM encrypts the rendered
+/// HTML with `--password`, and writes the final document. No LLM calls, no
+/// client-side markdown renderer (deliberate divergence from the TS source,
+/// which shipped `marked.js` and decrypted to raw markdown).
+async fn run_publish_command(args: PublishArgs) -> anyhow::Result<()> {
+    use zbrain_core::publish::{encrypt_content, extract_title, generate_html, make_shareable, render_markdown};
+
+    let raw = std::fs::read_to_string(&args.input)
+        .map_err(|e| anyhow::anyhow!("failed to read input {}: {e}", args.input.display()))?;
+
+    let shareable = make_shareable(&raw);
+    let title = match &args.title {
+        Some(t) => t.clone(),
+        // TS extracts the title from the raw (pre-strip) page; frontmatter uses
+        // `---` not `#`, so the first H1 is the same either way.
+        None => extract_title(&raw),
+    };
+    let rendered = render_markdown(&shareable);
+
+    // Resolve the password: `--password` alone -> auto-generated; `--password
+    // "x"` -> literal; absent -> no encryption (cleartext share).
+    let (encrypted, shown_password) = match &args.password {
+        None => (None, None),
+        Some(pw) => {
+            let pw = if pw.is_empty() {
+                zbrain_core::publish::generate_password(16)
+            } else {
+                pw.clone()
+            };
+            (Some(encrypt_content(&rendered, &pw)), Some(pw))
+        }
+    };
+
+    let html = generate_html(&title, &rendered, encrypted.as_ref());
+
+    let out_path = match &args.out {
+        Some(o) => o.clone(),
+        None => {
+            let stem = args
+                .input
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "document".into());
+            let mut p = args.input.to_path_buf();
+            p.set_file_name(format!("{stem}.html"));
+            p
+        }
+    };
+
+    // Mirror TS `mkdirSync(dirname(outPath), { recursive: true })`.
+    if let Some(parent) = out_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| anyhow::anyhow!("failed to create dir {}: {e}", parent.display()))?;
+        }
+    }
+
+    std::fs::write(&out_path, html)
+        .map_err(|e| anyhow::anyhow!("failed to write output {}: {e}", out_path.display()))?;
+
+    println!("Published: {}", out_path.display());
+    match shown_password {
+        Some(pw) => println!("  (password protected, AES-256-GCM encrypted)\n  Password: {pw}"),
+        None => println!("  (no password, content in cleartext)"),
     }
     Ok(())
 }

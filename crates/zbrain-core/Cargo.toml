@@ -48,6 +48,16 @@ regex = "1"
 serde_yaml = { workspace = true }
 unicode-normalization = { workspace = true }
 walkdir = "2"
+# Slice 1-6-4-9 (publish command): self-contained shareable-HTML generation.
+# AES-256-GCM content encryption + PBKDF2 (100k rounds, SHA-256) key derivation
+# — wire-compatible with the TS `crypto` module so the in-browser decryptor
+# (DECRYPT_JS) keeps working unchanged. `hmac` is the Mac backend for pbkdf2.
+aes-gcm = "0.10"
+pbkdf2 = "0.12"
+hmac = "0.12"
+# Server-side markdown -> HTML rendering (replaces the TS inlined marked.js),
+# so published HTML is fully static with no client-side JS renderer.
+pulldown-cmark = "0.12"
 # ISO-8601 week-number math for the rerank-audit JSONL file rotation
 # (`rerank-failures-YYYY-Www.jsonl`) and the doctor 7-day failure window.
 # ISO week year-boundary rules (week 1 contains the first Thursday; a
