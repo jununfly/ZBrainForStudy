@@ -480,7 +480,8 @@
         "1-6-4-2",
         "1-6-4-3",
         "1-6-4-4",
-        "1-6-4-5"
+        "1-6-4-5",
+        "1-6-4-6"
       ],
       "decisions": [
         {
@@ -604,11 +605,27 @@
         }
       ],
       "notes": ""
+    },
+    "1-6-4-6": {
+      "id": "1-6-4-6",
+      "label": "whoknows 命令迁移完成: 扩 SearchOpts(types + disable_salience_boost/disable_recency_boost) + fuse_and_boost 尊重开关与type过滤(三后端共享); rank_candidates 纯函数 + find_experts + CLI(whoknows --json/--explain) 接线。core 10单测 + libsql 6 + postgres 4 集成全绿, search复归14全绿。schema-pack pack-aware types + 截断顺序差异登记G49/G50",
+      "status": "completed",
+      "mode": "real_migrate",
+      "parent": "1-6-4",
+      "children": [],
+      "decisions": [
+        {
+          "q": "whoknows 的 search 集成路径?",
+          "answer": "方案B: 扩 SearchOpts 求精确 parity (types 过滤 + salience/recency off 开关)",
+          "note": "复核发现 base_score 已保留裸分、type 可命令层后置过滤; 但用户选扩管线做到逐位对齐而非命令层取巧, 改动集中在 fuse_and_boost(三后端共享) 与 whoknows.rs(共享), 未扰动各后端 search_pages SQL。截断顺序差异(Rust 按 boosted score 截 innerLimit, TS 按裸分)与 schema-pack pack-aware types 登记为 G49/G50。"
+        }
+      ],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-16 20:46:42",
+    "updated": "2026-07-17 10:44:59",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"

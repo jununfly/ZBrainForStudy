@@ -293,6 +293,26 @@ pub struct SearchOpts {
     /// `recency_decay`. `None` uses `recency_decay::DEFAULT_FALLBACK`. Mirrors
     /// the TS `applyRecencyBoost(..., fallback)` parameter.
     pub recency_fallback: Option<crate::recency_decay::RecencyDecayConfig>,
+    /// Page-type whitelist. `None` (default) or empty = no filter (all live
+    /// pages are candidates). `Some(list)` keeps only pages whose `page_type`
+    /// is in the list. Mirrors TS `SearchOpts.types` (v0.33) which pushes the
+    /// person/company filter to SQL level for `whoknows`. In Rust the
+    /// candidate query already fetches ALL live pages before post-fusion
+    /// truncation, so filtering here (rather than in each backend's SQL) is
+    /// budget-identical and keeps the logic in one place — every engine
+    /// inherits it via `fuse_and_boost`.
+    pub types: Option<Vec<String>>,
+    /// When `true`, skip the post-fusion salience boost stage so `score`
+    /// equals the raw fused `base_score` on the salience axis. Default `false`
+    /// preserves the always-on behavior (G13). Mirrors TS
+    /// `SearchOpts.salience = 'off'`. `whoknows` sets this so it can apply its
+    /// OWN salience formula on the raw relevance score without double-boosting.
+    pub disable_salience_boost: bool,
+    /// When `true`, skip the post-fusion recency boost stage. Default `false`
+    /// preserves always-on behavior (G13). Mirrors TS `SearchOpts.recency =
+    /// 'off'`. Paired with `disable_salience_boost` by `whoknows`, which owns
+    /// its recency-decay formula.
+    pub disable_recency_boost: bool,
 }
 
 /// Reciprocal Rank Fusion constant. Mirrors `RRF_K` at
@@ -379,7 +399,7 @@ const SALIENCE_BOOST_COEF_ON: f64 = 0.15;
 /// with an explicit offset (e.g. `2026-07-08T00:00:00Z`) and bare
 /// `YYYY-MM-DD` / `YYYY-MM-DDTHH:MM:SS` (assumed UTC), matching the shapes the
 /// TS layer feeds `new Date(...)`.
-fn iso8601_to_unix_ms(s: &str) -> Option<i64> {
+pub(crate) fn iso8601_to_unix_ms(s: &str) -> Option<i64> {
     use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
     if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
         return Some(dt.with_timezone(&Utc).timestamp_millis());
@@ -461,11 +481,23 @@ pub(crate) async fn fuse_and_boost(
 ) -> crate::Result<Vec<SearchResult>> {
     let keywords_lower: Vec<String> = opts.keywords.iter().map(|k| k.to_lowercase()).collect();
 
+    // Page-type whitelist (TS SearchOpts.types, v0.33). `None`/empty = no
+    // filter. Applied here (not in each backend's SQL) because the candidate
+    // query already materializes all live pages before post-fusion truncation,
+    // so a whitelist filter costs the same and keeps the logic single-sourced.
+    let type_filter: Option<&[String]> = match &opts.types {
+        Some(t) if !t.is_empty() => Some(t.as_slice()),
+        _ => None,
+    };
+
     // Index the owned candidate slice by page id so the two retrieval paths and
     // the fusion step share one lookup (was a `HashMap<u64, &Page>` over the
     // live store; now over the caller-materialized slice).
-    let candidates_by_id: std::collections::HashMap<u64, &Page> =
-        candidates.iter().map(|p| (p.id, p)).collect();
+    let candidates_by_id: std::collections::HashMap<u64, &Page> = candidates
+        .iter()
+        .filter(|p| type_filter.map_or(true, |types| types.iter().any(|t| t == &p.page_type)))
+        .map(|p| (p.id, p))
+        .collect();
 
     // ── Lexical path ────────────────────────────────────────────────────
     // Substring match over title / compiled_truth / frontmatter. Produces a
@@ -598,22 +630,29 @@ pub(crate) async fn fuse_and_boost(
                 source_id: r.page.source_id.clone(),
             })
             .collect();
-        let salience = engine.get_salience_scores(&refs).await?;
 
-        for r in &mut results {
-            if !r.score.is_finite() || r.score < floor {
-                continue;
+        // Salience boost stage. Skipped entirely when the caller sets
+        // `disable_salience_boost` (TS `salience: 'off'`) — `whoknows` does
+        // this so it can apply its OWN salience formula on the raw fused
+        // `base_score` without double-boosting. When skipped, we also avoid
+        // the `get_salience_scores` round-trip.
+        if !opts.disable_salience_boost {
+            let salience = engine.get_salience_scores(&refs).await?;
+            for r in &mut results {
+                if !r.score.is_finite() || r.score < floor {
+                    continue;
+                }
+                let key = format!("{}::{}", r.page.source_id, r.page.slug);
+                let Some(&s) = salience.get(&key) else {
+                    continue;
+                };
+                if s <= 0.0 {
+                    continue;
+                }
+                let factor = 1.0 + SALIENCE_BOOST_COEF_ON * (1.0 + s).ln();
+                r.score *= factor;
+                r.salience_boost = Some(factor);
             }
-            let key = format!("{}::{}", r.page.source_id, r.page.slug);
-            let Some(&s) = salience.get(&key) else {
-                continue;
-            };
-            if s <= 0.0 {
-                continue;
-            }
-            let factor = 1.0 + SALIENCE_BOOST_COEF_ON * (1.0 + s).ln();
-            r.score *= factor;
-            r.salience_boost = Some(factor);
         }
 
         // Recency stage (per-prefix half-life decay). Uses the same
@@ -624,45 +663,52 @@ pub(crate) async fn fuse_and_boost(
         // itself, staying a pure scoring machine. Dates come from the
         // engine's own get_effective_dates; strength is pinned to 'on'
         // (search-mode system unported — see the salience note above / G13).
-        let date_strings = engine.get_effective_dates(&refs).await?;
-        let dates_ms: std::collections::HashMap<String, i64> = date_strings
-            .into_iter()
-            .filter_map(|(k, v)| iso8601_to_unix_ms(&v).map(|ms| (k, ms)))
-            .collect();
-        let decay_map = opts
-            .recency_decay
-            .clone()
-            .unwrap_or_else(crate::recency_decay::default_recency_decay);
-        let fallback = opts
-            .recency_fallback
-            .unwrap_or(crate::recency_decay::DEFAULT_FALLBACK);
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
-        let mut rows: Vec<crate::recency_decay::RecencyRow<'_>> = results
-            .iter_mut()
-            .map(|r| {
-                let key = format!("{}::{}", r.page.source_id, r.page.slug);
-                crate::recency_decay::RecencyRow {
-                    slug: r.page.slug.as_str(),
-                    key,
-                    score: &mut r.score,
-                    recency_boost: &mut r.recency_boost,
-                }
-            })
-            .collect();
-        crate::recency_decay::apply_recency_boost(
-            &mut rows,
-            &dates_ms,
-            // Pinned to 'on': Rust has no search-mode system yet to resolve
-            // 'on'/'strong'/'off' from a ModeBundle (same gap as salience
-            // strength above). registered in docs/plans/KNOWN-GAPS.md (G13).
-            crate::recency_decay::RecencyStrength::On,
-            &decay_map,
-            fallback,
-            now_ms,
-            if floor.is_finite() { Some(floor) } else { None },
-        );
+        //
+        // Skipped entirely when the caller sets `disable_recency_boost` (TS
+        // `recency: 'off'`), paired with `disable_salience_boost` by
+        // `whoknows` which owns its recency-decay formula. When skipped we
+        // also avoid the `get_effective_dates` round-trip.
+        if !opts.disable_recency_boost {
+            let date_strings = engine.get_effective_dates(&refs).await?;
+            let dates_ms: std::collections::HashMap<String, i64> = date_strings
+                .into_iter()
+                .filter_map(|(k, v)| iso8601_to_unix_ms(&v).map(|ms| (k, ms)))
+                .collect();
+            let decay_map = opts
+                .recency_decay
+                .clone()
+                .unwrap_or_else(crate::recency_decay::default_recency_decay);
+            let fallback = opts
+                .recency_fallback
+                .unwrap_or(crate::recency_decay::DEFAULT_FALLBACK);
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
+            let mut rows: Vec<crate::recency_decay::RecencyRow<'_>> = results
+                .iter_mut()
+                .map(|r| {
+                    let key = format!("{}::{}", r.page.source_id, r.page.slug);
+                    crate::recency_decay::RecencyRow {
+                        slug: r.page.slug.as_str(),
+                        key,
+                        score: &mut r.score,
+                        recency_boost: &mut r.recency_boost,
+                    }
+                })
+                .collect();
+            crate::recency_decay::apply_recency_boost(
+                &mut rows,
+                &dates_ms,
+                // Pinned to 'on': Rust has no search-mode system yet to resolve
+                // 'on'/'strong'/'off' from a ModeBundle (same gap as salience
+                // strength above). registered in docs/plans/KNOWN-GAPS.md (G13).
+                crate::recency_decay::RecencyStrength::On,
+                &decay_map,
+                fallback,
+                now_ms,
+                if floor.is_finite() { Some(floor) } else { None },
+            );
+        }
     }
 
     // Sort by score descending (boosts may have reordered the head).
@@ -6206,6 +6252,7 @@ mod tests {
             floor_ratio: None,
             recency_decay: None,
             recency_fallback: None,
+            ..Default::default()
         }).await.unwrap();
 
         assert_eq!(results.len(), 1);
@@ -6250,6 +6297,7 @@ mod tests {
             floor_ratio: None,
             recency_decay: None,
             recency_fallback: None,
+            ..Default::default()
         }).await.unwrap();
 
         assert_eq!(results.len(), 1);
@@ -6293,6 +6341,7 @@ mod tests {
             floor_ratio: None,
             recency_decay: None,
             recency_fallback: None,
+            ..Default::default()
         }).await.unwrap();
 
         assert_eq!(results.len(), 0);
@@ -6337,6 +6386,7 @@ mod tests {
             floor_ratio: None,
             recency_decay: None,
             recency_fallback: None,
+            ..Default::default()
         }).await.unwrap();
 
         assert_eq!(results.len(), 2);
@@ -6403,6 +6453,7 @@ mod tests {
             floor_ratio: None,
             recency_decay: None,
             recency_fallback: None,
+            ..Default::default()
         }).await.unwrap();
 
         assert_eq!(results.len(), 1);
@@ -6472,6 +6523,7 @@ mod tests {
             floor_ratio: None,
             recency_decay: None,
             recency_fallback: None,
+            ..Default::default()
         }).await.unwrap();
 
         assert_eq!(results.len(), 2);
@@ -6532,6 +6584,7 @@ mod tests {
             floor_ratio: None,
             recency_decay: None,
             recency_fallback: None,
+            ..Default::default()
         }).await.unwrap();
 
         assert_eq!(results.len(), 2);
@@ -6632,6 +6685,7 @@ mod tests {
             floor_ratio: Some(0.95),
             recency_decay: None,
             recency_fallback: None,
+            ..Default::default()
         }).await.unwrap();
 
         let weak = results.iter().find(|r| r.page.slug == "weak").unwrap();
@@ -6697,6 +6751,7 @@ mod tests {
             floor_ratio: None,
             recency_decay: None,    // engine falls back to DEFAULT_RECENCY_DECAY
             recency_fallback: None, // engine falls back to DEFAULT_FALLBACK
+            ..Default::default()
         }).await.unwrap();
 
         assert_eq!(results.len(), 2);
@@ -6770,6 +6825,7 @@ mod tests {
                 floor_ratio: None,
                 recency_decay: None,
                 recency_fallback: None,
+                ..Default::default()
             })
             .await
             .unwrap();

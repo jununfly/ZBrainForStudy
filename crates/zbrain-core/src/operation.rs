@@ -1646,6 +1646,7 @@ impl TypedOperation for ThinkOperation {
                     floor_ratio: None,
                     recency_decay: None,
                     recency_fallback: None,
+                    ..Default::default()
                 }).await?;
 
                 evidence_used = results.len() as u32;
@@ -1931,6 +1932,7 @@ impl TypedOperation for QueryOperation {
                 floor_ratio: None,
                 recency_decay: None,
                 recency_fallback: None,
+                ..Default::default()
             })
             .await?;
 

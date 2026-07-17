@@ -347,6 +347,9 @@ pub enum Commands {
     /// Scan brain usage and recommend unused features
     Features(FeaturesArgs),
 
+    /// Ask your brain who knows about a topic (ranked person/company experts)
+    Whoknows(WhoknowsArgs),
+
     /// Manage configuration values
     Config(ConfigArgs),
 
@@ -1315,6 +1318,35 @@ pub struct FeaturesArgs {
     pub json: bool,
 }
 
+/// Arguments for `zbrain whoknows` — expert-routing query.
+///
+/// Returns ranked person/company pages by expertise depth (hybrid-search
+/// relevance), relationship recency, and salience. The ranking spec is locked
+/// by ENG-D1 and lives in `zbrain_core::whoknows`.
+///
+/// Note on the type filter: TS derives expert types from the active schema
+/// pack (`expertTypesFromPack`). The schema-pack subsystem is not migrated
+/// yet, so this uses the default person/company filter — see
+/// docs/plans/KNOWN-GAPS.md.
+#[derive(Debug, Parser)]
+pub struct WhoknowsArgs {
+    /// Topic to route on (multiple words are joined into one query).
+    #[arg(required = true, num_args = 1..)]
+    pub topic: Vec<String>,
+
+    /// Max results (default 5).
+    #[arg(long)]
+    pub limit: Option<usize>,
+
+    /// Show the ranking factor breakdown per result.
+    #[arg(long)]
+    pub explain: bool,
+
+    /// Emit results as JSON (for agents) instead of human-readable output.
+    #[arg(long)]
+    pub json: bool,
+}
+
 /// Arguments for `zbrain config` command and its subcommands.
 #[derive(Debug, Parser)]
 pub struct ConfigArgs {
@@ -1491,6 +1523,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Init(args) => run_init_command(args, cli.config.as_deref()).await?,
         Commands::Doctor(args) => run_doctor_command(args, cli.config.as_deref()).await?,
         Commands::Features(args) => run_features_command(args, cli.config.as_deref()).await?,
+        Commands::Whoknows(args) => run_whoknows_command(args, cli.config.as_deref()).await?,
         Commands::Config(args) => run_config_command(args, cli.config.as_deref()).await?,
         Commands::SchemaSql(args) => run_schema_command(args)?,
         Commands::GetPage(args) => run_get_page_command(args, cli.config.as_deref(), timeout_ms).await?,
@@ -3248,6 +3281,88 @@ async fn run_features_command(args: FeaturesArgs, config_path: Option<&Path>) ->
     offers.last_version = scan.version.clone();
     offers.last_scan = scan_ts;
     features::save_offers(&offers);
+
+    Ok(())
+}
+
+/// `zbrain whoknows <topic>` — expert-routing query.
+///
+/// Builds the home libsql engine (same as doctor/features), runs the
+/// expertise-ranked search via `zbrain_core::whoknows::find_experts`, and
+/// prints either a human table (with optional `--explain` factor breakdown)
+/// or JSON.
+///
+/// Type filter parity note: TS consults the active schema pack via
+/// `expertTypesFromPack` to honor user-defined `expert_routing:` declarations.
+/// The schema-pack subsystem is not migrated yet, so this falls back to the
+/// default person/company filter (`whoknows::DEFAULT_TYPES`). Thin-client
+/// remote routing (TS routes to the `find_experts` MCP op when there is no
+/// local brain) is likewise deferred. Both are registered in
+/// docs/plans/KNOWN-GAPS.md.
+async fn run_whoknows_command(args: WhoknowsArgs, _config_path: Option<&Path>) -> anyhow::Result<()> {
+    use zbrain_core::whoknows;
+
+    let topic = args.topic.join(" ");
+
+    // Build the engine the same way doctor/features do: home PGLite DB via libsql.
+    let db_path = config::zbrain_home()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("brain.pglite");
+    let engine_config = zbrain_core::engine::EngineConfig {
+        database_path: Some(db_path.to_string_lossy().to_string()),
+        database_url: None,
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+
+    let results = whoknows::find_experts(
+        &engine,
+        &whoknows::FindExpertsOpts {
+            topic: topic.clone(),
+            limit: args.limit,
+            // Default person/company filter (schema-pack pack-aware derivation
+            // not migrated yet — see KNOWN-GAPS).
+            types: None,
+            source_id: None,
+        },
+    )
+    .await?;
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&results)?);
+        return Ok(());
+    }
+
+    if results.is_empty() {
+        println!("(no person or company pages match \"{topic}\")");
+        return Ok(());
+    }
+
+    // Human format: rank | score | type | slug — title.
+    let header = format!("{:<3} {:<7} {:<8} slug — title", "#", "score", "type");
+    println!("{header}");
+    println!("{}", "-".repeat(header.len().min(80)));
+    for (i, r) in results.iter().enumerate() {
+        println!(
+            "{:<3} {:<7} {:<8} {} — {}",
+            i + 1,
+            format!("{:.3}", r.score),
+            r.page_type,
+            r.slug,
+            r.title
+        );
+        if args.explain {
+            let f = &r.factors;
+            let days = match f.days_since_effective {
+                Some(d) => format!("{d:.0}d"),
+                None => "cold".to_string(),
+            };
+            println!(
+                "      expertise={:.3} (raw={:.3}) recency={:.3} ({}) salience={:.3} → factor={:.3}",
+                f.expertise, f.raw_match, f.recency_factor, days, f.salience, f.salience_factor
+            );
+        }
+    }
 
     Ok(())
 }
