@@ -52,7 +52,7 @@ impl CohortKind {
 }
 
 /// A detected anomaly row, ready to serialize for the CLI / tool output.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct AnomalyResult {
     pub cohort_kind: CohortKind,

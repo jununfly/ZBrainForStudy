@@ -362,6 +362,9 @@ pub enum Commands {
     /// Introspect the Resolver SDK registry (list / describe builtin resolvers)
     Resolvers(ResolversArgs),
 
+    /// Statistical anomalies in recent page activity, grouped by cohort (tag, type)
+    Anomalies(AnomaliesArgs),
+
     /// Manage configuration values
     Config(ConfigArgs),
 
@@ -1614,7 +1617,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Integrity(args) => run_integrity_command(args, cli.config.as_deref()).await?,
         Commands::Storage(args) => run_storage_command(args, cli.config.as_deref()).await?,
         Commands::Publish(args) => run_publish_command(args).await?,
-        Commands::Resolvers(args) => run_resolvers_command(args).await?,
+            Commands::Resolvers(args) => run_resolvers_command(args).await?,
+        Commands::Anomalies(args) => run_anomalies_command(args, cli.config.as_deref()).await?,
         Commands::Config(args) => run_config_command(args, cli.config.as_deref()).await?,
         Commands::SchemaSql(args) => run_schema_command(args)?,
         Commands::GetPage(args) => run_get_page_command(args, cli.config.as_deref(), timeout_ms).await?,
@@ -3635,6 +3639,28 @@ pub enum ResolversSub {
     },
 }
 
+/// Arguments for `zbrain anomalies` — statistical anomalies in recent page
+/// activity, grouped by cohort (tag, type). Deterministic: zero LLM calls.
+#[derive(Debug, Parser)]
+pub struct AnomaliesArgs {
+    /// Target day (YYYY-MM-DD). Defaults to today UTC. Invalid dates are
+    /// ignored (mirrors the TS CLI's silent-drop behavior).
+    #[arg(long)]
+    pub since: Option<String>,
+
+    /// Baseline window in days (default 30, clamped to >= 1).
+    #[arg(long)]
+    pub lookback_days: Option<u32>,
+
+    /// Sigma threshold multiplier (default 3.0, must be > 0).
+    #[arg(long)]
+    pub sigma: Option<f64>,
+
+    /// Emit results as JSON (for agents) instead of human-readable output.
+    #[arg(long)]
+    pub json: bool,
+}
+
 async fn run_resolvers_command(args: ResolversArgs) -> anyhow::Result<()> {
     use std::sync::Arc;
     use zbrain_core::resolvers::{
@@ -3753,6 +3779,128 @@ async fn run_resolvers_command(args: ResolversArgs) -> anyhow::Result<()> {
             Ok(())
         }
     }
+}
+
+/// Execute `zbrain anomalies` — statistical anomalies in recent page activity.
+///
+/// Builds the home PGLite engine the same way doctor/features/whoknows do,
+/// runs [`zbrain_core::anomaly`]'s `find_anomalies` engine method, and prints
+/// either JSON (`--json`) or a human summary. On thin-client installs, routes
+/// via MCP (mirrors TS `callRemoteTool(cfg, 'find_anomalies', ...)`).
+async fn run_anomalies_command(
+    args: AnomaliesArgs,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    use chrono::NaiveDate;
+    use zbrain_core::anomaly::{AnomaliesOpts, AnomalyResult};
+
+    // Normalize flags (mirror TS parseArgs: invalid values dropped silently).
+    // `since` must be YYYY-MM-DD; `lookback_days` >= 1; `sigma` > 0.
+    let since = args
+        .since
+        .as_ref()
+        .filter(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok())
+        .cloned();
+    let lookback_days = args.lookback_days.filter(|n| *n >= 1);
+    let sigma = args.sigma.filter(|n| *n > 0.0);
+
+    // Load config (needed for thin-client check + engine path).
+    let config_file = config_path
+        .map(PathBuf::from)
+        .or_else(|| config::user_config_path())
+        .ok_or_else(|| anyhow::anyhow!("Could not determine config path"))?;
+    let config = config::load_config_from_path(&config_file)?;
+
+    let rows: Vec<AnomalyResult> = if config::is_thin_client(&config) {
+        // Thin-client: route via remote MCP (mirror TS callRemoteTool).
+        let mcp_client = mcp_client::McpClient::new(
+            config,
+            std::time::Duration::from_millis(30_000),
+        );
+        let raw = mcp_client
+            .call_tool(
+                "find_anomalies",
+                serde_json::json!({
+                    "since": since,
+                    "lookback_days": lookback_days,
+                    "sigma": sigma,
+                }),
+            )
+            .await
+            .map_err(|e| {
+                eprintln!("Remote MCP call failed: {}", e);
+                std::process::exit(1);
+            })
+            .unwrap();
+        let data = unpack_tool_result(&raw);
+        serde_json::from_value::<Vec<AnomalyResult>>(data)
+            .map_err(|e| anyhow::anyhow!("failed to decode find_anomalies result: {}", e))?
+    } else {
+        // Local: build home PGLite engine (mirror whoknows/integrity/storage).
+        let db_path = config::zbrain_home()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("brain.pglite");
+        let engine_config = zbrain_core::engine::EngineConfig {
+            database_path: Some(db_path.to_string_lossy().to_string()),
+            database_url: None,
+        };
+        let engine = zbrain_core::libsql::LibsqlEngine::new();
+        engine.connect(&engine_config).await?;
+        engine
+            .find_anomalies(AnomaliesOpts {
+                since: since.clone(),
+                lookback_days,
+                sigma,
+            })
+            .await?
+    };
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
+
+    if rows.is_empty() {
+        println!("(no anomalies for this window)");
+        return Ok(());
+    }
+
+    let since_label = since
+        .clone()
+        .unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d").to_string());
+    println!(
+        "{} anomalous cohort(s) for {}:\n",
+        rows.len(),
+        since_label
+    );
+
+    for r in &rows {
+        println!(
+            "[{}={}] count={}, baseline mean={:.2}±{:.2}, sigma={:.2}",
+            r.cohort_kind.as_str(),
+            r.cohort_value,
+            r.count,
+            r.baseline_mean,
+            r.baseline_stddev,
+            r.sigma_observed
+        );
+        let slug_sample: Vec<&String> = r.page_slugs.iter().take(5).collect();
+        if !slug_sample.is_empty() {
+            let sample_str = slug_sample
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let more = if r.page_slugs.len() > 5 {
+                format!(", +{} more", r.page_slugs.len() - 5)
+            } else {
+                String::new()
+            };
+            println!("  pages: {}{}", sample_str, more);
+        }
+    }
+
+    Ok(())
 }
 
 fn print_resolvers_table(summaries: &[zbrain_core::resolvers::ResolverSummary]) {

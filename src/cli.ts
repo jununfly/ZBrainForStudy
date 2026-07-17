@@ -35,7 +35,7 @@ for (const op of operations) {
 }
 
 // CLI-only commands that bypass the operation layer
-const CLI_ONLY = new Set(['reinit-pglite', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'import', 'export', 'files', 'embed', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'features', 'apply-migrations', 'skillpack-check', 'resolvers', 'integrity', 'repair-jsonb', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'frontmatter', 'auth', 'friction', 'book-mirror', 'anomalies', 'transcripts', 'models', 'recall', 'forget', 'edges-backfill', 'ze-switch', 'founder', 'brainstorm', 'lsd']);
+const CLI_ONLY = new Set(['reinit-pglite', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'import', 'export', 'files', 'embed', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'features', 'apply-migrations', 'skillpack-check', 'resolvers', 'integrity', 'repair-jsonb', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'frontmatter', 'auth', 'friction', 'book-mirror', 'transcripts', 'models', 'recall', 'forget', 'edges-backfill', 'ze-switch', 'founder', 'brainstorm', 'lsd']);
 // CLI-only commands whose handlers print their own --help text. These are
 // excluded from the generic short-circuit so detailed per-command and
 // per-subcommand usage stays reachable.
@@ -1189,12 +1189,6 @@ async function handleCliOnly(command: string, args: string[]) {
         }
         const { runReindex } = await import('./commands/reindex.ts');
         await runReindex(engine, args);
-        break;
-      }
-      // v0.29 — Salience + Anomaly Detection
-      case 'anomalies': {
-        const { runAnomalies } = await import('./commands/anomalies.ts');
-        await runAnomalies(engine, args);
         break;
       }
       case 'edges-backfill': {
