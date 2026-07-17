@@ -366,6 +366,9 @@ pub enum Commands {
     /// Statistical anomalies in recent page activity, grouped by cohort (tag, type)
     Anomalies(AnomaliesArgs),
 
+    /// Check for new ZBrain versions (GitHub releases + changelog diff)
+    CheckUpdate(CheckUpdateArgs),
+
     /// Manage configuration values
     Config(ConfigArgs),
 
@@ -1620,6 +1623,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Publish(args) => run_publish_command(args).await?,
             Commands::Resolvers(args) => run_resolvers_command(args).await?,
         Commands::Anomalies(args) => run_anomalies_command(args, cli.config.as_deref()).await?,
+        Commands::CheckUpdate(args) => update_check::run_check_update(args.json).await?,
         Commands::Config(args) => run_config_command(args, cli.config.as_deref()).await?,
         Commands::SchemaSql(args) => run_schema_command(args)?,
         Commands::GetPage(args) => run_get_page_command(args, cli.config.as_deref(), timeout_ms).await?,
@@ -3657,6 +3661,14 @@ pub struct AnomaliesArgs {
     #[arg(long)]
     pub sigma: Option<f64>,
 
+    /// Emit results as JSON (for agents) instead of human-readable output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `zbrain check-update`.
+#[derive(Debug, Parser)]
+pub struct CheckUpdateArgs {
     /// Emit results as JSON (for agents) instead of human-readable output.
     #[arg(long)]
     pub json: bool,

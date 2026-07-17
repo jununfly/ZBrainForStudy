@@ -2,10 +2,10 @@
 //!
 //! This module is built in vertical slices (see roadmap 1-6-4-12):
 //! - slice 1: pure functions (`parse_semver` / `is_minor_or_major_bump` /
-//!   `extract_changelog_between` / `upgrade_command_for_method`) — offline-testable.
-//! - slice 2: `detect_install_method` (fs walk + clawhub probe).
-//! - slice 3: network layer (reqwest) + `CheckUpdateResult` builder.
-//! - slice 4: CLI wiring (`Commands::CheckUpdate`) + delete TS command.
+//!   `extract_changelog_between` / `upgrade_command_for_method`) — offline-testable. [DONE]
+//! - slice 2: `detect_install_method` (fs walk + clawhub probe). [DONE]
+//! - slice 3: network layer (reqwest) + `CheckUpdateResult` builder. [DONE]
+//! - slice 4: CLI wiring (`Commands::CheckUpdate` + `run_check_update`) + delete TS command. [DONE]
 //!
 //! `VERSION` is supplied by the caller via `env!("CARGO_PKG_VERSION")`
 //! (mirrors TS `import { VERSION } from '../version.ts'` → `pkg.version`).
@@ -13,6 +13,9 @@
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
 
 /// Canonical GitHub repo slug — the non-spoofable signal for the bun-link and
 /// bun-install authenticity checks (mirrors TS `ZBRAIN_GITHUB_REPO`).
@@ -328,6 +331,205 @@ pub fn detect_install_method() -> InstallMethod {
     InstallMethod::Unknown
 }
 
+/// Network-fetched release metadata from the GitHub releases API.
+/// Mirrors the TS `fetchLatestRelease` return shape `{ tag, published_at, url }`.
+#[derive(Debug, Clone)]
+pub struct ReleaseInfo {
+    pub tag: String,
+    pub published_at: String,
+    pub url: String,
+}
+
+/// Result struct for `zbrain check-update --json`.
+///
+/// Mirrors TS `CheckUpdateResult` exactly (snake_case wire fields).
+/// `error` is `Option<String>` and skipped from serialization when absent,
+/// matching the TS `error?: string` optional field (only present on the
+/// no-release branch).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct CheckUpdateResult {
+    pub current_version: String,
+    pub current_source: String,
+    pub latest_version: String,
+    pub update_available: bool,
+    pub upgrade_command: String,
+    pub release_url: String,
+    pub changelog_diff: String,
+    pub published_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Build the reqwest client used for update checks.
+///
+/// Mirrors TS `AbortSignal.timeout(10_000)` via a 10s overall request timeout.
+pub fn build_update_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("reqwest client should build")
+}
+
+/// Fetch the latest GitHub release via the public REST API.
+///
+/// Mirrors TS `fetchLatestRelease`: sets a `zbrain/{version}` user-agent on
+/// this call (the changelog call omits it, matching TS), and **fails
+/// silently** — any HTTP/transport/parse error yields `None` (TS returns
+/// `null` on its `catch`).
+pub async fn fetch_latest_release(client: &reqwest::Client, version: &str) -> Option<ReleaseInfo> {
+    let res = client
+        .get("https://api.github.com/repos/garrytan/zbrain/releases/latest")
+        .header(reqwest::header::USER_AGENT, format!("zbrain/{version}"))
+        .send()
+        .await
+        .ok()?;
+    if !res.status().is_success() {
+        return None;
+    }
+    let data: serde_json::Value = res.json().await.ok()?;
+    Some(ReleaseInfo {
+        tag: data
+            .get("tag_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        published_at: data
+            .get("published_at")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        url: data
+            .get("html_url")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+    })
+}
+
+/// Fetch the raw `CHANGELOG.md` from the repo's `master` branch.
+///
+/// Mirrors TS `fetchChangelog`: on any failure returns an empty string. The
+/// caller only invokes this when an update is available, so an empty result
+/// simply yields no diff section.
+pub async fn fetch_changelog(client: &reqwest::Client) -> String {
+    let res = match client
+        .get("https://raw.githubusercontent.com/garrytan/zbrain/master/CHANGELOG.md")
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(_) => return String::new(),
+    };
+    if !res.status().is_success() {
+        return String::new();
+    }
+    res.text().await.unwrap_or_default()
+}
+
+/// Pure builder — assembles a [`CheckUpdateResult`] from gathered inputs.
+///
+/// Mirrors the construction logic in TS `runCheckUpdate`: when `release` is
+/// `None`, emit the `error: "no_releases"` shape; otherwise fill in the
+/// version/url/changelog fields, stripping a leading `v` from the tag.
+///
+/// `changelog` is copied verbatim — the caller is responsible for only
+/// fetching it when an update is available (mirroring TS's
+/// `if (updateAvailable) changelogDiff = await fetchChangelog(...)`), so a
+/// non-bump naturally passes an empty string here.
+pub fn build_check_update_result(
+    current_version: &str,
+    upgrade_command: &str,
+    release: Option<&ReleaseInfo>,
+    changelog: &str,
+) -> CheckUpdateResult {
+    match release {
+        None => CheckUpdateResult {
+            current_version: current_version.to_string(),
+            current_source: "package-json".to_string(),
+            latest_version: String::new(),
+            update_available: false,
+            upgrade_command: upgrade_command.to_string(),
+            release_url: String::new(),
+            changelog_diff: String::new(),
+            published_at: String::new(),
+            error: Some("no_releases".to_string()),
+        },
+        Some(r) => {
+            let latest_version = r.tag.strip_prefix('v').unwrap_or(&r.tag).to_string();
+            let update_available = is_minor_or_major_bump(current_version, &latest_version);
+            CheckUpdateResult {
+                current_version: current_version.to_string(),
+                current_source: "package-json".to_string(),
+                latest_version,
+                update_available,
+                upgrade_command: upgrade_command.to_string(),
+                release_url: r.url.clone(),
+                changelog_diff: changelog.to_string(),
+                published_at: r.published_at.clone(),
+                error: None,
+            }
+        }
+    }
+}
+
+/// Execute `zbrain check-update [--json]`.
+///
+/// Mirrors TS `runCheckUpdate` end-to-end: detect the install method, fetch
+/// the latest GitHub release, and — only when a minor/major bump is detected —
+/// fetch the changelog diff. Renders JSON (`--json`) or a human summary, and
+/// fails silently on network errors (the `error: "no_releases"` shape).
+pub async fn run_check_update(json: bool) -> anyhow::Result<()> {
+    let version = env!("CARGO_PKG_VERSION");
+    let method = detect_install_method();
+    let upgrade_cmd = upgrade_command_for_method(method);
+
+    let client = build_update_client();
+    let release = fetch_latest_release(&client, version).await;
+
+    if release.is_none() {
+        let result = build_check_update_result(version, &upgrade_cmd, None, "");
+        if json {
+            println!("{}", serde_json::to_string_pretty(&result).unwrap());
+        } else {
+            println!(
+                "ZBrain {version} — could not check for updates (no releases found or network unavailable)."
+            );
+        }
+        return Ok(());
+    }
+
+    // Safe: confirmed `Some` above.
+    let release = release.unwrap();
+    let latest_version = release
+        .tag
+        .strip_prefix('v')
+        .unwrap_or(&release.tag)
+        .to_string();
+    let update_available = is_minor_or_major_bump(version, &latest_version);
+
+    // TS only fetches the changelog when an update is available.
+    let changelog = if update_available {
+        fetch_changelog(&client).await
+    } else {
+        String::new()
+    };
+
+    let result = build_check_update_result(version, &upgrade_cmd, Some(&release), &changelog);
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&result).unwrap());
+    } else if update_available {
+        println!("ZBrain update available: {version} → {latest_version}");
+        println!("Run: {upgrade_cmd}");
+        println!("Release: {}", result.release_url);
+    } else {
+        println!("ZBrain {version} is up to date.");
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -567,5 +769,82 @@ mod tests {
             BunVerdict::Suspect,
             "no package.json within 6 levels => suspect"
         );
+    }
+
+    // --- slice 3: network layer + CheckUpdateResult builder ---
+
+    fn release(tag: &str) -> ReleaseInfo {
+        ReleaseInfo {
+            tag: tag.to_string(),
+            published_at: "2026-01-02T03:04:05Z".to_string(),
+            url: format!("https://github.com/garrytan/zbrain/releases/tag/{tag}"),
+        }
+    }
+
+    #[test]
+    fn build_result_no_release_emits_error_shape() {
+        let r = build_check_update_result("1.2.3", "zbrain upgrade", None, "");
+        assert_eq!(r.current_version, "1.2.3");
+        assert_eq!(r.current_source, "package-json");
+        assert!(!r.update_available);
+        assert_eq!(r.latest_version, "");
+        assert_eq!(r.release_url, "");
+        assert_eq!(r.changelog_diff, "");
+        assert_eq!(r.published_at, "");
+        assert_eq!(r.error, Some("no_releases".to_string()));
+    }
+
+    #[test]
+    fn build_result_with_release_minor_bump() {
+        let rel = release("v1.3.0");
+        let changelog = "## [1.3.0]\n- New.\n";
+        let r = build_check_update_result("1.2.3", "bun update zbrain", Some(&rel), changelog);
+        assert!(r.update_available);
+        assert_eq!(r.latest_version, "1.3.0");
+        assert_eq!(r.release_url, rel.url);
+        assert_eq!(r.published_at, rel.published_at);
+        assert_eq!(r.changelog_diff, changelog);
+        assert_eq!(r.upgrade_command, "bun update zbrain");
+        assert_eq!(r.error, None);
+    }
+
+    #[test]
+    fn build_result_patch_bump_not_available() {
+        let rel = release("1.2.9");
+        // TS only fetches the changelog when update_available, so the caller
+        // passes an empty string on a patch-only bump.
+        let r = build_check_update_result("1.2.3", "zbrain upgrade", Some(&rel), "");
+        assert!(!r.update_available);
+        assert_eq!(r.latest_version, "1.2.9");
+        assert_eq!(r.changelog_diff, "", "no changelog on non-bump");
+        assert_eq!(r.error, None);
+    }
+
+    #[test]
+    fn build_result_strips_v_prefix() {
+        let rel = release("v2.0.0");
+        let r = build_check_update_result("1.2.3", "zbrain upgrade", Some(&rel), "");
+        assert!(r.update_available);
+        assert_eq!(r.latest_version, "2.0.0", "leading v stripped");
+    }
+
+    #[test]
+    fn result_json_omits_error_when_success() {
+        let rel = release("v1.3.0");
+        let r = build_check_update_result("1.2.3", "zbrain upgrade", Some(&rel), "diff");
+        let v = serde_json::to_value(&r).unwrap();
+        assert!(v.get("error").is_none(), "success must not serialize error: {v}");
+        assert_eq!(v["current_source"], "package-json");
+        assert_eq!(v["current_version"], "1.2.3");
+        assert_eq!(v["latest_version"], "1.3.0");
+        assert_eq!(v["update_available"], true);
+    }
+
+    #[test]
+    fn result_json_includes_error_when_no_release() {
+        let r = build_check_update_result("1.2.3", "zbrain upgrade", None, "");
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["error"], "no_releases");
+        assert_eq!(v["update_available"], false);
     }
 }

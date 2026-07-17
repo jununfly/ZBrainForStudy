@@ -472,7 +472,7 @@
     "1-6-4": {
       "id": "1-6-4",
       "label": "REAL_MIGRATE 孤儿命令批 [去重后: 移出 skillify->1-1 / eval族->1-2 / calibration->1-3 / dream->1-12 / extract·export·integrity->1-4; 真孤儿=code-intel(code-*·reindex*·edges-backfill·backfill) + memory(recall·forget) + models·providers + whoknows·brainstorm·auth·features·storage·migrate·publish·extract-conversation-facts·resolvers·check-resolvable + 20个1-6-3归入带test命令]",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6",
       "children": [
@@ -1067,7 +1067,7 @@
     "1-6-4-12": {
       "id": "1-6-4-12",
       "label": "check-update 命令迁移 (纯函数 + detect_install_method + reqwest 网络 + CLI 接线)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-6-4",
       "children": [
@@ -1133,7 +1133,7 @@
     "1-6-4-12-3": {
       "id": "1-6-4-12-3",
       "label": "网络层 (reqwest fetch_latest_release + fetch_changelog) + CheckUpdateResult builder (纯, 单测)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6-4-12",
       "children": [],
@@ -1143,7 +1143,7 @@
     "1-6-4-12-4": {
       "id": "1-6-4-12-4",
       "label": "CLI 接线 (Commands::CheckUpdate + run_check_update) + 删 TS 命令 + cli.ts 清理 + PARITY_GATE",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6-4-12",
       "children": [],
@@ -1153,7 +1153,7 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-18 00:04:50",
+    "updated": "2026-07-18 00:28:30",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
