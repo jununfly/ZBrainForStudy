@@ -481,7 +481,8 @@
         "1-6-4-3",
         "1-6-4-4",
         "1-6-4-5",
-        "1-6-4-6"
+        "1-6-4-6",
+        "1-6-4-7"
       ],
       "decisions": [
         {
@@ -621,11 +622,27 @@
         }
       ],
       "notes": ""
+    },
+    "1-6-4-7": {
+      "id": "1-6-4-7",
+      "label": "integrity check 子命令迁移: 纯函数 find_bare_tweet_hits/find_external_links(围栏跳过+URL邻近跳过+via X guard) + scan_integrity(list_all_page_refs+get_page枚举, validate:false祖父跳过, --type slug前缀过滤, top_pages) + CLI(zbrain integrity --json/--type/--limit)。core 12单测 + libsql 6 + postgres 4 集成全绿。auto/review/reset-progress 押后(依赖未迁 resolver SDK)",
+      "status": "completed",
+      "mode": "real_migrate",
+      "parent": "1-6-4",
+      "children": [],
+      "decisions": [
+        {
+          "q": "integrity 哪些子命令要迁?",
+          "answer": "只迁 check (只读扫描); auto/review/reset-progress 押后",
+          "note": "check 路径零 AI 耦合、引擎原语齐(list_all_page_refs+get_page+Page.compiled_truth/frontmatter), 近机械 150 行 port。auto 依赖未迁 resolver SDK(x_handle_to_tweet/url_reachable) 与 BrainWriter, review/reset-progress 是文件操作, 全部登记 G51 押后。端到端 smoke: 空 brain→Scanned 0, 播种页→1 bare+1 external, cited tweet 行正确跳过。"
+        }
+      ],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-17 10:44:59",
+    "updated": "2026-07-17 11:15:02",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"

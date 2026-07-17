@@ -350,6 +350,9 @@ pub enum Commands {
     /// Ask your brain who knows about a topic (ranked person/company experts)
     Whoknows(WhoknowsArgs),
 
+    /// Scan the brain for integrity issues (bare-tweet refs, external links)
+    Integrity(IntegrityArgs),
+
     /// Manage configuration values
     Config(ConfigArgs),
 
@@ -1347,6 +1350,27 @@ pub struct WhoknowsArgs {
     pub json: bool,
 }
 
+/// Arguments for `zbrain integrity` command (read-only `check` subcommand).
+#[derive(Debug, Parser)]
+pub struct IntegrityArgs {
+    /// Run the read-only scan (the only subcommand ported so far; `auto`/
+    /// `review`/`reset-progress` depend on the un-migrated resolver SDK).
+    #[arg(long, default_value = "check")]
+    pub subcommand: String,
+
+    /// Max pages to scan.
+    #[arg(long)]
+    pub limit: Option<u64>,
+
+    /// Only scan pages whose slug starts with `<TYPE>/` (e.g. `person`).
+    #[arg(long)]
+    pub r#type: Option<String>,
+
+    /// Emit results as JSON (for agents) instead of human-readable output.
+    #[arg(long)]
+    pub json: bool,
+}
+
 /// Arguments for `zbrain config` command and its subcommands.
 #[derive(Debug, Parser)]
 pub struct ConfigArgs {
@@ -1524,6 +1548,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Doctor(args) => run_doctor_command(args, cli.config.as_deref()).await?,
         Commands::Features(args) => run_features_command(args, cli.config.as_deref()).await?,
         Commands::Whoknows(args) => run_whoknows_command(args, cli.config.as_deref()).await?,
+        Commands::Integrity(args) => run_integrity_command(args, cli.config.as_deref()).await?,
         Commands::Config(args) => run_config_command(args, cli.config.as_deref()).await?,
         Commands::SchemaSql(args) => run_schema_command(args)?,
         Commands::GetPage(args) => run_get_page_command(args, cli.config.as_deref(), timeout_ms).await?,
@@ -3361,6 +3386,71 @@ async fn run_whoknows_command(args: WhoknowsArgs, _config_path: Option<&Path>) -
                 "      expertise={:.3} (raw={:.3}) recency={:.3} ({}) salience={:.3} → factor={:.3}",
                 f.expertise, f.raw_match, f.recency_factor, days, f.salience, f.salience_factor
             );
+        }
+    }
+
+    Ok(())
+}
+
+/// Execute `zbrain integrity check` — read-only brain-integrity scan.
+///
+/// Builds the home PGLite engine the same way doctor/features/whoknows do,
+/// runs [`zbrain_core::integrity::scan_integrity`], and prints either JSON
+/// (`--json`) or a human summary. The `auto`/`review`/`reset-progress`
+/// subcommands are intentionally not wired (resolver SDK un-migrated, G51).
+async fn run_integrity_command(
+    args: IntegrityArgs,
+    _config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    use zbrain_core::integrity;
+
+    // Build the engine the same way doctor/features/whoknows do: home PGLite DB.
+    let db_path = config::zbrain_home()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("brain.pglite");
+    let engine_config = zbrain_core::engine::EngineConfig {
+        database_path: Some(db_path.to_string_lossy().to_string()),
+        database_url: None,
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+
+    let result = integrity::scan_integrity(
+        &engine,
+        &integrity::IntegrityScanOptions {
+            limit: args.limit,
+            type_filter: args.r#type.clone(),
+        },
+    )
+    .await?;
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+        return Ok(());
+    }
+
+    println!(
+        "Scanned {} page(s) · bare-tweet phrases: {} · external links: {}",
+        result.pages_scanned,
+        result.bare_hits.len(),
+        result.external_hits.len()
+    );
+    if !result.bare_hits.is_empty() {
+        println!("\nBare-tweet references (need a citation URL):");
+        for h in &result.bare_hits {
+            println!("  {}:{}  {}   → \"{}\"", h.slug, h.line, h.phrase, h.raw_line);
+        }
+    }
+    if !result.external_hits.is_empty() {
+        println!("\nExternal links (check for rot):");
+        for h in &result.external_hits {
+            println!("  {}:{}  {}", h.slug, h.line, h.url);
+        }
+    }
+    if !result.top_pages.is_empty() {
+        println!("\nTop pages by bare-tweet count:");
+        for (i, p) in result.top_pages.iter().enumerate() {
+            println!("  {}. {} ({} hits)", i + 1, p.slug, p.count);
         }
     }
 
