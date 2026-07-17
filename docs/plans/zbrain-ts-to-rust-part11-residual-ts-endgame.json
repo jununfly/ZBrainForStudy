@@ -472,7 +472,7 @@
     "1-6-4": {
       "id": "1-6-4",
       "label": "REAL_MIGRATE 孤儿命令批 [去重后: 移出 skillify->1-1 / eval族->1-2 / calibration->1-3 / dream->1-12 / extract·export·integrity->1-4; 真孤儿=code-intel(code-*·reindex*·edges-backfill·backfill) + memory(recall·forget) + models·providers + whoknows·brainstorm·auth·features·storage·migrate·publish·extract-conversation-facts·resolvers·check-resolvable + 20个1-6-3归入带test命令]",
-      "status": "completed",
+      "status": "in_progress",
       "mode": "explore",
       "parent": "1-6",
       "children": [
@@ -484,7 +484,8 @@
         "1-6-4-6",
         "1-6-4-7",
         "1-6-4-8",
-        "1-6-4-9"
+        "1-6-4-9",
+        "1-6-4-10"
       ],
       "decisions": [
         {
@@ -868,11 +869,107 @@
       "children": [],
       "decisions": [],
       "notes": ""
+    },
+    "1-6-4-10": {
+      "id": "1-6-4-10",
+      "label": "resolvers 命令 + Resolver SDK 迁移 (interface/registry/url-reachable/x-api + CLI)",
+      "status": "in_progress",
+      "mode": "exploit",
+      "parent": "1-6-4",
+      "children": [
+        "1-6-4-10-1",
+        "1-6-4-10-2",
+        "1-6-4-10-3",
+        "1-6-4-10-4"
+      ],
+      "decisions": [
+        {
+          "q": "先启动哪个孤儿命令（resolvers vs check-resolvable）?",
+          "answer": "resolvers（用户 2026-07-17 选定；check-resolvable 留待后续，其底层静态分析 core ~2300 行且 --fix 改写用户文件风险高）",
+          "note": ""
+        },
+        {
+          "q": "本切片切多深（x-api 是否一起迁）?",
+          "answer": "全量迁：SDK 核心 + url-reachable + x-api/handle-to-tweet + CLI 全做。x-api 的 X API 网络路径在沙箱无 token 不可真跑，靠可注入的 HttpClient trait + MockHttpClient 离线测试（与 embedding/rerank/chat 既有的 trait+mock 模式一致）。url-reachable 直接复用 zbrain-core 已有的 url_safety::is_internal_url，不重迁 SSRF。",
+          "note": ""
+        },
+        {
+          "q": "x-api 的 X API HTTP 调用怎么落地?",
+          "answer": "trait 在 core + live 在 core feature：zbrain-core 定义 HttpClient trait(async get+超时)+ MockHttpClient 测试替身；live ReqwestHttpClient 放 zbrain-core 新 resolvers feature(复用已有 optional reqwest)。register_builtin_resolvers() 在 feature 开启时建 live client；测试用 with_client(mock) 注入。token 在 resolve() 内读 ctx.secret('X_API_BEARER_TOKEN')。完全离线可测，零 CLI 依赖。",
+          "note": ""
+        },
+        {
+          "q": "Rust 模块布局?",
+          "answer": "zbrain-core/src/resolvers/{mod.rs, interface.rs, registry.rs, url_reachable.rs, x_api.rs, http.rs} 镜像 TS src/core/resolvers/*。http.rs 放 HttpClient trait + MockHttpClient + (feature) ReqwestHttpClient。lib.rs 加 pub mod resolvers。",
+          "note": ""
+        },
+        {
+          "q": "CLI 接口 parity?",
+          "answer": "1:1 镜像 TS：zbrain resolvers list [--json] [--cost free|rate-limited|paid] [--backend <b>] 与 resolvers describe <id>。--cost/--backend 走 registry 过滤；unknown subcommand -> exit 1。",
+          "note": ""
+        },
+        {
+          "q": "测试策略?",
+          "answer": "TDD 垂直切片，忠实 port TS 717 行 resolvers.test.ts 的离线部分：registry 契约(单例/重复/过滤/错误码) + url-reachable(SSRF localhost/RFC1918/metadata、重定向逐跳、HEAD→GET 回退、AbortError) + x-api(纯函数 computeBackoffMs、available、非法 handle、零/单/多候选置信度分桶、401/403/500/429 错误码、关键字注入防护) 全部用 MockHttpClient。CI 防漂移锚点(若有)同步清空。",
+          "note": ""
+        },
+        {
+          "q": "resolver 注册与 secret 读取模型 + feature 门控?",
+          "answer": "register_builtin_resolvers() 总是注册 url-reachable + x-handle-to-tweet 两个 resolver(镜像 TS)。ResolverContext.secret(name)->Option<String> 由闭包/struct 提供：运行时读 env X_API_BEARER_TOKEN + config，测试注入返回 token 的闭包。x-api resolve 无 token -> ResolverError(Config)。模块常编译；仅 ReqwestHttpClient + live register 路径在 resolvers feature 后；MockHttpClient 无条件编译供测试。",
+          "note": ""
+        },
+        {
+          "q": "x-api 缺 token 的错误码（更正前条笔误）",
+          "answer": "更正：TS ResolverErrorCode 无 'config' 变体；x-api 缺 token 时实际映射为 ResolverError(Unavailable)（TS 测试 resolvers.test.ts:461 断言 'unavailable'），available() 同样返回 false。前条 'ResolverError(Config)' 为笔误，以本条为准。",
+          "note": ""
+        }
+      ],
+      "notes": ""
+    },
+    "1-6-4-10-1": {
+      "id": "1-6-4-10-1",
+      "label": "Resolver SDK 核心 (Resolver trait + ResolverRegistry + 类型 + ResolverError)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-6-4-10",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-4-10-2": {
+      "id": "1-6-4-10-2",
+      "label": "url-reachable resolver port (HEAD 检查 + SSRF 防护, 复用 url_safety::is_internal_url)",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-6-4-10",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-4-10-3": {
+      "id": "1-6-4-10-3",
+      "label": "x-api handle-to-tweet resolver (HttpClient trait + ReqwestHttpClient[resolvers feature] + Bearer + 429 退避 + 打分纯函数)",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-6-4-10",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-4-10-4": {
+      "id": "1-6-4-10-4",
+      "label": "resolvers CLI 接线 (list [--json/--cost/--backend] + describe <id>) + E2E smoke",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-6-4-10",
+      "children": [],
+      "decisions": [],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-17 18:24:16",
+    "updated": "2026-07-17 19:26:16",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
