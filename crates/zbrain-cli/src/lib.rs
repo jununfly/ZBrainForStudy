@@ -8,6 +8,7 @@ pub mod config;
 pub mod mcp_client;
 pub mod schema_cmd;
 pub mod timeout;
+pub mod update_check;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};

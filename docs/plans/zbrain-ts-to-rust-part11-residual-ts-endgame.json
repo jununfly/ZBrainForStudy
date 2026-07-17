@@ -472,7 +472,7 @@
     "1-6-4": {
       "id": "1-6-4",
       "label": "REAL_MIGRATE 孤儿命令批 [去重后: 移出 skillify->1-1 / eval族->1-2 / calibration->1-3 / dream->1-12 / extract·export·integrity->1-4; 真孤儿=code-intel(code-*·reindex*·edges-backfill·backfill) + memory(recall·forget) + models·providers + whoknows·brainstorm·auth·features·storage·migrate·publish·extract-conversation-facts·resolvers·check-resolvable + 20个1-6-3归入带test命令]",
-      "status": "completed",
+      "status": "in_progress",
       "mode": "explore",
       "parent": "1-6",
       "children": [
@@ -486,7 +486,8 @@
         "1-6-4-8",
         "1-6-4-9",
         "1-6-4-10",
-        "1-6-4-11"
+        "1-6-4-11",
+        "1-6-4-12"
       ],
       "decisions": [
         {
@@ -1062,11 +1063,97 @@
       "children": [],
       "decisions": [],
       "notes": ""
+    },
+    "1-6-4-12": {
+      "id": "1-6-4-12",
+      "label": "check-update 命令迁移 (纯函数 + detect_install_method + reqwest 网络 + CLI 接线)",
+      "status": "in_progress",
+      "mode": "exploit",
+      "parent": "1-6-4",
+      "children": [
+        "1-6-4-12-1",
+        "1-6-4-12-2",
+        "1-6-4-12-3",
+        "1-6-4-12-4"
+      ],
+      "decisions": [
+        {
+          "q": "check-update 走直接全迁还是另选?",
+          "answer": "直接全迁。它是残留孤立命令里最干净的：纯函数可离线测(parseSemver/isMinorOrMajorBump/extractChangelogBetween/upgradeCommandForMethod) + reqwest 网络(GitHub releases + raw CHANGELOG) + detect_install_method(fs walk + clawhub 探测)，无引擎依赖、无 thin-client(与 anomalies 不同)。anomalies 已闭环，check-update 是下一个干净项。",
+          "note": ""
+        },
+        {
+          "q": "current_source wire 字段写什么?",
+          "answer": "package-json（wire parity）。TS 的 CheckUpdateResult.current_source 恒为 'package-json'，Rust 沿用同一字符串，保证 --json 字段与 TS 逐字一致，防外部 pipeline 比对断裂。",
+          "note": ""
+        },
+        {
+          "q": "detect_install_method 是否纳入 squatter 警告?",
+          "answer": "忠实全迁：detect_bun_link + classify_bun_install + print_squatter_recovery 一并移植，node_modules 安装告警 npm 名字碰撞(#658)，与 TS 行为一致。Rust 二进制实走 binary 分支，squatter 分支不会触发，但逻辑完整保留以备 node_modules 安装。",
+          "note": ""
+        },
+        {
+          "q": "模块放哪 + VERSION 来源?",
+          "answer": "crates/zbrain-cli/src/update_check.rs（CLI 专属，纯函数+网络+命令一体，保持 lib.rs 干净）。VERSION 用 env!(CARGO_PKG_VERSION)（对齐 TS 的 pkg.version）。",
+          "note": ""
+        },
+        {
+          "q": "网络客户端与失败语义?",
+          "answer": "reqwest（zbrain-cli 已有依赖）。Client::builder().timeout(10s).user_agent(format!(\"zbrain/{VERSION}\"))。fetch_latest_release 走 GitHub releases API；fetch_changelog 走 raw.githubusercontent.com/garrytan/zbrain/master/CHANGELOG.md。网络失败/无 release 静默返回 error='no_releases'（对齐 TS 的 try/catch 返回 null）。",
+          "note": ""
+        },
+        {
+          "q": "是否有 thin-client 回退?",
+          "answer": "无。check-update 纯本地+网络（查 GitHub），不依赖 BrainEngine，故无 is_thin_client 分支（与 anomalies 的 call_remote_tool 回退不同）。",
+          "note": ""
+        }
+      ],
+      "notes": ""
+    },
+    "1-6-4-12-1": {
+      "id": "1-6-4-12-1",
+      "label": "纯函数 port (parse_semver / is_minor_or_major_bump / extract_changelog_between / upgrade_command_for_method) + 单测",
+      "status": "completed",
+      "mode": "explore",
+      "parent": "1-6-4-12",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-4-12-2": {
+      "id": "1-6-4-12-2",
+      "label": "detect_install_method port (detect_bun_link + node_modules/squatter + binary + clawhub 探测) + 单测",
+      "status": "in_progress",
+      "mode": "explore",
+      "parent": "1-6-4-12",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-4-12-3": {
+      "id": "1-6-4-12-3",
+      "label": "网络层 (reqwest fetch_latest_release + fetch_changelog) + CheckUpdateResult builder (纯, 单测)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-6-4-12",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-4-12-4": {
+      "id": "1-6-4-12-4",
+      "label": "CLI 接线 (Commands::CheckUpdate + run_check_update) + 删 TS 命令 + cli.ts 清理 + PARITY_GATE",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-6-4-12",
+      "children": [],
+      "decisions": [],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-17 23:41:28",
+    "updated": "2026-07-17 23:56:01",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
