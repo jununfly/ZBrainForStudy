@@ -353,6 +353,9 @@ pub enum Commands {
     /// Scan the brain for integrity issues (bare-tweet refs, external links)
     Integrity(IntegrityArgs),
 
+    /// Report storage tiering statistics for the brain repo
+    Storage(StorageArgs),
+
     /// Manage configuration values
     Config(ConfigArgs),
 
@@ -1327,6 +1330,30 @@ pub struct FeaturesArgs {
     pub auto_fix: bool,
 }
 
+/// Arguments for `zbrain storage status` — storage-tiering report.
+///
+/// Reports how brain pages are distributed across storage tiers
+/// (`db_tracked` / `db_only` / `unspecified`), on-disk size per tier, and
+/// `db_only` pages whose markdown file is missing from the repo. Reads the
+/// `storage:` section of the repo's `zbrain.yml` (Rust port of TS
+/// `src/commands/storage.ts`).
+#[derive(Debug, Parser)]
+pub struct StorageArgs {
+    /// The `status` subcommand (default when omitted).
+    #[arg(default_value = "status")]
+    pub subcommand: String,
+
+    /// Override the brain repo path (where `zbrain.yml` + markdown live).
+    /// Falls back to `config.sync.default_repo` when omitted.
+    #[arg(long)]
+    pub repo: Option<String>,
+
+    /// Emit the report as JSON (stable scripting contract) instead of
+    /// human-readable text.
+    #[arg(long)]
+    pub json: bool,
+}
+
 /// Arguments for `zbrain whoknows` — expert-routing query.
 ///
 /// Returns ranked person/company pages by expertise depth (hybrid-search
@@ -1555,6 +1582,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Features(args) => run_features_command(args, cli.config.as_deref()).await?,
         Commands::Whoknows(args) => run_whoknows_command(args, cli.config.as_deref()).await?,
         Commands::Integrity(args) => run_integrity_command(args, cli.config.as_deref()).await?,
+        Commands::Storage(args) => run_storage_command(args, cli.config.as_deref()).await?,
         Commands::Config(args) => run_config_command(args, cli.config.as_deref()).await?,
         Commands::SchemaSql(args) => run_schema_command(args)?,
         Commands::GetPage(args) => run_get_page_command(args, cli.config.as_deref(), timeout_ms).await?,
@@ -3397,6 +3425,72 @@ async fn run_auto_fix(
         links_created: links.links_created,
         timeline_entries_added: timeline.entries_added,
     })
+}
+
+/// `zbrain storage status` — storage-tiering report (Rust port of TS
+/// `src/commands/storage.ts`).
+///
+/// Builds the home libsql engine (same as doctor/features), resolves the repo
+/// path (`--repo` override, else `config.sync.default_repo`), warns once when
+/// running on the local Libsql engine (tiering has limited effect there,
+/// mirroring TS `engine.kind !== 'pglite'`), then dispatches to
+/// `zbrain_core::storage_status::get_storage_status` and prints the result as
+/// JSON or human-readable text. Unknown subcommands exit 1.
+async fn run_storage_command(
+    args: StorageArgs,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    if args.subcommand != "status" {
+        anyhow::bail!("Unknown storage subcommand: {}", args.subcommand);
+    }
+
+    // Build the engine the same way doctor/features do: home PGLite DB.
+    let db_path = config::zbrain_home()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("brain.pglite");
+    let engine_config = zbrain_core::engine::EngineConfig {
+        database_path: Some(db_path.to_string_lossy().to_string()),
+        database_url: None,
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+
+    // TS warns when not on PGLite; in Rust the local engine is Libsql.
+    if engine.kind() == zbrain_core::engine::EngineKind::Libsql
+        && std::io::IsTerminal::is_terminal(&std::io::stderr())
+    {
+        eprintln!(
+            "Note: storage tiering has limited effect on Libsql — pages live in \
+             your local database file regardless of tier. The .gitignore \
+             management still keeps bulk content out of git history. To get \
+             full tiering, migrate to Postgres with `zbrain migrate --to supabase`."
+        );
+    }
+
+    // Resolution chain: explicit --repo → typed config accessor → null.
+    let repo_path: Option<String> = match &args.repo {
+        Some(r) => Some(r.clone()),
+        None => config::load_config(config_path)
+            .ok()
+            .and_then(|c| c.sync.and_then(|s| s.default_repo))
+            .map(|p| p.to_string_lossy().to_string()),
+    };
+
+    let result = zbrain_core::storage_status::get_storage_status(&engine, repo_path.clone())
+        .await?;
+
+    if args.json {
+        println!(
+            "{}",
+            zbrain_core::storage_status::format_storage_status_json(&result)
+        );
+    } else {
+        println!(
+            "{}",
+            zbrain_core::storage_status::format_storage_status_human(&result)
+        );
+    }
+    Ok(())
 }
 
 /// `zbrain whoknows <topic>` — expert-routing query.

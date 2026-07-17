@@ -482,7 +482,8 @@
         "1-6-4-4",
         "1-6-4-5",
         "1-6-4-6",
-        "1-6-4-7"
+        "1-6-4-7",
+        "1-6-4-8"
       ],
       "decisions": [
         {
@@ -709,11 +710,92 @@
       "children": [],
       "decisions": [],
       "notes": "DONE. CLI wiring: FeaturesArgs.auto_fix + run_features_command auto-fix branch + run_auto_fix dispatch + AutoFixResults struct. E2E smoke vs seeded libsql brain: links_created=1, timeline_entries_added=1, embedded=0 (no ZEROENTROPY_API_KEY), embedding_enabled=false; idempotent re-run links=0/timeline=0; offer ledger recorded missing-embeddings accepted. JSON --auto_fix field well-formed."
+    },
+    "1-6-4-8": {
+      "id": "1-6-4-8",
+      "label": "storage status 命令迁移 (config parser + disk walk + get_storage_status + formatters + CLI 接线)",
+      "status": "completed",
+      "mode": "build",
+      "parent": "1-6-4",
+      "children": [
+        "1-6-4-8-1",
+        "1-6-4-8-2",
+        "1-6-4-8-3",
+        "1-6-4-8-4"
+      ],
+      "decisions": [
+        {
+          "q": "范围：本刀迁多大？",
+          "answer": "只迁 zbrain storage status 子命令(default+status); unknown subcommand -> exit 1. 纯只读 reporting, 零 AI/网络耦合. 不做 export --restore-only 等其它 storage 功能.",
+          "note": ""
+        },
+        {
+          "q": "配置解析：用 serde_yaml 还是忠实重实现 TS 手写解析器？",
+          "answer": "忠实重实现 TS 的手写行解析器(parse_storage_yaml). TS 刻意零依赖(避免 gray-matter 沉默失败), 不改 serde_yaml 保 parity. 含 deprecated git_tracked/supabase_only 别名归一 + validate_storage_config + normalizeAndValidate(自动补/ + overlap抛StorageConfigError) + matches_tier_dir(路径段精确前缀, 防 media/xerox 误匹配).",
+          "note": ""
+        },
+        {
+          "q": "repo 路径解析：如何替代 TS getDefaultSourcePath？",
+          "answer": "TS 走完整 resolveSourceId 链(dotfile/env/等, 属未迁 resolver 子系统). Rust 复用已建立 config::load_config().sync.default_repo(与 features/whoknows 一致), 避免迁 resolver 子系统; 等价语义: 无 --repo 用 sync repo. 若仍 null 则 config=null(全 unspecified).",
+          "note": ""
+        },
+        {
+          "q": "EngineKind 映射？",
+          "answer": "TS engine.kind!=='pglite' -> Rust EngineKind::Libsql 触发 tiering-limited 警告(一行映射, 非 blocker). Postgres 不警告.",
+          "note": ""
+        },
+        {
+          "q": "测试策略？",
+          "answer": "TDD 垂直切片: config parser 单测 / disk walk 单测 / get_storage_status 单测(InMemoryEngine+temp repo) / formatter 单测 / CLI 接线 / E2E smoke(真实二进制+播种brain+temp repo含zbrain.yml+md文件). get_storage_status 依赖 list_pages(三后端全实现), 单测走 InMemory, E2E 走 libsql.",
+          "note": ""
+        }
+      ],
+      "notes": ""
+    },
+    "1-6-4-8-1": {
+      "id": "1-6-4-8-1",
+      "label": "storage config parser (parse_storage_yaml + normalize deprecated alias + validate + get_storage_tier)",
+      "status": "completed",
+      "mode": "build",
+      "parent": "1-6-4-8",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-4-8-2": {
+      "id": "1-6-4-8-2",
+      "label": "storage disk walk (walk_brain_repo via walkdir, slug=relpath minus .md)",
+      "status": "completed",
+      "mode": "build",
+      "parent": "1-6-4-8",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-4-8-3": {
+      "id": "1-6-4-8-3",
+      "label": "get_storage_status core + formatters (json/human, format_bytes)",
+      "status": "completed",
+      "mode": "build",
+      "parent": "1-6-4-8",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-4-8-4": {
+      "id": "1-6-4-8-4",
+      "label": "storage CLI 接线 (zbrain storage status [--repo] [--json] + Libsql 警告) + E2E smoke",
+      "status": "completed",
+      "mode": "build",
+      "parent": "1-6-4-8",
+      "children": [],
+      "decisions": [],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-17 15:35:18",
+    "updated": "2026-07-17 16:40:07",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
