@@ -472,7 +472,7 @@
     "1-6-4": {
       "id": "1-6-4",
       "label": "REAL_MIGRATE 孤儿命令批 [去重后: 移出 skillify->1-1 / eval族->1-2 / calibration->1-3 / dream->1-12 / extract·export·integrity->1-4; 真孤儿=code-intel(code-*·reindex*·edges-backfill·backfill) + memory(recall·forget) + models·providers + whoknows·brainstorm·auth·features·storage·migrate·publish·extract-conversation-facts·resolvers·check-resolvable + 20个1-6-3归入带test命令]",
-      "status": "completed",
+      "status": "in_progress",
       "mode": "explore",
       "parent": "1-6",
       "children": [
@@ -584,7 +584,7 @@
     "1-6-4-4": {
       "id": "1-6-4-4",
       "label": "features auto-fix 引擎地基 (page-level: list_stale_pages + put_page_embedding + add_timeline_entry + link 解析器)",
-      "status": "completed",
+      "status": "in_progress",
       "mode": "exploit",
       "parent": "1-6-4",
       "children": [
@@ -673,12 +673,12 @@
     "1-6-4-4-1": {
       "id": "1-6-4-4-1",
       "label": "embed_stale 库函数 (枚举 stale 页→EmbeddingClient→put_page_embedding)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6-4-4",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "DONE (TDD). 新增 zbrain_core::auto_fix::embed_stale(engine, client, opts) -> EmbedStaleResult{total,embedded,would_embed,skipped}. 文本取 compiled_truth, 空则 title 兜底, 皆空则跳过. 支持 dry_run + source_id 过滤. 单测: auto_fix.rs 4 passed (ConstProvider fake) + libsql_auto_fix_embed.rs 2 passed + postgres_auto_fix_embed.rs 2 passed. 无网络(fake provider). 模块已 pub mod auto_fix 注册."
     },
     "1-6-4-4-2": {
       "id": "1-6-4-4-2",
@@ -713,7 +713,7 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-17 14:30:40",
+    "updated": "2026-07-17 14:50:35",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
