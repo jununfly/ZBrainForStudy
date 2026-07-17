@@ -1123,7 +1123,7 @@
     "1-6-4-12-2": {
       "id": "1-6-4-12-2",
       "label": "detect_install_method port (detect_bun_link + node_modules/squatter + binary + clawhub 探测) + 单测",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6-4-12",
       "children": [],
@@ -1133,7 +1133,7 @@
     "1-6-4-12-3": {
       "id": "1-6-4-12-3",
       "label": "网络层 (reqwest fetch_latest_release + fetch_changelog) + CheckUpdateResult builder (纯, 单测)",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "explore",
       "parent": "1-6-4-12",
       "children": [],
@@ -1153,7 +1153,7 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-17 23:56:01",
+    "updated": "2026-07-18 00:04:50",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
