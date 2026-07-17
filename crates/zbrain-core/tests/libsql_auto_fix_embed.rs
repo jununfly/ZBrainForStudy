@@ -8,7 +8,7 @@
 use serde_json::json;
 use std::sync::Arc;
 use tempfile::NamedTempFile;
-use zbrain_core::auto_fix::{embed_stale, EmbedStaleOpts};
+use zbrain_core::auto_fix::{embed_stale, extract_links, EmbedStaleOpts, ExtractLinksOpts};
 use zbrain_core::embedding::{EmbeddingClient, EmbeddingConfig, EmbeddingError, EmbeddingProvider};
 use zbrain_core::engine::{BrainEngine, EngineConfig, PageInput};
 use zbrain_core::libsql::LibsqlEngine;
@@ -144,4 +144,44 @@ async fn embed_stale_dry_run_leaves_db_untouched() {
         .expect("get_page")
         .expect("page present");
     assert!(got.embedding.is_none());
+}
+
+/// `extract_links` scans page bodies for wikilinks, resolves them against
+/// existing slugs, and writes outgoing links on a real backend.
+#[tokio::test]
+async fn extract_links_creates_resolved_link_on_libsql() {
+    let path = temp_db();
+    let engine = connected_engine(&path).await;
+    engine
+        .put_page("alice", Some("default"), &page("alice", "see [[bob]]", None))
+        .await
+        .expect("put alice");
+    engine
+        .put_page("bob", Some("default"), &page("bob", "i am bob", None))
+        .await
+        .expect("put bob");
+
+    let res = extract_links(&engine, &ExtractLinksOpts::default())
+        .await
+        .expect("extract_links");
+    assert_eq!(res.pages_processed, 2);
+    assert_eq!(res.links_created, 1);
+    assert_eq!(res.dangling, 0);
+}
+
+/// Dangling wikilinks (target slug absent) are counted, not written.
+#[tokio::test]
+async fn extract_links_skips_dangling_on_libsql() {
+    let path = temp_db();
+    let engine = connected_engine(&path).await;
+    engine
+        .put_page("alice", Some("default"), &page("alice", "see [[ghost]]", None))
+        .await
+        .expect("put alice");
+
+    let res = extract_links(&engine, &ExtractLinksOpts::default())
+        .await
+        .expect("extract_links");
+    assert_eq!(res.links_created, 0);
+    assert_eq!(res.dangling, 1);
 }

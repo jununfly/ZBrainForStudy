@@ -5,7 +5,7 @@
 mod support;
 
 use std::sync::Arc;
-use zbrain_core::auto_fix::{embed_stale, EmbedStaleOpts};
+use zbrain_core::auto_fix::{embed_stale, extract_links, EmbedStaleOpts, ExtractLinksOpts};
 use zbrain_core::embedding::{EmbeddingClient, EmbeddingConfig, EmbeddingError, EmbeddingProvider};
 use zbrain_core::engine::{BrainEngine, PageInput};
 use zbrain_core::PageKind;
@@ -115,4 +115,42 @@ async fn postgres_embed_stale_dry_run_leaves_db_untouched() {
         .expect("get_page")
         .expect("page present");
     assert!(got.embedding.is_none());
+}
+
+/// `extract_links` scans page bodies and writes resolved outgoing links on
+/// postgres.
+#[tokio::test]
+async fn postgres_extract_links_creates_resolved_link() {
+    let fix = PgFixture::start().await;
+    fix.engine
+        .put_page("alice", Some("default"), &page("alice", "see [[bob]]"))
+        .await
+        .expect("put alice");
+    fix.engine
+        .put_page("bob", Some("default"), &page("bob", "i am bob"))
+        .await
+        .expect("put bob");
+
+    let res = extract_links(&fix.engine, &ExtractLinksOpts::default())
+        .await
+        .expect("extract_links");
+    assert_eq!(res.pages_processed, 2);
+    assert_eq!(res.links_created, 1);
+    assert_eq!(res.dangling, 0);
+}
+
+/// Dangling wikilinks are counted, not written (postgres).
+#[tokio::test]
+async fn postgres_extract_links_skips_dangling() {
+    let fix = PgFixture::start().await;
+    fix.engine
+        .put_page("alice", Some("default"), &page("alice", "see [[ghost]]"))
+        .await
+        .expect("put alice");
+
+    let res = extract_links(&fix.engine, &ExtractLinksOpts::default())
+        .await
+        .expect("extract_links");
+    assert_eq!(res.links_created, 0);
+    assert_eq!(res.dangling, 1);
 }

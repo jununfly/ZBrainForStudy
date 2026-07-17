@@ -13,6 +13,9 @@
 use crate::embedding::{EmbeddingClient, EmbeddingError};
 use crate::engine::{BrainEngine, Page};
 use crate::error::{StructuredError, Result};
+use crate::markdown_links::extract_markdown_links;
+use crate::types::LinkBatchInput;
+use std::collections::{HashMap, HashSet};
 
 /// Options for [`embed_stale`].
 pub struct EmbedStaleOpts {
@@ -107,6 +110,136 @@ fn embed_err(text: &str, e: EmbeddingError) -> StructuredError {
             text.chars().count()
         ),
     )
+}
+
+// ── extract_links ────────────────────────────────────────────────────────
+//
+// Page-level analog of `zbrain extract links`. The TS path resolves each
+// markdown/wikilink target against the set of existing slugs (via
+// `resolveSlug`, which joins the link's relative path against the page's
+// directory). In the page-level Rust model there are no files/directories,
+// so the candidate slug is simply the link target with its `.md` suffix and
+// optional `source:` qualifier stripped — equivalent to TS `resolveSlug`
+// with an empty `fileDir`. Dangling links (no matching slug) are skipped,
+// and self-links are never written.
+
+/// Flush `add_links_batch` calls in chunks to avoid one giant insert (mirrors
+/// the TS `BATCH_SIZE` batching in `extract.ts`).
+const LINK_BATCH_SIZE: usize = 200;
+
+/// Options for [`extract_links`].
+pub struct ExtractLinksOpts {
+    /// Process a single page (by slug) instead of every page in the brain.
+    pub slug: Option<String>,
+}
+
+impl Default for ExtractLinksOpts {
+    fn default() -> Self {
+        ExtractLinksOpts { slug: None }
+    }
+}
+
+/// Outcome of an [`extract_links`] run.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ExtractLinksResult {
+    /// Pages whose body was scanned.
+    pub pages_processed: usize,
+    /// Links written (count returned by `add_links_batch`).
+    pub links_created: usize,
+    /// Links whose target slug does not exist in the brain (skipped).
+    pub dangling: usize,
+}
+
+/// Resolve a markdown/wikilink target to a slug in the brain, page-level
+/// style: strip an optional `source:` qualifier and the `.md` suffix, then
+/// check exact membership in `all_slugs`. Returns `None` for dangling links.
+fn resolve_link_slug(rel_target: &str, all_slugs: &HashSet<&str>) -> Option<String> {
+    // Optional `source:slug` qualifier (e.g. cross-source wikilinks). The
+    // qualifier token has no `/` or `.`; anything else is a literal slug.
+    let without_source = match rel_target.split_once(':') {
+        Some((prefix, rest)) if !prefix.contains('/') && !prefix.contains('.') => rest,
+        _ => rel_target,
+    };
+    let no_ext = without_source
+        .strip_suffix(".md")
+        .unwrap_or(without_source);
+    if all_slugs.contains(no_ext) {
+        Some(no_ext.to_string())
+    } else {
+        None
+    }
+}
+
+/// Scan page bodies for markdown/wikilinks, resolve each target against the
+/// set of existing page slugs, and write the resulting outgoing links via
+/// `add_links_batch`. Page-level analog of the TS `extract links` db-source
+/// path.
+pub async fn extract_links(
+    engine: &dyn BrainEngine,
+    opts: &ExtractLinksOpts,
+) -> Result<ExtractLinksResult> {
+    // 1. Snapshot all slugs (+ their source) for target resolution.
+    let refs = engine.list_all_page_refs().await?;
+    let slug_source: HashMap<&str, &str> = refs
+        .iter()
+        .map(|r| (r.slug.as_str(), r.source_id.as_str()))
+        .collect();
+    let all_slugs: HashSet<&str> = slug_source.keys().copied().collect();
+
+    // 2. Pages to scan.
+    let targets: Vec<String> = match &opts.slug {
+        Some(s) => vec![s.clone()],
+        None => refs.iter().map(|r| r.slug.clone()).collect(),
+    };
+
+    let mut result = ExtractLinksResult::default();
+    let mut batch: Vec<LinkBatchInput> = Vec::new();
+
+    for slug in &targets {
+        let Some(page) = engine.get_page(slug, &Default::default()).await? else {
+            continue;
+        };
+        result.pages_processed += 1;
+        let from_source = page.source_id.clone();
+
+        for (name, rel_target) in extract_markdown_links(&page.compiled_truth) {
+            match resolve_link_slug(&rel_target, &all_slugs) {
+                None => {
+                    result.dangling += 1;
+                }
+                Some(target) if target == slug.as_str() => {
+                    // Self-link — never written.
+                }
+                Some(target) => {
+                    let to_source = slug_source
+                        .get(target.as_str())
+                        .copied()
+                        .map(str::to_string);
+                    batch.push(LinkBatchInput {
+                        from_slug: slug.clone(),
+                        to_slug: target,
+                        link_type: None,
+                        context: Some(format!("markdown link: [{name}]")),
+                        link_source: Some("markdown".to_string()),
+                        origin_slug: None,
+                        origin_field: None,
+                        from_source_id: Some(from_source.clone()),
+                        to_source_id: to_source,
+                        origin_source_id: None,
+                    });
+                    if batch.len() >= LINK_BATCH_SIZE {
+                        result.links_created += engine.add_links_batch(&batch).await?;
+                        batch.clear();
+                    }
+                }
+            }
+        }
+    }
+
+    if !batch.is_empty() {
+        result.links_created += engine.add_links_batch(&batch).await?;
+    }
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -274,5 +407,91 @@ mod tests {
         assert_eq!(res.total, 1);
         assert_eq!(res.skipped, 1);
         assert_eq!(res.embedded, 0);
+    }
+
+    // ── extract_links ─────────────────────────────────────────────────────
+
+    async fn put_with_body(engine: &InMemoryEngine, slug: &str, body: &str) {
+        engine
+            .put_page(
+                slug,
+                None,
+                &PageInput {
+                    title: slug.to_string(),
+                    compiled_truth: body.to_string(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn extract_links_resolves_existing_slug() {
+        let engine = InMemoryEngine::new();
+        put_with_body(&engine, "alice", "see [[bob]] for details").await;
+        put_with_body(&engine, "bob", "i am bob").await;
+
+        let res = extract_links(&engine, &ExtractLinksOpts::default())
+            .await
+            .unwrap();
+        assert_eq!(res.pages_processed, 2);
+        assert_eq!(res.links_created, 1);
+        assert_eq!(res.dangling, 0);
+    }
+
+    #[tokio::test]
+    async fn extract_links_skips_dangling_target() {
+        let engine = InMemoryEngine::new();
+        put_with_body(&engine, "alice", "see [[ghost]]").await;
+
+        let res = extract_links(&engine, &ExtractLinksOpts::default())
+            .await
+            .unwrap();
+        assert_eq!(res.links_created, 0);
+        assert_eq!(res.dangling, 1);
+    }
+
+    #[tokio::test]
+    async fn extract_links_skips_self_link() {
+        let engine = InMemoryEngine::new();
+        put_with_body(&engine, "alice", "about [[alice]]").await;
+
+        let res = extract_links(&engine, &ExtractLinksOpts::default())
+            .await
+            .unwrap();
+        assert_eq!(res.links_created, 0);
+        assert_eq!(res.dangling, 0);
+    }
+
+    #[tokio::test]
+    async fn extract_links_respects_single_slug_scope() {
+        let engine = InMemoryEngine::new();
+        put_with_body(&engine, "alice", "see [[bob]]").await;
+        put_with_body(&engine, "bob", "back to [[alice]]").await;
+
+        let res = extract_links(
+            &engine,
+            &ExtractLinksOpts {
+                slug: Some("alice".into()),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(res.pages_processed, 1);
+        assert_eq!(res.links_created, 1);
+    }
+
+    #[tokio::test]
+    async fn extract_links_handles_markdown_syntax() {
+        let engine = InMemoryEngine::new();
+        put_with_body(&engine, "alice", "see [Bob](bob.md)").await;
+        put_with_body(&engine, "bob", "i am bob").await;
+
+        let res = extract_links(&engine, &ExtractLinksOpts::default())
+            .await
+            .unwrap();
+        assert_eq!(res.links_created, 1);
+        assert_eq!(res.dangling, 0);
     }
 }

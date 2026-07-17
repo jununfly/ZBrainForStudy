@@ -683,12 +683,12 @@
     "1-6-4-4-2": {
       "id": "1-6-4-4-2",
       "label": "extract_links 库函数 (link 解析器→add_links_batch)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6-4-4",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "DONE (TDD). 新增 zbrain_core::auto_fix::extract_links(engine, opts: &ExtractLinksOpts{slug:Option<String>}) -> Result<ExtractLinksResult{pages_processed,links_created,dangling}>. 流程: list_all_page_refs 建 slug 集合 -> 枚举页面(或全部) -> extract_markdown_links(compiled_truth) -> resolve_link_slug(去 .md/去 source: 前缀查 slug 集合, page-level 无 fileDir) -> 跳过悬空/自链接 -> add_links_batch 批写(LINK_BATCH_SIZE=200). link_type=None(link_source=markdown). 测试: auto_fix.rs 5 单测 + libsql 2 + postgres 2."
     },
     "1-6-4-4-3": {
       "id": "1-6-4-4-3",
@@ -713,7 +713,7 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-17 14:50:35",
+    "updated": "2026-07-17 15:09:31",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
