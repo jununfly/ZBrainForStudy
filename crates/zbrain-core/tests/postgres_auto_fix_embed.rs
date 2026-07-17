@@ -5,7 +5,10 @@
 mod support;
 
 use std::sync::Arc;
-use zbrain_core::auto_fix::{embed_stale, extract_links, EmbedStaleOpts, ExtractLinksOpts};
+use zbrain_core::auto_fix::{
+    embed_stale, extract_links, extract_timeline, EmbedStaleOpts, ExtractLinksOpts,
+    ExtractTimelineOpts,
+};
 use zbrain_core::embedding::{EmbeddingClient, EmbeddingConfig, EmbeddingError, EmbeddingProvider};
 use zbrain_core::engine::{BrainEngine, PageInput};
 use zbrain_core::PageKind;
@@ -153,4 +156,61 @@ async fn postgres_extract_links_skips_dangling() {
         .expect("extract_links");
     assert_eq!(res.links_created, 0);
     assert_eq!(res.dangling, 1);
+}
+
+/// `extract_timeline` appends parsed dated entries to `pages.timeline` on
+/// postgres.
+#[tokio::test]
+async fn postgres_extract_timeline_appends_entries() {
+    let fix = PgFixture::start().await;
+    fix.engine
+        .put_page(
+            "p",
+            Some("default"),
+            &page(
+                "p",
+                "- **2024-01-01** | Source — First event\n- **2024-06-15** | Other — Second event",
+            ),
+        )
+        .await
+        .expect("put p");
+
+    let res = extract_timeline(&fix.engine, &ExtractTimelineOpts::default())
+        .await
+        .expect("extract_timeline");
+    assert_eq!(res.pages_processed, 1);
+    assert_eq!(res.entries_added, 2);
+
+    let timeline = fix
+        .engine
+        .get_page("p", &Default::default())
+        .await
+        .expect("get_page")
+        .expect("page present")
+        .timeline;
+    assert!(timeline.contains("2024-01-01 First event"));
+    assert!(timeline.contains("2024-06-15 Second event"));
+}
+
+/// `extract_timeline` is idempotent on postgres.
+#[tokio::test]
+async fn postgres_extract_timeline_idempotent() {
+    let fix = PgFixture::start().await;
+    fix.engine
+        .put_page(
+            "p",
+            Some("default"),
+            &page("p", "- **2024-01-01** | Source — First event"),
+        )
+        .await
+        .expect("put p");
+
+    let first = extract_timeline(&fix.engine, &ExtractTimelineOpts::default())
+        .await
+        .expect("first");
+    assert_eq!(first.entries_added, 1);
+    let second = extract_timeline(&fix.engine, &ExtractTimelineOpts::default())
+        .await
+        .expect("second");
+    assert_eq!(second.entries_added, 0);
 }

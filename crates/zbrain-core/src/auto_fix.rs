@@ -15,7 +15,9 @@ use crate::engine::{BrainEngine, Page};
 use crate::error::{StructuredError, Result};
 use crate::markdown_links::extract_markdown_links;
 use crate::types::LinkBatchInput;
+use regex::Regex;
 use std::collections::{HashMap, HashSet};
+use std::sync::LazyLock;
 
 /// Options for [`embed_stale`].
 pub struct EmbedStaleOpts {
@@ -238,6 +240,118 @@ pub async fn extract_links(
 
     if !batch.is_empty() {
         result.links_created += engine.add_links_batch(&batch).await?;
+    }
+    Ok(result)
+}
+
+// ── extract_timeline ──────────────────────────────────────────────────────
+//
+// Page-level analog of `zbrain extract timeline`. The TS `extractTimelineFrom
+// Content` parses two markdown shapes (a bullet form and a `###` header form)
+// into `{date, summary}` entries. We format each as a single `"{date}
+// {summary}"` line and append it to the page's `pages.timeline` TEXT column
+// via `add_timeline_entry`. Re-runs are de-duplicated against the lines
+// already present so reconciliation stays idempotent.
+
+/// A single parsed timeline entry (date + human summary).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TimelineEntry {
+    pub date: String,
+    pub summary: String,
+}
+
+/// Bullet form: `- **YYYY-MM-DD** | Source — Summary`.
+static BULLET_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)^-\s+\*\*(\d{4}-\d{2}-\d{2})\*\*\s*\|\s*(.+?)\s*[—–-]\s*(.+)$").unwrap()
+});
+
+/// Header form: `### YYYY-MM-DD — Title`.
+static HEADER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)^###\s+(\d{4}-\d{2}-\d{2})\s*[—–-]\s*(.+)$").unwrap()
+});
+
+/// Parse timeline entries from page markdown. Ported from TS
+/// `extractTimelineFromContent`: bullet entries first, then header entries
+/// (matching TS push order), dropping the `Source`/`detail` fields that don't
+/// fit the page-level single-line `pages.timeline` TEXT column.
+pub fn extract_timeline_entries(content: &str) -> Vec<TimelineEntry> {
+    let mut out = Vec::new();
+    for c in BULLET_RE.captures_iter(content) {
+        out.push(TimelineEntry {
+            date: c[1].to_string(),
+            summary: c[3].trim().to_string(),
+        });
+    }
+    for c in HEADER_RE.captures_iter(content) {
+        out.push(TimelineEntry {
+            date: c[1].to_string(),
+            summary: c[2].trim().to_string(),
+        });
+    }
+    out
+}
+
+/// Options for [`extract_timeline`].
+pub struct ExtractTimelineOpts {
+    /// Process a single page (by slug) instead of every page in the brain.
+    pub slug: Option<String>,
+}
+
+impl Default for ExtractTimelineOpts {
+    fn default() -> Self {
+        ExtractTimelineOpts { slug: None }
+    }
+}
+
+/// Outcome of an [`extract_timeline`] run.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ExtractTimelineResult {
+    /// Pages whose body was scanned.
+    pub pages_processed: usize,
+    /// Timeline lines appended (de-duplicated).
+    pub entries_added: usize,
+}
+
+/// Scan page bodies for dated timeline entries, format each as a
+/// `"{date} {summary}"` line, and append it to the page's `pages.timeline`
+/// column (skipping lines already present). Page-level analog of the TS
+/// `extract timeline` db-source path.
+pub async fn extract_timeline(
+    engine: &dyn BrainEngine,
+    opts: &ExtractTimelineOpts,
+) -> Result<ExtractTimelineResult> {
+    let refs = engine.list_all_page_refs().await?;
+    let targets: Vec<(String, String)> = match &opts.slug {
+        Some(s) => refs
+            .into_iter()
+            .filter(|r| &r.slug == s)
+            .map(|r| (r.slug, r.source_id))
+            .collect(),
+        None => refs.into_iter().map(|r| (r.slug, r.source_id)).collect(),
+    };
+
+    let mut result = ExtractTimelineResult::default();
+    for (slug, source_id) in targets {
+        let Some(page) = engine.get_page(&slug, &Default::default()).await? else {
+            continue;
+        };
+        result.pages_processed += 1;
+        let existing: HashSet<String> = page
+            .timeline
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+        for entry in extract_timeline_entries(&page.compiled_truth) {
+            let line = format!("{} {}", entry.date, entry.summary);
+            if existing.contains(&line) {
+                continue;
+            }
+            engine
+                .add_timeline_entry(&slug, &source_id, &line)
+                .await?;
+            result.entries_added += 1;
+        }
     }
     Ok(result)
 }
@@ -493,5 +607,91 @@ mod tests {
             .unwrap();
         assert_eq!(res.links_created, 1);
         assert_eq!(res.dangling, 0);
+    }
+
+    // ── extract_timeline ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn extract_timeline_finds_bullet_entries() {
+        let engine = InMemoryEngine::new();
+        put_with_body(
+            &engine,
+            "p",
+            "- **2024-01-01** | Source — First event\n- **2024-06-15** | Other — Second event",
+        )
+        .await;
+
+        let res = extract_timeline(&engine, &ExtractTimelineOpts::default())
+            .await
+            .unwrap();
+        assert_eq!(res.pages_processed, 1);
+        assert_eq!(res.entries_added, 2);
+
+        let timeline = engine
+            .get_page("p", &Default::default())
+            .await
+            .unwrap()
+            .unwrap()
+            .timeline;
+        assert!(timeline.contains("2024-01-01 First event"));
+        assert!(timeline.contains("2024-06-15 Second event"));
+    }
+
+    #[tokio::test]
+    async fn extract_timeline_finds_header_entries() {
+        let engine = InMemoryEngine::new();
+        put_with_body(
+            &engine,
+            "p",
+            "### 2024-03-15 — Launched the project\n\nbody text\n\n### 2024-09-02 — Shipped v1",
+        )
+        .await;
+
+        let res = extract_timeline(&engine, &ExtractTimelineOpts::default())
+            .await
+            .unwrap();
+        assert_eq!(res.entries_added, 2);
+
+        let timeline = engine
+            .get_page("p", &Default::default())
+            .await
+            .unwrap()
+            .unwrap()
+            .timeline;
+        assert!(timeline.contains("2024-03-15 Launched the project"));
+        assert!(timeline.contains("2024-09-02 Shipped v1"));
+    }
+
+    #[tokio::test]
+    async fn extract_timeline_is_idempotent_on_rerun() {
+        let engine = InMemoryEngine::new();
+        put_with_body(&engine, "p", "- **2024-01-01** | Source — First event").await;
+
+        let first = extract_timeline(&engine, &ExtractTimelineOpts::default())
+            .await
+            .unwrap();
+        assert_eq!(first.entries_added, 1);
+        let second = extract_timeline(&engine, &ExtractTimelineOpts::default())
+            .await
+            .unwrap();
+        assert_eq!(second.entries_added, 0, "re-run must not duplicate");
+    }
+
+    #[tokio::test]
+    async fn extract_timeline_single_slug_scope() {
+        let engine = InMemoryEngine::new();
+        put_with_body(&engine, "a", "- **2024-01-01** | Source — Event A").await;
+        put_with_body(&engine, "b", "- **2024-02-02** | Source — Event B").await;
+
+        let res = extract_timeline(
+            &engine,
+            &ExtractTimelineOpts {
+                slug: Some("a".into()),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(res.pages_processed, 1);
+        assert_eq!(res.entries_added, 1);
     }
 }

@@ -693,12 +693,12 @@
     "1-6-4-4-3": {
       "id": "1-6-4-4-3",
       "label": "extract_timeline 库函数 (timeline 解析器→add_timeline_entry)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6-4-4",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "DONE (TDD). 新增 zbrain_core::auto_fix::extract_timeline(engine, &ExtractTimelineOpts{slug:Option<String>}) -> Result<ExtractTimelineResult{pages_processed,entries_added}> + 纯解析器 extract_timeline_entries(content)->Vec<TimelineEntry{date,summary}>(移植TS两种格式: bullet '- **YYYY-MM-DD** | Source — Summary' + header '### YYYY-MM-DD — Title', 顺序一致, 丢弃source/detail). 每条格式化为 '{date} {summary}' 单行, 对已有行去重后 add_timeline_entry 追加(幂等). 测试: auto_fix.rs 4 单测 + libsql 2 + postgres 2."
     },
     "1-6-4-4-4": {
       "id": "1-6-4-4-4",
@@ -713,7 +713,7 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-17 15:09:31",
+    "updated": "2026-07-17 15:21:31",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"

@@ -65,7 +65,7 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-07-17 15:09:31
+> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-07-17 15:21:31
 
 [~][X+] 1. Part11 — 残留 TS 收尾 (综合容器)
 ├── [ ][X+] 1-1. skillpack / skillify 迁移 (27+ 文件 Schema/Subagent 包)
@@ -113,6 +113,6 @@ ENGINE FOUNDATION COMPLETE 2026-07-17 TDD. list_stale_pages + put_page_embedding
 **当前子树：**
 ├── [x][X+] 1-6-4-4-1. embed_stale 库函数 (枚举 stale 页→EmbeddingClient→put_page_embedding)
 ├── [x][X+] 1-6-4-4-2. extract_links 库函数 (link 解析器→add_links_batch)
-├── [ ][X+] 1-6-4-4-3. extract_timeline 库函数 (timeline 解析器→add_timeline_entry)
+├── [x][X+] 1-6-4-4-3. extract_timeline 库函数 (timeline 解析器→add_timeline_entry)
 └── [ ][X+] 1-6-4-4-4. features --auto-fix CLI 接线 (execute_auto_fix + accepted 记账 + --json auto_fix_results)
 <!-- ROADMAP_SECTION_END -->
