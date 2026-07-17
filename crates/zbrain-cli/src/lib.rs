@@ -359,6 +359,9 @@ pub enum Commands {
     /// Generate a self-contained, shareable HTML file from a brain markdown page
     Publish(PublishArgs),
 
+    /// Introspect the Resolver SDK registry (list / describe builtin resolvers)
+    Resolvers(ResolversArgs),
+
     /// Manage configuration values
     Config(ConfigArgs),
 
@@ -1611,6 +1614,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Integrity(args) => run_integrity_command(args, cli.config.as_deref()).await?,
         Commands::Storage(args) => run_storage_command(args, cli.config.as_deref()).await?,
         Commands::Publish(args) => run_publish_command(args).await?,
+        Commands::Resolvers(args) => run_resolvers_command(args).await?,
         Commands::Config(args) => run_config_command(args, cli.config.as_deref()).await?,
         Commands::SchemaSql(args) => run_schema_command(args)?,
         Commands::GetPage(args) => run_get_page_command(args, cli.config.as_deref(), timeout_ms).await?,
@@ -3591,6 +3595,215 @@ async fn run_publish_command(args: PublishArgs) -> anyhow::Result<()> {
         None => println!("  (no password, content in cleartext)"),
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// resolvers — introspect the Resolver SDK registry (slice 1-6-4-10-4)
+// ---------------------------------------------------------------------------
+
+/// Arguments for `zbrain resolvers`.
+///
+/// Mirrors TS `src/commands/resolvers.ts`: `list` (pretty table / `--json`,
+/// with `--cost` / `--backend` filters) and `describe <id>` (schema +
+/// availability). No engine connection is required — the registry is a
+/// process-wide in-memory singleton. The builtins are registered with live
+/// transport clients at invocation time.
+#[derive(Debug, Parser)]
+pub struct ResolversArgs {
+    #[command(subcommand)]
+    pub sub: Option<ResolversSub>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ResolversSub {
+    /// List all registered resolvers (pretty table)
+    List {
+        /// Machine-readable JSON output
+        #[arg(long)]
+        json: bool,
+        /// Filter by cost: free, rate-limited, paid
+        #[arg(long)]
+        cost: Option<String>,
+        /// Filter by backend label
+        #[arg(long)]
+        backend: Option<String>,
+    },
+    /// Show schema + availability for a single resolver
+    Describe {
+        /// Resolver id (e.g. `x_handle_to_tweet`)
+        id: String,
+    },
+}
+
+async fn run_resolvers_command(args: ResolversArgs) -> anyhow::Result<()> {
+    use std::sync::Arc;
+    use zbrain_core::resolvers::{
+        get_default_registry, DnsResolver, HttpClient, ReqwestHttpClient, ResolverContext,
+        ResolverCost, ResolverListFilter, TokioDnsResolver,
+    };
+
+    // Register the two builtin resolvers with live transport clients
+    // (idempotent: re-registration of an existing id is a no-op inside the
+    // registry). Mirrors TS `registerBuiltinResolvers()`.
+    {
+        let mut registry = get_default_registry();
+        let http: Arc<dyn HttpClient> = Arc::new(ReqwestHttpClient::new());
+        let dns: Arc<dyn DnsResolver> = Arc::new(TokioDnsResolver);
+        registry.register_builtin_resolvers(http, dns);
+    }
+
+    match args.sub {
+        None => {
+            print_resolvers_help();
+            Ok(())
+        }
+        Some(ResolversSub::List { json, cost, backend }) => {
+            let cost = match cost.as_deref() {
+                None => None,
+                Some("free") => Some(ResolverCost::Free),
+                Some("rate-limited") => Some(ResolverCost::RateLimited),
+                Some("paid") => Some(ResolverCost::Paid),
+                Some(other) => {
+                    eprintln!(
+                        "Invalid --cost value: {other}. Must be one of: free, rate-limited, paid."
+                    );
+                    std::process::exit(1);
+                }
+            };
+            let filter = if cost.is_some() || backend.is_some() {
+                Some(ResolverListFilter { cost, backend })
+            } else {
+                None
+            };
+            let registry = get_default_registry();
+            let summaries = registry.list(filter.as_ref());
+
+            if json {
+                let arr: Vec<serde_json::Value> = summaries
+                    .iter()
+                    .map(|s| {
+                        serde_json::json!({
+                            "id": s.id,
+                            "cost": s.cost.as_str(),
+                            "backend": s.backend,
+                            "description": s.description,
+                            "hasInputSchema": s.has_input_schema,
+                            "hasOutputSchema": s.has_output_schema,
+                        })
+                    })
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::Value::Array(arr))?
+                );
+                return Ok(());
+            }
+
+            if summaries.is_empty() {
+                println!("No resolvers registered.");
+                return Ok(());
+            }
+            print_resolvers_table(&summaries);
+            Ok(())
+        }
+        Some(ResolversSub::Describe { id }) => {
+            let (resolver, available) = {
+                let registry = get_default_registry();
+                if !registry.has(&id) {
+                    eprintln!("Resolver not found: {id}");
+                    eprintln!(
+                        "Available: {}",
+                        registry
+                            .list(None)
+                            .iter()
+                            .map(|s| s.id.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                    std::process::exit(1);
+                }
+                let resolver = registry.get(&id).expect("checked has() above");
+                drop(registry); // release the lock before the async await
+                let ctx = ResolverContext::new();
+                let available = resolver.available(&ctx).await;
+                (resolver, available)
+            };
+            println!("ID:          {}", resolver.id());
+            println!("Cost:        {}", resolver.cost());
+            println!("Backend:     {}", resolver.backend());
+            if let Some(d) = resolver.description() {
+                println!("Description: {d}");
+            }
+            println!(
+                "Available:   {}",
+                if available {
+                    "yes"
+                } else {
+                    "no (check env/config)"
+                }
+            );
+            if let Some(schema) = resolver.input_schema() {
+                println!("\nInput schema:");
+                println!("{}", serde_json::to_string_pretty(schema)?);
+            }
+            if let Some(schema) = resolver.output_schema() {
+                println!("\nOutput schema:");
+                println!("{}", serde_json::to_string_pretty(schema)?);
+            }
+            Ok(())
+        }
+    }
+}
+
+fn print_resolvers_table(summaries: &[zbrain_core::resolvers::ResolverSummary]) {
+    use std::cmp::max;
+
+    let id_w = max(2, summaries.iter().map(|s| s.id.len()).max().unwrap_or(2));
+    let cost_w = max(4, summaries.iter().map(|s| s.cost.as_str().len()).max().unwrap_or(4));
+    let backend_w = max(7, summaries.iter().map(|s| s.backend.len()).max().unwrap_or(7));
+
+    let hdr = format!(
+        "{:<id_w$}  {:<cost_w$}  {:<backend_w$}  DESCRIPTION",
+        "ID", "COST", "BACKEND", id_w = id_w, cost_w = cost_w, backend_w = backend_w
+    );
+    println!("{hdr}");
+    println!("{}", "-".repeat(hdr.len()));
+    for s in summaries {
+        println!(
+            "{:<id_w$}  {:<cost_w$}  {:<backend_w$}  {}",
+            s.id,
+            s.cost.as_str(),
+            s.backend,
+            s.description.as_deref().unwrap_or(""),
+            id_w = id_w,
+            cost_w = cost_w,
+            backend_w = backend_w
+        );
+    }
+    println!(
+        "\n{} resolver{} registered.",
+        summaries.len(),
+        if summaries.len() == 1 { "" } else { "s" }
+    );
+}
+
+fn print_resolvers_help() {
+    println!(
+        "Usage: zbrain resolvers <subcommand> [options]
+
+Subcommands:
+  list                    List all registered resolvers (pretty table)
+  list --json             List as JSON
+  list --cost <c>         Filter by cost: free, rate-limited, paid
+  list --backend <b>      Filter by backend label
+  describe <id>           Show schema + availability for a single resolver
+
+Examples:
+  zbrain resolvers list
+  zbrain resolvers list --cost paid
+  zbrain resolvers describe x_handle_to_tweet
+"
+    );
 }
 
 /// `zbrain whoknows <topic>` — expert-routing query.

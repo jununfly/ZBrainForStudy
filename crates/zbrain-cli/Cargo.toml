@@ -20,7 +20,7 @@ name = "zbrain_cli"
 path = "src/lib.rs"
 
 [dependencies]
-zbrain-core = { path = "../zbrain-core", features = ["rerank", "embedding"] }
+zbrain-core = { path = "../zbrain-core", features = ["rerank", "embedding", "resolvers"] }
 zbrain-mcp = { path = "../zbrain-mcp" }
 zbrain-web = { path = "../zbrain-web" }
 clap = { version = "4", features = ["derive", "color"] }
