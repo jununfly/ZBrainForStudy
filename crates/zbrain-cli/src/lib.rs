@@ -11,6 +11,7 @@ pub mod timeout;
 pub mod update_check;
 pub mod models;
 pub mod apply_migrations;
+pub mod mounts;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -480,6 +481,10 @@ pub enum Commands {
     /// Run pending upgrade-migration orchestrators (orchestrator ledger).
     #[command(name = "apply-migrations")]
     ApplyMigrations(ApplyMigrationsArgs),
+
+    /// Manage connected brains (mounts.json)
+    #[command(name = "mounts", subcommand)]
+    Mounts(mounts::MountsSubcommand),
 }
 
 /// Subcommands for `zbrain jobs`.
@@ -1671,6 +1676,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Commands::ApplyMigrations(args) => {
             apply_migrations::run_apply_migrations_command(&args, cli.config.as_deref()).await?
+        }
+        Commands::Mounts(cmd) => {
+            mounts::run_mounts_command(&cmd, cli.config.as_deref()).await?
         }
     }
     Ok(())

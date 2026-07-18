@@ -427,7 +427,6 @@
   "tests/unit/mode-switch-ux.test.ts": 3698,
   "tests/unit/model-config.serial.test.ts": 101,
   "tests/unit/mounts-cache.test.ts": 21,
-  "tests/unit/mounts-cli.test.ts": 20,
   "tests/unit/multi-source-drift.test.ts": 2479,
   "tests/unit/multi-source-integration.test.ts": 3120,
   "tests/unit/notability-eval.test.ts": 36,

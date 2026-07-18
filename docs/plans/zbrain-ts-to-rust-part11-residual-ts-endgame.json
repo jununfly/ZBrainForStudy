@@ -472,7 +472,7 @@
     "1-6-4": {
       "id": "1-6-4",
       "label": "REAL_MIGRATE 孤儿命令批 [去重后: 移出 skillify->1-1 / eval族->1-2 / calibration->1-3 / dream->1-12 / extract·export·integrity->1-4; 真孤儿=code-intel(code-*·reindex*·edges-backfill·backfill) + memory(recall·forget) + models·providers + whoknows·brainstorm·auth·features·storage·migrate·publish·extract-conversation-facts·resolvers·check-resolvable + 20个1-6-3归入带test命令]",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6",
       "children": [
@@ -489,7 +489,8 @@
         "1-6-4-11",
         "1-6-4-12",
         "1-6-4-13",
-        "1-6-4-14"
+        "1-6-4-14",
+        "1-6-4-15"
       ],
       "decisions": [
         {
@@ -1276,11 +1277,21 @@
       "children": [],
       "decisions": [],
       "notes": ""
+    },
+    "1-6-4-15": {
+      "id": "1-6-4-15",
+      "label": "mounts 命令迁移 (纯文件IO 管理 ~/.zbrain/mounts.json: add/list/ls/remove/rm/enable/disable/trust-frontmatter/untrust-frontmatter; 原子写+权限0600+路径resolve+重复id/path校验+db_url软告警+URL密码脱敏+host保留字拒绝; cache聚合publish诚实park为G52只迁repo-root skip)",
+      "status": "completed",
+      "mode": "real_migrate",
+      "parent": "1-6-4",
+      "children": [],
+      "decisions": [],
+      "notes": "Rust 新增 crates/zbrain-cli/src/mounts.rs：7 子命令(add/list=ls/remove=rm/enable/disable/trust-frontmatter/untrust-frontmatter) + 29 单测(12 parseAddArgs + 4 redactUrl + 3 read/write + add→list→remove roundtrip + list_json_redacts_db_url + enable/disable cycle + trust/untrust cycle preserves fields + missing_id/host reject + idempotent enable + duplicate id/path) 全绿。纯文件 IO 管理 ~/.zbrain/mounts.json(version:1, mounts[])，不需要 engine。忠实保真：原子写(临时文件+rename+unix 0600 chmod)、路径 resolve(非绝对则 current_dir().join)、重复 id/path 校验(db_url 软告警允许别名)、URL 密码脱敏(postgres/postgresql 去密码其他原样)、host 保留字拒绝、trust_frontmatter_overrides serde 默认 false 兼容 TS 既有文件 roundtrip。纠缠点(cache 聚合)：refreshMountsCache 依赖 findRepoRoot+writeMountsCache，耦合未迁 skill/resolver 栈；诚实 park 为 G52——只迁 repo-root skip 检测 + stderr NOTE，绝不伪造 published cache。接线：lib.rs pub mod mounts + Commands::Mounts(MountsSubcommand) 用 #[command(name=mounts, subcommand)] + dispatch 调 run_mounts_command(&cmd, cli.config.as_deref())。删 TS：git rm src/commands/mounts.ts + tests/unit/mounts-cli.test.ts；cli.ts 删 mounts dispatch 分支 + CLI_ONLY 集合移除 mounts；scripts/test-weights.json 删 mounts-cli.test.ts 条目。PARITY_GATE 64 baseline 无新增；E2E(ZBRAIN_HOME 隔离) add→list→remove/enable-disable/trust cycle/host 拒绝/幂等全过。"
     }
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-18 22:16:08",
+    "updated": "2026-07-18 23:46:34",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
