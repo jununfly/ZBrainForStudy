@@ -9,6 +9,7 @@ pub mod mcp_client;
 pub mod schema_cmd;
 pub mod timeout;
 pub mod update_check;
+pub mod models;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -471,6 +472,9 @@ pub enum Commands {
     /// Schema pack management — inspect, validate, lint packs.
     #[command(subcommand)]
     Schema(schema_cmd::SchemaSubcommand),
+
+    /// Show model routing table / probe configured models.
+    Models(ModelsArgs),
 }
 
 /// Subcommands for `zbrain jobs`.
@@ -1657,6 +1661,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Jobs(action) => run_jobs_command(action, cli.config.as_deref()).await?,
         Commands::Agent(action) => run_agent_command(action, cli.config.as_deref()).await?,
         Commands::Schema(cmd) => schema_cmd::run_schema_pack_command(cmd, cli.config.as_deref()).await?,
+        Commands::Models(args) => {
+            models::run_models_command(args.mode, args.json, args.skip, cli.config.as_deref()).await?
+        }
     }
     Ok(())
 }
@@ -3672,6 +3679,29 @@ pub struct CheckUpdateArgs {
     /// Emit results as JSON (for agents) instead of human-readable output.
     #[arg(long)]
     pub json: bool,
+}
+
+/// Mode selector for `zbrain models`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum ModelsMode {
+    /// Print the model routing table (default).
+    Read,
+    /// Probe that each configured model is reachable.
+    Doctor,
+}
+
+/// Arguments for `zbrain models`.
+#[derive(Debug, Parser)]
+pub struct ModelsArgs {
+    /// Mode: routing table (`read`, default) or reachability probes (`doctor`).
+    #[arg(value_enum, default_value_t = ModelsMode::Read)]
+    pub mode: ModelsMode,
+    /// Emit results as JSON (for agents) instead of human-readable output.
+    #[arg(long)]
+    pub json: bool,
+    /// Skip reachability probes for a provider (repeatable, e.g. `--skip=anthropic`).
+    #[arg(long, value_name = "PROVIDER")]
+    pub skip: Vec<String>,
 }
 
 async fn run_resolvers_command(args: ResolversArgs) -> anyhow::Result<()> {

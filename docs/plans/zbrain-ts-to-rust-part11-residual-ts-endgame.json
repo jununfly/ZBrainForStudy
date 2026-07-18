@@ -487,7 +487,8 @@
         "1-6-4-9",
         "1-6-4-10",
         "1-6-4-11",
-        "1-6-4-12"
+        "1-6-4-12",
+        "1-6-4-13"
       ],
       "decisions": [
         {
@@ -1149,11 +1150,66 @@
       "children": [],
       "decisions": [],
       "notes": ""
+    },
+    "1-6-4-13": {
+      "id": "1-6-4-13",
+      "label": "models 命令迁移 (只读路由表 + doctor 探测)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-6-4",
+      "children": [
+        "1-6-4-13-1",
+        "1-6-4-13-2",
+        "1-6-4-13-3",
+        "1-6-4-13-4"
+      ],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-4-13-1": {
+      "id": "1-6-4-13-1",
+      "label": "只读模式纯函数 (build_models_report + source 归因 + format_text/json), DI ConfigLookup, 离线单测",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-6-4-13",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-4-13-2": {
+      "id": "1-6-4-13-2",
+      "label": "doctor 纯函数 (classify_error + dims 白名单 + should_skip + ProbeResult 结构)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-6-4-13",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-4-13-3": {
+      "id": "1-6-4-13-3",
+      "label": "doctor 探测 (config probes + AI chat/embed/rerank 探测, fail-open)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-6-4-13",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-4-13-4": {
+      "id": "1-6-4-13-4",
+      "label": "CLI 接线 (Commands::Models) + 删 TS models.ts + cli.ts 清理 + PARITY_GATE",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-6-4-13",
+      "children": [],
+      "decisions": [],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-18 00:28:30",
+    "updated": "2026-07-18 21:04:25",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"

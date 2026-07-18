@@ -35,7 +35,7 @@ for (const op of operations) {
 }
 
 // CLI-only commands that bypass the operation layer
-const CLI_ONLY = new Set(['reinit-pglite', 'upgrade', 'post-upgrade', 'integrations', 'publish', 'check-backlinks', 'lint', 'import', 'export', 'files', 'embed', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'features', 'apply-migrations', 'skillpack-check', 'resolvers', 'integrity', 'repair-jsonb', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'frontmatter', 'auth', 'friction', 'book-mirror', 'transcripts', 'models', 'recall', 'forget', 'edges-backfill', 'ze-switch', 'founder', 'brainstorm', 'lsd']);
+const CLI_ONLY = new Set(['reinit-pglite', 'upgrade', 'post-upgrade', 'integrations', 'publish', 'check-backlinks', 'lint', 'import', 'export', 'files', 'embed', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'features', 'apply-migrations', 'skillpack-check', 'resolvers', 'integrity', 'repair-jsonb', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'frontmatter', 'auth', 'friction', 'book-mirror', 'transcripts', 'recall', 'forget', 'edges-backfill', 'ze-switch', 'founder', 'brainstorm', 'lsd']);
 // CLI-only commands whose handlers print their own --help text. These are
 // excluded from the generic short-circuit so detailed per-command and
 // per-subcommand usage stays reachable.
@@ -45,7 +45,6 @@ const CLI_ONLY_SELF_HELP = new Set([
   'skillpack-check',
   'integrations', 'friction',
   'frontmatter', 'check-resolvable',
-  'models',
   'brainstorm', 'lsd',
   // v0.37 fix wave (Lane D.4 + CDX2-12): sync's --no-embed flag was
   // unreachable via help because the dispatcher's generic CLI-only
@@ -1231,11 +1230,6 @@ async function handleCliOnly(command: string, args: string[]) {
       case 'transcripts': {
         const { runTranscripts } = await import('./commands/transcripts.ts');
         await runTranscripts(engine, args);
-        break;
-      }
-      case 'models': {
-        const { runModels } = await import('./commands/models.ts');
-        await runModels(engine, args);
         break;
       }
       // search: NOT in CLI_ONLY — dispatched via shared op (cliOps).
