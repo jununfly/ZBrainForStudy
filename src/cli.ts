@@ -722,7 +722,7 @@ function formatResult(opName: string, result: unknown): string {
  * `runRemoteDoctor` for thin-client installs.
  */
 const THIN_CLIENT_REFUSED_COMMANDS = new Set([
-  'sync', 'embed', 'extract', 'extract-conversation-facts', 'migrate', 'apply-migrations',
+  'sync', 'embed', 'extract', 'extract-conversation-facts', 'migrate',
   'repair-jsonb', 'integrity',
   // v0.31.1 (CDX-2 op coverage matrix): more local-only commands
   'dream', 'transcripts', 'storage',
@@ -751,7 +751,6 @@ const THIN_CLIENT_REFUSE_HINTS: Record<string, string> = {
   extract: 'extract runs on the host. Use `zbrain remote ping` to trigger a cycle including extract.',
   'extract-conversation-facts': 'extract-conversation-facts runs on the host (requires local engine + chat gateway). Run on the host machine.',
   migrate: "migrate runs on the host's local engine. Run on the host machine.",
-  'apply-migrations': 'schema migrations run on the host. SSH and run there.',
   'repair-jsonb': 'repair-jsonb operates on the local DB only.',
   integrity: 'integrity scans local files. Run on the host machine.',
   dream: 'dream runs the autopilot cycle on the host. `zbrain remote ping` queues one. (Native `zbrain dream` thin-client routing planned for v0.31.2.)',
@@ -894,15 +893,6 @@ async function handleCliOnly(command: string, args: string[]) {
   if (command === 'friction') {
     const { runFriction } = await import('./commands/friction.ts');
     process.exit(runFriction(args));
-  }
-  if (command === 'apply-migrations') {
-    // Does not need connectEngine — each phase (schema, smoke, host-rewrite)
-    // manages its own subprocess or file-layer access directly. Avoids
-    // connecting a second time when the orchestrator shells out to
-    // `zbrain init --migrate-only` and `zbrain jobs smoke`.
-    const { runApplyMigrations } = await import('./commands/apply-migrations.ts');
-    await runApplyMigrations(args);
-    return;
   }
   if (command === 'repair-jsonb') {
     const { runRepairJsonbCli } = await import('./commands/repair-jsonb.ts');

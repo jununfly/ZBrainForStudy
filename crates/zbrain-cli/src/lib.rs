@@ -10,6 +10,7 @@ pub mod schema_cmd;
 pub mod timeout;
 pub mod update_check;
 pub mod models;
+pub mod apply_migrations;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -475,6 +476,10 @@ pub enum Commands {
 
     /// Show model routing table / probe configured models.
     Models(ModelsArgs),
+
+    /// Run pending upgrade-migration orchestrators (orchestrator ledger).
+    #[command(name = "apply-migrations")]
+    ApplyMigrations(ApplyMigrationsArgs),
 }
 
 /// Subcommands for `zbrain jobs`.
@@ -1663,6 +1668,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Schema(cmd) => schema_cmd::run_schema_pack_command(cmd, cli.config.as_deref()).await?,
         Commands::Models(args) => {
             models::run_models_command(args.mode, args.json, args.skip, cli.config.as_deref()).await?
+        }
+        Commands::ApplyMigrations(args) => {
+            apply_migrations::run_apply_migrations_command(&args, cli.config.as_deref()).await?
         }
     }
     Ok(())
@@ -3702,6 +3710,47 @@ pub struct ModelsArgs {
     /// Skip reachability probes for a provider (repeatable, e.g. `--skip=anthropic`).
     #[arg(long, value_name = "PROVIDER")]
     pub skip: Vec<String>,
+}
+
+/// Arguments for `zbrain apply-migrations`.
+#[derive(Debug, Parser)]
+pub struct ApplyMigrationsArgs {
+    /// Show applied + pending migrations and exit.
+    #[arg(long)]
+    pub list: bool,
+    /// Print the plan; take no action.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Run all pending migrations (non-interactive).
+    #[arg(long)]
+    pub yes: bool,
+    /// Write a 'retry' marker for a wedged migration by version (then re-run --yes).
+    #[arg(long, value_name = "VERSION")]
+    pub force_retry: Option<String>,
+    /// Write a 'retry' marker for every wedged orchestrator migration.
+    #[arg(long)]
+    pub force_orchestrator: bool,
+    /// Reset schema-version drift; re-run init schema (DDL) on the configured brain.
+    #[arg(long)]
+    pub force_schema: bool,
+    /// Both --force-orchestrator and --force-schema.
+    #[arg(long)]
+    pub force_all: bool,
+    /// Bypass post-condition verify hooks on non-idempotent migrations.
+    #[arg(long)]
+    pub skip_verify: bool,
+    /// Set minion_mode without prompting (always | pain_triggered | off).
+    #[arg(long, value_name = "MODE")]
+    pub mode: Option<String>,
+    /// Include this directory in the host-file walk.
+    #[arg(long, value_name = "PATH")]
+    pub host_dir: Option<String>,
+    /// Skip the v0.11.0 autopilot install step.
+    #[arg(long)]
+    pub no_autopilot_install: bool,
+    /// Emit results as JSON (for agents).
+    #[arg(long)]
+    pub json: bool,
 }
 
 async fn run_resolvers_command(args: ResolversArgs) -> anyhow::Result<()> {

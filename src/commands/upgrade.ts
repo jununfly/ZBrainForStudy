@@ -280,8 +280,10 @@ export async function runPostUpgrade(args: string[] = []): Promise<void> {
   // when nothing is pending. Stays inside the same process so a long Phase F
   // (autopilot install) doesn't hit a subprocess boundary.
   try {
-    const { runApplyMigrations } = await import('./apply-migrations.ts');
-    await runApplyMigrations(['--yes', '--non-interactive']);
+    // The orchestrator run loop now lives in the Rust `zbrain` binary
+    // (roadmap 1-6-4-14, C' pragmatic port). Shell out to it so the
+    // post-upgrade step stays best-effort and self-contained.
+    execFileSync('zbrain', ['apply-migrations', '--yes', '--non-interactive'], { stdio: 'inherit' });
   } catch (e) {
     // Surface the error but don't throw — post-upgrade is best-effort.
     // Users can re-run `zbrain apply-migrations` manually if they want

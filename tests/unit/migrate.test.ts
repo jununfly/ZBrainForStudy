@@ -1204,20 +1204,6 @@ describe('PR #356 — 57014 catch path emits actionable 4-part diagnostic', () =
   });
 });
 
-describe('PR #356 — apply-migrations pre-flight schema-version warning', () => {
-  test('source contains the pre-flight check branch before plan execution', () => {
-    // Structural check: the pre-flight block compares the engine's
-    // reported schema version against LATEST_VERSION and warns if
-    // behind. If someone removes this branch, users who run
-    // apply-migrations expecting it to handle schema migrations get
-    // the silent-gaslight experience from the field report.
-    const source = readFileSync(resolve('src/commands/apply-migrations.ts'), 'utf-8');
-    expect(source).toContain('LATEST_VERSION');
-    expect(source).toContain('Schema version');
-    expect(source).toContain('is behind latest');
-  });
-});
-
 describe('PR #356 + #363 — session timeouts applied via startup parameters', () => {
   test('structural: setSessionDefaults exists for back-compat; resolveSessionTimeouts is the source of truth', () => {
     // PR #356 introduced setSessionDefaults (post-pool SET).

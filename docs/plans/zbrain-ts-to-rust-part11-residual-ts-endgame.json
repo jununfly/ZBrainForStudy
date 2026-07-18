@@ -472,7 +472,7 @@
     "1-6-4": {
       "id": "1-6-4",
       "label": "REAL_MIGRATE 孤儿命令批 [去重后: 移出 skillify->1-1 / eval族->1-2 / calibration->1-3 / dream->1-12 / extract·export·integrity->1-4; 真孤儿=code-intel(code-*·reindex*·edges-backfill·backfill) + memory(recall·forget) + models·providers + whoknows·brainstorm·auth·features·storage·migrate·publish·extract-conversation-facts·resolvers·check-resolvable + 20个1-6-3归入带test命令]",
-      "status": "completed",
+      "status": "in_progress",
       "mode": "explore",
       "parent": "1-6",
       "children": [
@@ -488,7 +488,8 @@
         "1-6-4-10",
         "1-6-4-11",
         "1-6-4-12",
-        "1-6-4-13"
+        "1-6-4-13",
+        "1-6-4-14"
       ],
       "decisions": [
         {
@@ -1205,11 +1206,81 @@
       "children": [],
       "decisions": [],
       "notes": ""
+    },
+    "1-6-4-14": {
+      "id": "1-6-4-14",
+      "label": "apply-migrations 命令迁移（C' 务实重建 orchestrator 框架）",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-6-4",
+      "children": [
+        "1-6-4-14-1",
+        "1-6-4-14-2",
+        "1-6-4-14-3"
+      ],
+      "decisions": [
+        {
+          "q": "下一孤儿命令选哪个？",
+          "answer": "apply-migrations",
+          "note": "Q2: 剩余孤儿里最基础+有界+低风险；Rust 已有 LIBQL_MIGRATIONS/POSTGRES_MIGRATIONS + init_schema 自动迁移，无需搬 TS 20 个迁移文件"
+        },
+        {
+          "q": "端口范围：薄 CLI 还是搬 TS 文件？",
+          "answer": "薄 CLI 罩 Rust 现有 registry + --list 保真 TS 命名版本；apply 委托 init_schema；不建平行 apply 系统",
+          "note": "Q3: 探查证明 TS 自身 src/core/migrate.ts 已注释 'All migration decision logic lives in Rust'，runMigrations 直接委托 engine.initSchema；20 个 migrations/ 文件仅用于 --list 展示+--force-retry 查找，不参与 apply。故'完整忠实搬文件'(原C)在 TS 架构里已不成立，选保真输出=TS 当前真实架构"
+        },
+        {
+          "q": "migrate-engine 是否打包进本节点？",
+          "answer": "不打包，独立未来节点",
+          "note": "Q4: migrate-engine 实为脑间数据迁移工具（copy pages 源→目标 engine，处理 slug 碰撞），与 schema 迁移无关；apply-migrations 才是 schema 迁移。两者必须分开"
+        },
+        {
+          "q": "Rust init_schema 为单事务全有/全无，无 TS 式半途卡死；--force-retry/--force-all/--force-schema 降级为'强制重跑 init_schema'或 no-op，并写文档说明偏差",
+          "answer": "Q3 偏差登记：Rust 无 wedged partial migration，故恢复标志语义变更",
+          "note": ""
+        },
+        {
+          "q": "方向最终确定（C' 务实重建）",
+          "answer": "C' 务实重建 orchestrator 框架",
+          "note": "证据：explore 测绘证明 14/15 orchestrator 是 old-brain-only 升级胶水（数据回填/JSONB 修复/schema 验证/takes backfill），项目无线上用户（memory 铁律），Rust zbrain init 已在10+处调 init_schema 覆盖 schema 阶段。字面完整重建 C = 重建永不被触发的代码，违背'无用户不需兼容'既定策略。C' = 完整框架+completed.jsonl 状态+15 声明(--list 完整)+v0_11_0 真实实现+其余14 fresh-brain 自动complete 薄壳。"
+        }
+      ],
+      "notes": ""
+    },
+    "1-6-4-14-1": {
+      "id": "1-6-4-14-1",
+      "label": "状态机制+声明+计划纯函数（completed.jsonl+15声明+build_plan+格式化）",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-6-4-14",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-4-14-2": {
+      "id": "1-6-4-14-2",
+      "label": "v0_11_0 真实实现+14薄壳（run loop+autopilot install+AGENTS.md+cron+prefs）",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-6-4-14",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-4-14-3": {
+      "id": "1-6-4-14-3",
+      "label": "CLI 接线+删 TS+PARITY_GATE+E2E",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-6-4-14",
+      "children": [],
+      "decisions": [],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-18 21:04:25",
+    "updated": "2026-07-18 22:16:08",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
