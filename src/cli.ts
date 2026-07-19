@@ -35,7 +35,7 @@ for (const op of operations) {
 }
 
 // CLI-only commands that bypass the operation layer
-const CLI_ONLY = new Set(['reinit-pglite', 'upgrade', 'post-upgrade', 'integrations', 'publish', 'check-backlinks', 'lint', 'import', 'export', 'files', 'embed', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'features', 'apply-migrations', 'skillpack-check', 'resolvers', 'integrity', 'repair-jsonb', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'frontmatter', 'auth', 'friction', 'book-mirror', 'transcripts', 'recall', 'forget', 'edges-backfill', 'ze-switch', 'founder', 'brainstorm', 'lsd']);
+const CLI_ONLY = new Set(['reinit-pglite', 'upgrade', 'post-upgrade', 'integrations', 'publish', 'check-backlinks', 'lint', 'import', 'export', 'files', 'embed', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'features', 'apply-migrations', 'skillpack-check', 'resolvers', 'integrity', 'repair-jsonb', 'dream', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'frontmatter', 'auth', 'friction', 'book-mirror', 'transcripts', 'recall', 'forget', 'edges-backfill', 'ze-switch', 'founder', 'brainstorm', 'lsd']);
 // CLI-only commands whose handlers print their own --help text. These are
 // excluded from the generic short-circuit so detailed per-command and
 // per-subcommand usage stays reachable.
@@ -44,7 +44,7 @@ const CLI_ONLY_SELF_HELP = new Set([
   'embed',
   'skillpack-check',
   'integrations', 'friction',
-  'frontmatter', 'check-resolvable',
+  'frontmatter',
   'brainstorm', 'lsd',
   // v0.37 fix wave (Lane D.4 + CDX2-12): sync's --no-embed flag was
   // unreachable via help because the dispatcher's generic CLI-only
@@ -866,11 +866,6 @@ async function handleCliOnly(command: string, args: string[]) {
     await runLint(args);
     return;
   }
-  if (command === 'check-resolvable') {
-    const { runCheckResolvable } = await import('./commands/check-resolvable.ts');
-    await runCheckResolvable(args);
-    return;
-  }
   if (command === 'routing-eval') {
     const { runRoutingEvalCli } = await import('./commands/routing-eval.ts');
     await runRoutingEvalCli(args);
@@ -1597,7 +1592,6 @@ TOOLS
   anomalies [--since D] [--sigma N]  v0.29: cohort-based statistical anomalies (tag, type)
   transcripts recent [--days N]      v0.29: recent raw .txt transcripts (local-only)
   dream [--dry-run] [--json]         Run the overnight maintenance cycle once (cron-friendly).
-  check-resolvable [--json] [--fix]  Validate skill tree (reachability/MECE/DRY)
 
 BRAIN (ideate / explore — v0.37/v0.38)
   brainstorm <question> [--json]     Bisociation idea generator (hybrid search + far-set + judge)

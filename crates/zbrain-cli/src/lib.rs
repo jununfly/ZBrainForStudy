@@ -12,6 +12,7 @@ pub mod update_check;
 pub mod models;
 pub mod apply_migrations;
 pub mod mounts;
+pub mod check_resolvable;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -347,6 +348,9 @@ pub enum Commands {
 
     /// Validate installation and connectivity
     Doctor(DoctorArgs),
+
+    /// Validate the skill tree: reachability, MECE overlap, DRY, gap detection
+    CheckResolvable(check_resolvable::CheckResolvableArgs),
 
     /// Scan brain usage and recommend unused features
     Features(FeaturesArgs),
@@ -1630,6 +1634,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Commands::Init(args) => run_init_command(args, cli.config.as_deref()).await?,
         Commands::Doctor(args) => run_doctor_command(args, cli.config.as_deref()).await?,
+        Commands::CheckResolvable(args) => {
+            check_resolvable::run_check_resolvable_command(&args, cli.config.as_deref()).await?
+        }
         Commands::Features(args) => run_features_command(args, cli.config.as_deref()).await?,
         Commands::Whoknows(args) => run_whoknows_command(args, cli.config.as_deref()).await?,
         Commands::Integrity(args) => run_integrity_command(args, cli.config.as_deref()).await?,

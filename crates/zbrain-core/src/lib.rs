@@ -29,6 +29,7 @@ pub mod file_classify;
 pub mod markdown;
 pub mod oauth_queries;
 pub mod skill_conformance;
+pub mod skill_resolver;
 pub mod engine;
 pub mod error;
 pub mod explain_formatter;

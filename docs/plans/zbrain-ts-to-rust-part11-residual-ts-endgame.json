@@ -160,7 +160,8 @@
         "1-6-2",
         "1-6-3",
         "1-6-4",
-        "1-6-5"
+        "1-6-5",
+        "1-6-6"
       ],
       "decisions": [],
       "notes": ""
@@ -514,10 +515,20 @@
     "1-6-5": {
       "id": "1-6-5",
       "label": "PARITY_GATE (删除任何TS命令前: 确认零src引用+零test引用+真Rust覆盖非stub; 1-6-2/1-6-3共用)",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "exploit",
       "parent": "1-6",
-      "children": [],
+      "children": [
+        "1-6-5-1",
+        "1-6-5-2",
+        "1-6-5-3",
+        "1-6-5-4",
+        "1-6-5-5",
+        "1-6-5-6",
+        "1-6-5-7",
+        "1-6-5-8",
+        "1-6-5-9"
+      ],
       "decisions": [],
       "notes": ""
     },
@@ -1287,11 +1298,111 @@
       "children": [],
       "decisions": [],
       "notes": "Rust 新增 crates/zbrain-cli/src/mounts.rs：7 子命令(add/list=ls/remove=rm/enable/disable/trust-frontmatter/untrust-frontmatter) + 29 单测(12 parseAddArgs + 4 redactUrl + 3 read/write + add→list→remove roundtrip + list_json_redacts_db_url + enable/disable cycle + trust/untrust cycle preserves fields + missing_id/host reject + idempotent enable + duplicate id/path) 全绿。纯文件 IO 管理 ~/.zbrain/mounts.json(version:1, mounts[])，不需要 engine。忠实保真：原子写(临时文件+rename+unix 0600 chmod)、路径 resolve(非绝对则 current_dir().join)、重复 id/path 校验(db_url 软告警允许别名)、URL 密码脱敏(postgres/postgresql 去密码其他原样)、host 保留字拒绝、trust_frontmatter_overrides serde 默认 false 兼容 TS 既有文件 roundtrip。纠缠点(cache 聚合)：refreshMountsCache 依赖 findRepoRoot+writeMountsCache，耦合未迁 skill/resolver 栈；诚实 park 为 G52——只迁 repo-root skip 检测 + stderr NOTE，绝不伪造 published cache。接线：lib.rs pub mod mounts + Commands::Mounts(MountsSubcommand) 用 #[command(name=mounts, subcommand)] + dispatch 调 run_mounts_command(&cmd, cli.config.as_deref())。删 TS：git rm src/commands/mounts.ts + tests/unit/mounts-cli.test.ts；cli.ts 删 mounts dispatch 分支 + CLI_ONLY 集合移除 mounts；scripts/test-weights.json 删 mounts-cli.test.ts 条目。PARITY_GATE 64 baseline 无新增；E2E(ZBRAIN_HOME 隔离) add→list→remove/enable-disable/trust cycle/host 拒绝/幂等全过。"
+    },
+    "1-6-6": {
+      "id": "1-6-6",
+      "label": "skill/resolver 校验子系统全量迁 Rust (check-resolvable 全轨道): 覆盖 resolver-filenames / skill-frontmatter / skill-manifest / trigger-index(+parseResolverEntries) / check-resolvable core(checks 1-4) / repo-root / CLI / routing-eval(Check5) / filing-audit(Check6) / dry-fix(--fix) / 重接 doctor+skillify-check。非孤儿命令——是整条 skill 树校验栈，耦合 doctor/skillify-check 共享核心。",
+      "status": "in_progress",
+      "mode": "real_migrate",
+      "parent": "1-6",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-5-1": {
+      "id": "1-6-5-1",
+      "label": "skill_resolver 基础模块 Rust 化 (resolver-filenames + skill-frontmatter + skill-manifest + trigger-index 含 parseResolverEntries 表+紧凑列表双格式) + 单测",
+      "status": "completed",
+      "mode": "real_migrate",
+      "parent": "1-6-5",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-5-2": {
+      "id": "1-6-5-2",
+      "label": "check_resolvable 核心 checks 1-4 (reachability + missing_file + MECE overlap/gap + DRY + skillify_stub 扫描) Rust 化 + 单测",
+      "status": "completed",
+      "mode": "real_migrate",
+      "parent": "1-6-5",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-5-3": {
+      "id": "1-6-5-3",
+      "label": "repo-root skills-dir 自动检测 (autoDetectSkillsDir / ReadOnly + install_path 只读兜底 gated by is_gbrain_repo_root) Rust 化",
+      "status": "completed",
+      "mode": "real_migrate",
+      "parent": "1-6-5",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-5-4": {
+      "id": "1-6-5-4",
+      "label": "check_resolvable CLI 命令外壳 (clap 子命令 + flags/envelope/render/退出码, checks 1-4; --fix 暂拒绝提示) + 接线 lib.rs",
+      "status": "completed",
+      "mode": "real_migrate",
+      "parent": "1-6-5",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-5-5": {
+      "id": "1-6-5-5",
+      "label": "收尾: 删除 TS check-resolvable CLI dispatch + 保留 TS core(被 doctor/skillify-check 消费, 记录决策) + PARITY_GATE + E2E + 提交",
+      "status": "in_progress",
+      "mode": "real_migrate",
+      "parent": "1-6-5",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-5-6": {
+      "id": "1-6-5-6",
+      "label": "routing-eval (Check 5): loadRoutingFixtures + indexResolverTriggers + lintRoutingFixtures + runRoutingEval Rust 化 + 接 check_resolvable 警告",
+      "status": "pending",
+      "mode": "real_migrate",
+      "parent": "1-6-5",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-5-7": {
+      "id": "1-6-5-7",
+      "label": "filing-audit (Check 6): loadFilingRules + runFilingAudit (writes_pages/writes_to 声明审计) Rust 化 + 接 check_resolvable 警告",
+      "status": "pending",
+      "mode": "real_migrate",
+      "parent": "1-6-5",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-5-8": {
+      "id": "1-6-5-8",
+      "label": "dry-fix (--fix): autoFixDryViolations + CROSS_CUTTING REPLACE + MISSING_RULE INSERT + skill-fix-gates(git/code-fence) + skill-brain-first 合规 Rust 化",
+      "status": "pending",
+      "mode": "real_migrate",
+      "parent": "1-6-5",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-5-9": {
+      "id": "1-6-5-9",
+      "label": "重接 doctor / skillify-check: 待这两个 TS 命令各自迁移切片时改用 Rust skill_resolver 核心, 删除 TS src/core/check-resolvable.ts 及其依赖栈",
+      "status": "pending",
+      "mode": "real_migrate",
+      "parent": "1-6-5",
+      "children": [],
+      "decisions": [],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-18 23:46:34",
+    "updated": "2026-07-19 10:32:27",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
