@@ -57,7 +57,7 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-07-18 00:04:50
+> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-07-20 13:23:25
 
 [~][X+] 1. Part11 — 残留 TS 收尾 (综合容器)
 ├── [ ][X+] 1-1. skillpack / skillify 迁移 (27+ 文件 Schema/Subagent 包)
@@ -80,8 +80,9 @@
 │   ├── [x][X+] 1-6-1. 孤儿命令审计 (TS 活 dispatch ~50 vs Rust 已注册, 分类 trivial-delete / real-migrate)
 │   ├── [x][Y+] 1-6-2. RUST_OWNED 壳清理 (删TS副本, 过1-6-5对等闸门: config/query/search/get-page/list-pages/sync/takes/orphans/import/reconcile-links/skillpack/schema/init/doctor)
 │   ├── [x][Y+] 1-6-3. TRIVIAL_DELETE 批 [已收口: 真零依赖仅3个 cache/claw-test/report 已整删; 原审计宣称27为过度分类, 20个带test_refs命令归1-6-4, discovery/network/parse非命令+call幽灵条目已从审计剔除]
-│   ├── [~][X+] 1-6-4. REAL_MIGRATE 孤儿命令批 [去重后: 移出 skillify->1-1 / eval族->1-2 / calibration->1-3 / dream->1-12 / extract·export·integrity->1-4; 真孤儿=code-intel(code-*·reindex*·edges-backfill·backfill) + memory(recall·forget) + models·providers + whoknows·brainstorm·auth·features·storage·migrate·publish·extract-conversation-facts·resolvers·check-resolvable + 20个1-6-3归入带test命令]
-│   └── [ ][Y+] 1-6-5. PARITY_GATE (删除任何TS命令前: 确认零src引用+零test引用+真Rust覆盖非stub; 1-6-2/1-6-3共用)
+│   ├── [x][X+] 1-6-4. REAL_MIGRATE 孤儿命令批 [去重后: 移出 skillify->1-1 / eval族->1-2 / calibration->1-3 / dream->1-12 / extract·export·integrity->1-4; 真孤儿=code-intel(code-*·reindex*·edges-backfill·backfill) + memory(recall·forget) + models·providers + whoknows·brainstorm·auth·features·storage·migrate·publish·extract-conversation-facts·resolvers·check-resolvable + 20个1-6-3归入带test命令]
+│   ├── [~][Y+] 1-6-5. PARITY_GATE (删除任何TS命令前: 确认零src引用+零test引用+真Rust覆盖非stub; 1-6-2/1-6-3共用)
+│   └── [~] 1-6-6. skill/resolver 校验子系统全量迁 Rust (check-resolvable 全轨道): 覆盖 resolver-filenames / skill-frontmatter / skill-manifest / trigger-index(+parseResolverEntries) / check-resolvable core(checks 1-4) / repo-root / CLI / routing-eval(Check5) / filing-audit(Check6) / dry-fix(--fix) / 重接 doctor+skillify-check。非孤儿命令——是整条 skill 树校验栈，耦合 doctor/skillify-check 共享核心。
 ├── [ ][X+] 1-7. search core 模块补齐 (C 类，src/core/search 23 文件)
 ├── [ ][X+] 1-8. facts core 模块补齐 (C 类，src/core/facts 13 文件)
 ├── [ ][X+] 1-9. think core 模块补齐 (C 类，src/core/think 7 文件)
@@ -91,5 +92,19 @@
 │   └── [!][X+] 1-11-2. minions 纯删除探查 [BLOCKED: minions 100% 测试耦合, 无零引用叶子; A类纯删除已耗尽]
 └── [!][X+] 1-12. cycle 大迁移 (runCycle 2057行主循环 + 20 phase 全未迁, Rust autopilot/cycle.rs 仅骨架 stub) — B类真迁移主战场
 
-### 当前施工：1-6-4-12-3. 网络层 (reqwest fetch_latest_release + fetch_changelog) + CheckUpdateResult builder (纯, 单测)
+### 当前施工：1-6-5. PARITY_GATE (删除任何TS命令前: 确认零src引用+零test引用+真Rust覆盖非stub; 1-6-2/1-6-3共用)
+
+**当前子树：**
+├── [x] 1-6-5-1. skill_resolver 基础模块 Rust 化 (resolver-filenames + skill-frontmatter + skill-manifest + trigger-index 含 parseResolverEntries 表+紧凑列表双格式) + 单测
+├── [x] 1-6-5-2. check_resolvable 核心 checks 1-4 (reachability + missing_file + MECE overlap/gap + DRY + skillify_stub 扫描) Rust 化 + 单测
+├── [x] 1-6-5-3. repo-root skills-dir 自动检测 (autoDetectSkillsDir / ReadOnly + install_path 只读兜底 gated by is_gbrain_repo_root) Rust 化
+├── [x] 1-6-5-4. check_resolvable CLI 命令外壳 (clap 子命令 + flags/envelope/render/退出码, checks 1-4; --fix 暂拒绝提示) + 接线 lib.rs
+├── [x] 1-6-5-5. 收尾: 删除 TS check-resolvable CLI dispatch + 保留 TS core(被 doctor/skillify-check 消费, 记录决策) + PARITY_GATE + E2E + 提交
+├── [x] 1-6-5-6. routing-eval (Check 5): loadRoutingFixtures + indexResolverTriggers + lintRoutingFixtures + runRoutingEval Rust 化 + 接 check_resolvable 警告
+│   ... 7 more child nodes; run tree 1-6-5-6 --depth 2 for full view
+├── [x] 1-6-5-7. filing-audit (Check 6): loadFilingRules + runFilingAudit (writes_pages/writes_to 声明审计) Rust 化 + 接 check_resolvable 警告
+│   ... 4 more child nodes; run tree 1-6-5-7 --depth 2 for full view
+├── [x] 1-6-5-8. dry-fix (--fix): autoFixDryViolations + CROSS_CUTTING REPLACE + MISSING_RULE INSERT + skill-fix-gates(git/code-fence) + skill-brain-first 合规 Rust 化
+│   ... 4 more child nodes; run tree 1-6-5-8 --depth 2 for full view
+└── [ ] 1-6-5-9. 重接 doctor / skillify-check: 待这两个 TS 命令各自迁移切片时改用 Rust skill_resolver 核心, 删除 TS src/core/check-resolvable.ts 及其依赖栈
 <!-- ROADMAP_SECTION_END -->

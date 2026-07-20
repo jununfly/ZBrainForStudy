@@ -16,6 +16,8 @@
 //!   - repo_root           : skills-dir auto-detection (1-6-5-3)
 //!   - routing_eval        : Check 5 routing eval (1-6-5-6; core + wiring)
 //!   - filing_audit         : Check 6 filing audit (1-6-5-7; core + wiring)
+//!   - dry_fix             : `--fix` write path — DRY REPLACE + brain-first INSERT (1-6-5-8)
+//!   - brain_first         : brain-first compliance analyzer (1-6-5-8-3)
 
 pub mod resolver_filenames;
 pub mod skill_frontmatter;
@@ -25,3 +27,5 @@ pub mod check_resolvable;
 pub mod repo_root;
 pub mod routing_eval;
 pub mod filing_audit;
+pub mod dry_fix;
+pub mod brain_first;

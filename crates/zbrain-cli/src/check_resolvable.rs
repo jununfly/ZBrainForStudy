@@ -6,16 +6,17 @@
 //!   --strict: exit 0 unless there are errors OR warnings
 //!
 //! Slice 1-6-5-4 covers checks 1-4 (reachability, MECE overlap/gap, DRY).
-//! `--fix` / `--dry-run` (the dry-fix write path, roadmap 1-6-5-8) are NOT
-//! yet wired in Rust — passing them now prints a clear "not yet implemented"
-//! message and exits 1, rather than exposing a lying no-op interface.
+//! `--fix` / `--dry-run` (the dry-fix write path, roadmap 1-6-5-8) ARE wired:
+//! `--fix` writes approved DRY/INSERT fixes back to SKILL.md under safety
+//! gates; `--dry-run` previews them without writing. Both then run the
+//! read-only `check_resolvable` on the (possibly mutated) skills dir.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use serde_json::Value;
 use zbrain_core::skill_resolver::check_resolvable::{check_resolvable, ResolvableIssue, ResolvableReport};
+use zbrain_core::skill_resolver::dry_fix::{auto_fix_dry_violations, AutoFixOptions, AutoFixReport, FixStatus};
 use zbrain_core::skill_resolver::repo_root::{
     auto_detect_hint_read_only, auto_detect_skills_dir_read_only, SkillsDirSource,
 };
@@ -37,9 +38,9 @@ struct Envelope {
     #[serde(rename = "skillsDir")]
     skills_dir: Option<String>,
     report: Option<ResolvableReport>,
-    /// DRY auto-fix outcome. Always `null` until roadmap 1-6-5-8 wires --fix.
+    /// DRY auto-fix outcome (null unless --fix / --dry-run was passed).
     #[serde(rename = "autoFix")]
-    auto_fix: Option<Value>,
+    auto_fix: Option<AutoFixReport>,
     deferred: Vec<DeferredCheck>,
     #[serde(rename = "error")]
     error_field: Option<String>,
@@ -52,11 +53,12 @@ pub struct CheckResolvableArgs {
     /// Emit a stable machine-readable JSON envelope instead of human output.
     #[arg(long)]
     pub json: bool,
-    /// Apply DRY auto-fixes before checking. NOT YET IMPLEMENTED in the Rust
-    /// port (see roadmap 1-6-5-8). Passing it exits 1 with a clear message.
+    /// Apply DRY auto-fixes (cross-cutting DRY REPLACE + brain-first INSERT)
+    /// before checking. Writes are gated by safety checks (working-tree dirt,
+    /// code fences, existing delegation, ambiguous match). See roadmap 1-6-5-8.
     #[arg(long)]
     pub fix: bool,
-    /// With --fix, preview only (no writes). NOT YET IMPLEMENTED.
+    /// With --fix, preview only (no writes).
     #[arg(long)]
     pub dry_run: bool,
     /// Show passing checks and the deferred-check note.
@@ -79,16 +81,6 @@ pub async fn run_check_resolvable_command(
     args: &CheckResolvableArgs,
     _config_path: Option<&Path>,
 ) -> Result<()> {
-    // --fix / --dry-run are not yet implemented (roadmap 1-6-5-8). Refuse
-    // rather than expose a lying no-op flag.
-    if args.fix || args.dry_run {
-        eprintln!(
-            "zbrain check-resolvable --fix / --dry-run is not yet implemented in the Rust port.\n\
-             It is tracked as roadmap 1-6-5-8 (dry-fix slice). Re-run without --fix."
-        );
-        std::process::exit(1);
-    }
-
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let env: HashMap<String, String> = std::env::vars().collect();
 
@@ -119,25 +111,94 @@ pub async fn run_check_resolvable_command(
         }
     }
 
-    let report = check_resolvable(&skills_dir);
+    let (env_el, code) = run_check_resolvable_core(&skills_dir, args);
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&env_el)?);
+    } else {
+        let report = env_el.report.as_ref().expect("report present on success");
+        render_human(report, args.verbose, args.strict);
+        if let Some(af) = &env_el.auto_fix {
+            render_autofix_human(af);
+        }
+    }
+
+    std::process::exit(code);
+}
+
+/// Pure resolution + auto-fix step (no `std::process::exit`), so it is
+/// unit-testable. Runs the `--fix`/`--dry-run` write path when requested,
+/// then runs the read-only `check_resolvable` on the (possibly mutated)
+/// skills dir and returns the envelope + exit code.
+fn run_check_resolvable_core(skills_dir: &Path, args: &CheckResolvableArgs) -> (Envelope, i32) {
+    // `--fix` runs the write path; `--dry-run` previews without writing.
+    let auto_fix = if args.fix || args.dry_run {
+        Some(auto_fix_dry_violations(
+            skills_dir,
+            &AutoFixOptions {
+                dry_run: args.dry_run,
+            },
+        ))
+    } else {
+        None
+    };
+
+    let report = check_resolvable(skills_dir);
 
     let env_el = Envelope {
         ok: resolve_exit_code(&report, args.strict) == 0,
         skills_dir: Some(skills_dir.to_string_lossy().into_owned()),
         report: Some(report.clone()),
-        auto_fix: None,
+        auto_fix,
         deferred: Vec::new(),
         error_field: None,
         message: None,
     };
 
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&env_el)?);
-    } else {
-        render_human(&report, args.verbose, args.strict);
-    }
+    (env_el, resolve_exit_code(&report, args.strict))
+}
 
-    std::process::exit(resolve_exit_code(&report, args.strict));
+/// Human-readable summary of the `--fix` / `--dry-run` outcome.
+fn render_autofix_human(af: &AutoFixReport) {
+    if af.fixed.is_empty() && af.skipped.is_empty() {
+        println!("\nauto_fix: nothing to do");
+        return;
+    }
+    let applied = af
+        .fixed
+        .iter()
+        .filter(|o| o.status == FixStatus::Applied)
+        .count();
+    let proposed = af
+        .fixed
+        .iter()
+        .filter(|o| o.status == FixStatus::Proposed)
+        .count();
+    let skipped = af.skipped.len();
+    if applied > 0 {
+        println!("\nauto_fix: applied {applied} fix(es)");
+    }
+    if proposed > 0 {
+        println!("\nauto_fix: proposed {proposed} fix(es) (dry-run, no writes)");
+    }
+    if skipped > 0 {
+        println!("auto_fix: skipped {skipped} (safety gate / ambiguous / already delegated)");
+    }
+    for o in af.fixed.iter() {
+        let verb = if o.status == FixStatus::Proposed {
+            "proposed"
+        } else {
+            "applied"
+        };
+        println!("  • {verb:<8} {} — {}", o.skill, o.pattern_label);
+    }
+    for o in af.skipped.iter() {
+        let reason = o
+            .reason
+            .map(|r| serde_json::to_string(&r).unwrap_or_default())
+            .unwrap_or_default();
+        println!("  • skipped   {} — {} ({reason})", o.skill, o.pattern_label);
+    }
 }
 
 /// Pure exit-code decision (D-CX-3):
@@ -296,5 +357,101 @@ mod tests {
         assert_eq!(resolve_exit_code(&report_with(0, 1), true), 1);
         // errors still flip it
         assert_eq!(resolve_exit_code(&report_with(1, 0), true), 1);
+    }
+
+    // --- 1-6-5-8-4: --fix / --dry-run wiring ---
+
+    fn cli_scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("zb_cli_{}", name));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn cli_git_committed(root: &Path, rel: &str, content: &str) {
+        let full = root.join(rel);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(&full, content).unwrap();
+        let run = |a: &[&str]| {
+            std::process::Command::new("git")
+                .args(a)
+                .current_dir(root)
+                .output()
+                .unwrap()
+        };
+        run(&["init", "-q"]);
+        run(&["add", rel]);
+        run(&[
+            "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "c",
+        ]);
+    }
+
+    #[test]
+    fn fix_applies_dry_violation_and_populates_envelope() {
+        let root = cli_scratch("fixapply");
+        cli_git_committed(
+            &root,
+            "a/SKILL.md",
+            "---\nname: a\n---\n\nWe follow the iron law of back-linking here.\n",
+        );
+        let args = CheckResolvableArgs {
+            json: false,
+            fix: true,
+            dry_run: false,
+            verbose: false,
+            strict: false,
+            skills_dir: Some(root.clone()),
+        };
+        let (env_el, _code) = run_check_resolvable_core(&root, &args);
+        let af = env_el.auto_fix.expect("autoFix populated");
+        assert!(!af.fixed.is_empty(), "expected an applied fix: {:?}", af);
+        assert_eq!(af.fixed[0].status, FixStatus::Applied);
+        let new = std::fs::read_to_string(root.join("a/SKILL.md")).unwrap();
+        assert!(new.contains("Convention"));
+    }
+
+    #[test]
+    fn dry_run_proposes_only_and_leaves_file() {
+        let root = cli_scratch("fixdry");
+        cli_git_committed(
+            &root,
+            "a/SKILL.md",
+            "---\nname: a\n---\n\nWe follow the iron law of back-linking here.\n",
+        );
+        let args = CheckResolvableArgs {
+            json: false,
+            fix: false,
+            dry_run: true,
+            verbose: false,
+            strict: false,
+            skills_dir: Some(root.clone()),
+        };
+        let (env_el, _code) = run_check_resolvable_core(&root, &args);
+        let af = env_el.auto_fix.expect("autoFix populated");
+        assert!(!af.fixed.is_empty());
+        assert_eq!(af.fixed[0].status, FixStatus::Proposed);
+        // File untouched in dry-run.
+        let new = std::fs::read_to_string(root.join("a/SKILL.md")).unwrap();
+        assert!(!new.contains("Convention"));
+    }
+
+    #[test]
+    fn no_fix_flag_leaves_auto_fix_null() {
+        let root = cli_scratch("fixnone");
+        cli_git_committed(
+            &root,
+            "a/SKILL.md",
+            "---\nname: a\n---\n\nWe follow the iron law of back-linking here.\n",
+        );
+        let args = CheckResolvableArgs {
+            json: false,
+            fix: false,
+            dry_run: false,
+            verbose: false,
+            strict: false,
+            skills_dir: Some(root.clone()),
+        };
+        let (env_el, _code) = run_check_resolvable_core(&root, &args);
+        assert!(env_el.auto_fix.is_none());
     }
 }

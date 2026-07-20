@@ -1432,11 +1432,32 @@
     "1-6-5-8": {
       "id": "1-6-5-8",
       "label": "dry-fix (--fix): autoFixDryViolations + CROSS_CUTTING REPLACE + MISSING_RULE INSERT + skill-fix-gates(git/code-fence) + skill-brain-first 合规 Rust 化",
-      "status": "pending",
+      "status": "completed",
       "mode": "real_migrate",
       "parent": "1-6-5",
-      "children": [],
-      "decisions": [],
+      "children": [
+        "1-6-5-8-1",
+        "1-6-5-8-2",
+        "1-6-5-8-3",
+        "1-6-5-8-4"
+      ],
+      "decisions": [
+        {
+          "q": "留在 check-resolvable --fix/--dry-run（Rust shell 已建 stub + Envelope.autoFix 留位；1-6-5-8 本就授权实现，不再是假 no-op）。对齐纪念：check-resolvable 报 dry_violation 再由其修，闭环最紧。",
+          "answer": "用户 q-0 选推荐",
+          "note": ""
+        },
+        {
+          "q": "写回范围",
+          "answer": "完整对齐 TS：--dry-run 仅预览 + --fix 真实写回 SKILL.md，带完整安全闸门（working-tree 脏→跳过 / 非 git 仓库→跳过 / 代码 fence 内→跳过 / 已 delegate→跳过 / 多匹配→跳过）。",
+          "note": "用户 q-1 选推荐"
+        },
+        {
+          "q": "修复类型范围",
+          "answer": "REPLACE(跨切面 DRY 内联→Convention callout) + INSERT(brain-first 合规缺失→插入 callout) 全做，含 analyzeSkillBrainFirst 合规判定 Rust 化。",
+          "note": "用户 q-2 选推荐"
+        }
+      ],
       "notes": ""
     },
     "1-6-5-9": {
@@ -1564,11 +1585,51 @@
       "children": [],
       "decisions": [],
       "notes": ""
+    },
+    "1-6-5-8-1": {
+      "id": "1-6-5-8-1",
+      "label": "skill-fix-gates Rust 化 (isInsideCodeFence + getWorkingTreeStatus 调 git status --porcelain + isWorkingTreeDirty)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-6-5-8",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-5-8-2": {
+      "id": "1-6-5-8-2",
+      "label": "dry-fix REPLACE 跨切面 DRY (block expansion bullet/blockquote/paragraph + attemptFix 替换 + 复用 CROSS_CUTTING_PATTERNS + 接 gates) + autoFixDryViolations REPLACE 分支",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-6-5-8",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-5-8-3": {
+      "id": "1-6-5-8-3",
+      "label": "skill-brain-first 合规分析 Rust 化 (analyzeSkillBrainFirst + 模式常量 + stripFrontmatter/findFirst*Offset) + MISSING_RULE INSERT (findInsertionLine + attemptInsertFix) 接入 autoFixDryViolations",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-6-5-8",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-5-8-4": {
+      "id": "1-6-5-8-4",
+      "label": "接 check-resolvable CLI --fix/--dry-run (移除 stub) + Envelope.autoFix 填充 + 单测 + E2E + 提交 1-6-5-8",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-6-5-8",
+      "children": [],
+      "decisions": [],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-20 12:11:05",
+    "updated": "2026-07-20 13:23:25",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"

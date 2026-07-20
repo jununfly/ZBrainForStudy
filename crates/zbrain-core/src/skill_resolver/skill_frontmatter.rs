@@ -186,6 +186,32 @@ fn parse_brain_first(raw: &str, out: &mut ParsedFrontmatter) {
     });
 }
 
+/// Build a paste-ready fix hint string from a `brain_first_typo` field.
+/// Returns `None` when no typo is present. Consumed by the doctor message,
+/// the stderr typo warning, and `brain_first::analyze_skill_brain_first`.
+/// Ported from `src/core/skill-frontmatter.ts` `formatBrainFirstTypoHint`.
+pub fn format_brain_first_typo_hint(typo: &BrainFirstTypo) -> Option<String> {
+    let hint = match typo.reason {
+        BrainFirstTypoReason::NonCanonicalKey => format!(
+            "Found '{}: {}' — did you mean 'brain_first: exempt'? (snake_case key required)",
+            typo.key, typo.value
+        ),
+        BrainFirstTypoReason::QuotedValue => format!(
+            "Found 'brain_first: {}' — drop the quotes: 'brain_first: exempt'",
+            typo.value
+        ),
+        BrainFirstTypoReason::CapitalizedValue => format!(
+            "Found 'brain_first: {}' — value must be lowercase: 'brain_first: exempt'",
+            typo.value
+        ),
+        BrainFirstTypoReason::UnknownValue => format!(
+            "Found 'brain_first: {}' — v0.36 ships only 'brain_first: exempt' (declarative opt-out)",
+            typo.value
+        ),
+    };
+    Some(hint)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
