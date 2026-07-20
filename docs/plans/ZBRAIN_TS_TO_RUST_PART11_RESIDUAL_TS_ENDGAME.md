@@ -57,7 +57,7 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-07-20 15:54:20
+> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-07-20 16:36:06
 
 [~][X+] 1. Part11 — 残留 TS 收尾 (综合容器)
 ├── [ ][X+] 1-1. skillpack / skillify 迁移 (27+ 文件 Schema/Subagent 包)
@@ -97,7 +97,7 @@
 
 **当前子树：**
 ├── [x][Y+] 1-6-7-1. 统一 live registry 汇总 + tracer-bullet: 汇总 operation.rs 碎片注册为全量 register_all, page 剩余 WRAP 首批迁 (update_slug/rewrite_links/soft_delete/page timestamps)
-├── [ ][Y+] 1-6-7-2. 标注/图域 wrap: tags(6)+links-graph(9)+timeline(3) 包成 Operation 并注册 (engine 已有方法)
+├── [x][Y+] 1-6-7-2. 标注/图域迁移: tags(3)+links(5)+timeline(2)=10 op 迁入 register_all (8 纯 WRAP + traverse_graph 形状适配 + get_timeline wrap get_page + add_timeline_entry 日期校验)
 ├── [ ][Y+] 1-6-7-3. sources(4)+facts(3)+anomalies(1)+health-stats(6) 域 wrap (engine 已有方法)
 ├── [ ][Y+] 1-6-7-4. jobs-minions 域 wrap (12 op, engine job 方法)
 ├── [ ][Y+] 1-6-7-5. ingestion(4)+files-attachments(5) 域: 含 file_upload NET_NEW 校验器 validateUploadPath 信任边界

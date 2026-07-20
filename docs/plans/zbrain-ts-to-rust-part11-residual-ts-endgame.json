@@ -1726,13 +1726,44 @@
     },
     "1-6-7-2": {
       "id": "1-6-7-2",
-      "label": "标注/图域 wrap: tags(6)+links-graph(9)+timeline(3) 包成 Operation 并注册 (engine 已有方法)",
-      "status": "pending",
+      "label": "标注/图域迁移: tags(3)+links(5)+timeline(2)=10 op 迁入 register_all (8 纯 WRAP + traverse_graph 形状适配 + get_timeline wrap get_page + add_timeline_entry 日期校验)",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-6-7",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "切片范围：10 个 op 一次迁还是拆三子切片？",
+          "answer": "一次迁完 10 个 (tags3+links5+timeline2)",
+          "note": "8 纯 WRAP + 2 带逻辑(traverse_graph/get_timeline)，单节点收口"
+        },
+        {
+          "q": "get_timeline 在 engine 缺方法，怎么实现？",
+          "answer": "wrap get_page 取 .timeline",
+          "note": "不新增 engine 方法；timeline 是 page 上的 JSON 列"
+        },
+        {
+          "q": "traverse_graph legacy GraphNode[] 形状怎么处理？",
+          "answer": "op 内适配 traverse_paths→GraphNode[]",
+          "note": "无过滤时 GraphPath[]→GraphNode[]；有过滤返回 GraphPath[]。不新增 engine 方法"
+        },
+        {
+          "q": "TS operations.ts 这 10 个 op 删除时机？",
+          "answer": "延到 1-6-7-9 整删 operations.ts",
+          "note": "Rust register_all 已是活运行时；本切片只加 Rust op，不动 operations.ts"
+        },
+        {
+          "q": "add_timeline_entry 日期强校验要移植吗？",
+          "answer": "原样移植 TS 校验逻辑",
+          "note": "YYYY-MM-DD + 年1900-2199 + 日历合法性(Date 往返比对)"
+        },
+        {
+          "q": "新 op 是否填 cli_hints 人类别名？",
+          "answer": "不填 cli_hints",
+          "note": "Rust cli_hints() 零调用(死代码)；人类 CLI 走独立 clap。别名属人类 CLI 面，不在注册表迁移范围"
+        }
+      ],
+      "notes": "探查修正: 审计 6+9+3=18 把 cliHints 别名也数了, 真实去重 op=10. tags3/links4 纯 WRAP; traverse_graph 需 op 内适配 traverse_paths→GraphNode[]; get_timeline 缺 engine 方法→wrap get_page; add_timeline_entry 需移植日期校验. 人类 CLI 走独立 clap, 本切片只动 register_all(agent/MCP 工具面). TS operations.ts 延到 1-6-7-9 整删."
     },
     "1-6-7-3": {
       "id": "1-6-7-3",
@@ -1807,7 +1838,7 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-20 15:54:20",
+    "updated": "2026-07-20 16:36:06",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"

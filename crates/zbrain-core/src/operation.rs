@@ -2662,6 +2662,17 @@ pub fn register_all(registry: &mut OperationRegistry) {
     registry.register(RewriteLinksOperation);
     registry.register(GetPageTimestampsOperation);
     registry.register(RefreshPageBodyOperation);
+    // — Tags / Links / Timeline (slice 1-6-7-2) —
+    registry.register(AddTagOperation);
+    registry.register(RemoveTagOperation);
+    registry.register(GetTagsOperation);
+    registry.register(AddLinkOperation);
+    registry.register(RemoveLinkOperation);
+    registry.register(GetLinksOperation);
+    registry.register(GetBacklinksOperation);
+    registry.register(TraverseGraphOperation);
+    registry.register(AddTimelineEntryOperation);
+    registry.register(GetTimelineOperation);
 }
 
 // ── SoftDeletePage Operation (Slice 1-6-7-1) ──────────────────────────────
@@ -2948,6 +2959,777 @@ impl TypedOperation for RefreshPageBodyOperation {
         };
         engine.refresh_page_body(&args).await?;
         Ok(RefreshPageBodyOutput { refreshed: true })
+    }
+}
+
+// ── Tags / Links / Timeline Operations (Slice 1-6-7-2) ────────────────────
+//
+// Port of the `tags` (3), `links-graph` (5) and `timeline` (2) operation
+// families from `src/core/operations.ts` into the production registry. These
+// are thin wrappers over existing `BrainEngine` methods — see the roadmap node
+// 1-6-7-2 for the full decision record.
+//
+// Two deliberate, documented deviations from the legacy TS shapes:
+//   1. `traverse_graph` always returns `GraphPath[]` (never the legacy
+//      `GraphNode[]` shape). The Rust engine only exposes `traverse_paths`
+//      (GraphPath[]); GraphPath is the modern superset shape TS switches to
+//      whenever `link_type`/`direction` filters are present. Reproducing the
+//      legacy GraphNode[] projection would require an extra DB join for
+//      page titles that the engine does not perform.
+//   2. `get_timeline` reads the page's `timeline` TEXT column and parses each
+//      non-empty line as a JSON `TimelineEntry`. This matches the Rust
+//      engine's `add_timeline_entry` storage model (a newline-delimited JSON
+//      log on `pages.timeline`), which differs from the legacy TS engine's
+//      separate `timeline_entries` table. Since Rust is the successor
+//      runtime, the Rust model is canonical for this port.
+
+const TRAVERSE_DEPTH_CAP: u32 = 10;
+
+// — Tags (3) —
+
+/// Attach a tag to a page.
+#[derive(Debug, Clone)]
+pub struct AddTagOperation;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct AddTagParams {
+    pub slug: String,
+    pub tag: String,
+}
+
+impl ValidateParams for AddTagParams {
+    fn validate(&self) -> OperationResult<()> {
+        validate_page_slug(&self.slug)?;
+        if self.tag.trim().is_empty() {
+            return Err(OperationError::invalid_params("tag must not be empty"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddTagOutput {
+    pub slug: String,
+    pub tag: String,
+}
+
+#[async_trait]
+impl TypedOperation for AddTagOperation {
+    type Params = AddTagParams;
+    type Output = AddTagOutput;
+
+    fn name(&self) -> &'static str {
+        "add_tag"
+    }
+    fn description(&self) -> &'static str {
+        "Attach a tag to a page."
+    }
+    fn mutating(&self) -> bool {
+        true
+    }
+    fn required_scope(&self) -> &'static str {
+        "write"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "slug": { "type": "string", "description": "Page slug" },
+                "tag": { "type": "string", "description": "Tag to attach" }
+            },
+            "required": ["slug", "tag"]
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        engine
+            .add_tag(&params.slug, &params.tag, Some(&ctx.source_id))
+            .await?;
+        Ok(AddTagOutput {
+            slug: params.slug,
+            tag: params.tag,
+        })
+    }
+}
+
+/// Detach a tag from a page.
+#[derive(Debug, Clone)]
+pub struct RemoveTagOperation;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RemoveTagParams {
+    pub slug: String,
+    pub tag: String,
+}
+
+impl ValidateParams for RemoveTagParams {
+    fn validate(&self) -> OperationResult<()> {
+        validate_page_slug(&self.slug)?;
+        if self.tag.trim().is_empty() {
+            return Err(OperationError::invalid_params("tag must not be empty"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveTagOutput {
+    pub slug: String,
+    pub tag: String,
+}
+
+#[async_trait]
+impl TypedOperation for RemoveTagOperation {
+    type Params = RemoveTagParams;
+    type Output = RemoveTagOutput;
+
+    fn name(&self) -> &'static str {
+        "remove_tag"
+    }
+    fn description(&self) -> &'static str {
+        "Detach a tag from a page."
+    }
+    fn mutating(&self) -> bool {
+        true
+    }
+    fn required_scope(&self) -> &'static str {
+        "write"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "slug": { "type": "string" },
+                "tag": { "type": "string" }
+            },
+            "required": ["slug", "tag"]
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        engine
+            .remove_tag(&params.slug, &params.tag, Some(&ctx.source_id))
+            .await?;
+        Ok(RemoveTagOutput {
+            slug: params.slug,
+            tag: params.tag,
+        })
+    }
+}
+
+/// List the tags attached to a page.
+#[derive(Debug, Clone)]
+pub struct GetTagsOperation;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct GetTagsParams {
+    pub slug: String,
+}
+
+impl ValidateParams for GetTagsParams {
+    fn validate(&self) -> OperationResult<()> {
+        validate_page_slug(&self.slug)
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetTagsOutput {
+    pub slug: String,
+    pub tags: Vec<String>,
+}
+
+#[async_trait]
+impl TypedOperation for GetTagsOperation {
+    type Params = GetTagsParams;
+    type Output = GetTagsOutput;
+
+    fn name(&self) -> &'static str {
+        "get_tags"
+    }
+    fn description(&self) -> &'static str {
+        "List the tags attached to a page."
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": { "slug": { "type": "string" } },
+            "required": ["slug"]
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let tags = engine.get_tags(&params.slug, Some(&ctx.source_id)).await?;
+        Ok(GetTagsOutput {
+            slug: params.slug,
+            tags,
+        })
+    }
+}
+
+// — Links / Graph (5) —
+
+/// Create a link between two pages.
+#[derive(Debug, Clone)]
+pub struct AddLinkOperation;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct AddLinkParams {
+    pub from: String,
+    pub to: String,
+    pub link_type: Option<String>,
+    pub context: Option<String>,
+}
+
+impl ValidateParams for AddLinkParams {
+    fn validate(&self) -> OperationResult<()> {
+        validate_page_slug(&self.from)?;
+        validate_page_slug(&self.to)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddLinkOutput {
+    pub added: u64,
+    pub from: String,
+    pub to: String,
+}
+
+#[async_trait]
+impl TypedOperation for AddLinkOperation {
+    type Params = AddLinkParams;
+    type Output = AddLinkOutput;
+
+    fn name(&self) -> &'static str {
+        "add_link"
+    }
+    fn description(&self) -> &'static str {
+        "Create a link between two pages."
+    }
+    fn mutating(&self) -> bool {
+        true
+    }
+    fn required_scope(&self) -> &'static str {
+        "write"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "from": { "type": "string" },
+                "to": { "type": "string" },
+                "link_type": { "type": "string", "description": "Link type (e.g. invested_in, works_at)" },
+                "context": { "type": "string", "description": "Context for the link" }
+            },
+            "required": ["from", "to"]
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let input = crate::types::LinkBatchInput {
+            from_slug: params.from.clone(),
+            to_slug: params.to.clone(),
+            link_type: params.link_type.clone(),
+            context: params.context.clone(),
+            link_source: None,
+            origin_slug: None,
+            origin_field: None,
+            from_source_id: Some(ctx.source_id.clone()),
+            to_source_id: Some(ctx.source_id.clone()),
+            origin_source_id: Some(ctx.source_id.clone()),
+        };
+        let added: u64 = engine.add_links_batch(&[input]).await? as u64;
+        Ok(AddLinkOutput {
+            added,
+            from: params.from,
+            to: params.to,
+        })
+    }
+}
+
+/// Remove a link between two pages.
+#[derive(Debug, Clone)]
+pub struct RemoveLinkOperation;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RemoveLinkParams {
+    pub from: String,
+    pub to: String,
+}
+
+impl ValidateParams for RemoveLinkParams {
+    fn validate(&self) -> OperationResult<()> {
+        validate_page_slug(&self.from)?;
+        validate_page_slug(&self.to)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveLinkOutput {
+    pub from: String,
+    pub to: String,
+}
+
+#[async_trait]
+impl TypedOperation for RemoveLinkOperation {
+    type Params = RemoveLinkParams;
+    type Output = RemoveLinkOutput;
+
+    fn name(&self) -> &'static str {
+        "remove_link"
+    }
+    fn description(&self) -> &'static str {
+        "Remove a link between two pages."
+    }
+    fn mutating(&self) -> bool {
+        true
+    }
+    fn required_scope(&self) -> &'static str {
+        "write"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "from": { "type": "string" },
+                "to": { "type": "string" }
+            },
+            "required": ["from", "to"]
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        engine
+            .remove_link(
+                &params.from,
+                &params.to,
+                None,
+                None,
+                Some(&ctx.source_id),
+                Some(&ctx.source_id),
+            )
+            .await?;
+        Ok(RemoveLinkOutput {
+            from: params.from,
+            to: params.to,
+        })
+    }
+}
+
+/// List outgoing links from a page.
+#[derive(Debug, Clone)]
+pub struct GetLinksOperation;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct GetLinksParams {
+    pub slug: String,
+}
+
+impl ValidateParams for GetLinksParams {
+    fn validate(&self) -> OperationResult<()> {
+        validate_page_slug(&self.slug)
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetLinksOutput {
+    pub slug: String,
+    pub links: Vec<crate::types::Link>,
+}
+
+#[async_trait]
+impl TypedOperation for GetLinksOperation {
+    type Params = GetLinksParams;
+    type Output = GetLinksOutput;
+
+    fn name(&self) -> &'static str {
+        "get_links"
+    }
+    fn description(&self) -> &'static str {
+        "List outgoing links from a page."
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": { "slug": { "type": "string" } },
+            "required": ["slug"]
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let links = engine.get_links(&params.slug, Some(&ctx.source_id)).await?;
+        Ok(GetLinksOutput {
+            slug: params.slug,
+            links,
+        })
+    }
+}
+
+/// List incoming links to a page.
+#[derive(Debug, Clone)]
+pub struct GetBacklinksOperation;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct GetBacklinksParams {
+    pub slug: String,
+}
+
+impl ValidateParams for GetBacklinksParams {
+    fn validate(&self) -> OperationResult<()> {
+        validate_page_slug(&self.slug)
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetBacklinksOutput {
+    pub slug: String,
+    pub links: Vec<crate::types::Link>,
+}
+
+#[async_trait]
+impl TypedOperation for GetBacklinksOperation {
+    type Params = GetBacklinksParams;
+    type Output = GetBacklinksOutput;
+
+    fn name(&self) -> &'static str {
+        "get_backlinks"
+    }
+    fn description(&self) -> &'static str {
+        "List incoming links to a page."
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": { "slug": { "type": "string" } },
+            "required": ["slug"]
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let links = engine.get_backlinks(&params.slug, Some(&ctx.source_id)).await?;
+        Ok(GetBacklinksOutput {
+            slug: params.slug,
+            links,
+        })
+    }
+}
+
+/// Traverse the link graph from a page. Always returns `GraphPath[]` (see the
+/// module-level note on the legacy `GraphNode[]` deviation).
+#[derive(Debug, Clone)]
+pub struct TraverseGraphOperation;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct TraverseGraphParams {
+    pub slug: String,
+    pub depth: Option<u32>,
+    pub link_type: Option<String>,
+    pub direction: Option<String>,
+}
+
+impl ValidateParams for TraverseGraphParams {
+    fn validate(&self) -> OperationResult<()> {
+        validate_page_slug(&self.slug)?;
+        if let Some(d) = self.depth {
+            if d == 0 {
+                return Err(OperationError::invalid_params("depth must be >= 1"));
+            }
+        }
+        if let Some(dir) = &self.direction {
+            if !matches!(dir.as_str(), "in" | "out" | "both") {
+                return Err(OperationError::invalid_params(
+                    "direction must be 'in', 'out', or 'both'",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Bare `GraphPath[]` array — mirrors the TS wire shape for `traverse_graph`.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(transparent)]
+pub struct TraverseGraphOutput(pub Vec<crate::types::GraphPath>);
+
+#[async_trait]
+impl TypedOperation for TraverseGraphOperation {
+    type Params = TraverseGraphParams;
+    type Output = TraverseGraphOutput;
+
+    fn name(&self) -> &'static str {
+        "traverse_graph"
+    }
+    fn description(&self) -> &'static str {
+        "Traverse the link graph from a page (BFS, returns edges with depth)."
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "slug": { "type": "string" },
+                "depth": { "type": "number", "description": "Max traversal depth (default 5, capped at 10)" },
+                "link_type": { "type": "string", "description": "Filter to one link type" },
+                "direction": { "type": "string", "enum": ["in", "out", "both"] }
+            },
+            "required": ["slug"]
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        // Mirror TS: default depth 5, clamp to [1, TRAVERSE_DEPTH_CAP]. This
+        // also neutralises a remote caller passing depth=1e6 (memory/CPU burn).
+        let depth = Some(params.depth.unwrap_or(5).clamp(1, TRAVERSE_DEPTH_CAP));
+        let paths = engine
+            .traverse_paths(
+                &params.slug,
+                depth,
+                params.link_type.as_deref(),
+                params.direction.as_deref(),
+                Some(&ctx.source_id),
+                None,
+            )
+            .await?;
+        Ok(TraverseGraphOutput(paths))
+    }
+}
+
+// — Timeline (2) —
+
+/// Validate a `YYYY-MM-DD` timeline date: strict format, year 1900-2199, and
+/// a real calendar day (chrono rejects e.g. Feb 30). Mirrors the TS
+/// `add_timeline_entry` date guard.
+fn validate_timeline_date(date: &str) -> OperationResult<()> {
+    use chrono::Datelike;
+    let parsed = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").map_err(|_| {
+        OperationError::invalid_params(format!(
+            "Invalid date format \"{date}\" (expected YYYY-MM-DD)"
+        ))
+    })?;
+    if parsed.year() < 1900 || parsed.year() > 2199 {
+        return Err(OperationError::invalid_params(format!(
+            "Invalid date \"{date}\" (year must be 1900-2199)"
+        )));
+    }
+    Ok(())
+}
+
+/// Append a single timeline entry to a page.
+#[derive(Debug, Clone)]
+pub struct AddTimelineEntryOperation;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct AddTimelineEntryParams {
+    pub slug: String,
+    pub date: String,
+    pub summary: String,
+    pub detail: Option<String>,
+    pub source: Option<String>,
+}
+
+impl ValidateParams for AddTimelineEntryParams {
+    fn validate(&self) -> OperationResult<()> {
+        validate_page_slug(&self.slug)?;
+        validate_timeline_date(&self.date)?;
+        if self.summary.trim().is_empty() {
+            return Err(OperationError::invalid_params(
+                "summary must not be empty",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddTimelineEntryOutput {
+    pub slug: String,
+    pub date: String,
+}
+
+#[async_trait]
+impl TypedOperation for AddTimelineEntryOperation {
+    type Params = AddTimelineEntryParams;
+    type Output = AddTimelineEntryOutput;
+
+    fn name(&self) -> &'static str {
+        "add_timeline_entry"
+    }
+    fn description(&self) -> &'static str {
+        "Add a timeline entry to a page."
+    }
+    fn mutating(&self) -> bool {
+        true
+    }
+    fn required_scope(&self) -> &'static str {
+        "write"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "slug": { "type": "string" },
+                "date": { "type": "string", "description": "YYYY-MM-DD" },
+                "summary": { "type": "string" },
+                "detail": { "type": "string" },
+                "source": { "type": "string" }
+            },
+            "required": ["slug", "date", "summary"]
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        // Serialise the entry as one JSON line so `get_timeline` can round-trip
+        // it. Mirrors the structured (date, source, summary, detail) shape of
+        // the legacy TS TimelineInput.
+        let entry = serde_json::json!({
+            "date": params.date,
+            "source": params.source.unwrap_or_default(),
+            "summary": params.summary,
+            "detail": params.detail.unwrap_or_default(),
+        })
+        .to_string();
+        engine
+            .add_timeline_entry(&params.slug, &ctx.source_id, &entry)
+            .await?;
+        Ok(AddTimelineEntryOutput {
+            slug: params.slug,
+            date: params.date,
+        })
+    }
+}
+
+/// A single timeline entry as returned by `get_timeline`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineEntryOutput {
+    pub date: String,
+    pub source: String,
+    pub summary: String,
+    pub detail: String,
+}
+
+/// List timeline entries for a page.
+#[derive(Debug, Clone)]
+pub struct GetTimelineOperation;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct GetTimelineParams {
+    pub slug: String,
+}
+
+impl ValidateParams for GetTimelineParams {
+    fn validate(&self) -> OperationResult<()> {
+        validate_page_slug(&self.slug)
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetTimelineOutput {
+    pub slug: String,
+    pub entries: Vec<TimelineEntryOutput>,
+}
+
+#[async_trait]
+impl TypedOperation for GetTimelineOperation {
+    type Params = GetTimelineParams;
+    type Output = GetTimelineOutput;
+
+    fn name(&self) -> &'static str {
+        "get_timeline"
+    }
+    fn description(&self) -> &'static str {
+        "Get timeline entries for a page."
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": { "slug": { "type": "string" } },
+            "required": ["slug"]
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let page = engine
+            .get_page(
+                &params.slug,
+                &crate::engine::GetPageOpts {
+                    source_id: Some(ctx.source_id.clone()),
+                    include_deleted: false,
+                },
+            )
+            .await?;
+        let entries = match page {
+            Some(p) => p
+                .timeline
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .filter_map(|l| serde_json::from_str::<TimelineEntryOutput>(l).ok())
+                .collect(),
+            None => Vec::new(),
+        };
+        Ok(GetTimelineOutput {
+            slug: params.slug,
+            entries,
+        })
     }
 }
 
@@ -6690,7 +7472,7 @@ Outro."#;
         }
 
         #[test]
-        fn register_all_registers_fourteen_ops() {
+        fn register_all_registers_twenty_four_ops() {
             let mut registry = OperationRegistry::new();
             register_all(&mut registry);
             let names = registry.operation_names();
@@ -6709,9 +7491,229 @@ Outro."#;
                 "rewrite_links",
                 "get_page_timestamps",
                 "refresh_page_body",
+                // 1-6-7-2: tags / links / timeline domain
+                "add_tag",
+                "remove_tag",
+                "get_tags",
+                "add_link",
+                "remove_link",
+                "get_links",
+                "get_backlinks",
+                "traverse_graph",
+                "add_timeline_entry",
+                "get_timeline",
             ] {
                 assert!(names.contains(&n), "missing op: {}", n);
             }
+        }
+
+        // ── 1-6-7-2 domain ops: tags / links / timeline ──────────────────────
+
+        async fn domain_ctx() -> (OperationRegistry, OperationContext) {
+            let mut registry = OperationRegistry::new();
+            register_all(&mut registry);
+            use crate::engine::{InMemoryEngine, PageInput};
+            let engine = InMemoryEngine::default();
+            for slug in ["p/a", "p/b", "p/c"] {
+                let input = PageInput {
+                    page_type: "note".to_string(),
+                    title: slug.to_string(),
+                    compiled_truth: "# ".to_string() + slug,
+                    ..Default::default()
+                };
+                let _ = engine.put_page(slug, None, &input).await;
+            }
+            let ctx = OperationContext::local_cli().with_engine(engine.into_arc());
+            (registry, ctx)
+        }
+
+        #[tokio::test]
+        async fn add_get_remove_tag_roundtrip() {
+            let (registry, ctx) = domain_ctx().await;
+
+            let res = registry
+                .dispatch_json("add_tag", &ctx, serde_json::json!({ "slug": "p/a", "tag": "important" }))
+                .await;
+            assert!(res.is_ok(), "add_tag got: {:?}", res);
+
+            let tags = registry
+                .dispatch_json("get_tags", &ctx, serde_json::json!({ "slug": "p/a" }))
+                .await
+                .unwrap();
+            let arr = tags["tags"].as_array().unwrap();
+            assert!(arr.iter().any(|t| t.as_str() == Some("important")), "tags={:?}", tags);
+
+            let res = registry
+                .dispatch_json("remove_tag", &ctx, serde_json::json!({ "slug": "p/a", "tag": "important" }))
+                .await;
+            assert!(res.is_ok(), "remove_tag got: {:?}", res);
+
+            let tags = registry
+                .dispatch_json("get_tags", &ctx, serde_json::json!({ "slug": "p/a" }))
+                .await
+                .unwrap();
+            let arr = tags["tags"].as_array().unwrap();
+            assert!(!arr.iter().any(|t| t.as_str() == Some("important")), "tag still present: {:?}", tags);
+        }
+
+        #[tokio::test]
+        async fn add_tag_rejects_empty_tag() {
+            let (registry, ctx) = domain_ctx().await;
+            let res = registry
+                .dispatch_json("add_tag", &ctx, serde_json::json!({ "slug": "p/a", "tag": "  " }))
+                .await;
+            assert!(res.is_err());
+            assert_eq!(res.unwrap_err().code, ErrorCode::InvalidParams);
+        }
+
+        #[tokio::test]
+        async fn add_link_get_links_backlinks() {
+            let (registry, ctx) = domain_ctx().await;
+            let res = registry
+                .dispatch_json(
+                    "add_link",
+                    &ctx,
+                    serde_json::json!({ "from": "p/a", "to": "p/b", "linkType": "related" }),
+                )
+                .await;
+            assert!(res.is_ok(), "add_link got: {:?}", res);
+            assert_eq!(res.unwrap()["added"].as_u64().unwrap(), 1);
+
+            let links = registry
+                .dispatch_json("get_links", &ctx, serde_json::json!({ "slug": "p/a" }))
+                .await
+                .unwrap();
+            let arr = links["links"].as_array().unwrap();
+            assert!(arr.iter().any(|l| l["toSlug"].as_str() == Some("p/b")), "links={:?}", links);
+
+            let back = registry
+                .dispatch_json("get_backlinks", &ctx, serde_json::json!({ "slug": "p/b" }))
+                .await
+                .unwrap();
+            let arr = back["links"].as_array().unwrap();
+            assert!(arr.iter().any(|l| l["fromSlug"].as_str() == Some("p/a")), "backlinks={:?}", back);
+        }
+
+        #[tokio::test]
+        async fn remove_link_clears_link() {
+            let (registry, ctx) = domain_ctx().await;
+            let _ = registry
+                .dispatch_json("add_link", &ctx, serde_json::json!({ "from": "p/a", "to": "p/b" }))
+                .await
+                .unwrap();
+            let res = registry
+                .dispatch_json("remove_link", &ctx, serde_json::json!({ "from": "p/a", "to": "p/b" }))
+                .await;
+            assert!(res.is_ok(), "remove_link got: {:?}", res);
+            let links = registry
+                .dispatch_json("get_links", &ctx, serde_json::json!({ "slug": "p/a" }))
+                .await
+                .unwrap();
+            assert!(links["links"].as_array().unwrap().is_empty(), "links={:?}", links);
+        }
+
+        #[tokio::test]
+        async fn traverse_graph_returns_bare_path_array() {
+            let (registry, ctx) = domain_ctx().await;
+            let _ = registry
+                .dispatch_json("add_link", &ctx, serde_json::json!({ "from": "p/a", "to": "p/b" }))
+                .await
+                .unwrap();
+            let _ = registry
+                .dispatch_json("add_link", &ctx, serde_json::json!({ "from": "p/b", "to": "p/c" }))
+                .await
+                .unwrap();
+            let res = registry
+                .dispatch_json(
+                    "traverse_graph",
+                    &ctx,
+                    serde_json::json!({ "slug": "p/a", "depth": 3, "direction": "out" }),
+                )
+                .await;
+            assert!(res.is_ok(), "traverse_graph got: {:?}", res);
+            // Transparent serialization: the output is the bare array, not wrapped.
+            let out = res.unwrap();
+            assert!(out.is_array(), "traverse_graph must serialize as a bare array, got: {:?}", out);
+            assert!(!out.as_array().unwrap().is_empty());
+        }
+
+        #[tokio::test]
+        async fn traverse_graph_rejects_bad_direction() {
+            let (registry, ctx) = domain_ctx().await;
+            let res = registry
+                .dispatch_json(
+                    "traverse_graph",
+                    &ctx,
+                    serde_json::json!({ "slug": "p/a", "direction": "sideways" }),
+                )
+                .await;
+            assert!(res.is_err());
+            assert_eq!(res.unwrap_err().code, ErrorCode::InvalidParams);
+        }
+
+        #[tokio::test]
+        async fn traverse_graph_clamps_oversized_depth() {
+            let (registry, ctx) = domain_ctx().await;
+            let res = registry
+                .dispatch_json("traverse_graph", &ctx, serde_json::json!({ "slug": "p/a", "depth": 9999 }))
+                .await;
+            assert!(res.is_ok(), "depth should clamp, not error: {:?}", res);
+        }
+
+        #[tokio::test]
+        async fn add_timeline_entry_get_timeline_roundtrip() {
+            let (registry, ctx) = domain_ctx().await;
+            let res = registry
+                .dispatch_json(
+                    "add_timeline_entry",
+                    &ctx,
+                    serde_json::json!({
+                        "slug": "p/a",
+                        "date": "2024-01-15",
+                        "summary": "Launched",
+                        "detail": "v1 ship",
+                        "source": "history"
+                    }),
+                )
+                .await;
+            assert!(res.is_ok(), "add_timeline_entry got: {:?}", res);
+            assert_eq!(res.unwrap()["date"].as_str().unwrap(), "2024-01-15");
+
+            let res = registry
+                .dispatch_json("get_timeline", &ctx, serde_json::json!({ "slug": "p/a" }))
+                .await;
+            assert!(res.is_ok(), "get_timeline got: {:?}", res);
+            let out = res.unwrap();
+            let entries = out["entries"].as_array().unwrap();
+            assert_eq!(entries.len(), 1, "entries={:?}", entries);
+            assert_eq!(entries[0]["date"].as_str().unwrap(), "2024-01-15");
+            assert_eq!(entries[0]["summary"].as_str().unwrap(), "Launched");
+            assert_eq!(entries[0]["detail"].as_str().unwrap(), "v1 ship");
+            assert_eq!(entries[0]["source"].as_str().unwrap(), "history");
+        }
+
+        #[tokio::test]
+        async fn add_timeline_entry_rejects_bad_date() {
+            let (registry, ctx) = domain_ctx().await;
+            let res = registry
+                .dispatch_json(
+                    "add_timeline_entry",
+                    &ctx,
+                    serde_json::json!({ "slug": "p/a", "date": "not-a-date", "summary": "x" }),
+                )
+                .await;
+            assert!(res.is_err());
+            assert_eq!(res.unwrap_err().code, ErrorCode::InvalidParams);
+        }
+
+        #[tokio::test]
+        async fn get_timeline_empty_without_entries() {
+            let (registry, ctx) = domain_ctx().await;
+            let res = registry
+                .dispatch_json("get_timeline", &ctx, serde_json::json!({ "slug": "p/a" }))
+                .await
+                .unwrap();
+            assert!(res["entries"].as_array().unwrap().is_empty());
         }
 
         #[tokio::test]
