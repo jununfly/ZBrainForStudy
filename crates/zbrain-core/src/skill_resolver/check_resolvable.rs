@@ -26,6 +26,7 @@ use crate::skill_resolver::routing_eval::{
     index_resolver_triggers, lint_routing_fixtures, load_routing_fixtures, run_routing_eval,
     RoutingOutcome,
 };
+use crate::skill_resolver::filing_audit::{run_filing_audit, FilingIssueType};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -614,6 +615,40 @@ pub fn check_resolvable(skills_dir: &Path) -> ResolvableReport {
         });
     }
 
+    // 5c. Check 6 (filing audit, W3): brain-filing audit findings. Warning-only
+    // (D-CX-3 + D-CX-5) — does not break CI for workspaces that haven't adopted
+    // writes_pages:/writes_to: yet. Mirrors `src/core/check-resolvable.ts` Check 6.
+    match run_filing_audit(skills_dir) {
+        Ok(report) => {
+            for issue in &report.issues {
+                issues.push(ResolvableIssue {
+                    issue_type: match issue.issue_type {
+                        FilingIssueType::FilingMissingWritesTo => IssueType::FilingMissingWritesTo,
+                        FilingIssueType::FilingUnknownDirectory => IssueType::FilingUnknownDirectory,
+                    },
+                    severity: Severity::Warning,
+                    skill: issue.skill.clone(),
+                    message: issue.message.clone(),
+                    action: issue.action.clone(),
+                    fix: None,
+                });
+            }
+        }
+        Err(e) => {
+            // TS reuses the `filing_unknown_directory` type for a malformed
+            // rules doc (a quirk of the TS catch block); mirror it so the
+            // issue list stays byte-for-byte equivalent post-migration.
+            issues.push(ResolvableIssue {
+                issue_type: IssueType::FilingUnknownDirectory,
+                severity: Severity::Warning,
+                skill: "brain-filing-rules".to_string(),
+                message: "_brain-filing-rules.json failed to load".to_string(),
+                action: format!("Fix skills/_brain-filing-rules.json: {}", e),
+                fix: None,
+            });
+        }
+    }
+
     // 6. SKILLIFY_STUB sentinel check.
     for skill in &manifest {
         let skill_dir = skills_dir.join(skill.path.trim_end_matches("/SKILL.md"));
@@ -883,5 +918,74 @@ mod tests {
                     | IssueType::RoutingFalsePositive
                     | IssueType::RoutingFixtureLint
             )));
+    }
+
+    #[test]
+    fn check6_filing_missing_writes_to_warns() {
+        // Check 6 (1-6-5-7-3): a skill with writes_pages:true but no
+        // writes_to: must surface as a FilingMissingWritesTo warning.
+        let dir = scratch("check6");
+        write_skill(&dir, "capture", "name: capture\nwrites_pages: true");
+        fs::write(
+            dir.join("RESOLVER.md"),
+            "| trigger | skill |\n| --- | --- |\n| t | `skills/capture/SKILL.md` |",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("_brain-filing-rules.json"),
+            "{\"version\":\"1\",\"rules\":[{\"directory\":\"people\"}]}",
+        )
+        .unwrap();
+        let report = check_resolvable(&dir);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|i| i.issue_type == IssueType::FilingMissingWritesTo),
+            "expected FilingMissingWritesTo warning; warnings: {:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn check6_skipped_when_no_rules_doc() {
+        // When _brain-filing-rules.json is absent, Check 6 must stay silent
+        // (no Filing* warnings).
+        let dir = scratch("check6empty");
+        write_skill(&dir, "capture", "name: capture\nwrites_pages: true");
+        fs::write(
+            dir.join("RESOLVER.md"),
+            "| trigger | skill |\n| --- | --- |\n| t | `skills/capture/SKILL.md` |",
+        )
+        .unwrap();
+        let report = check_resolvable(&dir);
+        assert!(!report.warnings.iter().any(|i| matches!(
+            i.issue_type,
+            IssueType::FilingMissingWritesTo | IssueType::FilingUnknownDirectory
+        )));
+    }
+
+    #[test]
+    fn check6_malformed_rules_doc_warns_unknown_directory() {
+        // A malformed rules doc surfaces a single warning reusing the
+        // FilingUnknownDirectory type (mirrors the TS catch-block quirk).
+        let dir = scratch("check6malformed");
+        write_skill(&dir, "capture", "name: capture\nwrites_pages: true");
+        fs::write(
+            dir.join("RESOLVER.md"),
+            "| trigger | skill |\n| --- | --- |\n| t | `skills/capture/SKILL.md` |",
+        )
+        .unwrap();
+        fs::write(dir.join("_brain-filing-rules.json"), "not json at all").unwrap();
+        let report = check_resolvable(&dir);
+        let hit = report.warnings.iter().find(|i| {
+            i.issue_type == IssueType::FilingUnknownDirectory && i.skill == "brain-filing-rules"
+        });
+        assert!(
+            hit.is_some(),
+            "expected a malformed-rules warning; warnings: {:?}",
+            report.warnings
+        );
+        assert!(hit.unwrap().message.contains("failed to load"));
     }
 }

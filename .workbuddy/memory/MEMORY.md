@@ -6,7 +6,7 @@
 - 命名迁移范围：连文件名一起改。第一阶段彻底迁移 `gbrain.yml -> zbrain.yml`、`docs/GBRAIN_*.md -> docs/ZBRAIN_*.md`、package name/bin/env/dotfile/path/docs/test 引用等；TS 代码部分先不直接动，随“完成 TS -> Rust”PRD 迁移成功一部分就删除一部分。执行分层：配置/包名/bin；env/dotfile/path；docs 文件名与引用；测试脚本引用；最后验证断链。
 - 配置兼容策略：`gbrain.yml`、`.gbrain*`、`GBRAIN_*`、`~/.gbrain` 全部迁到 ZBrain 命名，不保留 alias/fallback/兼容读取；`brain` 和 `source` 作为领域词不改。
 - 下个 PRD：`docs/prd/complete-ts-to-rust.md`。核心原则：TS 代码先不直接动；Rust 迁移成功一部分就对应删除一部分 TS；不适合直接删的内容到时讨论并记录决策。
-- 测试目录迁移：整体物理迁移 `test/` 到 `tests/unit/`，这只是目录规范迁移，不等于删除 TS 测试；现有 `tests/heavy/` 保持，scripts 测试 glob 和文档引用同步改。当前已完成物理迁移与 runner/config 改动，阻塞在本机无 `bun`，无法执行 typecheck/test 分片验证。
+- 测试目录迁移：整体物理迁移 `test/` 到 `tests/unit/`，这只是目录规范迁移，不等于删除 TS 测试；现有 `tests/heavy/` 保持，scripts 测试 glob 和文档引用同步改。物理迁移与 runner/config 改动均已完成。**bun 已可用**（2026-07-20 确认：`~/.bun/bin/bun` v1.3.14，node_modules 在；`bun test` 与 `bash scripts/typecheck-baseline.sh` 均可在本机实跑），此前"无 bun 阻塞"记录已过时。
 - Plans 清理：将 `docs/plans/20260526/` 提炼为 canonical 文档 `docs/plans/20260526-rust-rewrite-plan.md`（目标范围、slice 列表、已确认决策、当前状态/后续切片、废弃/关闭调查结论），提炼后删除连续过程文件；唯一且仍有效的决策必须先提炼再删。
 - Roadmap 拆 plan 约定：若审计或拆解时发现与当前节点目标存在语义偏差，且有跟进价值，应拆成 sub-node 跟踪，而不是吸收到当前 plan 中。
 - **Roadmap 文件位置铁律（2026-07-13 约定）**：所有 roadmap 的 `.json` 和 `.md` **统一放 `docs/plans/`**（不再放 `.workbuddy/roadmaps/`，该目录已清空删除）。JSON 命名 `zbrain-ts-to-rust-partN-*.json`，md 命名 `ZBRAIN_TS_TO_RUST_PARTN_*.md`（**md 与对应 JSON 同名转大写下划线**，全 7 part 统一，无 `ZJ_ROADMAP.md` 特例——已废弃）。

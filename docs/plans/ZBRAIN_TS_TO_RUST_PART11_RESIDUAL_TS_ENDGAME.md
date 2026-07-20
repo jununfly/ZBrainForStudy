@@ -49,7 +49,7 @@
 - [x] 1-6-5-4. check_resolvable CLI 命令外壳 (clap 子命令 + flags/envelope/render/退出码, checks 1-4; --fix 暂拒绝提示) + 接线 lib.rs
 - [x] 1-6-5-5. 收尾: 删除 TS check-resolvable CLI dispatch + 保留 TS core(被 doctor/skillify-check 消费, 记录决策) + PARITY_GATE + E2E + 提交
 - [x] 1-6-5-6. routing-eval (Check 5): loadRoutingFixtures + indexResolverTriggers + lintRoutingFixtures + runRoutingEval Rust 化 + 接 check_resolvable 警告
-- [ ] 1-6-5-7. filing-audit (Check 6): loadFilingRules + runFilingAudit (writes_pages/writes_to 声明审计) Rust 化 + 接 check_resolvable 警告
+- [x] 1-6-5-7. filing-audit (Check 6): loadFilingRules + runFilingAudit (writes_pages/writes_to 声明审计) Rust 化 + 接 check_resolvable 警告
 - [ ] 1-6-5-8. dry-fix (--fix): autoFixDryViolations + CROSS_CUTTING REPLACE + MISSING_RULE INSERT + skill-fix-gates(git/code-fence) + skill-brain-first 合规 Rust 化
 - [ ] 1-6-5-9. 重接 doctor / skillify-check: 待这两个 TS 命令各自迁移切片时改用 Rust skill_resolver 核心, 删除 TS src/core/check-resolvable.ts 及其依赖栈
 <!-- ⚠️ ROADMAP_SECTION_END -->

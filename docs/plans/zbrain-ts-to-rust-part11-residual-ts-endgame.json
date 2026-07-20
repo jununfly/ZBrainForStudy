@@ -1396,11 +1396,37 @@
     "1-6-5-7": {
       "id": "1-6-5-7",
       "label": "filing-audit (Check 6): loadFilingRules + runFilingAudit (writes_pages/writes_to 声明审计) Rust 化 + 接 check_resolvable 警告",
-      "status": "pending",
+      "status": "completed",
       "mode": "real_migrate",
       "parent": "1-6-5",
-      "children": [],
-      "decisions": [],
+      "children": [
+        "1-6-5-7-1",
+        "1-6-5-7-2",
+        "1-6-5-7-3",
+        "1-6-5-7-4"
+      ],
+      "decisions": [
+        {
+          "q": "1-6-5-7 范围是否含独立 zbrain filing-audit CLI？",
+          "answer": "否，仅核心 Rust 化 + 接 check_resolvable 警告。TS 端 filing-audit 历来只有 check-resolvable.ts 一个消费者，从无独立 CLI 命令，故 Rust 也不新增，避免凭空扩表面。",
+          "note": "与 routing-eval(1-6-5-6) 不同：routing-eval TS 本有 src/commands/routing-eval.ts 独立命令，filing-audit 没有"
+        },
+        {
+          "q": "1-6-5-7 怎么拆 TDD 子节点？",
+          "answer": "细粒度 4 子节点（load / run / wire / close），与 routing-eval(1-6-5-6) 同纪律",
+          "note": "1-6-5-7-1 load / -2 run / -3 wire / -4 收尾"
+        },
+        {
+          "q": "filing-audit 的 Rust 测试 fixture 怎么组织？",
+          "answer": "inline 字符串 fixture：测试内临时 scratch 目录现写 _brain-filing-rules.json + 带 frontmatter 的 SKILL.md",
+          "note": "同 routing-eval Q4 决策；不提交固定 fixture 文件"
+        },
+        {
+          "q": "Rust 落地文件与复用点？",
+          "answer": "crates/zbrain-core/src/skill_resolver/filing_audit.rs（镜像 routing_eval.rs）；复用既有 parse_skill_frontmatter；IssueType::FilingMissingWritesTo/FilingUnknownDirectory 已预留",
+          "note": "TS src/core/filing-audit.ts 本切片不删（仍被 TS check-resolvable.ts 消费），归 1-6-5-9 整删"
+        }
+      ],
       "notes": ""
     },
     "1-6-5-8": {
@@ -1498,11 +1524,51 @@
       "children": [],
       "decisions": [],
       "notes": ""
+    },
+    "1-6-5-7-1": {
+      "id": "1-6-5-7-1",
+      "label": "loadFilingRules + FilingRulesDoc/FilingRule 类型 + normalizeDir + allowedDirectories Rust 化",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-6-5-7",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-5-7-2": {
+      "id": "1-6-5-7-2",
+      "label": "runFilingAudit Rust 化 (scan + writes_pages 过滤 + 两类 warning) + FilingIssue/FilingReport 类型",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-6-5-7",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-5-7-3": {
+      "id": "1-6-5-7-3",
+      "label": "接 Check 6 进 check_resolvable() 为 warnings (FilingMissingWritesTo/FilingUnknownDirectory, 仅当 _brain-filing-rules.json 存在)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-6-5-7",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-5-7-4": {
+      "id": "1-6-5-7-4",
+      "label": "typecheck baseline 门 + E2E + 提交 1-6-5-7",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-6-5-7",
+      "children": [],
+      "decisions": [],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-20 11:11:58",
+    "updated": "2026-07-20 12:11:05",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
