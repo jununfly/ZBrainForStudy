@@ -2673,6 +2673,19 @@ pub fn register_all(registry: &mut OperationRegistry) {
     registry.register(TraverseGraphOperation);
     registry.register(AddTimelineEntryOperation);
     registry.register(GetTimelineOperation);
+
+    // 1-6-7-3 — sources(4) + facts(3) + anomalies(1) + health-stats(3)
+    registry.register(SourcesAddOperation);
+    registry.register(SourcesListOperation);
+    registry.register(SourcesStatusOperation);
+    registry.register(SourcesRemoveOperation);
+    registry.register(ForgetFactOperation);
+    registry.register(ExtractFactsOperation);
+    registry.register(FindContradictionsOperation);
+    registry.register(FindAnomaliesOperation);
+    registry.register(GetHealthOperation);
+    registry.register(GetStatsOperation);
+    registry.register(GetRecentSalienceOperation);
 }
 
 // ── SoftDeletePage Operation (Slice 1-6-7-1) ──────────────────────────────
@@ -3730,6 +3743,667 @@ impl TypedOperation for GetTimelineOperation {
             slug: params.slug,
             entries,
         })
+    }
+}
+
+// ─── Sources (4) ────────────────────────────────────────────────────────────
+// Wraps engine source CRUD. The bare `health`/`salience`/`stats` names are
+// human-CLI cliHints only (see operations.ts) and are NOT agent tools, so
+// only `get_health`/`get_stats`/`get_recent_salience` are registered below.
+
+/// Create a new source.
+#[derive(Debug, Clone)]
+pub struct SourcesAddOperation;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct SourcesAddParams {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub config: Option<serde_json::Value>,
+}
+
+impl ValidateParams for SourcesAddParams {
+    fn validate(&self) -> OperationResult<()> {
+        if self.id.trim().is_empty() {
+            return Err(OperationError::invalid_params("id must not be empty"));
+        }
+        if self.name.trim().is_empty() {
+            return Err(OperationError::invalid_params("name must not be empty"));
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TypedOperation for SourcesAddOperation {
+    type Params = SourcesAddParams;
+    type Output = crate::engine::SourceRow;
+
+    fn name(&self) -> &'static str {
+        "sources_add"
+    }
+    fn description(&self) -> &'static str {
+        "Create a new source."
+    }
+    fn mutating(&self) -> bool {
+        true
+    }
+    fn required_scope(&self) -> &'static str {
+        "write"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "string", "description": "Source id (lowercase, hyphenated)" },
+                "name": { "type": "string", "description": "Human-friendly name" },
+                "config": { "type": "object", "description": "Optional source config" }
+            },
+            "required": ["id", "name"]
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let created = engine
+            .create_source(&crate::engine::CreateSourceInput {
+                id: params.id,
+                name: params.name,
+                config: params.config,
+            })
+            .await?;
+        Ok(created)
+    }
+}
+
+/// List sources.
+#[derive(Debug, Clone)]
+pub struct SourcesListOperation;
+
+#[derive(Debug, serde::Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct SourcesListParams {
+    #[serde(default)]
+    pub include_archived: Option<bool>,
+}
+
+impl ValidateParams for SourcesListParams {
+    fn validate(&self) -> OperationResult<()> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TypedOperation for SourcesListOperation {
+    type Params = SourcesListParams;
+    type Output = Vec<crate::engine::SourceRow>;
+
+    fn name(&self) -> &'static str {
+        "sources_list"
+    }
+    fn description(&self) -> &'static str {
+        "List all sources."
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "include_archived": { "type": "boolean", "description": "Include archived sources" }
+            }
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let sources = engine
+            .list_sources(params.include_archived.unwrap_or(false))
+            .await?;
+        Ok(sources)
+    }
+}
+
+/// Get a single source's status/config.
+#[derive(Debug, Clone)]
+pub struct SourcesStatusOperation;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct SourcesStatusParams {
+    pub id: String,
+}
+
+impl ValidateParams for SourcesStatusParams {
+    fn validate(&self) -> OperationResult<()> {
+        if self.id.trim().is_empty() {
+            return Err(OperationError::invalid_params("id must not be empty"));
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TypedOperation for SourcesStatusOperation {
+    type Params = SourcesStatusParams;
+    type Output = crate::engine::SourceRow;
+
+    fn name(&self) -> &'static str {
+        "sources_status"
+    }
+    fn description(&self) -> &'static str {
+        "Get a source's status and config."
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": { "id": { "type": "string" } },
+            "required": ["id"]
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let source = engine
+            .get_source(&params.id)
+            .await?
+            .ok_or_else(|| OperationError::invalid_params(format!("source not found: {}", params.id)))?;
+        Ok(source)
+    }
+}
+
+/// Remove (archive) a source.
+#[derive(Debug, Clone)]
+pub struct SourcesRemoveOperation;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct SourcesRemoveParams {
+    pub id: String,
+}
+
+impl ValidateParams for SourcesRemoveParams {
+    fn validate(&self) -> OperationResult<()> {
+        if self.id.trim().is_empty() {
+            return Err(OperationError::invalid_params("id must not be empty"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourcesRemoveOutput {
+    pub removed: bool,
+}
+
+#[async_trait]
+impl TypedOperation for SourcesRemoveOperation {
+    type Params = SourcesRemoveParams;
+    type Output = SourcesRemoveOutput;
+
+    fn name(&self) -> &'static str {
+        "sources_remove"
+    }
+    fn description(&self) -> &'static str {
+        "Archive (soft-delete) a source."
+    }
+    fn mutating(&self) -> bool {
+        true
+    }
+    fn required_scope(&self) -> &'static str {
+        "write"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": { "id": { "type": "string" } },
+            "required": ["id"]
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let removed = engine.delete_source(&params.id).await?;
+        Ok(SourcesRemoveOutput { removed })
+    }
+}
+
+// ─── Facts (3) ─────────────────────────────────────────────────────────────
+// NOTE: TS `extract_facts` is an LLM extraction pipeline (Haiku + sanitise +
+// dedup) and `find_contradictions` reads the `eval_contradictions_runs` report
+// table. Rust has neither yet, so these two are simplified stand-ins that wrap
+// the available engine facts methods (`insert_fact` / `get_facts_health`).
+// `forget_fact` maps cleanly to `expire_fact`. The LLM pipeline + contradiction
+// probe are tracked for a later dedicated slice.
+
+/// Forget (expire) a fact.
+#[derive(Debug, Clone)]
+pub struct ForgetFactOperation;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ForgetFactParams {
+    pub fact_id: i64,
+}
+
+impl ValidateParams for ForgetFactParams {
+    fn validate(&self) -> OperationResult<()> {
+        Ok(())
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForgetFactOutput {
+    pub removed: bool,
+}
+
+#[async_trait]
+impl TypedOperation for ForgetFactOperation {
+    type Params = ForgetFactParams;
+    type Output = ForgetFactOutput;
+
+    fn name(&self) -> &'static str {
+        "forget_fact"
+    }
+    fn description(&self) -> &'static str {
+        "Expire (forget) a fact by id."
+    }
+    fn mutating(&self) -> bool {
+        true
+    }
+    fn required_scope(&self) -> &'static str {
+        "write"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": { "fact_id": { "type": "integer" } },
+            "required": ["fact_id"]
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let removed = engine.expire_fact(&ctx.source_id, params.fact_id).await?;
+        Ok(ForgetFactOutput { removed })
+    }
+}
+
+/// Extract facts — simplified stand-in. Accepts a pre-extracted fact claim and
+/// inserts it via `engine.insert_fact`. The TS LLM extraction pipeline
+/// (sanitise + Haiku + dedup) is not ported here yet.
+#[derive(Debug, Clone)]
+pub struct ExtractFactsOperation;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ExtractFactsParams {
+    pub fact: String,
+    #[serde(default)]
+    pub entity_slug: Option<String>,
+    #[serde(default)]
+    pub context: Option<String>,
+}
+
+impl ValidateParams for ExtractFactsParams {
+    fn validate(&self) -> OperationResult<()> {
+        if self.fact.trim().is_empty() {
+            return Err(OperationError::invalid_params("fact must not be empty"));
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TypedOperation for ExtractFactsOperation {
+    type Params = ExtractFactsParams;
+    type Output = crate::types::FactInsertStatus;
+
+    fn name(&self) -> &'static str {
+        "extract_facts"
+    }
+    fn description(&self) -> &'static str {
+        "Insert a fact into the per-source hot memory (simplified: pre-extracted claim)."
+    }
+    fn mutating(&self) -> bool {
+        true
+    }
+    fn required_scope(&self) -> &'static str {
+        "write"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "fact": { "type": "string", "description": "The fact claim text (pre-extracted)" },
+                "entity_slug": { "type": "string", "description": "Optional canonical entity slug" },
+                "context": { "type": "string", "description": "Optional context" }
+            },
+            "required": ["fact"]
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let entity_slug = params.entity_slug.clone();
+        let status = engine
+            .insert_fact(
+                &ctx.source_id,
+                entity_slug.as_deref().unwrap_or(""),
+                &crate::types::NewFact {
+                    fact: params.fact,
+                    kind: None,
+                    entity_slug: params.entity_slug,
+                    visibility: None,
+                    context: params.context,
+                    valid_from: None,
+                    valid_until: None,
+                    source: "mcp:extract_facts".to_string(),
+                    source_session: None,
+                    confidence: None,
+                    notability: None,
+                    claim_metric: None,
+                    claim_value: None,
+                    claim_unit: None,
+                    claim_period: None,
+                    event_type: None,
+                },
+            )
+            .await?;
+        Ok(status)
+    }
+}
+
+/// Find contradictions — simplified stand-in. Rust has no contradictions probe
+/// yet (TS reads `eval_contradictions_runs.report_json`); this returns the
+/// facts-domain health snapshot as a proxy.
+#[derive(Debug, Clone)]
+pub struct FindContradictionsOperation;
+
+#[derive(Debug, serde::Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct FindContradictionsParams {
+    #[serde(default)]
+    pub slug: Option<String>,
+    #[serde(default)]
+    pub severity: Option<String>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+impl ValidateParams for FindContradictionsParams {
+    fn validate(&self) -> OperationResult<()> {
+        Ok(())
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FindContradictionsOutput {
+    pub health: crate::types::FactsHealth,
+    pub note: String,
+}
+
+#[async_trait]
+impl TypedOperation for FindContradictionsOperation {
+    type Params = FindContradictionsParams;
+    type Output = FindContradictionsOutput;
+
+    fn name(&self) -> &'static str {
+        "find_contradictions"
+    }
+    fn description(&self) -> &'static str {
+        "Facts-domain health snapshot (Rust has no contradictions probe yet)."
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "slug": { "type": "string" },
+                "severity": { "type": "string", "enum": ["low", "medium", "high"] },
+                "limit": { "type": "integer" }
+            }
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let _ = params; // slug/severity/limit filtering not available without the contradictions probe
+        let engine = ctx.engine()?;
+        let health = engine.get_facts_health(&ctx.source_id).await?;
+        Ok(FindContradictionsOutput {
+            health,
+            note: "Rust has no contradictions probe yet; returning facts health as a proxy.".to_string(),
+        })
+    }
+}
+
+// ─── Anomalies (1) ──────────────────────────────────────────────────────────
+
+/// Find anomalies (cohort traffic deviations).
+#[derive(Debug, Clone)]
+pub struct FindAnomaliesOperation;
+
+#[derive(Debug, serde::Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct FindAnomaliesParams {
+    #[serde(default)]
+    pub since: Option<String>,
+    #[serde(default)]
+    pub lookback_days: Option<u32>,
+    #[serde(default)]
+    pub sigma: Option<f64>,
+}
+
+impl ValidateParams for FindAnomaliesParams {
+    fn validate(&self) -> OperationResult<()> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TypedOperation for FindAnomaliesOperation {
+    type Params = FindAnomaliesParams;
+    type Output = Vec<crate::anomaly::AnomalyResult>;
+
+    fn name(&self) -> &'static str {
+        "find_anomalies"
+    }
+    fn description(&self) -> &'static str {
+        "Detect cohort traffic anomalies."
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "since": { "type": "string", "description": "Target day YYYY-MM-DD" },
+                "lookback_days": { "type": "integer", "description": "Baseline window days" },
+                "sigma": { "type": "number", "description": "Sigma threshold multiplier" }
+            }
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let anomalies = engine
+            .find_anomalies(crate::anomaly::AnomaliesOpts {
+                since: params.since,
+                lookback_days: params.lookback_days,
+                sigma: params.sigma,
+            })
+            .await?;
+        Ok(anomalies)
+    }
+}
+
+// ─── Health / stats (3) ─────────────────────────────────────────────────────
+
+/// Brain health snapshot.
+#[derive(Debug, Clone)]
+pub struct GetHealthOperation;
+
+#[derive(Debug, serde::Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct GetHealthParams {}
+
+impl ValidateParams for GetHealthParams {
+    fn validate(&self) -> OperationResult<()> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TypedOperation for GetHealthOperation {
+    type Params = GetHealthParams;
+    type Output = crate::autopilot::brain_score::BrainHealth;
+
+    fn name(&self) -> &'static str {
+        "get_health"
+    }
+    fn description(&self) -> &'static str {
+        "Brain health snapshot."
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({ "type": "object", "properties": {} })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let _ = params;
+        let engine = ctx.engine()?;
+        let health = engine.get_health().await?;
+        Ok(health)
+    }
+}
+
+/// Minion job queue stats.
+#[derive(Debug, Clone)]
+pub struct GetStatsOperation;
+
+#[derive(Debug, serde::Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct GetStatsParams {
+    #[serde(default)]
+    pub since: Option<String>,
+}
+
+impl ValidateParams for GetStatsParams {
+    fn validate(&self) -> OperationResult<()> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TypedOperation for GetStatsOperation {
+    type Params = GetStatsParams;
+    type Output = crate::minions::types::QueueStats;
+
+    fn name(&self) -> &'static str {
+        "get_stats"
+    }
+    fn description(&self) -> &'static str {
+        "Minion job queue statistics."
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": { "since": { "type": "string", "description": "RFC3339 lower bound" } }
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let stats = engine.get_stats(&params.since.unwrap_or_default()).await?;
+        Ok(stats)
+    }
+}
+
+/// Recent salience entries.
+#[derive(Debug, Clone)]
+pub struct GetRecentSalienceOperation;
+
+#[derive(Debug, serde::Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct GetRecentSalienceParams {
+    #[serde(default)]
+    pub days: Option<u32>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub slug_prefix: Option<String>,
+}
+
+impl ValidateParams for GetRecentSalienceParams {
+    fn validate(&self) -> OperationResult<()> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TypedOperation for GetRecentSalienceOperation {
+    type Params = GetRecentSalienceParams;
+    type Output = Vec<crate::types::SalienceResult>;
+
+    fn name(&self) -> &'static str {
+        "get_recent_salience"
+    }
+    fn description(&self) -> &'static str {
+        "Recent salience entries."
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "days": { "type": "integer" },
+                "limit": { "type": "integer" },
+                "slug_prefix": { "type": "string" }
+            }
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let salience = engine
+            .get_recent_salience(
+                params.days.unwrap_or(7),
+                params.limit.unwrap_or(50),
+                params.slug_prefix.as_deref(),
+            )
+            .await?;
+        Ok(salience)
     }
 }
 
@@ -7472,7 +8146,7 @@ Outro."#;
         }
 
         #[test]
-        fn register_all_registers_twenty_four_ops() {
+        fn register_all_registers_thirty_five_ops() {
             let mut registry = OperationRegistry::new();
             register_all(&mut registry);
             let names = registry.operation_names();
@@ -7502,6 +8176,18 @@ Outro."#;
                 "traverse_graph",
                 "add_timeline_entry",
                 "get_timeline",
+                // 1-6-7-3: sources / facts / anomalies / health-stats
+                "sources_add",
+                "sources_list",
+                "sources_status",
+                "sources_remove",
+                "forget_fact",
+                "extract_facts",
+                "find_contradictions",
+                "find_anomalies",
+                "get_health",
+                "get_stats",
+                "get_recent_salience",
             ] {
                 assert!(names.contains(&n), "missing op: {}", n);
             }
@@ -7752,6 +8438,105 @@ Outro."#;
                 .await;
             assert!(res.is_ok(), "got: {:?}", res);
             assert!(res.unwrap()["timestamps"]["p/one"].is_string());
+        }
+
+        // ── 1-6-7-3 domain ops: sources / facts / anomalies / health-stats ──
+
+        #[tokio::test]
+        async fn sources_add_list_status_remove_roundtrip() {
+            let (registry, ctx) = page_ctx().await;
+
+            let res = registry
+                .dispatch_json("sources_add", &ctx, serde_json::json!({ "id": "src-a", "name": "Source A" }))
+                .await;
+            assert!(res.is_ok(), "sources_add got: {:?}", res);
+            assert_eq!(res.unwrap()["id"].as_str().unwrap(), "src-a");
+
+            let res = registry
+                .dispatch_json("sources_list", &ctx, serde_json::json!({}))
+                .await;
+            assert!(res.is_ok());
+            let out = res.unwrap();
+            let arr = out.as_array().unwrap();
+            assert!(arr.iter().any(|s| s["id"].as_str() == Some("src-a")));
+
+            let res = registry
+                .dispatch_json("sources_status", &ctx, serde_json::json!({ "id": "src-a" }))
+                .await;
+            assert!(res.is_ok());
+            assert_eq!(res.unwrap()["name"].as_str().unwrap(), "Source A");
+
+            let res = registry
+                .dispatch_json("sources_remove", &ctx, serde_json::json!({ "id": "src-a" }))
+                .await;
+            assert!(res.is_ok());
+            assert_eq!(res.unwrap()["removed"], true);
+        }
+
+        #[tokio::test]
+        async fn sources_status_missing_returns_error() {
+            let (registry, ctx) = page_ctx().await;
+            let res = registry
+                .dispatch_json("sources_status", &ctx, serde_json::json!({ "id": "nope" }))
+                .await;
+            assert!(res.is_err());
+        }
+
+        #[tokio::test]
+        async fn extract_facts_inserts_and_forget_fact_expires() {
+            let (registry, ctx) = page_ctx().await;
+
+            let res = registry
+                .dispatch_json(
+                    "extract_facts",
+                    &ctx,
+                    serde_json::json!({ "fact": "Alice likes Rust", "entity_slug": "people/alice" }),
+                )
+                .await;
+            assert!(res.is_ok(), "extract_facts got: {:?}", res);
+            let status = res.unwrap().as_str().unwrap_or("").to_string();
+            assert!(
+                ["inserted", "duplicate", "superseded"].contains(&status.as_str()),
+                "unexpected status: {}",
+                status
+            );
+
+            let res = registry
+                .dispatch_json("forget_fact", &ctx, serde_json::json!({ "fact_id": 999 }))
+                .await;
+            assert!(res.is_ok());
+            assert_eq!(res.unwrap()["removed"], false);
+        }
+
+        #[tokio::test]
+        async fn find_contradictions_returns_health_proxy() {
+            let (registry, ctx) = page_ctx().await;
+            let res = registry
+                .dispatch_json("find_contradictions", &ctx, serde_json::json!({}))
+                .await;
+            assert!(res.is_ok(), "got: {:?}", res);
+            let out = res.unwrap();
+            assert!(out["health"].is_object());
+            assert!(out["note"].as_str().unwrap().contains("proxy"));
+        }
+
+        #[tokio::test]
+        async fn find_anomalies_dispatches() {
+            let (registry, ctx) = page_ctx().await;
+            let res = registry
+                .dispatch_json("find_anomalies", &ctx, serde_json::json!({}))
+                .await;
+            assert!(res.is_ok(), "got: {:?}", res);
+            assert!(res.unwrap().as_array().is_some());
+        }
+
+        #[tokio::test]
+        async fn health_stats_salience_dispatch() {
+            let (registry, ctx) = page_ctx().await;
+            for op in ["get_health", "get_stats", "get_recent_salience"] {
+                let res = registry.dispatch_json(op, &ctx, serde_json::json!({})).await;
+                assert!(res.is_ok(), "{} got: {:?}", op, res);
+            }
         }
 
         #[tokio::test]

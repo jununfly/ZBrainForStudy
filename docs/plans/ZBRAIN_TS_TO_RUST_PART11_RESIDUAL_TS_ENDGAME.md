@@ -57,7 +57,7 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-07-20 16:36:06
+> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-07-20 17:03:27
 
 [~][X+] 1. Part11 — 残留 TS 收尾 (综合容器)
 ├── [ ][X+] 1-1. skillpack / skillify 迁移 (27+ 文件 Schema/Subagent 包)
@@ -95,10 +95,14 @@
 
 ### 当前施工：1-6-7. operations.ts 替换式迁移 (Rust OperationRegistry 为继任者): 107 op 逐一对齐, 随迁随删 TS; 覆盖审计见 docs/plans/OPERATIONS_TS_TO_RUST_AUDIT.md
 
+**决策：**
+- Q: 缺口 ops 处理策略（审计 per-op 不可信，探查发现 3 处硬伤） → 就地补方法：每个 3…8 切片遇到无 engine 方法的 op，当场补 engine 方法 + 包成 Operation，不延后到独立切片 (探查修正：①schema-pack(9)实为 COMMAND_ELSEWHERE(Part10 Phase12 已100%完成)→从 operations.ts 摘除非 wrap；②recall 实为 TS-only(无 Rust CLI)→必须迁非摘除；③jobs/minions 仅6/12有方法，缺 get_job_progress/replay_job/send_job_message/submit_job/submit_agent/subagent；④NET_NEW=file_upload/search_by_image/get_brain_identity 零 Rust 实现。故不设 1-6-7-10，缺口在各自切片内联消化。)
+- Q: 执行节奏 → 一次推完 1-6-7-3…8 六切片：每切片三道门(core test/mcp test/cli build)全绿后独立 commit，切片间不打断；终局 1-6-7-9 下次再开 (用户选『一次推完』。)
+
 **当前子树：**
 ├── [x][Y+] 1-6-7-1. 统一 live registry 汇总 + tracer-bullet: 汇总 operation.rs 碎片注册为全量 register_all, page 剩余 WRAP 首批迁 (update_slug/rewrite_links/soft_delete/page timestamps)
 ├── [x][Y+] 1-6-7-2. 标注/图域迁移: tags(3)+links(5)+timeline(2)=10 op 迁入 register_all (8 纯 WRAP + traverse_graph 形状适配 + get_timeline wrap get_page + add_timeline_entry 日期校验)
-├── [ ][Y+] 1-6-7-3. sources(4)+facts(3)+anomalies(1)+health-stats(6) 域 wrap (engine 已有方法)
+├── [x][Y+] 1-6-7-3. sources(4)+facts(3)+anomalies(1)+health-stats(3)=11 op 迁入 register_all (health-stats 实为3: health/salience/stats 仅是 cliHints 别名; facts 2 个简化 stand-in)
 ├── [ ][Y+] 1-6-7-4. jobs-minions 域 wrap (12 op, engine job 方法)
 ├── [ ][Y+] 1-6-7-5. ingestion(4)+files-attachments(5) 域: 含 file_upload NET_NEW 校验器 validateUploadPath 信任边界
 ├── [ ][Y+] 1-6-7-6. schema-pack 域 (9 op: 多已迁命令→从 operations.ts 摘除, 少数 wrap)

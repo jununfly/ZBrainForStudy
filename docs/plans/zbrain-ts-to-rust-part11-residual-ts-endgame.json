@@ -1711,7 +1711,18 @@
         "1-6-7-8",
         "1-6-7-9"
       ],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "缺口 ops 处理策略（审计 per-op 不可信，探查发现 3 处硬伤）",
+          "answer": "就地补方法：每个 3…8 切片遇到无 engine 方法的 op，当场补 engine 方法 + 包成 Operation，不延后到独立切片",
+          "note": "探查修正：①schema-pack(9)实为 COMMAND_ELSEWHERE(Part10 Phase12 已100%完成)→从 operations.ts 摘除非 wrap；②recall 实为 TS-only(无 Rust CLI)→必须迁非摘除；③jobs/minions 仅6/12有方法，缺 get_job_progress/replay_job/send_job_message/submit_job/submit_agent/subagent；④NET_NEW=file_upload/search_by_image/get_brain_identity 零 Rust 实现。故不设 1-6-7-10，缺口在各自切片内联消化。"
+        },
+        {
+          "q": "执行节奏",
+          "answer": "一次推完 1-6-7-3…8 六切片：每切片三道门(core test/mcp test/cli build)全绿后独立 commit，切片间不打断；终局 1-6-7-9 下次再开",
+          "note": "用户选『一次推完』。"
+        }
+      ],
       "notes": ""
     },
     "1-6-7-1": {
@@ -1767,13 +1778,13 @@
     },
     "1-6-7-3": {
       "id": "1-6-7-3",
-      "label": "sources(4)+facts(3)+anomalies(1)+health-stats(6) 域 wrap (engine 已有方法)",
-      "status": "pending",
+      "label": "sources(4)+facts(3)+anomalies(1)+health-stats(3)=11 op 迁入 register_all (health-stats 实为3: health/salience/stats 仅是 cliHints 别名; facts 2 个简化 stand-in)",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-6-7",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "实际迁 11 op 非审计标 14：health-stats 的 health/salience/stats 在 operations.ts 仅是 cliHints 别名，agent registry 只需 get_health/get_stats/get_recent_salience。facts(3) 偏离：forget_fact→expire_fact 干净；extract_facts 简化包 insert_fact(接预抽取文本，Rust 无 LLM 抽取流水线)；find_contradictions 简化包 get_facts_health 作代理(Rust 无 eval 矛盾探测)。两简化待专项切片补。"
     },
     "1-6-7-4": {
       "id": "1-6-7-4",
@@ -1838,7 +1849,7 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-20 16:36:06",
+    "updated": "2026-07-20 17:03:27",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
