@@ -17,7 +17,6 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 
-import { checkResolvable } from '../../../src/core/check-resolvable.ts';
 import { autoDetectSkillsDir } from '../../../src/core/repo-root.ts';
 import { loadOrDeriveManifest } from '../../../src/core/skill-manifest.ts';
 import {
@@ -25,11 +24,15 @@ import {
   planInstall,
 } from '../../../src/core/skillpack/installer.ts';
 import { findZbrainRoot } from '../../../src/core/skillpack/bundle.ts';
+import { resolveZbrainBin } from '../../../src/core/zbrain-bin.ts';
 
 const FIXTURE = join(import.meta.dir, '..', 'fixtures', 'openclaw-reference-minimal');
 const SKILLS_DIR = join(FIXTURE, 'skills');
 const REPO = join(import.meta.dir, '..', '..');
-const CLI = join(REPO, 'src', 'cli.ts');
+// Rust binary is the canonical entrypoint for `check-resolvable` (the TS
+// `src/cli.ts` does NOT proxy Rust commands). Resolve it from the build
+// tree / PATH via the shared helper.
+const CLI = resolveZbrainBin();
 
 const created: string[] = [];
 afterEach(() => {
@@ -70,30 +73,37 @@ describe('OpenClaw reference workspace compat (W1 + W2 + W3)', () => {
   });
 
   it('checkResolvable accepts AGENTS.md at workspace root and runs all checks', () => {
-    const report = checkResolvable(SKILLS_DIR);
+    const r = spawnSync(CLI, [ 'check-resolvable', '--json', '--skills-dir', SKILLS_DIR], {
+      encoding: 'utf-8', cwd: REPO, maxBuffer: 10 * 1024 * 1024,
+    });
+    expect(r.status).toBe(0);
+    const env = JSON.parse(r.stdout);
     // Top-level ok is errors-only (D-CX-3) — no unreachable/missing-file errors.
-    expect(report.ok).toBe(true);
-    expect(report.errors.length).toBe(0);
+    expect(env.ok).toBe(true);
+    expect(env.report.errors.length).toBe(0);
     // All 4 skills should be reachable via AGENTS.md rows.
-    expect(report.summary.total_skills).toBe(4);
-    expect(report.summary.reachable).toBe(4);
-    expect(report.summary.unreachable).toBe(0);
+    expect(env.report.summary.total_skills).toBe(4);
+    expect(env.report.summary.reachable).toBe(4);
+    expect(env.report.summary.unreachable).toBe(0);
   });
 
   it('brain-ops declares writes_pages+writes_to — filing audit clean', () => {
-    const report = checkResolvable(SKILLS_DIR);
-    const filing = report.warnings.filter(w =>
-      w.type === 'filing_missing_writes_to' || w.type === 'filing_unknown_directory',
+    const r = spawnSync(CLI, [ 'check-resolvable', '--json', '--skills-dir', SKILLS_DIR], {
+      encoding: 'utf-8', cwd: REPO, maxBuffer: 10 * 1024 * 1024,
+    });
+    expect(r.status).toBe(0);
+    const env = JSON.parse(r.stdout);
+    const filing = env.report.warnings.filter(
+      (w: { type: string }) =>
+        w.type === 'filing_missing_writes_to' || w.type === 'filing_unknown_directory',
     );
     expect(filing).toEqual([]);
   });
 
   it('CLI subprocess: zbrain check-resolvable --json --skills-dir FIXTURE clean', () => {
-    const r = spawnSync(
-      'bun',
-      [CLI, 'check-resolvable', '--json', '--skills-dir', SKILLS_DIR],
-      { encoding: 'utf-8', cwd: REPO, maxBuffer: 10 * 1024 * 1024 },
-    );
+    const r = spawnSync(CLI, ['check-resolvable', '--json', '--skills-dir', SKILLS_DIR], {
+      encoding: 'utf-8', cwd: REPO, maxBuffer: 10 * 1024 * 1024,
+    });
     expect(r.status).toBe(0);
     const env = JSON.parse(r.stdout);
     expect(env.ok).toBe(true);
@@ -102,7 +112,7 @@ describe('OpenClaw reference workspace compat (W1 + W2 + W3)', () => {
   });
 
   it('CLI subprocess: $OPENCLAW_WORKSPACE auto-detect without --skills-dir', () => {
-    const r = spawnSync('bun', [CLI, 'check-resolvable', '--json'], {
+    const r = spawnSync(CLI, [ 'check-resolvable', '--json'], {
       encoding: 'utf-8',
       cwd: REPO,
       env: { ...process.env, OPENCLAW_WORKSPACE: FIXTURE },

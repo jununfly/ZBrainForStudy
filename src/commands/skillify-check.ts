@@ -33,11 +33,7 @@ import {
   findReceiptForSkill,
   type ReceiptStatus,
 } from '../core/cross-modal-eval/receipt-name.ts';
-import { parseSkillFrontmatter } from '../core/skill-frontmatter.ts';
-import {
-  analyzeSkillBrainFirst,
-  buildBrainFirstSummaryLine,
-} from '../core/skill-brain-first.ts';
+import { resolveZbrainBin } from '../core/zbrain-bin.ts';
 
 interface CheckItem {
   name: string;
@@ -92,7 +88,7 @@ let _resolverCache: ResolverResult | null = null;
 function runCheckResolvableCached(): ResolverResult {
   if (_resolverCache) return _resolverCache;
   try {
-    const res = spawnSync('zbrain', ['check-resolvable', '--json'], {
+    const res = spawnSync(resolveZbrainBin(), ['check-resolvable', '--json'], {
       encoding: 'utf-8',
       maxBuffer: 10 * 1024 * 1024,
     });
@@ -358,45 +354,56 @@ function lookupCrossModalReceipt(
 /**
  * Item 12 helper: brain-first compliance gate.
  *
- * Reads the skill's SKILL.md, parses frontmatter, runs the pure
- * `analyzeSkillBrainFirst()` analyzer. A `warn` status fails this
- * required item; an `ok` status (any exemption or compliance reason)
- * passes.
+ * Delegates to the Rust `zbrain check-brain-first <path> --json` command
+ * (1-6-5-9-3), which runs the pure `analyze_skill_brain_first` analyzer and
+ * emits a stable JSON envelope. A `warn` status (or error) fails this
+ * REQUIRED item; an `ok` status (any exemption or compliance reason) passes.
  *
- * When SKILL.md doesn't exist, the check passes — item 1 already
- * reported the missing file; we don't pile-on with a second failure.
- *
- * Detail string follows the same shape as the doctor check message
- * (via `buildBrainFirstSummaryLine`) so the two surfaces stay
- * consistent for skill authors learning the contract.
+ * When the command is unavailable (binary not found / unreadable SKILL.md),
+ * the check passes best-effort — item 1 already reported a missing file, and
+ * we don't pile-on with a second failure. The detail string mirrors the
+ * doctor check message (`summary_line` + `fix_hint`) so the two surfaces
+ * stay consistent for skill authors learning the contract.
  */
 function checkBrainFirstCompliance(
   skillMdPath: string,
   skillName: string,
 ): { passed: boolean; detail: string } {
-  if (!existsSync(skillMdPath)) {
-    return { passed: true, detail: 'no SKILL.md — covered by item 1' };
+  const bin = resolveZbrainBin();
+  const res = spawnSync(bin, ['check-brain-first', skillMdPath, '--json'], {
+    encoding: 'utf-8',
+    maxBuffer: 10 * 1024 * 1024,
+  });
+  if (res.error || res.status === null) {
+    const reason = res.error?.message ?? 'spawn returned null status';
+    console.error(`[skillify] zbrain check-brain-first not runnable: ${reason}`);
+    return { passed: true, detail: `brain-first check unavailable: ${reason}` };
   }
-  let content: string;
-  try {
-    content = readFileSync(skillMdPath, 'utf-8');
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    // Read failure is best-effort — don't double-fail; item 1 / 2 would
-    // already report the problem. Pass with a note.
-    return { passed: true, detail: `could not read SKILL.md: ${msg}` };
-  }
-  const fm = parseSkillFrontmatter(content);
-  const analysis = analyzeSkillBrainFirst(content, skillName, fm);
-  if (analysis.status === 'ok') {
-    return { passed: true, detail: `${analysis.reason} (${skillName})` };
-  }
-  return {
-    passed: false,
-    detail:
-      buildBrainFirstSummaryLine(analysis) +
-      ` — Fix: add canonical Convention callout (see conventions/brain-first.md), or set 'brain_first: exempt' in frontmatter.`,
+  let env: {
+    error?: string;
+    status?: 'ok' | 'warn';
+    reason?: string;
+    summary_line?: string;
+    fix_hint?: string;
   };
+  try {
+    env = JSON.parse(res.stdout);
+  } catch {
+    return { passed: true, detail: 'brain-first check produced no JSON' };
+  }
+  if (env.error) {
+    // File missing/unreadable — item 1 covers it; pass best-effort.
+    return { passed: true, detail: `brain-first check skipped: ${env.error}` };
+  }
+  if (env.status === 'ok') {
+    return { passed: true, detail: `${env.reason ?? 'ok'} (${skillName})` };
+  }
+  // warn → fail the required item.
+  const detail =
+    (env.summary_line ??
+      `${skillName}: external lookup without brain-first compliance`) +
+    (env.fix_hint ? ` — ${env.fix_hint}` : '');
+  return { passed: false, detail };
 }
 
 function recentlyModified(root: string, days: number = 7): string[] {

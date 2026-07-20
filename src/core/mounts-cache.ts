@@ -27,7 +27,7 @@
 import { readFileSync, existsSync, mkdirSync, writeFileSync, rmSync, renameSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { parseResolverEntries } from './check-resolvable.ts';
+import { parseResolverEntries } from './resolver-entries.ts';
 import { loadSkillTriggerIndex } from './skill-trigger-index.ts';
 import { HOST_BRAIN_ID, type MountEntry } from './brain-registry.ts';
 

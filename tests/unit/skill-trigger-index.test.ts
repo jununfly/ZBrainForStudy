@@ -281,7 +281,7 @@ describe('loadSkillTriggerIndex — RESOLVER.md merge (UNION semantics)', () => 
 
 describe('entriesToResolverContent', () => {
   test('synthesized markdown is re-parseable by parseResolverEntries', async () => {
-    const { parseResolverEntries } = await import('../../src/core/check-resolvable.ts');
+    const { parseResolverEntries } = await import('../../src/core/resolver-entries.ts');
     const skillsDir = makeSkillsDir();
     writeSkill(skillsDir, 'query', skillWithTriggers('query', ['what is', 'tell me about']));
 
@@ -316,7 +316,7 @@ describe('entriesToResolverContent', () => {
   });
 
   test('GStack/external entries re-emit with prose skillPath (no backticks)', async () => {
-    const { parseResolverEntries } = await import('../../src/core/check-resolvable.ts');
+    const { parseResolverEntries } = await import('../../src/core/resolver-entries.ts');
     const synthesized = entriesToResolverContent([
       {
         trigger: 'review this plan',

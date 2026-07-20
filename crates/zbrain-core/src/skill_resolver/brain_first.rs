@@ -20,7 +20,8 @@ use crate::skill_resolver::skill_frontmatter::{
 };
 
 /// Why the analyzer landed where it did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BrainFirstReason {
     ExemptExplicit,
     ExemptNoExternal,
@@ -31,14 +32,15 @@ pub enum BrainFirstReason {
 }
 
 /// OK if any exemption or compliance path matched; Warn otherwise.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum BrainFirstStatus {
     Ok,
     Warn,
 }
 
 /// Result of analyzing one SKILL.md.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct BrainFirstAnalysis {
     pub skill: String,
     pub status: BrainFirstStatus,
@@ -342,6 +344,45 @@ pub fn analyze_skill_brain_first(
 }
 
 // ---------------------------------------------------------------------------
+// Message builders (mirror src/core/skill-brain-first.ts)
+// ---------------------------------------------------------------------------
+
+/// Canonical "Fix:" guidance appended to the warn detail by skillify-check
+/// and surfaced by the doctor. Kept as a standalone constant so both the JSON
+/// `fix_hint` field and the human output share one source of truth.
+pub fn build_brain_first_fix_hint() -> String {
+    "Fix: add canonical Convention callout (see conventions/brain-first.md), or set 'brain_first: exempt' in frontmatter.".to_string()
+}
+
+/// Build a human-readable per-skill summary line. Used by the doctor message,
+/// the skillify-check error output, and `zbrain check-brain-first`. Mirrors
+/// TS `buildBrainFirstSummaryLine` exactly so the two surfaces stay consistent.
+pub fn build_brain_first_summary_line(a: &BrainFirstAnalysis) -> String {
+    if matches!(a.status, BrainFirstStatus::Ok) {
+        let reason_s = serde_json::to_value(&a.reason)
+            .ok()
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| format!("{:?}", a.reason));
+        return format!("{}: ok ({})", a.skill, reason_s);
+    }
+    let mut parts: Vec<String> = Vec::new();
+    parts.push(format!(
+        "{}: external lookup ({}) without brain-first compliance",
+        a.skill,
+        a.external_patterns_matched.join(", ")
+    ));
+    if a.formerly_hardcoded_exempt {
+        parts.push(
+            "(was hardcoded-exempt in PR #1206 — opt out explicitly via 'brain_first: exempt' or run 'zbrain doctor --fix' to add the canonical callout)".to_string(),
+        );
+    }
+    if let Some(hint) = &a.typo_hint {
+        parts.push(format!("(typo: {hint})"));
+    }
+    parts.join(" ")
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -414,5 +455,28 @@ mod tests {
         let a = analyze_skill_brain_first(c, "a", fm.as_ref());
         assert!(a.typo_hint.is_some());
         assert!(a.typo_hint.unwrap().contains("drop the quotes"));
+    }
+
+    // --- 1-6-5-9-3: summary-line builder (mirrors TS buildBrainFirstSummaryLine) ---
+
+    #[test]
+    fn summary_line_ok_uses_snake_case_reason() {
+        let c = "---\nname: a\n---\n\nJust does local stuff.\n";
+        let fm = parse_skill_frontmatter(c);
+        let a = analyze_skill_brain_first(c, "my-skill", fm.as_ref());
+        assert_eq!(a.status, BrainFirstStatus::Ok);
+        assert_eq!(build_brain_first_summary_line(&a), "my-skill: ok (exempt_no_external)");
+    }
+
+    #[test]
+    fn summary_line_warn_lists_patterns_and_fix_hint() {
+        let c = "---\nname: a\n---\n\nUse web_search to look things up.\n";
+        let fm = parse_skill_frontmatter(c);
+        let a = analyze_skill_brain_first(c, "lookup-skill", fm.as_ref());
+        assert_eq!(a.status, BrainFirstStatus::Warn);
+        let line = build_brain_first_summary_line(&a);
+        assert!(line.starts_with("lookup-skill: external lookup (web_search) without brain-first compliance"));
+        // fix hint is a stable constant, surfaced separately by consumers.
+        assert!(build_brain_first_fix_hint().starts_with("Fix: add canonical Convention callout"));
     }
 }

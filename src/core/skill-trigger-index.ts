@@ -27,7 +27,7 @@
 
 import { existsSync, readFileSync, readdirSync, type Dirent } from 'fs';
 import { join } from 'path';
-import { parseResolverEntries, type ResolverEntry } from './check-resolvable.ts';
+import { parseResolverEntries, type ResolverEntry } from './resolver-entries.ts';
 import { findAllResolverFiles } from './resolver-filenames.ts';
 import { parseSkillFrontmatter } from './skill-frontmatter.ts';
 

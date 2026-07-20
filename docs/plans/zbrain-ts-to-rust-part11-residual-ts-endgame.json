@@ -1463,11 +1463,28 @@
     "1-6-5-9": {
       "id": "1-6-5-9",
       "label": "重接 doctor / skillify-check: 待这两个 TS 命令各自迁移切片时改用 Rust skill_resolver 核心, 删除 TS src/core/check-resolvable.ts 及其依赖栈",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "real_migrate",
       "parent": "1-6-5",
-      "children": [],
-      "decisions": [],
+      "children": [
+        "1-6-5-9-1",
+        "1-6-5-9-2",
+        "1-6-5-9-3",
+        "1-6-5-9-4",
+        "1-6-5-9-5"
+      ],
+      "decisions": [
+        {
+          "q": "删除范围",
+          "answer": "连 skillify-check 一起迁：抽 parseResolverEntries/ResolverEntry 到独立 resolver-entries.ts 重指 3 活消费者(mounts-cache/skill-trigger-index/routing-eval)；删 5 栈文件+commands/check-resolvable.ts+已死 routing-eval.ts core；删 skill-brain-first.ts(skillify-check 改接 Rust)；删 6 个 TS 测试文件；doctor 不动(从不 import 此栈)。",
+          "note": "用户 q-1 选 B"
+        },
+        {
+          "q": "brain-first 接法",
+          "answer": "独立子命令 zbrain check-brain-first <skill路径>：跑 analyze_skill_brain_first 输 JSON(status/reason/外部模式/typo_hint/summary_line/fix_hint)，Warn 时 exit 1。skillify-check 删 skill-brain-first.ts import，本地 checkBrainFirstCompliance 改 spawn 该命令读 JSON 映射 passed/detail。check-resolvable 契约不变(TS 里 brain-first 从不在 checkResolvable)。",
+          "note": "用户 q-2 选 A"
+        }
+      ],
       "notes": ""
     },
     "1-6-5-6-1": {
@@ -1625,11 +1642,61 @@
       "children": [],
       "decisions": [],
       "notes": ""
+    },
+    "1-6-5-9-1": {
+      "id": "1-6-5-9-1",
+      "label": "抽 parseResolverEntries/ResolverEntry 到独立 resolver-entries.ts 并重的 mounts-cache/skill-trigger-index/routing-eval 三处 import；删已死 core/routing-eval.ts",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-6-5-9",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-5-9-2": {
+      "id": "1-6-5-9-2",
+      "label": "删 TS 栈 (core/check-resolvable.ts + core/dry-fix.ts + core/filing-audit.ts + core/skill-fix-gates.ts + commands/check-resolvable.ts)；删 6 个 TS 测试 (check-resolvable* / dry-fix / filing-audit / routing-eval)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-6-5-9",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-5-9-3": {
+      "id": "1-6-5-9-3",
+      "label": "Rust check-brain-first 子命令 (brain_first.rs 加 build_brain_first_summary_line + run_check_brain_first；zbrain-cli/check_brain_first.rs + lib.rs dispatch；Warn exit 1)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-6-5-9",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-5-9-4": {
+      "id": "1-6-5-9-4",
+      "label": "skillify-check.ts 重接 (删 skill-brain-first.ts import+本地 checkBrainFirstCompliance，Item12 改 spawn zbrain check-brain-first 读 JSON；删 skill-brain-first.test.ts；doctor 不动) + 单测",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-6-5-9",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-5-9-5": {
+      "id": "1-6-5-9-5",
+      "label": "收尾 (typecheck baseline 0 new + bun test + cargo core/CLI + 提交 + roadmap render)",
+      "status": "in_progress",
+      "mode": "exploit",
+      "parent": "1-6-5-9",
+      "children": [],
+      "decisions": [],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-20 13:23:25",
+    "updated": "2026-07-20 14:18:16",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"

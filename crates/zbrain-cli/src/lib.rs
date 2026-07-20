@@ -12,6 +12,7 @@ pub mod update_check;
 pub mod models;
 pub mod apply_migrations;
 pub mod mounts;
+pub mod check_brain_first;
 pub mod check_resolvable;
 pub mod routing_eval;
 
@@ -352,6 +353,9 @@ pub enum Commands {
 
     /// Validate the skill tree: reachability, MECE overlap, DRY, gap detection
     CheckResolvable(check_resolvable::CheckResolvableArgs),
+
+    /// Check a single SKILL.md for brain-first compliance (v0.36.x gate)
+    CheckBrainFirst(check_brain_first::CheckBrainFirstArgs),
 
     /// Run Check 5 (routing eval) against every skills/<name>/routing-eval.jsonl fixture
     RoutingEval(routing_eval::RoutingEvalArgs),
@@ -1640,6 +1644,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Doctor(args) => run_doctor_command(args, cli.config.as_deref()).await?,
         Commands::CheckResolvable(args) => {
             check_resolvable::run_check_resolvable_command(&args, cli.config.as_deref()).await?
+        }
+        Commands::CheckBrainFirst(args) => {
+            check_brain_first::run_check_brain_first_command(&args)?
         }
         Commands::RoutingEval(args) => {
             routing_eval::run_routing_eval_command(&args, cli.config.as_deref()).await?
