@@ -22,7 +22,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use zbrain_core::engine::BrainEngine;
-use zbrain_core::operation::{CliOpts, OperationContext, OperationRegistry};
+use zbrain_core::operation::{register_all, CliOpts, OperationContext, OperationRegistry};
 use zbrain_core::progress::{ProgressMode, ProgressReporter};
 
 /// Doctor check status
@@ -1861,12 +1861,7 @@ async fn run_serve_mcp_command(args: ServeMcpArgs, _config_path: Option<&Path>) 
         .with_writer(std::io::stderr)
         .try_init();
 
-    use zbrain_core::operation::{
-        GetPageOperation, ThinkOperation, QueryOperation,
-        PutPageOperation, DeletePageOperation, RestorePageOperation,
-        PurgeDeletedPagesOperation, ListPagesOperation,
-        TakesListOperation, TakesSearchOperation,
-    };
+    // Live operation set assembled via `register_all` (zbrain_core::operation).
 
     // Load config for MCP settings (rate limit)
     let config_file = _config_path
@@ -1885,18 +1880,9 @@ async fn run_serve_mcp_command(args: ServeMcpArgs, _config_path: Option<&Path>) 
         std::env::set_var("ZBRAIN_SOURCE", source);
     }
 
-    // Build registry
+    // Build registry (all production ops, single source of truth)
     let mut registry = OperationRegistry::new();
-    registry.register(GetPageOperation);
-    registry.register(TakesListOperation);
-    registry.register(TakesSearchOperation);
-    registry.register(ThinkOperation);
-    registry.register(QueryOperation);
-    registry.register(PutPageOperation);
-    registry.register(DeletePageOperation);
-    registry.register(RestorePageOperation);
-    registry.register(PurgeDeletedPagesOperation);
-    registry.register(ListPagesOperation);
+    register_all(&mut registry);
 
     // Log startup to stderr (MCP protocol uses stdout for JSON-RPC)
     let source_id = std::env::var("ZBRAIN_SOURCE").unwrap_or_else(|_| "default".to_string());
@@ -1920,22 +1906,8 @@ async fn run_serve_mcp_command(args: ServeMcpArgs, _config_path: Option<&Path>) 
 
 /// Build the standard operation registry with all registered operations.
 fn build_operation_registry() -> Arc<OperationRegistry> {
-    use zbrain_core::operation::{
-        GetPageOperation, ThinkOperation, QueryOperation, PutPageOperation,
-        DeletePageOperation, RestorePageOperation, PurgeDeletedPagesOperation,
-        ListPagesOperation, TakesListOperation, TakesSearchOperation,
-    };
     let mut registry = OperationRegistry::new();
-    registry.register(GetPageOperation);
-    registry.register(TakesListOperation);
-    registry.register(TakesSearchOperation);
-    registry.register(ThinkOperation);
-    registry.register(QueryOperation);
-    registry.register(PutPageOperation);
-    registry.register(DeletePageOperation);
-    registry.register(RestorePageOperation);
-    registry.register(PurgeDeletedPagesOperation);
-    registry.register(ListPagesOperation);
+    register_all(&mut registry);
     Arc::new(registry)
 }
 
@@ -2198,16 +2170,7 @@ async fn run_operation(
     // Build operation registry early so thin-client check can query local_only status
     // from the canonical TypedOperation trait (not a hardcoded list).
     let mut registry = OperationRegistry::new();
-    registry.register(zbrain_core::operation::GetPageOperation);
-    registry.register(zbrain_core::operation::TakesListOperation);
-    registry.register(zbrain_core::operation::TakesSearchOperation);
-    registry.register(zbrain_core::operation::ThinkOperation);
-    registry.register(zbrain_core::operation::QueryOperation);
-    registry.register(zbrain_core::operation::PutPageOperation);
-    registry.register(zbrain_core::operation::DeletePageOperation);
-    registry.register(zbrain_core::operation::RestorePageOperation);
-    registry.register(zbrain_core::operation::PurgeDeletedPagesOperation);
-    registry.register(zbrain_core::operation::ListPagesOperation);
+    register_all(&mut registry);
 
     // Check for thin-client mode (v0.31.1 Issue #734)
     if config::is_thin_client(&config) {
@@ -7518,24 +7481,8 @@ mod tests {
 
     #[test]
     fn registry_dynamic_local_only_consistent_with_trait() {
-        use zbrain_core::operation::{
-            GetPageOperation, ThinkOperation, QueryOperation,
-            PutPageOperation, DeletePageOperation, RestorePageOperation,
-            PurgeDeletedPagesOperation, ListPagesOperation,
-            TakesListOperation, TakesSearchOperation,
-        };
-
         let mut registry = OperationRegistry::new();
-        registry.register(GetPageOperation);
-        registry.register(TakesListOperation);
-        registry.register(TakesSearchOperation);
-        registry.register(ThinkOperation);
-        registry.register(QueryOperation);
-        registry.register(PutPageOperation);
-        registry.register(DeletePageOperation);
-        registry.register(RestorePageOperation);
-        registry.register(PurgeDeletedPagesOperation);
-        registry.register(ListPagesOperation);
+        register_all(&mut registry);
 
         // local_only ops: must return true from both trait AND registry lookup
         for name in &["put_page", "delete_page", "restore_page", "purge_deleted_pages"] {

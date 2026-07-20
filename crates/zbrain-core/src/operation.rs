@@ -2633,6 +2633,324 @@ impl TypedOperation for TakesSearchOperation {
     }
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// Unified live registry (Slice 1-6-7-1)
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Register every production operation into `registry`.
+///
+/// Single source of truth for the live operation set. The CLI (`zbrain`)
+/// and the MCP server (`zbrain-mcp`) both call this instead of hand-listing
+/// operations, so new ports land in the live registry automatically.
+///
+/// Test-only fixture operations (the `AddTag*`/`UpdateSlug*` family defined
+/// inside `mod tests` below) are intentionally NOT registered here — they are
+/// promotion targets for their own domain slices (tags/links/timeline).
+pub fn register_all(registry: &mut OperationRegistry) {
+    registry.register(GetPageOperation);
+    registry.register(PutPageOperation);
+    registry.register(DeletePageOperation);
+    registry.register(RestorePageOperation);
+    registry.register(PurgeDeletedPagesOperation);
+    registry.register(ListPagesOperation);
+    registry.register(QueryOperation);
+    registry.register(ThinkOperation);
+    registry.register(TakesListOperation);
+    registry.register(TakesSearchOperation);
+    // — Page domain WRAP (first batch, slice 1-6-7-1) —
+    registry.register(SoftDeletePageOperation);
+    registry.register(RewriteLinksOperation);
+    registry.register(GetPageTimestampsOperation);
+    registry.register(RefreshPageBodyOperation);
+}
+
+// ── SoftDeletePage Operation (Slice 1-6-7-1) ──────────────────────────────
+
+/// Soft-delete a page by slug (keeps the row with `deleted_at` set).
+#[derive(Debug, Clone)]
+pub struct SoftDeletePageOperation;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct SoftDeletePageParams {
+    pub slug: String,
+}
+
+impl ValidateParams for SoftDeletePageParams {
+    fn validate(&self) -> OperationResult<()> {
+        validate_page_slug(&self.slug)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SoftDeletePageOutput {
+    pub deleted_slug: Option<String>,
+}
+
+#[async_trait]
+impl TypedOperation for SoftDeletePageOperation {
+    type Params = SoftDeletePageParams;
+    type Output = SoftDeletePageOutput;
+
+    fn name(&self) -> &'static str {
+        "soft_delete_page"
+    }
+
+    fn description(&self) -> &'static str {
+        "Soft-delete a page by slug, retaining the row (deleted_at set)."
+    }
+
+    fn local_only(&self) -> bool {
+        true
+    }
+
+    fn mutating(&self) -> bool {
+        true
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "slug": { "type": "string", "description": "Slug of the page to soft-delete" }
+            },
+            "required": ["slug"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let deleted = engine
+            .soft_delete_page(&params.slug, Some(&ctx.source_id))
+            .await?;
+        Ok(SoftDeletePageOutput { deleted_slug: deleted })
+    }
+}
+
+// ── RewriteLinks Operation (Slice 1-6-7-1) ─────────────────────────────────
+
+/// Rewrite links after a slug change. Explicit no-op in the current engine
+/// (links use integer page_id foreign keys), kept for contract parity.
+#[derive(Debug, Clone)]
+pub struct RewriteLinksOperation;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RewriteLinksParams {
+    pub old_slug: String,
+    pub new_slug: String,
+}
+
+impl ValidateParams for RewriteLinksParams {
+    fn validate(&self) -> OperationResult<()> {
+        validate_page_slug(&self.old_slug)?;
+        validate_page_slug(&self.new_slug)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RewriteLinksOutput {
+    pub rewritten: bool,
+}
+
+#[async_trait]
+impl TypedOperation for RewriteLinksOperation {
+    type Params = RewriteLinksParams;
+    type Output = RewriteLinksOutput;
+
+    fn name(&self) -> &'static str {
+        "rewrite_links"
+    }
+
+    fn description(&self) -> &'static str {
+        "Rewrite links pointing at `old_slug` to `new_slug`."
+    }
+
+    fn local_only(&self) -> bool {
+        true
+    }
+
+    fn mutating(&self) -> bool {
+        true
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "old_slug": { "type": "string", "description": "Current page slug" },
+                "new_slug": { "type": "string", "description": "New slug to repoint links to" }
+            },
+            "required": ["old_slug", "new_slug"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        engine
+            .rewrite_links(&params.old_slug, &params.new_slug)
+            .await?;
+        Ok(RewriteLinksOutput { rewritten: true })
+    }
+}
+
+// ── GetPageTimestamps Operation (Slice 1-6-7-1) ────────────────────────────
+
+/// Get created/updated timestamps for a batch of slugs.
+#[derive(Debug, Clone)]
+pub struct GetPageTimestampsOperation;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct GetPageTimestampsParams {
+    pub slugs: Vec<String>,
+}
+
+impl ValidateParams for GetPageTimestampsParams {
+    fn validate(&self) -> OperationResult<()> {
+        if self.slugs.is_empty() {
+            return Err(OperationError::invalid_params("`slugs` must not be empty"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetPageTimestampsOutput {
+    pub timestamps: std::collections::HashMap<String, String>,
+}
+
+#[async_trait]
+impl TypedOperation for GetPageTimestampsOperation {
+    type Params = GetPageTimestampsParams;
+    type Output = GetPageTimestampsOutput;
+
+    fn name(&self) -> &'static str {
+        "get_page_timestamps"
+    }
+
+    fn description(&self) -> &'static str {
+        "Get created/updated timestamps for a batch of page slugs."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "slugs": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Page slugs to fetch timestamps for"
+                }
+            },
+            "required": ["slugs"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let timestamps = engine.get_page_timestamps(&params.slugs).await?;
+        Ok(GetPageTimestampsOutput { timestamps })
+    }
+}
+
+// ── RefreshPageBody Operation (Slice 1-6-7-1) ─────────────────────────────
+
+/// Update `compiled_truth` / `timeline` / `content_hash` for an existing page.
+#[derive(Debug, Clone)]
+pub struct RefreshPageBodyOperation;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RefreshPageBodyParams {
+    pub slug: String,
+    pub compiled_truth: String,
+    pub timeline: serde_json::Value,
+    pub content_hash: String,
+}
+
+impl ValidateParams for RefreshPageBodyParams {
+    fn validate(&self) -> OperationResult<()> {
+        validate_page_slug(&self.slug)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshPageBodyOutput {
+    pub refreshed: bool,
+}
+
+#[async_trait]
+impl TypedOperation for RefreshPageBodyOperation {
+    type Params = RefreshPageBodyParams;
+    type Output = RefreshPageBodyOutput;
+
+    fn name(&self) -> &'static str {
+        "refresh_page_body"
+    }
+
+    fn description(&self) -> &'static str {
+        "Refresh compiled_truth / timeline / content_hash for a page."
+    }
+
+    fn local_only(&self) -> bool {
+        true
+    }
+
+    fn mutating(&self) -> bool {
+        true
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "slug": { "type": "string", "description": "Page slug" },
+                "compiled_truth": { "type": "string", "description": "New compiled truth" },
+                "timeline": { "type": "object", "description": "New timeline JSON" },
+                "content_hash": { "type": "string", "description": "New content hash" }
+            },
+            "required": ["slug", "compiled_truth", "timeline", "content_hash"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let args = crate::types::RefreshPageBodyArgs {
+            slug: params.slug,
+            source_id: ctx.source_id.clone(),
+            compiled_truth: params.compiled_truth,
+            timeline: params.timeline,
+            content_hash: params.content_hash,
+        };
+        engine.refresh_page_body(&args).await?;
+        Ok(RefreshPageBodyOutput { refreshed: true })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6348,6 +6666,118 @@ Outro."#;
             let result = registry.dispatch_tool_call("echo_tool", &ctx, params).await;
 
             assert!(result.meta.is_none(), "_meta should be None by default");
+        }
+    }
+
+    // ── Page WRAP ops (slice 1-6-7-1) ──────────────────────────────────────
+    mod page_ops_tests {
+        use super::*;
+        use crate::engine::{InMemoryEngine, PageInput};
+
+        async fn page_ctx() -> (OperationRegistry, OperationContext) {
+            let mut registry = OperationRegistry::new();
+            register_all(&mut registry);
+            let engine = InMemoryEngine::default();
+            let input = PageInput {
+                page_type: "note".to_string(),
+                title: "P".to_string(),
+                compiled_truth: "x".to_string(),
+                ..Default::default()
+            };
+            let _ = engine.put_page("p/one", None, &input).await;
+            let ctx = OperationContext::local_cli().with_engine(engine.into_arc());
+            (registry, ctx)
+        }
+
+        #[test]
+        fn register_all_registers_fourteen_ops() {
+            let mut registry = OperationRegistry::new();
+            register_all(&mut registry);
+            let names = registry.operation_names();
+            for n in [
+                "get_page",
+                "put_page",
+                "delete_page",
+                "restore_page",
+                "purge_deleted_pages",
+                "list_pages",
+                "query",
+                "think",
+                "takes_list",
+                "takes_search",
+                "soft_delete_page",
+                "rewrite_links",
+                "get_page_timestamps",
+                "refresh_page_body",
+            ] {
+                assert!(names.contains(&n), "missing op: {}", n);
+            }
+        }
+
+        #[tokio::test]
+        async fn soft_delete_page_dispatches() {
+            let (registry, ctx) = page_ctx().await;
+            let res = registry
+                .dispatch_json("soft_delete_page", &ctx, serde_json::json!({ "slug": "p/one" }))
+                .await;
+            assert!(res.is_ok(), "got: {:?}", res);
+            assert_eq!(res.unwrap()["deletedSlug"], "p/one");
+        }
+
+        #[tokio::test]
+        async fn rewrite_links_dispatches() {
+            let (registry, ctx) = page_ctx().await;
+            let res = registry
+                .dispatch_json(
+                    "rewrite_links",
+                    &ctx,
+                    serde_json::json!({ "old_slug": "p/one", "new_slug": "p/two" }),
+                )
+                .await;
+            assert!(res.is_ok(), "got: {:?}", res);
+            assert_eq!(res.unwrap()["rewritten"], true);
+        }
+
+        #[tokio::test]
+        async fn get_page_timestamps_dispatches() {
+            let (registry, ctx) = page_ctx().await;
+            let res = registry
+                .dispatch_json(
+                    "get_page_timestamps",
+                    &ctx,
+                    serde_json::json!({ "slugs": ["p/one"] }),
+                )
+                .await;
+            assert!(res.is_ok(), "got: {:?}", res);
+            assert!(res.unwrap()["timestamps"]["p/one"].is_string());
+        }
+
+        #[tokio::test]
+        async fn refresh_page_body_dispatches() {
+            let (registry, ctx) = page_ctx().await;
+            let res = registry
+                .dispatch_json(
+                    "refresh_page_body",
+                    &ctx,
+                    serde_json::json!({
+                        "slug": "p/one",
+                        "compiled_truth": "new",
+                        "timeline": { "a": 1 },
+                        "content_hash": "h"
+                    }),
+                )
+                .await;
+            assert!(res.is_ok(), "got: {:?}", res);
+            assert_eq!(res.unwrap()["refreshed"], true);
+        }
+
+        #[tokio::test]
+        async fn soft_delete_page_rejects_bad_slug() {
+            let (registry, ctx) = page_ctx().await;
+            let res = registry
+                .dispatch_json("soft_delete_page", &ctx, serde_json::json!({ "slug": "/bad" }))
+                .await;
+            assert!(res.is_err());
         }
     }
 }

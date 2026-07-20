@@ -17,7 +17,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use zbrain_core::engine::BrainEngine;
-use zbrain_core::operation::{OperationContext, OperationRegistry};
+use zbrain_core::operation::{register_all, OperationContext, OperationRegistry};
 
 // ──────────────────────────────────────────────────────────────────────────
 // MCP Tool Definition (mirrors TS tool-defs.ts)
@@ -368,26 +368,9 @@ impl StdioMcpServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zbrain_core::operation::{
-        GetPageOperation, QueryOperation, ThinkOperation,
-        PutPageOperation, DeletePageOperation, RestorePageOperation,
-        PurgeDeletedPagesOperation, ListPagesOperation,
-        TakesListOperation, TakesSearchOperation,
-    };
-
     fn make_registry() -> OperationRegistry {
         let mut reg = OperationRegistry::new();
-        reg.register(GetPageOperation);
-        reg.register(TakesListOperation);
-        reg.register(TakesSearchOperation);
-        reg.register(ThinkOperation);
-        reg.register(QueryOperation);
-        // Note: put_page, delete_page, etc. are local_only — excluded from MCP tool defs
-        reg.register(PutPageOperation);
-        reg.register(DeletePageOperation);
-        reg.register(RestorePageOperation);
-        reg.register(PurgeDeletedPagesOperation);
-        reg.register(ListPagesOperation);
+        register_all(&mut reg);
         reg
     }
 
@@ -409,6 +392,9 @@ mod tests {
 
         // list_pages is not local_only → should appear
         assert!(tools.iter().any(|t| t.name == "list_pages"), "list_pages should be in tool defs");
+
+        // get_page_timestamps (slice 1-6-7-1) is not local_only → should appear
+        assert!(tools.iter().any(|t| t.name == "get_page_timestamps"), "get_page_timestamps should be in tool defs");
     }
 
     #[test]

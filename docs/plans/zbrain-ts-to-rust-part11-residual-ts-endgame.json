@@ -161,7 +161,8 @@
         "1-6-3",
         "1-6-4",
         "1-6-5",
-        "1-6-6"
+        "1-6-6",
+        "1-6-7"
       ],
       "decisions": [],
       "notes": ""
@@ -515,7 +516,7 @@
     "1-6-5": {
       "id": "1-6-5",
       "label": "PARITY_GATE (删除任何TS命令前: 确认零src引用+零test引用+真Rust覆盖非stub; 1-6-2/1-6-3共用)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-6",
       "children": [
@@ -1302,7 +1303,7 @@
     "1-6-6": {
       "id": "1-6-6",
       "label": "skill/resolver 校验子系统全量迁 Rust (check-resolvable 全轨道): 覆盖 resolver-filenames / skill-frontmatter / skill-manifest / trigger-index(+parseResolverEntries) / check-resolvable core(checks 1-4) / repo-root / CLI / routing-eval(Check5) / filing-audit(Check6) / dry-fix(--fix) / 重接 doctor+skillify-check。非孤儿命令——是整条 skill 树校验栈，耦合 doctor/skillify-check 共享核心。",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "real_migrate",
       "parent": "1-6",
       "children": [],
@@ -1463,7 +1464,7 @@
     "1-6-5-9": {
       "id": "1-6-5-9",
       "label": "重接 doctor / skillify-check: 待这两个 TS 命令各自迁移切片时改用 Rust skill_resolver 核心, 删除 TS src/core/check-resolvable.ts 及其依赖栈",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "real_migrate",
       "parent": "1-6-5",
       "children": [
@@ -1686,9 +1687,119 @@
     "1-6-5-9-5": {
       "id": "1-6-5-9-5",
       "label": "收尾 (typecheck baseline 0 new + bun test + cargo core/CLI + 提交 + roadmap render)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-6-5-9",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-7": {
+      "id": "1-6-7",
+      "label": "operations.ts 替换式迁移 (Rust OperationRegistry 为继任者): 107 op 逐一对齐, 随迁随删 TS; 覆盖审计见 docs/plans/OPERATIONS_TS_TO_RUST_AUDIT.md",
+      "status": "in_progress",
+      "mode": "exploit",
+      "parent": "1-6",
+      "children": [
+        "1-6-7-1",
+        "1-6-7-2",
+        "1-6-7-3",
+        "1-6-7-4",
+        "1-6-7-5",
+        "1-6-7-6",
+        "1-6-7-7",
+        "1-6-7-8",
+        "1-6-7-9"
+      ],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-7-1": {
+      "id": "1-6-7-1",
+      "label": "统一 live registry 汇总 + tracer-bullet: 汇总 operation.rs 碎片注册为全量 register_all, page 剩余 WRAP 首批迁 (update_slug/rewrite_links/soft_delete/page timestamps)",
+      "status": "in_progress",
+      "mode": "exploit",
+      "parent": "1-6-7",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-7-2": {
+      "id": "1-6-7-2",
+      "label": "标注/图域 wrap: tags(6)+links-graph(9)+timeline(3) 包成 Operation 并注册 (engine 已有方法)",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-6-7",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-7-3": {
+      "id": "1-6-7-3",
+      "label": "sources(4)+facts(3)+anomalies(1)+health-stats(6) 域 wrap (engine 已有方法)",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-6-7",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-7-4": {
+      "id": "1-6-7-4",
+      "label": "jobs-minions 域 wrap (12 op, engine job 方法)",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-6-7",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-7-5": {
+      "id": "1-6-7-5",
+      "label": "ingestion(4)+files-attachments(5) 域: 含 file_upload NET_NEW 校验器 validateUploadPath 信任边界",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-6-7",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-7-6": {
+      "id": "1-6-7-6",
+      "label": "schema-pack 域 (9 op: 多已迁命令→从 operations.ts 摘除, 少数 wrap)",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-6-7",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-7-7": {
+      "id": "1-6-7-7",
+      "label": "code-intel(7)+search-query(3) 收尾: 含 search_by_image NET_NEW",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-6-7",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-7-8": {
+      "id": "1-6-7-8",
+      "label": "commands-misc(13)+takes(4) 收尾: 含 get_brain_identity NET_NEW; takes_calibration/scorecard 待 1-3-3 解锁",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-6-7",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-7-9": {
+      "id": "1-6-7-9",
+      "label": "终局: 删 operations.ts + cli.ts/mcp 切换 + typecheck baseline 0 new + 提交",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-6-7",
       "children": [],
       "decisions": [],
       "notes": ""
@@ -1696,7 +1807,7 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-20 14:18:16",
+    "updated": "2026-07-20 15:47:04",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
