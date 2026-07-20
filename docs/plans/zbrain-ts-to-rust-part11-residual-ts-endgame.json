@@ -1717,7 +1717,7 @@
     "1-6-7-1": {
       "id": "1-6-7-1",
       "label": "统一 live registry 汇总 + tracer-bullet: 汇总 operation.rs 碎片注册为全量 register_all, page 剩余 WRAP 首批迁 (update_slug/rewrite_links/soft_delete/page timestamps)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-6-7",
       "children": [],
@@ -1807,7 +1807,7 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-20 15:47:04",
+    "updated": "2026-07-20 15:54:20",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"

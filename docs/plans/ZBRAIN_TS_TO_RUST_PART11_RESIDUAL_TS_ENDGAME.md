@@ -57,7 +57,7 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-07-20 15:47:04
+> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-07-20 15:54:20
 
 [~][X+] 1. Part11 — 残留 TS 收尾 (综合容器)
 ├── [ ][X+] 1-1. skillpack / skillify 迁移 (27+ 文件 Schema/Subagent 包)
@@ -93,5 +93,16 @@
 │   └── [!][X+] 1-11-2. minions 纯删除探查 [BLOCKED: minions 100% 测试耦合, 无零引用叶子; A类纯删除已耗尽]
 └── [!][X+] 1-12. cycle 大迁移 (runCycle 2057行主循环 + 20 phase 全未迁, Rust autopilot/cycle.rs 仅骨架 stub) — B类真迁移主战场
 
-### 当前施工：1-6-7-1. 统一 live registry 汇总 + tracer-bullet: 汇总 operation.rs 碎片注册为全量 register_all, page 剩余 WRAP 首批迁 (update_slug/rewrite_links/soft_delete/page timestamps)
+### 当前施工：1-6-7. operations.ts 替换式迁移 (Rust OperationRegistry 为继任者): 107 op 逐一对齐, 随迁随删 TS; 覆盖审计见 docs/plans/OPERATIONS_TS_TO_RUST_AUDIT.md
+
+**当前子树：**
+├── [x][Y+] 1-6-7-1. 统一 live registry 汇总 + tracer-bullet: 汇总 operation.rs 碎片注册为全量 register_all, page 剩余 WRAP 首批迁 (update_slug/rewrite_links/soft_delete/page timestamps)
+├── [ ][Y+] 1-6-7-2. 标注/图域 wrap: tags(6)+links-graph(9)+timeline(3) 包成 Operation 并注册 (engine 已有方法)
+├── [ ][Y+] 1-6-7-3. sources(4)+facts(3)+anomalies(1)+health-stats(6) 域 wrap (engine 已有方法)
+├── [ ][Y+] 1-6-7-4. jobs-minions 域 wrap (12 op, engine job 方法)
+├── [ ][Y+] 1-6-7-5. ingestion(4)+files-attachments(5) 域: 含 file_upload NET_NEW 校验器 validateUploadPath 信任边界
+├── [ ][Y+] 1-6-7-6. schema-pack 域 (9 op: 多已迁命令→从 operations.ts 摘除, 少数 wrap)
+├── [ ][Y+] 1-6-7-7. code-intel(7)+search-query(3) 收尾: 含 search_by_image NET_NEW
+├── [ ][Y+] 1-6-7-8. commands-misc(13)+takes(4) 收尾: 含 get_brain_identity NET_NEW; takes_calibration/scorecard 待 1-3-3 解锁
+└── [ ][Y+] 1-6-7-9. 终局: 删 operations.ts + cli.ts/mcp 切换 + typecheck baseline 0 new + 提交
 <!-- ROADMAP_SECTION_END -->
