@@ -13,6 +13,7 @@ pub mod models;
 pub mod apply_migrations;
 pub mod mounts;
 pub mod check_resolvable;
+pub mod routing_eval;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -351,6 +352,9 @@ pub enum Commands {
 
     /// Validate the skill tree: reachability, MECE overlap, DRY, gap detection
     CheckResolvable(check_resolvable::CheckResolvableArgs),
+
+    /// Run Check 5 (routing eval) against every skills/<name>/routing-eval.jsonl fixture
+    RoutingEval(routing_eval::RoutingEvalArgs),
 
     /// Scan brain usage and recommend unused features
     Features(FeaturesArgs),
@@ -1636,6 +1640,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Doctor(args) => run_doctor_command(args, cli.config.as_deref()).await?,
         Commands::CheckResolvable(args) => {
             check_resolvable::run_check_resolvable_command(&args, cli.config.as_deref()).await?
+        }
+        Commands::RoutingEval(args) => {
+            routing_eval::run_routing_eval_command(&args, cli.config.as_deref()).await?
         }
         Commands::Features(args) => run_features_command(args, cli.config.as_deref()).await?,
         Commands::Whoknows(args) => run_whoknows_command(args, cli.config.as_deref()).await?,

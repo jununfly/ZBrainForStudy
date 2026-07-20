@@ -39,8 +39,19 @@
 └── [!][X+] 1-12. cycle 大迁移 (runCycle 2057行主循环 + 20 phase 全未迁, Rust autopilot/cycle.rs 仅骨架 stub) — B类真迁移主战场
 ```
 
-### 🔨 当前施工: 1-6-5-5. 收尾: 删除 TS check-resolvable CLI dispatch + 保留 TS core(被 doctor/skillify-check 消费, 记录决策) + PARITY_GATE + E2E + 提交
-**Status:** `in_progress` | **Mode:** `real_migrate`
+### 🔨 当前施工: 1-6-5. PARITY_GATE (删除任何TS命令前: 确认零src引用+零test引用+真Rust覆盖非stub; 1-6-2/1-6-3共用)
+**Status:** `in_progress` | **Mode:** `exploit`
+
+**子节点:**
+- [x] 1-6-5-1. skill_resolver 基础模块 Rust 化 (resolver-filenames + skill-frontmatter + skill-manifest + trigger-index 含 parseResolverEntries 表+紧凑列表双格式) + 单测
+- [x] 1-6-5-2. check_resolvable 核心 checks 1-4 (reachability + missing_file + MECE overlap/gap + DRY + skillify_stub 扫描) Rust 化 + 单测
+- [x] 1-6-5-3. repo-root skills-dir 自动检测 (autoDetectSkillsDir / ReadOnly + install_path 只读兜底 gated by is_gbrain_repo_root) Rust 化
+- [x] 1-6-5-4. check_resolvable CLI 命令外壳 (clap 子命令 + flags/envelope/render/退出码, checks 1-4; --fix 暂拒绝提示) + 接线 lib.rs
+- [x] 1-6-5-5. 收尾: 删除 TS check-resolvable CLI dispatch + 保留 TS core(被 doctor/skillify-check 消费, 记录决策) + PARITY_GATE + E2E + 提交
+- [x] 1-6-5-6. routing-eval (Check 5): loadRoutingFixtures + indexResolverTriggers + lintRoutingFixtures + runRoutingEval Rust 化 + 接 check_resolvable 警告
+- [ ] 1-6-5-7. filing-audit (Check 6): loadFilingRules + runFilingAudit (writes_pages/writes_to 声明审计) Rust 化 + 接 check_resolvable 警告
+- [ ] 1-6-5-8. dry-fix (--fix): autoFixDryViolations + CROSS_CUTTING REPLACE + MISSING_RULE INSERT + skill-fix-gates(git/code-fence) + skill-brain-first 合规 Rust 化
+- [ ] 1-6-5-9. 重接 doctor / skillify-check: 待这两个 TS 命令各自迁移切片时改用 Rust skill_resolver 核心, 删除 TS src/core/check-resolvable.ts 及其依赖栈
 <!-- ⚠️ ROADMAP_SECTION_END -->
 
 <!-- ROADMAP_SECTION_START -->

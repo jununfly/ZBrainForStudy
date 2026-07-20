@@ -22,6 +22,10 @@ use crate::skill_resolver::trigger_index::{
     entries_to_resolver_content, find_primary_resolver_path, load_skill_trigger_index,
     SkillTriggerEntry,
 };
+use crate::skill_resolver::routing_eval::{
+    index_resolver_triggers, lint_routing_fixtures, load_routing_fixtures, run_routing_eval,
+    RoutingOutcome,
+};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -284,7 +288,7 @@ pub fn check_resolvable(skills_dir: &Path) -> ResolvableReport {
         };
     }
 
-    let _resolver_content = entries_to_resolver_content(&trigger_entries);
+    let resolver_content = entries_to_resolver_content(&trigger_entries);
     let manifest: Vec<ManifestEntry> = load_or_derive_manifest(skills_dir).skills;
 
     // Build lookup sets.
@@ -518,6 +522,98 @@ pub fn check_resolvable(skills_dir: &Path) -> ResolvableReport {
         }
     }
 
+    // 5b. Check 5 (routing eval, W2): structural routing evaluation of
+    // routing-eval.jsonl fixtures. Surfaces as warnings only — advisory.
+    // Mirrors `src/core/check-resolvable.ts` Check 5 wiring.
+    let loaded = load_routing_fixtures(skills_dir);
+    if !loaded.fixtures.is_empty() {
+        let trigger_index = index_resolver_triggers(&resolver_content);
+        for lint in lint_routing_fixtures(&loaded.fixtures, &trigger_index) {
+            issues.push(ResolvableIssue {
+                issue_type: IssueType::RoutingFixtureLint,
+                severity: Severity::Warning,
+                skill: lint
+                    .fixture
+                    .expected_skill
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
+                message: format!(
+                    "Routing fixture lint ({}): \"{}\"",
+                    lint.reason.as_str(),
+                    lint.fixture.intent
+                ),
+                action: format!(
+                    "Edit skills/<skill>/routing-eval.jsonl to fix: {}",
+                    lint.detail
+                ),
+                fix: None,
+            });
+        }
+        let routing_report = run_routing_eval(&resolver_content, &loaded.fixtures);
+        for d in &routing_report.details {
+            let outcome = d.outcome;
+            if outcome == RoutingOutcome::Pass {
+                continue;
+            }
+            let (kind, skill_name) = match outcome {
+                RoutingOutcome::Missed => (
+                    IssueType::RoutingMiss,
+                    d.fixture
+                        .expected_skill
+                        .clone()
+                        .unwrap_or_else(|| "negative-case".to_string()),
+                ),
+                RoutingOutcome::Ambiguous => (
+                    IssueType::RoutingAmbiguous,
+                    d.fixture
+                        .expected_skill
+                        .clone()
+                        .unwrap_or_else(|| "negative-case".to_string()),
+                ),
+                RoutingOutcome::FalsePositive => (
+                    IssueType::RoutingFalsePositive,
+                    d.fixture
+                        .expected_skill
+                        .clone()
+                        .unwrap_or_else(|| "negative-case".to_string()),
+                ),
+                RoutingOutcome::Pass => unreachable!(),
+            };
+            let edit_target = match &d.fixture.expected_skill {
+                Some(s) => format!(
+                    "skills/{}/SKILL.md frontmatter triggers: (canonical) or skills/RESOLVER.md row (dispatcher map)",
+                    s
+                ),
+                None => "the relevant skill's SKILL.md frontmatter triggers:".to_string(),
+            };
+            issues.push(ResolvableIssue {
+                issue_type: kind,
+                severity: Severity::Warning,
+                skill: skill_name,
+                message: format!("Routing {} for intent \"{}\"", outcome.as_str(), d.fixture.intent),
+                action: format!(
+                    "Update routing-eval.jsonl fixture or broaden {} ({})",
+                    edit_target,
+                    d.note.clone().unwrap_or_else(|| "no additional detail".to_string())
+                ),
+                fix: None,
+            });
+        }
+    }
+    for m in &loaded.malformed {
+        issues.push(ResolvableIssue {
+            issue_type: IssueType::RoutingFixtureLint,
+            severity: Severity::Warning,
+            skill: "routing-eval".to_string(),
+            message: format!("Malformed routing fixture {}:{}", m.file, m.line),
+            action: format!(
+                "Fix the JSONL in routing-eval.jsonl at line {}: {}",
+                m.line, m.error
+            ),
+            fix: None,
+        });
+    }
+
     // 6. SKILLIFY_STUB sentinel check.
     for skill in &manifest {
         let skill_dir = skills_dir.join(skill.path.trim_end_matches("/SKILL.md"));
@@ -734,5 +830,58 @@ mod tests {
             .warnings
             .iter()
             .any(|i| i.issue_type == IssueType::SkillifyStubUnreplaced));
+    }
+
+    #[test]
+    fn check5_routing_eval_surfaces_miss_warning() {
+        // Check 5 (1-6-5-6-5): a routing-eval.jsonl fixture whose intent does
+        // not contain its expected_skill's trigger must surface as a
+        // RoutingMiss warning in check_resolvable's output.
+        let dir = scratch("check5");
+        write_skill(&dir, "query", "name: query");
+        fs::write(
+            dir.join("RESOLVER.md"),
+            "| trigger | skill |\n| --- | --- |\n| \"what do we know about\" | `skills/query/SKILL.md` |",
+        )
+        .unwrap();
+        let qdir = dir.join("query");
+        fs::write(
+            qdir.join("routing-eval.jsonl"),
+            "{\"intent\":\"totally unrelated nonsense\",\"expected_skill\":\"query\"}\n",
+        )
+        .unwrap();
+        let report = check_resolvable(&dir);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|i| i.issue_type == IssueType::RoutingMiss),
+            "expected a RoutingMiss warning; warnings: {:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn check5_skipped_when_no_fixtures() {
+        // When no routing-eval.jsonl exists, Check 5 must stay silent
+        // (no Routing* warnings).
+        let dir = scratch("check5empty");
+        write_skill(&dir, "query", "name: query");
+        fs::write(
+            dir.join("RESOLVER.md"),
+            "| trigger | skill |\n| --- | --- |\n| \"what do we know about\" | `skills/query/SKILL.md` |",
+        )
+        .unwrap();
+        let report = check_resolvable(&dir);
+        assert!(!report
+            .warnings
+            .iter()
+            .any(|i| matches!(
+                i.issue_type,
+                IssueType::RoutingMiss
+                    | IssueType::RoutingAmbiguous
+                    | IssueType::RoutingFalsePositive
+                    | IssueType::RoutingFixtureLint
+            )));
     }
 }

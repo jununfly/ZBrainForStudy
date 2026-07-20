@@ -1352,7 +1352,7 @@
     "1-6-5-5": {
       "id": "1-6-5-5",
       "label": "收尾: 删除 TS check-resolvable CLI dispatch + 保留 TS core(被 doctor/skillify-check 消费, 记录决策) + PARITY_GATE + E2E + 提交",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "real_migrate",
       "parent": "1-6-5",
       "children": [],
@@ -1362,11 +1362,35 @@
     "1-6-5-6": {
       "id": "1-6-5-6",
       "label": "routing-eval (Check 5): loadRoutingFixtures + indexResolverTriggers + lintRoutingFixtures + runRoutingEval Rust 化 + 接 check_resolvable 警告",
-      "status": "pending",
+      "status": "completed",
       "mode": "real_migrate",
       "parent": "1-6-5",
-      "children": [],
-      "decisions": [],
+      "children": [
+        "1-6-5-6-1",
+        "1-6-5-6-2",
+        "1-6-5-6-3",
+        "1-6-5-6-4",
+        "1-6-5-6-5",
+        "1-6-5-6-6",
+        "1-6-5-6-7"
+      ],
+      "decisions": [
+        {
+          "q": "1-6-5-6 范围是否含独立 routing-eval CLI 命令?",
+          "answer": "含 —— Check 5 核心逻辑 + 接入 check_resolvable 警告 + 独立 zbrain routing-eval 命令一起迁。用户 q-0 选'核心+独立命令一起迁'。",
+          "note": "原节点 label 只写'接 check_resolvable 警告'，但用户'全量子系统轨道'原话点名 routing-eval，期望整套搬完。"
+        },
+        {
+          "q": "1-6-5-6 怎么拆 TDD 子节点?",
+          "answer": "细粒度 7 子节点: primitives+index / lint / load / run / 接check_resolvable / 独立CLI / 收尾。用户 q-0 选'细粒度 7 子节点'。",
+          "note": "与 1-6-5-1~5 切片一致，每子节点独立可验证。"
+        },
+        {
+          "q": "routing-eval Rust 测试 fixture 怎么组织?",
+          "answer": "inline 字符串 —— 每个测试用 &str 字面量构造 resolver content + jsonl content，无外部文件。用户 q-0 选'inline 字符串'。",
+          "note": "镜像现有 53 个 skill_resolver 测试，快/自含/无路径问题。"
+        }
+      ],
       "notes": ""
     },
     "1-6-5-7": {
@@ -1398,11 +1422,87 @@
       "children": [],
       "decisions": [],
       "notes": ""
+    },
+    "1-6-5-6-1": {
+      "id": "1-6-5-6-1",
+      "label": "routing-eval primitives + indexResolverTriggers Rust 化 (normalize_text/extract_trigger_phrases/skill_slug_from_path/index_resolver_triggers, 建在 trigger_index::parse_resolver_entries 上)",
+      "status": "completed",
+      "mode": "real_migrate",
+      "parent": "1-6-5-6",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-5-6-2": {
+      "id": "1-6-5-6-2",
+      "label": "lintRoutingFixtures Rust 化 (D-CX-6 fixture lint: intent_copies_trigger/unknown_expected_skill/invalid_shape)",
+      "status": "completed",
+      "mode": "real_migrate",
+      "parent": "1-6-5-6",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-5-6-3": {
+      "id": "1-6-5-6-3",
+      "label": "loadRoutingFixtures Rust 化 (skills/<name>/routing-eval.jsonl 加载 + 注释跳过 + malformed 收集)",
+      "status": "completed",
+      "mode": "real_migrate",
+      "parent": "1-6-5-6",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-5-6-4": {
+      "id": "1-6-5-6-4",
+      "label": "runRoutingEval Rust 化 (structuralRouteMatch + RoutingReport: pass/missed/ambiguous/false_positive)",
+      "status": "completed",
+      "mode": "real_migrate",
+      "parent": "1-6-5-6",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-5-6-5": {
+      "id": "1-6-5-6-5",
+      "label": "接 Check 5 进 check_resolvable() 为 warnings (RoutingMiss/Ambiguous/FalsePositive/FixtureLint, 仅当存在 routing-eval.jsonl)",
+      "status": "completed",
+      "mode": "real_migrate",
+      "parent": "1-6-5-6",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-5-6-6": {
+      "id": "1-6-5-6-6",
+      "label": "独立 zbrain routing-eval CLI 命令 Rust 化 (routing_eval.rs in zbrain-cli + 接 lib.rs Commands + 删 cli.ts dispatch + CLI_ONLY)",
+      "status": "completed",
+      "mode": "real_migrate",
+      "parent": "1-6-5-6",
+      "children": [],
+      "decisions": [
+        {
+          "q": "独立 routing-eval 命令的 --llm 占位 flag 怎么处理?",
+          "answer": "拒绝 —— exit 1 'not yet implemented'。用户 q-0 选'拒绝为未实现'。",
+          "note": "与 check-resolvable --fix 拒绝原则一致(不接収做了无事儿的 flag，保持诚实)。代价: 偏离 TS(其接受 --llm 为占位)，可能挂 CI call site，但用户优先一致性。"
+        }
+      ],
+      "notes": ""
+    },
+    "1-6-5-6-7": {
+      "id": "1-6-5-6-7",
+      "label": "typecheck baseline 门 + E2E(clean/miss/ambiguous/false_positive/malformed) + 提交 1-6-5-6",
+      "status": "completed",
+      "mode": "real_migrate",
+      "parent": "1-6-5-6",
+      "children": [],
+      "decisions": [],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-19 10:32:27",
+    "updated": "2026-07-20 11:11:58",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"

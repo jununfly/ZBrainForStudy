@@ -14,6 +14,7 @@
 //!   - trigger_index       : unified trigger index (UNION frontmatter+resolver)
 //!   - check_resolvable    : reachability / MECE / DRY / stub checks (1-6-5-2)
 //!   - repo_root           : skills-dir auto-detection (1-6-5-3)
+//!   - routing_eval        : Check 5 routing eval (1-6-5-6; core + wiring)
 
 pub mod resolver_filenames;
 pub mod skill_frontmatter;
@@ -21,3 +22,4 @@ pub mod skill_manifest;
 pub mod trigger_index;
 pub mod check_resolvable;
 pub mod repo_root;
+pub mod routing_eval;

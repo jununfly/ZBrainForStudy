@@ -35,7 +35,7 @@ for (const op of operations) {
 }
 
 // CLI-only commands that bypass the operation layer
-const CLI_ONLY = new Set(['reinit-pglite', 'upgrade', 'post-upgrade', 'integrations', 'publish', 'check-backlinks', 'lint', 'import', 'export', 'files', 'embed', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'features', 'apply-migrations', 'skillpack-check', 'resolvers', 'integrity', 'repair-jsonb', 'dream', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'frontmatter', 'auth', 'friction', 'book-mirror', 'transcripts', 'recall', 'forget', 'edges-backfill', 'ze-switch', 'founder', 'brainstorm', 'lsd']);
+const CLI_ONLY = new Set(['reinit-pglite', 'upgrade', 'post-upgrade', 'integrations', 'publish', 'check-backlinks', 'lint', 'import', 'export', 'files', 'embed', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'features', 'apply-migrations', 'skillpack-check', 'resolvers', 'integrity', 'repair-jsonb', 'dream', 'skillify', 'smoke-test', 'providers', 'storage', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'frontmatter', 'auth', 'friction', 'book-mirror', 'transcripts', 'recall', 'forget', 'edges-backfill', 'ze-switch', 'founder', 'brainstorm', 'lsd']);
 // CLI-only commands whose handlers print their own --help text. These are
 // excluded from the generic short-circuit so detailed per-command and
 // per-subcommand usage stays reachable.
@@ -864,11 +864,6 @@ async function handleCliOnly(command: string, args: string[]) {
   if (command === 'lint') {
     const { runLint } = await import('./commands/lint.ts');
     await runLint(args);
-    return;
-  }
-  if (command === 'routing-eval') {
-    const { runRoutingEvalCli } = await import('./commands/routing-eval.ts');
-    await runRoutingEvalCli(args);
     return;
   }
   if (command === 'skillify') {

@@ -75,7 +75,7 @@ fn suffix_re() -> &'static regex::Regex {
 /// two formats that can mix in one file:
 ///   Format 1 (table): `| trigger phrase | \`skills/<name>/SKILL.md\` |`
 ///   Format 2 (compact list, v0.41.7.0): `- **skill-name**: t1 | t2`
-fn parse_resolver_entries(resolver_content: &str) -> Vec<ResolverEntry> {
+pub fn parse_resolver_entries(resolver_content: &str) -> Vec<ResolverEntry> {
     let mut entries: Vec<ResolverEntry> = Vec::new();
     let mut current_section = String::new();
 
