@@ -2686,6 +2686,19 @@ pub fn register_all(registry: &mut OperationRegistry) {
     registry.register(GetHealthOperation);
     registry.register(GetStatsOperation);
     registry.register(GetRecentSalienceOperation);
+
+    // 1-6-7-4 — jobs / minions (11)
+    registry.register(SubmitJobOperation);
+    registry.register(SubmitAgentOperation);
+    registry.register(ListJobsOperation);
+    registry.register(GetJobOperation);
+    registry.register(GetJobProgressOperation);
+    registry.register(ReplayJobOperation);
+    registry.register(SendJobMessageOperation);
+    registry.register(CancelJobOperation);
+    registry.register(RetryJobOperation);
+    registry.register(PauseJobOperation);
+    registry.register(ResumeJobOperation);
 }
 
 // ── SoftDeletePage Operation (Slice 1-6-7-1) ──────────────────────────────
@@ -4404,6 +4417,804 @@ impl TypedOperation for GetRecentSalienceOperation {
             )
             .await?;
         Ok(salience)
+    }
+}
+
+// ─── Jobs / minions (11) ──────────────────────────────────────────────────
+// All ops wrap the Rust `MinionQueue` (minions/queue.rs) except `cancel_job`
+// and `send_job_message` which use engine methods. `subagent` is NOT a
+// separate op — it is the `name` returned by `submit_agent` in TS; the audit
+// double-counted it. `submit_job` preserves the TS MCP protected-name guard
+// (rejects shell-type jobs from remote callers). `submit_agent` simplifies the
+// TS OAuth binding enforcement (tracked for a later dedicated slice).
+
+use crate::minions::queue::MinionQueue;
+use crate::minions::types::{InboxMessage, JobFilters, MinionJob, MinionJobInput, MinionJobStatus};
+
+fn is_protected_job_name(name: &str) -> bool {
+    matches!(name, "shell")
+}
+
+fn parse_job_status(s: &str) -> Option<MinionJobStatus> {
+    match s.to_ascii_lowercase().as_str() {
+        "waiting" => Some(MinionJobStatus::Waiting),
+        "active" => Some(MinionJobStatus::Active),
+        "completed" => Some(MinionJobStatus::Completed),
+        "failed" => Some(MinionJobStatus::Failed),
+        "delayed" => Some(MinionJobStatus::Delayed),
+        "dead" => Some(MinionJobStatus::Dead),
+        "cancelled" | "canceled" => Some(MinionJobStatus::Cancelled),
+        "waiting-children" => Some(MinionJobStatus::WaitingChildren),
+        "paused" => Some(MinionJobStatus::Paused),
+        _ => None,
+    }
+}
+
+/// Submit a background job to the Minions queue.
+#[derive(Debug, Clone)]
+pub struct SubmitJobOperation;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct SubmitJobParams {
+    pub name: String,
+    #[serde(default)]
+    pub data: Option<serde_json::Value>,
+    #[serde(default)]
+    pub queue: Option<String>,
+    #[serde(default)]
+    pub priority: Option<i32>,
+    #[serde(default)]
+    pub max_attempts: Option<i32>,
+    #[serde(default)]
+    pub delay: Option<i64>,
+    #[serde(default)]
+    pub timeout_ms: Option<i64>,
+}
+
+impl ValidateParams for SubmitJobParams {
+    fn validate(&self) -> OperationResult<()> {
+        if self.name.trim().is_empty() {
+            return Err(OperationError::invalid_params("name must not be empty"));
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TypedOperation for SubmitJobOperation {
+    type Params = SubmitJobParams;
+    type Output = MinionJob;
+
+    fn name(&self) -> &'static str {
+        "submit_job"
+    }
+    fn description(&self) -> &'static str {
+        "Submit a background job to the Minions queue."
+    }
+    fn mutating(&self) -> bool {
+        true
+    }
+    fn required_scope(&self) -> &'static str {
+        "admin"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string", "description": "Job type (sync, embed, lint, import, extract, backlinks, autopilot-cycle; shell is CLI-only)" },
+                "data": { "type": "object", "description": "Job payload (JSON)" },
+                "queue": { "type": "string" },
+                "priority": { "type": "integer" },
+                "max_attempts": { "type": "integer" },
+                "delay": { "type": "integer", "description": "Delay in ms before eligible" },
+                "timeout_ms": { "type": "integer" }
+            },
+            "required": ["name"]
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let name = params.name.trim().to_string();
+        // MCP guard: reject protected job names from remote callers (TS F7b).
+        if ctx.remote && is_protected_job_name(&name) {
+            return Err(OperationError::permission_denied(format!(
+                "'{}' jobs cannot be submitted over MCP (CLI-only for security)",
+                name
+            )));
+        }
+        let queue = MinionQueue::new(ctx.engine()?);
+        let job = queue
+            .add(&MinionJobInput {
+                name,
+                data: params.data,
+                queue: params.queue,
+                priority: params.priority,
+                max_attempts: params.max_attempts,
+                delay: params.delay,
+                timeout_ms: params.timeout_ms,
+                ..Default::default()
+            })
+            .await?;
+        Ok(job)
+    }
+}
+
+/// Submit an LLM agent job (simplified: OAuth binding enforcement deferred).
+#[derive(Debug, Clone)]
+pub struct SubmitAgentOperation;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct SubmitAgentParams {
+    pub prompt: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub allowed_tools: Option<Vec<String>>,
+    #[serde(default)]
+    pub allowed_slug_prefixes: Option<Vec<String>>,
+    #[serde(default)]
+    pub max_turns: Option<i32>,
+    #[serde(default)]
+    pub queue: Option<String>,
+}
+
+impl ValidateParams for SubmitAgentParams {
+    fn validate(&self) -> OperationResult<()> {
+        if self.prompt.trim().is_empty() {
+            return Err(OperationError::invalid_params("prompt must not be empty"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmitAgentOutput {
+    pub id: i64,
+    pub name: String,
+    pub client_id: String,
+}
+
+#[async_trait]
+impl TypedOperation for SubmitAgentOperation {
+    type Params = SubmitAgentParams;
+    type Output = SubmitAgentOutput;
+
+    fn name(&self) -> &'static str {
+        "submit_agent"
+    }
+    fn description(&self) -> &'static str {
+        "Submit an LLM agent job (simplified; OAuth binding deferred)."
+    }
+    fn mutating(&self) -> bool {
+        true
+    }
+    fn required_scope(&self) -> &'static str {
+        "agent"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "prompt": { "type": "string" },
+                "model": { "type": "string" },
+                "allowed_tools": { "type": "array", "items": { "type": "string" } },
+                "allowed_slug_prefixes": { "type": "array", "items": { "type": "string" } },
+                "max_turns": { "type": "integer" },
+                "queue": { "type": "string" }
+            },
+            "required": ["prompt"]
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        // TS rejects local CLI: `zbrain agent run` is the local path.
+        if ctx.remote == false {
+            return Err(OperationError::invalid_params(
+                "submit_agent over the local CLI: use `zbrain agent run` instead.",
+            ));
+        }
+        let queue = MinionQueue::new(ctx.engine()?);
+        let data = serde_json::json!({
+            "prompt": params.prompt,
+            "model": params.model,
+            "allowed_tools": params.allowed_tools,
+            "allowed_slug_prefixes": params.allowed_slug_prefixes,
+            "max_turns": params.max_turns,
+        });
+        let job = queue
+            .add(&MinionJobInput {
+                name: "subagent".to_string(),
+                data: Some(data),
+                queue: params.queue,
+                ..Default::default()
+            })
+            .await?;
+        Ok(SubmitAgentOutput {
+            id: job.id,
+            name: "subagent".to_string(),
+            client_id: "<unbound>".to_string(),
+        })
+    }
+}
+
+/// List jobs with optional filters.
+#[derive(Debug, Clone)]
+pub struct ListJobsOperation;
+
+#[derive(Debug, serde::Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct ListJobsParams {
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub queue: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+}
+
+impl ValidateParams for ListJobsParams {
+    fn validate(&self) -> OperationResult<()> {
+        if let Some(s) = &self.status {
+            if parse_job_status(s).is_none() {
+                return Err(OperationError::invalid_params(format!("invalid status: {}", s)));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TypedOperation for ListJobsOperation {
+    type Params = ListJobsParams;
+    type Output = Vec<MinionJob>;
+
+    fn name(&self) -> &'static str {
+        "list_jobs"
+    }
+    fn description(&self) -> &'static str {
+        "List jobs with optional filters."
+    }
+    fn required_scope(&self) -> &'static str {
+        "admin"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "status": { "type": "string" },
+                "queue": { "type": "string" },
+                "name": { "type": "string" },
+                "limit": { "type": "integer" }
+            }
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let queue = MinionQueue::new(ctx.engine()?);
+        let jobs = queue
+            .get_jobs(&JobFilters {
+                status: params.status.as_deref().and_then(parse_job_status),
+                queue: params.queue,
+                name: params.name,
+                limit: params.limit,
+                ..Default::default()
+            })
+            .await?;
+        Ok(jobs)
+    }
+}
+
+/// Get a job by id.
+#[derive(Debug, Clone)]
+pub struct GetJobOperation;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct GetJobParams {
+    pub id: i64,
+}
+
+impl ValidateParams for GetJobParams {
+    fn validate(&self) -> OperationResult<()> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TypedOperation for GetJobOperation {
+    type Params = GetJobParams;
+    type Output = MinionJob;
+
+    fn name(&self) -> &'static str {
+        "get_job"
+    }
+    fn description(&self) -> &'static str {
+        "Get job status and details by id."
+    }
+    fn required_scope(&self) -> &'static str {
+        "admin"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": { "id": { "type": "integer" } },
+            "required": ["id"]
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let queue = MinionQueue::new(ctx.engine()?);
+        let job = queue
+            .get_job(params.id)
+            .await?
+            .ok_or_else(|| OperationError::invalid_params(format!("job not found: {}", params.id)))?;
+        Ok(job)
+    }
+}
+
+/// Get structured progress for a running job.
+#[derive(Debug, Clone)]
+pub struct GetJobProgressOperation;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct GetJobProgressParams {
+    pub id: i64,
+}
+
+impl ValidateParams for GetJobProgressParams {
+    fn validate(&self) -> OperationResult<()> {
+        Ok(())
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetJobProgressOutput {
+    pub id: i64,
+    pub name: String,
+    pub status: MinionJobStatus,
+    pub progress: Option<serde_json::Value>,
+}
+
+#[async_trait]
+impl TypedOperation for GetJobProgressOperation {
+    type Params = GetJobProgressParams;
+    type Output = GetJobProgressOutput;
+
+    fn name(&self) -> &'static str {
+        "get_job_progress"
+    }
+    fn description(&self) -> &'static str {
+        "Get structured progress for a running job."
+    }
+    fn required_scope(&self) -> &'static str {
+        "admin"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": { "id": { "type": "integer" } },
+            "required": ["id"]
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let queue = MinionQueue::new(ctx.engine()?);
+        let job = queue
+            .get_job(params.id)
+            .await?
+            .ok_or_else(|| OperationError::invalid_params(format!("job not found: {}", params.id)))?;
+        Ok(GetJobProgressOutput {
+            id: job.id,
+            name: job.name,
+            status: job.status,
+            progress: job.progress,
+        })
+    }
+}
+
+/// Replay a terminal job, optionally with overridden data.
+#[derive(Debug, Clone)]
+pub struct ReplayJobOperation;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ReplayJobParams {
+    pub id: i64,
+    #[serde(default)]
+    pub data_overrides: Option<serde_json::Value>,
+}
+
+impl ValidateParams for ReplayJobParams {
+    fn validate(&self) -> OperationResult<()> {
+        Ok(())
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayJobOutput {
+    pub id: i64,
+    pub name: String,
+    pub status: MinionJobStatus,
+    pub source_id: i64,
+}
+
+#[async_trait]
+impl TypedOperation for ReplayJobOperation {
+    type Params = ReplayJobParams;
+    type Output = ReplayJobOutput;
+
+    fn name(&self) -> &'static str {
+        "replay_job"
+    }
+    fn description(&self) -> &'static str {
+        "Replay a completed/failed/dead job with optional data overrides."
+    }
+    fn mutating(&self) -> bool {
+        true
+    }
+    fn required_scope(&self) -> &'static str {
+        "admin"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "integer", "description": "Source job id to replay" },
+                "data_overrides": { "type": "object" }
+            },
+            "required": ["id"]
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let queue = MinionQueue::new(ctx.engine()?);
+        let original = queue
+            .get_job(params.id)
+            .await?
+            .ok_or_else(|| OperationError::invalid_params(format!("job not found: {}", params.id)))?;
+        let mut data = original.data.clone();
+        if let Some(overrides) = &params.data_overrides {
+            if let Some(obj) = data.as_object_mut() {
+                if let Some(ov) = overrides.as_object() {
+                    for (k, v) in ov {
+                        obj.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+        }
+        let new = queue
+            .add(&MinionJobInput {
+                name: original.name.clone(),
+                data: Some(data),
+                queue: Some(original.queue.clone()),
+                ..Default::default()
+            })
+            .await?;
+        Ok(ReplayJobOutput {
+            id: new.id,
+            name: new.name,
+            status: new.status,
+            source_id: params.id,
+        })
+    }
+}
+
+/// Send a sidechannel message to a running job's inbox.
+#[derive(Debug, Clone)]
+pub struct SendJobMessageOperation;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct SendJobMessageParams {
+    pub id: i64,
+    pub payload: serde_json::Value,
+    #[serde(default)]
+    pub sender: Option<String>,
+}
+
+impl ValidateParams for SendJobMessageParams {
+    fn validate(&self) -> OperationResult<()> {
+        Ok(())
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendJobMessageOutput {
+    pub sent: bool,
+    pub message_id: i64,
+    pub job_id: i64,
+}
+
+#[async_trait]
+impl TypedOperation for SendJobMessageOperation {
+    type Params = SendJobMessageParams;
+    type Output = SendJobMessageOutput;
+
+    fn name(&self) -> &'static str {
+        "send_job_message"
+    }
+    fn description(&self) -> &'static str {
+        "Send a sidechannel message to a running job's inbox."
+    }
+    fn required_scope(&self) -> &'static str {
+        "admin"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "integer" },
+                "payload": { "type": "object" },
+                "sender": { "type": "string" }
+            },
+            "required": ["id", "payload"]
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let msg: InboxMessage = engine
+            .send_message(params.id, &params.payload, params.sender.as_deref().unwrap_or("admin"))
+            .await?
+            .ok_or_else(|| {
+                OperationError::invalid_params(format!(
+                    "job not found, not messageable, or sender unauthorized: {}",
+                    params.id
+                ))
+            })?;
+        Ok(SendJobMessageOutput {
+            sent: true,
+            message_id: msg.id,
+            job_id: params.id,
+        })
+    }
+}
+
+/// Cancel a job.
+#[derive(Debug, Clone)]
+pub struct CancelJobOperation;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct CancelJobParams {
+    pub id: i64,
+}
+
+impl ValidateParams for CancelJobParams {
+    fn validate(&self) -> OperationResult<()> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TypedOperation for CancelJobOperation {
+    type Params = CancelJobParams;
+    type Output = MinionJob;
+
+    fn name(&self) -> &'static str {
+        "cancel_job"
+    }
+    fn description(&self) -> &'static str {
+        "Cancel a waiting, active, or delayed job."
+    }
+    fn mutating(&self) -> bool {
+        true
+    }
+    fn required_scope(&self) -> &'static str {
+        "admin"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": { "id": { "type": "integer" } },
+            "required": ["id"]
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let cancelled = engine
+            .cancel_job(params.id)
+            .await?
+            .ok_or_else(|| {
+                OperationError::invalid_params(format!("cannot cancel job {} (may be terminal)", params.id))
+            })?;
+        Ok(cancelled)
+    }
+}
+
+/// Retry a failed or dead job.
+#[derive(Debug, Clone)]
+pub struct RetryJobOperation;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RetryJobParams {
+    pub id: i64,
+}
+
+impl ValidateParams for RetryJobParams {
+    fn validate(&self) -> OperationResult<()> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TypedOperation for RetryJobOperation {
+    type Params = RetryJobParams;
+    type Output = MinionJob;
+
+    fn name(&self) -> &'static str {
+        "retry_job"
+    }
+    fn description(&self) -> &'static str {
+        "Re-queue a failed or dead job for retry."
+    }
+    fn mutating(&self) -> bool {
+        true
+    }
+    fn required_scope(&self) -> &'static str {
+        "admin"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": { "id": { "type": "integer" } },
+            "required": ["id"]
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let queue = MinionQueue::new(ctx.engine()?);
+        let retried = queue
+            .retry_job(params.id)
+            .await?
+            .ok_or_else(|| {
+                OperationError::invalid_params(format!("cannot retry job {} (must be failed or dead)", params.id))
+            })?;
+        Ok(retried)
+    }
+}
+
+/// Pause a job.
+#[derive(Debug, Clone)]
+pub struct PauseJobOperation;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct PauseJobParams {
+    pub id: i64,
+}
+
+impl ValidateParams for PauseJobParams {
+    fn validate(&self) -> OperationResult<()> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TypedOperation for PauseJobOperation {
+    type Params = PauseJobParams;
+    type Output = MinionJob;
+
+    fn name(&self) -> &'static str {
+        "pause_job"
+    }
+    fn description(&self) -> &'static str {
+        "Pause a waiting, active, or delayed job."
+    }
+    fn required_scope(&self) -> &'static str {
+        "admin"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": { "id": { "type": "integer" } },
+            "required": ["id"]
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let queue = MinionQueue::new(ctx.engine()?);
+        let job = queue
+            .pause_job(params.id)
+            .await?
+            .ok_or_else(|| {
+                OperationError::invalid_params(format!("job not found or not pausable: {}", params.id))
+            })?;
+        Ok(job)
+    }
+}
+
+/// Resume a paused job.
+#[derive(Debug, Clone)]
+pub struct ResumeJobOperation;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ResumeJobParams {
+    pub id: i64,
+}
+
+impl ValidateParams for ResumeJobParams {
+    fn validate(&self) -> OperationResult<()> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TypedOperation for ResumeJobOperation {
+    type Params = ResumeJobParams;
+    type Output = MinionJob;
+
+    fn name(&self) -> &'static str {
+        "resume_job"
+    }
+    fn description(&self) -> &'static str {
+        "Resume a paused job back to waiting."
+    }
+    fn required_scope(&self) -> &'static str {
+        "admin"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": { "id": { "type": "integer" } },
+            "required": ["id"]
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let queue = MinionQueue::new(ctx.engine()?);
+        let job = queue
+            .resume_job(params.id)
+            .await?
+            .ok_or_else(|| {
+                OperationError::invalid_params(format!("job not found or not paused: {}", params.id))
+            })?;
+        Ok(job)
     }
 }
 
@@ -8146,7 +8957,7 @@ Outro."#;
         }
 
         #[test]
-        fn register_all_registers_thirty_five_ops() {
+        fn register_all_registers_forty_six_ops() {
             let mut registry = OperationRegistry::new();
             register_all(&mut registry);
             let names = registry.operation_names();
@@ -8188,6 +8999,18 @@ Outro."#;
                 "get_health",
                 "get_stats",
                 "get_recent_salience",
+                // 1-6-7-4: jobs / minions domain
+                "submit_job",
+                "submit_agent",
+                "list_jobs",
+                "get_job",
+                "get_job_progress",
+                "replay_job",
+                "send_job_message",
+                "cancel_job",
+                "retry_job",
+                "pause_job",
+                "resume_job",
             ] {
                 assert!(names.contains(&n), "missing op: {}", n);
             }
@@ -8565,6 +9388,202 @@ Outro."#;
                 .dispatch_json("soft_delete_page", &ctx, serde_json::json!({ "slug": "/bad" }))
                 .await;
             assert!(res.is_err());
+        }
+
+        // ── 1-6-7-4 domain ops: jobs / minions ──────────────────────────────
+
+        async fn job_ctx() -> (OperationRegistry, OperationContext) {
+            let mut registry = OperationRegistry::new();
+            register_all(&mut registry);
+            let engine = InMemoryEngine::default();
+            let ctx = OperationContext::local_cli().with_engine(engine.into_arc());
+            (registry, ctx)
+        }
+
+        async fn remote_job_ctx() -> (OperationRegistry, OperationContext) {
+            let mut registry = OperationRegistry::new();
+            register_all(&mut registry);
+            let engine = InMemoryEngine::default();
+            let ctx = OperationContext::remote_mcp("default").with_engine(engine.into_arc());
+            (registry, ctx)
+        }
+
+        #[tokio::test]
+        async fn submit_job_then_list_get_progress_roundtrip() {
+            let (registry, ctx) = job_ctx().await;
+            let job = registry
+                .dispatch_json("submit_job", &ctx, serde_json::json!({ "name": "sync" }))
+                .await
+                .unwrap();
+            let id = job["id"].as_i64().unwrap();
+            assert_eq!(job["name"].as_str().unwrap(), "sync");
+            assert_eq!(job["status"].as_str().unwrap(), "Waiting");
+
+            let listed = registry
+                .dispatch_json("list_jobs", &ctx, serde_json::json!({}))
+                .await
+                .unwrap();
+            let arr = listed.as_array().unwrap();
+            assert!(arr.iter().any(|j| j["id"].as_i64() == Some(id)));
+
+            let got = registry
+                .dispatch_json("get_job", &ctx, serde_json::json!({ "id": id }))
+                .await
+                .unwrap();
+            assert_eq!(got["name"].as_str().unwrap(), "sync");
+
+            let prog = registry
+                .dispatch_json("get_job_progress", &ctx, serde_json::json!({ "id": id }))
+                .await
+                .unwrap();
+            assert_eq!(prog["id"].as_i64().unwrap(), id);
+            assert_eq!(prog["status"].as_str().unwrap(), "Waiting");
+        }
+
+        #[tokio::test]
+        async fn submit_job_rejects_protected_name_over_mcp() {
+            let (registry, ctx) = remote_job_ctx().await;
+            let res = registry
+                .dispatch_json("submit_job", &ctx, serde_json::json!({ "name": "shell" }))
+                .await;
+            assert!(res.is_err());
+            assert_eq!(res.unwrap_err().code, ErrorCode::PermissionDenied);
+        }
+
+        #[tokio::test]
+        async fn submit_agent_rejects_local_cli() {
+            let (registry, ctx) = job_ctx().await;
+            let res = registry
+                .dispatch_json("submit_agent", &ctx, serde_json::json!({ "prompt": "do a thing" }))
+                .await;
+            assert!(res.is_err());
+            assert_eq!(res.unwrap_err().code, ErrorCode::InvalidParams);
+        }
+
+        #[tokio::test]
+        async fn get_job_missing_returns_error() {
+            let (registry, ctx) = job_ctx().await;
+            let res = registry
+                .dispatch_json("get_job", &ctx, serde_json::json!({ "id": 999 }))
+                .await;
+            assert!(res.is_err());
+        }
+
+        #[tokio::test]
+        async fn replay_job_creates_new_from_original() {
+            let (registry, ctx) = job_ctx().await;
+            let job = registry
+                .dispatch_json("submit_job", &ctx, serde_json::json!({ "name": "embed" }))
+                .await
+                .unwrap();
+            let id = job["id"].as_i64().unwrap();
+
+            let replayed = registry
+                .dispatch_json("replay_job", &ctx, serde_json::json!({ "id": id }))
+                .await
+                .unwrap();
+            assert_eq!(replayed["sourceId"].as_i64().unwrap(), id);
+            assert_ne!(replayed["id"].as_i64().unwrap(), id);
+            assert_eq!(replayed["name"].as_str().unwrap(), "embed");
+        }
+
+        #[tokio::test]
+        async fn send_job_message_roundtrip() {
+            let (registry, ctx) = job_ctx().await;
+            let job = registry
+                .dispatch_json("submit_job", &ctx, serde_json::json!({ "name": "import" }))
+                .await
+                .unwrap();
+            let id = job["id"].as_i64().unwrap();
+
+            let msg = registry
+                .dispatch_json(
+                    "send_job_message",
+                    &ctx,
+                    serde_json::json!({ "id": id, "payload": { "msg": "hi" } }),
+                )
+                .await
+                .unwrap();
+            assert_eq!(msg["sent"].as_bool().unwrap(), true);
+            assert_eq!(msg["jobId"].as_i64().unwrap(), id);
+            assert!(msg["messageId"].as_i64().is_some());
+        }
+
+        #[tokio::test]
+        async fn cancel_job_roundtrip() {
+            let (registry, ctx) = job_ctx().await;
+            let job = registry
+                .dispatch_json("submit_job", &ctx, serde_json::json!({ "name": "lint" }))
+                .await
+                .unwrap();
+            let id = job["id"].as_i64().unwrap();
+
+            let cancelled = registry
+                .dispatch_json("cancel_job", &ctx, serde_json::json!({ "id": id }))
+                .await
+                .unwrap();
+            assert_eq!(cancelled["id"].as_i64().unwrap(), id);
+            assert_eq!(cancelled["status"].as_str().unwrap(), "Cancelled");
+        }
+
+        #[tokio::test]
+        async fn retry_job_missing_returns_error() {
+            let (registry, ctx) = job_ctx().await;
+            let res = registry
+                .dispatch_json("retry_job", &ctx, serde_json::json!({ "id": 999 }))
+                .await;
+            assert!(res.is_err());
+        }
+
+        #[tokio::test]
+        async fn pause_resume_job_roundtrip() {
+            let (registry, ctx) = job_ctx().await;
+            let job = registry
+                .dispatch_json("submit_job", &ctx, serde_json::json!({ "name": "backlinks" }))
+                .await
+                .unwrap();
+            let id = job["id"].as_i64().unwrap();
+
+            let paused = registry
+                .dispatch_json("pause_job", &ctx, serde_json::json!({ "id": id }))
+                .await
+                .unwrap();
+            assert_eq!(paused["status"].as_str().unwrap(), "Paused");
+
+            let resumed = registry
+                .dispatch_json("resume_job", &ctx, serde_json::json!({ "id": id }))
+                .await
+                .unwrap();
+            assert_eq!(resumed["status"].as_str().unwrap(), "Waiting");
+        }
+
+        #[tokio::test]
+        async fn list_jobs_filters_by_status() {
+            let (registry, ctx) = job_ctx().await;
+            let _ = registry
+                .dispatch_json("submit_job", &ctx, serde_json::json!({ "name": "a" }))
+                .await
+                .unwrap();
+            let _ = registry
+                .dispatch_json("submit_job", &ctx, serde_json::json!({ "name": "b" }))
+                .await
+                .unwrap();
+
+            let waiting = registry
+                .dispatch_json("list_jobs", &ctx, serde_json::json!({ "status": "waiting" }))
+                .await
+                .unwrap();
+            assert!(waiting.as_array().unwrap().len() >= 2);
+        }
+
+        #[tokio::test]
+        async fn list_jobs_rejects_invalid_status() {
+            let (registry, ctx) = job_ctx().await;
+            let res = registry
+                .dispatch_json("list_jobs", &ctx, serde_json::json!({ "status": "nonsense" }))
+                .await;
+            assert!(res.is_err());
+            assert_eq!(res.unwrap_err().code, ErrorCode::InvalidParams);
         }
     }
 }

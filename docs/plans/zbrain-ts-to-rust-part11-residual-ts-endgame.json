@@ -1788,13 +1788,13 @@
     },
     "1-6-7-4": {
       "id": "1-6-7-4",
-      "label": "jobs-minions 域 wrap (12 op, engine job 方法)",
-      "status": "pending",
+      "label": "jobs-minions 域 wrap (11 op: submit/submit_agent/list/get/get_progress/replay/send_message/cancel/retry/pause/resume; engine job 方法 + MinionQueue)",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-6-7",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "实际 11 op 非审计标 12：subagent 非独立 op（只是 submit_agent 返回值 name）。InMemoryEngine 完整实现 job 队列（enqueue/get/get_jobs/retry/cancel/send_message/pause/resume/stats/health），op 直接调 MinionQueue::new(ctx.engine()?) + engine.cancel_job/send_message。提交/列表/进度/重放/消息/取消/重试/暂停/恢复 roundtrip + shell-over-MCP 受保护名拒绝 + 本地 CLI 拒 submit_agent 全部 11 测通过。register_all 累计 46。"
     },
     "1-6-7-5": {
       "id": "1-6-7-5",
@@ -1849,7 +1849,7 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-20 17:03:27",
+    "updated": "2026-07-20 17:26:50",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
