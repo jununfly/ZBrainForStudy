@@ -1893,6 +1893,95 @@ impl BrainEngine for LibsqlEngine {
         Ok(())
     }
 
+    // ── 1-6-7-10-2: code-graph query methods (Libsql) ────────────────────
+
+    async fn get_callers_of(
+        &self,
+        qualified_name: &str,
+        opts: &crate::import::CodeGraphQueryOpts,
+    ) -> Result<Vec<crate::import::CodeEdgeResult>> {
+        code_edge_symbol_query(self, "to_symbol_qualified", qualified_name, opts).await
+    }
+
+    async fn get_callees_of(
+        &self,
+        qualified_name: &str,
+        opts: &crate::import::CodeGraphQueryOpts,
+    ) -> Result<Vec<crate::import::CodeEdgeResult>> {
+        code_edge_symbol_query(self, "from_symbol_qualified", qualified_name, opts).await
+    }
+
+    async fn get_edges_by_chunk(
+        &self,
+        chunk_id: i64,
+        opts: &crate::import::CodeEdgeByChunkOpts,
+    ) -> Result<Vec<crate::import::CodeEdgeResult>> {
+        let conn = self.conn().await?;
+        let limit = (opts.limit.unwrap_or(50) as i64).min(200);
+
+        let mut params: Vec<::libsql::Value> = Vec::new();
+        params.push(::libsql::Value::from(chunk_id));
+
+        let chunk_filter = match opts.direction {
+            crate::import::CodeEdgeDirection::In => " WHERE to_chunk_id = ?1",
+            crate::import::CodeEdgeDirection::Out => " WHERE from_chunk_id = ?1",
+            // Parenthesize so an optional edge_type filter applies to BOTH
+            // endpoints (intent), not just the second via OR/AND precedence.
+            crate::import::CodeEdgeDirection::Both => " WHERE (from_chunk_id = ?1 OR to_chunk_id = ?1)",
+        };
+        let mut sql = format!(
+            "SELECT id, from_chunk_id, to_chunk_id, from_symbol_qualified, to_symbol_qualified, \
+                    edge_type, edge_metadata, source_id, 1 AS resolved \
+               FROM code_edges_chunk{chunk_filter}",
+        );
+
+        // Unresolved rows carry only `from_chunk_id`, so they contribute only
+        // for 'out' / 'both' directions.
+        let sym_filter = match opts.direction {
+            crate::import::CodeEdgeDirection::In => None,
+            crate::import::CodeEdgeDirection::Out | crate::import::CodeEdgeDirection::Both => {
+                Some(" WHERE from_chunk_id = ?1")
+            }
+        };
+        if let Some(sf) = sym_filter {
+            sql.push_str(&format!(
+                " UNION ALL SELECT id, from_chunk_id, NULL AS to_chunk_id, from_symbol_qualified, \
+                        to_symbol_qualified, edge_type, edge_metadata, source_id, 0 AS resolved \
+                   FROM code_edges_symbol{sf}",
+            ));
+        }
+
+        if let Some(et) = &opts.edge_type {
+            sql.push_str(" AND edge_type = ?2");
+            if sym_filter.is_some() {
+                sql.push_str(" AND edge_type = ?2");
+            }
+            params.push(::libsql::Value::from(et.clone()));
+        }
+
+        let limit_ph = params.len() + 1;
+        sql.push_str(&format!(" LIMIT ?{limit_ph}"));
+        params.push(::libsql::Value::from(limit));
+
+        let mut rows = conn
+            .query(&sql, ::libsql::params_from_iter(params))
+            .await
+            .map_err(|e| Error::engine(format!("get_edges_by_chunk query failed: {e}")))?;
+
+        let mut out = Vec::new();
+        loop {
+            let next = rows
+                .next()
+                .await
+                .map_err(|e| Error::engine(format!("get_edges_by_chunk row fetch failed: {e}")))?;
+            match next {
+                Some(row) => out.push(code_edge_row_to_result(&row)?),
+                None => break,
+            }
+        }
+        Ok(out)
+    }
+
     async fn get_calibration_profile(
         &self,
         holder: &str,
@@ -6014,6 +6103,106 @@ impl BrainEngine for LibsqlEngine {
             .map_err(|e| Error::engine(format!("delete_attachment: {e}")))?;
         Ok(affected > 0)
     }
+}
+
+/// UNION `code_edges_chunk` + `code_edges_symbol` on a symbol column
+/// (`to_symbol_qualified` for callers, `from_symbol_qualified` for callees).
+/// Mirrors TS `getCallersOf` / `getCalleesOf`. Free function (not a trait
+/// method) so it can be shared by both `get_callers_of` / `get_callees_of`.
+async fn code_edge_symbol_query(
+    engine: &LibsqlEngine,
+    symbol_col: &str,
+    qualified_name: &str,
+    opts: &crate::import::CodeGraphQueryOpts,
+) -> crate::Result<Vec<crate::import::CodeEdgeResult>> {
+    let conn = engine.conn().await?;
+    let limit = (opts.limit.unwrap_or(100) as i64).min(500);
+
+    let mut params: Vec<::libsql::Value> = Vec::new();
+    params.push(::libsql::Value::from(qualified_name.to_string()));
+
+    let mut sql = format!(
+        "SELECT id, from_chunk_id, to_chunk_id, from_symbol_qualified, to_symbol_qualified, \
+                edge_type, edge_metadata, source_id, 1 AS resolved \
+           FROM code_edges_chunk WHERE {sym} = ?1",
+        sym = symbol_col,
+    );
+    let mut sym_sql = format!(
+        "SELECT id, from_chunk_id, NULL AS to_chunk_id, from_symbol_qualified, to_symbol_qualified, \
+                edge_type, edge_metadata, source_id, 0 AS resolved \
+           FROM code_edges_symbol WHERE {sym} = ?1",
+        sym = symbol_col,
+    );
+    if !opts.all_sources {
+        if let Some(sid) = &opts.source_id {
+            sql.push_str(" AND source_id = ?2");
+            sym_sql.push_str(" AND source_id = ?2");
+            params.push(::libsql::Value::from(sid.clone()));
+        }
+    }
+        let limit_ph = params.len() + 1;
+        sql.push_str(&format!(" UNION ALL {sym_sql} LIMIT ?{limit_ph}"));
+        params.push(::libsql::Value::from(limit));
+
+    let mut rows = conn
+        .query(&sql, ::libsql::params_from_iter(params))
+        .await
+        .map_err(|e| crate::Error::engine(format!("get_callers/callees ({symbol_col}) query failed: {e}")))?;
+
+    let mut out = Vec::new();
+    loop {
+        let next = rows
+            .next()
+            .await
+            .map_err(|e| crate::Error::engine(format!("get_callers/callees ({symbol_col}) row fetch failed: {e}")))?;
+        match next {
+            Some(row) => out.push(code_edge_row_to_result(&row)?),
+            None => break,
+        }
+    }
+    Ok(out)
+}
+
+/// Map a libsql code-edge result row to the public `CodeEdgeResult` contract.
+/// Column order matches the SELECTs in `code_edge_symbol_query` /
+/// `get_edges_by_chunk`: id, from_chunk_id, to_chunk_id, from_symbol_qualified,
+/// to_symbol_qualified, edge_type, edge_metadata, source_id, resolved.
+fn code_edge_row_to_result(row: &::libsql::Row) -> crate::Result<crate::import::CodeEdgeResult> {
+    let id: i64 = row
+        .get(0)
+        .map_err(|e| crate::Error::engine(format!("code_edge decode id: {e}")))?;
+    let from_chunk_id: i64 = row
+        .get(1)
+        .map_err(|e| crate::Error::engine(format!("code_edge decode from_chunk_id: {e}")))?;
+    let to_chunk_id: Option<i64> = row.get(2).unwrap_or(None);
+    let from_symbol_qualified: String = row
+        .get(3)
+        .map_err(|e| crate::Error::engine(format!("code_edge decode from_symbol_qualified: {e}")))?;
+    let to_symbol_qualified: String = row
+        .get(4)
+        .map_err(|e| crate::Error::engine(format!("code_edge decode to_symbol_qualified: {e}")))?;
+    let edge_type: String = row
+        .get(5)
+        .map_err(|e| crate::Error::engine(format!("code_edge decode edge_type: {e}")))?;
+    let meta_text: Option<String> = row.get(6).unwrap_or(None);
+    let edge_metadata = meta_text
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let source_id: Option<String> = row.get(7).unwrap_or(None);
+    let resolved_raw: i64 = row
+        .get(8)
+        .map_err(|e| crate::Error::engine(format!("code_edge decode resolved: {e}")))?;
+    Ok(crate::import::CodeEdgeResult {
+        id,
+        from_chunk_id,
+        to_chunk_id,
+        from_symbol_qualified,
+        to_symbol_qualified,
+        edge_type,
+        edge_metadata,
+        source_id,
+        resolved: resolved_raw != 0,
+    })
 }
 
 // ─── libsql facts helpers ─────────────────────────────────────────────────

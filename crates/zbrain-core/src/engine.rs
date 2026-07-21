@@ -1136,6 +1136,53 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
         ))
     }
 
+    /// Graph query: "who calls this symbol?" — UNION of `code_edges_chunk` +
+    /// `code_edges_symbol` where `to_symbol_qualified = qualified_name`.
+    /// Mirrors TS `getCallersOf`. Default: returns `Err(`Unsupported`)`.
+    async fn get_callers_of(
+        &self,
+        qualified_name: &str,
+        opts: &crate::import::CodeGraphQueryOpts,
+    ) -> crate::Result<Vec<crate::import::CodeEdgeResult>> {
+        let _ = (qualified_name, opts);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "get_callers_of not yet implemented for this engine",
+        ))
+    }
+
+    /// Graph query: "what does this symbol call?" — edges where
+    /// `from_symbol_qualified = qualified_name`. Mirrors TS `getCalleesOf`.
+    /// Default: returns `Err(`Unsupported`)`.
+    async fn get_callees_of(
+        &self,
+        qualified_name: &str,
+        opts: &crate::import::CodeGraphQueryOpts,
+    ) -> crate::Result<Vec<crate::import::CodeEdgeResult>> {
+        let _ = (qualified_name, opts);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "get_callees_of not yet implemented for this engine",
+        ))
+    }
+
+    /// All edges touching a chunk in the given direction. Mirrors TS
+    /// `getEdgesByChunk`. Default: returns `Err(`Unsupported`)`.
+    async fn get_edges_by_chunk(
+        &self,
+        chunk_id: i64,
+        opts: &crate::import::CodeEdgeByChunkOpts,
+    ) -> crate::Result<Vec<crate::import::CodeEdgeResult>> {
+        let _ = (chunk_id, opts);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "get_edges_by_chunk not yet implemented for this engine",
+        ))
+    }
+
     // ── Slice 6a S6 method group (15 required methods) ────────────────────
     //
     // Backends must implement the full Slice 6a S6 method group explicitly;
@@ -2648,6 +2695,41 @@ struct InternalCodeEdge {
     edge_metadata: serde_json::Value,
     source_id: Option<String>,
     resolved: bool,
+}
+
+/// Map an in-memory code-edge row to the public `CodeEdgeResult` contract.
+fn edge_row_to_result(row: &InternalCodeEdge) -> crate::import::CodeEdgeResult {
+    crate::import::CodeEdgeResult {
+        id: row.id,
+        from_chunk_id: row.from_chunk_id,
+        to_chunk_id: row.to_chunk_id,
+        from_symbol_qualified: row.from_symbol_qualified.clone(),
+        to_symbol_qualified: row.to_symbol_qualified.clone(),
+        edge_type: row.edge_type.clone(),
+        edge_metadata: row.edge_metadata.clone(),
+        source_id: row.source_id.clone(),
+        resolved: row.resolved,
+    }
+}
+
+/// Source scoping for `get_callers_of` / `get_callees_of` (mirrors TS):
+/// apply the filter only when a concrete `source_id` is set AND not all-sources.
+fn edge_source_match(row: &InternalCodeEdge, opts: &crate::import::CodeGraphQueryOpts) -> bool {
+    if opts.all_sources {
+        return true;
+    }
+    match &opts.source_id {
+        None => true,
+        Some(sid) => row.source_id.as_deref() == Some(sid.as_str()),
+    }
+}
+
+/// Cap a result set to `limit` (default 100, hard cap 500 for callers/callees).
+fn apply_edge_limit<T>(out: &mut Vec<T>, limit: Option<usize>) {
+    let cap = limit.unwrap_or(100).min(500);
+    if out.len() > cap {
+        out.truncate(cap);
+    }
 }
 
 /// Internal in-memory attachment row: the persisted metadata plus the decoded
@@ -6489,6 +6571,80 @@ impl BrainEngine for InMemoryEngine {
         Ok(())
     }
 
+    // ── 1-6-7-10-2: code-graph query methods (InMemory) ──────────────────
+
+    async fn get_callers_of(
+        &self,
+        qualified_name: &str,
+        opts: &crate::import::CodeGraphQueryOpts,
+    ) -> crate::Result<Vec<crate::import::CodeEdgeResult>> {
+        let store = self
+            .code_edges_store
+            .lock()
+            .expect("InMemoryEngine code_edges_store mutex poisoned");
+        let mut out: Vec<crate::import::CodeEdgeResult> = store
+            .iter()
+            .filter(|row| row.to_symbol_qualified == qualified_name)
+            .filter(|row| edge_source_match(row, opts))
+            .map(edge_row_to_result)
+            .collect();
+        apply_edge_limit(&mut out, opts.limit);
+        Ok(out)
+    }
+
+    async fn get_callees_of(
+        &self,
+        qualified_name: &str,
+        opts: &crate::import::CodeGraphQueryOpts,
+    ) -> crate::Result<Vec<crate::import::CodeEdgeResult>> {
+        let store = self
+            .code_edges_store
+            .lock()
+            .expect("InMemoryEngine code_edges_store mutex poisoned");
+        let mut out: Vec<crate::import::CodeEdgeResult> = store
+            .iter()
+            .filter(|row| row.from_symbol_qualified == qualified_name)
+            .filter(|row| edge_source_match(row, opts))
+            .map(edge_row_to_result)
+            .collect();
+        apply_edge_limit(&mut out, opts.limit);
+        Ok(out)
+    }
+
+    async fn get_edges_by_chunk(
+        &self,
+        chunk_id: i64,
+        opts: &crate::import::CodeEdgeByChunkOpts,
+    ) -> crate::Result<Vec<crate::import::CodeEdgeResult>> {
+        let store = self
+            .code_edges_store
+            .lock()
+            .expect("InMemoryEngine code_edges_store mutex poisoned");
+        let mut out: Vec<crate::import::CodeEdgeResult> = store
+            .iter()
+            .filter(|row| match opts.direction {
+                crate::import::CodeEdgeDirection::In => {
+                    row.resolved && row.to_chunk_id == Some(chunk_id)
+                }
+                crate::import::CodeEdgeDirection::Out => row.from_chunk_id == chunk_id,
+                crate::import::CodeEdgeDirection::Both => {
+                    row.from_chunk_id == chunk_id
+                        || (row.resolved && row.to_chunk_id == Some(chunk_id))
+                }
+            })
+            .filter(|row| match &opts.edge_type {
+                Some(et) => &row.edge_type == et,
+                None => true,
+            })
+            .map(edge_row_to_result)
+            .collect();
+        let cap = opts.limit.unwrap_or(50).min(200);
+        if out.len() > cap {
+            out.truncate(cap);
+        }
+        Ok(out)
+    }
+
     async fn get_health(&self) -> crate::Result<crate::autopilot::brain_score::BrainHealth> {
         use crate::autopilot::brain_score::{BrainHealth, MostConnectedEntry};
 
@@ -8924,5 +9080,235 @@ mod rate_lease_tests {
         assert_eq!(store.len(), 1);
         assert_eq!(store[0].from_chunk_id, 40);
         assert_eq!(store[0].to_chunk_id, Some(50));
+    }
+
+    // ── 1-6-7-10-2: code-graph query methods (InMemory) ────────────────
+
+    #[tokio::test]
+    async fn code_edge_query_callers_returns_resolved_and_unresolved() {
+        let engine = InMemoryEngine::default();
+        let edges = vec![
+            crate::import::CodeEdgeInput {
+                from_chunk_id: 1,
+                to_chunk_id: Some(2),
+                from_symbol_qualified: "mod::foo".to_string(),
+                to_symbol_qualified: "mod::target".to_string(),
+                edge_type: "calls".to_string(),
+                edge_metadata: serde_json::json!({}),
+                source_id: Some("s1".to_string()),
+            },
+            crate::import::CodeEdgeInput {
+                from_chunk_id: 3,
+                to_chunk_id: None,
+                from_symbol_qualified: "mod::bar".to_string(),
+                to_symbol_qualified: "mod::target".to_string(),
+                edge_type: "imports".to_string(),
+                edge_metadata: serde_json::json!({ "line": 5 }),
+                source_id: None,
+            },
+        ];
+        engine.add_code_edges(&edges).await.unwrap();
+
+        let callers = engine
+            .get_callers_of("mod::target", &crate::import::CodeGraphQueryOpts::default())
+            .await
+            .unwrap();
+        assert_eq!(callers.len(), 2);
+        assert!(callers.iter().any(|e| e.resolved && e.from_symbol_qualified == "mod::foo"));
+        assert!(callers.iter().any(|e| !e.resolved && e.from_symbol_qualified == "mod::bar"));
+        let unresolved = callers.iter().find(|e| !e.resolved).expect("unresolved caller");
+        assert_eq!(unresolved.edge_metadata, serde_json::json!({ "line": 5 }));
+    }
+
+    #[tokio::test]
+    async fn code_edge_query_callees_matches_from_symbol() {
+        let engine = InMemoryEngine::default();
+        let edges = vec![
+            crate::import::CodeEdgeInput {
+                from_chunk_id: 1,
+                to_chunk_id: Some(2),
+                from_symbol_qualified: "mod::origin".to_string(),
+                to_symbol_qualified: "mod::a".to_string(),
+                edge_type: "calls".to_string(),
+                edge_metadata: serde_json::json!({}),
+                source_id: None,
+            },
+            crate::import::CodeEdgeInput {
+                from_chunk_id: 3,
+                to_chunk_id: None,
+                from_symbol_qualified: "mod::origin".to_string(),
+                to_symbol_qualified: "mod::b".to_string(),
+                edge_type: "imports".to_string(),
+                edge_metadata: serde_json::json!({}),
+                source_id: None,
+            },
+            // unrelated caller of a different symbol
+            crate::import::CodeEdgeInput {
+                from_chunk_id: 4,
+                to_chunk_id: Some(5),
+                from_symbol_qualified: "mod::other".to_string(),
+                to_symbol_qualified: "mod::z".to_string(),
+                edge_type: "calls".to_string(),
+                edge_metadata: serde_json::json!({}),
+                source_id: None,
+            },
+        ];
+        engine.add_code_edges(&edges).await.unwrap();
+
+        let callees = engine
+            .get_callees_of("mod::origin", &crate::import::CodeGraphQueryOpts::default())
+            .await
+            .unwrap();
+        assert_eq!(callees.len(), 2);
+        assert!(callees.iter().all(|e| e.from_symbol_qualified == "mod::origin"));
+    }
+
+    #[tokio::test]
+    async fn code_edges_by_chunk_direction_filters() {
+        let engine = InMemoryEngine::default();
+        let edges = vec![
+            // out (resolved): 10 → 20
+            crate::import::CodeEdgeInput {
+                from_chunk_id: 10,
+                to_chunk_id: Some(20),
+                from_symbol_qualified: "a".to_string(),
+                to_symbol_qualified: "b".to_string(),
+                edge_type: "calls".to_string(),
+                edge_metadata: serde_json::json!({}),
+                source_id: None,
+            },
+            // in (resolved): 30 → 10
+            crate::import::CodeEdgeInput {
+                from_chunk_id: 30,
+                to_chunk_id: Some(10),
+                from_symbol_qualified: "c".to_string(),
+                to_symbol_qualified: "d".to_string(),
+                edge_type: "calls".to_string(),
+                edge_metadata: serde_json::json!({}),
+                source_id: None,
+            },
+            // out (unresolved): 10 → ?
+            crate::import::CodeEdgeInput {
+                from_chunk_id: 10,
+                to_chunk_id: None,
+                from_symbol_qualified: "e".to_string(),
+                to_symbol_qualified: "f".to_string(),
+                edge_type: "imports".to_string(),
+                edge_metadata: serde_json::json!({}),
+                source_id: None,
+            },
+        ];
+        engine.add_code_edges(&edges).await.unwrap();
+
+        let out = engine
+            .get_edges_by_chunk(
+                10,
+                &crate::import::CodeEdgeByChunkOpts {
+                    direction: crate::import::CodeEdgeDirection::Out,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|e| e.from_chunk_id == 10));
+
+        let inbound = engine
+            .get_edges_by_chunk(
+                10,
+                &crate::import::CodeEdgeByChunkOpts {
+                    direction: crate::import::CodeEdgeDirection::In,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(inbound.len(), 1);
+        assert_eq!(inbound[0].from_chunk_id, 30);
+        assert_eq!(inbound[0].to_chunk_id, Some(10));
+
+        let both = engine
+            .get_edges_by_chunk(
+                10,
+                &crate::import::CodeEdgeByChunkOpts {
+                    direction: crate::import::CodeEdgeDirection::Both,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(both.len(), 3);
+
+        let calls_only = engine
+            .get_edges_by_chunk(
+                10,
+                &crate::import::CodeEdgeByChunkOpts {
+                    direction: crate::import::CodeEdgeDirection::Both,
+                    edge_type: Some("calls".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(calls_only.len(), 2);
+        assert!(calls_only.iter().all(|e| e.edge_type == "calls"));
+    }
+
+    #[tokio::test]
+    async fn code_edge_query_source_scoping() {
+        let engine = InMemoryEngine::default();
+        let edges = vec![
+            crate::import::CodeEdgeInput {
+                from_chunk_id: 1,
+                to_chunk_id: Some(2),
+                from_symbol_qualified: "x".to_string(),
+                to_symbol_qualified: "T".to_string(),
+                edge_type: "calls".to_string(),
+                edge_metadata: serde_json::json!({}),
+                source_id: Some("s1".to_string()),
+            },
+            crate::import::CodeEdgeInput {
+                from_chunk_id: 3,
+                to_chunk_id: Some(4),
+                from_symbol_qualified: "y".to_string(),
+                to_symbol_qualified: "T".to_string(),
+                edge_type: "calls".to_string(),
+                edge_metadata: serde_json::json!({}),
+                source_id: Some("s2".to_string()),
+            },
+        ];
+        engine.add_code_edges(&edges).await.unwrap();
+
+        let all = engine
+            .get_callers_of("T", &crate::import::CodeGraphQueryOpts::default())
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 2);
+
+        let scoped = engine
+            .get_callers_of(
+                "T",
+                &crate::import::CodeGraphQueryOpts {
+                    source_id: Some("s1".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0].from_symbol_qualified, "x");
+
+        let override_scope = engine
+            .get_callers_of(
+                "T",
+                &crate::import::CodeGraphQueryOpts {
+                    all_sources: true,
+                    source_id: Some("s1".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(override_scope.len(), 2);
     }
 }

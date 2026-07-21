@@ -2823,6 +2823,157 @@ impl BrainEngine for PostgresEngine {
             .collect()
     }
 
+    // ── 1-6-7-10-2: code-graph write + query methods (Postgres) ──────────
+
+    async fn add_code_edges(
+        &self,
+        edges: &[crate::import::CodeEdgeInput],
+    ) -> Result<()> {
+        if edges.is_empty() {
+            return Ok(());
+        }
+        let pool = self.pool()?;
+        for e in edges {
+            // Mirror TS: edge_metadata defaults to {} when null.
+            let meta = if e.edge_metadata.is_null() {
+                serde_json::json!({})
+            } else {
+                e.edge_metadata.clone()
+            };
+            match e.to_chunk_id {
+                Some(to_chunk_id) => {
+                    sqlx::query(
+                        "INSERT INTO code_edges_chunk \
+                         (from_chunk_id, to_chunk_id, from_symbol_qualified, to_symbol_qualified, edge_type, edge_metadata, source_id) \
+                         VALUES ($1,$2,$3,$4,$5,$6,$7) \
+                         ON CONFLICT (from_chunk_id, to_chunk_id, edge_type) DO NOTHING",
+                    )
+                    .bind(e.from_chunk_id)
+                    .bind(to_chunk_id)
+                    .bind(&e.from_symbol_qualified)
+                    .bind(&e.to_symbol_qualified)
+                    .bind(&e.edge_type)
+                    .bind(&meta)
+                    .bind(e.source_id.clone())
+                    .execute(pool)
+                    .await
+                    .map_err(|err| Error::engine(format!("add_code_edges (chunk) insert failed: {err}")))?;
+                }
+                None => {
+                    sqlx::query(
+                        "INSERT INTO code_edges_symbol \
+                         (from_chunk_id, from_symbol_qualified, to_symbol_qualified, edge_type, edge_metadata, source_id) \
+                         VALUES ($1,$2,$3,$4,$5,$6) \
+                         ON CONFLICT (from_chunk_id, to_symbol_qualified, edge_type) DO NOTHING",
+                    )
+                    .bind(e.from_chunk_id)
+                    .bind(&e.from_symbol_qualified)
+                    .bind(&e.to_symbol_qualified)
+                    .bind(&e.edge_type)
+                    .bind(&meta)
+                    .bind(e.source_id.clone())
+                    .execute(pool)
+                    .await
+                    .map_err(|err| Error::engine(format!("add_code_edges (symbol) insert failed: {err}")))?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn delete_code_edges_for_chunks(
+        &self,
+        chunk_ids: &[i64],
+    ) -> Result<()> {
+        if chunk_ids.is_empty() {
+            return Ok(());
+        }
+        let pool = self.pool()?;
+        for &cid in chunk_ids {
+            sqlx::query("DELETE FROM code_edges_chunk WHERE from_chunk_id = $1 OR to_chunk_id = $1")
+                .bind(cid)
+                .execute(pool)
+                .await
+                .map_err(|err| Error::engine(format!("delete_code_edges_for_chunks (chunk) failed: {err}")))?;
+            sqlx::query("DELETE FROM code_edges_symbol WHERE from_chunk_id = $1")
+                .bind(cid)
+                .execute(pool)
+                .await
+                .map_err(|err| Error::engine(format!("delete_code_edges_for_chunks (symbol) failed: {err}")))?;
+        }
+        Ok(())
+    }
+
+    async fn get_callers_of(
+        &self,
+        qualified_name: &str,
+        opts: &crate::import::CodeGraphQueryOpts,
+    ) -> Result<Vec<crate::import::CodeEdgeResult>> {
+        code_edge_symbol_query_pg(self, "to_symbol_qualified", qualified_name, opts).await
+    }
+
+    async fn get_callees_of(
+        &self,
+        qualified_name: &str,
+        opts: &crate::import::CodeGraphQueryOpts,
+    ) -> Result<Vec<crate::import::CodeEdgeResult>> {
+        code_edge_symbol_query_pg(self, "from_symbol_qualified", qualified_name, opts).await
+    }
+
+    async fn get_edges_by_chunk(
+        &self,
+        chunk_id: i64,
+        opts: &crate::import::CodeEdgeByChunkOpts,
+    ) -> Result<Vec<crate::import::CodeEdgeResult>> {
+        let pool = self.pool()?;
+        let limit = (opts.limit.unwrap_or(50) as i64).min(200);
+
+        let chunk_filter = match opts.direction {
+            crate::import::CodeEdgeDirection::In => " WHERE to_chunk_id = $1",
+            crate::import::CodeEdgeDirection::Out => " WHERE from_chunk_id = $1",
+            crate::import::CodeEdgeDirection::Both => " WHERE (from_chunk_id = $1 OR to_chunk_id = $1)",
+        };
+        let sym_filter = match opts.direction {
+            crate::import::CodeEdgeDirection::In => None,
+            crate::import::CodeEdgeDirection::Out | crate::import::CodeEdgeDirection::Both => {
+                Some(" WHERE from_chunk_id = $1")
+            }
+        };
+
+        let mut sql = format!(
+            "SELECT id, from_chunk_id, to_chunk_id, from_symbol_qualified, to_symbol_qualified, \
+                    edge_type, edge_metadata, source_id, true AS resolved \
+               FROM code_edges_chunk{chunk_filter}",
+        );
+        if let Some(sf) = sym_filter {
+            sql.push_str(&format!(
+                " UNION ALL SELECT id, from_chunk_id, NULL AS to_chunk_id, from_symbol_qualified, \
+                        to_symbol_qualified, edge_type, edge_metadata, source_id, false AS resolved \
+                   FROM code_edges_symbol{sf}",
+            ));
+        }
+        let has_edge_type = opts.edge_type.is_some();
+        if has_edge_type {
+            sql.push_str(" AND edge_type = $2");
+            if sym_filter.is_some() {
+                sql.push_str(" AND edge_type = $2");
+            }
+        }
+        let limit_ph = if has_edge_type { 3 } else { 2 };
+        sql.push_str(&format!(" LIMIT ${limit_ph}"));
+
+        let mut q = sqlx::query(&sql).bind(chunk_id);
+        if has_edge_type {
+            q = q.bind(opts.edge_type.clone().unwrap());
+        }
+        q = q.bind(limit);
+        let rows = q
+            .fetch_all(pool)
+            .await
+            .map_err(|e| Error::engine(format!("get_edges_by_chunk query failed: {e}")))?;
+        rows.iter().map(code_edge_row_to_result_pg).collect()
+    }
+
     async fn get_backlink_counts(
         &self,
         slugs: &[String],
@@ -6327,4 +6478,92 @@ impl TokenQueries for PostgresEngine {
             }
         }
     }
+}
+
+/// UNION `code_edges_chunk` + `code_edges_symbol` on a symbol column.
+/// Mirrors the libsql `code_edge_symbol_query` (Rust replacement of TS
+/// `getCallersOf` / `getCalleesOf`). Free function (not a trait method) so it
+/// can be shared by both `get_callers_of` / `get_callees_of`.
+async fn code_edge_symbol_query_pg(
+    engine: &PostgresEngine,
+    symbol_col: &str,
+    qualified_name: &str,
+    opts: &crate::import::CodeGraphQueryOpts,
+) -> crate::Result<Vec<crate::import::CodeEdgeResult>> {
+    let pool = engine.pool()?;
+    let limit = (opts.limit.unwrap_or(100) as i64).min(500);
+    let has_source = !opts.all_sources && opts.source_id.is_some();
+    let source_clause = if has_source { " AND source_id = $2" } else { "" };
+    let limit_ph = if has_source { 3 } else { 2 };
+    let sql = format!(
+        "SELECT id, from_chunk_id, to_chunk_id, from_symbol_qualified, to_symbol_qualified, \
+                edge_type, edge_metadata, source_id, true AS resolved \
+           FROM code_edges_chunk WHERE {sym} = $1{sc} \
+         UNION ALL \
+         SELECT id, from_chunk_id, NULL AS to_chunk_id, from_symbol_qualified, to_symbol_qualified, \
+                edge_type, edge_metadata, source_id, false AS resolved \
+           FROM code_edges_symbol WHERE {sym} = $1{sc} \
+         LIMIT ${lim}",
+        sym = symbol_col,
+        sc = source_clause,
+        lim = limit_ph,
+    );
+    let mut q = sqlx::query(&sql).bind(qualified_name.to_string());
+    if has_source {
+        q = q.bind(opts.source_id.clone().unwrap());
+    }
+    q = q.bind(limit);
+    let rows = q
+        .fetch_all(pool)
+        .await
+        .map_err(|e| crate::Error::engine(format!("get_callers/callees ({symbol_col}) query failed: {e}")))?;
+    rows.iter().map(code_edge_row_to_result_pg).collect()
+}
+
+/// Map a Postgres code-edge result row to the public `CodeEdgeResult` contract.
+/// Column aliases must match the SELECTs in `code_edge_symbol_query_pg` /
+/// `get_edges_by_chunk` (the `resolved`/`to_chunk_id` AS aliases come from SQL).
+fn code_edge_row_to_result_pg(
+    row: &sqlx::postgres::PgRow,
+) -> crate::Result<crate::import::CodeEdgeResult> {
+    // PG stores these as INT4 (from SERIAL / INTEGER); widen to i64 to match
+    // the `CodeEdgeResult` contract and the libsql / InMemory backends.
+    let id: i32 = row
+        .try_get("id")
+        .map_err(|e| crate::Error::engine(format!("code_edge decode id: {e}")))?;
+    let from_chunk_id: i32 = row
+        .try_get("from_chunk_id")
+        .map_err(|e| crate::Error::engine(format!("code_edge decode from_chunk_id: {e}")))?;
+    let to_chunk_id: Option<i32> = row
+        .try_get("to_chunk_id")
+        .map_err(|e| crate::Error::engine(format!("code_edge decode to_chunk_id: {e}")))?;
+    let from_symbol_qualified: String = row
+        .try_get("from_symbol_qualified")
+        .map_err(|e| crate::Error::engine(format!("code_edge decode from_symbol_qualified: {e}")))?;
+    let to_symbol_qualified: String = row
+        .try_get("to_symbol_qualified")
+        .map_err(|e| crate::Error::engine(format!("code_edge decode to_symbol_qualified: {e}")))?;
+    let edge_type: String = row
+        .try_get("edge_type")
+        .map_err(|e| crate::Error::engine(format!("code_edge decode edge_type: {e}")))?;
+    let edge_metadata: serde_json::Value = row
+        .try_get("edge_metadata")
+        .unwrap_or_else(|_| serde_json::json!({}));
+    let source_id: Option<String> = row
+        .try_get("source_id")
+        .map_err(|e| crate::Error::engine(format!("code_edge decode source_id: {e}")))?;
+    let resolved: bool = row
+        .try_get("resolved")
+        .map_err(|e| crate::Error::engine(format!("code_edge decode resolved: {e}")))?;
+    Ok(crate::import::CodeEdgeResult {
+        id: id as i64,
+        from_chunk_id: from_chunk_id as i64,
+        to_chunk_id: to_chunk_id.map(|v| v as i64),
+        from_symbol_qualified,
+        to_symbol_qualified,
+        edge_type,
+        edge_metadata,
+        source_id,
+        resolved,
+    })
 }

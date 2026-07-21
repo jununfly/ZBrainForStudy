@@ -61,6 +61,56 @@ pub struct CodeEdgeInput {
     pub source_id: Option<String>,
 }
 
+/// 代码边查询结果行。对齐 TS `CodeEdgeResult`（src/core/types.ts:946）。
+///
+/// `resolved = true` 表示该行来自 `code_edges_chunk`（`to_chunk_id` 已知）；
+/// `resolved = false` 表示来自 `code_edges_symbol`（`to_chunk_id` 为 null）。
+/// 读路径（1-6-7-10-2）对两表 UNION 后统一映射为此结构。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CodeEdgeResult {
+    pub id: i64,
+    pub from_chunk_id: i64,
+    pub to_chunk_id: Option<i64>,
+    pub from_symbol_qualified: String,
+    pub to_symbol_qualified: String,
+    pub edge_type: String,
+    pub edge_metadata: serde_json::Value,
+    pub source_id: Option<String>,
+    pub resolved: bool,
+}
+
+/// `get_callers_of` / `get_callees_of` 的查询选项。
+#[derive(Debug, Clone, Default)]
+pub struct CodeGraphQueryOpts {
+    /// 结果上限；缺省 100，硬性上限 500（对齐 TS）。
+    pub limit: Option<usize>,
+    /// 跨 source 查询（忽略 source 作用域）。
+    pub all_sources: bool,
+    /// 单一 source 作用域；与 `all_sources` 互斥，`all_sources = true` 时忽略。
+    pub source_id: Option<String>,
+}
+
+/// `get_edges_by_chunk` 的方向过滤。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CodeEdgeDirection {
+    /// 同时返回指向该 chunk 与从该 chunk 出发的边。
+    #[default]
+    Both,
+    /// 仅返回指向该 chunk 的边（`to_chunk_id = chunk_id`，仅 resolved 行）。
+    In,
+    /// 仅返回从该 chunk 出发的边（`from_chunk_id = chunk_id`）。
+    Out,
+}
+
+/// `get_edges_by_chunk` 的查询选项。
+#[derive(Debug, Clone, Default)]
+pub struct CodeEdgeByChunkOpts {
+    pub direction: CodeEdgeDirection,
+    pub edge_type: Option<String>,
+    /// 结果上限；缺省 50，硬性上限 200（对齐 TS）。
+    pub limit: Option<usize>,
+}
+
 // --- 公共 API ---
 
 use crate::error::Result;
