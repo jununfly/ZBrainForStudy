@@ -2037,12 +2037,13 @@
     "1-6-7-10-3": {
       "id": "1-6-7-10-3",
       "label": "符号查询: find_code_def (content_chunks.symbol_name 精确, IN 类型列表) + find_code_refs (chunk_text ILIKE) 作为 typed engine 方法 (无 execute_raw) → code_def / code_refs op",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6-7-10",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": " | DONE 2026-07-21: typed BrainEngine methods find_code_def (symbol_name exact + symbol_type IN DEF_TYPES + page_kind=code) and find_code_refs (chunk_text ILIKE, code pages only). InMemory + Libsql + Postgres all implemented. 10 integration tests (2 libsql def/refs + 2 inmemory + 4 libsql behavior + 2 pg). Three gates green (core 1874 / mcp 14 / cli build). Op rewiring (code_def/code_refs) deferred to final cutover.",
+      "title": "code-graph symbol queries"
     },
     "1-6-7-10-4": {
       "id": "1-6-7-10-4",

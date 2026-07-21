@@ -1183,6 +1183,42 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
         ))
     }
 
+    /// 1-6-7-10-3 符号查询：精确查找符号的**定义站点**。
+    ///
+    /// 对齐 TS `findCodeDef`（`src/commands/code-def.ts`）：`content_chunks.symbol_name`
+    /// 精确匹配 + `symbol_type IN (DEF_TYPES)` + 所属页面 `page_kind = 'code'`，
+    /// JOIN `pages` 取 `slug` 与 `frontmatter->>'file'`。
+    async fn find_code_def(
+        &self,
+        symbol: &str,
+        opts: &crate::import::CodeSymbolQueryOpts,
+    ) -> crate::Result<Vec<crate::import::CodeDefResult>> {
+        let _ = (symbol, opts);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "find_code_def not yet implemented for this engine",
+        ))
+    }
+
+    /// 1-6-7-10-3 符号查询：模糊查找符号的**引用站点**（使用处）。
+    ///
+    /// 对齐 TS `findCodeRefs`（`src/commands/code-refs.ts`）：`content_chunks.chunk_text`
+    /// `ILIKE '%symbol%'` + 所属页面 `page_kind = 'code'`，JOIN `pages` 取 `slug` 与
+    /// `frontmatter->>'file'`。
+    async fn find_code_refs(
+        &self,
+        symbol: &str,
+        opts: &crate::import::CodeSymbolQueryOpts,
+    ) -> crate::Result<Vec<crate::import::CodeRefResult>> {
+        let _ = (symbol, opts);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "find_code_refs not yet implemented for this engine",
+        ))
+    }
+
     // ── Slice 6a S6 method group (15 required methods) ────────────────────
     //
     // Backends must implement the full Slice 6a S6 method group explicitly;
@@ -2729,6 +2765,46 @@ fn apply_edge_limit<T>(out: &mut Vec<T>, limit: Option<usize>) {
     let cap = limit.unwrap_or(100).min(500);
     if out.len() > cap {
         out.truncate(cap);
+    }
+}
+
+/// Definition-site symbol types (aligns with TS `DEF_TYPES` in
+/// `src/commands/code-def.ts`). Used by `find_code_def` to restrict the
+/// `symbol_type` column to real definitions rather than usage sites.
+fn is_def_type(symbol_type: &str) -> bool {
+    matches!(
+        symbol_type,
+        "function"
+            | "class"
+            | "interface"
+            | "type"
+            | "enum"
+            | "struct"
+            | "trait"
+            | "module"
+            | "contract"
+            | "table"
+            | "view"
+            | "index"
+            | "procedure"
+            | "schema"
+            | "database"
+            | "trigger"
+            | "export statement"
+    )
+}
+
+/// Deterministic ordering rank for `find_code_def` results: functions before
+/// classes before interfaces … exactly mirrors the TS `ORDER BY CASE`.
+fn def_rank(symbol_type: Option<&str>) -> u8 {
+    match symbol_type {
+        Some("function") => 1,
+        Some("class") => 2,
+        Some("interface") => 3,
+        Some("type") => 4,
+        Some("enum") => 5,
+        Some("struct") => 6,
+        _ => 7,
     }
 }
 
@@ -6639,6 +6715,116 @@ impl BrainEngine for InMemoryEngine {
             .map(edge_row_to_result)
             .collect();
         let cap = opts.limit.unwrap_or(50).min(200);
+        if out.len() > cap {
+            out.truncate(cap);
+        }
+        Ok(out)
+    }
+
+    async fn find_code_def(
+        &self,
+        symbol: &str,
+        opts: &crate::import::CodeSymbolQueryOpts,
+    ) -> crate::Result<Vec<crate::import::CodeDefResult>> {
+        let cap = (opts.limit.unwrap_or(20) as usize).min(500);
+        let pages = self.store.lock().expect("InMemoryEngine store mutex poisoned");
+        let chunks = self
+            .chunk_store
+            .lock()
+            .expect("InMemoryEngine chunk_store mutex poisoned");
+        let mut out: Vec<crate::import::CodeDefResult> = Vec::new();
+        for page in pages.iter() {
+            if page.page_kind != crate::types::PageKind::Code {
+                continue;
+            }
+            let Some(page_chunks) = chunks.get(&page.slug) else {
+                continue;
+            };
+            for ci in page_chunks.iter() {
+                let Some(st) = ci.symbol_type.as_deref() else {
+                    continue;
+                };
+                if ci.symbol_name.as_deref() != Some(symbol) || !is_def_type(st) {
+                    continue;
+                }
+                if let Some(lang) = &opts.language {
+                    if ci.language.as_deref() != Some(lang.as_str()) {
+                        continue;
+                    }
+                }
+                out.push(crate::import::CodeDefResult {
+                    slug: page.slug.clone(),
+                    file: page
+                        .frontmatter
+                        .get("file")
+                        .and_then(|v| v.as_str())
+                        .map(String::from),
+                    language: ci.language.clone(),
+                    symbol_type: ci.symbol_type.clone(),
+                    start_line: ci.start_line.map(|v| v as i64),
+                    end_line: ci.end_line.map(|v| v as i64),
+                    snippet: ci.chunk_text.chars().take(500).collect(),
+                });
+            }
+        }
+        out.sort_by(|a, b| {
+            def_rank(a.symbol_type.as_deref())
+                .cmp(&def_rank(b.symbol_type.as_deref()))
+                .then_with(|| a.slug.cmp(&b.slug))
+                .then_with(|| a.start_line.cmp(&b.start_line))
+        });
+        if out.len() > cap {
+            out.truncate(cap);
+        }
+        Ok(out)
+    }
+
+    async fn find_code_refs(
+        &self,
+        symbol: &str,
+        opts: &crate::import::CodeSymbolQueryOpts,
+    ) -> crate::Result<Vec<crate::import::CodeRefResult>> {
+        let cap = (opts.limit.unwrap_or(50) as usize).min(500);
+        let pages = self.store.lock().expect("InMemoryEngine store mutex poisoned");
+        let chunks = self
+            .chunk_store
+            .lock()
+            .expect("InMemoryEngine chunk_store mutex poisoned");
+        let needle = symbol.to_lowercase();
+        let mut out: Vec<crate::import::CodeRefResult> = Vec::new();
+        for page in pages.iter() {
+            if page.page_kind != crate::types::PageKind::Code {
+                continue;
+            }
+            let Some(page_chunks) = chunks.get(&page.slug) else {
+                continue;
+            };
+            for ci in page_chunks.iter() {
+                if !ci.chunk_text.to_lowercase().contains(&needle) {
+                    continue;
+                }
+                if let Some(lang) = &opts.language {
+                    if ci.language.as_deref() != Some(lang.as_str()) {
+                        continue;
+                    }
+                }
+                out.push(crate::import::CodeRefResult {
+                    slug: page.slug.clone(),
+                    file: page
+                        .frontmatter
+                        .get("file")
+                        .and_then(|v| v.as_str())
+                        .map(String::from),
+                    language: ci.language.clone(),
+                    symbol_name: ci.symbol_name.clone(),
+                    symbol_type: ci.symbol_type.clone(),
+                    start_line: ci.start_line.map(|v| v as i64),
+                    end_line: ci.end_line.map(|v| v as i64),
+                    snippet: ci.chunk_text.chars().take(500).collect(),
+                });
+            }
+        }
+        out.sort_by(|a, b| a.slug.cmp(&b.slug).then_with(|| a.start_line.cmp(&b.start_line)));
         if out.len() > cap {
             out.truncate(cap);
         }

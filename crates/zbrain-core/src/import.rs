@@ -111,6 +111,48 @@ pub struct CodeEdgeByChunkOpts {
     pub limit: Option<usize>,
 }
 
+/// 符号定义查询结果行。对齐 TS `CodeDefResult`（`src/commands/code-def.ts:19`）。
+///
+/// `find_code_def` 在 `content_chunks` 上按 `symbol_name` 精确匹配，限制
+/// `symbol_type IN (DEF_TYPES)` 且所属页面 `page_kind = 'code'`，JOIN `pages`
+/// 取 `slug` 与 `frontmatter->>'file'`。`snippet` 为 `chunk_text` 前 500 字。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CodeDefResult {
+    pub slug: String,
+    pub file: Option<String>,
+    pub language: Option<String>,
+    pub symbol_type: Option<String>,
+    pub start_line: Option<i64>,
+    pub end_line: Option<i64>,
+    pub snippet: String,
+}
+
+/// 符号引用查询结果行。对齐 TS `CodeRefResult`（`src/commands/code-refs.ts:24`）。
+///
+/// `find_code_refs` 在 `content_chunks` 上按 `chunk_text ILIKE '%symbol%'` 模糊
+/// 匹配，限制所属页面 `page_kind = 'code'`，JOIN `pages` 取 `slug` 与
+/// `frontmatter->>'file'`。`snippet` 为 `chunk_text` 前 500 字。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CodeRefResult {
+    pub slug: String,
+    pub file: Option<String>,
+    pub language: Option<String>,
+    pub symbol_name: Option<String>,
+    pub symbol_type: Option<String>,
+    pub start_line: Option<i64>,
+    pub end_line: Option<i64>,
+    pub snippet: String,
+}
+
+/// `find_code_def` / `find_code_refs` 的共享查询选项。
+#[derive(Debug, Clone, Default)]
+pub struct CodeSymbolQueryOpts {
+    /// 结果上限；缺省 20（def）/ 50（refs），硬性上限 500（对齐 TS）。
+    pub limit: Option<i64>,
+    /// 单一语言作用域过滤（`cc.language = ?`）；`None` 不过滤。
+    pub language: Option<String>,
+}
+
 // --- 公共 API ---
 
 use crate::error::Result;

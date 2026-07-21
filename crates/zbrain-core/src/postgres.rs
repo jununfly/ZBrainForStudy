@@ -2974,6 +2974,24 @@ impl BrainEngine for PostgresEngine {
         rows.iter().map(code_edge_row_to_result_pg).collect()
     }
 
+    async fn find_code_def(
+        &self,
+        symbol: &str,
+        opts: &crate::import::CodeSymbolQueryOpts,
+    ) -> Result<Vec<crate::import::CodeDefResult>> {
+        let pool = self.pool()?;
+        code_def_query_pg(pool, symbol, opts).await
+    }
+
+    async fn find_code_refs(
+        &self,
+        symbol: &str,
+        opts: &crate::import::CodeSymbolQueryOpts,
+    ) -> Result<Vec<crate::import::CodeRefResult>> {
+        let pool = self.pool()?;
+        code_ref_query_pg(pool, symbol, opts).await
+    }
+
     async fn get_backlink_counts(
         &self,
         slugs: &[String],
@@ -6565,5 +6583,172 @@ fn code_edge_row_to_result_pg(
         edge_metadata,
         source_id,
         resolved,
+    })
+}
+
+// ─── 1-6-7-10-3: code-graph symbol queries (Postgres) ──────────────────────
+
+/// Definition-site symbol types (mirrors `CODE_DEF_TYPES` in libsql.rs and the
+/// TS `DEF_TYPES`); interpolated into the `IN (...)` clause (trusted literal).
+const CODE_DEF_TYPES_PG: &[&str] = &[
+    "function", "class", "interface", "type", "enum", "struct", "trait", "module", "contract",
+    "table", "view", "index", "procedure", "schema", "database", "trigger", "export statement",
+];
+
+/// Postgres mirror of `code_def_query` (libsql). `frontmatter->>'file'` extracts
+/// the JSONB file key; `symbol_type IN (...)` restricts to real definitions.
+async fn code_def_query_pg(
+    pool: &sqlx::PgPool,
+    symbol: &str,
+    opts: &crate::import::CodeSymbolQueryOpts,
+) -> Result<Vec<crate::import::CodeDefResult>> {
+    let limit = (opts.limit.unwrap_or(20) as i64).min(500);
+    let has_lang = opts.language.is_some();
+    let lang_clause = if has_lang { " AND cc.language = $2" } else { "" };
+    let limit_ph = if has_lang { 3 } else { 2 };
+    let types_list = CODE_DEF_TYPES_PG
+        .iter()
+        .map(|t| format!("'{t}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT p.slug, p.frontmatter->>'file' AS file, cc.language, \
+                cc.symbol_type, cc.start_line, cc.end_line, cc.chunk_text \
+           FROM content_chunks cc \
+           JOIN pages p ON p.id = cc.page_id \
+          WHERE cc.symbol_name = $1 \
+            {lang} \
+            AND p.page_kind = 'code' \
+            AND cc.symbol_type IN ({types}) \
+          ORDER BY CASE cc.symbol_type \
+                     WHEN 'function' THEN 1 WHEN 'class' THEN 2 WHEN 'interface' THEN 3 \
+                     WHEN 'type' THEN 4 WHEN 'enum' THEN 5 WHEN 'struct' THEN 6 \
+                     ELSE 7 END, \
+                   p.slug, cc.start_line \
+          LIMIT ${lim}",
+        lang = lang_clause,
+        types = types_list,
+        lim = limit_ph,
+    );
+    let mut q = sqlx::query(&sql).bind(symbol.to_string());
+    if has_lang {
+        q = q.bind(opts.language.clone().unwrap());
+    }
+    q = q.bind(limit);
+    let rows = q
+        .fetch_all(pool)
+        .await
+        .map_err(|e| crate::Error::engine(format!("find_code_def (pg) query failed: {e}")))?;
+    rows.iter().map(code_def_row_to_result_pg).collect()
+}
+
+/// Postgres mirror of `code_ref_query` (libsql). Native `ILIKE` for the
+/// case-insensitive substring scan; every matching chunk is returned.
+async fn code_ref_query_pg(
+    pool: &sqlx::PgPool,
+    symbol: &str,
+    opts: &crate::import::CodeSymbolQueryOpts,
+) -> Result<Vec<crate::import::CodeRefResult>> {
+    let limit = (opts.limit.unwrap_or(50) as i64).min(500);
+    let has_lang = opts.language.is_some();
+    let lang_clause = if has_lang { " AND cc.language = $2" } else { "" };
+    let limit_ph = if has_lang { 3 } else { 2 };
+    let sql = format!(
+        "SELECT p.slug, p.frontmatter->>'file' AS file, cc.language, \
+                cc.symbol_name, cc.symbol_type, cc.start_line, cc.end_line, cc.chunk_text \
+           FROM content_chunks cc \
+           JOIN pages p ON p.id = cc.page_id \
+          WHERE p.page_kind = 'code' \
+            AND cc.chunk_text ILIKE $1 \
+            {lang} \
+          ORDER BY p.slug, cc.start_line \
+          LIMIT ${lim}",
+        lang = lang_clause,
+        lim = limit_ph,
+    );
+    let mut q = sqlx::query(&sql).bind(format!("%{symbol}%"));
+    if has_lang {
+        q = q.bind(opts.language.clone().unwrap());
+    }
+    q = q.bind(limit);
+    let rows = q
+        .fetch_all(pool)
+        .await
+        .map_err(|e| crate::Error::engine(format!("find_code_refs (pg) query failed: {e}")))?;
+    rows.iter().map(code_ref_row_to_result_pg).collect()
+}
+
+fn code_def_row_to_result_pg(
+    row: &sqlx::postgres::PgRow,
+) -> crate::Result<crate::import::CodeDefResult> {
+    let slug: String = row
+        .try_get("slug")
+        .map_err(|e| crate::Error::engine(format!("code_def (pg) decode slug: {e}")))?;
+    let file: Option<String> = row
+        .try_get("file")
+        .map_err(|e| crate::Error::engine(format!("code_def (pg) decode file: {e}")))?;
+    let language: Option<String> = row
+        .try_get("language")
+        .map_err(|e| crate::Error::engine(format!("code_def (pg) decode language: {e}")))?;
+    let symbol_type: Option<String> = row
+        .try_get("symbol_type")
+        .map_err(|e| crate::Error::engine(format!("code_def (pg) decode symbol_type: {e}")))?;
+    // PG stores start_line/end_line as INTEGER (INT4); widen to i64.
+    let start_line: Option<i32> = row
+        .try_get("start_line")
+        .map_err(|e| crate::Error::engine(format!("code_def (pg) decode start_line: {e}")))?;
+    let end_line: Option<i32> = row
+        .try_get("end_line")
+        .map_err(|e| crate::Error::engine(format!("code_def (pg) decode end_line: {e}")))?;
+    let chunk_text: String = row
+        .try_get("chunk_text")
+        .map_err(|e| crate::Error::engine(format!("code_def (pg) decode chunk_text: {e}")))?;
+    Ok(crate::import::CodeDefResult {
+        slug,
+        file,
+        language,
+        symbol_type,
+        start_line: start_line.map(|v| v as i64),
+        end_line: end_line.map(|v| v as i64),
+        snippet: chunk_text.chars().take(500).collect(),
+    })
+}
+
+fn code_ref_row_to_result_pg(
+    row: &sqlx::postgres::PgRow,
+) -> crate::Result<crate::import::CodeRefResult> {
+    let slug: String = row
+        .try_get("slug")
+        .map_err(|e| crate::Error::engine(format!("code_ref (pg) decode slug: {e}")))?;
+    let file: Option<String> = row
+        .try_get("file")
+        .map_err(|e| crate::Error::engine(format!("code_ref (pg) decode file: {e}")))?;
+    let language: Option<String> = row
+        .try_get("language")
+        .map_err(|e| crate::Error::engine(format!("code_ref (pg) decode language: {e}")))?;
+    let symbol_name: Option<String> = row
+        .try_get("symbol_name")
+        .map_err(|e| crate::Error::engine(format!("code_ref (pg) decode symbol_name: {e}")))?;
+    let symbol_type: Option<String> = row
+        .try_get("symbol_type")
+        .map_err(|e| crate::Error::engine(format!("code_ref (pg) decode symbol_type: {e}")))?;
+    let start_line: Option<i32> = row
+        .try_get("start_line")
+        .map_err(|e| crate::Error::engine(format!("code_ref (pg) decode start_line: {e}")))?;
+    let end_line: Option<i32> = row
+        .try_get("end_line")
+        .map_err(|e| crate::Error::engine(format!("code_ref (pg) decode end_line: {e}")))?;
+    let chunk_text: String = row
+        .try_get("chunk_text")
+        .map_err(|e| crate::Error::engine(format!("code_ref (pg) decode chunk_text: {e}")))?;
+    Ok(crate::import::CodeRefResult {
+        slug,
+        file,
+        language,
+        symbol_name,
+        symbol_type,
+        start_line: start_line.map(|v| v as i64),
+        end_line: end_line.map(|v| v as i64),
+        snippet: chunk_text.chars().take(500).collect(),
     })
 }

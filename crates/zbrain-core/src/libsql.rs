@@ -1982,6 +1982,24 @@ impl BrainEngine for LibsqlEngine {
         Ok(out)
     }
 
+    async fn find_code_def(
+        &self,
+        symbol: &str,
+        opts: &crate::import::CodeSymbolQueryOpts,
+    ) -> Result<Vec<crate::import::CodeDefResult>> {
+        let conn = self.conn().await?;
+        code_def_query(&conn, symbol, opts).await
+    }
+
+    async fn find_code_refs(
+        &self,
+        symbol: &str,
+        opts: &crate::import::CodeSymbolQueryOpts,
+    ) -> Result<Vec<crate::import::CodeRefResult>> {
+        let conn = self.conn().await?;
+        code_ref_query(&conn, symbol, opts).await
+    }
+
     async fn get_calibration_profile(
         &self,
         holder: &str,
@@ -6202,6 +6220,177 @@ fn code_edge_row_to_result(row: &::libsql::Row) -> crate::Result<crate::import::
         edge_metadata,
         source_id,
         resolved: resolved_raw != 0,
+    })
+}
+
+// ─── 1-6-7-10-3: code-graph symbol queries (libsql) ────────────────────────
+
+/// Definition-site symbol types, aligned with TS `DEF_TYPES` in
+/// `src/commands/code-def.ts`. The list is a fixed, trusted literal set — it
+/// is interpolated into the SQL `IN (...)` clause (no user input reaches it).
+const CODE_DEF_TYPES: &[&str] = &[
+    "function", "class", "interface", "type", "enum", "struct", "trait", "module", "contract",
+    "table", "view", "index", "procedure", "schema", "database", "trigger", "export statement",
+];
+
+/// Mirror of TS `findCodeDef` (`src/commands/code-def.ts`): exact
+/// `symbol_name` match, restricted to `symbol_type IN (DEF_TYPES)` on
+/// `page_kind = 'code'` pages, joined to `pages` for slug + file.
+async fn code_def_query(
+    conn: &::libsql::Connection,
+    symbol: &str,
+    opts: &crate::import::CodeSymbolQueryOpts,
+) -> Result<Vec<crate::import::CodeDefResult>> {
+    let limit = (opts.limit.unwrap_or(20) as i64).min(500);
+    let mut params: Vec<::libsql::Value> = vec![::libsql::Value::from(symbol.to_string())];
+    let mut lang_clause = String::new();
+    if let Some(lang) = &opts.language {
+        lang_clause = " AND cc.language = ?2".to_string();
+        params.push(::libsql::Value::from(lang.clone()));
+    }
+    let limit_ph = params.len() + 1;
+    params.push(::libsql::Value::from(limit));
+
+    let types_list = CODE_DEF_TYPES
+        .iter()
+        .map(|t| format!("'{t}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let sql = format!(
+        "SELECT p.slug, json_extract(p.frontmatter, '$.file') AS file, cc.language, \
+                cc.symbol_type, cc.start_line, cc.end_line, cc.chunk_text \
+           FROM content_chunks cc \
+           JOIN pages p ON p.id = cc.page_id \
+          WHERE cc.symbol_name = ?1 \
+            {lang} \
+            AND p.page_kind = 'code' \
+            AND cc.symbol_type IN ({types}) \
+          ORDER BY CASE cc.symbol_type \
+                     WHEN 'function' THEN 1 WHEN 'class' THEN 2 WHEN 'interface' THEN 3 \
+                     WHEN 'type' THEN 4 WHEN 'enum' THEN 5 WHEN 'struct' THEN 6 \
+                     ELSE 7 END, \
+                   p.slug, cc.start_line \
+          LIMIT ?{limit_ph}",
+        lang = lang_clause,
+        types = types_list,
+        limit_ph = limit_ph,
+    );
+
+    let mut rows = conn
+        .query(&sql, ::libsql::params_from_iter(params))
+        .await
+        .map_err(|e| Error::engine(format!("find_code_def query failed: {e}")))?;
+    let mut out = Vec::new();
+    loop {
+        let next = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("find_code_def row fetch failed: {e}")))?;
+        match next {
+            Some(row) => out.push(code_def_row_to_result(&row)?),
+            None => break,
+        }
+    }
+    Ok(out)
+}
+
+/// Mirror of TS `findCodeRefs` (`src/commands/code-refs.ts`): `chunk_text
+/// ILIKE '%symbol%'` over `page_kind = 'code'` pages, joined to `pages` for
+/// slug + file. Returns every matching chunk (no DISTINCT ON page).
+async fn code_ref_query(
+    conn: &::libsql::Connection,
+    symbol: &str,
+    opts: &crate::import::CodeSymbolQueryOpts,
+) -> Result<Vec<crate::import::CodeRefResult>> {
+    let limit = (opts.limit.unwrap_or(50) as i64).min(500);
+    let mut params: Vec<::libsql::Value> =
+        vec![::libsql::Value::from(format!("%{symbol}%"))];
+    let mut lang_clause = String::new();
+    if let Some(lang) = &opts.language {
+        lang_clause = format!(" AND cc.language = ?{}", params.len() + 1);
+        params.push(::libsql::Value::from(lang.clone()));
+    }
+    let limit_ph = params.len() + 1;
+    params.push(::libsql::Value::from(limit));
+
+    let sql = format!(
+        "SELECT p.slug, json_extract(p.frontmatter, '$.file') AS file, cc.language, \
+                cc.symbol_name, cc.symbol_type, cc.start_line, cc.end_line, cc.chunk_text \
+           FROM content_chunks cc \
+           JOIN pages p ON p.id = cc.page_id \
+          WHERE p.page_kind = 'code' \
+            AND cc.chunk_text LIKE ?1 \
+            {lang} \
+          ORDER BY p.slug, cc.start_line \
+          LIMIT ?{limit_ph}",
+        lang = lang_clause,
+        limit_ph = limit_ph,
+    );
+
+    let mut rows = conn
+        .query(&sql, ::libsql::params_from_iter(params))
+        .await
+        .map_err(|e| Error::engine(format!("find_code_refs query failed: {e}")))?;
+    let mut out = Vec::new();
+    loop {
+        let next = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("find_code_refs row fetch failed: {e}")))?;
+        match next {
+            Some(row) => out.push(code_ref_row_to_result(&row)?),
+            None => break,
+        }
+    }
+    Ok(out)
+}
+
+fn code_def_row_to_result(row: &::libsql::Row) -> crate::Result<crate::import::CodeDefResult> {
+    let slug: String = row
+        .get(0)
+        .map_err(|e| crate::Error::engine(format!("code_def decode slug: {e}")))?;
+    let file: Option<String> = row.get(1).unwrap_or(None);
+    let language: Option<String> = row.get(2).unwrap_or(None);
+    let symbol_type: Option<String> = row.get(3).unwrap_or(None);
+    let start_line: Option<i64> = row.get(4).unwrap_or(None);
+    let end_line: Option<i64> = row.get(5).unwrap_or(None);
+    let chunk_text: String = row
+        .get(6)
+        .map_err(|e| crate::Error::engine(format!("code_def decode chunk_text: {e}")))?;
+    Ok(crate::import::CodeDefResult {
+        slug,
+        file,
+        language,
+        symbol_type,
+        start_line,
+        end_line,
+        snippet: chunk_text.chars().take(500).collect(),
+    })
+}
+
+fn code_ref_row_to_result(row: &::libsql::Row) -> crate::Result<crate::import::CodeRefResult> {
+    let slug: String = row
+        .get(0)
+        .map_err(|e| crate::Error::engine(format!("code_ref decode slug: {e}")))?;
+    let file: Option<String> = row.get(1).unwrap_or(None);
+    let language: Option<String> = row.get(2).unwrap_or(None);
+    let symbol_name: Option<String> = row.get(3).unwrap_or(None);
+    let symbol_type: Option<String> = row.get(4).unwrap_or(None);
+    let start_line: Option<i64> = row.get(5).unwrap_or(None);
+    let end_line: Option<i64> = row.get(6).unwrap_or(None);
+    let chunk_text: String = row
+        .get(7)
+        .map_err(|e| crate::Error::engine(format!("code_ref decode chunk_text: {e}")))?;
+    Ok(crate::import::CodeRefResult {
+        slug,
+        file,
+        language,
+        symbol_name,
+        symbol_type,
+        start_line,
+        end_line,
+        snippet: chunk_text.chars().take(500).collect(),
     })
 }
 
