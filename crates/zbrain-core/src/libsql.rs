@@ -625,6 +625,18 @@ impl BrainEngine for LibsqlEngine {
         EngineKind::Libsql
     }
 
+    async fn brain_identity(&self) -> crate::error::Result<crate::engine::BrainIdentity> {
+        // Libsql exposes admin stats; populate the real page/chunk counts.
+        let full = crate::admin_queries::AdminQueries::get_full_stats(self).await?;
+        Ok(crate::engine::BrainIdentity {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            engine: crate::engine::engine_kind_str(self.kind()).to_string(),
+            page_count: full.page_count,
+            chunk_count: full.chunk_count,
+            last_sync_iso: None,
+        })
+    }
+
     // ── Lifecycle ─────────────────────────────────────────────────────────
 
     async fn connect(&self, config: &EngineConfig) -> Result<()> {

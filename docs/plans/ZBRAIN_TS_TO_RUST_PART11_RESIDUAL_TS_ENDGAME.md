@@ -47,6 +47,9 @@
 - Q: commands-misc 5 op Rust 实现后，TS operations.ts 中对应 op 是否随删？
   A: 否，保留 TS op 直到终局 1-6-7-9「删 operations.ts」
   > 理由：(1)机械测试 mechanical.test.ts 经 operationsByName+callOp 直派 TS registry，删 op 会让 callOp(get_versions/revert_version/resolve_slugs/put_raw_data/get_raw_data) 失败；(2)TS get_versions 含 takes-fence 红挡(stripTakesFence)，Rust GetVersionsOperation 当前未移植该隐私边界，删 TS 会丢行为。1-6-7-1..5 均保留 TS，仅 1-6-7-6 schema-pack 因独立注册解耦才 per-slice 删。
+- Q: get_brain_identity (1-6-7-8 NET_NEW) 本增量是否实现？
+  A: 是，已实现并注册（register_all 59→60）
+  > 新增 BrainEngine::brain_identity 默认方法（返回 kind+零计数，version=CARGO_PKG_VERSION）+ LibsqlEngine override（经 AdminQueries::get_full_stats 填 page/chunk 计数）；GetBrainIdentityOperation 注册。InMemory/Postgres 走默认零计数。TS operations.ts 中 get_brain_identity 仍保留至 1-6-7-9（同批决策）。
 
 **子节点:**
 - [x] 1-6-7-8-1. 1-6-7-8-1. commands-misc 可行 5 op Rust 实现 (resolve_slugs/get_versions/revert_version/put_raw_data/get_raw_data): engine 方法双后端已备，迁入 register_all(54→59) + 5 行为测试，三道门全绿

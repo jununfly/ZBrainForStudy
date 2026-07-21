@@ -1857,6 +1857,11 @@
           "q": "commands-misc 5 op Rust 实现后，TS operations.ts 中对应 op 是否随删？",
           "answer": "否，保留 TS op 直到终局 1-6-7-9「删 operations.ts」",
           "note": "理由：(1)机械测试 mechanical.test.ts 经 operationsByName+callOp 直派 TS registry，删 op 会让 callOp(get_versions/revert_version/resolve_slugs/put_raw_data/get_raw_data) 失败；(2)TS get_versions 含 takes-fence 红挡(stripTakesFence)，Rust GetVersionsOperation 当前未移植该隐私边界，删 TS 会丢行为。1-6-7-1..5 均保留 TS，仅 1-6-7-6 schema-pack 因独立注册解耦才 per-slice 删。"
+        },
+        {
+          "q": "get_brain_identity (1-6-7-8 NET_NEW) 本增量是否实现？",
+          "answer": "是，已实现并注册（register_all 59→60）",
+          "note": "新增 BrainEngine::brain_identity 默认方法（返回 kind+零计数，version=CARGO_PKG_VERSION）+ LibsqlEngine override（经 AdminQueries::get_full_stats 填 page/chunk 计数）；GetBrainIdentityOperation 注册。InMemory/Postgres 走默认零计数。TS operations.ts 中 get_brain_identity 仍保留至 1-6-7-9（同批决策）。"
         }
       ],
       "notes": ""
@@ -1884,7 +1889,7 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-21 13:36:55",
+    "updated": "2026-07-21 13:50:29",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"

@@ -2715,6 +2715,7 @@ pub fn register_all(registry: &mut OperationRegistry) {
     registry.register(RevertVersionOperation);
     registry.register(PutRawDataOperation);
     registry.register(GetRawDataOperation);
+    registry.register(GetBrainIdentityOperation);
 }
 
 // ── SoftDeletePage Operation (Slice 1-6-7-1) ──────────────────────────────
@@ -6291,6 +6292,45 @@ impl TypedOperation for GetRawDataOperation {
             .get_raw_data(&params.slug, params.source.as_deref(), Some(ctx.source_id.as_str()))
             .await?;
         Ok(rows)
+    }
+}
+
+/// Thin-client banner identity packet (mirrors TS `get_brain_identity`).
+#[derive(Debug, Clone)]
+pub struct GetBrainIdentityOperation;
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct GetBrainIdentityParams {}
+
+impl ValidateParams for GetBrainIdentityParams {
+    fn validate(&self) -> OperationResult<()> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TypedOperation for GetBrainIdentityOperation {
+    type Params = GetBrainIdentityParams;
+    type Output = crate::engine::BrainIdentity;
+
+    fn name(&self) -> &'static str {
+        "get_brain_identity"
+    }
+    fn description(&self) -> &'static str {
+        "Thin-client banner identity packet: engine kind + content counts (read-scope, banner-only)."
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({ "type": "object", "properties": {} })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        _params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let identity = engine.brain_identity().await?;
+        Ok(identity)
     }
 }
 
@@ -10033,7 +10073,7 @@ Outro."#;
         }
 
         #[test]
-        fn register_all_registers_fifty_nine_ops() {
+        fn register_all_registers_sixty_ops() {
             let mut registry = OperationRegistry::new();
             register_all(&mut registry);
             let names = registry.operation_names();
@@ -10102,6 +10142,7 @@ Outro."#;
                 "revert_version",
                 "put_raw_data",
                 "get_raw_data",
+                "get_brain_identity",
             ] {
                 assert!(names.contains(&n), "missing op: {}", n);
             }
@@ -10239,6 +10280,25 @@ Outro."#;
                 .await;
             assert!(res.is_ok(), "get_chunks failed: {:?}", res);
             assert_eq!(res.unwrap(), serde_json::json!([]));
+        }
+
+        #[tokio::test]
+        async fn get_brain_identity_reports_engine_and_version() {
+            let (registry, ctx) = ingestion_ctx().await;
+            let res = registry
+                .dispatch_json("get_brain_identity", &ctx, serde_json::json!({}))
+                .await;
+            assert!(res.is_ok(), "get_brain_identity failed: {:?}", res);
+            let id = res.unwrap();
+            assert_eq!(id.get("engine").and_then(|s| s.as_str()), Some("inmemory"));
+            assert!(
+                id.get("version").and_then(|s| s.as_str()).unwrap_or("").len() > 0,
+                "expected non-empty version, got: {:?}",
+                id
+            );
+            // In-memory engine has no admin stats, so counts default to 0.
+            assert_eq!(id.get("pageCount").and_then(|n| n.as_i64()), Some(0));
+            assert_eq!(id.get("chunkCount").and_then(|n| n.as_i64()), Some(0));
         }
 
         #[tokio::test]

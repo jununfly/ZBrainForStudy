@@ -40,6 +40,34 @@ pub enum EngineKind {
     InMemory,
 }
 
+/// Map an [`EngineKind`] to the stable string the thin-client banner and
+/// `get_brain_identity` packet expose. Mirrors the TS `'postgres' | 'pglite'`
+/// union; the Rust-only `InMemory` test double renders as `inmemory`.
+pub fn engine_kind_str(k: EngineKind) -> &'static str {
+    match k {
+        EngineKind::Postgres => "postgres",
+        EngineKind::Libsql => "pglite",
+        EngineKind::InMemory => "inmemory",
+    }
+}
+
+/// Thin-client banner identity packet (mirrors TS `get_brain_identity`).
+///
+/// Read-scope, banner-only: lets a thin client learn which engine backs its
+/// brain and roughly how much content lives there, without any content access.
+/// `page_count` / `chunk_count` default to 0 and are populated only by backends
+/// that expose admin stats (Libsql); `last_sync_iso` is always `None` in this
+/// port (the TS source never populated it either).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrainIdentity {
+    pub version: String,
+    pub engine: String,
+    pub page_count: i64,
+    pub chunk_count: i64,
+    pub last_sync_iso: Option<String>,
+}
+
 /// Startup configuration passed to [`BrainEngine::connect`].
 /// Mirrors `EngineConfig` in `src/core/types.ts:1285`.
 #[derive(Debug, Default, Clone)]
@@ -2229,6 +2257,21 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
             "unsupported",
             "get_stats not yet implemented for this engine",
         ))
+    }
+
+    /// Thin-client banner identity packet (mirrors TS `get_brain_identity`).
+    ///
+    /// Default returns the engine kind plus zero counters. Backends that expose
+    /// admin stats (Libsql) override this to populate `page_count` /
+    /// `chunk_count` from [`crate::admin_queries::AdminQueries::get_full_stats`].
+    async fn brain_identity(&self) -> crate::error::Result<BrainIdentity> {
+        Ok(BrainIdentity {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            engine: engine_kind_str(self.kind()).to_string(),
+            page_count: 0,
+            chunk_count: 0,
+            last_sync_iso: None,
+        })
     }
 
     /// Supervisor-level health probe on the minion jobs table. Returns live
