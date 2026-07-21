@@ -40,14 +40,25 @@ pub struct ImportResult {
     pub tags_removed: usize,
 }
 
-/// 代码边输入（用于 add_code_edges）
+/// 代码边输入（用于 add_code_edges）。
+///
+/// 对齐 TS `CodeEdgeInput`（src/core/types.ts:928）：`from_chunk_id` 恒已知；
+/// `to_chunk_id` 为 `None` 时该行落入 `code_edges_symbol`（目标仅以合格符号名
+/// 已知，定义 chunk 尚未导入），否则落入 `code_edges_chunk`（两端均为已知
+/// chunk id）。读路径在 1-6-7-10-2 通过 UNION 两表消费。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CodeEdgeInput {
-    pub source_chunk_id: i64,
-    pub target_chunk_id: i64,
+    pub from_chunk_id: i64,
+    /// 已解析目标 chunk id。`None` → 行落入 `code_edges_symbol`。
+    #[serde(default)]
+    pub to_chunk_id: Option<i64>,
+    pub from_symbol_qualified: String,
+    pub to_symbol_qualified: String,
     pub edge_type: String,
-    pub target_symbol: String,
-    pub target_module: Option<String>,
+    #[serde(default)]
+    pub edge_metadata: serde_json::Value,
+    #[serde(default)]
+    pub source_id: Option<String>,
 }
 
 // --- 公共 API ---

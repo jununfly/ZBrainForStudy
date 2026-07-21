@@ -132,6 +132,8 @@ const MIGRATION_0018: &str = include_str!("../migrations-sqlite/0018_rate_leases
 const MIGRATION_0019: &str = include_str!("../migrations-sqlite/0019_content_chunks.sql");
 /// 1-6-7-5: ingest log for the `log_ingest` / `get_ingest_log` ops.
 const MIGRATION_0020: &str = include_str!("../migrations-sqlite/0020_ingest_log.sql");
+/// 1-6-7-10-1: code-graph edge storage (write side for code-intel ops).
+const MIGRATION_0021: &str = include_str!("../migrations-sqlite/0021_code_edges.sql");
 
 /// Legacy string array — REMOVED in favor of MigrationRegistry.
 /// Use LIBQL_MIGRATIONS instead.
@@ -257,6 +259,11 @@ pub static LIBQL_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 20,
         name: "ingest_log",
         sql: MIGRATION_0020,
+    }));
+    registry.add(Box::new(LibsqlMigration {
+        version: 21,
+        name: "code_edges",
+        sql: MIGRATION_0021,
     }));
 
     registry
@@ -1800,6 +1807,90 @@ impl BrainEngine for LibsqlEngine {
             out.push(libsql_row_to_ingest_log(&row)?);
         }
         Ok(out)
+    }
+
+    async fn add_code_edges(
+        &self,
+        edges: &[crate::import::CodeEdgeInput],
+    ) -> Result<()> {
+        if edges.is_empty() {
+            return Ok(());
+        }
+        let conn = self.conn().await?;
+        for e in edges {
+            // Mirror TS: edge_metadata defaults to {} when absent/null.
+            let meta = if e.edge_metadata.is_null() {
+                "{}".to_string()
+            } else {
+                serde_json::to_string(&e.edge_metadata)
+                    .unwrap_or_else(|_| "{}".to_string())
+            };
+            match e.to_chunk_id {
+                Some(to_chunk_id) => {
+                    conn.execute(
+                        "INSERT OR IGNORE INTO code_edges_chunk \
+                         (from_chunk_id, to_chunk_id, from_symbol_qualified, to_symbol_qualified, edge_type, edge_metadata, source_id) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                        ::libsql::params![
+                            e.from_chunk_id,
+                            to_chunk_id,
+                            e.from_symbol_qualified.clone(),
+                            e.to_symbol_qualified.clone(),
+                            e.edge_type.clone(),
+                            meta,
+                            e.source_id.clone(),
+                        ],
+                    )
+                    .await
+                    .map_err(|err| Error::engine(format!("add_code_edges (chunk) insert failed: {err}")))?;
+                }
+                None => {
+                    conn.execute(
+                        "INSERT OR IGNORE INTO code_edges_symbol \
+                         (from_chunk_id, from_symbol_qualified, to_symbol_qualified, edge_type, edge_metadata, source_id) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                        ::libsql::params![
+                            e.from_chunk_id,
+                            e.from_symbol_qualified.clone(),
+                            e.to_symbol_qualified.clone(),
+                            e.edge_type.clone(),
+                            meta,
+                            e.source_id.clone(),
+                        ],
+                    )
+                    .await
+                    .map_err(|err| Error::engine(format!("add_code_edges (symbol) insert failed: {err}")))?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn delete_code_edges_for_chunks(
+        &self,
+        chunk_ids: &[i64],
+    ) -> Result<()> {
+        if chunk_ids.is_empty() {
+            return Ok(());
+        }
+        let conn = self.conn().await?;
+        // code_edges_chunk matches either endpoint; code_edges_symbol is from-only
+        // (no to_chunk_id to match against), mirroring TS deleteCodeEdgesForChunks.
+        for &cid in chunk_ids {
+            conn.execute(
+                "DELETE FROM code_edges_chunk WHERE from_chunk_id = ?1 OR to_chunk_id = ?1",
+                ::libsql::params![cid],
+            )
+            .await
+            .map_err(|err| Error::engine(format!("delete_code_edges_for_chunks (chunk) failed: {err}")))?;
+            conn.execute(
+                "DELETE FROM code_edges_symbol WHERE from_chunk_id = ?1",
+                ::libsql::params![cid],
+            )
+            .await
+            .map_err(|err| Error::engine(format!("delete_code_edges_for_chunks (symbol) failed: {err}")))?;
+        }
+        Ok(())
     }
 
     async fn get_calibration_profile(

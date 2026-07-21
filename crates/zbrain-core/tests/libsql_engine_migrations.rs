@@ -44,8 +44,8 @@ async fn read_version_raw(path: &std::path::Path) -> i64 {
 }
 
 /// Current migration version. Bump when new migrations are added.
-/// 14 = through 0014_minion_jobs (Phase 9 minion queue, roadmap 1-1-1).
-const EXPECTED_VERSION: i64 = 14;
+/// 21 = through 0021_code_edges (1-6-7-10-1 code-graph edge storage).
+const EXPECTED_VERSION: i64 = 21;
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
@@ -173,6 +173,33 @@ async fn migrations_are_applied_in_ascending_version_order() {
         .await
         .unwrap();
     assert!(rows.next().await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn code_edges_tables_exist_after_0021() {
+    let (_temp, engine) = temp_engine().await;
+    engine.init_schema().await.unwrap();
+
+    let conn = Builder::new_local(_temp.path())
+        .build()
+        .await
+        .unwrap()
+        .connect()
+        .unwrap();
+
+    for table in ["code_edges_chunk", "code_edges_symbol"] {
+        let mut rows = conn
+            .query(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                [table],
+            )
+            .await
+            .unwrap();
+        assert!(
+            rows.next().await.unwrap().is_some(),
+            "expected table {table} to exist after migration 0021"
+        );
+    }
 }
 
 #[tokio::test]

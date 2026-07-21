@@ -1,3 +1,4 @@
+
 <!-- ⚠️ ROADMAP_SECTION_START -->
 <!-- ⚠️ 此 section 由 roadmap_cli.py render 自动生成，请勿手动编辑 -->
 ## Part11 — 残留 TS 收尾 (综合容器)
@@ -50,6 +51,12 @@
 - Q: 执行节奏
   A: 一次推完 1-6-7-3…8 六切片：每切片三道门(core test/mcp test/cli build)全绿后独立 commit，切片间不打断；终局 1-6-7-9 下次再开
   > 用户选『一次推完』。
+- Q: 终局前方向?
+  A: 留在 1-6-7 补齐所有真实 op 缺口后再走 1-6-7-9 删 operations.ts；不转其它分支(1-1/1-2/1-7~1-9/1-11/1-12)
+- Q: 缺口是否全迁?
+  A: 全迁才终局(B2)：code-intel×7 + find_orphans + takes_list/search + search_by_image + run_doctor + sync_brain + takes_calibration/scorecard 全部 Rust 化后才走 1-6-7-9；sync_brain/run_doctor 虽大也迁，不砍不延迟；takes_calibration/scorecard 受 1-3-3 阻塞，排最后
+- Q: 首刀与节点补齐?
+  A: A3：先把 6 个未入账缺口建为 1-6-7 子节点（search_by_image/run_doctor/sync_brain/find_orphans/takes_list+search/takes_calibration+scorecard），takes_calibration+scorecard 标 blocked(1-3-3)；首刀开 code-intel×7(1-6-7-10)，其已建节点、bounded、无外部阻塞
 
 **子节点:**
 - [x] 1-6-7-1. 统一 live registry 汇总 + tracer-bullet: 汇总 operation.rs 碎片注册为全量 register_all, page 剩余 WRAP 首批迁 (update_slug/rewrite_links/soft_delete/page timestamps)
@@ -61,5 +68,5 @@
 - [x] 1-6-7-7. search-query 收尾: Rust search op (lexical) + QueryParams boost/filter axes (salience/recency/min_score/types); search_by_image 仍 NET_NEW
 - [x] 1-6-7-8. commands-misc(13)+takes(4) 收尾: 含 get_brain_identity NET_NEW; takes_calibration/scorecard 待 1-3-3 解锁
 - [ ] 1-6-7-9. 终局: 删 operations.ts + cli.ts/mcp 切换 + typecheck baseline 0 new + 提交
-- [ ] 1-6-7-10. code-intel(7) ops (NET_NEW engine methods: code-intel family + reindex/edges-backfill/backfill) — 从 1-6-7-7 标题拆出, 本切片未做
+- [ ] 1-6-7-10. code-intel(7) ops — NET_NEW 代码图子系统 (存储+图查询+符号查询+消歧+递归遍历+缓存), 非薄 wrapper; 已拆 6 sub-node
 <!-- ⚠️ ROADMAP_SECTION_END -->

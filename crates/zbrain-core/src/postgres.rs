@@ -225,6 +225,8 @@ const MIGRATION_0018: &str = include_str!("../migrations/0018_rate_leases.sql");
 const MIGRATION_0019: &str = include_str!("../migrations/0019_content_chunks.sql");
 /// 1-6-7-5: ingest log for the `log_ingest` / `get_ingest_log` ops.
 const MIGRATION_0020: &str = include_str!("../migrations/0020_ingest_log.sql");
+/// 1-6-7-10-1: code-graph edge storage (write side for code-intel ops).
+const MIGRATION_0021: &str = include_str!("../migrations/0021_code_edges.sql");
 
 /// FNV-1a 64-bit hash of a lease key, mapped to a signed int64 for
 /// `pg_advisory_xact_lock`. Matches the TS implementation bit-for-bit.
@@ -341,6 +343,11 @@ pub static POSTGRES_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 20,
         name: "ingest_log",
         sql: MIGRATION_0020,
+    }));
+    registry.add(Box::new(PostgresMigration {
+        version: 21,
+        name: "code_edges",
+        sql: MIGRATION_0021,
     }));
 
     registry

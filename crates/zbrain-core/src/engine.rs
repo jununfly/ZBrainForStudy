@@ -2627,6 +2627,27 @@ pub struct InMemoryEngine {
     // real content (unlike a metadata-only stub).
     minion_attachments_store: Mutex<Vec<InternalAttachment>>,
     next_attachment_id: Mutex<i64>,
+    // 1-6-7-10-1: code-graph edge storage (in-memory, for testing).
+    // Holds both resolved (code_edges_chunk) and unresolved (code_edges_symbol)
+    // rows; `resolved` flags which table the row would live in.
+    code_edges_store: Mutex<Vec<InternalCodeEdge>>,
+    next_code_edge_id: Mutex<i64>,
+}
+
+/// In-memory code-graph edge row. `resolved == true` mirrors a `code_edges_chunk`
+/// row (both endpoints are known chunk IDs); `false` mirrors `code_edges_symbol`
+/// (target known only by qualified name).
+#[derive(Debug, Clone)]
+struct InternalCodeEdge {
+    id: i64,
+    from_chunk_id: i64,
+    to_chunk_id: Option<i64>,
+    from_symbol_qualified: String,
+    to_symbol_qualified: String,
+    edge_type: String,
+    edge_metadata: serde_json::Value,
+    source_id: Option<String>,
+    resolved: bool,
 }
 
 /// Internal in-memory attachment row: the persisted metadata plus the decoded
@@ -2698,6 +2719,9 @@ impl InMemoryEngine {
             // Phase 9 (1-1-3-2): minion attachment storage (in-memory, for testing)
             minion_attachments_store: Mutex::new(Vec::new()),
             next_attachment_id: Mutex::new(1),
+            // 1-6-7-10-1: code-graph edge storage (in-memory, for testing)
+            code_edges_store: Mutex::new(Vec::new()),
+            next_code_edge_id: Mutex::new(1),
         }
     }
 
@@ -2811,6 +2835,15 @@ impl InMemoryEngine {
         self.links_store
             .lock()
             .expect("InMemoryEngine links_store mutex poisoned")
+    }
+
+    /// Direct access to the code-graph edge store for tests (1-6-7-10-1).
+    pub fn code_edges_store_for_test(
+        &self,
+    ) -> std::sync::MutexGuard<'_, Vec<InternalCodeEdge>> {
+        self.code_edges_store
+            .lock()
+            .expect("InMemoryEngine code_edges_store mutex poisoned")
     }
 
     // ─── Minion D-layer helpers (1-1-3-1) ───────────────────────────────────
@@ -6375,17 +6408,84 @@ impl BrainEngine for InMemoryEngine {
 
     async fn add_code_edges(
         &self,
-        _edges: &[crate::import::CodeEdgeInput],
+        edges: &[crate::import::CodeEdgeInput],
     ) -> crate::Result<()> {
-        // TODO: implement code edge storage in InMemoryEngine
+        if edges.is_empty() {
+            return Ok(());
+        }
+        let mut store = self
+            .code_edges_store
+            .lock()
+            .expect("InMemoryEngine code_edges_store mutex poisoned");
+        let mut next_id = self
+            .next_code_edge_id
+            .lock()
+            .expect("InMemoryEngine next_code_edge_id mutex poisoned");
+
+        for e in edges {
+            let resolved = e.to_chunk_id.is_some();
+            // Mirror TS ON CONFLICT DO NOTHING: skip duplicate keys.
+            let dup = store.iter().any(|row| {
+                if resolved {
+                    row.resolved
+                        && row.from_chunk_id == e.from_chunk_id
+                        && row.to_chunk_id == e.to_chunk_id
+                        && row.edge_type == e.edge_type
+                } else {
+                    !row.resolved
+                        && row.from_chunk_id == e.from_chunk_id
+                        && row.to_symbol_qualified == e.to_symbol_qualified
+                        && row.edge_type == e.edge_type
+                }
+            });
+            if dup {
+                continue;
+            }
+            let id = *next_id;
+            *next_id += 1;
+            store.push(InternalCodeEdge {
+                id,
+                from_chunk_id: e.from_chunk_id,
+                to_chunk_id: e.to_chunk_id,
+                from_symbol_qualified: e.from_symbol_qualified.clone(),
+                to_symbol_qualified: e.to_symbol_qualified.clone(),
+                edge_type: e.edge_type.clone(),
+                edge_metadata: e.edge_metadata.clone(),
+                source_id: e.source_id.clone(),
+                resolved,
+            });
+        }
         Ok(())
     }
 
     async fn delete_code_edges_for_chunks(
         &self,
-        _chunk_ids: &[i64],
+        chunk_ids: &[i64],
     ) -> crate::Result<()> {
-        // TODO: implement code edge deletion in InMemoryEngine
+        if chunk_ids.is_empty() {
+            return Ok(());
+        }
+        let targets: std::collections::HashSet<i64> = chunk_ids.iter().copied().collect();
+        let mut store = self
+            .code_edges_store
+            .lock()
+            .expect("InMemoryEngine code_edges_store mutex poisoned");
+        store.retain(|row| {
+            // code_edges_chunk: match either endpoint.
+            if targets.contains(&row.from_chunk_id) {
+                return false;
+            }
+            if row.resolved {
+                if let Some(t) = row.to_chunk_id {
+                    if targets.contains(&t) {
+                        return false;
+                    }
+                }
+            }
+            // code_edges_symbol has no to_chunk_id to match; only from matters
+            // (already handled above).
+            true
+        });
         Ok(())
     }
 
@@ -8701,5 +8801,128 @@ mod rate_lease_tests {
         assert_eq!(s.page_count, 1);
         // pages_by_type mirrors TS: groups over ALL pages (includes soft-deleted)
         assert_eq!(s.pages_by_type.get("note"), Some(&2));
+    }
+
+    // ── 1-6-7-10-1: code-graph edge storage ────────────────────────────────
+
+    #[tokio::test]
+    async fn add_code_edges_stores_resolved_and_unresolved() {
+        let engine = InMemoryEngine::default();
+
+        let edges = vec![
+            crate::import::CodeEdgeInput {
+                from_chunk_id: 1,
+                to_chunk_id: Some(2),
+                from_symbol_qualified: "mod::foo".to_string(),
+                to_symbol_qualified: "mod::bar".to_string(),
+                edge_type: "calls".to_string(),
+                edge_metadata: serde_json::json!({}),
+                source_id: Some("src-1".to_string()),
+            },
+            crate::import::CodeEdgeInput {
+                from_chunk_id: 3,
+                to_chunk_id: None,
+                from_symbol_qualified: "mod::baz".to_string(),
+                to_symbol_qualified: "ext::qux".to_string(),
+                edge_type: "imports".to_string(),
+                edge_metadata: serde_json::json!({ "line": 7 }),
+                source_id: None,
+            },
+        ];
+        engine.add_code_edges(&edges).await.unwrap();
+
+        let store = engine.code_edges_store_for_test();
+        assert_eq!(store.len(), 2);
+        let resolved = store.iter().find(|e| e.resolved).expect("resolved row present");
+        assert_eq!(resolved.from_chunk_id, 1);
+        assert_eq!(resolved.to_chunk_id, Some(2));
+        assert_eq!(resolved.edge_type, "calls");
+        assert_eq!(resolved.source_id.as_deref(), Some("src-1"));
+
+        let unresolved = store.iter().find(|e| !e.resolved).expect("unresolved row present");
+        assert_eq!(unresolved.from_chunk_id, 3);
+        assert_eq!(unresolved.to_chunk_id, None);
+        assert_eq!(unresolved.edge_type, "imports");
+        assert_eq!(unresolved.edge_metadata, serde_json::json!({ "line": 7 }));
+    }
+
+    #[tokio::test]
+    async fn add_code_edges_dedup_by_unique_key() {
+        let engine = InMemoryEngine::default();
+        let mk = || crate::import::CodeEdgeInput {
+            from_chunk_id: 1,
+            to_chunk_id: Some(2),
+            from_symbol_qualified: "mod::foo".to_string(),
+            to_symbol_qualified: "mod::bar".to_string(),
+            edge_type: "calls".to_string(),
+            edge_metadata: serde_json::json!({}),
+            source_id: None,
+        };
+        engine.add_code_edges(&[mk()]).await.unwrap();
+        engine.add_code_edges(&[mk()]).await.unwrap();
+        assert_eq!(engine.code_edges_store_for_test().len(), 1);
+
+        // Different edge_type is a distinct key → stored.
+        let mut other = mk();
+        other.edge_type = "imports".to_string();
+        engine.add_code_edges(&[other]).await.unwrap();
+        assert_eq!(engine.code_edges_store_for_test().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn delete_code_edges_for_chunks_removes_touching_edges() {
+        let engine = InMemoryEngine::default();
+        let edges = vec![
+            // resolved, from=10 to=20
+            crate::import::CodeEdgeInput {
+                from_chunk_id: 10,
+                to_chunk_id: Some(20),
+                from_symbol_qualified: "a".to_string(),
+                to_symbol_qualified: "b".to_string(),
+                edge_type: "calls".to_string(),
+                edge_metadata: serde_json::json!({}),
+                source_id: None,
+            },
+            // resolved, from=30 to=10 (touches 10 on the to side)
+            crate::import::CodeEdgeInput {
+                from_chunk_id: 30,
+                to_chunk_id: Some(10),
+                from_symbol_qualified: "c".to_string(),
+                to_symbol_qualified: "d".to_string(),
+                edge_type: "calls".to_string(),
+                edge_metadata: serde_json::json!({}),
+                source_id: None,
+            },
+            // unresolved, from=10 (touches 10 on the from side)
+            crate::import::CodeEdgeInput {
+                from_chunk_id: 10,
+                to_chunk_id: None,
+                from_symbol_qualified: "e".to_string(),
+                to_symbol_qualified: "f".to_string(),
+                edge_type: "imports".to_string(),
+                edge_metadata: serde_json::json!({}),
+                source_id: None,
+            },
+            // resolved, from=40 to=50 (untouched)
+            crate::import::CodeEdgeInput {
+                from_chunk_id: 40,
+                to_chunk_id: Some(50),
+                from_symbol_qualified: "g".to_string(),
+                to_symbol_qualified: "h".to_string(),
+                edge_type: "calls".to_string(),
+                edge_metadata: serde_json::json!({}),
+                source_id: None,
+            },
+        ];
+        engine.add_code_edges(&edges).await.unwrap();
+        assert_eq!(engine.code_edges_store_for_test().len(), 4);
+
+        // Deleting chunk 10 must remove the 3 edges that touch it (from or to,
+        // including the unresolved one), leaving only the 40→50 edge.
+        engine.delete_code_edges_for_chunks(&[10]).await.unwrap();
+        let store = engine.code_edges_store_for_test();
+        assert_eq!(store.len(), 1);
+        assert_eq!(store[0].from_chunk_id, 40);
+        assert_eq!(store[0].to_chunk_id, Some(50));
     }
 }
