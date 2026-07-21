@@ -1819,13 +1819,19 @@
     },
     "1-6-7-6": {
       "id": "1-6-7-6",
-      "label": "schema-pack 域 (9 op: 多已迁命令→从 operations.ts 摘除, 少数 wrap)",
-      "status": "pending",
+      "label": "schema-pack 域 9 op 从 operations.ts 摘除 (COMMAND_ELSEWHERE: Rust schema_pack 模块 Part10 Phase12 已 100% 覆盖为 CLI 命令)",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-6-7",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "9 个 schema-pack op 处理方式",
+          "answer": "直接删除 TS operations.ts 中的 9 个 op 定义+聚合数组引用+专用测试文件 (operations-schema-pack.test.ts)",
+          "note": "用户拍板：它们是完整 TS 实现但 Rust 侧 Part10 Phase12 已等价建成 schema_pack 模块+CLI 命令，MCP 侧不再暴露；src/core/schema-pack/ 遗留 TS 模块暂保留（后续 residue pass 清理）"
+        }
+      ],
+      "notes": "删除块 lines 3818-4169 (段注释+9 op) 共 352 行 + operations 聚合数组 9 引用 + 删除 tests/unit/operations-schema-pack.test.ts。grep 确认 9 个 op 名在 src/tests (除 schema-pack/ 模块内部) 已无残留引用；brain-allowlist 未含这些 op 故无需改；mcp-tool-defs 用相对断言 (toolDefs.length==operations.length) 自洽。bun test 针对 operations-descriptions/mcp-tool-defs/brain-allowlist/operations-trust-boundary 验证不破。"
     },
     "1-6-7-7": {
       "id": "1-6-7-7",

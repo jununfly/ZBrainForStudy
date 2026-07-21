@@ -105,7 +105,7 @@
 ├── [x][Y+] 1-6-7-3. sources(4)+facts(3)+anomalies(1)+health-stats(3)=11 op 迁入 register_all (health-stats 实为3: health/salience/stats 仅是 cliHints 别名; facts 2 个简化 stand-in)
 ├── [x][Y+] 1-6-7-4. jobs-minions 域 wrap (11 op: submit/submit_agent/list/get/get_progress/replay/send_message/cancel/retry/pause/resume; engine job 方法 + MinionQueue)
 ├── [x][Y+] 1-6-7-5. ingestion+files+calibration+transcripts 域 (8 op 迁入 register_all; audit '9' 又偏, 实际 8 个 distinct op)
-├── [ ][Y+] 1-6-7-6. schema-pack 域 (9 op: 多已迁命令→从 operations.ts 摘除, 少数 wrap)
+├── [x][Y+] 1-6-7-6. schema-pack 域 9 op 从 operations.ts 摘除 (COMMAND_ELSEWHERE: Rust schema_pack 模块 Part10 Phase12 已 100% 覆盖为 CLI 命令)
 ├── [ ][Y+] 1-6-7-7. code-intel(7)+search-query(3) 收尾: 含 search_by_image NET_NEW
 ├── [ ][Y+] 1-6-7-8. commands-misc(13)+takes(4) 收尾: 含 get_brain_identity NET_NEW; takes_calibration/scorecard 待 1-3-3 解锁
 └── [ ][Y+] 1-6-7-9. 终局: 删 operations.ts + cli.ts/mcp 切换 + typecheck baseline 0 new + 提交
