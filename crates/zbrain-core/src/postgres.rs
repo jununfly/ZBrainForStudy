@@ -2992,6 +2992,24 @@ impl BrainEngine for PostgresEngine {
         code_ref_query_pg(pool, symbol, opts).await
     }
 
+    async fn disambiguate_symbol(
+        &self,
+        bare: &str,
+        source_id: &str,
+    ) -> Result<crate::import::SymbolDisambiguation> {
+        let pool = self.pool()?;
+        code_disambiguate_query_pg(pool, bare, source_id).await
+    }
+
+    async fn recursive_walk(
+        &self,
+        symbol: &str,
+        opts: &crate::import::RecursiveWalkOpts,
+    ) -> Result<crate::import::RecursiveWalkResult> {
+        let pool = self.pool()?;
+        code_recursive_walk_query_pg(self, pool, symbol, opts).await
+    }
+
     async fn get_backlink_counts(
         &self,
         slugs: &[String],
@@ -6676,6 +6694,282 @@ async fn code_ref_query_pg(
         .await
         .map_err(|e| crate::Error::engine(format!("find_code_refs (pg) query failed: {e}")))?;
     rows.iter().map(code_ref_row_to_result_pg).collect()
+}
+
+/// 1-6-7-10-4 符号消歧，Postgres 镜像（对齐 TS `disambiguateSymbol`）。
+///
+/// 阶段一（精确）：`symbol_name = $2 OR symbol_name_qualified = $2` 取
+/// `DISTINCT symbol_name_qualified`（LIMIT 25）。阶段二（近似）：仅当无精确命中，
+/// 按 `symbol_name_qualified ILIKE $2`（`$2 = '%bare%'`）取 `did_you_mean` 候选
+/// （LIMIT 5）。两阶段均限定 `p.source_id = $1` 且 `symbol_name_qualified IS NOT NULL`。
+async fn code_disambiguate_query_pg(
+    pool: &sqlx::PgPool,
+    bare: &str,
+    source_id: &str,
+) -> Result<crate::import::SymbolDisambiguation> {
+    let exact_sql = "SELECT DISTINCT cc.symbol_name_qualified \
+                       FROM content_chunks cc \
+                       JOIN pages p ON p.id = cc.page_id \
+                      WHERE p.source_id = $1 \
+                        AND cc.symbol_name_qualified IS NOT NULL \
+                        AND (cc.symbol_name = $2 OR cc.symbol_name_qualified = $2) \
+                      LIMIT 25";
+    let rows = sqlx::query(exact_sql)
+        .bind(source_id.to_string())
+        .bind(bare.to_string())
+        .fetch_all(pool)
+        .await
+        .map_err(|e| crate::Error::engine(format!("disambiguate (pg exact) query failed: {e}")))?;
+    let mut matches: Vec<String> = Vec::new();
+    for row in rows.iter() {
+        let q: Option<String> = row
+            .try_get("symbol_name_qualified")
+            .map_err(|e| crate::Error::engine(format!("disambiguate (pg exact) decode: {e}")))?;
+        if let Some(q) = q {
+            matches.push(q);
+        }
+    }
+    if !matches.is_empty() {
+        return Ok(crate::import::SymbolDisambiguation {
+            matches,
+            suggestions: Vec::new(),
+        });
+    }
+
+    let like = format!("%{bare}%");
+    let fuzzy_sql = "SELECT DISTINCT cc.symbol_name_qualified \
+                       FROM content_chunks cc \
+                       JOIN pages p ON p.id = cc.page_id \
+                      WHERE p.source_id = $1 \
+                        AND cc.symbol_name_qualified IS NOT NULL \
+                        AND cc.symbol_name_qualified ILIKE $2 \
+                      LIMIT 5";
+    let rows = sqlx::query(fuzzy_sql)
+        .bind(source_id.to_string())
+        .bind(like)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| crate::Error::engine(format!("disambiguate (pg fuzzy) query failed: {e}")))?;
+    let mut suggestions: Vec<String> = Vec::new();
+    for row in rows.iter() {
+        let q: Option<String> = row
+            .try_get("symbol_name_qualified")
+            .map_err(|e| crate::Error::engine(format!("disambiguate (pg fuzzy) decode: {e}")))?;
+        if let Some(q) = q {
+            suggestions.push(q);
+        }
+    }
+    Ok(crate::import::SymbolDisambiguation {
+        matches: Vec::new(),
+        suggestions,
+    })
+}
+
+/// 1-6-7-10-5 recursive walk for Postgres.
+/// Mirrors the libsql implementation exactly, using existing code-edge query helper.
+async fn code_recursive_walk_query_pg(
+    engine: &PostgresEngine,
+    pool: &sqlx::PgPool,
+    symbol: &str,
+    opts: &crate::import::RecursiveWalkOpts,
+) -> Result<crate::import::RecursiveWalkResult> {
+    use crate::import::{
+        AmbiguousCandidate, DepthGroup, DidYouMeanCandidate, RecursiveWalkNode,
+        RecursiveWalkResult, WalkFreshness, WalkTruncation,
+    };
+
+    const SUPPORTED_LANGS: &[&str] = &["typescript", "tsx", "javascript", "python"];
+
+    let depth_cap = opts.depth_cap.unwrap_or(match opts.direction {
+        crate::import::WalkDirection::Callers => 5,
+        crate::import::WalkDirection::Callees => 8,
+    });
+    let max_nodes = opts.max_nodes.unwrap_or(200);
+    let source_id = opts.source_id.as_str();
+    let exact = opts.exact.unwrap_or(false);
+
+    // Step 1: disambiguate starting symbol unless exact
+    let qualified_start: String;
+    if exact || symbol.contains("::") {
+        qualified_start = symbol.to_string();
+    } else {
+        let disambig = code_disambiguate_query_pg(pool, symbol, source_id).await?;
+        if disambig.matches.is_empty() {
+            let dym = disambig
+                .suggestions
+                .into_iter()
+                .map(|s| DidYouMeanCandidate {
+                    symbol_qualified: s,
+                    score: 0.5,
+                })
+                .collect();
+            return Ok(RecursiveWalkResult::NotFound { did_you_mean: dym });
+        }
+        if disambig.matches.len() > 1 {
+            let candidates = disambig
+                .matches
+                .into_iter()
+                .map(|m| AmbiguousCandidate {
+                    symbol_qualified: m,
+                    lang: None,
+                    file: None,
+                    lines: None,
+                })
+                .collect();
+            return Ok(RecursiveWalkResult::Ambiguous { candidates });
+        }
+        qualified_start = disambig.matches[0].clone();
+    }
+
+    // Step 2: language gate — get starting symbol's language
+    let start_lang = 'find_lang: {
+        let row = sqlx::query(
+            r#"SELECT cc.language
+               FROM content_chunks cc
+               JOIN pages p ON p.id = cc.page_id
+              WHERE p.source_id = $1
+                AND cc.symbol_name_qualified = $2
+              LIMIT 1"#,
+        )
+        .bind(source_id)
+        .bind(&qualified_start)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| crate::Error::engine(format!("recursive-walk language lookup failed: {e}")))?;
+        match row {
+            Some(r) => r.try_get::<Option<String>, _>("language").unwrap_or(None),
+            None => None,
+        }
+    };
+
+    if let Some(lang) = &start_lang {
+        if !SUPPORTED_LANGS.contains(&lang.as_str()) {
+            let supported: Vec<String> = SUPPORTED_LANGS.iter().map(|s| s.to_string()).collect();
+            return Ok(RecursiveWalkResult::UnsupportedLanguage { supported });
+        }
+    }
+
+    // Step 3: BFS walk
+    let mut visited = std::collections::HashSet::<String>::new();
+    let mut depth_groups: Vec<DepthGroup> = Vec::new();
+    let mut cycles_detected = false;
+    let mut truncation = WalkTruncation::None;
+    let mut total_nodes = 0;
+    let mut terminal_nodes = Vec::new();
+    let freshness = WalkFreshness::Fresh;
+
+    visited.insert(qualified_start.clone());
+    let mut frontier = vec![qualified_start];
+
+    for d in 1..=depth_cap {
+        if truncation != WalkTruncation::None {
+            break;
+        }
+        let mut next_frontier = Vec::new();
+        let mut nodes_this_depth = Vec::new();
+
+        'frontier_loop: for sym in frontier.iter() {
+            // Get edges using existing code-edge query
+            let (symbol_col, next_sym_extractor): (&str, Box<dyn Fn(&crate::import::CodeEdgeResult) -> Option<&String> + Send + Sync>) = match opts.direction {
+                crate::import::WalkDirection::Callers => {
+                    // callers of sym = edges where to_symbol_qualified = sym → next is from_symbol_qualified
+                    ("to_symbol_qualified", Box::new(|e| Some(&e.from_symbol_qualified)))
+                }
+                crate::import::WalkDirection::Callees => {
+                    // callees of sym = edges where from_symbol_qualified = sym → next is to_symbol_qualified
+                    ("from_symbol_qualified", Box::new(|e| Some(&e.to_symbol_qualified)))
+                }
+            };
+            let edges = code_edge_symbol_query_pg(
+                engine,
+                symbol_col,
+                sym,
+                &crate::import::CodeGraphQueryOpts {
+                    source_id: Some(source_id.to_string()),
+                    all_sources: false,
+                    limit: Some(max_nodes - total_nodes),
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+            for e in edges {
+                let next_sym = next_sym_extractor(&e);
+                let Some(next_sym_str) = next_sym else {
+                    continue;
+                };
+                if next_sym_str == sym {
+                    continue; // self-loop skip
+                }
+                if visited.contains(next_sym_str) {
+                    cycles_detected = true;
+                    continue;
+                }
+                if total_nodes >= max_nodes {
+                    truncation = match truncation {
+                        WalkTruncation::None => WalkTruncation::MaxNodes,
+                        WalkTruncation::DepthCap => WalkTruncation::Both,
+                        _ => truncation,
+                    };
+                    break 'frontier_loop;
+                }
+                visited.insert(next_sym_str.clone());
+                total_nodes += 1;
+
+                let mut node = RecursiveWalkNode {
+                    symbol: next_sym_str.clone(),
+                    chunk_id: Some(e.from_chunk_id),
+                    sink_kind: None,
+                };
+
+                // classify sink for callees direction when we have start language
+                if matches!(opts.direction, crate::import::WalkDirection::Callees) && start_lang.is_some() {
+                    if let Some(kind) = crate::code_intel::classify_sink(next_sym_str, start_lang.as_deref().unwrap_or("")) {
+                        node.sink_kind = Some(kind.as_str().to_string());
+                        terminal_nodes.push(crate::import::TerminalNode {
+                            symbol: next_sym_str.clone(),
+                            sink_kind: kind.as_str().to_string(),
+                        });
+                    }
+                }
+
+                nodes_this_depth.push(node);
+                next_frontier.push(next_sym_str.clone());
+            }
+        }
+
+        if !nodes_this_depth.is_empty() {
+            let confidence = crate::engine::clamp_confidence(d);
+            depth_groups.push(DepthGroup {
+                depth: d,
+                nodes: nodes_this_depth,
+                confidence,
+            });
+        }
+        if next_frontier.is_empty() {
+            break;
+        }
+        if d == depth_cap && !next_frontier.is_empty() {
+            truncation = match truncation {
+                WalkTruncation::None => WalkTruncation::DepthCap,
+                WalkTruncation::MaxNodes => WalkTruncation::Both,
+                _ => truncation,
+            };
+        }
+        frontier = next_frontier;
+    }
+
+    Ok(RecursiveWalkResult::Ok {
+        depth_groups,
+        cycles_detected,
+        truncation,
+        freshness,
+        terminal_nodes: if terminal_nodes.is_empty() {
+            None
+        } else {
+            Some(terminal_nodes)
+        },
+    })
 }
 
 fn code_def_row_to_result_pg(

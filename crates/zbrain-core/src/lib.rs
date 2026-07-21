@@ -13,6 +13,7 @@ pub mod ai;
 pub mod autopilot;
 pub mod budget;
 pub mod chunkers;
+pub mod code_intel;
 pub mod cjk;
 pub mod embedding;
 pub mod embedding_context;

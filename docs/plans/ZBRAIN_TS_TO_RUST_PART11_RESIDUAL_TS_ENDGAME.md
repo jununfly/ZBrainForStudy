@@ -7,8 +7,8 @@
 
 ```
 [~][X+] 1. Part11 — 残留 TS 收尾 (综合容器)
-├── [ ][X+] 1-1. skillpack / skillify 迁移 (27+ 文件 Schema/Subagent 包)
-├── [ ][X+] 1-2. eval 一族迁移 (~20 eval-* 命令 + src/eval + core/eval)
+├── [x][X+] 1-1. skillpack / skillify 迁移 (27+ 文件 Schema/Subagent 包)
+├── [x][X+] 1-2. eval 一族迁移 (~20 eval-* 命令 + src/eval + core/eval)
 ├── [~][X+] 1-3. calibration 算法迁移 (10 文件，当前仅 DB 层)
 │   ├── [x][Y+] 1-3-1. calibration 纯函数 port (Phase 1: 零依赖纯函数)
 │   ├── [x][Y+] 1-3-2. calibration engine-read 子集 (forecastForTake + batchForecast + get_scorecard domain_prefix)
@@ -31,10 +31,10 @@
 │   ├── [x][Y+] 1-6-5. PARITY_GATE (删除任何TS命令前: 确认零src引用+零test引用+真Rust覆盖非stub; 1-6-2/1-6-3共用)
 │   ├── [x] 1-6-6. skill/resolver 校验子系统全量迁 Rust (check-resolvable 全轨道): 覆盖 resolver-filenames / skill-frontmatter / skill-manifest / trigger-index(+parseResolverEntries) / check-resolvable core(checks 1-4) / repo-root / CLI / routing-eval(Check5) / filing-audit(Check6) / dry-fix(--fix) / 重接 doctor+skillify-check。非孤儿命令——是整条 skill 树校验栈，耦合 doctor/skillify-check 共享核心。
 │   └── [~][Y+] 1-6-7. operations.ts 替换式迁移 (Rust OperationRegistry 为继任者): 107 op 逐一对齐, 随迁随删 TS; 覆盖审计见 docs/plans/OPERATIONS_TS_TO_RUST_AUDIT.md
-├── [ ][X+] 1-7. search core 模块补齐 (C 类，src/core/search 23 文件)
-├── [ ][X+] 1-8. facts core 模块补齐 (C 类，src/core/facts 13 文件)
-├── [ ][X+] 1-9. think core 模块补齐 (C 类，src/core/think 7 文件)
-├── [ ][X+] 1-10. G38 schema-pack TS 删除尾 (gate=operations.ts 移植)
+├── [x][X+] 1-7. search core 模块补齐 (C 类，src/core/search 23 文件)
+├── [x][X+] 1-8. facts core 模块补齐 (C 类，src/core/facts 13 文件)
+├── [x][X+] 1-9. think core 模块补齐 (C 类，src/core/think 7 文件)
+├── [x][X+] 1-10. G38 schema-pack TS 删除尾 (gate=operations.ts 移植)
 ├── [~][X+] 1-11. A 类已迁 TS 删除 (minions/ai/ingestion/cycle + 命令)
 │   ├── [x][X+] 1-11-1. ingestion A类闭合簇删除 (src/core/ingestion 10文件 + ingest-capture.ts + 测试；Rust ingestion.rs/sync/import.rs/ingest_capture.rs 已覆盖)
 │   └── [!][X+] 1-11-2. minions 纯删除探查 [BLOCKED: minions 100% 测试耦合, 无零引用叶子; A类纯删除已耗尽]
@@ -67,6 +67,6 @@
 - [x] 1-6-7-6. schema-pack 域 9 op 从 operations.ts 摘除 (COMMAND_ELSEWHERE: Rust schema_pack 模块 Part10 Phase12 已 100% 覆盖为 CLI 命令)
 - [x] 1-6-7-7. search-query 收尾: Rust search op (lexical) + QueryParams boost/filter axes (salience/recency/min_score/types); search_by_image 仍 NET_NEW
 - [x] 1-6-7-8. commands-misc(13)+takes(4) 收尾: 含 get_brain_identity NET_NEW; takes_calibration/scorecard 待 1-3-3 解锁
-- [ ] 1-6-7-9. 终局: 删 operations.ts + cli.ts/mcp 切换 + typecheck baseline 0 new + 提交
-- [ ] 1-6-7-10. code-intel(7) ops — NET_NEW 代码图子系统 (存储+图查询+符号查询+消歧+递归遍历+缓存), 非薄 wrapper; 已拆 6 sub-node
+- [x] 1-6-7-9. 终局: 删 operations.ts + cli.ts/mcp 切换 + typecheck baseline 0 new + 提交
+- [x] 1-6-7-10. code-intel(7) ops — NET_NEW 代码图子系统 (存储+图查询+符号查询+消歧+递归遍历+缓存), 非薄 wrapper; 已拆 6 sub-node
 <!-- ⚠️ ROADMAP_SECTION_END -->

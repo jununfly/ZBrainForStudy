@@ -153,6 +153,150 @@ pub struct CodeSymbolQueryOpts {
     pub language: Option<String>,
 }
 
+/// 1-6-7-10-4 符号消歧：裸名（bare name）→ 合格符号名（`symbol_name_qualified`）解析。
+///
+/// 对齐 TS `disambiguateSymbol`（`src/core/code-intel/recursive-walk.ts:77`），
+/// 被 `runRecursiveWalk` 在递归遍历前用于把用户输入的裸符号名解析为唯一合格名。
+///
+/// - `matches`：精确命中——`DISTINCT symbol_name_qualified`，其中 chunk 的
+///   `symbol_name` 或 `symbol_name_qualified` 等于裸名（递归遍历据此判定
+///   `ambiguous`（>1）/ `not_found`（0）/ 继续（1））。
+/// - `suggestions`：仅当 `matches` 为空时填充——`symbol_name_qualified ILIKE '%bare%'`
+///   的 `did_you_mean` 候选（递归遍历的 `not_found` 信封）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct SymbolDisambiguation {
+    /// 精确命中（裸名 = `symbol_name` 或 `symbol_name_qualified`）。
+    pub matches: Vec<String>,
+    /// 近似候选（裸名作为子串，大小写不敏感），仅当 `matches` 为空时非空。
+    pub suggestions: Vec<String>,
+}
+
+/// 递归遍历方向：`callers`（向上爆炸 / code_blast）或 `callees`（向下流动 / code_flow）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WalkDirection {
+    /// 向上爆炸：找所有调用当前符号的 caller。
+    Callers,
+    /// 向下流动：找当前符号调用的所有 callee。
+    Callees,
+}
+
+impl Default for WalkDirection {
+    fn default() -> Self {
+        Self::Callers
+    }
+}
+
+/// `run_recursive_walk` 遍历选项。对齐 TS `WalkOpts`。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RecursiveWalkOpts {
+    /// 遍历方向：callers / callees。
+    pub direction: WalkDirection,
+    /// 跳数硬上限；缺省：callers=5，callees=8（对齐 TS）。
+    pub depth_cap: Option<usize>,
+    /// 总节点数硬上限；缺省 200（对齐 TS）。
+    pub max_nodes: Option<usize>,
+    /// 必须限定 source 作用域（所有遍历都限定 source，所以必填）。
+    pub source_id: String,
+    /// 是否强制精确匹配（跳过裸名消歧）；当输入已经是 `symbol_name_qualified` 时为 true。
+    pub exact: Option<bool>,
+}
+
+/// BFS 遍历树中一个深度分组里的单个节点。对齐 TS `WalkNode`。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RecursiveWalkNode {
+    /// 合格符号名（`symbol_name_qualified`）。
+    pub symbol: String,
+    /// 产生该边的原始 chunk id（可选）。
+    pub chunk_id: Option<i64>,
+    /// 终端节点的 sink 种类（仅 callee 方向向下遍历时分类）。
+    pub sink_kind: Option<String>,
+}
+
+/// BFS 按深度分组返回结果。对齐 TS `DepthGroup`。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DepthGroup {
+    /// 当前深度（从 1 开始计数）。
+    pub depth: usize,
+    /// 该深度发现的所有新节点。
+    pub nodes: Vec<RecursiveWalkNode>,
+    /// 置信度：`1 / (1 + 0.3 * depth)`， clamped to `[0.05, 1.0]`。
+    pub confidence: f32,
+}
+
+/// 截断原因：什么原因导致遍历提前结束。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WalkTruncation {
+    /// 无截断，遍历自然结束。
+    None,
+    /// 命中节点总数上限。
+    MaxNodes,
+    /// 命中深度上限。
+    DepthCap,
+    /// 同时命中深度和节点上限。
+    Both,
+}
+
+impl Default for WalkTruncation {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+/// 遍历结果的整体枚举状态。对齐 TS `WalkResult`。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum RecursiveWalkResult {
+    /// 遍历成功完成（可能有截断）。
+    Ok {
+        depth_groups: Vec<DepthGroup>,
+        cycles_detected: bool,
+        truncation: WalkTruncation,
+        freshness: WalkFreshness,
+        terminal_nodes: Option<Vec<TerminalNode>>,
+    },
+    /// 起始符号找不到（消歧后零匹配），返回 did_you_mean 候选。
+    NotFound { did_you_mean: Vec<DidYouMeanCandidate> },
+    /// 起始符号消歧后多匹配，需要用户选择。
+    Ambiguous { candidates: Vec<AmbiguousCandidate> },
+    /// 起始符号语言不支持（目前只支持 TS/JS/Python）。
+    UnsupportedLanguage { supported: Vec<String> },
+}
+
+/// `NotFound` 信封里的 did_you_mean 候选。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DidYouMeanCandidate {
+    pub symbol_qualified: String,
+    pub score: f32,
+}
+
+/// `Ambiguous` 信封里的多匹配候选。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AmbiguousCandidate {
+    pub symbol_qualified: String,
+    pub lang: Option<String>,
+    pub file: Option<String>,
+    pub lines: Option<String>,
+}
+
+/// 向下遍历（callees）找到的终端节点（sink）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TerminalNode {
+    pub symbol: String,
+    pub sink_kind: String,
+}
+
+/// 数据新鲜度：v0.34 W3b 这里是缓存 freshness；Rust 实现暂固定为 `fresh`（因为我们直接查询 engine，不读缓存）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WalkFreshness {
+    Fresh,
+    Partial,
+}
+
+impl Default for WalkFreshness {
+    fn default() -> Self {
+        Self::Fresh
+    }
+}
+
 // --- 公共 API ---
 
 use crate::error::Result;

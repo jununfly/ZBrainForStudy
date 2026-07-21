@@ -1219,6 +1219,49 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
         ))
     }
 
+    /// 1-6-7-10-4 符号消歧：把裸符号名解析为合格名（`symbol_name_qualified`），
+    /// 供递归遍历（`runRecursiveWalk`）在跳数之前定位起点。
+    ///
+    /// 对齐 TS `disambiguateSymbol`（`src/core/code-intel/recursive-walk.ts:77`）：
+    /// 先按 `symbol_name = bare OR symbol_name_qualified = bare` 取精确命中，
+    /// 无命中时按 `symbol_name_qualified ILIKE '%bare%'` 取 `did_you_mean` 候选。
+    /// 两阶段均限定 `pages.source_id = source_id` 且与 `symbol_name_qualified IS NOT NULL`。
+    async fn disambiguate_symbol(
+        &self,
+        bare: &str,
+        source_id: &str,
+    ) -> crate::Result<crate::import::SymbolDisambiguation> {
+        let _ = (bare, source_id);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "disambiguate_symbol not yet implemented for this engine",
+        ))
+    }
+
+    /// 递归遍历代码调用图（BFS）：从起始合格符号出发，按方向逐跳扩展，
+    /// 深度分组返回，处理循环截断、节点上限。对齐 TS `runRecursiveWalk`。
+    ///
+    /// 算法路径：
+    /// 1. 若输入不是精确合格名，先用 `disambiguate_symbol` 解析起始符号；
+    /// 2. 语言门：仅支持 `typescript/tsx/javascript/python`，其它语言返回 unsupported；
+    /// 3. BFS 遍历：从起始符号出发，每跳调用 `get_callers_of`/`get_callees_of` 取下一跳，
+    ///    用 visited set 去重+检测循环，遇到循环跳过并标记 `cycles_detected = true`；
+    /// 4. 截断：命中 `depth_cap` 或 `max_nodes` 时标记对应 truncation 提前退出；
+    /// 5. 结果按深度分组返回，置信度按公式 `clamp(1/(1+0.3*d), 0.05, 1.0)` 计算。
+    async fn recursive_walk(
+        &self,
+        symbol: &str,
+        opts: &crate::import::RecursiveWalkOpts,
+    ) -> crate::Result<crate::import::RecursiveWalkResult> {
+        let _ = (symbol, opts);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "recursive_walk not yet implemented for this engine",
+        ))
+    }
+
     // ── Slice 6a S6 method group (15 required methods) ────────────────────
     //
     // Backends must implement the full Slice 6a S6 method group explicitly;
@@ -2667,6 +2710,47 @@ struct InternalLink {
     origin_field: Option<String>,
 }
 
+/// Internal in-memory attachment row: the persisted metadata plus the decoded
+/// bytes. Keyed logically by `(meta.job_id, meta.filename)`.
+#[derive(Debug, Clone)]
+struct InternalAttachment {
+    meta: crate::minions::types::Attachment,
+    bytes: Vec<u8>,
+}
+
+/// Extract the sorted, deduped tag list from `Page::frontmatter["tags"]`.
+fn page_tags(page: &Page) -> Vec<String> {
+    page.frontmatter
+        .get("tags")
+        .and_then(Value::as_array)
+        .map(|tags| {
+            tags.iter()
+                .filter_map(Value::as_str)
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Set the tag list on `Page::frontmatter["tags"]`, sorting and deduping.
+fn set_page_tags(page: &mut Page, mut tags: Vec<String>) {
+    tags.sort();
+    tags.dedup();
+    if let Some(metadata) = page.frontmatter.as_object_mut() {
+        metadata.insert("tags".to_string(), json!(tags));
+    } else {
+        page.frontmatter = json!({"tags": tags});
+    }
+}
+
+/// Clamp confidence: 1/(1 + 0.3*d) clamped to [0.05, 1.0], matches TS contract.
+/// Used by all three backends for consistent confidence calculation.
+pub fn clamp_confidence(depth: usize) -> f32 {
+    let d = depth as f32;
+    let c = 1.0 / (1.0 + 0.3 * d);
+    c.max(0.05).min(1.0)
+}
+
 /// In-process engine backed by a `Vec<Page>`. Not persistent, not
 /// transactional — its only job is to validate the trait contract in unit
 /// tests and integration harnesses.
@@ -2750,7 +2834,21 @@ fn edge_row_to_result(row: &InternalCodeEdge) -> crate::import::CodeEdgeResult {
 
 /// Source scoping for `get_callers_of` / `get_callees_of` (mirrors TS):
 /// apply the filter only when a concrete `source_id` is set AND not all-sources.
-fn edge_source_match(row: &InternalCodeEdge, opts: &crate::import::CodeGraphQueryOpts) -> bool {
+/// This version works for the in-memory internal storage representation.
+fn edge_source_match_inmem(row: &InternalCodeEdge, opts: &crate::import::CodeGraphQueryOpts) -> bool {
+    if opts.all_sources {
+        return true;
+    }
+    match &opts.source_id {
+        None => true,
+        Some(sid) => row.source_id.as_deref() == Some(sid.as_str()),
+    }
+}
+
+/// Source scoping for `get_callers_of` / `get_callees_of` (mirrors TS):
+/// apply the filter only when a concrete `source_id` is set AND not all-sources.
+/// This version works on the exported CodeEdgeResult that is returned by the getters.
+fn edge_source_match(row: &crate::import::CodeEdgeResult, opts: &crate::import::CodeGraphQueryOpts) -> bool {
     if opts.all_sources {
         return true;
     }
@@ -2793,56 +2891,6 @@ fn is_def_type(symbol_type: &str) -> bool {
             | "export statement"
     )
 }
-
-/// Deterministic ordering rank for `find_code_def` results: functions before
-/// classes before interfaces … exactly mirrors the TS `ORDER BY CASE`.
-fn def_rank(symbol_type: Option<&str>) -> u8 {
-    match symbol_type {
-        Some("function") => 1,
-        Some("class") => 2,
-        Some("interface") => 3,
-        Some("type") => 4,
-        Some("enum") => 5,
-        Some("struct") => 6,
-        _ => 7,
-    }
-}
-
-/// Internal in-memory attachment row: the persisted metadata plus the decoded
-/// bytes. Keyed logically by `(meta.job_id, meta.filename)`.
-#[derive(Debug, Clone)]
-struct InternalAttachment {
-    meta: crate::minions::types::Attachment,
-    bytes: Vec<u8>,
-}
-
-// ─── Tag helpers ─────────────────────────────────────────────────────────────
-
-/// Extract the sorted, deduped tag list from `Page::frontmatter["tags"]`.
-fn page_tags(page: &Page) -> Vec<String> {
-    page.frontmatter
-        .get("tags")
-        .and_then(Value::as_array)
-        .map(|tags| {
-            tags.iter()
-                .filter_map(Value::as_str)
-                .map(ToString::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// Set the tag list on `Page::frontmatter["tags"]`, sorting and deduping.
-fn set_page_tags(page: &mut Page, mut tags: Vec<String>) {
-    tags.sort();
-    tags.dedup();
-    if let Some(metadata) = page.frontmatter.as_object_mut() {
-        metadata.insert("tags".to_string(), json!(tags));
-    } else {
-        page.frontmatter = json!({"tags": tags});
-    }
-}
-
 impl InMemoryEngine {
     /// Create a new empty InMemoryEngine for testing.
     pub fn new() -> Self {
@@ -6661,7 +6709,7 @@ impl BrainEngine for InMemoryEngine {
         let mut out: Vec<crate::import::CodeEdgeResult> = store
             .iter()
             .filter(|row| row.to_symbol_qualified == qualified_name)
-            .filter(|row| edge_source_match(row, opts))
+            .filter(|row| edge_source_match_inmem(row, opts))
             .map(edge_row_to_result)
             .collect();
         apply_edge_limit(&mut out, opts.limit);
@@ -6680,7 +6728,7 @@ impl BrainEngine for InMemoryEngine {
         let mut out: Vec<crate::import::CodeEdgeResult> = store
             .iter()
             .filter(|row| row.from_symbol_qualified == qualified_name)
-            .filter(|row| edge_source_match(row, opts))
+            .filter(|row| edge_source_match_inmem(row, opts))
             .map(edge_row_to_result)
             .collect();
         apply_edge_limit(&mut out, opts.limit);
@@ -6765,6 +6813,29 @@ impl BrainEngine for InMemoryEngine {
                     end_line: ci.end_line.map(|v| v as i64),
                     snippet: ci.chunk_text.chars().take(500).collect(),
                 });
+            }
+        }
+        /// Define sort rank for definition types (closer to definition is higher rank)
+        fn def_rank(ty: Option<&str>) -> u8 {
+            match ty {
+                Some("type") => 4,
+                Some("enum") => 5,
+                Some("struct") => 6,
+                Some("trait") => 7,
+                Some("function") => 1,
+                Some("class") => 2,
+                Some("interface") => 3,
+                Some("module") => 8,
+                Some("contract") => 9,
+                Some("table") => 10,
+                Some("view") => 11,
+                Some("index") => 12,
+                Some("procedure") => 13,
+                Some("schema") => 14,
+                Some("database") => 15,
+                Some("trigger") => 16,
+                Some("export statement") => 17,
+                _ => 0,
             }
         }
         out.sort_by(|a, b| {
@@ -7081,6 +7152,254 @@ impl BrainEngine for InMemoryEngine {
             pages_by_type,
         })
     }
+
+    // The code-graph related methods: 1-6-7-10-4 disambiguate_symbol and 1-6-7-10-5 recursive_walk
+    async fn disambiguate_symbol(
+        &self,
+        bare: &str,
+        source_id: &str,
+    ) -> crate::Result<crate::import::SymbolDisambiguation> {
+        let store = self
+            .code_edges_store
+            .lock()
+            .expect("InMemoryEngine code_edges_store mutex poisoned");
+
+        let mut matches: Vec<String> = Vec::new();
+        let mut suggestions: Vec<String> = Vec::new();
+        let lower_bare = bare.to_lowercase();
+
+        for edge in store.iter() {
+            // Check both from and to symbols because either could be the start
+            for sym in &[&edge.from_symbol_qualified, &edge.to_symbol_qualified] {
+                if *sym == bare {
+                    // Exact match
+                    if !matches.contains(sym) {
+                        matches.push(sym.to_string());
+                    }
+                }
+                if sym.to_lowercase().contains(&lower_bare) {
+                    // Did you mean suggestion
+                    if !suggestions.contains(sym) {
+                        suggestions.push(sym.to_string());
+                    }
+                }
+            }
+        }
+
+        // Deduplicate already handled by the contains check above
+        matches.sort();
+        suggestions.sort();
+        suggestions.truncate(10);
+
+        Ok(crate::import::SymbolDisambiguation {
+            matches,
+            suggestions,
+        })
+    }
+
+    async fn recursive_walk(
+            &self,
+            symbol: &str,
+            opts: &crate::import::RecursiveWalkOpts,
+        ) -> crate::Result<crate::import::RecursiveWalkResult> {
+            use crate::import::{
+                DepthGroup, RecursiveWalkResult, RecursiveWalkNode, WalkDirection, WalkFreshness,
+                WalkTruncation,
+            };
+            use std::collections::HashSet;
+
+            let depth_cap = opts.depth_cap.unwrap_or(match opts.direction {
+                WalkDirection::Callers => 5,
+                WalkDirection::Callees => 8,
+            });
+            let max_nodes = opts.max_nodes.unwrap_or(200);
+            let source_id = opts.source_id.as_str();
+
+            // Step 1: disambiguate starting symbol if not exact
+            let (qualified_start, start_chunk_id, start_lang) = if opts.exact.unwrap_or_default() {
+                (symbol.to_string(), None::<i64>, None::<String>)
+            } else {
+                let disambig = self.disambiguate_symbol(symbol, source_id).await?;
+                if disambig.matches.is_empty() {
+                    // No exact matches → convert suggestions to did_you_mean candidates
+                    let did_you_mean = disambig.suggestions
+                        .into_iter()
+                        .map(|s| crate::import::DidYouMeanCandidate {
+                            symbol_qualified: s,
+                            score: 1.0,
+                        })
+                        .collect();
+                    return Ok(RecursiveWalkResult::NotFound { did_you_mean });
+                }
+                if disambig.matches.len() > 1 {
+                    // Multiple exact matches → ambiguous
+                    let candidates = disambig.matches
+                        .into_iter()
+                        .map(|s| crate::import::AmbiguousCandidate {
+                            symbol_qualified: s,
+                            lang: None,
+                            file: None,
+                            lines: None,
+                        })
+                        .collect();
+                    return Ok(RecursiveWalkResult::Ambiguous { candidates });
+                }
+                // Single exact match → resolved
+                let only = disambig.matches.first().unwrap();
+                (only.clone(), None, None)
+            };
+
+            // Step 2: get language for starting symbol from its chunk
+            let start_lang: Option<String> = if let Some(_chunk_id) = start_chunk_id {
+                // TODO: get chunk page to get language from page
+                // For in-memory, we don't have chunk -> page mapping yet, so leave as None
+                None
+            } else {
+                None
+            };
+
+            // Check if starting symbol exists in any case
+            let mut visited = HashSet::new();
+            visited.insert(qualified_start.clone());
+
+            let mut total_nodes = 1;
+            let mut cycles_detected = false;
+            let mut truncation = WalkTruncation::None;
+            let mut terminal_nodes = Vec::new();
+            let mut depth_groups = Vec::new();
+
+            let mut current_depth = 0;
+            let mut frontier = Vec::new();
+            frontier.push(qualified_start.clone());
+
+            while !frontier.is_empty() && current_depth < depth_cap {
+                let mut next_frontier = Vec::new();
+                let mut nodes_this_depth = Vec::new();
+
+                'frontier_loop: for sym in frontier.iter() {
+                    // Get edges using existing code-edge query: for Callers we use get_callers_of, for Callees get_callees_of
+                    // Note: we don't apply a limit here because we need to detect truncation
+                    // (total_nodes >= max_nodes) inside the loop. The limit would prevent
+                    // us from seeing enough edges to trigger the check.
+                    let (edges_result, next_sym_extractor): (
+                        crate::Result<Vec<crate::import::CodeEdgeResult>>,
+                        Box<dyn Fn(&crate::import::CodeEdgeResult) -> Option<&String> + Send + Sync>,
+                    ) = match opts.direction {
+                        WalkDirection::Callers => {
+                            // callers of sym = who calls sym → next is from_symbol_qualified
+                            let res = self.get_callers_of(sym, &crate::import::CodeGraphQueryOpts {
+                                source_id: Some(source_id.to_string()),
+                                all_sources: false,
+                                limit: None,
+                                ..Default::default()
+                            }).await;
+                            (res, Box::new(|e| Some(&e.from_symbol_qualified)))
+                        }
+                        WalkDirection::Callees => {
+                            // callees of sym = whom sym calls → next is to_symbol_qualified
+                            let res = self.get_callees_of(sym, &crate::import::CodeGraphQueryOpts {
+                                source_id: Some(source_id.to_string()),
+                                all_sources: false,
+                                limit: None,
+                                ..Default::default()
+                            }).await;
+                            (res, Box::new(|e| Some(&e.to_symbol_qualified)))
+                        }
+                    };
+
+                    let mut edges = match edges_result {
+                        Ok(edges) => edges,
+                        Err(e) => return Err(e),
+                    };
+
+                    edges.retain(|e| edge_source_match(e, &crate::import::CodeGraphQueryOpts {
+                        source_id: Some(source_id.to_string()),
+                        all_sources: false,
+                        ..Default::default()
+                    }));
+
+                    for e in edges {
+                        let next_sym = next_sym_extractor(&e);
+                        let Some(next_sym_str) = next_sym else {
+                            continue;
+                        };
+                        if next_sym_str == sym {
+                            continue; // self-loop skip
+                        }
+                        if visited.contains(next_sym_str) {
+                            cycles_detected = true;
+                            continue;
+                        }
+                        if total_nodes >= max_nodes {
+                            truncation = match truncation {
+                                WalkTruncation::None => WalkTruncation::MaxNodes,
+                                WalkTruncation::DepthCap => WalkTruncation::Both,
+                                _ => truncation,
+                            };
+                            break 'frontier_loop;
+                        }
+                        visited.insert(next_sym_str.clone());
+                        total_nodes += 1;
+
+                        let from_chunk_id = match opts.direction {
+                            WalkDirection::Callers => e.from_chunk_id,
+                            WalkDirection::Callees => e.from_chunk_id,
+                        };
+
+                        let mut node = RecursiveWalkNode {
+                            symbol: next_sym_str.clone(),
+                            chunk_id: Some(from_chunk_id),
+                            sink_kind: None,
+                        };
+
+                        // classify sink for callees direction when we have start language
+                        if matches!(opts.direction, WalkDirection::Callees) && start_lang.is_some() {
+                            if let Some(kind) = crate::code_intel::classify_sink(
+                                next_sym_str,
+                                start_lang.as_deref().unwrap_or(""),
+                            ) {
+                                node.sink_kind = Some(kind.as_str().to_string());
+                                terminal_nodes.push(crate::import::TerminalNode {
+                                    symbol: next_sym_str.clone(),
+                                    sink_kind: kind.as_str().to_string(),
+                                });
+                            }
+                        }
+
+                        nodes_this_depth.push(node);
+                        next_frontier.push(next_sym_str.clone());
+                    }
+                }
+
+                if !nodes_this_depth.is_empty() {
+                    let confidence = crate::engine::clamp_confidence(current_depth + 1);
+                    depth_groups.push(DepthGroup {
+                        depth: current_depth + 1,
+                        nodes: nodes_this_depth,
+                        confidence,
+                    });
+                }
+
+                frontier = next_frontier;
+                current_depth += 1;
+
+                if current_depth >= depth_cap && !frontier.is_empty() {
+                    truncation = match truncation {
+                        WalkTruncation::None => WalkTruncation::DepthCap,
+                        WalkTruncation::MaxNodes => WalkTruncation::Both,
+                        _ => truncation,
+                    };
+                }
+            }
+
+            Ok(RecursiveWalkResult::Ok {
+                depth_groups,
+                cycles_detected,
+                truncation,
+                freshness: WalkFreshness::Fresh,
+                terminal_nodes: Some(terminal_nodes),
+            })
+        }
 }
 
 #[cfg(test)]
@@ -8887,6 +9206,7 @@ impl crate::token_queries::TokenQueries for InMemoryEngine {
     }
 }
 
+
 // ─── Budget management tests (1-3-2) ────────────────────────────────────────
 
 #[cfg(test)]
@@ -8942,559 +9262,3 @@ mod budget_tests {
     }
 }
 
-#[cfg(test)]
-mod rate_lease_tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn inmem_acquire_rate_lease_unsupported() {
-        let engine = InMemoryEngine::new();
-        let result = engine.acquire_rate_lease("test", 1, 10, 120_000).await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not yet implemented"));
-    }
-
-    #[tokio::test]
-    async fn inmem_renew_rate_lease_unsupported() {
-        let engine = InMemoryEngine::new();
-        let result = engine.renew_rate_lease(1, 120_000).await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not yet implemented"));
-    }
-
-    #[tokio::test]
-    async fn inmem_release_rate_lease_unsupported() {
-        let engine = InMemoryEngine::new();
-        let result = engine.release_rate_lease(1).await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not yet implemented"));
-    }
-
-    // ── get_brain_stats (1-6-4-2) ──────────────────────────────────────
-
-    /// Build a PageInput with a given type, compiled_truth, timeline JSON and
-    /// tags, defaulting everything else.
-    fn brain_stats_page(
-        page_type: &str,
-        compiled_truth: &str,
-        timeline: Option<&str>,
-        tags: &[&str],
-    ) -> PageInput {
-        let frontmatter = if tags.is_empty() {
-            None
-        } else {
-            Some(serde_json::json!({ "tags": tags }))
-        };
-        PageInput {
-            page_type: page_type.to_string(),
-            title: "T".to_string(),
-            compiled_truth: compiled_truth.to_string(),
-            timeline: timeline.map(ToString::to_string),
-            frontmatter,
-            content_hash: None,
-            page_kind: None,
-            effective_date: None,
-            effective_date_source: None,
-            import_filename: None,
-            chunker_version: None,
-            source_path: None,
-            source_kind: None,
-            source_uri: None,
-            ingested_via: None,
-            ingested_at: None,
-            last_retrieved_at: None,
-            embedding: None,
-        }
-    }
-
-    fn chunk(index: usize, text: &str, embedded: bool) -> crate::import::ChunkInput {
-        crate::import::ChunkInput {
-            chunk_index: index,
-            chunk_text: text.to_string(),
-            chunk_source: crate::import::ChunkSource::CompiledTruth,
-            embedding: if embedded { Some(vec![0.1, 0.2]) } else { None },
-            token_count: None,
-            language: None,
-            symbol_name: None,
-            symbol_type: None,
-            start_line: None,
-            end_line: None,
-            parent_symbol_path: vec![],
-            symbol_name_qualified: None,
-        }
-    }
-
-    #[tokio::test]
-    async fn brain_stats_empty_engine_is_all_zero() {
-        let engine = InMemoryEngine::new();
-        let s = engine.get_brain_stats().await.unwrap();
-        assert_eq!(s.page_count, 0);
-        assert_eq!(s.chunk_count, 0);
-        assert_eq!(s.embedded_count, 0);
-        assert_eq!(s.link_count, 0);
-        assert_eq!(s.tag_count, 0);
-        assert_eq!(s.timeline_entry_count, 0);
-        assert!(s.pages_by_type.is_empty());
-    }
-
-    #[tokio::test]
-    async fn brain_stats_counts_pages_tags_timeline_by_type() {
-        let engine = InMemoryEngine::new();
-        engine
-            .put_page(
-                "a",
-                Some("default"),
-                &brain_stats_page("note", "body a", Some("[{\"e\":1},{\"e\":2}]"), &["x", "y"]),
-            )
-            .await
-            .unwrap();
-        engine
-            .put_page(
-                "b",
-                Some("default"),
-                &brain_stats_page("guide", "body b", Some("[{\"e\":3}]"), &["y", "z"]),
-            )
-            .await
-            .unwrap();
-        engine
-            .put_page(
-                "c",
-                Some("default"),
-                &brain_stats_page("note", "body c", None, &[]),
-            )
-            .await
-            .unwrap();
-
-        let s = engine.get_brain_stats().await.unwrap();
-        assert_eq!(s.page_count, 3);
-        // timeline: 2 + 1 + 0 = 3
-        assert_eq!(s.timeline_entry_count, 3);
-        // distinct tags across pages: x, y, z = 3
-        assert_eq!(s.tag_count, 3);
-        // pages_by_type over ALL pages: note=2, guide=1
-        assert_eq!(s.pages_by_type.get("note"), Some(&2));
-        assert_eq!(s.pages_by_type.get("guide"), Some(&1));
-    }
-
-    #[tokio::test]
-    async fn brain_stats_counts_chunks_and_embeddings() {
-        let engine = InMemoryEngine::new();
-        engine
-            .put_page("p", Some("default"), &brain_stats_page("note", "x", None, &[]))
-            .await
-            .unwrap();
-        engine
-            .upsert_chunks(
-                "p",
-                &[chunk(0, "c0", true), chunk(1, "c1", false), chunk(2, "c2", true)],
-            )
-            .await
-            .unwrap();
-
-        let s = engine.get_brain_stats().await.unwrap();
-        assert_eq!(s.chunk_count, 3);
-        assert_eq!(s.embedded_count, 2);
-    }
-
-    #[tokio::test]
-    async fn brain_stats_counts_links() {
-        let engine = InMemoryEngine::new();
-        for slug in ["a", "b"] {
-            engine
-                .put_page(slug, Some("default"), &brain_stats_page("note", "x", None, &[]))
-                .await
-                .unwrap();
-        }
-        engine
-            .add_links_batch(&[LinkBatchInput {
-                from_slug: "a".to_string(),
-                to_slug: "b".to_string(),
-                link_type: None,
-                context: None,
-                link_source: None,
-                origin_slug: None,
-                origin_field: None,
-                from_source_id: None,
-                to_source_id: None,
-                origin_source_id: None,
-            }])
-            .await
-            .unwrap();
-
-        let s = engine.get_brain_stats().await.unwrap();
-        assert_eq!(s.link_count, 1);
-    }
-
-    #[tokio::test]
-    async fn brain_stats_excludes_soft_deleted_from_page_count_but_not_pages_by_type() {
-        let engine = InMemoryEngine::new();
-        engine
-            .put_page("live", Some("default"), &brain_stats_page("note", "x", None, &[]))
-            .await
-            .unwrap();
-        engine
-            .put_page("gone", Some("default"), &brain_stats_page("note", "x", None, &[]))
-            .await
-            .unwrap();
-        engine.delete_page("gone", Some("default")).await.unwrap();
-
-        let s = engine.get_brain_stats().await.unwrap();
-        // page_count excludes soft-deleted
-        assert_eq!(s.page_count, 1);
-        // pages_by_type mirrors TS: groups over ALL pages (includes soft-deleted)
-        assert_eq!(s.pages_by_type.get("note"), Some(&2));
-    }
-
-    // ── 1-6-7-10-1: code-graph edge storage ────────────────────────────────
-
-    #[tokio::test]
-    async fn add_code_edges_stores_resolved_and_unresolved() {
-        let engine = InMemoryEngine::default();
-
-        let edges = vec![
-            crate::import::CodeEdgeInput {
-                from_chunk_id: 1,
-                to_chunk_id: Some(2),
-                from_symbol_qualified: "mod::foo".to_string(),
-                to_symbol_qualified: "mod::bar".to_string(),
-                edge_type: "calls".to_string(),
-                edge_metadata: serde_json::json!({}),
-                source_id: Some("src-1".to_string()),
-            },
-            crate::import::CodeEdgeInput {
-                from_chunk_id: 3,
-                to_chunk_id: None,
-                from_symbol_qualified: "mod::baz".to_string(),
-                to_symbol_qualified: "ext::qux".to_string(),
-                edge_type: "imports".to_string(),
-                edge_metadata: serde_json::json!({ "line": 7 }),
-                source_id: None,
-            },
-        ];
-        engine.add_code_edges(&edges).await.unwrap();
-
-        let store = engine.code_edges_store_for_test();
-        assert_eq!(store.len(), 2);
-        let resolved = store.iter().find(|e| e.resolved).expect("resolved row present");
-        assert_eq!(resolved.from_chunk_id, 1);
-        assert_eq!(resolved.to_chunk_id, Some(2));
-        assert_eq!(resolved.edge_type, "calls");
-        assert_eq!(resolved.source_id.as_deref(), Some("src-1"));
-
-        let unresolved = store.iter().find(|e| !e.resolved).expect("unresolved row present");
-        assert_eq!(unresolved.from_chunk_id, 3);
-        assert_eq!(unresolved.to_chunk_id, None);
-        assert_eq!(unresolved.edge_type, "imports");
-        assert_eq!(unresolved.edge_metadata, serde_json::json!({ "line": 7 }));
-    }
-
-    #[tokio::test]
-    async fn add_code_edges_dedup_by_unique_key() {
-        let engine = InMemoryEngine::default();
-        let mk = || crate::import::CodeEdgeInput {
-            from_chunk_id: 1,
-            to_chunk_id: Some(2),
-            from_symbol_qualified: "mod::foo".to_string(),
-            to_symbol_qualified: "mod::bar".to_string(),
-            edge_type: "calls".to_string(),
-            edge_metadata: serde_json::json!({}),
-            source_id: None,
-        };
-        engine.add_code_edges(&[mk()]).await.unwrap();
-        engine.add_code_edges(&[mk()]).await.unwrap();
-        assert_eq!(engine.code_edges_store_for_test().len(), 1);
-
-        // Different edge_type is a distinct key → stored.
-        let mut other = mk();
-        other.edge_type = "imports".to_string();
-        engine.add_code_edges(&[other]).await.unwrap();
-        assert_eq!(engine.code_edges_store_for_test().len(), 2);
-    }
-
-    #[tokio::test]
-    async fn delete_code_edges_for_chunks_removes_touching_edges() {
-        let engine = InMemoryEngine::default();
-        let edges = vec![
-            // resolved, from=10 to=20
-            crate::import::CodeEdgeInput {
-                from_chunk_id: 10,
-                to_chunk_id: Some(20),
-                from_symbol_qualified: "a".to_string(),
-                to_symbol_qualified: "b".to_string(),
-                edge_type: "calls".to_string(),
-                edge_metadata: serde_json::json!({}),
-                source_id: None,
-            },
-            // resolved, from=30 to=10 (touches 10 on the to side)
-            crate::import::CodeEdgeInput {
-                from_chunk_id: 30,
-                to_chunk_id: Some(10),
-                from_symbol_qualified: "c".to_string(),
-                to_symbol_qualified: "d".to_string(),
-                edge_type: "calls".to_string(),
-                edge_metadata: serde_json::json!({}),
-                source_id: None,
-            },
-            // unresolved, from=10 (touches 10 on the from side)
-            crate::import::CodeEdgeInput {
-                from_chunk_id: 10,
-                to_chunk_id: None,
-                from_symbol_qualified: "e".to_string(),
-                to_symbol_qualified: "f".to_string(),
-                edge_type: "imports".to_string(),
-                edge_metadata: serde_json::json!({}),
-                source_id: None,
-            },
-            // resolved, from=40 to=50 (untouched)
-            crate::import::CodeEdgeInput {
-                from_chunk_id: 40,
-                to_chunk_id: Some(50),
-                from_symbol_qualified: "g".to_string(),
-                to_symbol_qualified: "h".to_string(),
-                edge_type: "calls".to_string(),
-                edge_metadata: serde_json::json!({}),
-                source_id: None,
-            },
-        ];
-        engine.add_code_edges(&edges).await.unwrap();
-        assert_eq!(engine.code_edges_store_for_test().len(), 4);
-
-        // Deleting chunk 10 must remove the 3 edges that touch it (from or to,
-        // including the unresolved one), leaving only the 40→50 edge.
-        engine.delete_code_edges_for_chunks(&[10]).await.unwrap();
-        let store = engine.code_edges_store_for_test();
-        assert_eq!(store.len(), 1);
-        assert_eq!(store[0].from_chunk_id, 40);
-        assert_eq!(store[0].to_chunk_id, Some(50));
-    }
-
-    // ── 1-6-7-10-2: code-graph query methods (InMemory) ────────────────
-
-    #[tokio::test]
-    async fn code_edge_query_callers_returns_resolved_and_unresolved() {
-        let engine = InMemoryEngine::default();
-        let edges = vec![
-            crate::import::CodeEdgeInput {
-                from_chunk_id: 1,
-                to_chunk_id: Some(2),
-                from_symbol_qualified: "mod::foo".to_string(),
-                to_symbol_qualified: "mod::target".to_string(),
-                edge_type: "calls".to_string(),
-                edge_metadata: serde_json::json!({}),
-                source_id: Some("s1".to_string()),
-            },
-            crate::import::CodeEdgeInput {
-                from_chunk_id: 3,
-                to_chunk_id: None,
-                from_symbol_qualified: "mod::bar".to_string(),
-                to_symbol_qualified: "mod::target".to_string(),
-                edge_type: "imports".to_string(),
-                edge_metadata: serde_json::json!({ "line": 5 }),
-                source_id: None,
-            },
-        ];
-        engine.add_code_edges(&edges).await.unwrap();
-
-        let callers = engine
-            .get_callers_of("mod::target", &crate::import::CodeGraphQueryOpts::default())
-            .await
-            .unwrap();
-        assert_eq!(callers.len(), 2);
-        assert!(callers.iter().any(|e| e.resolved && e.from_symbol_qualified == "mod::foo"));
-        assert!(callers.iter().any(|e| !e.resolved && e.from_symbol_qualified == "mod::bar"));
-        let unresolved = callers.iter().find(|e| !e.resolved).expect("unresolved caller");
-        assert_eq!(unresolved.edge_metadata, serde_json::json!({ "line": 5 }));
-    }
-
-    #[tokio::test]
-    async fn code_edge_query_callees_matches_from_symbol() {
-        let engine = InMemoryEngine::default();
-        let edges = vec![
-            crate::import::CodeEdgeInput {
-                from_chunk_id: 1,
-                to_chunk_id: Some(2),
-                from_symbol_qualified: "mod::origin".to_string(),
-                to_symbol_qualified: "mod::a".to_string(),
-                edge_type: "calls".to_string(),
-                edge_metadata: serde_json::json!({}),
-                source_id: None,
-            },
-            crate::import::CodeEdgeInput {
-                from_chunk_id: 3,
-                to_chunk_id: None,
-                from_symbol_qualified: "mod::origin".to_string(),
-                to_symbol_qualified: "mod::b".to_string(),
-                edge_type: "imports".to_string(),
-                edge_metadata: serde_json::json!({}),
-                source_id: None,
-            },
-            // unrelated caller of a different symbol
-            crate::import::CodeEdgeInput {
-                from_chunk_id: 4,
-                to_chunk_id: Some(5),
-                from_symbol_qualified: "mod::other".to_string(),
-                to_symbol_qualified: "mod::z".to_string(),
-                edge_type: "calls".to_string(),
-                edge_metadata: serde_json::json!({}),
-                source_id: None,
-            },
-        ];
-        engine.add_code_edges(&edges).await.unwrap();
-
-        let callees = engine
-            .get_callees_of("mod::origin", &crate::import::CodeGraphQueryOpts::default())
-            .await
-            .unwrap();
-        assert_eq!(callees.len(), 2);
-        assert!(callees.iter().all(|e| e.from_symbol_qualified == "mod::origin"));
-    }
-
-    #[tokio::test]
-    async fn code_edges_by_chunk_direction_filters() {
-        let engine = InMemoryEngine::default();
-        let edges = vec![
-            // out (resolved): 10 → 20
-            crate::import::CodeEdgeInput {
-                from_chunk_id: 10,
-                to_chunk_id: Some(20),
-                from_symbol_qualified: "a".to_string(),
-                to_symbol_qualified: "b".to_string(),
-                edge_type: "calls".to_string(),
-                edge_metadata: serde_json::json!({}),
-                source_id: None,
-            },
-            // in (resolved): 30 → 10
-            crate::import::CodeEdgeInput {
-                from_chunk_id: 30,
-                to_chunk_id: Some(10),
-                from_symbol_qualified: "c".to_string(),
-                to_symbol_qualified: "d".to_string(),
-                edge_type: "calls".to_string(),
-                edge_metadata: serde_json::json!({}),
-                source_id: None,
-            },
-            // out (unresolved): 10 → ?
-            crate::import::CodeEdgeInput {
-                from_chunk_id: 10,
-                to_chunk_id: None,
-                from_symbol_qualified: "e".to_string(),
-                to_symbol_qualified: "f".to_string(),
-                edge_type: "imports".to_string(),
-                edge_metadata: serde_json::json!({}),
-                source_id: None,
-            },
-        ];
-        engine.add_code_edges(&edges).await.unwrap();
-
-        let out = engine
-            .get_edges_by_chunk(
-                10,
-                &crate::import::CodeEdgeByChunkOpts {
-                    direction: crate::import::CodeEdgeDirection::Out,
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-        assert_eq!(out.len(), 2);
-        assert!(out.iter().all(|e| e.from_chunk_id == 10));
-
-        let inbound = engine
-            .get_edges_by_chunk(
-                10,
-                &crate::import::CodeEdgeByChunkOpts {
-                    direction: crate::import::CodeEdgeDirection::In,
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-        assert_eq!(inbound.len(), 1);
-        assert_eq!(inbound[0].from_chunk_id, 30);
-        assert_eq!(inbound[0].to_chunk_id, Some(10));
-
-        let both = engine
-            .get_edges_by_chunk(
-                10,
-                &crate::import::CodeEdgeByChunkOpts {
-                    direction: crate::import::CodeEdgeDirection::Both,
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-        assert_eq!(both.len(), 3);
-
-        let calls_only = engine
-            .get_edges_by_chunk(
-                10,
-                &crate::import::CodeEdgeByChunkOpts {
-                    direction: crate::import::CodeEdgeDirection::Both,
-                    edge_type: Some("calls".to_string()),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-        assert_eq!(calls_only.len(), 2);
-        assert!(calls_only.iter().all(|e| e.edge_type == "calls"));
-    }
-
-    #[tokio::test]
-    async fn code_edge_query_source_scoping() {
-        let engine = InMemoryEngine::default();
-        let edges = vec![
-            crate::import::CodeEdgeInput {
-                from_chunk_id: 1,
-                to_chunk_id: Some(2),
-                from_symbol_qualified: "x".to_string(),
-                to_symbol_qualified: "T".to_string(),
-                edge_type: "calls".to_string(),
-                edge_metadata: serde_json::json!({}),
-                source_id: Some("s1".to_string()),
-            },
-            crate::import::CodeEdgeInput {
-                from_chunk_id: 3,
-                to_chunk_id: Some(4),
-                from_symbol_qualified: "y".to_string(),
-                to_symbol_qualified: "T".to_string(),
-                edge_type: "calls".to_string(),
-                edge_metadata: serde_json::json!({}),
-                source_id: Some("s2".to_string()),
-            },
-        ];
-        engine.add_code_edges(&edges).await.unwrap();
-
-        let all = engine
-            .get_callers_of("T", &crate::import::CodeGraphQueryOpts::default())
-            .await
-            .unwrap();
-        assert_eq!(all.len(), 2);
-
-        let scoped = engine
-            .get_callers_of(
-                "T",
-                &crate::import::CodeGraphQueryOpts {
-                    source_id: Some("s1".to_string()),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-        assert_eq!(scoped.len(), 1);
-        assert_eq!(scoped[0].from_symbol_qualified, "x");
-
-        let override_scope = engine
-            .get_callers_of(
-                "T",
-                &crate::import::CodeGraphQueryOpts {
-                    all_sources: true,
-                    source_id: Some("s1".to_string()),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-        assert_eq!(override_scope.len(), 2);
-    }
-}

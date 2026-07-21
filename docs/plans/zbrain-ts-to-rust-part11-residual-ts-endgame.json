@@ -45,7 +45,7 @@
     "1-1": {
       "id": "1-1",
       "label": "skillpack / skillify 迁移 (27+ 文件 Schema/Subagent 包)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [],
@@ -55,7 +55,7 @@
     "1-2": {
       "id": "1-2",
       "label": "eval 一族迁移 (~20 eval-* 命令 + src/eval + core/eval)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [],
@@ -170,7 +170,7 @@
     "1-7": {
       "id": "1-7",
       "label": "search core 模块补齐 (C 类，src/core/search 23 文件)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [],
@@ -180,7 +180,7 @@
     "1-8": {
       "id": "1-8",
       "label": "facts core 模块补齐 (C 类，src/core/facts 13 文件)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [],
@@ -190,7 +190,7 @@
     "1-9": {
       "id": "1-9",
       "label": "think core 模块补齐 (C 类，src/core/think 7 文件)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [],
@@ -200,7 +200,7 @@
     "1-10": {
       "id": "1-10",
       "label": "G38 schema-pack TS 删除尾 (gate=operations.ts 移植)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [],
@@ -1904,7 +1904,7 @@
     "1-6-7-9": {
       "id": "1-6-7-9",
       "label": "终局: 删 operations.ts + cli.ts/mcp 切换 + typecheck baseline 0 new + 提交",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-6-7",
       "children": [],
@@ -1934,7 +1934,7 @@
     "1-6-7-10": {
       "id": "1-6-7-10",
       "label": "code-intel(7) ops — NET_NEW 代码图子系统 (存储+图查询+符号查询+消歧+递归遍历+缓存), 非薄 wrapper; 已拆 6 sub-node",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6-7",
       "children": [
@@ -1957,7 +1957,7 @@
     "1-6-7-11": {
       "id": "1-6-7-11",
       "label": "search_by_image op (NET_NEW 图像嵌入): embedMultimodal + searchVector(embedding_image)，Rust 新增图像检索后端",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6-7",
       "children": [],
@@ -1967,7 +1967,7 @@
     "1-6-7-12": {
       "id": "1-6-7-12",
       "label": "run_doctor op: 封装 callable runner 包装器，Rust 新增 doctor 执行入口（TS runDoctor 迁移）",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6-7",
       "children": [],
@@ -1977,7 +1977,7 @@
     "1-6-7-13": {
       "id": "1-6-7-13",
       "label": "sync_brain op (大子系统): 跨源同步引擎 Rust 化，需拆 sub-node（sync/pull/push/conflict）",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6-7",
       "children": [],
@@ -1987,7 +1987,7 @@
     "1-6-7-14": {
       "id": "1-6-7-14",
       "label": "find_orphans op: 新增 engine 方法枚举孤儿页/块，Rust 实现并接入 register_all",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6-7",
       "children": [],
@@ -1997,7 +1997,7 @@
     "1-6-7-15": {
       "id": "1-6-7-15",
       "label": "takes_list + takes_search ops: 新增 engine 方法列出/检索 takes，Rust 实现并接入 register_all",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6-7",
       "children": [],
@@ -2048,7 +2048,7 @@
     "1-6-7-10-4": {
       "id": "1-6-7-10-4",
       "label": "符号消歧: bare name → symbol_name_qualified 解析 (recursive-walk 前置; 等价于 TS executeRaw 消歧查询)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6-7-10",
       "children": [],
@@ -2058,7 +2058,7 @@
     "1-6-7-10-5": {
       "id": "1-6-7-10-5",
       "label": "递归遍历: runRecursiveWalk (多跳 over get_callers/callees + 消歧, 含 cycle/truncation) → code_blast / code_flow op",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6-7-10",
       "children": [],
@@ -2068,7 +2068,7 @@
     "1-6-7-10-6": {
       "id": "1-6-7-10-6",
       "label": "遍历缓存: cache 表 + config 键 code.cluster_generation 读写 → code_traversal_cache_clear op (code_blast/flow 缓存复用)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6-7-10",
       "children": [],
