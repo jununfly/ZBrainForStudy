@@ -1709,7 +1709,8 @@
         "1-6-7-6",
         "1-6-7-7",
         "1-6-7-8",
-        "1-6-7-9"
+        "1-6-7-9",
+        "1-6-7-10"
       ],
       "decisions": [
         {
@@ -1835,18 +1836,26 @@
     },
     "1-6-7-7": {
       "id": "1-6-7-7",
-      "label": "code-intel(7)+search-query(3) 收尾: 含 search_by_image NET_NEW",
-      "status": "pending",
+      "label": "search-query 收尾: Rust search op (lexical) + QueryParams boost/filter axes (salience/recency/min_score/types); search_by_image 仍 NET_NEW",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-6-7",
-      "children": [],
-      "decisions": [],
+      "children": [
+        "1-6-7-7-1"
+      ],
+      "decisions": [
+        {
+          "q": "query op already existed?",
+          "answer": "Yes - QueryOperation (Rust) pre-existed in operation.rs wrapping search_pages (keywords+vector+rerank+pagination). This slice's real gap was the search op, which now exists (name 'search', lexical substring via fuse_and_boost, source-scoped by default, offset/limit pagination). Also extended QueryParams with salience/recency/min_score/types mapped to SearchOpts.",
+          "note": "search_by_image remains NET_NEW (image embedding) and is out of scope for this slice."
+        }
+      ],
       "notes": ""
     },
     "1-6-7-8": {
       "id": "1-6-7-8",
       "label": "commands-misc(13)+takes(4) 收尾: 含 get_brain_identity NET_NEW; takes_calibration/scorecard 待 1-3-3 解锁",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-6-7",
       "children": [
@@ -1862,6 +1871,11 @@
           "q": "get_brain_identity (1-6-7-8 NET_NEW) 本增量是否实现？",
           "answer": "是，已实现并注册（register_all 59→60）",
           "note": "新增 BrainEngine::brain_identity 默认方法（返回 kind+零计数，version=CARGO_PKG_VERSION）+ LibsqlEngine override（经 AdminQueries::get_full_stats 填 page/chunk 计数）；GetBrainIdentityOperation 注册。InMemory/Postgres 走默认零计数。TS operations.ts 中 get_brain_identity 仍保留至 1-6-7-9（同批决策）。"
+        },
+        {
+          "q": "scope of 1-6-7-8?",
+          "answer": "Two batches: (1) 5 commands-misc ops wired to existing engine methods - resolve_slugs/get_versions/revert_version/put_raw_data/get_raw_data (node 1-6-7-8-1); (2) get_brain_identity NET_NEW op + BrainEngine::brain_identity default + Libsql override (60 ops total). TS operations.ts op definitions NOT deleted - deferred to 1-6-7-9 terminal slice (mechanical.test.ts dispatches through operationsByName; TS get_versions has takes-fence red wall not yet ported).",
+          "note": ""
         }
       ],
       "notes": ""
@@ -1885,11 +1899,31 @@
       "children": [],
       "decisions": [],
       "notes": ""
+    },
+    "1-6-7-7-1": {
+      "id": "1-6-7-7-1",
+      "label": "Rust search op (lexical) + QueryParams boost/filter axes (salience/recency/min_score/types)",
+      "status": "completed",
+      "mode": "explore",
+      "parent": "1-6-7-7",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-7-10": {
+      "id": "1-6-7-10",
+      "label": "code-intel(7) ops (NET_NEW engine methods: code-intel family + reindex/edges-backfill/backfill) — 从 1-6-7-7 标题拆出, 本切片未做",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-6-7",
+      "children": [],
+      "decisions": [],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-21 13:50:29",
+    "updated": "2026-07-21 14:14:13",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"

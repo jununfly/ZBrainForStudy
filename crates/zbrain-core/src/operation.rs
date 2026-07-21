@@ -1737,7 +1737,7 @@ pub struct QueryOperation;
 ///
 /// MVP: core search parameters only.
 /// v2 will add vector/image search, expansion, recency/salience.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub struct QueryParams {
     /// Search query text. Required for text search.
@@ -1751,6 +1751,23 @@ pub struct QueryParams {
     /// Scope search to a single source (None = all sources)
     #[serde(default)]
     pub source_id: Option<String>,
+    /// Salience boost axis. `'off'` disables the post-fusion salience stage;
+    /// `'on'` / `'strong'` (and omit) leave it on. Rust pins strength to `'on'`
+    /// because the mode-resolved strength system is not ported yet — see
+    /// docs/plans/KNOWN-GAPS.md (G13). Mirrors TS `query.salience`.
+    #[serde(default)]
+    pub salience: Option<String>,
+    /// Recency boost axis. `'off'` disables the post-fusion recency stage;
+    /// `'on'` / `'strong'` (and omit) leave it on. Mirrors TS `query.recency`.
+    #[serde(default)]
+    pub recency: Option<String>,
+    /// Minimum fused score threshold (0..1). Mirrors TS `query.min_score`.
+    #[serde(default)]
+    pub min_score: Option<f64>,
+    /// Page-type whitelist (e.g. `["person","company"]). Mirrors TS
+    /// `query.types` (v0.33) — pushed to the fusion layer for `whoknows`.
+    #[serde(default)]
+    pub types: Option<Vec<String>>,
 }
 
 impl ValidateParams for QueryParams {
@@ -1868,7 +1885,11 @@ impl TypedOperation for QueryOperation {
                 "query": { "type": "string", "description": "Search query text" },
                 "limit": { "type": "integer", "description": "Maximum number of results (default: 20)" },
                 "offset": { "type": "integer", "description": "Pagination offset (default: 0)" },
-                "source_id": { "type": "string", "description": "Scope search to a single source" }
+                "source_id": { "type": "string", "description": "Scope search to a single source" },
+                "salience": { "type": "string", "enum": ["off", "on", "strong"], "description": "Salience boost axis (Rust pins 'on'/'strong' to one strength, G13)" },
+                "recency": { "type": "string", "enum": ["off", "on", "strong"], "description": "Recency boost axis (Rust pins 'on'/'strong' to one strength, G13)" },
+                "min_score": { "type": "number", "description": "Minimum fused score threshold (0..1)" },
+                "types": { "type": "array", "items": { "type": "string" }, "description": "Page-type whitelist" }
             },
             "required": []
         })
@@ -1926,12 +1947,19 @@ impl TypedOperation for QueryOperation {
             .search_pages(&crate::engine::SearchOpts {
                 keywords,
                 limit: Some(limit),
-                min_score: Some(0.01),
+                min_score: params.min_score.or(Some(0.01)),
                 source_id: params.source_id.clone(),
                 query_embedding,
                 floor_ratio: None,
                 recency_decay: None,
                 recency_fallback: None,
+                // `salience`/`recency` axis: only `'off'` disables the
+                // post-fusion stage. `'on'`/`'strong'`/omit keep the always-on
+                // behavior (Rust pins strength to 'on', G13 — mode-resolved
+                // strength not ported). Mirrors TS `SearchOpts.salience`.
+                disable_salience_boost: params.salience.as_deref() == Some("off"),
+                disable_recency_boost: params.recency.as_deref() == Some("off"),
+                types: params.types.clone(),
                 ..Default::default()
             })
             .await?;
@@ -2009,6 +2037,131 @@ impl TypedOperation for QueryOperation {
             limit,
             offset,
         })
+    }
+}
+
+/// Lexical keyword search across pages — mirrors TS `search` operation.
+///
+/// Pure backend-agnostic substring match over title / compiled_truth /
+/// frontmatter via the shared `fuse_and_boost` lexical path. Unlike `query`
+/// (which is semantic + rerank + boost-heavy), `search` is the literal
+/// keyword op: the whole query string is treated as a single keyword so the
+/// match is a phrase-substring (mirrors TS `ctx.engine.searchKeyword(queryText, …)`).
+///
+/// Scoped to the caller's source by default (mirrors TS `sourceScopeOpts(ctx)`);
+/// an explicit `source_id` overrides the scope. No vector path — TS `search`
+/// is lexical-only. Pagination (offset/limit) is applied in-memory after the
+/// engine returns the fused, ranked candidate set.
+#[derive(Debug, Clone)]
+pub struct SearchOperation;
+
+#[derive(Debug, serde::Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct SearchParams {
+    /// Keywords to search for (substring match over title / body / frontmatter).
+    pub query: String,
+    /// Maximum number of results to return (default: 20).
+    #[serde(default)]
+    pub limit: Option<usize>,
+    /// Skip the first N results for pagination (default: 0).
+    #[serde(default)]
+    pub offset: Option<usize>,
+    /// Scope search to a single source. Defaults to the caller's `source_id`
+    /// (set from CLI `--source` / `ZBRAIN_SOURCE` / `.zbrain-source` dotfile).
+    /// Pass `__all__` to force cross-source search in multi-source brains.
+    #[serde(default)]
+    pub source_id: Option<String>,
+}
+
+impl ValidateParams for SearchParams {
+    fn validate(&self) -> OperationResult<()> {
+        if self.query.trim().is_empty() {
+            return Err(OperationError::invalid_params("query must not be empty"));
+        }
+        if let Some(limit) = self.limit {
+            if limit > 100 {
+                return Err(OperationError::invalid_params("limit cannot exceed 100"));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TypedOperation for SearchOperation {
+    type Params = SearchParams;
+    type Output = Vec<crate::engine::SearchResult>;
+
+    fn name(&self) -> &'static str {
+        "search"
+    }
+
+    fn description(&self) -> &'static str {
+        "Lexical keyword search across pages (title / body / frontmatter). Scoped to the caller's source by default."
+    }
+
+    fn local_only(&self) -> bool {
+        false
+    }
+
+    fn mutating(&self) -> bool {
+        false
+    }
+
+    fn cli_hints(&self) -> Option<CliHints> {
+        Some(CliHints::new("search").with_positional(&["query"]))
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string", "description": "Keywords to search for (substring match)" },
+                "limit": { "type": "integer", "description": "Maximum number of results (default: 20)" },
+                "offset": { "type": "integer", "description": "Pagination offset (default: 0)" },
+                "source_id": { "type": "string", "description": "Scope search to a single source (defaults to caller source; '__all__' for cross-source)" }
+            },
+            "required": ["query"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+
+        // Scope resolution mirrors TS `sourceScopeOpts(ctx)` + the `source_id`
+        // param: explicit `source_id` wins; `__all__` forces cross-source
+        // (None); otherwise fall back to the caller's `source_id`.
+        let source_id = match params.source_id.as_deref() {
+            Some("__all__") => None,
+            Some(s) => Some(s.to_string()),
+            None => Some(ctx.source_id.clone()),
+        };
+
+        let mut results = engine
+            .search_pages(&crate::engine::SearchOpts {
+                // Whole query as a single keyword → phrase-substring match,
+                // mirroring TS `searchKeyword`.
+                keywords: vec![params.query.clone()],
+                limit: params.limit,
+                source_id,
+                ..Default::default()
+            })
+            .await?;
+
+        // In-memory pagination (mirrors TS `search` offset/limit).
+        if let Some(offset) = params.offset {
+            if offset >= results.len() {
+                results.clear();
+            } else {
+                results = results.split_off(offset);
+            }
+        }
+
+        Ok(results)
     }
 }
 
@@ -2654,6 +2807,9 @@ pub fn register_all(registry: &mut OperationRegistry) {
     registry.register(PurgeDeletedPagesOperation);
     registry.register(ListPagesOperation);
     registry.register(QueryOperation);
+    // 1-6-7-7 — search op (lexical keyword search, mirrors TS `search`).
+    // `query` op already existed; this closes the search/query retrieval pair.
+    registry.register(SearchOperation);
     registry.register(ThinkOperation);
     registry.register(TakesListOperation);
     registry.register(TakesSearchOperation);
@@ -9314,6 +9470,7 @@ Outro."#;
                 limit: None,
                 offset: None,
                 source_id: None,
+                ..Default::default()
             };
 
             let result = params.validate();
@@ -9328,6 +9485,7 @@ Outro."#;
                 limit: Some(101),
                 offset: None,
                 source_id: None,
+                ..Default::default()
             };
 
             let result = params.validate();
@@ -9342,6 +9500,7 @@ Outro."#;
                 limit: Some(100),
                 offset: None,
                 source_id: None,
+                ..Default::default()
             };
 
             let result = params.validate();
@@ -10073,7 +10232,7 @@ Outro."#;
         }
 
         #[test]
-        fn register_all_registers_sixty_ops() {
+        fn register_all_registers_sixty_one_ops() {
             let mut registry = OperationRegistry::new();
             register_all(&mut registry);
             let names = registry.operation_names();
@@ -10085,6 +10244,7 @@ Outro."#;
                 "purge_deleted_pages",
                 "list_pages",
                 "query",
+                "search",
                 "think",
                 "takes_list",
                 "takes_search",
@@ -10299,6 +10459,128 @@ Outro."#;
             // In-memory engine has no admin stats, so counts default to 0.
             assert_eq!(id.get("pageCount").and_then(|n| n.as_i64()), Some(0));
             assert_eq!(id.get("chunkCount").and_then(|n| n.as_i64()), Some(0));
+        }
+
+        // ── 1-6-7-7: search op (lexical keyword search) ──
+
+        #[tokio::test]
+        async fn search_returns_pages_matching_keyword() {
+            let (registry, ctx) = ingestion_ctx().await;
+            seed_page(&registry, &ctx, "notes/rust-migration").await;
+            let res = registry
+                .dispatch_json(
+                    "search",
+                    &ctx,
+                    serde_json::json!({ "query": "rust", "limit": 20 }),
+                )
+                .await;
+            assert!(res.is_ok(), "search failed: {:?}", res);
+            let hits = res.unwrap();
+            let arr = hits.as_array().expect("search output should be an array");
+            let slugs: Vec<&str> = arr
+                .iter()
+                .filter_map(|r| r.get("page").and_then(|p| p.get("slug")).and_then(|s| s.as_str()))
+                .collect();
+            assert!(
+                slugs.iter().any(|s| *s == "notes/rust-migration"),
+                "expected slug in hits, got: {:?}",
+                slugs
+            );
+        }
+
+        #[tokio::test]
+        async fn search_empty_query_is_rejected() {
+            let (registry, ctx) = ingestion_ctx().await;
+            let res = registry
+                .dispatch_json("search", &ctx, serde_json::json!({ "query": "   " }))
+                .await;
+            assert!(res.is_err(), "expected empty query to be rejected: {:?}", res);
+        }
+
+        #[tokio::test]
+        async fn search_respects_source_scope_by_default() {
+            let (registry, ctx) = ingestion_ctx().await;
+            // Seeded under the default source (ctx.source_id == "default").
+            seed_page(&registry, &ctx, "notes/scoped").await;
+            // A caller scoped to a different source must NOT see it.
+            let engine = ctx.engine.clone().expect("engine set");
+            let mut other_ctx = OperationContext::local_cli();
+            other_ctx.engine = Some(engine);
+            other_ctx.source_id = "other".to_string();
+            let res = registry
+                .dispatch_json("search", &other_ctx, serde_json::json!({ "query": "scoped" }))
+                .await;
+            assert!(res.is_ok(), "search failed: {:?}", res);
+            let value = res.unwrap();
+            let arr = value.as_array().expect("array");
+            assert!(arr.is_empty(), "cross-source hit should be empty, got: {:?}", arr);
+        }
+
+        #[tokio::test]
+        async fn search_paginates_with_offset() {
+            let (registry, ctx) = ingestion_ctx().await;
+            for slug in ["a/zebra", "b/zebra", "c/zebra"] {
+                seed_page(&registry, &ctx, slug).await;
+            }
+            let all = registry
+                .dispatch_json("search", &ctx, serde_json::json!({ "query": "zebra", "limit": 10 }))
+                .await
+                .unwrap();
+            assert_eq!(all.as_array().unwrap().len(), 3, "expected 3 hits");
+            let page2 = registry
+                .dispatch_json(
+                    "search",
+                    &ctx,
+                    serde_json::json!({ "query": "zebra", "limit": 10, "offset": 1 }),
+                )
+                .await
+                .unwrap();
+            assert_eq!(page2.as_array().unwrap().len(), 2, "expected 2 after offset 1");
+            let past = registry
+                .dispatch_json(
+                    "search",
+                    &ctx,
+                    serde_json::json!({ "query": "zebra", "limit": 10, "offset": 99 }),
+                )
+                .await
+                .unwrap();
+            assert!(past.as_array().unwrap().is_empty(), "expected empty past end");
+        }
+
+        #[tokio::test]
+        async fn query_accepts_boost_and_filter_params() {
+            let (registry, ctx) = ingestion_ctx().await;
+            seed_page(&registry, &ctx, "notes/query-target").await;
+            // The new params (salience / recency / min_score / types) must
+            // deserialize and route without error; the seeded page (contains
+            // "query") should surface.
+            let res = registry
+                .dispatch_json(
+                    "query",
+                    &ctx,
+                    serde_json::json!({
+                        "query": "query",
+                        "limit": 10,
+                        "salience": "off",
+                        "recency": "on",
+                        "min_score": 0.0,
+                        "types": ["note"]
+                    }),
+                )
+                .await;
+            assert!(res.is_ok(), "query with boost/filter params failed: {:?}", res);
+            let out = res.unwrap();
+            assert_eq!(out.get("total").and_then(|n| n.as_u64()), Some(1), "got: {:?}", out);
+            let hits = out.get("results").and_then(|r| r.as_array()).expect("results array");
+            assert!(
+                hits.iter().any(|h| h
+                    .get("page")
+                    .and_then(|p| p.get("slug"))
+                    .and_then(|s| s.as_str())
+                    == Some("notes/query-target")),
+                "expected slug in query hits, got: {:?}",
+                hits
+            );
         }
 
         #[tokio::test]
