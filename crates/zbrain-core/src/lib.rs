@@ -77,7 +77,8 @@ pub use types::{
     FindDuplicatePageOpts, GraphNode, GraphNodeLink, GraphPath, Link, LinkBatchInput, NewFact,
     OrphanPage, PageKind, PageRef, PageType, PurgeResult, RefreshPageBodyArgs, Take,
     TakeInput, TakeHit, TakeResolution, TakesListOpts, SearchTakesOpts, UpsertFileResult,
-    UpsertTakesResult, ALL_PAGE_TYPES,
+    UpsertTakesResult, Chunk, FileListRow, IngestLogEntry, IngestLogInput, RecentTranscript,
+    ALL_PAGE_TYPES,
 };
 pub use engine::{BrainEngine, CreateSourceInput, InMemoryEngine, Page, PageInput, PageFilters, SearchOpts, SearchResult, GetPageOpts, ResolveSlugsOpts, SourceRow, UpdateSourceInput};
 pub use anomaly::{AnomalyResult, CohortDayRow, CohortKind, CohortTodayRow, compute_anomalies_from_buckets, mean_stddev, cohort_key};

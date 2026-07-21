@@ -1798,13 +1798,24 @@
     },
     "1-6-7-5": {
       "id": "1-6-7-5",
-      "label": "ingestion(4)+files-attachments(5) 域: 含 file_upload NET_NEW 校验器 validateUploadPath 信任边界",
-      "status": "pending",
+      "label": "ingestion+files+calibration+transcripts 域 (8 op 迁入 register_all; audit '9' 又偏, 实际 8 个 distinct op)",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-6-7",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "ingestion/files 域 op 数量",
+          "answer": "实际 8 个 distinct op (get_chunks/log_ingest/get_ingest_log/file_list/file_upload/file_url/get_calibration_profile/get_recent_transcripts)，审计标 '9' 又偏",
+          "note": "与前面 3 处审计硬伤一致：trust operations.ts 实际代码而非审计计数"
+        },
+        {
+          "q": "get_recent_transcripts 的 corpus dir 来源",
+          "answer": "Rust engine 无运行时 config kv 通道；改用环境变量 ZBRAIN_DREAM_SESSION_CORPUS_DIR / ZBRAIN_DREAM_MEETING_TRANSCRIPTS_DIR 兜底，未设则返回 []",
+          "note": "与 TS 读 dream.synthesize.*_dir 行为等价（local-only 场景），差异已记录待后续接 config 通道时收敛"
+        }
+      ],
+      "notes": "实现：4 个 engine 方法 list_files/get_chunks/log_ingest/get_ingest_log（双后端 InMemory+Libsql；Postgres 走 trait Unsupported 默认）+ get_calibration_profile 桥接 CalibrationQueries::get_latest_profile（BrainEngine 加默认方法，InMemory/Libsql 覆盖，Postgres 默认 Unsupported）+ 8 个 TypedOperation 接入 register_all（46→54）。迁移：0019 content_chunks / 0020 ingest_log（双后端）。file_upload 复用 validate_upload_path 信任边界 + upsert_file 元数据（与 TS 无 storage 后端时仅记元数据一致，不拷字节）。三道门全绿：core operation::tests 195 passed / zbrain-mcp 14 passed / zbrain-cli build clean。TS operations.ts 未删（与前序切片一致，推迟到 1-6-7-9）。"
     },
     "1-6-7-6": {
       "id": "1-6-7-6",

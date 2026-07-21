@@ -24,7 +24,7 @@ use crate::{
     EffectiveDateSource, Error, EntityCount, FactInsertStatus, FactKind, FactListOpts, FactRow,
     FactVisibility, FactsHealth, FileRow, FileSpec, FindDuplicatePageOpts, GraphNode, GraphPath,
     AdjacencyRow, Link, LinkBatchInput, NewFact, OrphanPage, PageKind, PageRef, PageType, PurgeResult,
-    RefreshPageBodyArgs, UpsertFileResult,
+    RefreshPageBodyArgs, UpsertFileResult, Chunk, FileListRow, IngestLogEntry, IngestLogInput,
 };
 
 // ─── Value types ─────────────────────────────────────────────────────────────
@@ -975,6 +975,71 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
     /// List file metadata rows linked to a page id. Mirrors TS
     /// `listFilesForPage(pageId)`.
     async fn list_files_for_page(&self, page_id: u64) -> crate::Result<Vec<FileRow>>;
+
+    // ── 1-6-7-5: file listing + ingestion + chunks ──────────────────────
+
+    /// List file metadata rows, optionally filtered by page slug. Mirrors TS
+    /// `file_list` op (FILE_LIST_LIMIT = 100 enforced by the op).
+    /// Default: returns `Err(`Unsupported`)`.
+    async fn list_files(&self, slug: Option<&str>) -> crate::Result<Vec<FileListRow>> {
+        let _ = slug;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "list_files not yet implemented for this engine",
+        ))
+    }
+
+    /// Return content chunks for a page by slug. Mirrors TS `getChunks`.
+    /// Default: returns `Err(`Unsupported`)`.
+    async fn get_chunks(&self, slug: &str, source_id: &str) -> crate::Result<Vec<Chunk>> {
+        let _ = (slug, source_id);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "get_chunks not yet implemented for this engine",
+        ))
+    }
+
+    /// Append an ingestion-log entry. Mirrors TS `logIngest`.
+    /// Default: returns `Err(`Unsupported`)`.
+    async fn log_ingest(&self, input: &IngestLogInput) -> crate::Result<()> {
+        let _ = input;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "log_ingest not yet implemented for this engine",
+        ))
+    }
+
+    /// Return recent ingestion-log entries, newest first. Mirrors TS
+    /// `getIngestLog`. Default: returns `Err(`Unsupported`)`.
+    async fn get_ingest_log(&self, limit: u32) -> crate::Result<Vec<IngestLogEntry>> {
+        let _ = limit;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "get_ingest_log not yet implemented for this engine",
+        ))
+    }
+
+    // ── Calibration (1-6-7-5) ─────────────────────────────────────
+
+    /// Read the active calibration profile for a holder. Mirrors TS
+    /// `get_calibration_profile` (which delegates to `getLatestProfile`).
+    /// Default: returns `Err(`Unsupported`)` — engines that implement
+    /// `CalibrationQueries` override this to delegate to `get_latest_profile`.
+    async fn get_calibration_profile(
+        &self,
+        _holder: &str,
+    ) -> crate::Result<Option<crate::calibration_queries::CalibrationProfileRow>> {
+        let _ = _holder;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "get_calibration_profile not implemented for this engine",
+        ))
+    }
 
     // ── Chunks & Code Edges (slice #110) ──────────────────────────
 
@@ -2485,6 +2550,9 @@ pub struct InMemoryEngine {
     next_id: Mutex<u64>,
     file_store: Mutex<Vec<FileRow>>,
     next_file_id: Mutex<u64>,
+    /// 1-6-7-5: ingest-log entries (in-memory, for testing).
+    ingest_log_store: Mutex<Vec<IngestLogEntry>>,
+    next_ingest_id: Mutex<u64>,
     /// Raw sidecar data, keyed by `(page_id, source)`.
     raw_data_store: Mutex<Vec<InternalRawData>>,
     /// Page version snapshots, newest-first within each page.
@@ -2561,6 +2629,8 @@ impl InMemoryEngine {
             next_id: Mutex::new(1),
             file_store: Mutex::new(Vec::new()),
             next_file_id: Mutex::new(1),
+            ingest_log_store: Mutex::new(Vec::new()),
+            next_ingest_id: Mutex::new(1),
             raw_data_store: Mutex::new(Vec::new()),
             version_store: Mutex::new(Vec::new()),
             next_version_id: Mutex::new(1),
@@ -3283,6 +3353,107 @@ impl BrainEngine for InMemoryEngine {
             .filter(|file| file.page_id == Some(page_id))
             .cloned()
             .collect())
+    }
+
+    // ── 1-6-7-5: file listing + ingestion + chunks ──────────────────────
+
+    async fn list_files(&self, slug: Option<&str>) -> crate::Result<Vec<FileListRow>> {
+        let file_store = self
+            .file_store
+            .lock()
+            .expect("InMemoryEngine file_store mutex poisoned");
+        Ok(file_store
+            .iter()
+            .filter(|file| slug.map_or(true, |s| file.page_slug.as_deref() == Some(s)))
+            .map(|f| FileListRow {
+                id: f.id as i64,
+                page_slug: f.page_slug.clone(),
+                filename: f.filename.clone(),
+                storage_path: f.storage_path.clone(),
+                mime_type: f.mime_type.clone(),
+                size_bytes: f.size_bytes,
+                content_hash: f.content_hash.clone(),
+                created_at: f.created_at.clone(),
+            })
+            .collect())
+    }
+
+    async fn get_chunks(&self, slug: &str, _source_id: &str) -> crate::Result<Vec<Chunk>> {
+        let store = self
+            .chunk_store
+            .lock()
+            .expect("InMemoryEngine chunk_store mutex poisoned");
+        let chunks = store.get(slug).cloned().unwrap_or_default();
+        Ok(chunks
+            .into_iter()
+            .map(|ci| Chunk {
+                page_id: 0,
+                chunk_index: ci.chunk_index as i64,
+                chunk_text: ci.chunk_text,
+                chunk_source: match ci.chunk_source {
+                    crate::import::ChunkSource::CompiledTruth => "compiled_truth",
+                    crate::import::ChunkSource::Timeline => "timeline",
+                    crate::import::ChunkSource::FencedCode => "fenced_code",
+                    crate::import::ChunkSource::Image => "image",
+                }
+                .to_string(),
+                model: None,
+                token_count: ci.token_count.map(|t| t as i64),
+                language: ci.language,
+                symbol_name: ci.symbol_name,
+                symbol_type: ci.symbol_type,
+                start_line: ci.start_line.map(|v| v as i64),
+                end_line: ci.end_line.map(|v| v as i64),
+                parent_symbol_path: if ci.parent_symbol_path.is_empty() {
+                    None
+                } else {
+                    Some(ci.parent_symbol_path.join("/"))
+                },
+                doc_comment: None,
+                symbol_name_qualified: ci.symbol_name_qualified,
+                created_at: current_utc_iso8601(),
+            })
+            .collect())
+    }
+
+    async fn log_ingest(&self, input: &IngestLogInput) -> crate::Result<()> {
+        let mut id_guard = self
+            .next_ingest_id
+            .lock()
+            .expect("InMemoryEngine next_ingest_id mutex poisoned");
+        *id_guard += 1;
+        let entry_id = *id_guard;
+        drop(id_guard);
+        let entry = IngestLogEntry {
+            id: entry_id as i64,
+            source_id: input.source_id.clone(),
+            source_type: input.source_type.clone(),
+            source_ref: input.source_ref.clone(),
+            pages_updated: input.pages_updated.clone(),
+            summary: input.summary.clone(),
+            created_at: current_utc_iso8601(),
+        };
+        self.ingest_log_store
+            .lock()
+            .expect("InMemoryEngine ingest_log_store mutex poisoned")
+            .push(entry);
+        Ok(())
+    }
+
+    async fn get_ingest_log(&self, limit: u32) -> crate::Result<Vec<IngestLogEntry>> {
+        let store = self
+            .ingest_log_store
+            .lock()
+            .expect("InMemoryEngine ingest_log_store mutex poisoned");
+        let mut out: Vec<IngestLogEntry> = store.iter().rev().take(limit as usize).cloned().collect();
+        Ok(out)
+    }
+
+    async fn get_calibration_profile(
+        &self,
+        holder: &str,
+    ) -> crate::Result<Option<crate::calibration_queries::CalibrationProfileRow>> {
+        crate::calibration_queries::CalibrationQueries::get_latest_profile(self, holder).await
     }
 
     async fn find_duplicate_page(

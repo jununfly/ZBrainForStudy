@@ -45,7 +45,8 @@ use crate::types::{
     FactListOpts, FactRow, FactVisibility, FactsHealth, FileRow, FileSpec,
     FindDuplicatePageOpts, GraphPath, Link, LinkBatchInput, NewFact, OrphanPage, PageKind, PageRef,
     PageVersion, PurgeResult, RawData, RefreshPageBodyArgs, Take, TakeHit, TakeInput,
-    TakesListOpts, SearchTakesOpts, UpsertFileResult, UpsertTakesResult, AdjacencyRow,
+    TakesListOpts, SearchTakesOpts, UpsertFileResult, UpsertTakesResult, AdjacencyRow, Chunk,
+    FileListRow, IngestLogEntry, IngestLogInput,
 };
 
 /// libsql-specific migration implementation. Wraps raw SQL from
@@ -127,6 +128,10 @@ const MIGRATION_0015: &str = include_str!("../migrations-sqlite/0015_minion_inbo
 const MIGRATION_0016: &str = include_str!("../migrations-sqlite/0016_minion_attachments.sql");
 const MIGRATION_0017: &str = include_str!("../migrations-sqlite/0017_minion_budget.sql");
 const MIGRATION_0018: &str = include_str!("../migrations-sqlite/0018_rate_leases.sql");
+/// 1-6-7-5: content chunks read side for the `get_chunks` op.
+const MIGRATION_0019: &str = include_str!("../migrations-sqlite/0019_content_chunks.sql");
+/// 1-6-7-5: ingest log for the `log_ingest` / `get_ingest_log` ops.
+const MIGRATION_0020: &str = include_str!("../migrations-sqlite/0020_ingest_log.sql");
 
 /// Legacy string array — REMOVED in favor of MigrationRegistry.
 /// Use LIBQL_MIGRATIONS instead.
@@ -242,6 +247,16 @@ pub static LIBQL_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 18,
         name: "rate_leases",
         sql: MIGRATION_0018,
+    }));
+    registry.add(Box::new(LibsqlMigration {
+        version: 19,
+        name: "content_chunks",
+        sql: MIGRATION_0019,
+    }));
+    registry.add(Box::new(LibsqlMigration {
+        version: 20,
+        name: "ingest_log",
+        sql: MIGRATION_0020,
     }));
 
     registry
@@ -424,6 +439,109 @@ fn libsql_row_to_file(row: &::libsql::Row) -> Result<FileRow> {
         size_bytes,
         content_hash,
         metadata,
+        created_at,
+    })
+}
+
+/// 1-6-7-5: decode a `content_chunks` row into the read-side [`Chunk`].
+fn libsql_row_to_chunk(row: &::libsql::Row) -> Result<Chunk> {
+    let page_id: i64 = row
+        .get(0)
+        .map_err(|e| Error::engine(format!("chunk row decode page_id: {e}")))?;
+    let chunk_index: i64 = row
+        .get(1)
+        .map_err(|e| Error::engine(format!("chunk row decode chunk_index: {e}")))?;
+    let chunk_text: String = row
+        .get(2)
+        .map_err(|e| Error::engine(format!("chunk row decode chunk_text: {e}")))?;
+    let chunk_source: String = row
+        .get(3)
+        .map_err(|e| Error::engine(format!("chunk row decode chunk_source: {e}")))?;
+    let model: Option<String> = row
+        .get(4)
+        .map_err(|e| Error::engine(format!("chunk row decode model: {e}")))?;
+    let token_count: Option<i64> = row
+        .get(5)
+        .map_err(|e| Error::engine(format!("chunk row decode token_count: {e}")))?;
+    let language: Option<String> = row
+        .get(6)
+        .map_err(|e| Error::engine(format!("chunk row decode language: {e}")))?;
+    let symbol_name: Option<String> = row
+        .get(7)
+        .map_err(|e| Error::engine(format!("chunk row decode symbol_name: {e}")))?;
+    let symbol_type: Option<String> = row
+        .get(8)
+        .map_err(|e| Error::engine(format!("chunk row decode symbol_type: {e}")))?;
+    let start_line: Option<i64> = row
+        .get(9)
+        .map_err(|e| Error::engine(format!("chunk row decode start_line: {e}")))?;
+    let end_line: Option<i64> = row
+        .get(10)
+        .map_err(|e| Error::engine(format!("chunk row decode end_line: {e}")))?;
+    let parent_symbol_path: Option<String> = row
+        .get(11)
+        .map_err(|e| Error::engine(format!("chunk row decode parent_symbol_path: {e}")))?;
+    let doc_comment: Option<String> = row
+        .get(12)
+        .map_err(|e| Error::engine(format!("chunk row decode doc_comment: {e}")))?;
+    let symbol_name_qualified: Option<String> = row
+        .get(13)
+        .map_err(|e| Error::engine(format!("chunk row decode symbol_name_qualified: {e}")))?;
+    let created_at: String = row
+        .get(14)
+        .map_err(|e| Error::engine(format!("chunk row decode created_at: {e}")))?;
+
+    Ok(Chunk {
+        page_id,
+        chunk_index,
+        chunk_text,
+        chunk_source,
+        model,
+        token_count,
+        language,
+        symbol_name,
+        symbol_type,
+        start_line,
+        end_line,
+        parent_symbol_path,
+        doc_comment,
+        symbol_name_qualified,
+        created_at,
+    })
+}
+
+/// 1-6-7-5: decode an `ingest_log` row into the read-side [`IngestLogEntry`].
+fn libsql_row_to_ingest_log(row: &::libsql::Row) -> Result<IngestLogEntry> {
+    let id: i64 = row
+        .get(0)
+        .map_err(|e| Error::engine(format!("ingest row decode id: {e}")))?;
+    let source_id: String = row
+        .get(1)
+        .map_err(|e| Error::engine(format!("ingest row decode source_id: {e}")))?;
+    let source_type: String = row
+        .get(2)
+        .map_err(|e| Error::engine(format!("ingest row decode source_type: {e}")))?;
+    let source_ref: String = row
+        .get(3)
+        .map_err(|e| Error::engine(format!("ingest row decode source_ref: {e}")))?;
+    let pages_updated_text: String = row
+        .get(4)
+        .map_err(|e| Error::engine(format!("ingest row decode pages_updated: {e}")))?;
+    let summary: String = row
+        .get(5)
+        .map_err(|e| Error::engine(format!("ingest row decode summary: {e}")))?;
+    let created_at: String = row
+        .get(6)
+        .map_err(|e| Error::engine(format!("ingest row decode created_at: {e}")))?;
+    let pages_updated: Vec<String> = serde_json::from_str(&pages_updated_text).unwrap_or_default();
+
+    Ok(IngestLogEntry {
+        id,
+        source_id,
+        source_type,
+        source_ref,
+        pages_updated,
+        summary,
         created_at,
     })
 }
@@ -1539,6 +1657,144 @@ impl BrainEngine for LibsqlEngine {
             files.push(libsql_row_to_file(&row)?);
         }
         Ok(files)
+    }
+
+    // ── 1-6-7-5: file listing + ingestion + chunks ──────────────────────
+
+    async fn list_files(&self, slug: Option<&str>) -> Result<Vec<FileListRow>> {
+        const FILE_LIST_LIMIT: i64 = 100;
+        let conn = self.conn().await?;
+        let mut sql = String::from(
+            "SELECT id, page_slug, filename, storage_path, mime_type, size_bytes, content_hash, created_at \
+             FROM files",
+        );
+        if slug.is_some() {
+            sql.push_str(" WHERE page_slug = ?1");
+        }
+        sql.push_str(" ORDER BY page_slug, filename LIMIT ?2");
+        // SQLite ignores the unreferenced ?1 binding when slug is None.
+        let slug_val = slug.unwrap_or("");
+        let params = ::libsql::params![slug_val, FILE_LIST_LIMIT];
+        let mut rows = conn
+            .query(&sql, params)
+            .await
+            .map_err(|e| Error::engine(format!("list_files query failed: {e}")))?;
+        let mut out = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("list_files fetch failed: {e}")))?
+        {
+            let id: i64 = row
+                .get(0)
+                .map_err(|e| Error::engine(format!("file row decode id: {e}")))?;
+            let page_slug: Option<String> = row
+                .get(1)
+                .map_err(|e| Error::engine(format!("file row decode page_slug: {e}")))?;
+            let filename: String = row
+                .get(2)
+                .map_err(|e| Error::engine(format!("file row decode filename: {e}")))?;
+            let storage_path: String = row
+                .get(3)
+                .map_err(|e| Error::engine(format!("file row decode storage_path: {e}")))?;
+            let mime_type: Option<String> = row
+                .get(4)
+                .map_err(|e| Error::engine(format!("file row decode mime_type: {e}")))?;
+            let size_bytes: Option<i64> = row
+                .get(5)
+                .map_err(|e| Error::engine(format!("file row decode size_bytes: {e}")))?;
+            let content_hash: String = row
+                .get(6)
+                .map_err(|e| Error::engine(format!("file row decode content_hash: {e}")))?;
+            let created_at: String = row
+                .get(7)
+                .map_err(|e| Error::engine(format!("file row decode created_at: {e}")))?;
+            out.push(FileListRow {
+                id,
+                page_slug,
+                filename,
+                storage_path,
+                mime_type,
+                size_bytes,
+                content_hash,
+                created_at,
+            });
+        }
+        Ok(out)
+    }
+
+    async fn get_chunks(&self, slug: &str, source_id: &str) -> Result<Vec<Chunk>> {
+        let conn = self.conn().await?;
+        let mut rows = conn
+            .query(
+                "SELECT cc.page_id, cc.chunk_index, cc.chunk_text, cc.chunk_source, cc.model, \
+                        cc.token_count, cc.language, cc.symbol_name, cc.symbol_type, cc.start_line, \
+                        cc.end_line, cc.parent_symbol_path, cc.doc_comment, cc.symbol_name_qualified, cc.created_at \
+                 FROM content_chunks cc \
+                 JOIN pages p ON p.id = cc.page_id \
+                 WHERE p.slug = ?1 AND p.source_id = ?2 \
+                 ORDER BY cc.chunk_index ASC",
+                ::libsql::params![slug, source_id],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("get_chunks query failed: {e}")))?;
+        let mut out = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("get_chunks fetch failed: {e}")))?
+        {
+            out.push(libsql_row_to_chunk(&row)?);
+        }
+        Ok(out)
+    }
+
+    async fn log_ingest(&self, input: &IngestLogInput) -> Result<()> {
+        let conn = self.conn().await?;
+        let pages_updated_json = serde_json::to_string(&input.pages_updated)
+            .map_err(|e| Error::engine(format!("log_ingest serialize pages_updated: {e}")))?;
+        conn.execute(
+            "INSERT INTO ingest_log (source_id, source_type, source_ref, pages_updated, summary) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            ::libsql::params![
+                input.source_id.clone(),
+                input.source_type.clone(),
+                input.source_ref.clone(),
+                pages_updated_json,
+                input.summary.clone(),
+            ],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("log_ingest insert failed: {e}")))?;
+        Ok(())
+    }
+
+    async fn get_ingest_log(&self, limit: u32) -> Result<Vec<IngestLogEntry>> {
+        let conn = self.conn().await?;
+        let mut rows = conn
+            .query(
+                "SELECT id, source_id, source_type, source_ref, pages_updated, summary, created_at \
+                 FROM ingest_log ORDER BY created_at DESC LIMIT ?1",
+                ::libsql::params![limit as i64],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("get_ingest_log query failed: {e}")))?;
+        let mut out = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("get_ingest_log fetch failed: {e}")))?
+        {
+            out.push(libsql_row_to_ingest_log(&row)?);
+        }
+        Ok(out)
+    }
+
+    async fn get_calibration_profile(
+        &self,
+        holder: &str,
+    ) -> Result<Option<crate::calibration_queries::CalibrationProfileRow>> {
+        crate::calibration_queries::CalibrationQueries::get_latest_profile(self, holder).await
     }
 
     async fn find_duplicate_page(

@@ -231,6 +231,97 @@ pub struct UpsertFileResult {
     pub created: bool,
 }
 
+// ── 1-6-7-5: ingestion + files read-side types ──────────────────────────────
+
+/// A single content chunk read by [`BrainEngine::get_chunks`]. Mirrors TS
+/// `Chunk` (src/core/types.ts). `embedding` is always omitted on read
+/// (the TS `getChunks` path sets `includeEmbedding=false`).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Chunk {
+    pub page_id: i64,
+    pub chunk_index: i64,
+    pub chunk_text: String,
+    pub chunk_source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_count: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_line: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_line: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_symbol_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc_comment: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol_name_qualified: Option<String>,
+    pub created_at: String,
+}
+
+/// One row from the `ingest_log` table, returned by
+/// [`BrainEngine::get_ingest_log`]. Mirrors TS `IngestLogEntry`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IngestLogEntry {
+    pub id: i64,
+    pub source_id: String,
+    pub source_type: String,
+    pub source_ref: String,
+    pub pages_updated: Vec<String>,
+    pub summary: String,
+    pub created_at: String,
+}
+
+/// Input for [`BrainEngine::log_ingest`]. Mirrors TS `logIngest` entry.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IngestLogInput {
+    pub source_id: String,
+    pub source_type: String,
+    pub source_ref: String,
+    pub pages_updated: Vec<String>,
+    pub summary: String,
+}
+
+/// A file metadata row as returned by [`BrainEngine::list_files`] — the 8
+/// columns selected by the TS `file_list` op (id, page_slug, filename,
+/// storage_path, mime_type, size_bytes, content_hash, created_at).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileListRow {
+    pub id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page_slug: Option<String>,
+    pub filename: String,
+    pub storage_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<i64>,
+    pub content_hash: String,
+    pub created_at: String,
+}
+
+/// A recent transcript entry returned by the `get_recent_transcripts` op.
+/// Mirrors TS `RecentTranscript` (src/core/transcripts.ts).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentTranscript {
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
+    pub mtime: String,
+    pub length: i64,
+    pub summary: String,
+}
+
 /// Raw sidecar data returned by [`BrainEngine::get_raw_data`]. Mirrors TS
 /// `RawData` in `src/core/engine.ts`.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]

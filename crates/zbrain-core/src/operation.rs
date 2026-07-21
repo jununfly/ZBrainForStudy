@@ -2699,6 +2699,16 @@ pub fn register_all(registry: &mut OperationRegistry) {
     registry.register(RetryJobOperation);
     registry.register(PauseJobOperation);
     registry.register(ResumeJobOperation);
+
+    // 1-6-7-5 — ingestion(4) + files-attachments(5) + calibration + transcripts
+    registry.register(GetChunksOperation);
+    registry.register(LogIngestOperation);
+    registry.register(GetIngestLogOperation);
+    registry.register(FileListOperation);
+    registry.register(FileUploadOperation);
+    registry.register(FileUrlOperation);
+    registry.register(GetCalibrationProfileOperation);
+    registry.register(GetRecentTranscriptsOperation);
 }
 
 // ── SoftDeletePage Operation (Slice 1-6-7-1) ──────────────────────────────
@@ -5215,6 +5225,775 @@ impl TypedOperation for ResumeJobOperation {
                 OperationError::invalid_params(format!("job not found or not paused: {}", params.id))
             })?;
         Ok(job)
+    }
+}
+
+// ── 1-6-7-5 — ingestion + files-attachments + calibration + transcripts ────
+//
+// Faithful 1:1 ports of the TS `operations.ts` ops in this domain. All nine
+// (eight distinct op names; `get_calibration_profile` reuses the existing
+// `CalibrationQueries` backend) are implemented in place — zero TS residue.
+// `file_upload` tightens its filesystem confinement via `validate_upload_path`
+// exactly like the TS original (strict when `ctx.remote`, loose for local CLI).
+
+/// Dream/LSD output markers (mirrors `src/core/cycle/transcript-discovery.ts`).
+/// Used by `get_recent_transcripts` to skip dream-generated corpus files so the
+/// synthesize loop never re-ingests its own output.
+fn is_dream_output(content: &str) -> bool {
+    use std::sync::OnceLock;
+    static LSD_RE: OnceLock<regex::Regex> = OnceLock::new();
+    static DREAM_RE: OnceLock<regex::Regex> = OnceLock::new();
+    let lsd = LSD_RE.get_or_init(|| {
+        regex::Regex::new(r#"^\u{feff}?-{3}\r?\n[\s\S]{0,2000}?mode\s*:\s*(?:"|'|)lsd(?:"|'|)\s*(?:\r?\n|$)"#).unwrap()
+    });
+    let dream = DREAM_RE.get_or_init(|| {
+        regex::Regex::new(r#"^\u{feff}?-{3}\r?\n[\s\S]{0,2000}?dream_generated\s*:\s*true\b"#).unwrap()
+    });
+    lsd.is_match(content) || dream.is_match(content)
+}
+
+// ── get_chunks ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct GetChunksParams {
+    pub slug: String,
+}
+
+impl ValidateParams for GetChunksParams {
+    fn validate(&self) -> OperationResult<()> {
+        validate_page_slug(&self.slug)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GetChunksOperation;
+
+#[async_trait]
+impl TypedOperation for GetChunksOperation {
+    type Params = GetChunksParams;
+    type Output = Vec<crate::types::Chunk>;
+
+    fn name(&self) -> &'static str {
+        "get_chunks"
+    }
+    fn description(&self) -> &'static str {
+        "Get content chunks for a page."
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": { "slug": { "type": "string", "description": "Page slug" } },
+            "required": ["slug"]
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let chunks = engine.get_chunks(&params.slug, &ctx.source_id).await?;
+        Ok(chunks)
+    }
+}
+
+
+// ── log_ingest ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct LogIngestParams {
+    pub source_type: String,
+    pub source_ref: String,
+    pub pages_updated: Vec<String>,
+    pub summary: String,
+}
+
+impl ValidateParams for LogIngestParams {
+    fn validate(&self) -> OperationResult<()> {
+        if self.source_type.trim().is_empty() {
+            return Err(OperationError::invalid_params("source_type is required"));
+        }
+        if self.source_ref.trim().is_empty() {
+            return Err(OperationError::invalid_params("source_ref is required"));
+        }
+        if self.summary.trim().is_empty() {
+            return Err(OperationError::invalid_params("summary is required"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogIngestOutput {
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dry_run: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LogIngestOperation;
+
+#[async_trait]
+impl TypedOperation for LogIngestOperation {
+    type Params = LogIngestParams;
+    type Output = LogIngestOutput;
+
+    fn name(&self) -> &'static str {
+        "log_ingest"
+    }
+    fn description(&self) -> &'static str {
+        "Log an ingestion event."
+    }
+    fn required_scope(&self) -> &'static str {
+        "write"
+    }
+    fn mutating(&self) -> bool {
+        true
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "source_type": { "type": "string" },
+                "source_ref": { "type": "string" },
+                "pages_updated": { "type": "array", "items": { "type": "string" } },
+                "summary": { "type": "string" }
+            },
+            "required": ["source_type", "source_ref", "pages_updated", "summary"]
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        if ctx.dry_run {
+            return Ok(LogIngestOutput {
+                status: "ok".to_string(),
+                dry_run: Some(true),
+                action: Some("log_ingest".to_string()),
+            });
+        }
+        let engine = ctx.engine()?;
+        let input = crate::types::IngestLogInput {
+            source_id: ctx.source_id.clone(),
+            source_type: params.source_type,
+            source_ref: params.source_ref,
+            pages_updated: params.pages_updated,
+            summary: params.summary,
+        };
+        engine.log_ingest(&input).await?;
+        Ok(LogIngestOutput {
+            status: "ok".to_string(),
+            dry_run: None,
+            action: None,
+        })
+    }
+}
+
+// ── get_ingest_log ─────────────────────────────────────────────────────────
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct GetIngestLogParams {
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+impl ValidateParams for GetIngestLogParams {
+    fn validate(&self) -> OperationResult<()> {
+        if let Some(l) = self.limit {
+            if l == 0 {
+                return Err(OperationError::invalid_params("limit must be >= 1"));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GetIngestLogOperation;
+
+#[async_trait]
+impl TypedOperation for GetIngestLogOperation {
+    type Params = GetIngestLogParams;
+    type Output = Vec<crate::types::IngestLogEntry>;
+
+    fn name(&self) -> &'static str {
+        "get_ingest_log"
+    }
+    fn description(&self) -> &'static str {
+        "Get recent ingestion log entries."
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": { "limit": { "type": "number", "description": "Max entries (default 20, capped 50)" } }
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let limit = params.limit.unwrap_or(20).clamp(1, 50);
+        let entries = engine.get_ingest_log(limit).await?;
+        Ok(entries)
+    }
+}
+
+// ── file_list ──────────────────────────────────────────────────────────────
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct FileListParams {
+    #[serde(default)]
+    pub slug: Option<String>,
+}
+
+impl ValidateParams for FileListParams {
+    fn validate(&self) -> OperationResult<()> {
+        if let Some(s) = &self.slug {
+            validate_page_slug(s)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FileListOperation;
+
+#[async_trait]
+impl TypedOperation for FileListOperation {
+    type Params = FileListParams;
+    type Output = Vec<crate::types::FileListRow>;
+
+    fn name(&self) -> &'static str {
+        "file_list"
+    }
+    fn description(&self) -> &'static str {
+        "List stored files."
+    }
+    fn required_scope(&self) -> &'static str {
+        "admin"
+    }
+    fn local_only(&self) -> bool {
+        true
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": { "slug": { "type": "string", "description": "Filter by page slug" } }
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let files = engine.list_files(params.slug.as_deref()).await?;
+        Ok(files)
+    }
+}
+
+// ── file_upload ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct FileUploadParams {
+    pub path: String,
+    #[serde(default)]
+    pub page_slug: Option<String>,
+}
+
+impl ValidateParams for FileUploadParams {
+    fn validate(&self) -> OperationResult<()> {
+        if self.path.trim().is_empty() {
+            return Err(OperationError::invalid_params("path is required"));
+        }
+        if let Some(s) = &self.page_slug {
+            validate_page_slug(s)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileUploadOutput {
+    pub status: String,
+    pub storage_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dry_run: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FileUploadOperation;
+
+#[async_trait]
+impl TypedOperation for FileUploadOperation {
+    type Params = FileUploadParams;
+    type Output = FileUploadOutput;
+
+    fn name(&self) -> &'static str {
+        "file_upload"
+    }
+    fn description(&self) -> &'static str {
+        "Upload a file to storage."
+    }
+    fn required_scope(&self) -> &'static str {
+        "admin"
+    }
+    fn local_only(&self) -> bool {
+        true
+    }
+    fn mutating(&self) -> bool {
+        true
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "Local file path" },
+                "page_slug": { "type": "string", "description": "Associate with page" }
+            },
+            "required": ["path"]
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        if ctx.dry_run {
+            return Ok(FileUploadOutput {
+                status: "uploaded".to_string(),
+                storage_path: String::new(),
+                size_bytes: None,
+                dry_run: Some(true),
+                action: Some("file_upload".to_string()),
+            });
+        }
+
+        use std::path::Path;
+        let path = Path::new(&params.path);
+        let filename = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| OperationError::invalid_params("path has no filename"))?
+            .to_string();
+        validate_filename(&filename)?;
+        let page_slug = params.page_slug.clone();
+
+        // Trust boundary: remote callers confined to cwd (strict); local CLI
+        // callers may upload from anywhere on the filesystem (loose).
+        let strict = ctx.remote;
+        let cwd = std::env::current_dir()
+            .map_err(|e| OperationError::invalid_params(format!("cannot resolve cwd: {e}")))?;
+        let _resolved = validate_upload_path(
+            &params.path,
+            &cwd.to_string_lossy(),
+            strict,
+        )?;
+
+        let content = std::fs::read(&params.path).map_err(|e| {
+            OperationError::new(
+                ErrorCode::StorageError,
+                format!("Cannot read file {}: {}", params.path, e),
+            )
+        })?;
+        let size_bytes = content.len() as i64;
+
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(&content);
+        let hash = hex::encode(hasher.finalize());
+
+        let storage_path = match &page_slug {
+            Some(slug) => format!("{slug}/{filename}"),
+            None => format!("unsorted/{}-{}", &hash[..8.min(hash.len())], filename),
+        };
+
+        const MIME_TYPES: &[(&str, &str)] = &[
+            (".jpg", "image/jpeg"),
+            (".jpeg", "image/jpeg"),
+            (".png", "image/png"),
+            (".gif", "image/gif"),
+            (".webp", "image/webp"),
+            (".svg", "image/svg+xml"),
+            (".pdf", "application/pdf"),
+            (".mp4", "video/mp4"),
+            (".mp3", "audio/mpeg"),
+        ];
+        let ext = Path::new(&filename)
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| format!(".{s}"))
+            .unwrap_or_default()
+            .to_lowercase();
+        let mime_type = MIME_TYPES
+            .iter()
+            .find(|(e, _)| *e == ext)
+            .map(|(_, m)| m.to_string());
+
+        let engine = ctx.engine()?;
+        // Faithful to TS default (no storage backend configured): record
+        // metadata only; we do NOT copy bytes (the original file stays on disk).
+        if engine
+            .get_file(&ctx.source_id, &storage_path)
+            .await?
+            .is_some()
+        {
+            return Ok(FileUploadOutput {
+                status: "already_exists".to_string(),
+                storage_path,
+                size_bytes: None,
+                dry_run: None,
+                action: None,
+            });
+        }
+
+        let spec = crate::types::FileSpec {
+            source_id: Some(ctx.source_id.clone()),
+            page_slug: page_slug.clone(),
+            page_id: None,
+            filename,
+            storage_path: storage_path.clone(),
+            mime_type,
+            size_bytes: Some(size_bytes),
+            content_hash: hash,
+            metadata: None,
+        };
+        engine.upsert_file(&spec).await?;
+        Ok(FileUploadOutput {
+            status: "uploaded".to_string(),
+            storage_path,
+            size_bytes: Some(size_bytes),
+            dry_run: None,
+            action: None,
+        })
+    }
+}
+
+// ── file_url ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct FileUrlParams {
+    pub storage_path: String,
+}
+
+impl ValidateParams for FileUrlParams {
+    fn validate(&self) -> OperationResult<()> {
+        if self.storage_path.trim().is_empty() {
+            return Err(OperationError::invalid_params("storage_path is required"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileUrlOutput {
+    pub storage_path: String,
+    pub url: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct FileUrlOperation;
+
+#[async_trait]
+impl TypedOperation for FileUrlOperation {
+    type Params = FileUrlParams;
+    type Output = FileUrlOutput;
+
+    fn name(&self) -> &'static str {
+        "file_url"
+    }
+    fn description(&self) -> &'static str {
+        "Get a URL for a stored file."
+    }
+    fn required_scope(&self) -> &'static str {
+        "admin"
+    }
+    fn local_only(&self) -> bool {
+        true
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": { "storage_path": { "type": "string" } },
+            "required": ["storage_path"]
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let _row = engine
+            .get_file(&ctx.source_id, &params.storage_path)
+            .await?
+            .ok_or_else(|| {
+                OperationError::new(
+                    ErrorCode::StorageError,
+                    format!("File not found: {}", params.storage_path),
+                )
+            })?;
+        Ok(FileUrlOutput {
+            storage_path: params.storage_path.clone(),
+            url: format!("zbrain:files/{}", params.storage_path),
+        })
+    }
+}
+
+// ── get_calibration_profile ────────────────────────────────────────────────
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct GetCalibrationProfileParams {
+    #[serde(default)]
+    pub holder: Option<String>,
+}
+
+impl ValidateParams for GetCalibrationProfileParams {
+    fn validate(&self) -> OperationResult<()> {
+        if let Some(h) = &self.holder {
+            if h.trim().is_empty() {
+                return Err(OperationError::invalid_params(
+                    "get_calibration_profile.holder must be a non-empty string",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GetCalibrationProfileOperation;
+
+#[async_trait]
+impl TypedOperation for GetCalibrationProfileOperation {
+    type Params = GetCalibrationProfileParams;
+    type Output = Option<crate::calibration_queries::CalibrationProfileRow>;
+
+    fn name(&self) -> &'static str {
+        "get_calibration_profile"
+    }
+    fn description(&self) -> &'static str {
+        "Read the active calibration profile for a holder. Returns null when no profile exists yet."
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "holder": { "type": "string", "description": "Holder slug (default 'garry')" }
+            }
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let holder = params.holder.unwrap_or_else(|| "garry".to_string());
+        let profile = engine.get_calibration_profile(&holder).await?;
+        Ok(profile)
+    }
+}
+
+// ── get_recent_transcripts ─────────────────────────────────────────────────
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct GetRecentTranscriptsParams {
+    #[serde(default)]
+    pub days: Option<u32>,
+    #[serde(default)]
+    pub summary: Option<bool>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+impl ValidateParams for GetRecentTranscriptsParams {
+    fn validate(&self) -> OperationResult<()> {
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GetRecentTranscriptsOperation;
+
+#[async_trait]
+impl TypedOperation for GetRecentTranscriptsOperation {
+    type Params = GetRecentTranscriptsParams;
+    type Output = Vec<crate::types::RecentTranscript>;
+
+    fn name(&self) -> &'static str {
+        "get_recent_transcripts"
+    }
+    fn description(&self) -> &'static str {
+        "List recent transcript files from the dream-cycle corpus dirs (local-only)."
+    }
+    fn local_only(&self) -> bool {
+        true
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "days": { "type": "number", "description": "Window in days. Default 7." },
+                "summary": { "type": "boolean", "description": "Return ~300-char summary (default true)." },
+                "limit": { "type": "number", "description": "Max transcripts (default 50)." }
+            }
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        // Trust gate: MCP/HTTP callers are blocked (local_only already enforces
+        // this at dispatch, but TS also fails closed on remote === true).
+        if ctx.remote {
+            return Err(OperationError::permission_denied(
+                "get_recent_transcripts is local-only — call via the zbrain CLI.",
+            ));
+        }
+        let days = params.days.unwrap_or(7).max(0);
+        let summary = params.summary.unwrap_or(true);
+        let limit = params.limit.unwrap_or(50).clamp(1, 500);
+
+        // Corpus dirs come from config in TS (dream.synthesize.*_dir). Rust has
+        // no runtime config kv yet, so we resolve them from env (set by the
+        // local CLI / dream cycle). Unset → no corpus → empty result.
+        let mut dirs: Vec<String> = Vec::new();
+        if let Ok(d) = std::env::var("ZBRAIN_DREAM_SESSION_CORPUS_DIR") {
+            if !d.trim().is_empty() {
+                dirs.push(d);
+            }
+        }
+        if let Ok(d) = std::env::var("ZBRAIN_DREAM_MEETING_TRANSCRIPTS_DIR") {
+            if !d.trim().is_empty() {
+                dirs.push(d);
+            }
+        }
+        if dirs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let cutoff_ms = chrono::Utc::now().timestamp_millis() - (days as i64) * 86_400_000;
+
+        let date_re = regex::Regex::new(r"^(\d{4}-\d{2}-\d{2})").unwrap();
+
+        let mut candidates: Vec<(std::path::PathBuf, i64, u64)> = Vec::new();
+        for dir in &dirs {
+            let entries = match std::fs::read_dir(dir) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) != Some("txt") {
+                    continue;
+                }
+                let meta = match std::fs::metadata(&path) {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+                if !meta.is_file() {
+                    continue;
+                }
+                let mtime_ms = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                if mtime_ms < cutoff_ms {
+                    continue;
+                }
+                candidates.push((path, mtime_ms, meta.len()));
+            }
+        }
+
+        candidates.sort_by(|a, b| b.1.cmp(&a.1));
+
+        let mut out: Vec<crate::types::RecentTranscript> = Vec::new();
+        for (path, mtime_ms, size) in candidates {
+            if out.len() >= limit as usize {
+                break;
+            }
+            let raw = match std::fs::read_to_string(&path) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            if is_dream_output(&raw) {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
+            let date = date_re
+                .captures(&name)
+                .and_then(|c| c.get(1))
+                .map(|m| m.as_str().to_string());
+            let mtime_iso = chrono::DateTime::<chrono::Utc>::from(
+                std::time::UNIX_EPOCH + std::time::Duration::from_millis(mtime_ms.max(0) as u64),
+            )
+            .to_rfc3339();
+            let body = if summary {
+                build_transcript_summary(&raw)
+            } else {
+                raw.chars().take(100 * 1024).collect()
+            };
+            out.push(crate::types::RecentTranscript {
+                path: name,
+                date,
+                mtime: mtime_iso,
+                length: size as i64,
+                summary: body,
+            });
+        }
+        Ok(out)
+    }
+}
+
+/// First non-empty line + next ~250 chars (mirrors TS `buildSummary`).
+fn build_transcript_summary(raw: &str) -> String {
+    let trimmed = regex::Regex::new(r"^[\s\u{feff}]+")
+        .unwrap()
+        .replace(raw, "")
+        .into_owned();
+    let first_line_end = trimmed.find('\n').unwrap_or(trimmed.len());
+    let first_line = &trimmed[..first_line_end];
+    let after = if first_line_end < trimmed.len() {
+        let rest = &trimmed[first_line_end + 1..];
+        let cap = rest.char_indices().take(250).map(|(i, _)| i).last().unwrap_or(0);
+        &rest[..cap]
+    } else {
+        ""
+    };
+    if after.trim().is_empty() {
+        first_line.to_string()
+    } else {
+        format!("{first_line}\n{after}").trim().to_string()
     }
 }
 
@@ -8957,7 +9736,7 @@ Outro."#;
         }
 
         #[test]
-        fn register_all_registers_forty_six_ops() {
+        fn register_all_registers_fifty_four_ops() {
             let mut registry = OperationRegistry::new();
             register_all(&mut registry);
             let names = registry.operation_names();
@@ -9011,9 +9790,142 @@ Outro."#;
                 "retry_job",
                 "pause_job",
                 "resume_job",
+                // 1-6-7-5: ingestion + files + calibration + transcripts
+                "get_chunks",
+                "log_ingest",
+                "get_ingest_log",
+                "file_list",
+                "file_upload",
+                "file_url",
+                "get_calibration_profile",
+                "get_recent_transcripts",
             ] {
                 assert!(names.contains(&n), "missing op: {}", n);
             }
+        }
+
+        // ── 1-6-7-5 domain ops: ingestion + files + calibration + transcripts ─
+
+        async fn ingestion_ctx() -> (OperationRegistry, OperationContext) {
+            let mut registry = OperationRegistry::new();
+            register_all(&mut registry);
+            use crate::engine::InMemoryEngine;
+            let engine = InMemoryEngine::default();
+            let ctx = OperationContext::local_cli().with_engine(engine.into_arc());
+            (registry, ctx)
+        }
+
+        #[tokio::test]
+        async fn get_chunks_empty_for_unknown_page() {
+            let (registry, ctx) = ingestion_ctx().await;
+            let res = registry
+                .dispatch_json("get_chunks", &ctx, serde_json::json!({ "slug": "nope/x" }))
+                .await;
+            assert!(res.is_ok(), "get_chunks failed: {:?}", res);
+            assert_eq!(res.unwrap(), serde_json::json!([]));
+        }
+
+        #[tokio::test]
+        async fn log_ingest_then_get_ingest_log_roundtrip() {
+            let (registry, ctx) = ingestion_ctx().await;
+            let log = registry
+                .dispatch_json(
+                    "log_ingest",
+                    &ctx,
+                    serde_json::json!({
+                        "source_type": "capture",
+                        "source_ref": "page/xyz",
+                        "pages_updated": ["page/xyz"],
+                        "summary": "captured one page"
+                    }),
+                )
+                .await;
+            assert!(log.is_ok(), "log_ingest failed: {:?}", log);
+            assert_eq!(log.unwrap()["status"], "ok");
+
+            let out = registry
+                .dispatch_json("get_ingest_log", &ctx, serde_json::json!({ "limit": 10 }))
+                .await
+                .expect("get_ingest_log failed");
+            let entries = out.as_array().expect("expected array");
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0]["sourceType"], "capture");
+            assert_eq!(entries[0]["sourceRef"], "page/xyz");
+        }
+
+        #[tokio::test]
+        async fn log_ingest_rejects_empty_summary() {
+            let (registry, ctx) = ingestion_ctx().await;
+            let res = registry
+                .dispatch_json(
+                    "log_ingest",
+                    &ctx,
+                    serde_json::json!({ "source_type": "x", "source_ref": "y", "pages_updated": [], "summary": "" }),
+                )
+                .await;
+            assert!(res.is_err(), "expected validation error");
+        }
+
+        #[tokio::test]
+        async fn file_list_empty_initially() {
+            let (registry, ctx) = ingestion_ctx().await;
+            let out = registry
+                .dispatch_json("file_list", &ctx, serde_json::json!({}))
+                .await
+                .expect("file_list failed");
+            assert_eq!(out, serde_json::json!([]));
+        }
+
+        #[tokio::test]
+        async fn file_upload_dry_run_is_noop() {
+            let (registry, ctx) = ingestion_ctx().await;
+            let mut ctx = ctx;
+            ctx.dry_run = true;
+            let out = registry
+                .dispatch_json(
+                    "file_upload",
+                    &ctx,
+                    serde_json::json!({ "path": "/tmp/does-not-matter.txt" }),
+                )
+                .await
+                .expect("file_upload dry_run failed");
+            assert_eq!(out["dryRun"], true);
+            assert_eq!(out["action"], "file_upload");
+        }
+
+        #[tokio::test]
+        async fn get_calibration_profile_returns_null_when_empty() {
+            let (registry, ctx) = ingestion_ctx().await;
+            let out = registry
+                .dispatch_json("get_calibration_profile", &ctx, serde_json::json!({}))
+                .await
+                .expect("get_calibration_profile failed");
+            assert_eq!(out, serde_json::json!(null));
+        }
+
+        #[tokio::test]
+        async fn get_recent_transcripts_empty_without_corpus_dirs() {
+            std::env::remove_var("ZBRAIN_DREAM_SESSION_CORPUS_DIR");
+            std::env::remove_var("ZBRAIN_DREAM_MEETING_TRANSCRIPTS_DIR");
+            let (registry, ctx) = ingestion_ctx().await;
+            let out = registry
+                .dispatch_json("get_recent_transcripts", &ctx, serde_json::json!({}))
+                .await
+                .expect("get_recent_transcripts failed");
+            assert_eq!(out, serde_json::json!([]));
+        }
+
+        #[tokio::test]
+        async fn file_url_rejects_unknown_file() {
+            let (registry, ctx) = ingestion_ctx().await;
+            let res = registry
+                .dispatch_json(
+                    "file_url",
+                    &ctx,
+                    serde_json::json!({ "storage_path": "unsorted/does-not-exist.txt" }),
+                )
+                .await;
+            assert!(res.is_err(), "expected storage_error for missing file");
         }
 
         // ── 1-6-7-2 domain ops: tags / links / timeline ──────────────────────

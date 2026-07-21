@@ -221,6 +221,10 @@ const MIGRATION_0015: &str = include_str!("../migrations/0015_minion_inbox.sql")
 const MIGRATION_0016: &str = include_str!("../migrations/0016_minion_attachments.sql");
 const MIGRATION_0017: &str = include_str!("../migrations/0017_minion_budget.sql");
 const MIGRATION_0018: &str = include_str!("../migrations/0018_rate_leases.sql");
+/// 1-6-7-5: content chunks read side for the `get_chunks` op.
+const MIGRATION_0019: &str = include_str!("../migrations/0019_content_chunks.sql");
+/// 1-6-7-5: ingest log for the `log_ingest` / `get_ingest_log` ops.
+const MIGRATION_0020: &str = include_str!("../migrations/0020_ingest_log.sql");
 
 /// FNV-1a 64-bit hash of a lease key, mapped to a signed int64 for
 /// `pg_advisory_xact_lock`. Matches the TS implementation bit-for-bit.
@@ -327,6 +331,16 @@ pub static POSTGRES_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 18,
         name: "rate_leases",
         sql: MIGRATION_0018,
+    }));
+    registry.add(Box::new(PostgresMigration {
+        version: 19,
+        name: "content_chunks",
+        sql: MIGRATION_0019,
+    }));
+    registry.add(Box::new(PostgresMigration {
+        version: 20,
+        name: "ingest_log",
+        sql: MIGRATION_0020,
     }));
 
     registry
