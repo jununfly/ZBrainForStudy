@@ -2709,6 +2709,12 @@ pub fn register_all(registry: &mut OperationRegistry) {
     registry.register(FileUrlOperation);
     registry.register(GetCalibrationProfileOperation);
     registry.register(GetRecentTranscriptsOperation);
+    // 1-6-7-8: commands-misc gap ops (engine methods already exist)
+    registry.register(ResolveSlugsOperation);
+    registry.register(GetVersionsOperation);
+    registry.register(RevertVersionOperation);
+    registry.register(PutRawDataOperation);
+    registry.register(GetRawDataOperation);
 }
 
 // ── SoftDeletePage Operation (Slice 1-6-7-1) ──────────────────────────────
@@ -5994,6 +6000,297 @@ fn build_transcript_summary(raw: &str) -> String {
         first_line.to_string()
     } else {
         format!("{first_line}\n{after}").trim().to_string()
+    }
+}
+
+// ── 1-6-7-8: commands-misc gap ops (Rust impl; engine methods already exist) ──
+
+/// Fuzzy-resolve a partial slug to matching page slugs.
+#[derive(Debug, Clone)]
+pub struct ResolveSlugsOperation;
+
+#[derive(Debug, serde::Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct ResolveSlugsParams {
+    pub partial: String,
+}
+
+impl ValidateParams for ResolveSlugsParams {
+    fn validate(&self) -> OperationResult<()> {
+        if self.partial.trim().is_empty() {
+            return Err(OperationError::invalid_params("partial is required"));
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TypedOperation for ResolveSlugsOperation {
+    type Params = ResolveSlugsParams;
+    type Output = Vec<String>;
+
+    fn name(&self) -> &'static str {
+        "resolve_slugs"
+    }
+    fn description(&self) -> &'static str {
+        "Fuzzy-resolve a partial slug to matching page slugs."
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": { "partial": { "type": "string", "description": "Partial slug to resolve" } },
+            "required": ["partial"]
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let opts = crate::engine::ResolveSlugsOpts {
+            source_id: Some(ctx.source_id.clone()),
+            source_ids: None,
+        };
+        let slugs = engine.resolve_slugs(&params.partial, &opts).await?;
+        Ok(slugs)
+    }
+}
+
+/// Page version history.
+#[derive(Debug, Clone)]
+pub struct GetVersionsOperation;
+
+#[derive(Debug, serde::Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct GetVersionsParams {
+    pub slug: String,
+}
+
+impl ValidateParams for GetVersionsParams {
+    fn validate(&self) -> OperationResult<()> {
+        validate_page_slug(&self.slug)?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TypedOperation for GetVersionsOperation {
+    type Params = GetVersionsParams;
+    type Output = Vec<crate::types::PageVersion>;
+
+    fn name(&self) -> &'static str {
+        "get_versions"
+    }
+    fn description(&self) -> &'static str {
+        "Page version history."
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": { "slug": { "type": "string", "description": "Page slug" } },
+            "required": ["slug"]
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let versions = engine.get_versions(&params.slug, Some(ctx.source_id.as_str())).await?;
+        Ok(versions)
+    }
+}
+
+/// Revert a page to a previous version.
+#[derive(Debug, Clone)]
+pub struct RevertVersionOperation;
+
+#[derive(Debug, serde::Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct RevertVersionParams {
+    pub slug: String,
+    pub version_id: u64,
+}
+
+impl ValidateParams for RevertVersionParams {
+    fn validate(&self) -> OperationResult<()> {
+        validate_page_slug(&self.slug)?;
+        if self.version_id == 0 {
+            return Err(OperationError::invalid_params("version_id must be > 0"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevertVersionOutput {
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dry_run: Option<bool>,
+}
+
+#[async_trait]
+impl TypedOperation for RevertVersionOperation {
+    type Params = RevertVersionParams;
+    type Output = RevertVersionOutput;
+
+    fn name(&self) -> &'static str {
+        "revert_version"
+    }
+    fn description(&self) -> &'static str {
+        "Revert a page to a previous version."
+    }
+    fn mutating(&self) -> bool {
+        true
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "slug": { "type": "string", "description": "Page slug" },
+                "version_id": { "type": "integer", "description": "Version id to revert to" }
+            },
+            "required": ["slug", "version_id"]
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        if ctx.dry_run {
+            return Ok(RevertVersionOutput { status: "reverted".to_string(), dry_run: Some(true) });
+        }
+        let engine = ctx.engine()?;
+        let sid = Some(ctx.source_id.as_str());
+        engine.create_version(&params.slug, sid).await?;
+        engine.revert_to_version(&params.slug, params.version_id, sid).await?;
+        Ok(RevertVersionOutput { status: "reverted".to_string(), dry_run: None })
+    }
+}
+
+/// Store raw API response data for a page.
+#[derive(Debug, Clone)]
+pub struct PutRawDataOperation;
+
+#[derive(Debug, serde::Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct PutRawDataParams {
+    pub slug: String,
+    pub source: String,
+    pub data: serde_json::Value,
+}
+
+impl ValidateParams for PutRawDataParams {
+    fn validate(&self) -> OperationResult<()> {
+        validate_page_slug(&self.slug)?;
+        if self.source.trim().is_empty() {
+            return Err(OperationError::invalid_params("source is required"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PutRawDataOutput {
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dry_run: Option<bool>,
+}
+
+#[async_trait]
+impl TypedOperation for PutRawDataOperation {
+    type Params = PutRawDataParams;
+    type Output = PutRawDataOutput;
+
+    fn name(&self) -> &'static str {
+        "put_raw_data"
+    }
+    fn description(&self) -> &'static str {
+        "Store raw API response data for a page."
+    }
+    fn mutating(&self) -> bool {
+        true
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "slug": { "type": "string", "description": "Page slug" },
+                "source": { "type": "string", "description": "Data source (e.g. crustdata, happenstance)" },
+                "data": { "type": "object", "description": "Raw data object" }
+            },
+            "required": ["slug", "source", "data"]
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        if ctx.dry_run {
+            return Ok(PutRawDataOutput { status: "ok".to_string(), dry_run: Some(true) });
+        }
+        let engine = ctx.engine()?;
+        engine.put_raw_data(&params.slug, &params.source, &params.data, Some(ctx.source_id.as_str())).await?;
+        Ok(PutRawDataOutput { status: "ok".to_string(), dry_run: None })
+    }
+}
+
+/// Retrieve raw data for a page.
+#[derive(Debug, Clone)]
+pub struct GetRawDataOperation;
+
+#[derive(Debug, serde::Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct GetRawDataParams {
+    pub slug: String,
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+impl ValidateParams for GetRawDataParams {
+    fn validate(&self) -> OperationResult<()> {
+        validate_page_slug(&self.slug)?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TypedOperation for GetRawDataOperation {
+    type Params = GetRawDataParams;
+    type Output = Vec<crate::types::RawData>;
+
+    fn name(&self) -> &'static str {
+        "get_raw_data"
+    }
+    fn description(&self) -> &'static str {
+        "Retrieve raw data for a page."
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "slug": { "type": "string", "description": "Page slug" },
+                "source": { "type": "string", "description": "Filter by source" }
+            },
+            "required": ["slug"]
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let rows = engine
+            .get_raw_data(&params.slug, params.source.as_deref(), Some(ctx.source_id.as_str()))
+            .await?;
+        Ok(rows)
     }
 }
 
@@ -9736,7 +10033,7 @@ Outro."#;
         }
 
         #[test]
-        fn register_all_registers_fifty_four_ops() {
+        fn register_all_registers_fifty_nine_ops() {
             let mut registry = OperationRegistry::new();
             register_all(&mut registry);
             let names = registry.operation_names();
@@ -9799,6 +10096,12 @@ Outro."#;
                 "file_url",
                 "get_calibration_profile",
                 "get_recent_transcripts",
+                // 1-6-7-8: commands-misc gap ops
+                "resolve_slugs",
+                "get_versions",
+                "revert_version",
+                "put_raw_data",
+                "get_raw_data",
             ] {
                 assert!(names.contains(&n), "missing op: {}", n);
             }
@@ -9813,6 +10116,119 @@ Outro."#;
             let engine = InMemoryEngine::default();
             let ctx = OperationContext::local_cli().with_engine(engine.into_arc());
             (registry, ctx)
+        }
+
+        // ── 1-6-7-8: commands-misc gap ops ──
+
+        async fn seed_page(registry: &OperationRegistry, ctx: &OperationContext, slug: &str) {
+            let res = registry
+                .dispatch_json(
+                    "put_page",
+                    ctx,
+                    serde_json::json!({ "slug": slug, "compiled_truth": "body" }),
+                )
+                .await;
+            assert!(res.is_ok(), "seed put_page failed: {:?}", res);
+        }
+
+        #[tokio::test]
+        async fn resolve_slugs_finds_created_page() {
+            let (registry, ctx) = ingestion_ctx().await;
+            seed_page(&registry, &ctx, "wiki/notes/alpha").await;
+            let res = registry
+                .dispatch_json("resolve_slugs", &ctx, serde_json::json!({ "partial": "wiki/notes" }))
+                .await;
+            assert!(res.is_ok(), "resolve_slugs failed: {:?}", res);
+            let slugs: Vec<String> = serde_json::from_value(res.unwrap()).unwrap();
+            assert!(slugs.iter().any(|s| s == "wiki/notes/alpha"), "got: {:?}", slugs);
+        }
+
+        #[tokio::test]
+        async fn get_versions_returns_history_after_put() {
+            let (registry, ctx) = ingestion_ctx().await;
+            seed_page(&registry, &ctx, "wiki/notes/beta").await;
+            // Versions are only created by explicit `create_version` (put_page does
+            // not snapshot), so snapshot one first, then read it back.
+            let engine = ctx.engine.clone().expect("engine set");
+            engine
+                .create_version("wiki/notes/beta", Some(ctx.source_id.as_str()))
+                .await
+                .expect("create_version failed");
+            let res = registry
+                .dispatch_json("get_versions", &ctx, serde_json::json!({ "slug": "wiki/notes/beta" }))
+                .await;
+            assert!(res.is_ok(), "get_versions failed: {:?}", res);
+            let versions = res.unwrap();
+            assert!(
+                versions.as_array().map(|a| !a.is_empty()).unwrap_or(false),
+                "expected >=1 version, got: {:?}", versions
+            );
+        }
+
+        #[tokio::test]
+        async fn revert_version_dry_run_flags() {
+            let (registry, ctx) = ingestion_ctx().await;
+            seed_page(&registry, &ctx, "wiki/notes/gamma").await;
+            let engine = ctx.engine.clone().expect("engine set");
+            let mut dry = OperationContext::local_cli();
+            dry.engine = Some(engine);
+            dry.dry_run = true;
+            let res = registry
+                .dispatch_json(
+                    "revert_version",
+                    &dry,
+                    serde_json::json!({ "slug": "wiki/notes/gamma", "version_id": 1 }),
+                )
+                .await;
+            assert!(res.is_ok(), "revert_version dry failed: {:?}", res);
+            assert_eq!(res.unwrap(), serde_json::json!({ "status": "reverted", "dryRun": true }));
+        }
+
+        #[tokio::test]
+        async fn put_raw_data_then_get_raw_data_roundtrip() {
+            let (registry, ctx) = ingestion_ctx().await;
+            seed_page(&registry, &ctx, "wiki/notes/delta").await;
+            let put = registry
+                .dispatch_json(
+                    "put_raw_data",
+                    &ctx,
+                    serde_json::json!({ "slug": "wiki/notes/delta", "source": "crustdata", "data": { "k": "v" } }),
+                )
+                .await;
+            assert!(put.is_ok(), "put_raw_data failed: {:?}", put);
+            let res = registry
+                .dispatch_json(
+                    "get_raw_data",
+                    &ctx,
+                    serde_json::json!({ "slug": "wiki/notes/delta", "source": "crustdata" }),
+                )
+                .await;
+            assert!(res.is_ok(), "get_raw_data failed: {:?}", res);
+            let rows = res.unwrap();
+            let arr = rows.as_array().expect("rows should be an array");
+            assert!(
+                arr.iter()
+                    .any(|r| r.get("source").and_then(|s| s.as_str()) == Some("crustdata")),
+                "expected a crustdata row, got: {:?}", rows
+            );
+        }
+
+        #[tokio::test]
+        async fn put_raw_data_dry_run_flags() {
+            let (registry, ctx) = ingestion_ctx().await;
+            let engine = ctx.engine.clone().expect("engine set");
+            let mut dry = OperationContext::local_cli();
+            dry.engine = Some(engine);
+            dry.dry_run = true;
+            let res = registry
+                .dispatch_json(
+                    "put_raw_data",
+                    &dry,
+                    serde_json::json!({ "slug": "wiki/x", "source": "crustdata", "data": { "k": "v" } }),
+                )
+                .await;
+            assert!(res.is_ok(), "put_raw_data dry failed: {:?}", res);
+            assert_eq!(res.unwrap(), serde_json::json!({ "status": "ok", "dryRun": true }));
         }
 
         #[tokio::test]

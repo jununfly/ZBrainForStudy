@@ -1846,11 +1846,19 @@
     "1-6-7-8": {
       "id": "1-6-7-8",
       "label": "commands-misc(13)+takes(4) 收尾: 含 get_brain_identity NET_NEW; takes_calibration/scorecard 待 1-3-3 解锁",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "exploit",
       "parent": "1-6-7",
-      "children": [],
-      "decisions": [],
+      "children": [
+        "1-6-7-8-1"
+      ],
+      "decisions": [
+        {
+          "q": "commands-misc 5 op Rust 实现后，TS operations.ts 中对应 op 是否随删？",
+          "answer": "否，保留 TS op 直到终局 1-6-7-9「删 operations.ts」",
+          "note": "理由：(1)机械测试 mechanical.test.ts 经 operationsByName+callOp 直派 TS registry，删 op 会让 callOp(get_versions/revert_version/resolve_slugs/put_raw_data/get_raw_data) 失败；(2)TS get_versions 含 takes-fence 红挡(stripTakesFence)，Rust GetVersionsOperation 当前未移植该隐私边界，删 TS 会丢行为。1-6-7-1..5 均保留 TS，仅 1-6-7-6 schema-pack 因独立注册解耦才 per-slice 删。"
+        }
+      ],
       "notes": ""
     },
     "1-6-7-9": {
@@ -1862,11 +1870,21 @@
       "children": [],
       "decisions": [],
       "notes": ""
+    },
+    "1-6-7-8-1": {
+      "id": "1-6-7-8-1",
+      "label": "1-6-7-8-1. commands-misc 可行 5 op Rust 实现 (resolve_slugs/get_versions/revert_version/put_raw_data/get_raw_data): engine 方法双后端已备，迁入 register_all(54→59) + 5 行为测试，三道门全绿",
+      "status": "completed",
+      "mode": "explore",
+      "parent": "1-6-7-8",
+      "children": [],
+      "decisions": [],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-20 17:26:50",
+    "updated": "2026-07-21 13:36:55",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"

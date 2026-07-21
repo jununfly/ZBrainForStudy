@@ -27,8 +27,9 @@
 │   ├── [x][Y+] 1-6-2. RUST_OWNED 壳清理 (删TS副本, 过1-6-5对等闸门: config/query/search/get-page/list-pages/sync/takes/orphans/import/reconcile-links/skillpack/schema/init/doctor)
 │   ├── [x][Y+] 1-6-3. TRIVIAL_DELETE 批 [已收口: 真零依赖仅3个 cache/claw-test/report 已整删; 原审计宣称27为过度分类, 20个带test_refs命令归1-6-4, discovery/network/parse非命令+call幽灵条目已从审计剔除]
 │   ├── [x][X+] 1-6-4. REAL_MIGRATE 孤儿命令批 [去重后: 移出 skillify->1-1 / eval族->1-2 / calibration->1-3 / dream->1-12 / extract·export·integrity->1-4; 真孤儿=code-intel(code-*·reindex*·edges-backfill·backfill) + memory(recall·forget) + models·providers + whoknows·brainstorm·auth·features·storage·migrate·publish·extract-conversation-facts·resolvers·check-resolvable + 20个1-6-3归入带test命令]
-│   ├── [~][Y+] 1-6-5. PARITY_GATE (删除任何TS命令前: 确认零src引用+零test引用+真Rust覆盖非stub; 1-6-2/1-6-3共用)
-│   └── [~] 1-6-6. skill/resolver 校验子系统全量迁 Rust (check-resolvable 全轨道): 覆盖 resolver-filenames / skill-frontmatter / skill-manifest / trigger-index(+parseResolverEntries) / check-resolvable core(checks 1-4) / repo-root / CLI / routing-eval(Check5) / filing-audit(Check6) / dry-fix(--fix) / 重接 doctor+skillify-check。非孤儿命令——是整条 skill 树校验栈，耦合 doctor/skillify-check 共享核心。
+│   ├── [x][Y+] 1-6-5. PARITY_GATE (删除任何TS命令前: 确认零src引用+零test引用+真Rust覆盖非stub; 1-6-2/1-6-3共用)
+│   ├── [x] 1-6-6. skill/resolver 校验子系统全量迁 Rust (check-resolvable 全轨道): 覆盖 resolver-filenames / skill-frontmatter / skill-manifest / trigger-index(+parseResolverEntries) / check-resolvable core(checks 1-4) / repo-root / CLI / routing-eval(Check5) / filing-audit(Check6) / dry-fix(--fix) / 重接 doctor+skillify-check。非孤儿命令——是整条 skill 树校验栈，耦合 doctor/skillify-check 共享核心。
+│   └── [~][Y+] 1-6-7. operations.ts 替换式迁移 (Rust OperationRegistry 为继任者): 107 op 逐一对齐, 随迁随删 TS; 覆盖审计见 docs/plans/OPERATIONS_TS_TO_RUST_AUDIT.md
 ├── [ ][X+] 1-7. search core 模块补齐 (C 类，src/core/search 23 文件)
 ├── [ ][X+] 1-8. facts core 模块补齐 (C 类，src/core/facts 13 文件)
 ├── [ ][X+] 1-9. think core 模块补齐 (C 类，src/core/think 7 文件)
@@ -39,19 +40,16 @@
 └── [!][X+] 1-12. cycle 大迁移 (runCycle 2057行主循环 + 20 phase 全未迁, Rust autopilot/cycle.rs 仅骨架 stub) — B类真迁移主战场
 ```
 
-### 🔨 当前施工: 1-6-5. PARITY_GATE (删除任何TS命令前: 确认零src引用+零test引用+真Rust覆盖非stub; 1-6-2/1-6-3共用)
+### 🔨 当前施工: 1-6-7-8. commands-misc(13)+takes(4) 收尾: 含 get_brain_identity NET_NEW; takes_calibration/scorecard 待 1-3-3 解锁
 **Status:** `in_progress` | **Mode:** `exploit`
 
+**决策记录:**
+- Q: commands-misc 5 op Rust 实现后，TS operations.ts 中对应 op 是否随删？
+  A: 否，保留 TS op 直到终局 1-6-7-9「删 operations.ts」
+  > 理由：(1)机械测试 mechanical.test.ts 经 operationsByName+callOp 直派 TS registry，删 op 会让 callOp(get_versions/revert_version/resolve_slugs/put_raw_data/get_raw_data) 失败；(2)TS get_versions 含 takes-fence 红挡(stripTakesFence)，Rust GetVersionsOperation 当前未移植该隐私边界，删 TS 会丢行为。1-6-7-1..5 均保留 TS，仅 1-6-7-6 schema-pack 因独立注册解耦才 per-slice 删。
+
 **子节点:**
-- [x] 1-6-5-1. skill_resolver 基础模块 Rust 化 (resolver-filenames + skill-frontmatter + skill-manifest + trigger-index 含 parseResolverEntries 表+紧凑列表双格式) + 单测
-- [x] 1-6-5-2. check_resolvable 核心 checks 1-4 (reachability + missing_file + MECE overlap/gap + DRY + skillify_stub 扫描) Rust 化 + 单测
-- [x] 1-6-5-3. repo-root skills-dir 自动检测 (autoDetectSkillsDir / ReadOnly + install_path 只读兜底 gated by is_gbrain_repo_root) Rust 化
-- [x] 1-6-5-4. check_resolvable CLI 命令外壳 (clap 子命令 + flags/envelope/render/退出码, checks 1-4; --fix 暂拒绝提示) + 接线 lib.rs
-- [x] 1-6-5-5. 收尾: 删除 TS check-resolvable CLI dispatch + 保留 TS core(被 doctor/skillify-check 消费, 记录决策) + PARITY_GATE + E2E + 提交
-- [x] 1-6-5-6. routing-eval (Check 5): loadRoutingFixtures + indexResolverTriggers + lintRoutingFixtures + runRoutingEval Rust 化 + 接 check_resolvable 警告
-- [x] 1-6-5-7. filing-audit (Check 6): loadFilingRules + runFilingAudit (writes_pages/writes_to 声明审计) Rust 化 + 接 check_resolvable 警告
-- [ ] 1-6-5-8. dry-fix (--fix): autoFixDryViolations + CROSS_CUTTING REPLACE + MISSING_RULE INSERT + skill-fix-gates(git/code-fence) + skill-brain-first 合规 Rust 化
-- [ ] 1-6-5-9. 重接 doctor / skillify-check: 待这两个 TS 命令各自迁移切片时改用 Rust skill_resolver 核心, 删除 TS src/core/check-resolvable.ts 及其依赖栈
+- [x] 1-6-7-8-1. 1-6-7-8-1. commands-misc 可行 5 op Rust 实现 (resolve_slugs/get_versions/revert_version/put_raw_data/get_raw_data): engine 方法双后端已备，迁入 register_all(54→59) + 5 行为测试，三道门全绿
 <!-- ⚠️ ROADMAP_SECTION_END -->
 
 <!-- ROADMAP_SECTION_START -->
