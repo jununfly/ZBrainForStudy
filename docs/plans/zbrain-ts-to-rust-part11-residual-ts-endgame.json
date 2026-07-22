@@ -1961,8 +1961,34 @@
       "mode": "explore",
       "parent": "1-6-7",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "图片加载实现策略",
+          "answer": "完整实现 SSRF 防护 + 三种输入格式支持（image_path/image_url/image_data）",
+          "note": "远程 MCP 调用 image_path 需要安全防护，一次性对齐 TS 安全模型"
+        },
+        {
+          "q": "消费记录 schema 迁移范围",
+          "answer": "只添加 spend_log 表到 Rust migrations，满足 search_by_image 读写需求",
+          "note": "oauth_clients/mcp_spend_reservations 延后到 sync_brain 整体迁移 OAuth 时处理"
+        },
+        {
+          "q": "嵌入调用扩展方式",
+          "answer": "新增单独 embed_image 方法，保持现有文本嵌入结构不变",
+          "note": "增量修改影响小，满足单张图片嵌入需求即可，长远多模态扩展后续再考虑"
+        },
+        {
+          "q": "向量检索 trait 设计",
+          "answer": "BrainEngine trait 新增 search_pages_by_embedding 默认方法，三后端各自实现",
+          "note": "通用能力放在 trait 里，Postgres 默认返回空（G23 缺口），InMemory/libsql 实现真实检索"
+        },
+        {
+          "q": "RRF 融合位置",
+          "answer": "在 search_by_image op handler 内部做 RRF 融合，不改动现有 fuse_and_boost",
+          "note": "增量修改不影响现有 search_pages 调用，只有 search_by_image 需要混合两个检索结果"
+        }
+      ],
+      "notes": " | DONE 2026-07-22: NET_NEW search_by_image op implemented via TDD. image_loader.rs (SSRF-guarded: image_path/url/data). EmbeddingProvider::embed_image + EmbeddingClient::model(). BrainEngine::search_pages_by_embedding (InMemory+Libsql real chunk-cosine; Postgres default empty=G23). Reused fuse_and_boost for RRF+salience/recency+snippet (page-level embedding). Daily spend budget: image_search_spend_log table (sqlite+pg MIGRATION_0022) + image_search_daily_spend_cents/record_image_search_spend trait methods. register_all registers 'search_by_image' (62 ops). 4 op tests + 14 image_loader tests. Three gates green (core 1877 / cli / mcp). Commit 9007ae4."
     },
     "1-6-7-12": {
       "id": "1-6-7-12",
@@ -1972,14 +1998,59 @@
       "parent": "1-6-7",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": " | 2026-07-22 NOTE: TS run_doctor is localOnly:false (remote). Rust implements the wrapper via zbrain-cli run_doctor_command -> mcp_client.call_tool('run_doctor') remote proxy. No local Rust op needed; completed-as-designed."
     },
     "1-6-7-13": {
       "id": "1-6-7-13",
       "label": "sync_brain op (大子系统): 跨源同步引擎 Rust 化，需拆 sub-node（sync/pull/push/conflict）",
-      "status": "completed",
+      "status": "in_progress",
       "mode": "explore",
       "parent": "1-6-7",
+      "children": [
+        "1-6-7-13-1",
+        "1-6-7-13-2",
+        "1-6-7-13-3",
+        "1-6-7-13-4"
+      ],
+      "decisions": [],
+      "notes": " | 2026-07-22 RECONCILE: was falsely 'completed' — no Rust impl exists (TS sync_brain only wraps performSync in src/commands/sync.ts, 2616 lines). Marked in_progress; decomposed into 4 sub-nodes (orchestration / git-pull / git-push+conflict / status+report)."
+    },
+    "1-6-7-13-1": {
+      "id": "1-6-7-13-1",
+      "label": "sync orchestration core: Rust 端口 performSync/performSyncInner — 需 engine 方法(sync anchor/checkpoint 读写, chunker version, lock 处理) + 增量同步主循环(逐源)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-6-7-13",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-7-13-2": {
+      "id": "1-6-7-13-2",
+      "label": "git pull 层: hasOriginRemote/isDetachedHead/buildGitInvocation/buildDetachedWorkingTreeManifest/buildAutoEmbedArgs + detached-head working-tree manifest 处理 (Rust 端口)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-6-7-13",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-7-13-3": {
+      "id": "1-6-7-13-3",
+      "label": "git push + 冲突层: push 逻辑 + 冲突检测/解决 + formatLockBusyMessage/runBreakLock (Rust 端口)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-6-7-13",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-7-13-4": {
+      "id": "1-6-7-13-4",
+      "label": "sync 状态与报告: buildSyncStatusReport/printSyncStatusReport/resolveParallelism/syncOneSource/runSyncTrigger/manageGitignore (Rust 端口, 多为只读)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-6-7-13",
       "children": [],
       "decisions": [],
       "notes": ""
@@ -2078,7 +2149,7 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-21 15:07:22",
+    "updated": "2026-07-21 20:34:59",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
