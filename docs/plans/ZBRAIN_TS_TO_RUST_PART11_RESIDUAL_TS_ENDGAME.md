@@ -44,12 +44,35 @@
 ### 🔨 当前施工: 1-6-7-13. sync_brain op (大子系统): 跨源同步引擎 Rust 化，需拆 sub-node（sync/pull/push/conflict）
 **Status:** `in_progress` | **Mode:** `explore`
 
- | 2026-07-22 RECONCILE: was falsely 'completed' — no Rust impl exists (TS sync_brain only wraps performSync in src/commands/sync.ts, 2616 lines). Marked in_progress; decomposed into 4 sub-nodes (orchestration / git-pull / git-push+conflict / status+report).
+Grill 决策树(2026-07-22, zj-grill-me + zj-roadmap-driven): Q1 真·增量 Rust 端口(sync 做成 Rust op,ingest 半复用既有 engine 方法); Q2 git shell-out(tokio::process::Command 调 git,零新依赖,对齐 TS execFileSync); Q3 git 封装放 zbrain-core/src/git.rs(薄 Git 客户端 struct); Q4 文件锁 advisory lock(跨进程,OS 退出自动释放); Q5 抽可复用 ingest_file(path,source_id,engine) 助手 + happy-path sync(git pull → 循环 ingest → 更新 last_commit/last_sync_at); Q6 13-3 = pull 边界 fallback(detached/no-origin/diverged 非致命回退)+ 文件锁生命周期,不做 push(push 归 federation 独立 surface); Q7 真实 git 集成测试(tempfile 临时 repo + InMemory engine 断言)。首刀 13-1 = git pull happy-path + 循环 ingest_file + 更新元数据。延后: 并行>1、push/federation、rename 检测等。
+
+**决策记录:**
+- Q: sync_brain 编排/git-pull/git-push(13-1..3)交付策略?
+  A: 真·增量 Rust 端口:sync 做成 Rust op;ingest 半(chunk/embed/write)复用既有类型化 engine 方法(put_page/upsert_chunks/list_sources);只新写 git shell-out(std::process::Command 调 git,对齐 TS 现有 execFileSync)+ 编排循环 + 元数据更新。按 tracer bullet 先打通 happy path 再补 diverged/conflict/federation 边界。
+  > TS sync.ts 2616 行含大量 CLI/progress/readline 样板,不需全迁;Rust CLI 入口已在 zbrain-cli。
+- Q: Rust 端 git 操作怎么做?
+  A: shell-out 调 git CLI:用 tokio::process::Command 调系统 git,对齐 TS 现有 execFileSync('git')。零新依赖,完整覆盖 detached HEAD/diverged/worktree 边界,集成测试直接用真实 git 行为。
+  > workspace 已有 tokio process feature;不引入 git2/gix。
+- Q: git shell-out 封装放哪个模块?
+  A: zbrain-core/src/git.rs:薄 Git 客户端 struct(pull/push/status/checkout 等方法),SyncBrainOperation(同 crate operation.rs)直接调用;测试在 zbrain-core 内用临时 repo。
+  > 不新建 crate,不放 zbrain-cli(op 在 core)。
+- Q: 同一 source 的并发 sync 怎么防重入?
+  A: 文件锁 advisory lock:在 source 的 local_path 下加排他锁文件(如 .zbrain-sync.lock),syncOneSource 开始取锁、结束(Drop)释放。跨进程生效,OS 进程退出自动释放防崩溃残留。可用轻量 fd-lock crate。
+  > 不用 in-memory Mutex(锁不住跨进程)、不用 DB 标志位(需清理 stale lock)。
+- Q: 13-1 首刀 tracer-bullet 怎么做?
+  A: 抽可复用 import_from_path + happy-path sync:在 zbrain-core 提取 ingest_file(path, source_id, engine)(read→chunk→embed→put_page/upsert_chunks),syncOneSource 循环调用;配 git pull happy path(有 origin/clean/ff)+ 更新 last_commit/last_sync_at。ingest 助手同时服务未来 capture-from-file/import。延后 diverged/detached/conflict/并行>1/federation push。
+  > Rust 现状无按路径摄取操作(仅 capture_content 吃字节),故需新抽 ingest 助手——深度模块,避免未来 import/add 重写。
+- Q: 13-3 实际范围怎么定?
+  A: pull 边界 + lock 收尾:13-3 实现 git pull 的非致命 fallback(detached HEAD / no origin / remote diverged → 回退本地状态并告警),并把 Q4 文件锁接入 syncOneSource 生命周期。不做 push——push 属 zbrain sources federate(联邦命令,独立 surface)。原标签'git push+冲突'语义有偏差,需校正为 pull 边界。
+  > TS 已确认 sync_brain 只 pull 不 push;push 触发的是 webhook 队列回调,非主动推。
+- Q: git-sync 怎么测?
+  A: 真实 git 集成测试:用 tempfile 起临时 git repo(git init + 提交),source.local_path 指向它,跑 Rust sync op 对 InMemory engine,断言 engine 状态(pages/chunks 数、last_commit 更新)。最贴近真实 git 行为,CI 有 git 可用。
+  > 不为测试抽 GitClient trait(Q2 已拒 trait 抽象);Git 客户端保持具体 struct,集成测试用真实 git。
 
 **子节点:**
-- [ ] 1-6-7-13-1. sync orchestration core: Rust 端口 performSync/performSyncInner — 需 engine 方法(sync anchor/checkpoint 读写, chunker version, lock 处理) + 增量同步主循环(逐源)
-- [ ] 1-6-7-13-2. git pull 层: hasOriginRemote/isDetachedHead/buildGitInvocation/buildDetachedWorkingTreeManifest/buildAutoEmbedArgs + detached-head working-tree manifest 处理 (Rust 端口)
-- [ ] 1-6-7-13-3. git push + 冲突层: push 逻辑 + 冲突检测/解决 + formatLockBusyMessage/runBreakLock (Rust 端口)
+- [ ] 1-6-7-13-1. sync 编排骨架: 抽 ingest_file 助手 + SyncBrainOperation(git pull happy-path → 循环 ingest → 更新 last_commit/last_sync_at)
+- [ ] 1-6-7-13-2. git pull happy path 封装到 zbrain-core/src/git.rs(有 origin / clean / fast-forward)
+- [ ] 1-6-7-13-3. git pull 边界 fallback(detached HEAD / no origin / remote diverged → 回退本地状态并告警) + 文件锁接入 syncOneSource 生命周期(不做 push,push 归 federation)
 - [x] 1-6-7-13-4. sync 状态与报告: buildSyncStatusReport/printSyncStatusReport/resolveParallelism/syncOneSource/runSyncTrigger/manageGitignore (Rust 端口, 多为只读)
 <!-- ⚠️ ROADMAP_SECTION_END -->
 
