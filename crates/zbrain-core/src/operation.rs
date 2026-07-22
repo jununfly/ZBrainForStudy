@@ -614,6 +614,15 @@ impl OperationContext {
         self
     }
 
+    /// Builder method to set the server-side takes holder allow-list. When
+    /// `Some`, takes ops (`takes_list`/`takes_search`/`takes_scorecard`)
+    /// enforce it as a hard holder filter (`AND holder = ANY($list)`).
+    #[must_use]
+    pub fn with_takes_holders_allow_list(mut self, allow_list: Option<Vec<String>>) -> Self {
+        self.takes_holders_allow_list = allow_list;
+        self
+    }
+
     #[must_use]
     pub fn source_scope_opts(&self) -> SourceScopeOpts {
         if let Some(allowed) = self.auth.as_ref().and_then(|a| a.allowed_sources.as_ref()) {
@@ -3067,6 +3076,70 @@ impl TypedOperation for TakesSearchOperation {
     }
 }
 
+// ── TakesScorecard Operation (calibration Phase 2, roadmap 1-3-3) ──────────
+/// Singleton operation for `takes_scorecard`.
+#[derive(Debug, Clone)]
+pub struct TakesScorecardOperation;
+
+/// Parameters for `takes_scorecard`.
+///
+/// All optional — an empty call aggregates over every holder in scope. Mirrors
+/// the canonical TS op params (`holder`/`domain_prefix`/`since`/`until`).
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct TakesScorecardParams {
+    pub holder: Option<String>,
+    pub domain_prefix: Option<String>,
+    pub since: Option<String>,
+    pub until: Option<String>,
+}
+impl ValidateParams for TakesScorecardParams {
+    fn validate(&self) -> OperationResult<()> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TypedOperation for TakesScorecardOperation {
+    type Params = TakesScorecardParams;
+    type Output = crate::calibration_queries::TakesScorecard;
+    fn name(&self) -> &'static str {
+        "takes_scorecard"
+    }
+    fn description(&self) -> &'static str {
+        "Calibration scorecard for resolved bets: counts, accuracy, Brier (correct ∨ incorrect only), partial_rate. A remote token's `takes_holders_allow_list` is enforced server-side as a hard holder filter."
+    }
+    fn cli_hints(&self) -> Option<CliHints> {
+        Some(CliHints::new("takes-scorecard"))
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "holder": { "type": "string", "description": "Filter to this holder (world|garry|brain|<slug>); omit for all holders" },
+                "domain_prefix": { "type": "string", "description": "Slug prefix (e.g. companies/) to scope the scorecard" },
+                "since": { "type": "string", "description": "Window start (YYYY-MM-DD)" },
+                "until": { "type": "string", "description": "Window end (YYYY-MM-DD)" }
+            }
+        })
+    }
+    async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        // v0.28: the allow-list is a server-side hard holder filter, applied
+        // per row (`AND holder = ANY($list)`). A remote token restricted to a
+        // subset of holders can never aggregate other holders' takes.
+        let query = crate::calibration_queries::ScorecardQuery {
+            holder: params.holder.as_deref(),
+            domain_prefix: params.domain_prefix.as_deref(),
+            since: params.since.as_deref(),
+            until: params.until.as_deref(),
+            holders_allow_list: ctx.takes_holders_allow_list.as_deref(),
+        };
+        let scorecard = engine.get_scorecard(&query).await?;
+        Ok(scorecard)
+    }
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Unified live registry (Slice 1-6-7-1)
 // ──────────────────────────────────────────────────────────────────────────
@@ -3373,6 +3446,9 @@ pub fn register_all(registry: &mut OperationRegistry) {
     registry.register(ThinkOperation);
     registry.register(TakesListOperation);
     registry.register(TakesSearchOperation);
+    // calibration Phase 2 (roadmap 1-3-3) — takes_scorecard: aggregate
+    // calibration stats. Allow-list enforced server-side as a hard filter.
+    registry.register(TakesScorecardOperation);
     // — Page domain WRAP (first batch, slice 1-6-7-1) —
     registry.register(SoftDeletePageOperation);
     registry.register(RewriteLinksOperation);
@@ -9600,6 +9676,146 @@ mod tests {
         let output = result.unwrap();
         assert_eq!(output["total"], 0);
         assert!(output["takes"].as_array().unwrap().is_empty());
+    }
+
+    // ── TakesScorecard Operation (calibration Phase 2, roadmap 1-3-3) ──────
+
+    /// Build a bet take for holder `alice` on page 1.
+    #[cfg(test)]
+    fn bet(weight: f64, row_num: i32) -> crate::types::TakeInput {
+        crate::types::TakeInput {
+            page_id: 1,
+            row_num: Some(row_num),
+            claim: format!("pred-{row_num}"),
+            kind: "bet".to_string(),
+            holder: "alice".to_string(),
+            weight,
+            since_date: None,
+            until_date: None,
+            source: None,
+            superseded_by: None,
+            active: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn resolve_outcome(row_num: i32, outcome: bool) -> crate::types::TakeResolution {
+        crate::types::TakeResolution {
+            page_id: 1,
+            row_num,
+            quality: None,
+            outcome: Some(outcome),
+            evidence: None,
+            value: None,
+            unit: None,
+            by: None,
+        }
+    }
+
+    #[test]
+    fn registry_register_takes_scorecard() {
+        let mut registry = OperationRegistry::new();
+        registry.register(super::TakesScorecardOperation);
+
+        let op = registry.lookup("takes_scorecard");
+        assert!(op.is_some());
+        assert_eq!(op.unwrap().name(), "takes_scorecard");
+    }
+
+    #[test]
+    fn takes_scorecard_defaults_read_scope_and_cli_hint() {
+        use crate::operation::TypedOperation;
+        let op = super::TakesScorecardOperation;
+        // UFCS: `required_scope` is defined on both `Operation` (blanket) and
+        // `TypedOperation`, so qualify to disambiguate.
+        assert_eq!(TypedOperation::required_scope(&op), "read");
+        assert!(!TypedOperation::mutating(&op));
+        assert_eq!(
+            TypedOperation::cli_hints(&op).expect("cli hint").name,
+            "takes-scorecard"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_json_takes_scorecard_aggregates_resolved_bets() {
+        use crate::engine::{BrainEngine, InMemoryEngine};
+
+        let engine = InMemoryEngine::default();
+        // 2 correct, 1 incorrect. Brier: [(0.6-1)²=0.16, (0.3-1)²=0.49,
+        // (0.8-0)²=0.64] / 3 = 1.29/3 = 0.43.
+        engine
+            .add_takes_batch(1, &[bet(0.6, 0), bet(0.3, 1), bet(0.8, 2)])
+            .await
+            .expect("add");
+        engine.resolve_take(1, 0, &resolve_outcome(0, true)).await.expect("r0");
+        engine.resolve_take(1, 1, &resolve_outcome(1, true)).await.expect("r1");
+        engine.resolve_take(1, 2, &resolve_outcome(2, false)).await.expect("r2");
+
+        let mut registry = OperationRegistry::new();
+        registry.register(super::TakesScorecardOperation);
+        let ctx = OperationContext::local_cli().with_engine(engine.into_arc());
+        let params = serde_json::json!({ "holder": "alice" });
+
+        let output = registry
+            .dispatch_json("takes_scorecard", &ctx, params)
+            .await
+            .expect("dispatch");
+        assert_eq!(output["total_bets"], 3);
+        assert_eq!(output["resolved"], 3);
+        assert_eq!(output["correct"], 2);
+        assert_eq!(output["incorrect"], 1);
+        assert!((output["accuracy"].as_f64().unwrap() - (2.0 / 3.0)).abs() < 1e-9);
+        assert!((output["brier"].as_f64().unwrap() - 0.43).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn dispatch_json_takes_scorecard_no_holder_aggregates_all() {
+        use crate::engine::{BrainEngine, InMemoryEngine};
+
+        let engine = InMemoryEngine::default();
+        let mut bob = bet(0.9, 0);
+        bob.holder = "bob".to_string();
+        engine.add_takes_batch(1, &[bet(0.6, 1), bob]).await.expect("add");
+        engine.resolve_take(1, 1, &resolve_outcome(1, true)).await.expect("r-alice");
+        engine.resolve_take(1, 0, &resolve_outcome(0, true)).await.expect("r-bob");
+
+        let mut registry = OperationRegistry::new();
+        registry.register(super::TakesScorecardOperation);
+        let ctx = OperationContext::local_cli().with_engine(engine.into_arc());
+
+        // No holder → aggregates over both alice and bob.
+        let output = registry
+            .dispatch_json("takes_scorecard", &ctx, serde_json::json!({}))
+            .await
+            .expect("dispatch");
+        assert_eq!(output["resolved"], 2);
+        assert_eq!(output["correct"], 2);
+    }
+
+    #[tokio::test]
+    async fn dispatch_json_takes_scorecard_allow_list_excludes_other_holders() {
+        use crate::engine::{BrainEngine, InMemoryEngine};
+
+        let engine = InMemoryEngine::default();
+        let mut bob = bet(0.9, 0);
+        bob.holder = "bob".to_string();
+        engine.add_takes_batch(1, &[bet(0.6, 1), bob]).await.expect("add");
+        engine.resolve_take(1, 1, &resolve_outcome(1, true)).await.expect("r-alice");
+        engine.resolve_take(1, 0, &resolve_outcome(0, true)).await.expect("r-bob");
+
+        let mut registry = OperationRegistry::new();
+        registry.register(super::TakesScorecardOperation);
+        // Remote token restricted to alice; no holder param → still cannot see bob.
+        let ctx = OperationContext::local_cli()
+            .with_engine(engine.into_arc())
+            .with_takes_holders_allow_list(Some(vec!["alice".to_string()]));
+
+        let output = registry
+            .dispatch_json("takes_scorecard", &ctx, serde_json::json!({}))
+            .await
+            .expect("dispatch");
+        assert_eq!(output["resolved"], 1, "allow-list must exclude bob's bet");
+        assert_eq!(output["correct"], 1);
     }
 
     // ── G33 / G34 security regression tests ─────────────────────────────────

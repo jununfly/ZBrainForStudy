@@ -92,8 +92,8 @@ pub use admin_queries::{
     Stats, WatchSnapshot,
 };
 pub use calibration_queries::{
-    CalibrationQueries, CalibrationBucket, CalibrationProfileRow, PatternDetail, TakeSummary,
-    TakesScorecard,
+    CalibrationQueries, CalibrationBucket, CalibrationProfileRow, PatternDetail, ScorecardQuery,
+    TakeSummary, TakesScorecard,
 };
 pub use progress::{ProgressMode, ProgressReporter};
 pub use oauth_queries::{

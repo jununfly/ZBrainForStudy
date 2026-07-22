@@ -25,8 +25,8 @@ use crate::admin_queries::{
     RequestLogFilters, Stats, WatchSnapshot,
 };
 use crate::calibration_queries::{
-    CalibrationBucket, CalibrationProfileRow, CalibrationQueries, PatternDetail, TakeSummary,
-    TakesScorecard,
+    aggregate_scorecard, CalibrationBucket, CalibrationProfileRow, CalibrationQueries,
+    PatternDetail, ScorecardQuery, ScorecardRow, TakeSummary, TakesScorecard,
 };
 use crate::oauth_queries::{
     OAuthQueries, RegisterClientRequest, RegisterClientResponse, RevokeClientResponse,
@@ -2267,6 +2267,13 @@ impl BrainEngine for LibsqlEngine {
         crate::calibration_queries::CalibrationQueries::get_latest_profile(self, holder).await
     }
 
+    async fn get_scorecard(
+        &self,
+        query: &crate::calibration_queries::ScorecardQuery<'_>,
+    ) -> Result<crate::calibration_queries::TakesScorecard> {
+        crate::calibration_queries::CalibrationQueries::get_scorecard(self, query).await
+    }
+
     async fn find_duplicate_page(
         &self,
         source_id: &str,
@@ -3767,7 +3774,31 @@ impl BrainEngine for LibsqlEngine {
     ) -> Result<()> {
         let conn = self.conn().await?;
         let now = current_utc_iso8601();
-        let affected = conn
+        // Existence check first, matching canonical TS ordering: TAKE_ROW_NOT_FOUND
+        // is thrown before deriveResolutionTuple validates the resolution.
+        let mut rows = conn
+            .query(
+                "SELECT 1 FROM takes WHERE page_id = ?1 AND row_num = ?2",
+                ::libsql::params![page_id as i64, row_num as i64],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("resolve_take existence check: {e}")))?;
+        if rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("resolve_take existence check: {e}")))?
+            .is_none()
+        {
+            return Err(crate::error::StructuredError::new(
+                "Not Found",
+                "not_found",
+                format!("no take found for page_id={page_id} row_num={row_num}"),
+            ));
+        }
+        // Canonical (resolved_quality, resolved_outcome) derivation — parity
+        // with TS `deriveResolutionTuple`; errors on invalid/contradictory input.
+        let (resolved_quality, resolved_outcome) = resolution.derive_quality_outcome()?;
+        conn
             .execute(
                 "UPDATE takes SET \
                         resolved_at = ?1, resolved_quality = ?2, resolved_outcome = ?3, \
@@ -3776,8 +3807,8 @@ impl BrainEngine for LibsqlEngine {
                  WHERE page_id = ?9 AND row_num = ?10",
                 ::libsql::params![
                     now.clone(),
-                    resolution.quality.clone(),
-                    resolution.outcome.map(|b| b as i64),
+                    resolved_quality.clone(),
+                    resolved_outcome.map(|b| b as i64),
                     resolution.evidence.clone(),
                     resolution.value,
                     resolution.unit.clone(),
@@ -3789,13 +3820,6 @@ impl BrainEngine for LibsqlEngine {
             )
             .await
             .map_err(|e| Error::engine(format!("resolve_take: {e}")))?;
-        if affected == 0 {
-            return Err(crate::error::StructuredError::new(
-                "Not Found",
-                "not_found",
-                format!("no take found for page_id={page_id} row_num={row_num}"),
-            ));
-        }
         Ok(())
     }
 
@@ -8347,81 +8371,83 @@ fn decode_cr_mode(value: &str) -> Result<CRMode> {
 #[async_trait]
 impl CalibrationQueries for LibsqlEngine {
     /// Aggregated scoring stats from resolved takes.
-    async fn get_scorecard(&self, holder: &str, domain_prefix: Option<&str>) -> Result<TakesScorecard> {
+    ///
+    /// Pulls the minimal scoped rows (`kind`/`weight`/`resolved_quality`) then
+    /// delegates the canonical math to `aggregate_scorecard`, so InMemory,
+    /// Libsql, and Postgres are bit-identical. Scoping mirrors canonical TS
+    /// `getScorecard`: holder + optional slug-prefix domain via
+    /// `EXISTS(pages.slug LIKE prefix%)` + `since_date` window + allow-list.
+    async fn get_scorecard(&self, query: &ScorecardQuery<'_>) -> Result<TakesScorecard> {
         let conn = self.conn().await?;
 
-        // Graceful degradation: `takes` table may not exist in current Rust schema.
-        // When `domain_prefix` is set, scope to a calibration domain via
-        // `take_domain_assignments` (mirrors TS getScorecard({holder, domainPrefix})).
-        let result = match domain_prefix {
-            Some(domain) => {
-                conn.query(
-                    "SELECT \
-                            COUNT(*) as resolved, \
-                            AVG(brier) as brier, \
-                            AVG(CASE WHEN resolution = 'correct' THEN 1.0 ELSE 0.0 END) as accuracy, \
-                            SUM(CASE WHEN resolution = 'correct' THEN 1 ELSE 0 END) as correct, \
-                            SUM(CASE WHEN resolution = 'incorrect' THEN 1 ELSE 0 END) as incorrect, \
-                            AVG(CASE WHEN partial_resolution IS NOT NULL THEN 1.0 ELSE 0.0 END) as partial_rate \
-                     FROM takes t \
-                     JOIN take_domain_assignments a ON a.take_id = t.id \
-                     WHERE t.holder = ?1 AND t.resolved_at IS NOT NULL AND a.domain = ?2",
-                    ::libsql::params![holder, domain],
-                )
-                .await
+        // Canonical `WHERE 1=1` base; every scope clause is optional and appends
+        // its own positional param so the bind order below stays aligned.
+        let mut sql = String::from(
+            "SELECT t.kind, t.weight, t.resolved_quality FROM takes t WHERE 1=1",
+        );
+        let mut params: Vec<::libsql::Value> = Vec::new();
+        // Optional single-holder filter (omitted when None, canonical parity).
+        if let Some(holder) = query.holder {
+            params.push(::libsql::Value::from(holder.to_string()));
+            sql.push_str(&format!(" AND t.holder = ?{}", params.len()));
+        }
+        if let Some(prefix) = query.domain_prefix {
+            params.push(::libsql::Value::from(format!("{prefix}%")));
+            sql.push_str(&format!(
+                " AND EXISTS (SELECT 1 FROM pages p WHERE p.id = t.page_id AND p.slug LIKE ?{})",
+                params.len()
+            ));
+        }
+        if let Some(since) = query.since {
+            params.push(::libsql::Value::from(since.to_string()));
+            sql.push_str(&format!(" AND t.since_date >= ?{}", params.len()));
+        }
+        if let Some(until) = query.until {
+            params.push(::libsql::Value::from(until.to_string()));
+            sql.push_str(&format!(" AND t.since_date <= ?{}", params.len()));
+        }
+        // Allow-list membership (`AND holder = ANY($list)`, expanded to an IN
+        // list on SQLite). Empty list fails closed.
+        if let Some(list) = query.holders_allow_list {
+            if list.is_empty() {
+                sql.push_str(" AND 0=1");
+            } else {
+                let start = params.len();
+                let placeholders: Vec<String> =
+                    (0..list.len()).map(|i| format!("?{}", start + i + 1)).collect();
+                sql.push_str(&format!(" AND t.holder IN ({})", placeholders.join(", ")));
+                for h in list {
+                    params.push(::libsql::Value::from(h.clone()));
+                }
             }
-            None => {
-                conn.query(
-                    "SELECT \
-                            COUNT(*) as resolved, \
-                            AVG(brier) as brier, \
-                            AVG(CASE WHEN resolution = 'correct' THEN 1.0 ELSE 0.0 END) as accuracy, \
-                            SUM(CASE WHEN resolution = 'correct' THEN 1 ELSE 0 END) as correct, \
-                            SUM(CASE WHEN resolution = 'incorrect' THEN 1 ELSE 0 END) as incorrect, \
-                            AVG(CASE WHEN partial_resolution IS NOT NULL THEN 1.0 ELSE 0.0 END) as partial_rate \
-                     FROM takes \
-                     WHERE holder = ?1 AND resolved_at IS NOT NULL",
-                    ::libsql::params![holder],
-                )
-                .await
-            }
-        };
+        }
+
+        let result = conn.query(&sql, ::libsql::params_from_iter(params)).await;
 
         match result {
             Err(e) => {
                 let msg = e.to_string();
-                if msg.contains("no such table") {
-                    return Ok(TakesScorecard {
-                        resolved: 0,
-                        brier: 0.0,
-                        accuracy: 0.0,
-                        correct: 0,
-                        incorrect: 0,
-                        partial_rate: 0.0,
-                    });
+                // Graceful degradation: `takes`/`pages` table or a column may
+                // not exist in the current schema — degrade to the zero card.
+                if msg.contains("no such table") || msg.contains("no such column") {
+                    return Ok(aggregate_scorecard(std::iter::empty()));
                 }
                 Err(Error::engine(format!("get_scorecard: {msg}")))
             }
             Ok(mut rows) => {
-                if let Some(row) = rows.next().await.map_err(|e| Error::engine(format!("get_scorecard row: {e}")))? {
-                    Ok(TakesScorecard {
-                        resolved: row.get::<i64>(0).unwrap_or(0),
-                        brier: row.get::<f64>(1).unwrap_or(0.0),
-                        accuracy: row.get::<f64>(2).unwrap_or(0.0),
-                        correct: row.get::<i64>(3).unwrap_or(0),
-                        incorrect: row.get::<i64>(4).unwrap_or(0),
-                        partial_rate: row.get::<f64>(5).unwrap_or(0.0),
-                    })
-                } else {
-                    Ok(TakesScorecard {
-                        resolved: 0,
-                        brier: 0.0,
-                        accuracy: 0.0,
-                        correct: 0,
-                        incorrect: 0,
-                        partial_rate: 0.0,
-                    })
+                let mut scored: Vec<ScorecardRow> = Vec::new();
+                while let Some(row) = rows
+                    .next()
+                    .await
+                    .map_err(|e| Error::engine(format!("get_scorecard row: {e}")))?
+                {
+                    scored.push(ScorecardRow {
+                        kind: row.get::<String>(0).unwrap_or_default(),
+                        weight: row.get::<f64>(1).unwrap_or(0.0),
+                        resolved_quality: row.get::<Option<String>>(2).unwrap_or(None),
+                    });
                 }
+                Ok(aggregate_scorecard(scored))
             }
         }
     }

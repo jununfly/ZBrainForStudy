@@ -407,6 +407,58 @@ pub struct TakeResolution {
     pub by: Option<String>,
 }
 
+impl TakeResolution {
+    /// Derive the canonical `(resolved_quality, resolved_outcome)` tuple that
+    /// gets written to the takes row.
+    ///
+    /// Faithful port of TS `deriveResolutionTuple`
+    /// (`src/core/takes-resolution.ts`). `quality` wins when both are set:
+    ///   - `quality` set → returned verbatim; `outcome` derived as
+    ///     `correct→true`, `incorrect→false`, `partial`/`unresolvable`→`None`.
+    ///     If `outcome` was also passed and contradicts the derived value, we
+    ///     surface the contradiction loudly.
+    ///   - only `outcome` set (v0.28 back-compat) → `true→'correct'`,
+    ///     `false→'incorrect'`. A boolean can never derive `'unresolvable'`.
+    ///
+    /// Returns `TAKE_RESOLUTION_INVALID` when neither field is set or when
+    /// `quality`/`outcome` disagree — mirroring the schema
+    /// `takes_resolution_consistency` CHECK as a first, CLI-friendly line.
+    pub fn derive_quality_outcome(&self) -> crate::error::Result<(String, Option<bool>)> {
+        let invalid = |msg: &str, hint: &str| {
+            crate::error::StructuredError::new("TAKE_RESOLUTION_INVALID", "invalid", msg)
+                .with_hint(hint)
+        };
+        match (&self.quality, self.outcome) {
+            (None, None) => Err(invalid(
+                "resolveTake: must pass either `quality` (correct|incorrect|partial|unresolvable) or `outcome` (true|false)",
+                "use --quality on the CLI; --outcome is the back-compat alias and cannot express partial or unresolvable",
+            )),
+            (Some(q), outcome_opt) => {
+                let derived = match q.as_str() {
+                    "correct" => Some(true),
+                    "incorrect" => Some(false),
+                    // 'partial' and 'unresolvable' are null-outcome.
+                    _ => None,
+                };
+                // Cross-check: caller passed BOTH and they contradict.
+                if let Some(o) = outcome_opt {
+                    if derived != Some(o) {
+                        return Err(invalid(
+                            &format!("resolveTake: --quality={q} contradicts --outcome={o}"),
+                            "pass only one of --quality or --outcome; they cannot disagree",
+                        ));
+                    }
+                }
+                Ok((q.clone(), derived))
+            }
+            (None, Some(outcome)) => Ok((
+                if outcome { "correct" } else { "incorrect" }.to_string(),
+                Some(outcome),
+            )),
+        }
+    }
+}
+
 /// Options for [`crate::engine::BrainEngine::list_takes`].
 ///
 /// Mirrors TS `TakesListOpts`. The `takes_holders_allow_list` field is the

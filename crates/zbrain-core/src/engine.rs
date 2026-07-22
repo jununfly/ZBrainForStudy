@@ -14,8 +14,9 @@ use async_trait::async_trait;
 use serde_json::{json, Map, Value};
 
 use crate::{
-    calibration_queries::{CalibrationBucket, CalibrationProfileRow, CalibrationQueries,
-        PatternDetail, TakeSummary, TakesScorecard},
+    calibration_queries::{aggregate_scorecard, CalibrationBucket, CalibrationProfileRow,
+        CalibrationQueries, PatternDetail, ScorecardQuery, ScorecardRow, TakeSummary,
+        TakesScorecard},
     oauth_queries::{ExchangeTokens, OAuthClientInfo, OAuthQueries, RegisterClientRequest,
         RegisterClientResponse, RevokeClientResponse, UpdateClientTtlResponse},
     time::current_utc_iso8601, types::PageVersion, types::RawData, types::Take,
@@ -1078,6 +1079,23 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
             "Unsupported",
             "unsupported",
             "get_calibration_profile not implemented for this engine",
+        ))
+    }
+
+    /// Aggregated scorecard for a holder. Mirrors TS `getScorecard`. Default:
+    /// `Err(`Unsupported`)` — engines that implement `CalibrationQueries`
+    /// override this to delegate to `CalibrationQueries::get_scorecard`.
+    ///
+    /// This is the bridge the `takes_scorecard` operation calls; it lets the
+    /// op stay on `&dyn BrainEngine` without downcasting to `CalibrationQueries`.
+    async fn get_scorecard(
+        &self,
+        _query: &crate::calibration_queries::ScorecardQuery<'_>,
+    ) -> crate::Result<crate::calibration_queries::TakesScorecard> {
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "get_scorecard not implemented for this engine",
         ))
     }
 
@@ -3873,6 +3891,13 @@ impl BrainEngine for InMemoryEngine {
         crate::calibration_queries::CalibrationQueries::get_latest_profile(self, holder).await
     }
 
+    async fn get_scorecard(
+        &self,
+        query: &crate::calibration_queries::ScorecardQuery<'_>,
+    ) -> crate::Result<crate::calibration_queries::TakesScorecard> {
+        crate::calibration_queries::CalibrationQueries::get_scorecard(self, query).await
+    }
+
     async fn find_duplicate_page(
         &self,
         source_id: &str,
@@ -4900,30 +4925,31 @@ impl BrainEngine for InMemoryEngine {
             .lock()
             .expect("InMemoryEngine takes_store mutex poisoned");
         let now = crate::time::current_utc_iso8601();
-        let mut found = false;
-        for take in store.iter_mut() {
-            if take.page_id == page_id && take.row_num == row_num {
-                take.resolved_at = Some(now.clone());
-                take.resolved_quality = resolution.quality.clone();
-                take.resolved_outcome = resolution.outcome;
-                take.resolved_evidence = resolution.evidence.clone();
-                take.resolved_value = resolution.value;
-                take.resolved_unit = resolution.unit.clone();
-                take.resolved_by = resolution.by.clone();
-                take.updated_at = now.clone();
-                found = true;
-                break;
-            }
-        }
-        if found {
-            Ok(())
-        } else {
-            Err(crate::error::StructuredError::new(
+        // Existence check first, matching canonical TS ordering
+        // (TAKE_ROW_NOT_FOUND is thrown before deriveResolutionTuple).
+        let Some(take) = store
+            .iter_mut()
+            .find(|t| t.page_id == page_id && t.row_num == row_num)
+        else {
+            return Err(crate::error::StructuredError::new(
                 "Not Found",
                 "not_found",
                 format!("no take found for page_id={page_id} row_num={row_num}"),
-            ))
-        }
+            ));
+        };
+        // Derive the canonical (resolved_quality, resolved_outcome) tuple only
+        // after confirming the take exists — errors out on invalid/contradictory
+        // input, matching canonical TS `deriveResolutionTuple`.
+        let (resolved_quality, resolved_outcome) = resolution.derive_quality_outcome()?;
+        take.resolved_at = Some(now.clone());
+        take.resolved_quality = Some(resolved_quality);
+        take.resolved_outcome = resolved_outcome;
+        take.resolved_evidence = resolution.evidence.clone();
+        take.resolved_value = resolution.value;
+        take.resolved_unit = resolution.unit.clone();
+        take.resolved_by = resolution.by.clone();
+        take.updated_at = now.clone();
+        Ok(())
     }
 
     // ── Links (Phase 7B) ──────────────────────────────────────────────────
@@ -9185,54 +9211,75 @@ impl crate::admin_queries::AdminQueries for InMemoryEngine {
 impl CalibrationQueries for InMemoryEngine {
     async fn get_scorecard(
         &self,
-        holder: &str,
-        _domain_prefix: Option<&str>,
+        query: &ScorecardQuery<'_>,
     ) -> crate::error::Result<TakesScorecard> {
-        // The in-memory engine does not model `take_domain_assignments`, so
-        // `domain_prefix` is ignored here — domain-scoped scorecards require a
-        // relational store (Libsql/Postgres). This is the overall scorecard.
+        // Domain scoping mirrors the TS `EXISTS(pages p WHERE p.id =
+        // takes.page_id AND p.slug LIKE prefix%)` — build a page_id → slug map
+        // from the pages store, then prefix-match. Only needed when a
+        // domain_prefix is requested.
+        let page_slugs: Option<std::collections::HashMap<u64, String>> =
+            if query.domain_prefix.is_some() {
+                let pages = self
+                    .store
+                    .lock()
+                    .expect("InMemoryEngine store mutex poisoned");
+                Some(pages.iter().map(|p| (p.id, p.slug.clone())).collect())
+            } else {
+                None
+            };
         let store = self
             .takes_store
             .lock()
             .expect("InMemoryEngine takes_store mutex poisoned");
-        let resolved: Vec<_> = store
+        let rows = store
             .iter()
-            .filter(|t| t.holder == holder && t.resolved_outcome.is_some())
-            .collect();
-        let total = resolved.len() as i64;
-        if total == 0 {
-            return Ok(TakesScorecard {
-                resolved: 0,
-                brier: 0.0,
-                accuracy: 0.0,
-                correct: 0,
-                incorrect: 0,
-                partial_rate: 0.0,
-            });
-        }
-        let correct = resolved
-            .iter()
-            .filter(|t| t.resolved_outcome == Some(true))
-            .count() as i64;
-        let incorrect = total - correct;
-        let accuracy = if total > 0 { correct as f64 / total as f64 } else { 0.0 };
-        let brier_sum: f64 = resolved
-            .iter()
-            .map(|t| {
-                let pred = t.weight;
-                let actual = if t.resolved_outcome == Some(true) { 1.0 } else { 0.0 };
-                (pred - actual).powi(2)
+            .filter(|t| {
+                // Optional single-holder filter (canonical: omitted when None).
+                if let Some(h) = query.holder {
+                    if t.holder != h {
+                        return false;
+                    }
+                }
+                // Allow-list membership (canonical `AND holder = ANY($list)`,
+                // D4 defense-in-depth). Applied per row so it composes with an
+                // absent holder filter (all-holders-within-allow-list).
+                if let Some(list) = query.holders_allow_list {
+                    if !list.iter().any(|h| h == &t.holder) {
+                        return false;
+                    }
+                }
+                if let Some(prefix) = query.domain_prefix {
+                    let matches = page_slugs
+                        .as_ref()
+                        .and_then(|m| m.get(&t.page_id))
+                        .map(|slug| slug.starts_with(prefix))
+                        .unwrap_or(false);
+                    if !matches {
+                        return false;
+                    }
+                }
+                // `since_date >= since` / `<= until`; NULL since_date fails a
+                // present bound (SQL `NULL >= x` is NULL ⇒ excluded).
+                if let Some(since) = query.since {
+                    match &t.since_date {
+                        Some(d) if d.as_str() >= since => {}
+                        _ => return false,
+                    }
+                }
+                if let Some(until) = query.until {
+                    match &t.since_date {
+                        Some(d) if d.as_str() <= until => {}
+                        _ => return false,
+                    }
+                }
+                true
             })
-            .sum();
-        let brier = if total > 0 { brier_sum / total as f64 } else { 0.0 };
-        Ok(TakesScorecard {
-            resolved: total,
-            brier,
-            accuracy,
-            correct,
-            incorrect,
-            partial_rate: 0.0,
-        })
+            .map(|t| ScorecardRow {
+                kind: t.kind.clone(),
+                weight: t.weight,
+                resolved_quality: t.resolved_quality.clone(),
+            });
+        Ok(aggregate_scorecard(rows))
     }
 
     async fn get_calibration_curve(

@@ -42,6 +42,10 @@ use crate::engine::{
     PageFilters, PageInput, PageSort, ResolveSlugsOpts, SearchOpts, SearchResult, SourceRow,
     UpdateSourceInput, fuse_and_boost, is_valid_source_id,
 };
+use crate::calibration_queries::{
+    aggregate_scorecard, CalibrationBucket, CalibrationProfileRow, CalibrationQueries,
+    PatternDetail, ScorecardQuery, ScorecardRow, TakesScorecard,
+};
 use crate::oauth_queries::{
     ExchangeTokens, OAuthClientInfo, OAuthQueries, RegisterClientRequest,
     RegisterClientResponse, RevokeClientResponse, UpdateClientTtlResponse,
@@ -1190,6 +1194,20 @@ impl BrainEngine for PostgresEngine {
         .await
         .map_err(|e| Error::engine(format!("list_files_for_page query failed: {e}")))?;
         rows.iter().map(pg_row_to_file).collect()
+    }
+
+    async fn get_calibration_profile(
+        &self,
+        holder: &str,
+    ) -> Result<Option<crate::calibration_queries::CalibrationProfileRow>> {
+        crate::calibration_queries::CalibrationQueries::get_latest_profile(self, holder).await
+    }
+
+    async fn get_scorecard(
+        &self,
+        query: &crate::calibration_queries::ScorecardQuery<'_>,
+    ) -> Result<crate::calibration_queries::TakesScorecard> {
+        crate::calibration_queries::CalibrationQueries::get_scorecard(self, query).await
     }
 
     async fn find_duplicate_page(
@@ -2741,7 +2759,27 @@ impl BrainEngine for PostgresEngine {
     ) -> Result<()> {
         let pool = self.pool()?;
         let now = sqlx::types::chrono::Utc::now();
-        let result = sqlx::query(
+        // Existence check first, matching canonical TS ordering: TAKE_ROW_NOT_FOUND
+        // is thrown before deriveResolutionTuple validates the resolution.
+        let existing: Option<(i64,)> = sqlx::query_as(
+            "SELECT 1::bigint FROM takes WHERE page_id = $1 AND row_num = $2",
+        )
+        .bind(page_id as i64)
+        .bind(row_num)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::engine(format!("resolve_take existence check: {e}")))?;
+        if existing.is_none() {
+            return Err(crate::error::StructuredError::new(
+                "Not Found",
+                "not_found",
+                format!("no take found for page_id={page_id} row_num={row_num}"),
+            ));
+        }
+        // Canonical (resolved_quality, resolved_outcome) derivation — parity
+        // with TS `deriveResolutionTuple`; errors on invalid/contradictory input.
+        let (resolved_quality, resolved_outcome) = resolution.derive_quality_outcome()?;
+        sqlx::query(
             "UPDATE takes SET \
                     resolved_at = $1, resolved_quality = $2, resolved_outcome = $3, \
                     resolved_evidence = $4, resolved_value = $5, resolved_unit = $6, \
@@ -2749,8 +2787,8 @@ impl BrainEngine for PostgresEngine {
              WHERE page_id = $9 AND row_num = $10",
         )
         .bind(now)
-        .bind(&resolution.quality)
-        .bind(resolution.outcome)
+        .bind(&resolved_quality)
+        .bind(resolved_outcome)
         .bind(&resolution.evidence)
         .bind(resolution.value)
         .bind(&resolution.unit)
@@ -2761,14 +2799,6 @@ impl BrainEngine for PostgresEngine {
         .execute(pool)
         .await
         .map_err(|e| Error::engine(format!("resolve_take: {e}")))?;
-
-        if result.rows_affected() == 0 {
-            return Err(crate::error::StructuredError::new(
-                "Not Found",
-                "not_found",
-                format!("no take found for page_id={page_id} row_num={row_num}"),
-            ));
-        }
         Ok(())
     }
 
@@ -6443,6 +6473,209 @@ impl OAuthQueries for PostgresEngine {
             .map_err(|e| Error::engine(format!("sweep_expired_tokens oauth_codes: {e}")))?;
 
         Ok(tokens_deleted.rows_affected() + codes_deleted.rows_affected())
+    }
+}
+
+// ── CalibrationQueries PostgresEngine implementation ──────────────────────
+
+/// Postgres catalogue errors we treat as "schema not migrated yet" and degrade
+/// to an empty/None result instead of failing the query — mirrors Libsql's
+/// `no such table` / `no such column` handling. Postgres uses
+/// `relation "x" does not exist` (42P01) and `column "x" does not exist`
+/// (42703); both contain the substring `does not exist`.
+fn pg_is_missing_schema(err: &sqlx::Error) -> bool {
+    err.to_string().contains("does not exist")
+}
+
+#[async_trait]
+impl CalibrationQueries for PostgresEngine {
+    /// Aggregated scoring stats from resolved takes.
+    ///
+    /// Pulls the minimal scoped rows (`kind`/`weight`/`resolved_quality`) then
+    /// delegates the canonical math to `aggregate_scorecard`, so InMemory,
+    /// Libsql, and Postgres are bit-identical. Scoping mirrors canonical TS
+    /// `getScorecard`: holder + optional slug-prefix domain via
+    /// `EXISTS(pages.slug LIKE prefix%)` + `since_date` window + allow-list.
+    async fn get_scorecard(&self, query: &ScorecardQuery<'_>) -> Result<TakesScorecard> {
+        let pool = self.pool()?;
+
+        // Build the scoped SELECT with positional $N placeholders. Every clause
+        // is optional and appends its own placeholder so the bind order below
+        // stays aligned (canonical `WHERE 1=1` + conditional clauses).
+        let mut sql = String::from(
+            "SELECT t.kind, t.weight, t.resolved_quality FROM takes t WHERE 1=1",
+        );
+        let mut n = 0;
+        let has_holder = query.holder.is_some();
+        if has_holder {
+            n += 1;
+            sql.push_str(&format!(" AND t.holder = ${n}"));
+        }
+        let domain_like = query.domain_prefix.map(|p| format!("{p}%"));
+        if domain_like.is_some() {
+            n += 1;
+            sql.push_str(&format!(
+                " AND EXISTS (SELECT 1 FROM pages p WHERE p.id = t.page_id AND p.slug LIKE ${n})",
+            ));
+        }
+        if query.since.is_some() {
+            n += 1;
+            sql.push_str(&format!(" AND t.since_date >= ${n}"));
+        }
+        if query.until.is_some() {
+            n += 1;
+            sql.push_str(&format!(" AND t.since_date <= ${n}"));
+        }
+        // Allow-list membership (`AND holder = ANY($list)`, D4 defense-in-depth).
+        let has_allow_list = query.holders_allow_list.is_some();
+        if has_allow_list {
+            n += 1;
+            sql.push_str(&format!(" AND t.holder = ANY(${n}::text[])"));
+        }
+
+        let mut q = sqlx::query_as::<_, (String, f64, Option<String>)>(&sql);
+        if let Some(holder) = query.holder {
+            q = q.bind(holder);
+        }
+        if let Some(ref like) = domain_like {
+            q = q.bind(like);
+        }
+        if let Some(since) = query.since {
+            q = q.bind(since);
+        }
+        if let Some(until) = query.until {
+            q = q.bind(until);
+        }
+        if let Some(list) = query.holders_allow_list {
+            q = q.bind(list.to_vec());
+        }
+
+        match q.fetch_all(pool).await {
+            Err(e) if pg_is_missing_schema(&e) => Ok(aggregate_scorecard(std::iter::empty())),
+            Err(e) => Err(Error::engine(format!("get_scorecard: {e}"))),
+            Ok(rows) => {
+                let scored = rows.into_iter().map(|(kind, weight, resolved_quality)| ScorecardRow {
+                    kind,
+                    weight,
+                    resolved_quality,
+                });
+                Ok(aggregate_scorecard(scored))
+            }
+        }
+    }
+
+    /// Confidence-bucket accuracy curve.
+    ///
+    /// The Postgres `takes` schema has no `confidence`/`resolution` columns yet
+    /// (see migrations/0012), so this degrades to an empty curve. Kept as a
+    /// symmetric trait impl so callers don't branch on backend.
+    async fn get_calibration_curve(&self, holder: &str) -> Result<Vec<CalibrationBucket>> {
+        let pool = self.pool()?;
+        let result = sqlx::query_as::<_, (String, i64, f64)>(
+            "SELECT \
+                    (FLOOR(confidence * 10) / 10.0)::text || '-' || ((FLOOR(confidence * 10) + 1) / 10.0)::text AS bucket_label, \
+                    COUNT(*)::bigint AS n, \
+                    AVG(CASE WHEN resolution = 'correct' THEN 1.0 ELSE 0.0 END)::double precision AS accuracy \
+             FROM takes \
+             WHERE holder = $1 AND resolved_at IS NOT NULL AND confidence BETWEEN 0.0 AND 1.0 \
+             GROUP BY FLOOR(confidence * 10) \
+             ORDER BY FLOOR(confidence * 10)",
+        )
+        .bind(holder)
+        .fetch_all(pool)
+        .await;
+
+        match result {
+            Err(e) if pg_is_missing_schema(&e) => Ok(vec![]),
+            Err(e) => Err(Error::engine(format!("get_calibration_curve: {e}"))),
+            Ok(rows) => Ok(rows
+                .into_iter()
+                .map(|(bucket_label, n, accuracy)| CalibrationBucket {
+                    bucket_label,
+                    n,
+                    accuracy,
+                })
+                .collect()),
+        }
+    }
+
+    /// Latest calibration profile for a holder.
+    ///
+    /// The `calibration_profiles` table does not exist in the Postgres schema
+    /// yet, so this degrades to `None`.
+    async fn get_latest_profile(&self, holder: &str) -> Result<Option<CalibrationProfileRow>> {
+        let pool = self.pool()?;
+        let result = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                String,
+                String,
+                Option<f64>,
+                Option<f64>,
+                Option<serde_json::Value>,
+                Option<serde_json::Value>,
+                Option<serde_json::Value>,
+            ),
+        >(
+            "SELECT id, source_id, holder, generated_at, brier, accuracy, \
+                    pattern_statements, active_bias_tags, domain_scorecards \
+             FROM calibration_profiles \
+             WHERE holder = $1 \
+             ORDER BY generated_at DESC \
+             LIMIT 1",
+        )
+        .bind(holder)
+        .fetch_optional(pool)
+        .await;
+
+        match result {
+            Err(e) if pg_is_missing_schema(&e) => Ok(None),
+            Err(e) => Err(Error::engine(format!("get_latest_profile: {e}"))),
+            Ok(None) => Ok(None),
+            Ok(Some(row)) => Ok(Some(CalibrationProfileRow {
+                id: row.0,
+                source_id: row.1,
+                holder: row.2,
+                generated_at: row.3,
+                brier: row.4,
+                accuracy: row.5,
+                pattern_statements: row
+                    .6
+                    .and_then(|v| serde_json::from_value::<Vec<String>>(v).ok()),
+                active_bias_tags: row
+                    .7
+                    .and_then(|v| serde_json::from_value::<Vec<String>>(v).ok()),
+                domain_scorecards: row.8,
+            })),
+        }
+    }
+
+    /// Pattern text + top-25 resolved takes for drill-down.
+    ///
+    /// Depends on `calibration_profiles` (absent in Postgres), so this degrades
+    /// to `None`.
+    async fn get_pattern_detail(
+        &self,
+        holder: &str,
+        _pattern_index: usize,
+    ) -> Result<Option<PatternDetail>> {
+        let pool = self.pool()?;
+        let result = sqlx::query_as::<_, (Option<serde_json::Value>,)>(
+            "SELECT pattern_statements FROM calibration_profiles \
+             WHERE holder = $1 ORDER BY generated_at DESC LIMIT 1",
+        )
+        .bind(holder)
+        .fetch_optional(pool)
+        .await;
+
+        match result {
+            Err(e) if pg_is_missing_schema(&e) => Ok(None),
+            Err(e) => Err(Error::engine(format!("get_pattern_detail: {e}"))),
+            // Table exists but no profile — treat as no detail available.
+            Ok(_) => Ok(None),
+        }
     }
 }
 

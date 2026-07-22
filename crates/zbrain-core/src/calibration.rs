@@ -408,7 +408,9 @@ pub fn resolve_domain_prefix(domain: Option<&str>) -> Option<String> {
 pub struct TakeForecast {
     pub predicted_brier: Option<f64>,
     pub bucket_n: u32,
-    pub overall_brier: f64,
+    /// Holder's overall Brier for comparison. `None` when the holder has no
+    /// resolved correct/incorrect bets (canonical TS `overall_brier: number | null`).
+    pub overall_brier: Option<f64>,
     pub bucket_domain: String,
     pub insufficient_data: bool,
 }
@@ -429,7 +431,7 @@ pub fn compute_forecast(
     let predicted_brier = if insufficient_data {
         None
     } else {
-        Some(bucket.brier)
+        bucket.brier
     };
     TakeForecast {
         predicted_brier,
@@ -454,15 +456,10 @@ pub struct TakeForecastInput {
 }
 
 /// Zero scorecard used for the fail-open fallback when an engine read errors.
+/// Delegates to `aggregate_scorecard` over no rows so it can never drift from
+/// the canonical degradation semantics.
 fn zero_scorecard() -> TakesScorecard {
-    TakesScorecard {
-        resolved: 0,
-        brier: 0.0,
-        accuracy: 0.0,
-        correct: 0,
-        incorrect: 0,
-        partial_rate: 0.0,
-    }
+    crate::calibration_queries::aggregate_scorecard(std::iter::empty())
 }
 
 /// Engine-backed forecast for a single take. Mirrors `forecastForTake`:
@@ -475,14 +472,20 @@ pub async fn forecast_for_take<C: CalibrationQueries + ?Sized>(
     input: &TakeForecastInput,
 ) -> TakeForecast {
     let overall = engine
-        .get_scorecard(&input.holder, None)
+        .get_scorecard(&crate::calibration_queries::ScorecardQuery::for_holder(
+            &input.holder,
+        ))
         .await
         .unwrap_or_else(|_| zero_scorecard());
     let bucket = match &input.domain {
         Some(domain) => match resolve_domain_prefix(Some(domain)) {
             Some(prefix) => Some(
                 engine
-                    .get_scorecard(&input.holder, Some(&prefix))
+                    .get_scorecard(&crate::calibration_queries::ScorecardQuery {
+                        holder: Some(&input.holder),
+                        domain_prefix: Some(&prefix),
+                        ..Default::default()
+                    })
                     .await
                     .unwrap_or_else(|_| zero_scorecard()),
             ),
@@ -1187,12 +1190,16 @@ mod tests {
 
     fn scorecard(resolved: i64, brier: f64) -> TakesScorecard {
         TakesScorecard {
+            total_bets: resolved,
             resolved,
-            brier,
-            accuracy: 0.0,
             correct: 0,
             incorrect: 0,
-            partial_rate: 0.0,
+            partial: 0,
+            accuracy: None,
+            brier: Some(brier),
+            partial_rate: None,
+            unresolvable_count: Some(0),
+            unresolvable_rate: None,
         }
     }
 
@@ -1221,7 +1228,7 @@ mod tests {
     fn compute_forecast_overall_only() {
         let overall = scorecard(42, 0.18);
         let f = compute_forecast(&overall, None, None);
-        assert_eq!(f.overall_brier, 0.18);
+        assert_eq!(f.overall_brier, Some(0.18));
         assert_eq!(f.bucket_n, 42);
         assert_eq!(f.predicted_brier, Some(0.18));
         assert_eq!(f.bucket_domain, "overall");
@@ -1237,7 +1244,7 @@ mod tests {
         assert_eq!(f.predicted_brier, None);
         assert_eq!(f.bucket_n, 3);
         assert_eq!(f.bucket_domain, "market");
-        assert_eq!(f.overall_brier, 0.18);
+        assert_eq!(f.overall_brier, Some(0.18));
     }
 
     #[test]
@@ -1585,12 +1592,14 @@ mod tests {
     impl CalibrationQueries for FakeCalibrationEngine {
         async fn get_scorecard(
             &self,
-            holder: &str,
-            domain_prefix: Option<&str>,
+            query: &crate::calibration_queries::ScorecardQuery<'_>,
         ) -> crate::error::Result<TakesScorecard> {
             Ok(self
                 .scorecards
-                .get(&(holder.to_string(), domain_prefix.unwrap_or("").to_string()))
+                .get(&(
+                    query.holder.unwrap_or("").to_string(),
+                    query.domain_prefix.unwrap_or("").to_string(),
+                ))
                 .cloned()
                 .unwrap_or_else(zero_scorecard))
         }
@@ -1620,12 +1629,16 @@ mod tests {
 
     fn sc(resolved: i64, brier: f64) -> TakesScorecard {
         TakesScorecard {
+            total_bets: resolved,
             resolved,
-            brier,
-            accuracy: 0.0,
             correct: 0,
             incorrect: 0,
-            partial_rate: 0.0,
+            partial: 0,
+            accuracy: None,
+            brier: Some(brier),
+            partial_rate: None,
+            unresolvable_count: Some(0),
+            unresolvable_rate: None,
         }
     }
 
@@ -1643,7 +1656,7 @@ mod tests {
         assert_eq!(f.bucket_n, 8);
         assert!(!f.insufficient_data);
         assert_eq!(f.predicted_brier, Some(0.15));
-        assert_eq!(f.overall_brier, 0.15);
+        assert_eq!(f.overall_brier, Some(0.15));
     }
 
     #[tokio::test]
@@ -1665,7 +1678,7 @@ mod tests {
         assert_eq!(f.bucket_n, 6);
         assert_eq!(f.predicted_brier, Some(0.10));
         // overall_brier still comes from the unbucketed scorecard.
-        assert_eq!(f.overall_brier, 0.20);
+        assert_eq!(f.overall_brier, Some(0.20));
     }
 
     #[tokio::test]

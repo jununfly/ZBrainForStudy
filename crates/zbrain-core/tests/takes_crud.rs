@@ -12,7 +12,9 @@ mod support;
 use tempfile::NamedTempFile;
 use zbrain_core::engine::{BrainEngine, EngineConfig, PageInput};
 use zbrain_core::libsql::LibsqlEngine;
-use zbrain_core::{CalibrationQueries, InMemoryEngine, TakeInput, TakeResolution, TakesScorecard};
+use zbrain_core::{
+    CalibrationQueries, InMemoryEngine, ScorecardQuery, TakeInput, TakeResolution, TakesScorecard,
+};
 
 // ---------------------------------------------------------------------------
 // InMemoryEngine tests
@@ -154,7 +156,7 @@ async fn inmem_resolve_take_updates_fields() {
     let res = TakeResolution {
         page_id: 1,
         row_num: 0,
-        quality: Some("high".to_string()),
+        quality: Some("correct".to_string()),
         outcome: Some(true),
         evidence: Some("confirmed by source".to_string()),
         value: Some(42.0),
@@ -168,7 +170,7 @@ async fn inmem_resolve_take_updates_fields() {
 
     let takes = engine.get_takes_for_page(1, None).await.expect("get_takes");
     let t = &takes[0];
-    assert_eq!(t.resolved_quality.as_deref(), Some("high"));
+    assert_eq!(t.resolved_quality.as_deref(), Some("correct"));
     assert_eq!(t.resolved_outcome, Some(true));
     assert_eq!(t.resolved_evidence.as_deref(), Some("confirmed by source"));
     assert!((t.resolved_value.unwrap() - 42.0).abs() < 1e-9);
@@ -206,10 +208,13 @@ async fn inmem_resolve_nonexistent_returns_error() {
 #[tokio::test]
 async fn inmem_scorecard_empty_returns_zeros() {
     let engine = InMemoryEngine::new();
-    let sc: TakesScorecard = engine.get_scorecard("alice", None).await.expect("get_scorecard");
+    let sc: TakesScorecard = CalibrationQueries::get_scorecard(&engine, &ScorecardQuery::for_holder("alice"))
+        .await
+        .expect("get_scorecard");
     assert_eq!(sc.resolved, 0);
-    assert_eq!(sc.brier, 0.0);
-    assert_eq!(sc.accuracy, 0.0);
+    // Canonical: empty window degrades aggregate fields to None (not 0.0).
+    assert_eq!(sc.brier, None);
+    assert_eq!(sc.accuracy, None);
     assert_eq!(sc.correct, 0);
     assert_eq!(sc.incorrect, 0);
 }
@@ -228,7 +233,7 @@ async fn inmem_scorecard_single_resolved_correct() {
             &TakeResolution {
                 page_id: 1,
                 row_num: 0,
-                quality: Some("high".to_string()),
+                quality: Some("correct".to_string()),
                 outcome: Some(true),
                 evidence: None,
                 value: None,
@@ -239,13 +244,16 @@ async fn inmem_scorecard_single_resolved_correct() {
         .await
         .expect("resolve");
 
-    let sc: TakesScorecard = engine.get_scorecard("alice", None).await.expect("get_scorecard");
+    let sc: TakesScorecard = CalibrationQueries::get_scorecard(&engine, &ScorecardQuery::for_holder("alice"))
+        .await
+        .expect("get_scorecard");
     assert_eq!(sc.resolved, 1);
     assert_eq!(sc.correct, 1);
     assert_eq!(sc.incorrect, 0);
-    assert!((sc.accuracy - 1.0).abs() < 1e-9);
+    assert!((sc.accuracy.unwrap() - 1.0).abs() < 1e-9);
     // Brier: (0.8 - 1.0)² = 0.04
-    assert!((sc.brier - 0.04).abs() < 1e-9, "Brier should be 0.04, got {}", sc.brier);
+    let brier = sc.brier.expect("brier");
+    assert!((brier - 0.04).abs() < 1e-9, "Brier should be 0.04, got {brier}");
 }
 
 #[tokio::test]
@@ -273,13 +281,16 @@ async fn inmem_scorecard_single_resolved_incorrect() {
         .await
         .expect("resolve");
 
-    let sc: TakesScorecard = engine.get_scorecard("alice", None).await.expect("get_scorecard");
+    let sc: TakesScorecard = CalibrationQueries::get_scorecard(&engine, &ScorecardQuery::for_holder("alice"))
+        .await
+        .expect("get_scorecard");
     assert_eq!(sc.resolved, 1);
     assert_eq!(sc.correct, 0);
     assert_eq!(sc.incorrect, 1);
-    assert!((sc.accuracy - 0.0).abs() < 1e-9);
+    assert!((sc.accuracy.unwrap() - 0.0).abs() < 1e-9);
     // Brier: (0.9 - 0.0)² = 0.81
-    assert!((sc.brier - 0.81).abs() < 1e-9, "Brier should be 0.81, got {}", sc.brier);
+    let brier = sc.brier.expect("brier");
+    assert!((brier - 0.81).abs() < 1e-9, "Brier should be 0.81, got {brier}");
 }
 
 #[tokio::test]
@@ -316,17 +327,19 @@ async fn inmem_scorecard_multiple_mixed() {
     engine.resolve_take(1, 1, &resolve(1, false)).await.expect("resolve 1");
     engine.resolve_take(1, 2, &resolve(2, true)).await.expect("resolve 2");
 
-    let sc: TakesScorecard = engine.get_scorecard("alice", None).await.expect("get_scorecard");
+    let sc: TakesScorecard = CalibrationQueries::get_scorecard(&engine, &ScorecardQuery::for_holder("alice"))
+        .await
+        .expect("get_scorecard");
     assert_eq!(sc.resolved, 3);
     assert_eq!(sc.correct, 2);
     assert_eq!(sc.incorrect, 1);
     let expected_acc = 2.0 / 3.0;
-    assert!((sc.accuracy - expected_acc).abs() < 1e-9);
+    assert!((sc.accuracy.unwrap() - expected_acc).abs() < 1e-9);
     let expected_brier = (0.16 + 0.64 + 0.49) / 3.0;
+    let brier = sc.brier.expect("brier");
     assert!(
-        (sc.brier - expected_brier).abs() < 1e-9,
-        "Brier should be ~{expected_brier}, got {}",
-        sc.brier
+        (brier - expected_brier).abs() < 1e-9,
+        "Brier should be ~{expected_brier}, got {brier}"
     );
 }
 
@@ -361,11 +374,15 @@ async fn inmem_scorecard_filters_by_holder() {
     engine.resolve_take(1, 0, &resolve(0, true)).await.expect("resolve alice");
     engine.resolve_take(1, 1, &resolve(1, false)).await.expect("resolve bob");
 
-    let sc_alice = engine.get_scorecard("alice", None).await.expect("alice");
+    let sc_alice = CalibrationQueries::get_scorecard(&engine, &ScorecardQuery::for_holder("alice"))
+        .await
+        .expect("alice");
     assert_eq!(sc_alice.resolved, 1, "alice should see 1 resolved take");
     assert_eq!(sc_alice.correct, 1);
 
-    let sc_bob = engine.get_scorecard("bob", None).await.expect("bob");
+    let sc_bob = CalibrationQueries::get_scorecard(&engine, &ScorecardQuery::for_holder("bob"))
+        .await
+        .expect("bob");
     assert_eq!(sc_bob.resolved, 1, "bob should see 1 resolved take");
     assert_eq!(sc_bob.incorrect, 1);
 }
@@ -379,7 +396,9 @@ async fn inmem_scorecard_ignores_unresolved() {
         .expect("add");
     // NOT resolved — should not appear in scorecard
 
-    let sc: TakesScorecard = engine.get_scorecard("alice", None).await.expect("get_scorecard");
+    let sc: TakesScorecard = CalibrationQueries::get_scorecard(&engine, &ScorecardQuery::for_holder("alice"))
+        .await
+        .expect("get_scorecard");
     assert_eq!(sc.resolved, 0);
 }
 
@@ -618,7 +637,7 @@ async fn libsql_resolve_take() {
             &TakeResolution {
                 page_id: page_id as u64,
                 row_num: 0,
-                quality: Some("high".to_string()),
+                quality: Some("correct".to_string()),
                 outcome: Some(true),
                 evidence: Some("solid".to_string()),
                 value: Some(100.0),
@@ -634,7 +653,7 @@ async fn libsql_resolve_take() {
         .await
         .expect("get");
     let t = &takes[0];
-    assert_eq!(t.resolved_quality.as_deref(), Some("high"));
+    assert_eq!(t.resolved_quality.as_deref(), Some("correct"));
     assert_eq!(t.resolved_outcome, Some(true));
     assert_eq!(t.resolved_evidence.as_deref(), Some("solid"));
     assert!((t.resolved_value.unwrap() - 100.0).abs() < 1e-9);
@@ -818,7 +837,7 @@ async fn postgres_resolve_take() {
             &TakeResolution {
                 page_id,
                 row_num: 1,
-                quality: Some("high".to_string()),
+                quality: Some("correct".to_string()),
                 outcome: Some(true),
                 evidence: Some("solid".to_string()),
                 value: Some(100.0),
@@ -831,7 +850,7 @@ async fn postgres_resolve_take() {
 
     let takes = engine.get_takes_for_page(page_id, None).await.expect("get");
     let t = &takes[0];
-    assert_eq!(t.resolved_quality.as_deref(), Some("high"));
+    assert_eq!(t.resolved_quality.as_deref(), Some("correct"));
     assert_eq!(t.resolved_outcome, Some(true));
     assert_eq!(t.resolved_evidence.as_deref(), Some("solid"));
     assert!((t.resolved_value.unwrap() - 100.0).abs() < 1e-9);
@@ -848,4 +867,136 @@ async fn postgres_get_takes_for_nonexistent_page_returns_empty() {
         .await
         .expect("get_takes");
     assert!(takes.is_empty());
+}
+
+/// PG mirror test for the calibration scorecard: insert real bets against a
+/// live Postgres, resolve them, and assert the aggregated numbers come back
+/// bit-identical to the InMemory/Libsql math. This exercises the real
+/// `resolve_take` (existence check → derive_quality_outcome → UPDATE) and the
+/// real `CalibrationQueries::get_scorecard` SQL path on the strongly-typed
+/// Postgres backend.
+#[tokio::test]
+async fn postgres_scorecard_aggregates_resolved_bets() {
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    let page_id = pg_seed_page(engine, &fix.url, "pg-scorecard", "src-1").await;
+
+    // 3 bets for alice: weight 0.6/0.3 → correct, 0.8 → incorrect.
+    let bet = |row: i32, weight: f64| TakeInput {
+        page_id,
+        row_num: Some(row),
+        claim: format!("pred-{row}"),
+        kind: "bet".to_string(),
+        holder: "alice".to_string(),
+        weight,
+        since_date: None,
+        until_date: None,
+        source: None,
+        superseded_by: None,
+        active: None,
+    };
+    engine
+        .add_takes_batch(page_id, &[bet(1, 0.6), bet(2, 0.3), bet(3, 0.8)])
+        .await
+        .expect("add bets");
+
+    let resolve = |row: i32, outcome: bool| TakeResolution {
+        page_id,
+        row_num: row,
+        quality: None,
+        outcome: Some(outcome),
+        evidence: None,
+        value: None,
+        unit: None,
+        by: None,
+    };
+    engine.resolve_take(page_id, 1, &resolve(1, true)).await.expect("r1");
+    engine.resolve_take(page_id, 2, &resolve(2, true)).await.expect("r2");
+    engine.resolve_take(page_id, 3, &resolve(3, false)).await.expect("r3");
+
+    let sc: TakesScorecard =
+        CalibrationQueries::get_scorecard(engine, &ScorecardQuery::for_holder("alice"))
+            .await
+            .expect("get_scorecard");
+    assert_eq!(sc.total_bets, 3);
+    assert_eq!(sc.resolved, 3);
+    assert_eq!(sc.correct, 2);
+    assert_eq!(sc.incorrect, 1);
+    // accuracy = 2 / (2+1) = 0.6667
+    assert!((sc.accuracy.expect("accuracy") - (2.0 / 3.0)).abs() < 1e-9);
+    // Brier = [(0.6-1)²=0.16, (0.3-1)²=0.49, (0.8-0)²=0.64] / 3 = 0.43
+    assert!((sc.brier.expect("brier") - 0.43).abs() < 1e-9);
+}
+
+/// PG mirror: an explicit holder filter + domain prefix + allow-list all
+/// compose. `bob`'s bet must never leak into alice's scorecard, and the
+/// allow-list (`holder = ANY($list)`) fails closed for an out-of-list holder.
+#[tokio::test]
+async fn postgres_scorecard_allow_list_and_holder_scope() {
+    let fix = support::pg_fixture::PgFixture::start().await;
+    let engine = &fix.engine;
+    let page_id = pg_seed_page(engine, &fix.url, "pg-scorecard-scope", "src-1").await;
+
+    let take = |row: i32, holder: &str, weight: f64| TakeInput {
+        page_id,
+        row_num: Some(row),
+        claim: format!("pred-{row}"),
+        kind: "bet".to_string(),
+        holder: holder.to_string(),
+        weight,
+        since_date: None,
+        until_date: None,
+        source: None,
+        superseded_by: None,
+        active: None,
+    };
+    engine
+        .add_takes_batch(page_id, &[take(1, "alice", 0.6), take(2, "bob", 0.9)])
+        .await
+        .expect("add");
+    let resolve = |row: i32| TakeResolution {
+        page_id,
+        row_num: row,
+        quality: None,
+        outcome: Some(true),
+        evidence: None,
+        value: None,
+        unit: None,
+        by: None,
+    };
+    engine.resolve_take(page_id, 1, &resolve(1)).await.expect("r-alice");
+    engine.resolve_take(page_id, 2, &resolve(2)).await.expect("r-bob");
+
+    // No holder param, but allow-list restricted to alice → only alice counts.
+    let allow = vec!["alice".to_string()];
+    let sc: TakesScorecard = CalibrationQueries::get_scorecard(
+        engine,
+        &ScorecardQuery {
+            holder: None,
+            domain_prefix: None,
+            since: None,
+            until: None,
+            holders_allow_list: Some(&allow),
+        },
+    )
+    .await
+    .expect("get_scorecard");
+    assert_eq!(sc.resolved, 1, "allow-list must exclude bob");
+    assert_eq!(sc.correct, 1);
+
+    // Holder=bob but allow-list excludes bob → fails closed, empty.
+    let sc_bob: TakesScorecard = CalibrationQueries::get_scorecard(
+        engine,
+        &ScorecardQuery {
+            holder: Some("bob"),
+            domain_prefix: None,
+            since: None,
+            until: None,
+            holders_allow_list: Some(&allow),
+        },
+    )
+    .await
+    .expect("get_scorecard");
+    assert_eq!(sc_bob.resolved, 0, "bob excluded by allow-list");
+    assert_eq!(sc_bob.accuracy, None);
 }
