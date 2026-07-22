@@ -2049,27 +2049,27 @@
           "note": "不为测试抽 GitClient trait(Q2 已拒 trait 抽象);Git 客户端保持具体 struct,集成测试用真实 git。"
         }
       ],
-      "notes": "Grill 决策树(2026-07-22, zj-grill-me + zj-roadmap-driven): Q1 真·增量 Rust 端口(sync 做成 Rust op,ingest 半复用既有 engine 方法); Q2 git shell-out(tokio::process::Command 调 git,零新依赖,对齐 TS execFileSync); Q3 git 封装放 zbrain-core/src/git.rs(薄 Git 客户端 struct); Q4 文件锁 advisory lock(跨进程,OS 退出自动释放); Q5 抽可复用 ingest_file(path,source_id,engine) 助手 + happy-path sync(git pull → 循环 ingest → 更新 last_commit/last_sync_at); Q6 13-3 = pull 边界 fallback(detached/no-origin/diverged 非致命回退)+ 文件锁生命周期,不做 push(push 归 federation 独立 surface); Q7 真实 git 集成测试(tempfile 临时 repo + InMemory engine 断言)。首刀 13-1 = git pull happy-path + 循环 ingest_file + 更新元数据。延后: 并行>1、push/federation、rename 检测等。"
+      "notes": "Grill 决策树(2026-07-22, zj-grill-me + zj-roadmap-driven): Q1 真·增量 Rust 端口(sync 做成 Rust op,ingest 半复用既有 engine 方法); Q2 git shell-out(tokio::process::Command 调 git,零新依赖,对齐 TS execFileSync); Q3 git 封装放 zbrain-core/src/git.rs(薄 Git 客户端 struct); Q4 文件锁 advisory lock(跨进程,OS 退出自动释放); Q5 抽可复用 ingest_file(path,source_id,engine) 助手 + happy-path sync(git pull → 循环 ingest → 更新 last_commit/last_sync_at); Q6 13-3 = pull 边界 fallback(detached/no-origin/diverged 非致命回退)+ 文件锁生命周期,不做 push(push 归 federation 独立 surface); Q7 真实 git 集成测试(tempfile 临时 repo + InMemory engine 断言)。首刀 13-1 = git pull happy-path + 循环 ingest_file + 更新元数据。延后: 并行>1、push/federation、rename 检测等。\n\n【实现校正 2026-07-22】动手写 13-1 时探索发现 crates/zbrain-core/src/sync/ 已是完整但未接线的 Rust sync 端口(core.rs perform_sync/perform_full_sync + import.rs import_one_path + anchor.rs + walker.rs + manifest.rs + concurrency.rs + failures.rs)。因此 grill Q5 '抽可复用 ingest_file' 被实践校正为：直接复用既有 sync::import::import_one_path 与 sync::anchor，不新抽助手。SyncBrainOperation = git pull(git.rs) → rev-parse HEAD → get_sync_anchor 读 previous → perform_sync(委派 import_one_path + 写回 last_commit)。13-1/13-2 已完成；13-3 非致命 pull 已预覆盖，剩 advisory 文件锁(Q4)与 diverged 告警。"
     },
     "1-6-7-13-1": {
       "id": "1-6-7-13-1",
-      "label": "sync 编排骨架: 抽 ingest_file 助手 + SyncBrainOperation(git pull happy-path → 循环 ingest → 更新 last_commit/last_sync_at)",
-      "status": "pending",
+      "label": "SyncBrainOperation: git pull happy-path → 委派既有 sync::core::perform_sync(reuse import_one_path + anchor, 不新抽 ingest_file)",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6-7-13",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "DONE (2026-07-22). 实现发现 crates/zbrain-core/src/sync/ 已是完整但未接线的 Rust sync 端口 (core.rs perform_sync/perform_full_sync + import.rs import_one_path + anchor.rs + walker.rs + manifest.rs + concurrency.rs + failures.rs)。故 SyncBrainOperation 不新抽 ingest_file，而是委派既有管线：git pull(git.rs) → rev-parse HEAD → sync::anchor::get_sync_anchor 读 previous → sync::core::perform_sync(import_one_path + 写回 last_commit)。import_one_path 写 chunk 时 embedding 留 None(靠后台 embed，对齐 G24)。新增：crates/zbrain-core/src/git.rs 薄 Git 客户端(pull/head_commit/is_repo/has_origin/current_branch，tokio shell-out，零新依赖)；OperationContext::engine_arc() 访问器；SyncBrainOperation(name=sync_brain, scope write) 接入 register_all (op 数 63→64)，1 op 集成测试(真实 git repo 跑通 pull→全量 ingest→anchor 落盘)。三道门通过: cargo test -p zbrain-core --lib 1887 passed/0 failed; cli/mcp build OK。文件锁(Q4)与 diverged 专用告警留 13-3。"
     },
     "1-6-7-13-2": {
       "id": "1-6-7-13-2",
       "label": "git pull happy path 封装到 zbrain-core/src/git.rs(有 origin / clean / fast-forward)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6-7-13",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "DONE (2026-07-22, absorbed by 1-6-7-13-1). git.rs 薄 Git 客户端已建：pull (git pull --ff-only, 非致命)、head_commit (rev-parse HEAD)、is_repo、has_origin、current_branch。tokio::process::Command shell-out，零新依赖，对齐 TS execFileSync('git')。SyncBrainOperation 调用它做 happy-path pull。"
     },
     "1-6-7-13-3": {
       "id": "1-6-7-13-3",
@@ -2079,7 +2079,7 @@
       "parent": "1-6-7-13",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "部分预覆盖 (2026-07-22): SyncBrainOperation(1-6-7-13-1) 已实现非致命 pull——detached HEAD / no origin / pull 失败均跳过 pull、改从本地树 sync。剩余：① advisory 文件锁 (Q4, .zbrain-sync.lock, 跨进程防重入) 接入 syncOneSource 生命周期；② diverged/non-fast-forward 专用告警文案 (目前静默跳过)；③ push 不属本节点 (push 归 zbrain sources federate)。"
     },
     "1-6-7-13-4": {
       "id": "1-6-7-13-4",

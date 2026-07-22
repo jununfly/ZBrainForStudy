@@ -593,6 +593,16 @@ impl OperationContext {
             ))
     }
 
+    /// Resolve the configured brain engine as a cloned `Arc`, for APIs that
+    /// require ownership-sharing (e.g. the sync pipeline's `perform_sync`,
+    /// which takes `&Arc<dyn BrainEngine>`).
+    pub fn engine_arc(&self) -> OperationResult<Arc<dyn BrainEngine>> {
+        self.engine.clone().ok_or_else(|| OperationError::new(
+            ErrorCode::InvalidParams,
+            "Operation context engine not configured".to_string(),
+        ))
+    }
+
     /// Builder method to attach an engine to this context.
     #[must_use]
     pub fn with_engine(mut self, engine: Arc<dyn BrainEngine>) -> Self {
@@ -3113,6 +3123,184 @@ impl TypedOperation for TakesSearchOperation {
         }
     }
 
+    // ── SyncBrain Operation (roadmap 1-6-7-13-1) ──
+    // Happy-path sync: pull a git repo, then delegate the ingest loop to the
+    // existing sync pipeline (crate::sync::core::perform_sync). The mutating
+    // counterpart to sync_status (1-6-7-13-4).
+
+    #[derive(Debug, Clone)]
+    struct SyncBrainOperation;
+
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    struct SyncBrainParams {
+        /// Source to sync. Falls back to the caller's source_id when omitted.
+        #[serde(default)]
+        source_id: Option<String>,
+        /// Override the repo path (defaults to the source's local_path).
+        #[serde(default)]
+        repo_path: Option<String>,
+        /// Skip the git pull; sync from the current working tree only.
+        #[serde(default)]
+        no_pull: Option<bool>,
+    }
+
+    impl ValidateParams for SyncBrainParams {
+        fn validate(&self) -> OperationResult<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct SyncBrainOutput {
+        pub source_id: String,
+        pub head_commit: String,
+        pub imported: usize,
+        pub deleted: usize,
+        pub failures: usize,
+        pub full_sync: bool,
+    }
+
+    #[async_trait]
+    impl TypedOperation for SyncBrainOperation {
+        type Params = SyncBrainParams;
+        type Output = SyncBrainOutput;
+
+        fn name(&self) -> &'static str {
+            "sync_brain"
+        }
+
+        fn description(&self) -> &'static str {
+            "Sync a source's git repo into the brain: pull, ingest tracked files, persist sync anchors."
+        }
+
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "source_id": { "type": "string", "description": "Source to sync (defaults to caller source_id)" },
+                    "repo_path": { "type": "string", "description": "Override repo path (defaults to source local_path)" },
+                    "no_pull": { "type": "boolean", "description": "Skip git pull; sync from working tree" }
+                }
+            })
+        }
+
+        async fn execute(
+            &self,
+            ctx: &OperationContext,
+            params: Self::Params,
+        ) -> OperationResult<Self::Output> {
+            let engine = ctx.engine_arc()?;
+
+            let source_id = params
+                .source_id
+                .filter(|s| !s.is_empty())
+                .or_else(|| {
+                    if ctx.source_id.is_empty() {
+                        None
+                    } else {
+                        Some(ctx.source_id.clone())
+                    }
+                })
+                .ok_or_else(|| {
+                    OperationError::new(
+                        ErrorCode::InvalidParams,
+                        "sync_brain requires a source_id (param or caller context)",
+                    )
+                })?;
+
+            // Resolve the source + repo path.
+            let source = engine
+                .get_source(&source_id)
+                .await
+                .map_err(|e| {
+                    OperationError::new(ErrorCode::StorageError, &format!("get_source failed: {e}"))
+                })?
+                .ok_or_else(|| {
+                    OperationError::new(
+                        ErrorCode::PageNotFound,
+                        &format!("source '{source_id}' not found"),
+                    )
+                })?;
+
+            let repo_path = params
+                .repo_path
+                .filter(|s| !s.is_empty())
+                .or_else(|| source.local_path.clone())
+                .ok_or_else(|| {
+                    OperationError::new(
+                        ErrorCode::InvalidParams,
+                        &format!(
+                            "source '{source_id}' has no local_path and no repo_path given"
+                        ),
+                    )
+                })?;
+            let repo = std::path::Path::new(&repo_path);
+
+            // 1. git pull (happy path; non-fatal on divergence / no-origin /
+            //    detached HEAD — fall back to the local working tree).
+            if !params.no_pull.unwrap_or(false) && crate::git::GitClient::is_repo(repo) {
+                let detached = crate::git::GitClient::current_branch(repo)
+                    .await
+                    .map(|b| b == "HEAD")
+                    .unwrap_or(false);
+                let has_origin = crate::git::GitClient::has_origin(repo).await;
+                if !detached && has_origin {
+                    let _ = crate::git::GitClient::pull(repo).await;
+                }
+            }
+
+            // 2. HEAD commit (empty when the path is not a git repo).
+            let head_commit = if crate::git::GitClient::is_repo(repo) {
+                crate::git::GitClient::head_commit(repo).await.unwrap_or_default()
+            } else {
+                String::new()
+            };
+
+            // 3. previous anchor (None → perform_sync falls back to full sync).
+            let previous_commit = crate::sync::anchor::get_sync_anchor(&engine, &source_id)
+                .await
+                .map_err(|e| {
+                    OperationError::new(
+                        ErrorCode::StorageError,
+                        &format!("get_sync_anchor failed: {e}"),
+                    )
+                })?
+                .last_commit;
+
+            // Failures dir (best-effort create; only touched on real failures).
+            let failures_dir =
+                std::env::temp_dir().join("zbrain").join("sync-failures");
+            let _ = tokio::fs::create_dir_all(&failures_dir).await;
+
+            // 4. delegate the ingest loop to the existing sync pipeline.
+            let opts = crate::sync::core::IncrementalSyncOpts {
+                source_id: source_id.clone(),
+                repo_path: repo.to_path_buf(),
+                current_commit: head_commit.clone(),
+                previous_commit,
+                chunker_version: None,
+                failures_dir,
+                max_file_size: None,
+            };
+            let result = crate::sync::core::perform_sync(&engine, &opts, None)
+                .await
+                .map_err(|e| {
+                    OperationError::new(ErrorCode::StorageError, &format!("sync failed: {e}"))
+                })?;
+
+            Ok(SyncBrainOutput {
+                source_id,
+                head_commit,
+                imported: result.imported,
+                deleted: result.deleted,
+                failures: result.failures,
+                full_sync: result.full_sync,
+            })
+        }
+    }
+
 pub fn register_all(registry: &mut OperationRegistry) {
     registry.register(GetPageOperation);
     registry.register(PutPageOperation);
@@ -3129,6 +3317,8 @@ pub fn register_all(registry: &mut OperationRegistry) {
     registry.register(SearchByImageOperation);
     // 1-6-7-13-4 — sync_status (read-only per-source sync status report).
     registry.register(SyncStatusOperation);
+    // 1-6-7-13-1 — sync_brain (mutating counterpart: pull + ingest loop).
+    registry.register(SyncBrainOperation);
     registry.register(ThinkOperation);
     registry.register(TakesListOperation);
     registry.register(TakesSearchOperation);
@@ -9037,6 +9227,89 @@ mod tests {
         assert_eq!(s["embedding_coverage_pct"].as_f64().unwrap(), 100.0);
     }
 
+    // ── SyncBrain Operation (roadmap 1-6-7-13-1) ──────────────────────────
+
+    #[tokio::test]
+    async fn dispatch_json_sync_brain_pulls_and_ingests() {
+        // Temp git repo with one committed markdown file.
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().to_path_buf();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .output()
+                .expect("git available on PATH");
+            assert!(
+                out.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git(&["init"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        std::fs::write(
+            repo.join("doc.md"),
+            "# Title\n\nHello world from the sync test.\n",
+        )
+        .unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-m", "initial"]);
+
+        let engine = std::sync::Arc::new(crate::engine::InMemoryEngine::default());
+        engine
+            .create_source(&crate::engine::CreateSourceInput {
+                id: "src1".to_string(),
+                name: "src1".to_string(),
+                config: None,
+            })
+            .await
+            .unwrap();
+
+        let mut registry = OperationRegistry::new();
+        registry.register(SyncBrainOperation);
+        let ctx = OperationContext::local_cli().with_engine(engine.clone());
+        let result = registry
+            .dispatch_json(
+                "sync_brain",
+                &ctx,
+                serde_json::json!({
+                    "source_id": "src1",
+                    "repo_path": repo.to_string_lossy().to_string(),
+                }),
+            )
+            .await;
+        assert!(result.is_ok(), "sync_brain failed: {:?}", result);
+
+        let out = result.unwrap();
+        assert_eq!(out["sourceId"], "src1");
+        assert_eq!(out["imported"], 1, "expected one file imported");
+        assert_eq!(out["fullSync"], true, "first sync is a full sync");
+        assert!(
+            out["headCommit"].as_str().unwrap().len() >= 7,
+            "expected a real HEAD sha"
+        );
+
+        // Page + chunks persisted (embedding left None by the pipeline).
+        let pages = engine
+            .list_pages(&crate::engine::PageFilters::default())
+            .await
+            .unwrap();
+        assert_eq!(pages.len(), 1, "expected one ingested page");
+        let chunks = engine.get_chunks_for_page(&pages[0].slug).await.unwrap();
+        assert!(!chunks.is_empty(), "expected chunks for ingested page");
+
+        // Sync anchor persisted on the source row.
+        let src = engine.get_source("src1").await.unwrap().unwrap();
+        assert!(
+            !src.last_commit.clone().unwrap_or_default().is_empty(),
+            "last_commit anchor should be set"
+        );
+    }
+
     // ── ListAllPageRefs Operation (Slice #49) ─────────────────────────────
 
     #[derive(Debug, Clone)]
@@ -10640,7 +10913,7 @@ Outro."#;
         }
 
         #[test]
-        fn register_all_registers_sixty_three_ops() {
+        fn register_all_registers_sixty_four_ops() {
             let mut registry = OperationRegistry::new();
             register_all(&mut registry);
             let names = registry.operation_names();
@@ -10655,6 +10928,7 @@ Outro."#;
                 "search",
                 "search_by_image",
                 "sync_status",
+                "sync_brain",
                 "think",
                 "takes_list",
                 "takes_search",

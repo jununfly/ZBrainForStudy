@@ -37,6 +37,7 @@ pub mod explain_formatter;
 pub mod git_remote;
 pub mod image_loader;
 pub mod sync_status;
+pub mod git;
 pub mod ingestion;
 pub mod libsql;
 pub mod llm;

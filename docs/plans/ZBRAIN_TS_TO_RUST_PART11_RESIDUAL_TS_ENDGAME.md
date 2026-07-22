@@ -46,6 +46,8 @@
 
 Grill 决策树(2026-07-22, zj-grill-me + zj-roadmap-driven): Q1 真·增量 Rust 端口(sync 做成 Rust op,ingest 半复用既有 engine 方法); Q2 git shell-out(tokio::process::Command 调 git,零新依赖,对齐 TS execFileSync); Q3 git 封装放 zbrain-core/src/git.rs(薄 Git 客户端 struct); Q4 文件锁 advisory lock(跨进程,OS 退出自动释放); Q5 抽可复用 ingest_file(path,source_id,engine) 助手 + happy-path sync(git pull → 循环 ingest → 更新 last_commit/last_sync_at); Q6 13-3 = pull 边界 fallback(detached/no-origin/diverged 非致命回退)+ 文件锁生命周期,不做 push(push 归 federation 独立 surface); Q7 真实 git 集成测试(tempfile 临时 repo + InMemory engine 断言)。首刀 13-1 = git pull happy-path + 循环 ingest_file + 更新元数据。延后: 并行>1、push/federation、rename 检测等。
 
+【实现校正 2026-07-22】动手写 13-1 时探索发现 crates/zbrain-core/src/sync/ 已是完整但未接线的 Rust sync 端口(core.rs perform_sync/perform_full_sync + import.rs import_one_path + anchor.rs + walker.rs + manifest.rs + concurrency.rs + failures.rs)。因此 grill Q5 '抽可复用 ingest_file' 被实践校正为：直接复用既有 sync::import::import_one_path 与 sync::anchor，不新抽助手。SyncBrainOperation = git pull(git.rs) → rev-parse HEAD → get_sync_anchor 读 previous → perform_sync(委派 import_one_path + 写回 last_commit)。13-1/13-2 已完成；13-3 非致命 pull 已预覆盖，剩 advisory 文件锁(Q4)与 diverged 告警。
+
 **决策记录:**
 - Q: sync_brain 编排/git-pull/git-push(13-1..3)交付策略?
   A: 真·增量 Rust 端口:sync 做成 Rust op;ingest 半(chunk/embed/write)复用既有类型化 engine 方法(put_page/upsert_chunks/list_sources);只新写 git shell-out(std::process::Command 调 git,对齐 TS 现有 execFileSync)+ 编排循环 + 元数据更新。按 tracer bullet 先打通 happy path 再补 diverged/conflict/federation 边界。
@@ -70,8 +72,8 @@ Grill 决策树(2026-07-22, zj-grill-me + zj-roadmap-driven): Q1 真·增量 Rus
   > 不为测试抽 GitClient trait(Q2 已拒 trait 抽象);Git 客户端保持具体 struct,集成测试用真实 git。
 
 **子节点:**
-- [ ] 1-6-7-13-1. sync 编排骨架: 抽 ingest_file 助手 + SyncBrainOperation(git pull happy-path → 循环 ingest → 更新 last_commit/last_sync_at)
-- [ ] 1-6-7-13-2. git pull happy path 封装到 zbrain-core/src/git.rs(有 origin / clean / fast-forward)
+- [x] 1-6-7-13-1. SyncBrainOperation: git pull happy-path → 委派既有 sync::core::perform_sync(reuse import_one_path + anchor, 不新抽 ingest_file)
+- [x] 1-6-7-13-2. git pull happy path 封装到 zbrain-core/src/git.rs(有 origin / clean / fast-forward)
 - [ ] 1-6-7-13-3. git pull 边界 fallback(detached HEAD / no origin / remote diverged → 回退本地状态并告警) + 文件锁接入 syncOneSource 生命周期(不做 push,push 归 federation)
 - [x] 1-6-7-13-4. sync 状态与报告: buildSyncStatusReport/printSyncStatusReport/resolveParallelism/syncOneSource/runSyncTrigger/manageGitignore (Rust 端口, 多为只读)
 <!-- ⚠️ ROADMAP_SECTION_END -->
