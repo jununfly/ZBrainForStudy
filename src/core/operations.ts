@@ -2000,32 +2000,6 @@ const revert_version: Operation = {
 
 // --- Sync ---
 
-const sync_brain: Operation = {
-  name: 'sync_brain',
-  description: 'Sync git repo to brain (incremental)',
-  params: {
-    repo: { type: 'string', description: 'Path to git repo (optional if configured)' },
-    dry_run: { type: 'boolean', description: 'Preview changes without applying' },
-    full: { type: 'boolean', description: 'Full re-sync (ignore checkpoint)' },
-    no_pull: { type: 'boolean', description: 'Skip git pull' },
-    no_embed: { type: 'boolean', description: 'Skip embedding generation' },
-  },
-  mutating: true,
-  scope: 'admin',
-  localOnly: true,
-  handler: async (ctx, p) => {
-    const { performSync } = await import('../commands/sync.ts');
-    return performSync(ctx.engine, {
-      repoPath: p.repo as string | undefined,
-      dryRun: ctx.dryRun || (p.dry_run as boolean) || false,
-      noEmbed: (p.no_embed as boolean) || false,
-      noPull: (p.no_pull as boolean) || false,
-      full: (p.full as boolean) || false,
-    });
-  },
-  cliHints: { name: 'sync', hidden: true },
-};
-
 // --- Raw Data ---
 
 const put_raw_data: Operation = {
@@ -3835,8 +3809,6 @@ export const operations: Operation[] = [
   get_stats, get_health, run_doctor, get_versions, revert_version,
   // v0.31.1 (Issue #734): thin-client banner identity packet (read-scope, banner-only)
   get_brain_identity,
-  // Sync
-  sync_brain,
   // Raw data
   put_raw_data, get_raw_data,
   // Resolution & chunks

@@ -16,13 +16,13 @@
  *       * search_by_image — image_path + ctx.remote=true MUST reject
  *                        (D18 P0 source-isolation leak class)
  *
- *     `file_upload` and `sync_brain` are intentionally NOT in the
- *     handler-invocation set — both are localOnly, so the canonical
- *     filter removes them from mcpOperations and the HTTP path never
- *     reaches their handlers. Calling their handlers with remote=true
- *     tests an impossible production path (codex CMT-3). The defense-
- *     in-depth strict-mode checks inside those handlers still exist;
- *     they're proven by the localOnly-filtered-out contract here.
+ *     `file_upload` is intentionally NOT in the handler-invocation set —
+ *     it is localOnly, so the canonical filter removes it from
+ *     mcpOperations and the HTTP path never reaches its handler. Calling
+ *     its handler with remote=true tests an impossible production path
+ *     (codex CMT-3). The defense-in-depth strict-mode checks inside that
+ *     handler still exist; they're proven by the localOnly-filtered-out
+ *     contract here.
  *
  * Criterion for the curated sensitive-ops list:
  *   ops whose HANDLER (not transport) has been broken historically.
@@ -146,7 +146,6 @@ describe('mcpOperations filter — localOnly ops are excluded from the HTTP-expo
     // contract above proves the filter rule applies; this list proves the
     // specific ops we care about haven't silently shed their localOnly flag.
     const KNOWN_LOCAL_ONLY = [
-      'sync_brain',
       'file_upload',
       'file_list',
       'file_url',
@@ -209,11 +208,10 @@ describe('hasScope — read-only token cannot satisfy write or admin scopes', ()
 });
 
 describe('handler invocation — historically-broken trust-boundary classes', () => {
-  // The two non-localOnly ops whose handler-level defense fires in
-  // production and has been broken historically (F7b HTTP MCP shell-job
-  // RCE; D18 P0 image_path remote-leak). file_upload and sync_brain are
-  // omitted because they're localOnly (codex CMT-3 — testing their
-  // handlers with remote=true tests an impossible production path).
+  // Ops whose handler-level defense fires in production and has been broken
+  // historically (F7b HTTP MCP shell-job RCE; D18 P0 image_path remote-leak).
+  // file_upload is omitted because it's localOnly (codex CMT-3 — testing its
+  // handler with remote=true tests an impossible production path).
 
   test('submit_job rejects shell with ctx.remote=true (HTTP MCP shell-job RCE class)', async () => {
     const submitJob = operations.find(op => op.name === 'submit_job');

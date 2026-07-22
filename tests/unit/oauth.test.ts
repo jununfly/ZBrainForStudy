@@ -633,9 +633,8 @@ describe('operation scope annotations', () => {
     }
   });
 
-  test('sync_brain and file_upload are localOnly', () => {
+  test('file_upload is localOnly', () => {
     const { operationsByName } = require('../../src/core/operations.ts');
-    expect(operationsByName.sync_brain.localOnly).toBe(true);
     expect(operationsByName.file_upload.localOnly).toBe(true);
   });
 

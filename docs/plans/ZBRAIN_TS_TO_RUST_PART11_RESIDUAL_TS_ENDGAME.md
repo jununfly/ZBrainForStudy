@@ -41,41 +41,34 @@
 └── [!][X+] 1-12. cycle 大迁移 (runCycle 2057行主循环 + 20 phase 全未迁, Rust autopilot/cycle.rs 仅骨架 stub) — B类真迁移主战场
 ```
 
-### 🔨 当前施工: 1-6-7-13. sync_brain op (大子系统): 跨源同步引擎 Rust 化，需拆 sub-node（sync/pull/push/conflict）
-**Status:** `in_progress` | **Mode:** `explore`
-
-Grill 决策树(2026-07-22, zj-grill-me + zj-roadmap-driven): Q1 真·增量 Rust 端口(sync 做成 Rust op,ingest 半复用既有 engine 方法); Q2 git shell-out(tokio::process::Command 调 git,零新依赖,对齐 TS execFileSync); Q3 git 封装放 zbrain-core/src/git.rs(薄 Git 客户端 struct); Q4 文件锁 advisory lock(跨进程,OS 退出自动释放); Q5 抽可复用 ingest_file(path,source_id,engine) 助手 + happy-path sync(git pull → 循环 ingest → 更新 last_commit/last_sync_at); Q6 13-3 = pull 边界 fallback(detached/no-origin/diverged 非致命回退)+ 文件锁生命周期,不做 push(push 归 federation 独立 surface); Q7 真实 git 集成测试(tempfile 临时 repo + InMemory engine 断言)。首刀 13-1 = git pull happy-path + 循环 ingest_file + 更新元数据。延后: 并行>1、push/federation、rename 检测等。
-
-【实现校正 2026-07-22】动手写 13-1 时探索发现 crates/zbrain-core/src/sync/ 已是完整但未接线的 Rust sync 端口(core.rs perform_sync/perform_full_sync + import.rs import_one_path + anchor.rs + walker.rs + manifest.rs + concurrency.rs + failures.rs)。因此 grill Q5 '抽可复用 ingest_file' 被实践校正为：直接复用既有 sync::import::import_one_path 与 sync::anchor，不新抽助手。SyncBrainOperation = git pull(git.rs) → rev-parse HEAD → get_sync_anchor 读 previous → perform_sync(委派 import_one_path + 写回 last_commit)。13-1/13-2 已完成；13-3 非致命 pull 已预覆盖，剩 advisory 文件锁(Q4)与 diverged 告警。
+### 🔨 当前施工: 1-6-7. operations.ts 替换式迁移 (Rust OperationRegistry 为继任者): 107 op 逐一对齐, 随迁随删 TS; 覆盖审计见 docs/plans/OPERATIONS_TS_TO_RUST_AUDIT.md
+**Status:** `in_progress` | **Mode:** `exploit`
 
 **决策记录:**
-- Q: sync_brain 编排/git-pull/git-push(13-1..3)交付策略?
-  A: 真·增量 Rust 端口:sync 做成 Rust op;ingest 半(chunk/embed/write)复用既有类型化 engine 方法(put_page/upsert_chunks/list_sources);只新写 git shell-out(std::process::Command 调 git,对齐 TS 现有 execFileSync)+ 编排循环 + 元数据更新。按 tracer bullet 先打通 happy path 再补 diverged/conflict/federation 边界。
-  > TS sync.ts 2616 行含大量 CLI/progress/readline 样板,不需全迁;Rust CLI 入口已在 zbrain-cli。
-- Q: Rust 端 git 操作怎么做?
-  A: shell-out 调 git CLI:用 tokio::process::Command 调系统 git,对齐 TS 现有 execFileSync('git')。零新依赖,完整覆盖 detached HEAD/diverged/worktree 边界,集成测试直接用真实 git 行为。
-  > workspace 已有 tokio process feature;不引入 git2/gix。
-- Q: git shell-out 封装放哪个模块?
-  A: zbrain-core/src/git.rs:薄 Git 客户端 struct(pull/push/status/checkout 等方法),SyncBrainOperation(同 crate operation.rs)直接调用;测试在 zbrain-core 内用临时 repo。
-  > 不新建 crate,不放 zbrain-cli(op 在 core)。
-- Q: 同一 source 的并发 sync 怎么防重入?
-  A: 文件锁 advisory lock:在 source 的 local_path 下加排他锁文件(如 .zbrain-sync.lock),syncOneSource 开始取锁、结束(Drop)释放。跨进程生效,OS 进程退出自动释放防崩溃残留。可用轻量 fd-lock crate。
-  > 不用 in-memory Mutex(锁不住跨进程)、不用 DB 标志位(需清理 stale lock)。
-- Q: 13-1 首刀 tracer-bullet 怎么做?
-  A: 抽可复用 import_from_path + happy-path sync:在 zbrain-core 提取 ingest_file(path, source_id, engine)(read→chunk→embed→put_page/upsert_chunks),syncOneSource 循环调用;配 git pull happy path(有 origin/clean/ff)+ 更新 last_commit/last_sync_at。ingest 助手同时服务未来 capture-from-file/import。延后 diverged/detached/conflict/并行>1/federation push。
-  > Rust 现状无按路径摄取操作(仅 capture_content 吃字节),故需新抽 ingest 助手——深度模块,避免未来 import/add 重写。
-- Q: 13-3 实际范围怎么定?
-  A: pull 边界 + lock 收尾:13-3 实现 git pull 的非致命 fallback(detached HEAD / no origin / remote diverged → 回退本地状态并告警),并把 Q4 文件锁接入 syncOneSource 生命周期。不做 push——push 属 zbrain sources federate(联邦命令,独立 surface)。原标签'git push+冲突'语义有偏差,需校正为 pull 边界。
-  > TS 已确认 sync_brain 只 pull 不 push;push 触发的是 webhook 队列回调,非主动推。
-- Q: git-sync 怎么测?
-  A: 真实 git 集成测试:用 tempfile 起临时 git repo(git init + 提交),source.local_path 指向它,跑 Rust sync op 对 InMemory engine,断言 engine 状态(pages/chunks 数、last_commit 更新)。最贴近真实 git 行为,CI 有 git 可用。
-  > 不为测试抽 GitClient trait(Q2 已拒 trait 抽象);Git 客户端保持具体 struct,集成测试用真实 git。
+- Q: 缺口 ops 处理策略（审计 per-op 不可信，探查发现 3 处硬伤）
+  A: 就地补方法：每个 3…8 切片遇到无 engine 方法的 op，当场补 engine 方法 + 包成 Operation，不延后到独立切片
+  > 探查修正：①schema-pack(9)实为 COMMAND_ELSEWHERE(Part10 Phase12 已100%完成)→从 operations.ts 摘除非 wrap；②recall 实为 TS-only(无 Rust CLI)→必须迁非摘除；③jobs/minions 仅6/12有方法，缺 get_job_progress/replay_job/send_job_message/submit_job/submit_agent/subagent；④NET_NEW=file_upload/search_by_image/get_brain_identity 零 Rust 实现。故不设 1-6-7-10，缺口在各自切片内联消化。
+- Q: 执行节奏
+  A: 一次推完 1-6-7-3…8 六切片：每切片三道门(core test/mcp test/cli build)全绿后独立 commit，切片间不打断；终局 1-6-7-9 下次再开
+  > 用户选『一次推完』。
+- Q: 终局前方向?
+  A: 留在 1-6-7 补齐所有真实 op 缺口后再走 1-6-7-9 删 operations.ts；不转其它分支(1-1/1-2/1-7~1-9/1-11/1-12)
+- Q: 缺口是否全迁?
+  A: 全迁才终局(B2)：code-intel×7 + find_orphans + takes_list/search + search_by_image + run_doctor + sync_brain + takes_calibration/scorecard 全部 Rust 化后才走 1-6-7-9；sync_brain/run_doctor 虽大也迁，不砍不延迟；takes_calibration/scorecard 受 1-3-3 阻塞，排最后
+- Q: 首刀与节点补齐?
+  A: A3：先把 6 个未入账缺口建为 1-6-7 子节点（search_by_image/run_doctor/sync_brain/find_orphans/takes_list+search/takes_calibration+scorecard），takes_calibration+scorecard 标 blocked(1-3-3)；首刀开 code-intel×7(1-6-7-10)，其已建节点、bounded、无外部阻塞
 
 **子节点:**
-- [x] 1-6-7-13-1. SyncBrainOperation: git pull happy-path → 委派既有 sync::core::perform_sync(reuse import_one_path + anchor, 不新抽 ingest_file)
-- [x] 1-6-7-13-2. git pull happy path 封装到 zbrain-core/src/git.rs(有 origin / clean / fast-forward)
-- [x] 1-6-7-13-3. git pull 边界 fallback(detached HEAD / no origin / remote diverged → 回退本地状态并告警) + 文件锁接入 syncOneSource 生命周期(不做 push,push 归 federation)
-- [x] 1-6-7-13-4. sync 状态与报告: buildSyncStatusReport/printSyncStatusReport/resolveParallelism/syncOneSource/runSyncTrigger/manageGitignore (Rust 端口, 多为只读)
+- [x] 1-6-7-1. 统一 live registry 汇总 + tracer-bullet: 汇总 operation.rs 碎片注册为全量 register_all, page 剩余 WRAP 首批迁 (update_slug/rewrite_links/soft_delete/page timestamps)
+- [x] 1-6-7-2. 标注/图域迁移: tags(3)+links(5)+timeline(2)=10 op 迁入 register_all (8 纯 WRAP + traverse_graph 形状适配 + get_timeline wrap get_page + add_timeline_entry 日期校验)
+- [x] 1-6-7-3. sources(4)+facts(3)+anomalies(1)+health-stats(3)=11 op 迁入 register_all (health-stats 实为3: health/salience/stats 仅是 cliHints 别名; facts 2 个简化 stand-in)
+- [x] 1-6-7-4. jobs-minions 域 wrap (11 op: submit/submit_agent/list/get/get_progress/replay/send_message/cancel/retry/pause/resume; engine job 方法 + MinionQueue)
+- [x] 1-6-7-5. ingestion+files+calibration+transcripts 域 (8 op 迁入 register_all; audit '9' 又偏, 实际 8 个 distinct op)
+- [x] 1-6-7-6. schema-pack 域 9 op 从 operations.ts 摘除 (COMMAND_ELSEWHERE: Rust schema_pack 模块 Part10 Phase12 已 100% 覆盖为 CLI 命令)
+- [x] 1-6-7-7. search-query 收尾: Rust search op (lexical) + QueryParams boost/filter axes (salience/recency/min_score/types); search_by_image 仍 NET_NEW
+- [x] 1-6-7-8. commands-misc(13)+takes(4) 收尾: 含 get_brain_identity NET_NEW; takes_calibration/scorecard 待 1-3-3 解锁
+- [x] 1-6-7-9. 终局: 删 operations.ts + cli.ts/mcp 切换 + typecheck baseline 0 new + 提交
+- [x] 1-6-7-10. code-intel(7) ops — NET_NEW 代码图子系统 (存储+图查询+符号查询+消歧+递归遍历+缓存), 非薄 wrapper; 已拆 6 sub-node
 <!-- ⚠️ ROADMAP_SECTION_END -->
 
 <!-- ROADMAP_SECTION_START -->

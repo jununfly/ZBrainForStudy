@@ -2003,8 +2003,8 @@
     "1-6-7-13": {
       "id": "1-6-7-13",
       "label": "sync_brain op (大子系统): 跨源同步引擎 Rust 化，需拆 sub-node（sync/pull/push/conflict）",
-      "status": "in_progress",
-      "mode": "explore",
+      "status": "completed",
+      "mode": "craft",
       "parent": "1-6-7",
       "children": [
         "1-6-7-13-1",
@@ -2049,7 +2049,7 @@
           "note": "不为测试抽 GitClient trait(Q2 已拒 trait 抽象);Git 客户端保持具体 struct,集成测试用真实 git。"
         }
       ],
-      "notes": "Grill 决策树(2026-07-22, zj-grill-me + zj-roadmap-driven): Q1 真·增量 Rust 端口(sync 做成 Rust op,ingest 半复用既有 engine 方法); Q2 git shell-out(tokio::process::Command 调 git,零新依赖,对齐 TS execFileSync); Q3 git 封装放 zbrain-core/src/git.rs(薄 Git 客户端 struct); Q4 文件锁 advisory lock(跨进程,OS 退出自动释放); Q5 抽可复用 ingest_file(path,source_id,engine) 助手 + happy-path sync(git pull → 循环 ingest → 更新 last_commit/last_sync_at); Q6 13-3 = pull 边界 fallback(detached/no-origin/diverged 非致命回退)+ 文件锁生命周期,不做 push(push 归 federation 独立 surface); Q7 真实 git 集成测试(tempfile 临时 repo + InMemory engine 断言)。首刀 13-1 = git pull happy-path + 循环 ingest_file + 更新元数据。延后: 并行>1、push/federation、rename 检测等。\n\n【实现校正 2026-07-22】动手写 13-1 时探索发现 crates/zbrain-core/src/sync/ 已是完整但未接线的 Rust sync 端口(core.rs perform_sync/perform_full_sync + import.rs import_one_path + anchor.rs + walker.rs + manifest.rs + concurrency.rs + failures.rs)。因此 grill Q5 '抽可复用 ingest_file' 被实践校正为：直接复用既有 sync::import::import_one_path 与 sync::anchor，不新抽助手。SyncBrainOperation = git pull(git.rs) → rev-parse HEAD → get_sync_anchor 读 previous → perform_sync(委派 import_one_path + 写回 last_commit)。13-1/13-2 已完成；13-3 非致命 pull 已预覆盖，剩 advisory 文件锁(Q4)与 diverged 告警。"
+      "notes": "Grill 决策树(2026-07-22, zj-grill-me + zj-roadmap-driven): Q1 真·增量 Rust 端口(sync 做成 Rust op,ingest 半复用既有 engine 方法); Q2 git shell-out(tokio::process::Command 调 git,零新依赖,对齐 TS execFileSync); Q3 git 封装放 zbrain-core/src/git.rs(薄 Git 客户端 struct); Q4 文件锁 advisory lock(跨进程,OS 退出自动释放); Q5 抽可复用 ingest_file(path,source_id,engine) 助手 + happy-path sync(git pull → 循环 ingest → 更新 last_commit/last_sync_at); Q6 13-3 = pull 边界 fallback(detached/no-origin/diverged 非致命回退)+ 文件锁生命周期,不做 push(push 归 federation 独立 surface); Q7 真实 git 集成测试(tempfile 临时 repo + InMemory engine 断言)。首刀 13-1 = git pull happy-path + 循环 ingest_file + 更新元数据。延后: 并行>1、push/federation、rename 检测等。\n\n【实现校正 2026-07-22】动手写 13-1 时探索发现 crates/zbrain-core/src/sync/ 已是完整但未接线的 Rust sync 端口(core.rs perform_sync/perform_full_sync + import.rs import_one_path + anchor.rs + walker.rs + manifest.rs + concurrency.rs + failures.rs)。因此 grill Q5 '抽可复用 ingest_file' 被实践校正为：直接复用既有 sync::import::import_one_path 与 sync::anchor，不新抽助手。SyncBrainOperation = git pull(git.rs) → rev-parse HEAD → get_sync_anchor 读 previous → perform_sync(委派 import_one_path + 写回 last_commit)。13-1/13-2 已完成；13-3 非致命 pull 已预覆盖，剩 advisory 文件锁(Q4)与 diverged 告警。\n\n【TS 删除切片 2026-07-22】Rust SyncBrainOperation 已落地(crates/zbrain-core/src/operation.rs)且三道门全绿后，删除 operations.ts 里的 TS sync_brain 壳：移除了 sync_brain const(仅动态 import commands/sync.ts 委派的薄壳，无自有逻辑) 及其在 registration 数组的登记行。未删 src/commands/sync.ts::performSync —— 它仍被 cycle.ts(autopilot 周期)、cli.ts(runSync 命令)独立调用，属 CLI 实体路径，不在本切片边界内。受影响的 2 个 TS 测试已改：oauth.test.ts 的 localOnly 断言改为只验 file_upload；operations-trust-boundary.test.ts 从 KNOWN_LOCAL_ONLY 移除 sync_brain 并更新 2 处注释。验证：本机 PGLite initSchema 挂死(环境预存问题，与本次无关)，故改用 DB-free 结构化检查——import operations 模块确认 sync_brain 已从注册表移除(present=false)、file_upload 仍在且 localOnly、73 ops 正常加载、src/tests 内零残留引用。"
     },
     "1-6-7-13-1": {
       "id": "1-6-7-13-1",
