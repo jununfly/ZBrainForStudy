@@ -641,8 +641,78 @@ impl BrainEngine for PostgresEngine {
             archived_at: None,
             archive_expires_at: None,
             contextual_retrieval_mode: None,
-            trust_frontmatter_overrides: false,
+                trust_frontmatter_overrides: false,
         }))
+    }
+
+    async fn source_sync_stats(
+        &self,
+    ) -> Result<Vec<crate::sync_status::SourceSyncStat>> {
+        let pool = self.pool()?;
+
+        let src_rows = sqlx::query_as::<_, (
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            serde_json::Value,
+        )>(
+            "SELECT id, name, local_path, last_commit, last_sync_at, config FROM sources",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("source_sync_stats sources failed: {e}")))?;
+
+        let page_rows = sqlx::query_as::<_, (String, i64)>(
+            "SELECT source_id, COUNT(*) AS pages FROM pages WHERE deleted_at IS NULL GROUP BY source_id",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("source_sync_stats pages failed: {e}")))?;
+        let page_counts: std::collections::HashMap<String, u64> = page_rows
+            .into_iter()
+            .map(|(sid, p)| (sid, p.max(0) as u64))
+            .collect();
+
+        // Per-source chunk counts + unembedded (exclude deleted pages, mirroring
+        // TS buildSyncStatusReport). `SUM(CASE WHEN ... IS NULL)` is portable.
+        let chunk_rows = sqlx::query_as::<_, (String, i64, Option<i64>)>(
+            "SELECT c.source_id, COUNT(*) AS chunks_total, \
+             SUM(CASE WHEN c.embedding IS NULL THEN 1 ELSE 0 END) AS chunks_unembedded \
+             FROM content_chunks c JOIN pages p ON p.id = c.page_id \
+             WHERE p.deleted_at IS NULL GROUP BY c.source_id",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("source_sync_stats chunks failed: {e}")))?;
+        let chunk_counts: std::collections::HashMap<String, (u64, u64)> = chunk_rows
+            .into_iter()
+            .map(|(sid, total, unembedded)| {
+                (sid, (total.max(0) as u64, unembedded.unwrap_or(0).max(0) as u64))
+            })
+            .collect();
+
+        let mut out = Vec::new();
+        for (id, name, local_path, last_commit, last_sync_at, config) in src_rows {
+            let sync_enabled =
+                config.get("syncEnabled").and_then(|v| v.as_bool()) != Some(false);
+            let pages = *page_counts.get(&id).unwrap_or(&0);
+            let (chunks_total, chunks_unembedded) =
+                *chunk_counts.get(&id).unwrap_or(&(0, 0));
+            out.push(crate::sync_status::SourceSyncStat {
+                source_id: id,
+                name,
+                local_path,
+                sync_enabled,
+                last_sync_at,
+                last_commit,
+                pages,
+                chunks_total,
+                chunks_unembedded,
+            });
+        }
+        Ok(out)
     }
 
     async fn create_source(&self, input: &CreateSourceInput) -> Result<SourceRow> {

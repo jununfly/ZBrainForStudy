@@ -2048,12 +2048,12 @@
     "1-6-7-13-4": {
       "id": "1-6-7-13-4",
       "label": "sync 状态与报告: buildSyncStatusReport/printSyncStatusReport/resolveParallelism/syncOneSource/runSyncTrigger/manageGitignore (Rust 端口, 多为只读)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6-7-13",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "DONE (2026-07-22). 只读半移植完成。新增 BrainEngine::source_sync_stats 跨三后端 (InMemory/libsql/postgres) 返回每源 pages/chunks_total/chunks_unembedded/sync_enabled/last_sync_at/last_commit；新增 zbrain-core::sync_status 模块 (SourceSyncStat/StalenessClass/SyncStatusReport + build_sync_status_report 纯函数 + format_sync_status_report 表格渲染，5 单测)；新增 operation SyncStatusOperation (name=sync_status, scope read) 接入 register_all (op 注册数 62→63)，2 op 测试。Rust 无 execute_raw 逃逸口，故严格经类型化 engine 方法而非裸 SQL。unacknowledged_failures 暂硬编码 0，TODO 接入失败日志读取器。三道门通过: cargo test -p zbrain-core --lib 1884 passed/0 failed; cargo build -p zbrain-cli OK; cargo build -p zbrain-mcp OK。resolveParallelism/syncOneSource/runSyncTrigger/manageGitignore 属变更/编排半，留 1-6-7-13-1..3。"
     },
     "1-6-7-14": {
       "id": "1-6-7-14",
@@ -2149,7 +2149,7 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-21 20:34:59",
+    "updated": "2026-07-22 20:27:00",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"

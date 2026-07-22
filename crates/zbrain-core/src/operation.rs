@@ -3066,6 +3066,53 @@ impl TypedOperation for TakesSearchOperation {
 /// Test-only fixture operations (the `AddTag*`/`UpdateSlug*` family defined
 /// inside `mod tests` below) are intentionally NOT registered here — they are
 /// promotion targets for their own domain slices (tags/links/timeline).
+    // ── SyncStatus Operation (roadmap 1-6-7-13-4) ─────────────────────────
+    // Read-only per-source sync status report (pages / chunks / embedding
+    // coverage / staleness). Ports the read-only half of TS sync_brain's
+    // `buildSyncStatusReport` (src/commands/sync.ts:2249). The mutating /
+    // git-pull / git-push halves live in sibling sub-nodes.
+
+    #[derive(Debug, Clone)]
+    struct SyncStatusOperation;
+
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    struct SyncStatusParams {}
+
+    impl ValidateParams for SyncStatusParams {
+        fn validate(&self) -> OperationResult<()> {
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl TypedOperation for SyncStatusOperation {
+        type Params = SyncStatusParams;
+        type Output = crate::sync_status::SyncStatusReport;
+
+        fn name(&self) -> &'static str {
+            "sync_status"
+        }
+
+        fn description(&self) -> &'static str {
+            "Report per-source sync status: page/chunk counts, embedding coverage, staleness."
+        }
+
+        async fn execute(
+            &self,
+            ctx: &OperationContext,
+            _params: Self::Params,
+        ) -> OperationResult<Self::Output> {
+            let engine = ctx.engine()?;
+            let stats = engine.source_sync_stats().await?;
+            // TODO(1-6-7-13-4): wire the unacknowledged-failure log reader;
+            // TS reads a JSONL failure log brain-wide. Passed as 0 for now.
+            let report =
+                crate::sync_status::build_sync_status_report(&stats, "embedding", 0);
+            Ok(report)
+        }
+    }
+
 pub fn register_all(registry: &mut OperationRegistry) {
     registry.register(GetPageOperation);
     registry.register(PutPageOperation);
@@ -3080,6 +3127,8 @@ pub fn register_all(registry: &mut OperationRegistry) {
     // 1-6-7-11 — search_by_image (multimodal embedding retrieval + daily
     // spend budget via image_search_spend_log).
     registry.register(SearchByImageOperation);
+    // 1-6-7-13-4 — sync_status (read-only per-source sync status report).
+    registry.register(SyncStatusOperation);
     registry.register(ThinkOperation);
     registry.register(TakesListOperation);
     registry.register(TakesSearchOperation);
@@ -8917,6 +8966,77 @@ mod tests {
         assert_eq!(output["totalCount"].as_u64().unwrap(), 1);
     }
 
+    // ── SyncStatus Operation tests (roadmap 1-6-7-13-4) ──────────────────
+    // The op struct + impl live in the main module so `register_all` can
+    // wire it; tests stay here.
+
+    #[test]
+    fn registry_register_sync_status() {
+        let mut registry = OperationRegistry::new();
+        registry.register(SyncStatusOperation);
+
+        let op = registry.lookup("sync_status");
+        assert!(op.is_some());
+        assert_eq!(op.unwrap().name(), "sync_status");
+    }
+
+    #[tokio::test]
+    async fn dispatch_json_sync_status_returns_report() {
+        use crate::engine::{CreateSourceInput, InMemoryEngine, PageInput};
+        use crate::import::{ChunkInput, ChunkSource};
+
+        let engine = InMemoryEngine::default();
+        engine
+            .create_source(&CreateSourceInput {
+                id: "src1".to_string(),
+                name: "Source One".to_string(),
+                config: None,
+            })
+            .await
+            .unwrap();
+        let page = PageInput {
+            page_type: "note".to_string(),
+            title: "P".to_string(),
+            compiled_truth: "# P".to_string(),
+            ..Default::default()
+        };
+        engine.put_page("test/p", Some("src1"), &page).await.unwrap();
+        let chunks = vec![ChunkInput {
+            chunk_index: 0,
+            chunk_text: "x".to_string(),
+            chunk_source: ChunkSource::CompiledTruth,
+            embedding: Some(vec![0.1, 0.2]),
+            token_count: None,
+            language: None,
+            symbol_name: None,
+            symbol_type: None,
+            start_line: None,
+            end_line: None,
+            parent_symbol_path: vec![],
+            symbol_name_qualified: None,
+        }];
+        engine.upsert_chunks("test/p", &chunks).await.unwrap();
+
+        let mut registry = OperationRegistry::new();
+        registry.register(SyncStatusOperation);
+        let ctx = OperationContext::local_cli().with_engine(engine.into_arc());
+        let result = registry
+            .dispatch_json("sync_status", &ctx, serde_json::json!({}))
+            .await;
+        assert!(result.is_ok(), "Expected ok, got: {:?}", result);
+
+        let output = result.unwrap();
+        assert_eq!(output["schema_version"].as_u64().unwrap(), 1);
+        let sources = output["sources"].as_array().unwrap();
+        assert_eq!(sources.len(), 1);
+        let s = &sources[0];
+        assert_eq!(s["source_id"].as_str().unwrap(), "src1");
+        assert_eq!(s["pages"].as_u64().unwrap(), 1);
+        assert_eq!(s["chunks_total"].as_u64().unwrap(), 1);
+        assert_eq!(s["chunks_unembedded"].as_u64().unwrap(), 0);
+        assert_eq!(s["embedding_coverage_pct"].as_f64().unwrap(), 100.0);
+    }
+
     // ── ListAllPageRefs Operation (Slice #49) ─────────────────────────────
 
     #[derive(Debug, Clone)]
@@ -10520,7 +10640,7 @@ Outro."#;
         }
 
         #[test]
-        fn register_all_registers_sixty_two_ops() {
+        fn register_all_registers_sixty_three_ops() {
             let mut registry = OperationRegistry::new();
             register_all(&mut registry);
             let names = registry.operation_names();
@@ -10534,6 +10654,7 @@ Outro."#;
                 "query",
                 "search",
                 "search_by_image",
+                "sync_status",
                 "think",
                 "takes_list",
                 "takes_search",

@@ -921,6 +921,18 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
     /// Mirrors TS `fetchSource(id)` in `src/core/sources-load.ts`.
     async fn get_source(&self, id: &str) -> crate::Result<Option<SourceRow>>;
 
+    /// Per-source sync statistics for the status report (roadmap 1-6-7-13-4).
+    ///
+    /// Returns one row per registered source with page / chunk / unembedded
+    /// chunk counts. The `sync_enabled` flag is derived from
+    /// `config.syncEnabled !== false` (default true). Unlike the TS
+    /// `buildSyncStatusReport` (which used `engine.executeRaw`), this is a
+    /// dedicated typed method — each backend encapsulates its own fixed SQL,
+    /// keeping `zbrain-core` free of a raw-SQL escape hatch.
+    async fn source_sync_stats(
+        &self,
+    ) -> crate::Result<Vec<crate::sync_status::SourceSyncStat>>;
+
     /// Create a new source row. The `id` must pass source-id validation
     /// (`^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$`). Returns the created row
     /// (with `created_at` populated). Mirrors TS `createSource` in the CLI
@@ -3252,6 +3264,71 @@ impl BrainEngine for InMemoryEngine {
             .lock()
             .expect("InMemoryEngine sources mutex poisoned");
         Ok(sources.iter().find(|s| s.id == id).cloned())
+    }
+
+    async fn source_sync_stats(
+        &self,
+    ) -> crate::Result<Vec<crate::sync_status::SourceSyncStat>> {
+        let sources = self
+            .sources
+            .lock()
+            .expect("InMemoryEngine sources mutex poisoned");
+        let store = self
+            .store
+            .lock()
+            .expect("InMemoryEngine store mutex poisoned");
+        let chunk_store = self
+            .chunk_store
+            .lock()
+            .expect("InMemoryEngine chunk_store mutex poisoned");
+
+        // slug -> (source_id, deleted) so we can attribute chunks to sources
+        // without a chunk-level source_id (ChunkInput carries only a kind).
+        let slug_index: std::collections::HashMap<String, (String, bool)> = store
+            .iter()
+            .map(|p| (p.slug.clone(), (p.source_id.clone(), p.deleted_at.is_some())))
+            .collect();
+
+        let mut out: Vec<crate::sync_status::SourceSyncStat> = Vec::new();
+        for src in sources.iter() {
+            let sync_enabled = src
+                .config
+                .get("syncEnabled")
+                .and_then(|v| v.as_bool())
+                != Some(false);
+            let pages = store
+                .iter()
+                .filter(|p| p.source_id == src.id && p.deleted_at.is_none())
+                .count() as u64;
+
+            let mut chunks_total = 0u64;
+            let mut chunks_unembedded = 0u64;
+            for (slug, chunks) in chunk_store.iter() {
+                if let Some((psrc, deleted)) = slug_index.get(slug) {
+                    if *psrc == src.id && !*deleted {
+                        for c in chunks.iter() {
+                            chunks_total += 1;
+                            if c.embedding.is_none() {
+                                chunks_unembedded += 1;
+                            }
+                        }
+                    }
+                }
+            }
+
+            out.push(crate::sync_status::SourceSyncStat {
+                source_id: src.id.clone(),
+                name: src.name.clone(),
+                local_path: src.local_path.clone(),
+                sync_enabled,
+                last_sync_at: src.last_sync_at.clone(),
+                last_commit: src.last_commit.clone(),
+                pages,
+                chunks_total,
+                chunks_unembedded,
+            });
+        }
+        Ok(out)
     }
 
     async fn create_source(&self, input: &CreateSourceInput) -> crate::Result<SourceRow> {

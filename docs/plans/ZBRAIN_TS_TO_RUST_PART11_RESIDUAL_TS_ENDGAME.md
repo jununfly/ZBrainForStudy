@@ -50,7 +50,7 @@
 - [ ] 1-6-7-13-1. sync orchestration core: Rust 端口 performSync/performSyncInner — 需 engine 方法(sync anchor/checkpoint 读写, chunker version, lock 处理) + 增量同步主循环(逐源)
 - [ ] 1-6-7-13-2. git pull 层: hasOriginRemote/isDetachedHead/buildGitInvocation/buildDetachedWorkingTreeManifest/buildAutoEmbedArgs + detached-head working-tree manifest 处理 (Rust 端口)
 - [ ] 1-6-7-13-3. git push + 冲突层: push 逻辑 + 冲突检测/解决 + formatLockBusyMessage/runBreakLock (Rust 端口)
-- [ ] 1-6-7-13-4. sync 状态与报告: buildSyncStatusReport/printSyncStatusReport/resolveParallelism/syncOneSource/runSyncTrigger/manageGitignore (Rust 端口, 多为只读)
+- [x] 1-6-7-13-4. sync 状态与报告: buildSyncStatusReport/printSyncStatusReport/resolveParallelism/syncOneSource/runSyncTrigger/manageGitignore (Rust 端口, 多为只读)
 <!-- ⚠️ ROADMAP_SECTION_END -->
 
 <!-- ROADMAP_SECTION_START -->

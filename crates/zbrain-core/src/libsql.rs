@@ -805,6 +805,130 @@ impl BrainEngine for LibsqlEngine {
         }
     }
 
+    async fn source_sync_stats(
+        &self,
+    ) -> Result<Vec<crate::sync_status::SourceSyncStat>> {
+        let conn = self.conn().await?;
+
+        // Source identity + sync metadata.
+        let mut src_rows = conn
+            .query(
+                "SELECT id, name, local_path, last_commit, last_sync_at, config FROM sources",
+                (),
+            )
+            .await
+            .map_err(|e| Error::engine(format!("source_sync_stats sources failed: {e}")))?;
+        let mut sources: Vec<(
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            serde_json::Value,
+        )> = Vec::new();
+        while let Some(row) = src_rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("row read failed: {e}")))?
+        {
+            let id: String = row
+                .get(0)
+                .map_err(|e| Error::engine(format!("id read failed: {e}")))?;
+            let name: String = row
+                .get(1)
+                .map_err(|e| Error::engine(format!("name read failed: {e}")))?;
+            let local_path: Option<String> =
+                row.get::<Option<String>>(2).unwrap_or(None);
+            let last_commit: Option<String> =
+                row.get::<Option<String>>(3).unwrap_or(None);
+            let last_sync_at: Option<String> =
+                row.get::<Option<String>>(4).unwrap_or(None);
+            let config_str: String = row
+                .get(5)
+                .map_err(|e| Error::engine(format!("config read failed: {e}")))?;
+            let config: serde_json::Value =
+                serde_json::from_str(&config_str).unwrap_or_default();
+            sources.push((id, name, local_path, last_commit, last_sync_at, config));
+        }
+
+        // Per-source live page counts.
+        let mut page_rows = conn
+            .query(
+                "SELECT source_id, COUNT(*) AS pages FROM pages WHERE deleted_at IS NULL GROUP BY source_id",
+                (),
+            )
+            .await
+            .map_err(|e| Error::engine(format!("source_sync_stats pages failed: {e}")))?;
+        let mut page_counts: std::collections::HashMap<String, u64> =
+            std::collections::HashMap::new();
+        while let Some(row) = page_rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("row read failed: {e}")))?
+        {
+            let sid: String = row
+                .get(0)
+                .map_err(|e| Error::engine(format!("source_id read failed: {e}")))?;
+            let pages: i64 = row
+                .get(1)
+                .map_err(|e| Error::engine(format!("pages read failed: {e}")))?;
+            page_counts.insert(sid, pages.max(0) as u64);
+        }
+
+        // Per-source chunk counts + unembedded (exclude deleted pages, mirroring
+        // TS buildSyncStatusReport). `SUM(CASE WHEN ... IS NULL)` is portable
+        // across libsql/SQLite and Postgres.
+        let mut chunk_rows = conn
+            .query(
+                "SELECT c.source_id, COUNT(*) AS chunks_total, \
+                 SUM(CASE WHEN c.embedding IS NULL THEN 1 ELSE 0 END) AS chunks_unembedded \
+                 FROM content_chunks c JOIN pages p ON p.id = c.page_id \
+                 WHERE p.deleted_at IS NULL GROUP BY c.source_id",
+                (),
+            )
+            .await
+            .map_err(|e| Error::engine(format!("source_sync_stats chunks failed: {e}")))?;
+        let mut chunk_counts: std::collections::HashMap<String, (u64, u64)> =
+            std::collections::HashMap::new();
+        while let Some(row) = chunk_rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("row read failed: {e}")))?
+        {
+            let sid: String = row
+                .get(0)
+                .map_err(|e| Error::engine(format!("source_id read failed: {e}")))?;
+            let total: i64 = row
+                .get(1)
+                .map_err(|e| Error::engine(format!("chunks_total read failed: {e}")))?;
+            let unembedded: i64 = row
+                .get(2)
+                .map_err(|e| Error::engine(format!("chunks_unembedded read failed: {e}")))?;
+            chunk_counts.insert(sid, (total.max(0) as u64, unembedded.max(0) as u64));
+        }
+
+        let mut out: Vec<crate::sync_status::SourceSyncStat> = Vec::new();
+        for (id, name, local_path, last_commit, last_sync_at, config) in sources {
+            let sync_enabled =
+                config.get("syncEnabled").and_then(|v| v.as_bool()) != Some(false);
+            let pages = *page_counts.get(&id).unwrap_or(&0);
+            let (chunks_total, chunks_unembedded) =
+                *chunk_counts.get(&id).unwrap_or(&(0, 0));
+            out.push(crate::sync_status::SourceSyncStat {
+                source_id: id,
+                name,
+                local_path,
+                sync_enabled,
+                last_sync_at,
+                last_commit,
+                pages,
+                chunks_total,
+                chunks_unembedded,
+            });
+        }
+        Ok(out)
+    }
+
     async fn create_source(&self, input: &CreateSourceInput) -> Result<SourceRow> {
         if !is_valid_source_id(&input.id) {
             return Err(Error::engine(format!(
