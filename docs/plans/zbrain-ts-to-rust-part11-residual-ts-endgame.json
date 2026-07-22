@@ -2074,12 +2074,12 @@
     "1-6-7-13-3": {
       "id": "1-6-7-13-3",
       "label": "git pull 边界 fallback(detached HEAD / no origin / remote diverged → 回退本地状态并告警) + 文件锁接入 syncOneSource 生命周期(不做 push,push 归 federation)",
-      "status": "pending",
-      "mode": "explore",
+      "status": "completed",
+      "mode": "craft",
       "parent": "1-6-7-13",
       "children": [],
       "decisions": [],
-      "notes": "部分预覆盖 (2026-07-22): SyncBrainOperation(1-6-7-13-1) 已实现非致命 pull——detached HEAD / no origin / pull 失败均跳过 pull、改从本地树 sync。剩余：① advisory 文件锁 (Q4, .zbrain-sync.lock, 跨进程防重入) 接入 syncOneSource 生命周期；② diverged/non-fast-forward 专用告警文案 (目前静默跳过)；③ push 不属本节点 (push 归 zbrain sources federate)。"
+      "notes": "COMPLETED (2026-07-22): ① advisory 文件锁接入——新增 crates/zbrain-core/src/sync/lock.rs，用 std-only 原子 create_new 实现跨进程互斥锁 .zbrain-sync.lock（含 TTL 自动破残锁，镜像 TS LOCK_TTL_MS，避免 DB-flag 清残难题）；SyncBrainOperation.execute 在 pull 前 acquire，_sync_lock 作用域结束自动 delete 释放。② diverged/non-fast-forward 专用告警——GitError::is_divergence 扩到覆盖 git 真实 --ff-only 信息(\"Not possible to fast-forward\"/\"unrelated histories\")，pull 分歧时往 output.warnings 写明确告警（而非静默跳过），并提示 git pull 或 zbrain sources federate。③ push 不属本节点（归 federation）。新增 ErrorCode::SyncLockBusy + 两道锁单测 + 1 道 diverged 集成测试（真实 git 造 A→C vs A→B 分歧）。三道门全绿：core lib 1890 passed/0，cli build ok，mcp build ok。"
     },
     "1-6-7-13-4": {
       "id": "1-6-7-13-4",

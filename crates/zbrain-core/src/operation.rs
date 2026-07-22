@@ -38,6 +38,8 @@ pub enum ErrorCode {
     RateLimited,
     ExtractionFailed,
     FactNotFound,
+    /// A `sync_brain` is already in progress for this repo (advisory lock busy).
+    SyncLockBusy,
     /// Catch-all for forward compatibility (matches TS open union).
     #[serde(skip)]
     Other(String),
@@ -57,6 +59,7 @@ impl fmt::Display for ErrorCode {
             ErrorCode::RateLimited => write!(f, "rate_limited"),
             ErrorCode::ExtractionFailed => write!(f, "extraction_failed"),
             ErrorCode::FactNotFound => write!(f, "fact_not_found"),
+            ErrorCode::SyncLockBusy => write!(f, "sync_lock_busy"),
             ErrorCode::Other(s) => write!(f, "{s}"),
         }
     }
@@ -226,6 +229,7 @@ impl From<OperationError> for StructuredError {
             ErrorCode::RateLimited => "RateLimited",
             ErrorCode::ExtractionFailed => "ExtractionFailed",
             ErrorCode::FactNotFound => "FactNotFound",
+            ErrorCode::SyncLockBusy => "SyncLockBusy",
             ErrorCode::Other(_) => "Error",
         };
         let mut se = StructuredError::new(class, err.code.to_string(), err.message);
@@ -3160,6 +3164,10 @@ impl TypedOperation for TakesSearchOperation {
         pub deleted: usize,
         pub failures: usize,
         pub full_sync: bool,
+        /// Non-fatal advisories (e.g. a diverged git pull that fell back to
+        /// the local working tree). Empty on the happy path.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pub warnings: Vec<String>,
     }
 
     #[async_trait]
@@ -3238,6 +3246,32 @@ impl TypedOperation for TakesSearchOperation {
                 })?;
             let repo = std::path::Path::new(&repo_path);
 
+            // 0. Advisory cross-process lock (roadmap 1-6-7-13 Q4): prevent
+            //    two concurrent sync_brain runs on this repo from interleaving
+            //    their ingest loops. Held for the rest of `execute()` and
+            //    released when `_sync_lock` is dropped.
+            let _sync_lock = match crate::sync::lock::acquire_sync_lock(repo) {
+                Ok(l) => Some(l),
+                Err(crate::sync::lock::AcquireSyncLockError::Busy(b)) => {
+                    return Err(OperationError::new(
+                        ErrorCode::SyncLockBusy,
+                        b.to_string(),
+                    )
+                    .with_suggestion(
+                        "Wait for the in-progress sync to finish, or remove the stale \
+                         lock file at <repo>/.zbrain-sync.lock if the previous run crashed.",
+                    ));
+                }
+                Err(crate::sync::lock::AcquireSyncLockError::Io(e)) => {
+                    return Err(OperationError::new(
+                        ErrorCode::StorageError,
+                        &format!("failed to acquire sync lock: {e}"),
+                    ));
+                }
+            };
+
+            let mut warnings: Vec<String> = Vec::new();
+
             // 1. git pull (happy path; non-fatal on divergence / no-origin /
             //    detached HEAD — fall back to the local working tree).
             if !params.no_pull.unwrap_or(false) && crate::git::GitClient::is_repo(repo) {
@@ -3247,7 +3281,23 @@ impl TypedOperation for TakesSearchOperation {
                     .unwrap_or(false);
                 let has_origin = crate::git::GitClient::has_origin(repo).await;
                 if !detached && has_origin {
-                    let _ = crate::git::GitClient::pull(repo).await;
+                    match crate::git::GitClient::pull(repo).await {
+                        Ok(()) => {}
+                        Err(e) if e.is_divergence() => {
+                            warnings.push(format!(
+                                "git pull --ff-only was rejected because the remote has \
+                                 diverged (non-fast-forward). Syncing from the local \
+                                 working tree at the current HEAD. To reconcile, run \
+                                 `git pull` in {repo_path} or use `zbrain sources federate`."
+                            ));
+                        }
+                        Err(e) => {
+                            warnings.push(format!(
+                                "git pull --ff-only failed ({e}); syncing the local \
+                                 working tree only."
+                            ));
+                        }
+                    }
                 }
             }
 
@@ -3297,6 +3347,7 @@ impl TypedOperation for TakesSearchOperation {
                 deleted: result.deleted,
                 failures: result.failures,
                 full_sync: result.full_sync,
+                warnings,
             })
         }
     }
@@ -9292,6 +9343,18 @@ mod tests {
             out["headCommit"].as_str().unwrap().len() >= 7,
             "expected a real HEAD sha"
         );
+        // Happy path has no advisories. The field is omitted from the JSON
+        // when empty (skip_serializing_if), so treat absence as "no warnings".
+        let warning_count = out
+            .get("warnings")
+            .and_then(|v| v.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+        assert_eq!(
+            warning_count, 0,
+            "expected no warnings on the happy path, got: {:?}",
+            out.get("warnings")
+        );
 
         // Page + chunks persisted (embedding left None by the pipeline).
         let pages = engine
@@ -9308,6 +9371,122 @@ mod tests {
             !src.last_commit.clone().unwrap_or_default().is_empty(),
             "last_commit anchor should be set"
         );
+    }
+
+    #[tokio::test]
+    async fn dispatch_json_sync_brain_warns_on_diverged_pull() {
+        use crate::engine::InMemoryEngine;
+
+        let base = std::env::temp_dir().join(format!("zbrain_sync_div_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let remote = base.join("remote.git");
+        let work = base.join("work");
+        let other = base.join("other");
+
+        let git = |dir: &std::path::Path, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .output()
+                .expect("git available on PATH");
+            assert!(
+                out.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        let write_doc = |dir: &std::path::Path, name: &str, body: &str| {
+            std::fs::write(dir.join(name), body).unwrap();
+        };
+
+        // Bare remote: git can't `cd` into a not-yet-created directory, so
+        // init it directly with the path argument (the `git` helper uses `-C`).
+        let init_out = std::process::Command::new("git")
+            .args(["init", "--bare", "-b", "main"])
+            .arg(&remote)
+            .output()
+            .expect("git available on PATH");
+        assert!(
+            init_out.status.success(),
+            "git init --bare failed: {}",
+            String::from_utf8_lossy(&init_out.stderr)
+        );
+
+        // git clone into dirs that don't exist yet.
+        let remote_str = remote.to_str().unwrap();
+        let work_str = work.to_str().unwrap();
+        let other_str = other.to_str().unwrap();
+        let clone_work = format!("clone {remote_str} {work_str}");
+        let clone_other = format!("clone {remote_str} {other_str}");
+        for c in [clone_work, clone_other] {
+            let mut parts = c.split_whitespace();
+            let args: Vec<&str> = parts.collect();
+            git(&base, &args);
+        }
+
+        for dir in [&work, &other] {
+            git(dir, &["config", "user.email", "test@example.com"]);
+            git(dir, &["config", "user.name", "Test"]);
+        }
+
+        // work: commit doc v1, push to remote.
+        write_doc(&work, "doc.md", "# v1\n\nfirst version\n");
+        git(&work, &["add", "."]);
+        git(&work, &["commit", "-m", "v1"]);
+        git(&work, &["push", "origin", "main"]);
+
+        // other: pull v1, commit doc v2, push → remote now has v2.
+        git(&other, &["pull", "origin", "main"]);
+        write_doc(&other, "doc.md", "# v2\n\nsecond version\n");
+        git(&other, &["add", "."]);
+        git(&other, &["commit", "-m", "v2"]);
+        git(&other, &["push", "origin", "main"]);
+
+        // work: commit a divergent doc v1.1 (work now A→C, remote A→B).
+        write_doc(&work, "doc.md", "# v1.1\n\nlocal divergent version\n");
+        git(&work, &["add", "."]);
+        git(&work, &["commit", "-m", "v1.1"]);
+
+        let engine = std::sync::Arc::new(InMemoryEngine::default());
+        engine
+            .create_source(&crate::engine::CreateSourceInput {
+                id: "src1".to_string(),
+                name: "src1".to_string(),
+                config: None,
+            })
+            .await
+            .unwrap();
+
+        let mut registry = OperationRegistry::new();
+        registry.register(SyncBrainOperation);
+        let ctx = OperationContext::local_cli().with_engine(engine.clone());
+        let result = registry
+            .dispatch_json(
+                "sync_brain",
+                &ctx,
+                serde_json::json!({
+                    "source_id": "src1",
+                    "repo_path": work.to_string_lossy().to_string(),
+                }),
+            )
+            .await;
+        assert!(result.is_ok(), "sync_brain failed: {:?}", result);
+        let out = result.unwrap();
+
+        // The diverged pull falls back to the local working tree (v1.1).
+        assert_eq!(out["imported"], 1, "expected the local doc imported");
+        let warns = out["warnings"].as_array().expect("warnings should be an array");
+        assert!(!warns.is_empty(), "expected a divergence warning");
+        let msg = warns[0].as_str().unwrap().to_lowercase();
+        assert!(
+            msg.contains("diverg") || msg.contains("fast-forward") || msg.contains("remote"),
+            "warning should mention the divergence, got: {msg}"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     // ── ListAllPageRefs Operation (Slice #49) ─────────────────────────────

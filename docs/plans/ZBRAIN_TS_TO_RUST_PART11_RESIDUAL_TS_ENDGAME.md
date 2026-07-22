@@ -74,7 +74,7 @@ Grill 决策树(2026-07-22, zj-grill-me + zj-roadmap-driven): Q1 真·增量 Rus
 **子节点:**
 - [x] 1-6-7-13-1. SyncBrainOperation: git pull happy-path → 委派既有 sync::core::perform_sync(reuse import_one_path + anchor, 不新抽 ingest_file)
 - [x] 1-6-7-13-2. git pull happy path 封装到 zbrain-core/src/git.rs(有 origin / clean / fast-forward)
-- [ ] 1-6-7-13-3. git pull 边界 fallback(detached HEAD / no origin / remote diverged → 回退本地状态并告警) + 文件锁接入 syncOneSource 生命周期(不做 push,push 归 federation)
+- [x] 1-6-7-13-3. git pull 边界 fallback(detached HEAD / no origin / remote diverged → 回退本地状态并告警) + 文件锁接入 syncOneSource 生命周期(不做 push,push 归 federation)
 - [x] 1-6-7-13-4. sync 状态与报告: buildSyncStatusReport/printSyncStatusReport/resolveParallelism/syncOneSource/runSyncTrigger/manageGitignore (Rust 端口, 多为只读)
 <!-- ⚠️ ROADMAP_SECTION_END -->
 

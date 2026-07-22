@@ -46,8 +46,10 @@ impl GitError {
         match self {
             GitError::NonZero { stderr, .. } => {
                 stderr.contains("non-fast-forward")
+                    || stderr.contains("fast-forward")
                     || stderr.contains("diverged")
                     || stderr.contains("rejected")
+                    || stderr.contains("unrelated histories")
             }
             _ => false,
         }
@@ -114,6 +116,15 @@ mod tests {
             stderr: "fatal: rejecting non-fast-forward\n".to_string(),
         };
         assert!(err.is_divergence());
+
+        // Real git message for a diverged `--ff-only` pull (note: it prints
+        // "Not possible to fast-forward", not "non-fast-forward").
+        let ff = GitError::NonZero {
+            cmd: "pull --ff-only".to_string(),
+            code: 1,
+            stderr: "fatal: Not possible to fast-forward, aborting.\n".to_string(),
+        };
+        assert!(ff.is_divergence());
 
         let unrelated = GitError::NonZero {
             cmd: "rev-parse HEAD".to_string(),
