@@ -18,7 +18,6 @@ import type {
 import { MAX_SEARCH_LIMIT, clampSearchLimit } from './engine.ts';
 import { deriveResolutionTuple, finalizeScorecard } from './takes-resolution.ts';
 import { normalizeWeightForStorage } from './takes-fence.ts';
-import { runMigrations } from './migrate.ts';
 import { SCHEMA_SQL } from './schema-embedded.ts';
 import { verifySchema } from './schema-verify.ts';
 import { applyChunkEmbeddingIndexPolicy, dropZombieIndexes } from './vector-index.ts';
@@ -264,11 +263,9 @@ export class PostgresEngine implements BrainEngine {
 
       await conn.unsafe(sqlText);
 
-      // Run any pending migrations automatically
-      const { applied } = await runMigrations(this);
-      if (applied > 0) {
-        process.stderr.write(`  ${applied} migration(s) applied\n`);
-      }
+      // NOTE: schema migrations are owned by Rust; `runMigrations()` (migrate.ts)
+      // is a thin delegate that calls `initSchema()` back, so calling it here
+      // would recurse infinitely. Schema setup is complete; no TS-side step.
 
       // Post-migration schema verification: catches columns that migrations
       // defined but PgBouncer transaction-mode silently failed to create.

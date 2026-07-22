@@ -16,7 +16,6 @@ import type {
   SourceRow,
 } from './engine.ts';
 import { MAX_SEARCH_LIMIT, clampSearchLimit } from './engine.ts';
-import { runMigrations } from './migrate.ts';
 import { PGLITE_SCHEMA_SQL, getPGLiteSchema } from './pglite-schema.ts';
 import { DEFAULT_EMBEDDING_MODEL, DEFAULT_EMBEDDING_DIMENSIONS } from './ai/defaults.ts';
 import { acquireLock, releaseLock, type LockHandle } from './pglite-lock.ts';
@@ -309,10 +308,11 @@ export class PGLiteEngine implements BrainEngine {
 
     await this.db.exec(getPGLiteSchema(dims, model));
 
-    const { applied } = await runMigrations(this);
-    if (applied > 0) {
-      process.stderr.write(`  ${applied} migration(s) applied\n`);
-    }
+    // NOTE: schema migrations are owned by Rust (crates/zbrain-core/src/
+    // migration.rs). `runMigrations()` in migrate.ts is a thin delegate that
+    // simply calls `initSchema()` back — so this method MUST NOT call it, or
+    // we recurse infinitely (initSchema -> runMigrations -> initSchema -> ...).
+    // Schema setup is complete here; TS-side incremental migration is a no-op.
   }
 
   /**
