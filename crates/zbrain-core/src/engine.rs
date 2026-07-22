@@ -353,7 +353,7 @@ pub const RRF_K: f64 = 60.0;
 /// `src/core/ai/gateway.ts:864`). Returns `None` when the blob is empty or its
 /// length is not a multiple of 4 (fail-loud on a malformed column rather than
 /// silently truncating).
-fn decode_embedding_le(bytes: &[u8]) -> Option<Vec<f32>> {
+pub(crate) fn decode_embedding_le(bytes: &[u8]) -> Option<Vec<f32>> {
     if bytes.is_empty() || bytes.len() % 4 != 0 {
         return None;
     }
@@ -370,7 +370,7 @@ fn decode_embedding_le(bytes: &[u8]) -> Option<Vec<f32>> {
 /// lengths differ or either magnitude is zero (matches the TS denom-zero
 /// guard), so a dimension mismatch degrades gracefully instead of ranking on
 /// garbage.
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
+pub(crate) fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
     if a.len() != b.len() {
         return 0.0;
     }
@@ -1335,6 +1335,47 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
     /// Postgres gap registered in docs/plans/KNOWN-GAPS.md (G23).
     async fn search_pages(&self, _opts: &SearchOpts) -> crate::Result<Vec<SearchResult>> {
         Ok(Vec::new())
+    }
+
+    /// Search for pages by embedding vector similarity (cosine distance).
+    /// 
+    /// Used by `search_by_image` op after embedding the query image to get
+    /// visually similar candidate pages. Returns the top-N candidates sorted
+    /// by descending similarity (best first).
+    /// 
+    /// Default implementation returns an empty Vec. Only InMemory and libsql
+    /// need an implementation because their `content_chunks` table stores
+    /// the embedding column for chunks when `search.unified_multimodal` is enabled.
+    /// Postgres stores the embedding but vector search is not yet implemented.
+    async fn search_pages_by_embedding(
+        &self,
+        _query_embedding: &[f32],
+        _limit: usize,
+        _source_id: Option<&str>,
+    ) -> crate::Result<Vec<Page>> {
+        Ok(Vec::new())
+    }
+
+    // — Image-search daily budget (1-6-7-11: search_by_image) —
+    /// Accumulated image-search spend (cents) for a client since UTC
+    /// midnight. Backs the per-client daily cap enforced by the
+    /// `search_by_image` op. Default returns `0` (cap effectively off for
+    /// backends that don't persist the `image_search_spend_log` table).
+    async fn image_search_daily_spend_cents(&self, _client_id: &str) -> crate::Result<i64> {
+        Ok(0)
+    }
+
+    /// Record one completed image-search API spend row (cents) for audit and
+    /// daily-cap accounting. `provider`/`model` identify the embedding API
+    /// used. Default is a no-op so backends without the table stay buildable.
+    async fn record_image_search_spend(
+        &self,
+        _client_id: &str,
+        _amount_cents: i64,
+        _provider: &str,
+        _model: &str,
+    ) -> crate::Result<()> {
+        Ok(())
     }
 
     // — Content refresh (2) —
@@ -2799,6 +2840,9 @@ pub struct InMemoryEngine {
     // rows; `resolved` flags which table the row would live in.
     code_edges_store: Mutex<Vec<InternalCodeEdge>>,
     next_code_edge_id: Mutex<i64>,
+    // 1-6-7-11: image-search spend rows (in-memory, for testing the daily
+    // budget cap without a real SQLite/Postgres backend).
+    image_search_spend_store: Mutex<Vec<InternalImageSearchSpend>>,
 }
 
 /// In-memory code-graph edge row. `resolved == true` mirrors a `code_edges_chunk`
@@ -2830,6 +2874,18 @@ fn edge_row_to_result(row: &InternalCodeEdge) -> crate::import::CodeEdgeResult {
         source_id: row.source_id.clone(),
         resolved: row.resolved,
     }
+}
+
+/// In-memory image-search spend row (1-6-7-11: search_by_image daily budget).
+#[derive(Debug, Clone)]
+struct InternalImageSearchSpend {
+    client_id: String,
+    amount_cents: i64,
+    provider: String,
+    model: String,
+    /// ISO-8601 UTC timestamp, `YYYY-MM-DDTHH:MM:SSZ` (prefix-compared for
+    /// "since UTC midnight" without parsing).
+    created_at: String,
 }
 
 /// Source scoping for `get_callers_of` / `get_callees_of` (mirrors TS):
@@ -2928,6 +2984,8 @@ impl InMemoryEngine {
             // 1-6-7-10-1: code-graph edge storage (in-memory, for testing)
             code_edges_store: Mutex::new(Vec::new()),
             next_code_edge_id: Mutex::new(1),
+            // 1-6-7-11: image-search spend rows (in-memory, for testing)
+            image_search_spend_store: Mutex::new(Vec::new()),
         }
     }
 
@@ -3911,6 +3969,82 @@ impl BrainEngine for InMemoryEngine {
         }; // store lock dropped here
 
         fuse_and_boost(self, &candidates, opts).await
+    }
+
+    async fn search_pages_by_embedding(
+        &self,
+        query_embedding: &[f32],
+        limit: usize,
+        source_id: Option<&str>,
+    ) -> crate::Result<Vec<Page>> {
+        let store = self.store.lock().expect("InMemoryEngine store mutex poisoned");
+        let chunk_store = self.chunk_store.lock().expect("InMemoryEngine chunk_store mutex poisoned");
+
+        // Score each live page by its best chunk embedding similarity.
+        let mut scored: Vec<(Page, f64)> = Vec::new();
+        for page in store.iter() {
+            if page.deleted_at.is_some() {
+                continue;
+            }
+            if let Some(sid) = source_id {
+                if page.source_id != sid {
+                    continue;
+                }
+            }
+            let best_score = chunk_store
+                .get(&page.slug)
+                .map(|chunks| {
+                    chunks
+                        .iter()
+                        .filter_map(|c| c.embedding.as_deref())
+                        .map(|emb| cosine_similarity(query_embedding, emb))
+                        .fold(0.0_f64, f64::max)
+                })
+                .unwrap_or(0.0);
+            scored.push((page.clone(), best_score));
+        } // store/chunk_store locks dropped
+
+        // Sort descending by similarity score.
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Truncate to top-N.
+        scored.truncate(limit.min(scored.len()));
+
+        Ok(scored.into_iter().map(|(p, _)| p).collect())
+    }
+
+    async fn image_search_daily_spend_cents(&self, client_id: &str) -> crate::Result<i64> {
+        let today_prefix = &crate::time::current_utc_iso8601()[..10];
+        let store = self
+            .image_search_spend_store
+            .lock()
+            .expect("InMemoryEngine image_search_spend_store mutex poisoned");
+        Ok(store
+            .iter()
+            .filter(|r| r.client_id == client_id && r.created_at.starts_with(today_prefix))
+            .map(|r| r.amount_cents)
+            .sum())
+    }
+
+    async fn record_image_search_spend(
+        &self,
+        client_id: &str,
+        amount_cents: i64,
+        provider: &str,
+        model: &str,
+    ) -> crate::Result<()> {
+        let mut store = self
+            .image_search_spend_store
+            .lock()
+            .expect("InMemoryEngine image_search_spend_store mutex poisoned");
+        store.push(InternalImageSearchSpend {
+            client_id: client_id.to_string(),
+            amount_cents,
+            provider: provider.to_string(),
+            model: model.to_string(),
+            created_at: crate::time::current_utc_iso8601(),
+        });
+        Ok(())
     }
 
     async fn refresh_page_body(&self, args: &RefreshPageBodyArgs) -> crate::Result<()> {

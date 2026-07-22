@@ -129,7 +129,7 @@
 | `schema_review_orphans` | schema-pack | WRAP |
 | `schema_stats` | schema-pack | WRAP |
 | `search` | search/query | WRAP |
-| `search_by_image` | search/query | NET_NEW |
+| `search_by_image` | search/query | NET_NEW ✅ done (zbrain-core: SearchByImageOperation + image_loader + embed_image + search_pages_by_embedding + image_search_spend_log daily budget) |
 | `send_job_message` | jobs/minions | WRAP |
 | `sources_add` | sources | WRAP |
 | `sources_list` | sources | WRAP |

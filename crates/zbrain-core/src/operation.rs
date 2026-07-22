@@ -2165,6 +2165,273 @@ impl TypedOperation for SearchOperation {
     }
 }
 
+/// Search pages by image similarity (1-6-7-11).
+///
+/// Embeds the supplied image via the multimodal embedding provider, retrieves
+/// visually-similar pages with `search_pages_by_embedding` (chunk-level cosine
+/// over stored chunk embeddings), then re-ranks the candidates through
+/// `fuse_and_boost` (page-level cosine + salience/recency boost + snippet).
+///
+/// A per-client daily spend budget is enforced up front (and the completed
+/// call recorded afterward) via `image_search_spend_log`, so a flaky embedding
+/// provider or failed retrieval never bills the client.
+#[derive(Debug, Clone)]
+pub struct SearchByImageOperation;
+
+/// Estimated cost (cents) of one image-embedding API call. Flat placeholder
+/// rate — the real multimodal-embedding price is a fraction of a cent per
+/// image. Recorded for daily-cap accounting + audit.
+const IMAGE_SEARCH_COST_CENTS_PER_CALL: i64 = 1;
+/// Per-client daily image-search spend cap (cents) = $1.00/day.
+const IMAGE_SEARCH_DAILY_CAP_CENTS: i64 = 100;
+
+/// Parameters for `search_by_image`. Exactly one of `image_path`, `image_url`,
+/// or `image_data` must be supplied.
+#[derive(Debug, serde::Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct SearchByImageParams {
+    /// Local filesystem path to the query image.
+    #[serde(default)]
+    pub image_path: Option<String>,
+    /// HTTP(S) URL of the query image (SSRF-protected on untrusted callers).
+    #[serde(default)]
+    pub image_url: Option<String>,
+    /// Raw base64 image bytes (a `data:` URI prefix is stripped if present).
+    #[serde(default)]
+    pub image_data: Option<String>,
+    /// Maximum number of results to return (default: 20, max: 100).
+    #[serde(default)]
+    pub limit: Option<usize>,
+    /// Scope search to a single source. Defaults to the caller's `source_id`;
+    /// `__all__` forces cross-source.
+    #[serde(default)]
+    pub source_id: Option<String>,
+}
+
+impl ValidateParams for SearchByImageParams {
+    fn validate(&self) -> OperationResult<()> {
+        let provided = [
+            self.image_path.is_some(),
+            self.image_url.is_some(),
+            self.image_data.is_some(),
+        ]
+        .iter()
+        .filter(|x| **x)
+        .count();
+        if provided == 0 {
+            return Err(OperationError::invalid_params(
+                "exactly one of image_path, image_url, or image_data is required",
+            ));
+        }
+        if provided > 1 {
+            return Err(OperationError::invalid_params(
+                "only one of image_path, image_url, or image_data may be supplied",
+            ));
+        }
+        if let Some(limit) = self.limit {
+            if limit == 0 || limit > 100 {
+                return Err(OperationError::invalid_params(
+                    "limit must be between 1 and 100",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Output for `search_by_image` — ranked, snippet-tagged page results.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchByImageOutput {
+    pub results: Vec<crate::engine::SearchResult>,
+    pub total: usize,
+    pub limit: usize,
+    pub offset: usize,
+}
+
+#[async_trait]
+impl TypedOperation for SearchByImageOperation {
+    type Params = SearchByImageParams;
+    type Output = SearchByImageOutput;
+
+    fn name(&self) -> &'static str {
+        "search_by_image"
+    }
+
+    fn description(&self) -> &'static str {
+        "Find pages visually similar to a query image via multimodal embedding search. Exactly one of image_path / image_url / image_data is required."
+    }
+
+    fn local_only(&self) -> bool {
+        false
+    }
+
+    fn mutating(&self) -> bool {
+        false
+    }
+
+    fn cli_hints(&self) -> Option<CliHints> {
+        Some(CliHints::new("search-by-image").with_positional(&["image_path"]))
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "image_path": { "type": "string", "description": "Local filesystem path to the query image" },
+                "image_url": { "type": "string", "description": "HTTP(S) URL of the query image (SSRF-protected)" },
+                "image_data": { "type": "string", "description": "Raw base64 image bytes (data: URI prefix optional)" },
+                "limit": { "type": "integer", "description": "Maximum number of results (default: 20, max: 100)" },
+                "source_id": { "type": "string", "description": "Scope search to a single source (defaults to caller source; '__all__' for cross-source)" }
+            },
+            "required": []
+        })
+    }
+
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine.as_ref().ok_or_else(|| {
+            OperationError::new(
+                ErrorCode::StorageError,
+                "search_by_image requires an engine",
+            )
+        })?;
+
+        // Budget identity: authenticated MCP client if present, else the
+        // caller's source (local CLI). Used for the per-client daily cap.
+        let client_id = ctx
+            .auth
+            .as_ref()
+            .map(|a| a.client_id.clone())
+            .unwrap_or_else(|| ctx.source_id.clone());
+
+        // Daily budget gate (checked before any paid call).
+        let spent_today = engine
+            .image_search_daily_spend_cents(&client_id)
+            .await
+            .map_err(|e| OperationError::new(ErrorCode::StorageError, &format!("budget check failed: {e}")))?;
+        if spent_today + IMAGE_SEARCH_COST_CENTS_PER_CALL > IMAGE_SEARCH_DAILY_CAP_CENTS {
+            return Err(OperationError::new(
+                ErrorCode::RateLimited,
+                &format!(
+                    "daily image-search budget exceeded for client '{client_id}' \
+                     (spent {spent_today} of {cap} cents today); try again tomorrow",
+                    cap = IMAGE_SEARCH_DAILY_CAP_CENTS
+                ),
+            ));
+        }
+
+        // Resolve which image source was provided (validation guarantees exactly one).
+        let source = if let Some(path) = &params.image_path {
+            crate::image_loader::ImageSource::Path(path.clone())
+        } else if let Some(url) = &params.image_url {
+            crate::image_loader::ImageSource::Url(url.clone())
+        } else {
+            crate::image_loader::ImageSource::Data(params.image_data.clone().expect("validated: one source present"))
+        };
+
+        // Load + base64-encode (SSRF guard runs inside for Url on untrusted callers).
+        let loaded = crate::image_loader::load_image(&source).await.map_err(|e| {
+            OperationError::new(
+                ErrorCode::InvalidParams,
+                &format!("failed to load query image: {e}"),
+            )
+        })?;
+
+        // Embedding is the query itself — without a provider there is nothing
+        // to search, so this is a hard error (not a fail-open lexical fallback
+        // like text `query`, which has a lexical path).
+        let embedding_client = ctx.embedding.as_ref().ok_or_else(|| {
+            OperationError::new(
+                ErrorCode::EmbeddingFailed,
+                "search_by_image requires an embedding provider (none configured)",
+            )
+        })?;
+        let embedding = embedding_client
+            .embed_image(&loaded.base64, loaded.mime.as_deref())
+            .await
+            .map_err(|e| {
+                OperationError::new(
+                    ErrorCode::EmbeddingFailed,
+                    &format!("image embedding failed: {e}"),
+                )
+            })?;
+
+        // Source scoping mirrors `search` / `query`.
+        let source_id = match params.source_id.as_deref() {
+            Some("__all__") => None,
+            Some(s) => Some(s.to_string()),
+            None => Some(ctx.source_id.clone()),
+        };
+
+        let limit = params.limit.unwrap_or(20);
+
+        // 1) Chunk-level cosine retrieval → over-fetch candidates, then the
+        //    fusion step trims to `limit` (mirrors query's rerank-before-paginate).
+        let candidates = engine
+            .search_pages_by_embedding(&embedding, limit * 3, source_id.as_deref())
+            .await
+            .map_err(|e| {
+                OperationError::new(
+                    ErrorCode::StorageError,
+                    &format!("image similarity search failed: {e}"),
+                )
+            })?;
+
+        // 2) Page-level fusion: vector cosine (against Page::embedding) +
+        //    salience/recency boost + snippet. (RRF lives in `fuse_and_boost`;
+        //    search_by_image orchestrates retrieval + fusion here rather than
+        //    re-implementing it.)
+        let results = crate::engine::fuse_and_boost(
+            engine.as_ref(),
+            &candidates,
+            &crate::engine::SearchOpts {
+                keywords: Vec::new(),
+                limit: Some(limit),
+                source_id: source_id.clone(),
+                query_embedding: Some(embedding.clone()),
+                min_score: Some(0.0),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|e| {
+            OperationError::new(
+                ErrorCode::StorageError,
+                &format!("image search fusion failed: {e}"),
+            )
+        })?;
+
+        // 3) Bill the completed call (audit + daily cap). Never runs on the
+        //    error paths above, so failed searches don't consume budget.
+        engine
+            .record_image_search_spend(
+                &client_id,
+                IMAGE_SEARCH_COST_CENTS_PER_CALL,
+                "embedding",
+                embedding_client.model(),
+            )
+            .await
+            .map_err(|e| {
+                OperationError::new(
+                    ErrorCode::StorageError,
+                    &format!("failed to record image-search spend: {e}"),
+                )
+            })?;
+
+        let total = results.len();
+        Ok(SearchByImageOutput {
+            results,
+            total,
+            limit,
+            offset: 0,
+        })
+    }
+}
+
 /// Extract keywords from a query string.
 ///
 /// v1.0 Simple rule-based approach:
@@ -2810,6 +3077,9 @@ pub fn register_all(registry: &mut OperationRegistry) {
     // 1-6-7-7 — search op (lexical keyword search, mirrors TS `search`).
     // `query` op already existed; this closes the search/query retrieval pair.
     registry.register(SearchOperation);
+    // 1-6-7-11 — search_by_image (multimodal embedding retrieval + daily
+    // spend budget via image_search_spend_log).
+    registry.register(SearchByImageOperation);
     registry.register(ThinkOperation);
     registry.register(TakesListOperation);
     registry.register(TakesSearchOperation);
@@ -9797,6 +10067,15 @@ Outro."#;
             ) -> Result<Vec<Vec<f32>>, crate::embedding::EmbeddingError> {
                 Ok(texts.iter().map(|_| self.0.clone()).collect())
             }
+
+            async fn embed_image(
+                &self,
+                _base64_image: &str,
+                _mime: Option<&str>,
+                _dims: usize,
+            ) -> Result<Vec<f32>, crate::embedding::EmbeddingError> {
+                Ok(self.0.clone())
+            }
         }
 
         /// Encode an f32 vector to the little-endian byte layout the
@@ -9904,6 +10183,15 @@ Outro."#;
                     _texts: &[String],
                     _dims: usize,
                 ) -> Result<Vec<Vec<f32>>, crate::embedding::EmbeddingError> {
+                    Err(crate::embedding::EmbeddingError::Provider("boom".to_string()))
+                }
+
+                async fn embed_image(
+                    &self,
+                    _base64_image: &str,
+                    _mime: Option<&str>,
+                    _dims: usize,
+                ) -> Result<Vec<f32>, crate::embedding::EmbeddingError> {
                     Err(crate::embedding::EmbeddingError::Provider("boom".to_string()))
                 }
             }
@@ -10232,7 +10520,7 @@ Outro."#;
         }
 
         #[test]
-        fn register_all_registers_sixty_one_ops() {
+        fn register_all_registers_sixty_two_ops() {
             let mut registry = OperationRegistry::new();
             register_all(&mut registry);
             let names = registry.operation_names();
@@ -10245,6 +10533,7 @@ Outro."#;
                 "list_pages",
                 "query",
                 "search",
+                "search_by_image",
                 "think",
                 "takes_list",
                 "takes_search",
@@ -10306,6 +10595,191 @@ Outro."#;
             ] {
                 assert!(names.contains(&n), "missing op: {}", n);
             }
+        }
+
+        // ── 1-6-7-11: search_by_image ──────────────────────────────────────
+
+        /// Fixed-vector embedding provider for search_by_image tests. Returns
+        /// the same non-zero vector for every image so cosine similarity
+        /// against a matching chunk embedding is well-defined (= 1.0).
+        struct ConstImageProvider(Vec<f32>);
+        #[async_trait::async_trait]
+        impl crate::embedding::EmbeddingProvider for ConstImageProvider {
+            async fn embed(
+                &self,
+                texts: &[String],
+                _dims: usize,
+            ) -> Result<Vec<Vec<f32>>, crate::embedding::EmbeddingError> {
+                Ok(texts.iter().map(|_| self.0.clone()).collect())
+            }
+            async fn embed_image(
+                &self,
+                _base64_image: &str,
+                _mime: Option<&str>,
+                _dims: usize,
+            ) -> Result<Vec<f32>, crate::embedding::EmbeddingError> {
+                Ok(self.0.clone())
+            }
+        }
+
+        fn image_embedding_client() -> std::sync::Arc<crate::embedding::EmbeddingClient> {
+            let config = crate::embedding::EmbeddingConfig {
+                model: "test-multimodal".to_string(),
+                dimensions: 4,
+                api_key: "test-key".to_string(),
+                ..Default::default()
+            };
+            std::sync::Arc::new(crate::embedding::EmbeddingClient::with_provider(
+                config,
+                std::sync::Arc::new(ConstImageProvider(vec![0.5, 0.5, 0.5, 0.5])),
+            ))
+        }
+
+        /// f32 → little-endian bytes (mirrors the engine's `Page::embedding` layout).
+        fn f32_le_bytes(v: &[f32]) -> Vec<u8> {
+            v.iter().flat_map(|f| f.to_le_bytes()).collect()
+        }
+
+        /// Seed one page with a single chunk whose embedding matches the test
+        /// provider's fixed image vector.
+        async fn seed_image_page(engine: &dyn crate::engine::BrainEngine, slug: &str) {
+            use crate::engine::PageInput;
+            let input = PageInput {
+                page_type: "note".to_string(),
+                title: "Cat page".to_string(),
+                compiled_truth: "a photo of a cat".to_string(),
+                // Page-level embedding (f32-LE) must match the chunk embedding
+                // so `fuse_and_boost`'s vector path keeps the candidate.
+                embedding: Some(f32_le_bytes(&[0.5, 0.5, 0.5, 0.5])),
+                ..Default::default()
+            };
+            engine.put_page(slug, None, &input).await.unwrap();
+            use crate::import::{ChunkInput, ChunkSource};
+            engine
+                .upsert_chunks(
+                    slug,
+                    &[ChunkInput {
+                        chunk_index: 0,
+                        chunk_text: "cat photo".to_string(),
+                        chunk_source: ChunkSource::CompiledTruth,
+                        embedding: Some(vec![0.5, 0.5, 0.5, 0.5]),
+                        token_count: None,
+                        language: None,
+                        symbol_name: None,
+                        symbol_type: None,
+                        start_line: None,
+                        end_line: None,
+                        parent_symbol_path: vec![],
+                        symbol_name_qualified: None,
+                    }],
+                )
+                .await
+                .unwrap();
+        }
+
+        #[tokio::test]
+        async fn search_by_image_requires_exactly_one_source() {
+            use crate::engine::InMemoryEngine;
+            let engine = InMemoryEngine::default();
+            let mut registry = OperationRegistry::new();
+            registry.register(SearchByImageOperation);
+            let ctx = OperationContext::local_cli().with_engine(std::sync::Arc::new(engine));
+
+            // No source → invalid_params.
+            let res = registry
+                .dispatch_json("search_by_image", &ctx, serde_json::json!({}))
+                .await;
+            assert!(res.is_err());
+            assert_eq!(res.unwrap_err().code, ErrorCode::InvalidParams);
+
+            // Two sources → invalid_params.
+            let res = registry
+                .dispatch_json(
+                    "search_by_image",
+                    &ctx,
+                    serde_json::json!({ "image_path": "/tmp/a.png", "image_url": "http://x/y.png" }),
+                )
+                .await;
+            assert!(res.is_err());
+            assert_eq!(res.unwrap_err().code, ErrorCode::InvalidParams);
+        }
+
+        #[tokio::test]
+        async fn search_by_image_requires_embedding_client() {
+            use crate::engine::InMemoryEngine;
+            let engine = InMemoryEngine::default();
+            let mut registry = OperationRegistry::new();
+            registry.register(SearchByImageOperation);
+            // No embedding client wired → EmbeddingFailed (hard error, no
+            // lexical fallback for image search).
+            let ctx = OperationContext::local_cli().with_engine(std::sync::Arc::new(engine));
+            let res = registry
+                .dispatch_json(
+                    "search_by_image",
+                    &ctx,
+                    serde_json::json!({ "image_data": "AAAA" }),
+                )
+                .await;
+            assert!(res.is_err());
+            assert_eq!(res.unwrap_err().code, ErrorCode::EmbeddingFailed);
+        }
+
+        #[tokio::test]
+        async fn search_by_image_daily_budget_enforced() {
+            use crate::engine::InMemoryEngine;
+            let engine = InMemoryEngine::default();
+            // Pre-fill today's spend at the cap; one more call must be blocked.
+            engine
+                .record_image_search_spend("default", 100, "embedding", "test-model")
+                .await
+                .unwrap();
+            let mut registry = OperationRegistry::new();
+            registry.register(SearchByImageOperation);
+            let ctx = OperationContext::local_cli()
+                .with_engine(std::sync::Arc::new(engine))
+                .with_embedding(image_embedding_client());
+            let res = registry
+                .dispatch_json(
+                    "search_by_image",
+                    &ctx,
+                    serde_json::json!({ "image_data": "AAAA" }),
+                )
+                .await;
+            assert!(res.is_err());
+            assert_eq!(res.unwrap_err().code, ErrorCode::RateLimited);
+        }
+
+        #[tokio::test]
+        async fn search_by_image_happy_path_returns_similar_page_and_logs_spend() {
+            use crate::engine::InMemoryEngine;
+            let engine = std::sync::Arc::new(InMemoryEngine::default());
+            seed_image_page(engine.as_ref(), "cat.md").await;
+            let mut registry = OperationRegistry::new();
+            registry.register(SearchByImageOperation);
+            let ctx = OperationContext::local_cli()
+                .with_engine(engine.clone())
+                .with_embedding(image_embedding_client());
+
+            let res = registry
+                .dispatch_json(
+                    "search_by_image",
+                    &ctx,
+                    serde_json::json!({ "image_data": "AAAA", "limit": 10 }),
+                )
+                .await;
+            assert!(res.is_ok(), "expected ok, got: {:?}", res);
+            let output = res.unwrap();
+            let results = output["results"].as_array().expect("results array");
+            assert!(!results.is_empty(), "expected at least one result");
+            let slugs: Vec<&str> = results
+                .iter()
+                .filter_map(|r| r["page"]["slug"].as_str())
+                .collect();
+            assert!(slugs.contains(&"cat.md"), "cat.md should be a top hit: {slugs:?}");
+
+            // Spend recorded for audit + daily cap (local_cli source_id = "default").
+            let spent = engine.image_search_daily_spend_cents("default").await.unwrap();
+            assert_eq!(spent, 1, "one completed call should be billed");
         }
 
         // ── 1-6-7-5 domain ops: ingestion + files + calibration + transcripts ─

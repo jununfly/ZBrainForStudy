@@ -377,6 +377,15 @@ mod tests {
         ) -> std::result::Result<Vec<Vec<f32>>, EmbeddingError> {
             Ok(texts.iter().map(|_| vec![1.5f32; dims]).collect())
         }
+
+        async fn embed_image(
+            &self,
+            _base64_image: &str,
+            _mime: Option<&str>,
+            dims: usize,
+        ) -> std::result::Result<Vec<f32>, EmbeddingError> {
+            Ok(vec![1.5f32; dims])
+        }
     }
 
     fn client(dims: usize) -> EmbeddingClient {

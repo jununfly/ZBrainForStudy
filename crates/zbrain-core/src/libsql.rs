@@ -134,6 +134,8 @@ const MIGRATION_0019: &str = include_str!("../migrations-sqlite/0019_content_chu
 const MIGRATION_0020: &str = include_str!("../migrations-sqlite/0020_ingest_log.sql");
 /// 1-6-7-10-1: code-graph edge storage (write side for code-intel ops).
 const MIGRATION_0021: &str = include_str!("../migrations-sqlite/0021_code_edges.sql");
+/// 1-6-7-11: search_by_image — image-search spend log table for daily budget tracking.
+const MIGRATION_0022: &str = include_str!("../migrations-sqlite/0022_image_search_spend_log.sql");
 
 /// Legacy string array — REMOVED in favor of MigrationRegistry.
 /// Use LIBQL_MIGRATIONS instead.
@@ -264,6 +266,11 @@ pub static LIBQL_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 21,
         name: "code_edges",
         sql: MIGRATION_0021,
+    }));
+    registry.add(Box::new(LibsqlMigration {
+        version: 22,
+        name: "mcp_spend_log",
+        sql: MIGRATION_0022,
     }));
 
     registry
@@ -1525,6 +1532,117 @@ impl BrainEngine for LibsqlEngine {
         }
 
         fuse_and_boost(self, &candidates, opts).await
+    }
+
+    async fn search_pages_by_embedding(
+        &self,
+        query_embedding: &[f32],
+        limit: usize,
+        source_id: Option<&str>,
+    ) -> Result<Vec<Page>> {
+        use crate::engine::{cosine_similarity, decode_embedding_le};
+
+        let conn = self.conn().await?;
+        let source_id_param = source_id;
+
+        // Fetch all live pages with non-null embeddings, optionally source-scoped.
+        let mut rows = conn
+            .query(
+                "SELECT id, slug, type, page_kind, title, compiled_truth, timeline, \
+                        frontmatter, content_hash, emotional_weight, created_at, updated_at, \
+                        deleted_at, last_retrieved_at, effective_date, effective_date_source, \
+                        import_filename, salience_touched_at, salience_score, generation, \
+                        embedding, chunker_version, source_path, source_id, source_kind, \
+                        source_uri, ingested_via, ingested_at, contextual_retrieval_mode, \
+                        corpus_generation \
+                 FROM pages \
+                 WHERE embedding IS NOT NULL \
+                   AND deleted_at IS NULL \
+                   AND (?1 IS NULL OR source_id = ?1)",
+                ::libsql::params![source_id_param],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("search_pages_by_embedding query failed: {e}")))?;
+
+        // Decode embeddings and compute cosine similarity.
+        let mut scored: Vec<(Page, f64)> = Vec::new();
+        loop {
+            let next = rows
+                .next()
+                .await
+                .map_err(|e| Error::engine(format!("search_pages_by_embedding row fetch failed: {e}")))?;
+            match next {
+                Some(row) => {
+                    let page = full_row_to_page(&row)?;
+                    let score = page
+                        .embedding
+                        .as_deref()
+                        .and_then(decode_embedding_le)
+                        .map(|emb| cosine_similarity(query_embedding, &emb))
+                        .unwrap_or(0.0);
+                    scored.push((page, score));
+                }
+                None => break,
+            }
+        }
+
+        // Sort by similarity score descending.
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Truncate to top-N.
+        scored.truncate(limit.min(scored.len()));
+
+        Ok(scored.into_iter().map(|(p, _)| p).collect())
+    }
+
+    async fn image_search_daily_spend_cents(&self, client_id: &str) -> Result<i64> {
+        let conn = self.conn().await?;
+        let today_start = format!("{}T00:00:00Z", &crate::time::current_utc_iso8601()[..10]);
+        let mut rows = conn
+            .query(
+                "SELECT COALESCE(SUM(amount_cents), 0) AS total FROM image_search_spend_log \
+                 WHERE client_id = ?1 AND created_at >= ?2",
+                ::libsql::params![client_id, today_start],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("image_search_daily_spend_cents query failed: {e}")))?;
+        match rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("image_search_daily_spend_cents row failed: {e}")))?
+        {
+            Some(row) => {
+                let total: i64 = row
+                    .get(0)
+                    .map_err(|e| Error::engine(format!("image_search_daily_spend_cents decode failed: {e}")))?;
+                Ok(total)
+            }
+            None => Ok(0),
+        }
+    }
+
+    async fn record_image_search_spend(
+        &self,
+        client_id: &str,
+        amount_cents: i64,
+        provider: &str,
+        model: &str,
+    ) -> Result<()> {
+        let conn = self.conn().await?;
+        conn.execute(
+            "INSERT INTO image_search_spend_log (client_id, amount_cents, provider, model, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            ::libsql::params![
+                client_id,
+                amount_cents,
+                provider,
+                model,
+                crate::time::current_utc_iso8601()
+            ],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("record_image_search_spend insert failed: {e}")))?;
+        Ok(())
     }
 
     async fn resolve_slugs(&self, partial: &str, opts: &ResolveSlugsOpts) -> Result<Vec<String>> {

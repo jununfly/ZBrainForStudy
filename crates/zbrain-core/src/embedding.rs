@@ -122,6 +122,12 @@ impl Default for EmbeddingConfig {
 #[async_trait::async_trait]
 pub trait EmbeddingProvider: Send + Sync {
     async fn embed(&self, texts: &[String], dims: usize) -> Result<Vec<Vec<f32>>, EmbeddingError>;
+    
+    /// Embed a single image from base64 data (multimodal model).
+    /// 
+    /// The input should be the base64-encoded image bytes already, with the
+    /// data URI prefix stripped (just the raw base64 chars).
+    async fn embed_image(&self, base64_image: &str, mime: Option<&str>, dims: usize) -> Result<Vec<f32>, EmbeddingError>;
 }
 
 /// 主嵌入客户端
@@ -197,6 +203,37 @@ impl EmbeddingClient {
     pub async fn embed_query(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
         self.embed(text).await
     }
+    
+    /// Embed a single image for search-by-image.
+    /// 
+    /// - `base64_image`: base64-encoded image bytes (data URI prefix is allowed
+    ///   and will be stripped automatically).
+    /// - `image_mime`: optional MIME type hint (when ambiguous). Magic-byte sniffing
+    ///   is authoritative if provided and hint mismatches are ignored.
+    pub async fn embed_image(&self, base64_image: &str, image_mime: Option<&str>) -> Result<Vec<f32>, EmbeddingError> {
+        let embedding = self.provider.embed_image(
+            strip_data_uri_prefix(base64_image), 
+            image_mime, 
+            self.config.dimensions
+        ).await?;
+        
+        // 检查维度是否匹配
+        if embedding.len() != self.config.dimensions {
+            return Err(EmbeddingError::DimensionMismatch {
+                expected: self.config.dimensions,
+                actual: embedding.len(),
+            });
+        }
+        
+        Ok(embedding)
+    }
+
+    /// Model identifier backing this client (e.g. `voyage-multimodal-3`).
+    /// Used for spend-audit attribution by `search_by_image`.
+    #[must_use]
+    pub fn model(&self) -> &str {
+        &self.config.model
+    }
 
     /// Build a production embedding client reading the API key from
     /// `ZEROENTROPY_API_KEY`. Returns `None` when the var is unset/empty so the
@@ -261,6 +298,15 @@ impl EmbeddingProvider for MockEmbeddingProvider {
     async fn embed(&self, texts: &[String], dims: usize) -> Result<Vec<Vec<f32>>, EmbeddingError> {
         Ok(texts.iter().map(|_| vec![0.0; dims]).collect())
     }
+
+    async fn embed_image(
+        &self,
+        _base64_image: &str,
+        _mime: Option<&str>,
+        dims: usize,
+    ) -> Result<Vec<f32>, EmbeddingError> {
+        Ok(vec![0.0; dims])
+    }
 }
 
 // --- HTTP Provider (requires `embedding` feature) ---
@@ -272,11 +318,28 @@ mod http_provider {
     use serde::{Deserialize, Serialize};
     use std::sync::Arc;
 
-    /// OpenAI-compatible embedding request
+    /// OpenAI-compatible embedding request (text-only).
     #[derive(Debug, Serialize, Deserialize)]
     pub struct EmbeddingRequest {
         pub model: String,
         pub input: Vec<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub dimensions: Option<usize>,
+    }
+
+    /// Single multimodal input entry for a multimodal embedding request.
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct MultimodalInput {
+        #[serde(rename = "type")]
+        pub input_type: String,
+        pub image: String,
+    }
+
+    /// OpenAI-compatible multimodal embedding request (single image).
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct MultimodalEmbeddingRequest {
+        pub model: String,
+        pub inputs: Vec<MultimodalInput>,
         #[serde(skip_serializing_if = "Option::is_none")]
         pub dimensions: Option<usize>,
     }
@@ -383,6 +446,59 @@ mod http_provider {
                 .collect();
 
             Ok(embeddings)
+        }
+
+        async fn embed_image(
+            &self,
+            base64_image: &str,
+            _mime: Option<&str>,
+            dims: usize,
+        ) -> Result<Vec<f32>, EmbeddingError> {
+            // Voyage multimodal expects:
+            // {
+            //   "model": "voyage-multimodal-3",
+            //   "inputs": [{"type": "image", "image": "base64..."}]
+            // }
+            let input = MultimodalInput {
+                input_type: "image".to_string(),
+                image: base64_image.to_string(),
+            };
+            let request = MultimodalEmbeddingRequest {
+                model: self.model.clone(),
+                inputs: vec![input],
+                dimensions: Some(dims),
+            };
+
+            let response = self.client
+                .post(self.build_url())
+                .bearer_auth(&self.api_key)
+                .json(&request)
+                .send()
+                .await
+                .map_err(|e| EmbeddingError::Provider(e.to_string()))?;
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+                return Err(EmbeddingError::Provider(format!("HTTP {}: {}", status, error_text)));
+            }
+
+            let embedding_response: EmbeddingResponse = response
+                .json()
+                .await
+                .map_err(|e| EmbeddingError::Provider(e.to_string()))?;
+
+            let mut embeddings: Vec<Vec<f32>> = embedding_response
+                .data
+                .into_iter()
+                .map(|d| d.embedding)
+                .collect();
+
+            if embeddings.is_empty() {
+                return Err(EmbeddingError::Provider("No embedding returned for image".to_string()));
+            }
+
+            Ok(embeddings.remove(0))
         }
     }
 
@@ -649,6 +765,15 @@ mod tests {
                 // 返回错误维度 (512 instead of requested 768)
                 Ok(texts.iter().map(|_| vec![0.0; 512]).collect())
             }
+
+            async fn embed_image(
+                &self,
+                _base64_image: &str,
+                _mime: Option<&str>,
+                _dims: usize,
+            ) -> Result<Vec<f32>, EmbeddingError> {
+                Ok(vec![0.0; 512])
+            }
         }
         
         let config = EmbeddingConfig::builder()
@@ -848,4 +973,19 @@ mod adaptive_safety_tests {
         assert!(safety_factor > after_shrinks);
         assert!(safety_factor <= 0.8);
     }
+}
+
+/// Strip the data: URI prefix from base64 image input if present.
+/// 
+/// Returns the raw base64 string without the prefix. If no prefix is present,
+/// returns the input unchanged.
+/// 
+/// Handles: `data:image/png;base64,...` → `...`
+fn strip_data_uri_prefix(input: &str) -> &str {
+    if let Some((prefix, base64)) = input.split_once(",") {
+        if prefix.starts_with("data:") {
+            return base64;
+        }
+    }
+    input
 }

@@ -227,6 +227,8 @@ const MIGRATION_0019: &str = include_str!("../migrations/0019_content_chunks.sql
 const MIGRATION_0020: &str = include_str!("../migrations/0020_ingest_log.sql");
 /// 1-6-7-10-1: code-graph edge storage (write side for code-intel ops).
 const MIGRATION_0021: &str = include_str!("../migrations/0021_code_edges.sql");
+/// 1-6-7-11: search_by_image — image-search spend log table for daily budget tracking.
+const MIGRATION_0022: &str = include_str!("../migrations/0022_image_search_spend_log.sql");
 
 /// FNV-1a 64-bit hash of a lease key, mapped to a signed int64 for
 /// `pg_advisory_xact_lock`. Matches the TS implementation bit-for-bit.
@@ -348,6 +350,11 @@ pub static POSTGRES_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 21,
         name: "code_edges",
         sql: MIGRATION_0021,
+    }));
+    registry.add(Box::new(PostgresMigration {
+        version: 22,
+        name: "mcp_spend_log",
+        sql: MIGRATION_0022,
     }));
 
     registry
@@ -1602,6 +1609,46 @@ impl BrainEngine for PostgresEngine {
         .await
         .map_err(|e| Error::engine(format!("refresh_page_body failed: {e}")))?;
 
+        Ok(())
+    }
+
+    async fn image_search_daily_spend_cents(&self, client_id: &str) -> Result<i64> {
+        let pool = self.pool()?;
+        let row = sqlx::query(
+            "SELECT COALESCE(SUM(amount_cents), 0)::bigint AS total \
+             FROM image_search_spend_log \
+             WHERE client_id = $1 \
+               AND created_at >= date_trunc('day', now() AT TIME ZONE 'UTC')",
+        )
+        .bind(client_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| Error::engine(format!("image_search_daily_spend_cents failed: {e}")))?;
+        let total: i64 = row
+            .try_get("total")
+            .map_err(|e| Error::engine(format!("image_search_daily_spend_cents decode failed: {e}")))?;
+        Ok(total)
+    }
+
+    async fn record_image_search_spend(
+        &self,
+        client_id: &str,
+        amount_cents: i64,
+        provider: &str,
+        model: &str,
+    ) -> Result<()> {
+        let pool = self.pool()?;
+        sqlx::query(
+            "INSERT INTO image_search_spend_log (client_id, amount_cents, provider, model, created_at) \
+             VALUES ($1, $2, $3, $4, NOW())",
+        )
+        .bind(client_id)
+        .bind(amount_cents)
+        .bind(provider)
+        .bind(model)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("record_image_search_spend failed: {e}")))?;
         Ok(())
     }
 

@@ -682,6 +682,15 @@ mod tests {
                 })
                 .collect())
         }
+
+        async fn embed_image(
+            &self,
+            _base64_image: &str,
+            _mime: Option<&str>,
+            dims: usize,
+        ) -> std::result::Result<Vec<f32>, crate::embedding::EmbeddingError> {
+            Ok(vec![1.0; dims])
+        }
     }
 
     /// 总是失败的 provider，验证 fail-open。
@@ -694,6 +703,15 @@ mod tests {
             _texts: &[String],
             _dims: usize,
         ) -> std::result::Result<Vec<Vec<f32>>, crate::embedding::EmbeddingError> {
+            Err(crate::embedding::EmbeddingError::Provider("boom".into()))
+        }
+
+        async fn embed_image(
+            &self,
+            _base64_image: &str,
+            _mime: Option<&str>,
+            _dims: usize,
+        ) -> std::result::Result<Vec<f32>, crate::embedding::EmbeddingError> {
             Err(crate::embedding::EmbeddingError::Provider("boom".into()))
         }
     }
