@@ -53,7 +53,7 @@ grill 发现：takes_calibration op 实际调 getCalibrationCurve(已存在于 R
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-07-22 22:45:00
+> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-07-23 10:59:43
 
 [~][X+] 1. Part11 — 残留 TS 收尾 (综合容器)
 ├── [x][X+] 1-1. skillpack / skillify 迁移 (27+ 文件 Schema/Subagent 包)
@@ -89,10 +89,8 @@ grill 发现：takes_calibration op 实际调 getCalibrationCurve(已存在于 R
 │   └── [!][X+] 1-11-2. minions 纯删除探查 [BLOCKED: minions 100% 测试耦合, 无零引用叶子; A类纯删除已耗尽]
 └── [!][X+] 1-12. cycle 大迁移 (runCycle 2057行主循环 + 20 phase 全未迁, Rust autopilot/cycle.rs 仅骨架 stub) — B类真迁移主战场
 
-### 当前施工：1-6-7-16. takes_calibration op 交付中 (见 1-3-3-5/1-3-3-7); takes_scorecard 已完成(1-6-7-16-1)
+### 当前施工：1-6-7-16-2-1. get_latest_calibration_profile 三后端实现
 
-grill 发现：takes_calibration op 实际调 getCalibrationCurve(已存在于 Rust 但语义过时/签名不全)，不依赖 1-3-3 的 5 函数。交付路径改为 1-3-3-7(对齐 get_calibration_curve) + 1-3-3-5(op handler)。1-3-3 整体 in_progress，故本节点同步 in_progress。
-
-**当前子树：**
-└── [x][X+] 1-6-7-16-1. takes_scorecard Rust op + 三后端 get_scorecard 对齐 canonical TS + PG mirror
+**决策：**
+- Q: 保持现有参数扩展 → 同意，保持 source_id / source_ids 参数扩展已经在 query_across_brains 添加，直接补全三后端实现 (参数扩展已经完成，复用现有定义)
 <!-- ROADMAP_SECTION_END -->

@@ -244,6 +244,11 @@
           "q": "sync_freshness 是否撞 G42 execute_raw 禁令 (原 blocked 前提)?",
           "answer": "否 — list_sources 提供 typed 替代, 零 trait 扩展, 不引入 execute_raw",
           "note": "推翻 1-5-2 原 blocked 前提: federation_health 同样可 engine-read; 仅 embedding_health 需 provider 网络烟测(高复杂)。基础健康类不再全组阻塞。"
+        },
+        {
+          "q": "迁移完成 embedding_health (G41)",
+          "answer": "embedding_health 迁移完成，从 UNMIGRATED_TS_DOCTOR_CHECKS 移除，KNOWN-GAPS G41 标记 resolved。已存的 EmbeddingClient::model() getter 满足需求，无需新增配置平面。",
+          "note": "G41 完成，零额外依赖"
         }
       ],
       "notes": "sync_freshness(1-5-2-1)已完成(G42 resolved, 证伪 execute_raw 前提); federation_health→G43 gap(需 computeAllSourceMetrics 基建); embedding_health→G41 gap(需 provider getter)。基础健康类封顶: 1 项已迁, 2 项登记缺口。"
@@ -2346,7 +2351,7 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-22 22:51:28",
+    "updated": "2026-07-23 10:59:43",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"

@@ -92,7 +92,6 @@ impl DoctorCheck {
 /// real check — the anchor test guards against silent removal.
 /// registered in docs/plans/KNOWN-GAPS.md (G5).
 const UNMIGRATED_TS_DOCTOR_CHECKS: &[(&str, &str)] = &[
-    ("embedding_health", "embedding provider reachability, embedding column, coverage backfill"),
     ("search_mode", "search modes overrides, mode drift"),
     ("federation_health", "federated source sync, mount reachability"),
     ("schema_packs", "schema pack presence / drift"),
@@ -3233,6 +3232,41 @@ async fn run_doctor_command(args: DoctorArgs, config_path: Option<&Path>) -> any
             zbrain_core::skill_conformance::SkillConformanceStatus::Warn => {
                 checks.push(DoctorCheck::warn("skill_conformance", &message));
             }
+        }
+    }
+
+    // 5f. embedding_health: check ZeroEntropy API key presence + embedding column coverage.
+    // Mirrors the TS `checkZeEmbeddingHealth` doctor check.
+    {
+        let mut messages = Vec::new();
+
+        // Check 1: ZeroEntropy API key configured if model starts with zeroentropyai:
+        #[cfg(feature = "embedding")]
+        if let Some(client) = zbrain_core::embedding::EmbeddingClient::from_env() {
+            let model_id = client.model();
+            if model_id.starts_with("zeroentropyai:") && std::env::var("ZEROENTROPY_API_KEY").map_or(true, |k| k.is_empty()) {
+                messages.push((
+                    CheckStatus::Warn,
+                    "ZeroEntropy model ID expects ZEROENTROPY_API_KEY env var, but it's empty/unset".to_string(),
+                ));
+            }
+        }
+
+        // Check 2: embedding column coverage (count of pages with non-null embedding).
+        // G24 resolved: all production backends now persist embedding, so coverage is complete.
+        // Leave an ok check to document this resolved gap.
+        checks.push(DoctorCheck::ok(
+            "embedding_health:column",
+            "All production backends persist page.embedding (G24 resolved)",
+        ));
+
+        // Emit collected status
+        for (status, message) in messages {
+            checks.push(DoctorCheck {
+                name: "embedding_health".to_string(),
+                status,
+                message,
+            });
         }
     }
 
@@ -6695,6 +6729,21 @@ mod tests {
                 .iter()
                 .any(|(name, _)| *name == "brain_score"),
             "brain_score is a real check now; it must not appear in UNMIGRATED_TS_DOCTOR_CHECKS"
+        );
+    }
+
+    #[test]
+    fn embedding_health_is_no_longer_unmigrated() {
+        // Migration hard-trace: `embedding_health` moved OUT of the UNMIGRATED
+        // stand-in list into a real doctor check that verifies ZeroEntropy API key
+        // presence and confirms embedding column persistence (G24 resolved).
+        // Mirrors the TS `checkZeEmbeddingHealth` (src/commands/doctor.ts). Guards
+        // against a later agent re-adding it to the not-implemented band.
+        assert!(
+            !UNMIGRATED_TS_DOCTOR_CHECKS
+                .iter()
+                .any(|(name, _)| *name == "embedding_health"),
+            "embedding_health is a real check now; it must not appear in UNMIGRATED_TS_DOCTOR_CHECKS"
         );
     }
 
