@@ -1,0 +1,95 @@
+{
+  "title": "Part12 - cycle 大迁移 (按能力簇切)",
+  "description": "runCycle 2057行主循环 + 20 phase 全 stub(0/20),B类真迁移主战场。按能力簇拆 ~6 slice。执行延后,本轮仅起草路线图。",
+  "version": 1,
+  "nodes": {
+    "1": {
+      "id": "1",
+      "label": "Part12 - cycle 大迁移 (按能力簇切)",
+      "status": "in_progress",
+      "mode": "explore",
+      "parent": null,
+      "children": [
+        "1-1",
+        "1-2",
+        "1-3",
+        "1-4",
+        "1-5",
+        "1-6"
+      ],
+      "decisions": [
+        {
+          "q": "Part12 簇执行顺序?",
+          "answer": "消费者解锁优先: emotional-calibration(1-2) -> facts-extraction(1-1) -> anomaly-transcript(1-4) -> synthesis(1-3) -> auto-think(1-5) -> orchestration-main-loop(1-6) 最后",
+          "note": "用户选推荐项(Q3)。每簇解锁对应消费者,主循环留最后降 big-bang 风险。执行仍延后,此为路线图预排;grind(1-6-7 + 1-3-3)走完删 operations.ts 后再启动 Part12。"
+        }
+      ],
+      "notes": ""
+    },
+    "1-1": {
+      "id": "1-1",
+      "label": "facts-extraction 簇迁移 (extract-facts/atoms/takes + propose/grade-takes + conversation-facts-backfill; 消费者 v0_28_0->extract-takes)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-2": {
+      "id": "1-2",
+      "label": "emotional-calibration 簇迁移 (emotional-weight/recompute-emotional-weight/calibration-profile; 消费者 calibration->calibration-profile, backfill-registry->emotional-weight)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-3": {
+      "id": "1-3",
+      "label": "synthesis 簇迁移 (synthesize/synthesize-concepts/patterns/schema-suggest)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-4": {
+      "id": "1-4",
+      "label": "anomaly-transcript 簇迁移 (anomaly/transcript-discovery; 消费者 transcripts->transcript-discovery, pglite/postgres-engine->anomaly)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-5": {
+      "id": "1-5",
+      "label": "auto-think 簇迁移 (auto-think phase)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6": {
+      "id": "1-6",
+      "label": "orchestration 主循环迁移 (runCycle 2057行 + base-phase/budget-meter/drift/phantom-redirect/phases/; 消费者 dream->runCycle; Rust cycle.rs 仅745行 dispatch 骨架)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    }
+  },
+  "metadata": {
+    "created": "2026-07-23 17:12:54",
+    "updated": "2026-07-23 17:15:13",
+    "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_PART12_CYCLE_MIGRATION.md"
+  }
+}

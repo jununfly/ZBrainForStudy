@@ -21,7 +21,8 @@
         "1-9",
         "1-10",
         "1-11",
-        "1-12"
+        "1-12",
+        "1-13"
       ],
       "decisions": [
         {
@@ -38,6 +39,16 @@
           "q": "下一刀选哪个子系统 (grill 2026-07-16)?",
           "answer": "1-4 output 模块",
           "note": "纠缠最低(全仓仅1个外部 importer integrity.ts)；可复用 calibration 分层打法(纯子集+engine-read+infra Phase2)；不碰 LLM/execute_raw。更正: 1-6 孤儿命令节点非过时——6 命令 cli.ts 全有 live dispatch, Rust 全无, 是真实重迁移工作。"
+        },
+        {
+          "q": "下一阶段主攻方向?",
+          "answer": "推 grind 到终局(1-6-7 各切片→1-6-7-9 删 operations.ts + 1-3-3 calibration 收尾),并并行起草 1-12 cycle 独立 Part12 路线图备用;grind 不暂停",
+          "note": "用户选推荐项(Q1)。grind 关键路径最高杠杆=删3855行 operations.ts 巨石+解锁1-4-2 output;cycle 维持执行延后但 now 起并行起草独立 Part12 路线图零摩擦备用。1-4-2/1-10/1-11 删除尾均挂在 grind 这把刀上。"
+        },
+        {
+          "q": "operations.ts 删库(cutover)路径?",
+          "answer": "先补 Rust CLI clap 层(把 cli.ts 全部命令映射到 Rust run_operation),clap 覆盖完整后再退役 cli.ts + 删 operations.ts。不采用'只补 registry 保留 TS 双轨'或'加通用 op 转发命令'的捷径。",
+          "note": "用户选推荐项(Q-cutover)。事实底座:生产入口=Rust zbrain binary(bin wrapper transparent,零TS fallback);Rust CLI 用 OperationRegistry+register_all+run_operation 但只暴露少数 clap 子命令;TS cli.ts 通过 operations.ts 暴露几十命令且主流命令仍走TS dispatch;删operations.ts 会断产品。故 cutover 前置=Rust CLI clap 层全量覆盖 cli.ts 命令。"
         }
       ],
       "notes": ""
@@ -45,7 +56,7 @@
     "1-1": {
       "id": "1-1",
       "label": "skillpack / skillify 迁移 (27+ 文件 Schema/Subagent 包)",
-      "status": "completed",
+      "status": "in_progress",
       "mode": "explore",
       "parent": "1",
       "children": [],
@@ -152,7 +163,7 @@
     "1-6": {
       "id": "1-6",
       "label": "孤儿命令迁移 (审计: 83 唯一活命令 = RUST_OWNED 17 / TRIVIAL_DELETE 27 / REAL_MIGRATE 33 / PARITY_REVIEW 6)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [
@@ -432,7 +443,9 @@
       "status": "blocked",
       "mode": "explore",
       "parent": "1",
-      "children": [],
+      "children": [
+        "1-12-1"
+      ],
       "decisions": [
         {
           "q": "cycle 是 A 类可删还是 B 类真迁移?",
@@ -1746,7 +1759,7 @@
     "1-6-7": {
       "id": "1-6-7",
       "label": "operations.ts 替换式迁移 (Rust OperationRegistry 为继任者): 107 op 逐一对齐, 随迁随删 TS; 覆盖审计见 docs/plans/OPERATIONS_TS_TO_RUST_AUDIT.md",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-6",
       "children": [
@@ -2163,7 +2176,7 @@
     "1-6-7-16": {
       "id": "1-6-7-16",
       "label": "takes_calibration op 交付中 (见 1-3-3-5/1-3-3-7); takes_scorecard 已完成(1-6-7-16-1)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6-7",
       "children": [
@@ -2323,7 +2336,7 @@
     "1-6-7-16-2": {
       "id": "1-6-7-16-2",
       "label": "takes_calibration operation 实现",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-6-7-16",
       "children": [
@@ -2335,7 +2348,7 @@
     "1-6-7-16-2-1": {
       "id": "1-6-7-16-2-1",
       "label": "get_latest_calibration_profile 三后端实现",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-6-7-16-2",
       "children": [],
@@ -2347,11 +2360,37 @@
         }
       ],
       "notes": ""
+    },
+    "1-12-1": {
+      "id": "1-12-1",
+      "label": "cycle Phase 路线图起草(独立 Part12 草案: 拆 runCycle 主循环 + 20 phase 为可执行切片)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-12",
+      "children": [],
+      "decisions": [
+        {
+          "q": "cycle 路线图切法?",
+          "answer": "按能力簇切 ~6 slice (facts-extraction / emotional-calibration / synthesis / anomaly-transcript / auto-think / orchestration-main-loop)",
+          "note": "用户选推荐项(Q2)。每簇内聚可评审,按簇解锁6硬消费者。Rust cycle.rs 已有 dispatch 骨架填实即可。"
+        }
+      ],
+      "notes": "独立 Part12 路线图草案: zbrain-ts-to-rust-part12-cycle-migration.json / ZBRAIN_TS_TO_RUST_PART12_CYCLE_MIGRATION.md。切法=能力簇(~6 slice),见 Q2 决策。执行仍延后(grind 优先),本节点仅起草。"
+    },
+    "1-13": {
+      "id": "1-13",
+      "label": "cutover 执行层: Rust CLI clap 层补全(映射 cli.ts 全部命令到 run_operation) + 退役 cli.ts + 删 operations.ts",
+      "status": "in_progress",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [],
+      "notes": "cutover 执行层(operations.ts→删库)。决策=先补 Rust CLI clap 再退役 cli.ts。阶段划分见 docs/plans/CLI_CUTOVER_MANIFEST.md: A=Rust registry 100%完整(零TS风险,当前起点) → B=Rust CLI clap 补全~18缺失命令 → C=退役cli.ts+mcp legacy+删operations.ts → D=CLI_ONLY命令迁Rust(独立,Part12+)。删operations.ts≠删几个const,而是TS legacy层整体退役(27处引用)。"
     }
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-23 10:59:43",
+    "updated": "2026-07-23 17:46:30",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"

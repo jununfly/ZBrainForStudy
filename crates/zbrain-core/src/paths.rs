@@ -57,6 +57,13 @@ pub fn zbrain_home() -> Option<PathBuf> {
     home_root().map(|home| home.join(".zbrain"))
 }
 
+/// Get a path inside the zbrain home directory (`~/.zbrain/<relative>`).
+/// Returns `None` if we cannot resolve a home directory.
+#[must_use]
+pub fn zbrain_path(relative: &str) -> Option<PathBuf> {
+    zbrain_home().map(|zbrain| zbrain.join(relative))
+}
+
 // ---------------------------------------------------------------------------
 // Thread-local test home injection (parallel-safe, no global env mutation)
 // ---------------------------------------------------------------------------

@@ -755,6 +755,95 @@ pub struct FactListOpts {
     pub visibility: Option<Vec<FactVisibility>>,
 }
 
+/// Options for `BrainEngine::list_supersessions`. Mirrors the `since?` /
+/// `limit?` subset of TS `listSupersessions`.
+#[derive(Debug, Clone, Default)]
+pub struct SupersessionOpts {
+    /// Optional lower bound on `expired_at` (ISO 8601). When `None`, no
+    /// time filter is applied.
+    pub since: Option<String>,
+    pub limit: Option<i64>,
+}
+
+// ─── Trajectory (findTrajectory / find-trajectory op) ──────────────────────
+
+/// Row-shape filter for [`TrajectoryOpts::kind`].
+/// Mirrors TS `TrajectoryOpts.kind` (v0.40.2.0).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TrajectoryKind {
+    /// Both typed-claim and event-shaped rows participate.
+    #[default]
+    All,
+    /// Only rows with `claim_metric IS NOT NULL`.
+    Metric,
+    /// Only rows with `event_type IS NOT NULL`.
+    Event,
+}
+
+/// Options for `BrainEngine.find_trajectory`.
+/// Mirrors TS `TrajectoryOpts` (v0.35.4, D-CDX-6 / D-CDX-1).
+#[derive(Debug, Clone, Default)]
+pub struct TrajectoryOpts {
+    pub entity_slug: String,
+    /// Single-source scope; `default` when both this and `source_ids` are unset.
+    pub source_id: Option<String>,
+    /// Federated array scope (mutually exclusive with `source_id`; array wins).
+    pub source_ids: Option<Vec<String>>,
+    /// When true, filters to `visibility = 'world'` only (untrusted callers).
+    pub remote: bool,
+    /// Restrict to a single canonical metric label.
+    pub metric: Option<String>,
+    pub kind: TrajectoryKind,
+    /// Inclusive lower bound on `valid_from` (YYYY-MM-DD or full ISO).
+    pub since: Option<String>,
+    /// Inclusive upper bound on `valid_from` (YYYY-MM-DD or full ISO).
+    pub until: Option<String>,
+    /// Cap on points returned. Default 100, max 500.
+    pub limit: Option<u32>,
+}
+
+/// A single trajectory point (typed-claim or event row).
+/// Mirrors TS `TrajectoryPoint`. `embedding` is internal — stripped from the
+/// wire output via `skip_serializing` — and used only for drift-score math.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrajectoryPoint {
+    pub fact_id: i64,
+    pub valid_from: Option<String>,
+    pub metric: Option<String>,
+    pub value: Option<f64>,
+    pub unit: Option<String>,
+    pub period: Option<String>,
+    pub event_type: Option<String>,
+    pub text: String,
+    pub source_session: Option<String>,
+    pub source_markdown_slug: Option<String>,
+    #[serde(skip_serializing)]
+    pub embedding: Option<Vec<f32>>,
+}
+
+/// A detected chronological regression within one metric's series.
+/// Mirrors TS `TrajectoryRegression`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrajectoryRegression {
+    pub metric: String,
+    pub from_value: f64,
+    pub from_date: String,
+    pub to_value: f64,
+    pub to_date: String,
+    pub delta_pct: f64,
+}
+
+/// Derived metrics composed by `compute_trajectory_stats`.
+/// Mirrors TS `TrajectoryStats`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrajectoryStats {
+    pub regressions: Vec<TrajectoryRegression>,
+    pub drift_score: Option<f64>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

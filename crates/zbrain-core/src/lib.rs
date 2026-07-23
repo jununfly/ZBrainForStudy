@@ -55,6 +55,7 @@ pub mod sync;
 pub mod sync_freshness;
 pub mod takes_fence;
 pub mod time;
+pub mod trajectory_stats;
 pub mod token_budget;
 pub mod types;
 pub mod url_safety;
@@ -65,8 +66,13 @@ pub mod auto_fix;
 pub mod storage_status;
 pub mod publish;
 pub mod schema_pack;
+#[cfg(feature = "skillpack")]
+pub mod skillpack;
 pub mod paths;
 pub mod resolvers;
+pub mod repo_root {
+    pub use crate::skill_resolver::repo_root::*;
+}
 
 pub use scope::{has_scope, parse_scope_string, is_allowed_scope, assert_allowed_scopes, normalize_scopes_input, InvalidScopeError, ALLOWED_SCOPES};
 pub use token_queries::{AuthInfo, TokenError, TokenQueries};

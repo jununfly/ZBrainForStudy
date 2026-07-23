@@ -8,6 +8,46 @@
 
 use std::path::Path;
 use std::time::Duration;
+use std::error::Error;
+use std::fmt;
+
+/// Error parsing a remote source spec.
+#[derive(Debug)]
+pub enum GitRemoteError {
+    /// Could not parse the spec as a valid remote.
+    InvalidSpec(String),
+}
+
+impl fmt::Display for GitRemoteError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GitRemoteError::InvalidSpec(s) => write!(f, "Invalid remote spec: {}", s),
+        }
+    }
+}
+
+impl Error for GitRemoteError {}
+
+/// Parse a remote source spec into a URL. Accepts:
+/// - owner/repo (→ GitHub HTTPS)
+/// - https://... (already a URL)
+/// - git@github.com:owner/repo (→ SSH → still converted to HTTPS for anonymous fetch)
+pub fn parse_remote_url(spec: &str) -> Result<String, GitRemoteError> {
+    // Already a full URL
+    if spec.starts_with("https://") || spec.starts_with("http://") {
+        return Ok(spec.to_string());
+    }
+    // SSH format git@github.com:owner/repo → convert to https://github.com/owner/repo
+    if let Some((_, rest)) = spec.split_once("git@") {
+        let https = rest.replace(':', "/");
+        return Ok(format!("https://{}", https));
+    }
+    // owner/repo → assume GitHub HTTPS
+    if spec.contains('/') && !spec.contains(|c| c == ' ' || c == ':') {
+        return Ok(format!("https://github.com/{}", spec));
+    }
+    Err(GitRemoteError::InvalidSpec(spec.to_string()))
+}
 
 /// Global git config flags. Spread BEFORE the subcommand verb.
 /// - `http.followRedirects=false`: closes DNS rebinding via redirect chains

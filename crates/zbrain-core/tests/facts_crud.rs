@@ -793,3 +793,119 @@ async fn postgres_expire_basic() {
     pg_seed_sources(&fix.url, &["ex-1"]).await;
     test_expire_basic(&fix.engine).await;
 }
+
+// ---------------------------------------------------------------------------
+// find_trajectory integration (cutover batch 4)
+// ---------------------------------------------------------------------------
+
+async fn test_find_trajectory(engine: &dyn BrainEngine) {
+    use zbrain_core::types::{TrajectoryKind, TrajectoryOpts};
+
+    let claim = |metric: &str, value: f64, vf: &str, slug: &str| NewFact {
+        fact: format!("{metric}={value} @ {vf}"),
+        kind: Some(FactKind::Fact),
+        entity_slug: Some(slug.to_string()),
+        claim_metric: Some(metric.to_string()),
+        claim_value: Some(value),
+        claim_unit: Some("usd".to_string()),
+        claim_period: Some("monthly".to_string()),
+        valid_from: Some(vf.to_string()),
+        confidence: Some(0.5),
+        source: "test".to_string(),
+        ..nf("")
+    };
+    let event = |etype: &str, vf: &str, slug: &str| NewFact {
+        fact: format!("event {etype} @ {vf}"),
+        kind: Some(FactKind::Event),
+        entity_slug: Some(slug.to_string()),
+        event_type: Some(etype.to_string()),
+        valid_from: Some(vf.to_string()),
+        confidence: Some(0.5),
+        source: "test".to_string(),
+        ..nf("")
+    };
+
+    assert_inserted!(engine, "src-ft", "acme", claim("mrr", 100.0, "2024-01-01", "acme"));
+    assert_inserted!(engine, "src-ft", "acme", claim("mrr", 80.0, "2024-02-01", "acme"));
+    assert_inserted!(engine, "src-ft", "acme", event("funding", "2024-03-01", "acme"));
+    assert_inserted!(engine, "src-ft", "other", claim("mrr", 50.0, "2024-01-15", "other"));
+
+    // All rows for acme, ordered by valid_from ASC.
+    let all = engine
+        .find_trajectory(&TrajectoryOpts {
+            entity_slug: "acme".to_string(),
+            source_id: Some("src-ft".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(all.len(), 3, "acme has 3 active rows (2 metric + 1 event)");
+    assert_eq!(all[0].metric.as_deref(), Some("mrr"));
+    assert_eq!(all[0].valid_from.as_deref(), Some("2024-01-01"));
+    assert_eq!(all[1].metric.as_deref(), Some("mrr"));
+    assert_eq!(all[2].event_type.as_deref(), Some("funding"));
+    assert_eq!(all[2].valid_from.as_deref(), Some("2024-03-01"));
+
+    // kind=Metric restricts to claim_metric IS NOT NULL.
+    let metrics = engine
+        .find_trajectory(&TrajectoryOpts {
+            entity_slug: "acme".to_string(),
+            source_id: Some("src-ft".to_string()),
+            kind: TrajectoryKind::Metric,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(metrics.len(), 2);
+
+    // kind=Event restricts to event_type IS NOT NULL.
+    let events = engine
+        .find_trajectory(&TrajectoryOpts {
+            entity_slug: "acme".to_string(),
+            source_id: Some("src-ft".to_string()),
+            kind: TrajectoryKind::Event,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event_type.as_deref(), Some("funding"));
+
+    // metric filter + kind=Metric.
+    let mrr = engine
+        .find_trajectory(&TrajectoryOpts {
+            entity_slug: "acme".to_string(),
+            source_id: Some("src-ft".to_string()),
+            kind: TrajectoryKind::Metric,
+            metric: Some("mrr".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(mrr.len(), 2);
+    assert!(mrr.iter().all(|p| p.metric.as_deref() == Some("mrr")));
+
+    // 'other' entity is isolated from 'acme'.
+    let other = engine
+        .find_trajectory(&TrajectoryOpts {
+            entity_slug: "other".to_string(),
+            source_id: Some("src-ft".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(other.len(), 1);
+
+    // Stats: mrr 100 -> 80 is a -20% regression.
+    let stats = zbrain_core::trajectory_stats::compute_trajectory_stats(&all, 0.10);
+    assert_eq!(stats.regressions.len(), 1);
+    assert_eq!(stats.regressions[0].metric, "mrr");
+    assert!((stats.regressions[0].delta_pct + 0.20).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn libsql_find_trajectory() {
+    let (engine, _tmp) = init_clean_libsql().await;
+    test_find_trajectory(&engine).await;
+    engine.disconnect().await.expect("disconnect");
+}

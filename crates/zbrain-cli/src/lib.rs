@@ -7,6 +7,7 @@
 pub mod config;
 pub mod mcp_client;
 pub mod schema_cmd;
+pub mod skillpack;
 pub mod timeout;
 pub mod update_check;
 pub mod models;
@@ -496,6 +497,10 @@ pub enum Commands {
     /// Manage connected brains (mounts.json)
     #[command(name = "mounts", subcommand)]
     Mounts(mounts::MountsSubcommand),
+
+    /// Skillpack management — install, scaffold, search, harvest from third-party repos.
+    #[command(subcommand)]
+    Skillpack(skillpack::SkillpackSubcommand),
 }
 
 /// Subcommands for `zbrain jobs`.
@@ -1699,6 +1704,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Commands::Mounts(cmd) => {
             mounts::run_mounts_command(&cmd, cli.config.as_deref()).await?
+        }
+        Commands::Skillpack(cmd) => {
+            skillpack::run_skillpack(cmd).await?
         }
     }
     Ok(())

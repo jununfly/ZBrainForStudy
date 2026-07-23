@@ -67,6 +67,13 @@ pulldown-cmark = "0.12"
 # late-December date can belong to week 53 of the *previous* year) are
 # error-prone to hand-roll, so we lean on chrono's `IsoWeek` + `%G-W%V`.
 chrono = { workspace = true }
+tar = "0.4"
+flate2 = { version = "1.0", features = ["miniz_oxide"], default-features = false }
+dirs = "5.0"
+atty = "0.2"
+semver = "1.0"
+textwrap = "0.16"
+lazy_static = "1.4"
 zbrain-chunking = { path = "../zbrain-chunking" }
 
 [features]
@@ -89,6 +96,8 @@ rerank = ["dep:reqwest"]
 # resolver for url_reachable / x_api. The trait + Mock clients + the resolver
 # logic are always compiled; only the live network paths need this feature.
 resolvers = ["dep:reqwest", "tokio/net"]
+# Skillpack subsystem registry client needs reqwest for network access.
+skillpack = ["dep:reqwest"]
 
 [dev-dependencies]
 tokio = { workspace = true }

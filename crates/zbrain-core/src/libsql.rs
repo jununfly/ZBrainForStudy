@@ -4206,8 +4206,8 @@ impl BrainEngine for LibsqlEngine {
             "INSERT INTO facts \
                   (source_id, entity_slug, fact, kind, visibility, notability, \
                    context, valid_from, valid_until, source, source_session, \
-                   confidence) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                   confidence, claim_metric, claim_value, claim_unit, claim_period, event_type) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             ::libsql::params![
                 source_id,
                 entity_slug,
@@ -4221,6 +4221,11 @@ impl BrainEngine for LibsqlEngine {
                 input.source.as_str(),
                 input.source_session.as_deref().unwrap_or(""),
                 input.confidence.unwrap_or(1.0),
+                input.claim_metric.clone(),
+                input.claim_value,
+                input.claim_unit.clone(),
+                input.claim_period.clone(),
+                input.event_type.clone(),
             ],
         )
         .await
@@ -4352,6 +4357,232 @@ impl BrainEngine for LibsqlEngine {
             out.push(row_to_fact(&row)?);
         }
         Ok(out)
+    }
+
+    async fn find_trajectory(
+        &self,
+        opts: &crate::types::TrajectoryOpts,
+    ) -> Result<Vec<crate::types::TrajectoryPoint>> {
+        let conn = self.conn().await?;
+
+        let mut sql = String::from(
+            "SELECT id, valid_from, claim_metric, claim_value, claim_unit, claim_period, \
+                    event_type, fact, source_session, source_markdown_slug, embedding \
+             FROM facts \
+             WHERE ",
+        );
+
+        let mut params: Vec<::libsql::Value> = Vec::new();
+        match &opts.source_ids {
+            Some(ids) if !ids.is_empty() => {
+                sql.push_str("source_id IN (");
+                for (i, id) in ids.iter().enumerate() {
+                    if i > 0 {
+                        sql.push(',');
+                    }
+                    sql.push('?');
+                    params.push(::libsql::Value::from(id.clone()));
+                }
+                sql.push_str(")");
+            }
+            _ => {
+                let sid = opts
+                    .source_id
+                    .clone()
+                    .unwrap_or_else(|| "default".to_string());
+                sql.push_str("source_id = ?");
+                params.push(::libsql::Value::from(sid));
+            }
+        }
+
+        sql.push_str(" AND entity_slug = ? AND expired_at IS NULL");
+        params.push(::libsql::Value::from(opts.entity_slug.clone()));
+
+        if opts.remote {
+            sql.push_str(" AND visibility = 'world'");
+        }
+        if let Some(ref metric) = opts.metric {
+            sql.push_str(" AND claim_metric = ?");
+            params.push(::libsql::Value::from(metric.clone()));
+        }
+        match opts.kind {
+            crate::types::TrajectoryKind::Metric => sql.push_str(" AND claim_metric IS NOT NULL"),
+            crate::types::TrajectoryKind::Event => sql.push_str(" AND event_type IS NOT NULL"),
+            crate::types::TrajectoryKind::All => {}
+        }
+        if let Some(ref since) = opts.since {
+            sql.push_str(" AND valid_from >= ?");
+            params.push(::libsql::Value::from(since.clone()));
+        }
+        if let Some(ref until) = opts.until {
+            sql.push_str(" AND valid_from <= ?");
+            params.push(::libsql::Value::from(until.clone()));
+        }
+
+        sql.push_str(" ORDER BY valid_from ASC, id ASC");
+
+        let limit = (opts.limit.unwrap_or(100) as i64).clamp(1, 500);
+        sql.push_str(" LIMIT ?");
+        params.push(::libsql::Value::from(limit));
+
+        let mut rows = conn
+            .query(&sql, ::libsql::params::Params::Positional(params))
+            .await
+            .map_err(|e| Error::engine(format!("find_trajectory: {e}")))?;
+
+        let mut out = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("find_trajectory row: {e}")))?
+        {
+            let valid_from: Option<String> = row.get(1).ok().flatten();
+            let embedding =
+                crate::trajectory_stats::parse_embedding_text(row.get::<Option<String>>(10).ok().flatten());
+            out.push(crate::types::TrajectoryPoint {
+                fact_id: row.get::<i64>(0).map_err(|e| Error::engine(format!("ft id: {e}")))?,
+                valid_from: valid_from.map(|s| crate::trajectory_stats::iso_date_prefix(&s)),
+                metric: row.get(2).ok().flatten(),
+                value: row.get(3).ok().flatten(),
+                unit: row.get(4).ok().flatten(),
+                period: row.get(5).ok().flatten(),
+                event_type: row.get(6).ok().flatten(),
+                text: row.get::<String>(7).unwrap_or_default(),
+                source_session: row.get(8).ok().flatten(),
+                source_markdown_slug: row.get(9).ok().flatten(),
+                embedding,
+            });
+        }
+        Ok(out)
+    }
+
+    async fn list_facts_since(
+        &self,
+        source_id: &str,
+        since_iso: &str,
+        opts: &FactListOpts,
+    ) -> Result<Vec<FactRow>> {
+        let conn = self.conn().await?;
+        let mut sql = String::from(
+            "SELECT id, source_id, entity_slug, fact, kind, visibility, \
+                    notability, context, valid_from, valid_until, expired_at, \
+                    superseded_by, consolidated_at, consolidated_into, source, \
+                    source_session, confidence, created_at \
+             FROM facts \
+             WHERE source_id = ? AND created_at >= ?",
+        );
+        let mut params: Vec<::libsql::Value> =
+            vec![::libsql::Value::from(source_id), ::libsql::Value::from(since_iso)];
+        Self::append_fact_list_filters(&mut sql, &mut params, opts);
+
+        let mut rows = conn
+            .query(&sql, ::libsql::params::Params::Positional(params))
+            .await
+            .map_err(|e| Error::engine(format!("list_facts_since: {e}")))?;
+        let mut out = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("list_facts_since row: {e}")))?
+        {
+            out.push(row_to_fact(&row)?);
+        }
+        Ok(out)
+    }
+
+    async fn list_facts_by_session(
+        &self,
+        source_id: &str,
+        session_id: &str,
+        opts: &FactListOpts,
+    ) -> Result<Vec<FactRow>> {
+        let conn = self.conn().await?;
+        let mut sql = String::from(
+            "SELECT id, source_id, entity_slug, fact, kind, visibility, \
+                    notability, context, valid_from, valid_until, expired_at, \
+                    superseded_by, consolidated_at, consolidated_into, source, \
+                    source_session, confidence, created_at \
+             FROM facts \
+             WHERE source_id = ? AND source_session = ?",
+        );
+        let mut params: Vec<::libsql::Value> =
+            vec![::libsql::Value::from(source_id), ::libsql::Value::from(session_id)];
+        Self::append_fact_list_filters(&mut sql, &mut params, opts);
+
+        let mut rows = conn
+            .query(&sql, ::libsql::params::Params::Positional(params))
+            .await
+            .map_err(|e| Error::engine(format!("list_facts_by_session: {e}")))?;
+        let mut out = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("list_facts_by_session row: {e}")))?
+        {
+            out.push(row_to_fact(&row)?);
+        }
+        Ok(out)
+    }
+
+    async fn list_supersessions(
+        &self,
+        source_id: &str,
+        opts: &crate::types::SupersessionOpts,
+    ) -> Result<Vec<FactRow>> {
+        let conn = self.conn().await?;
+        let mut sql = String::from(
+            "SELECT id, source_id, entity_slug, fact, kind, visibility, \
+                    notability, context, valid_from, valid_until, expired_at, \
+                    superseded_by, consolidated_at, consolidated_into, source, \
+                    source_session, confidence, created_at \
+             FROM facts \
+             WHERE source_id = ? AND expired_at IS NOT NULL AND superseded_by IS NOT NULL",
+        );
+        let mut params: Vec<::libsql::Value> = vec![::libsql::Value::from(source_id)];
+        if let Some(ref since) = opts.since {
+            sql.push_str(" AND expired_at >= ?");
+            params.push(::libsql::Value::from(since.clone()));
+        }
+        sql.push_str(" ORDER BY expired_at DESC, id DESC");
+        if let Some(ref limit) = opts.limit {
+            sql.push_str(" LIMIT ?");
+            params.push(::libsql::Value::from(*limit));
+        }
+
+        let mut rows = conn
+            .query(&sql, ::libsql::params::Params::Positional(params))
+            .await
+            .map_err(|e| Error::engine(format!("list_supersessions: {e}")))?;
+        let mut out = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("list_supersessions row: {e}")))?
+        {
+            out.push(row_to_fact(&row)?);
+        }
+        Ok(out)
+    }
+
+    async fn count_unconsolidated_facts(&self, source_id: &str) -> Result<i64> {
+        let conn = self.conn().await?;
+        let mut rows = conn
+            .query(
+                "SELECT COUNT(*) FROM facts \
+                 WHERE source_id = ?1 AND consolidated_at IS NULL AND expired_at IS NULL",
+                ::libsql::params![source_id],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("count_unconsolidated_facts: {e}")))?;
+        let row = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("count_unconsolidated_facts row: {e}")))?
+            .ok_or_else(|| Error::engine("count_unconsolidated_facts: no row"))?;
+        let count: i64 = row
+            .get(0)
+            .map_err(|e| Error::engine(format!("count_unconsolidated_facts get: {e}")))?;
+        Ok(count)
     }
 
     async fn get_facts_health(&self, source_id: &str) -> Result<FactsHealth> {
@@ -9211,6 +9442,55 @@ impl TokenQueries for LibsqlEngine {
 // ── Internal: OAuth token issuance helper ─────────────────────────────────────
 
 impl LibsqlEngine {
+    // ─── recall batch helpers (shared fact-list WHERE tail) ───────────────
+    //
+    // Shared WHERE tail for the fact-list family: active_only, kinds IN (..),
+    // visibility IN (..), ORDER BY created_at DESC, id DESC, LIMIT/OFFSET.
+    // `params` must already hold the base bindings (source_id + any
+    // method-specific conditions) in positional order.
+    fn append_fact_list_filters(
+        sql: &mut String,
+        params: &mut Vec<::libsql::Value>,
+        opts: &FactListOpts,
+    ) {
+        if opts.active_only.unwrap_or(false) {
+            sql.push_str(" AND expired_at IS NULL AND superseded_by IS NULL");
+        }
+        if let Some(ref kinds) = opts.kinds {
+            if !kinds.is_empty() {
+                sql.push_str(" AND kind IN (");
+                for (i, _) in kinds.iter().enumerate() {
+                    if i > 0 {
+                        sql.push(',');
+                    }
+                    sql.push('?');
+                }
+                sql.push(')');
+            }
+        }
+        if let Some(ref vs) = opts.visibility {
+            if !vs.is_empty() {
+                sql.push_str(" AND visibility IN (");
+                for (i, _) in vs.iter().enumerate() {
+                    if i > 0 {
+                        sql.push(',');
+                    }
+                    sql.push('?');
+                }
+                sql.push(')');
+            }
+        }
+        sql.push_str(" ORDER BY created_at DESC, id DESC");
+        if let Some(ref limit) = opts.limit {
+            sql.push_str(" LIMIT ?");
+            params.push(::libsql::Value::from(*limit));
+        }
+        if let Some(ref offset) = opts.offset {
+            sql.push_str(" OFFSET ?");
+            params.push(::libsql::Value::from(*offset));
+        }
+    }
+
     /// Issue access (and optionally refresh) tokens for a client.
     /// Inserts rows into `oauth_tokens` and returns the wire-format response.
     async fn issue_oauth_tokens(

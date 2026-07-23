@@ -1908,6 +1908,85 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
         ))
     }
 
+    /// Chart the typed-claim / event trajectory of an entity over time.
+    /// Mirrors TS `BrainEngine.findTrajectory` (v0.35.4, D-CDX-6).
+    /// Returns facts rows for `entity_slug` ordered by `(valid_from ASC, id ASC)`
+    /// with optional metric / kind / visibility / date-window filters.
+    /// `InMemoryEngine` relies on this default (Unsupported) — facts queries are
+    /// not supported in the in-memory backend, matching `list_facts_by_entity`.
+    async fn find_trajectory(
+        &self,
+        opts: &crate::types::TrajectoryOpts,
+    ) -> crate::Result<Vec<crate::types::TrajectoryPoint>> {
+        let _ = opts;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "find_trajectory not yet implemented for this engine",
+        ))
+    }
+
+    /// List facts created since a given ISO timestamp within a source, newest
+    /// first. Mirrors TS `listFactsSince`. The `entity_slug` opt narrows the
+    /// scan to a single entity when present.
+    async fn list_facts_since(
+        &self,
+        source_id: &str,
+        since_iso: &str,
+        opts: &crate::types::FactListOpts,
+    ) -> crate::Result<Vec<crate::types::FactRow>> {
+        let _ = (source_id, since_iso, opts);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "list_facts_since not yet implemented for this engine",
+        ))
+    }
+
+    /// List facts captured under a session id within a source, newest first.
+    /// Mirrors TS `listFactsBySession`.
+    async fn list_facts_by_session(
+        &self,
+        source_id: &str,
+        session_id: &str,
+        opts: &crate::types::FactListOpts,
+    ) -> crate::Result<Vec<crate::types::FactRow>> {
+        let _ = (source_id, session_id, opts);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "list_facts_by_session not yet implemented for this engine",
+        ))
+    }
+
+    /// Audit log: facts that were superseded (expired_at + superseded_by both
+    /// set), newest first. Mirrors TS `listSupersessions` (drives
+    /// `zbrain recall --supersessions`).
+    async fn list_supersessions(
+        &self,
+        source_id: &str,
+        opts: &crate::types::SupersessionOpts,
+    ) -> crate::Result<Vec<crate::types::FactRow>> {
+        let _ = (source_id, opts);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "list_supersessions not yet implemented for this engine",
+        ))
+    }
+
+    /// v0.32: count facts not yet promoted to takes by the consolidate phase
+    /// (active + unconsolidated). Mirrors TS `countUnconsolidatedFacts`
+    /// (drives `zbrain recall --pending`).
+    async fn count_unconsolidated_facts(&self, source_id: &str) -> crate::Result<i64> {
+        let _ = source_id;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "count_unconsolidated_facts not yet implemented for this engine",
+        ))
+    }
+
     // ─── Minion job queue (Phase 9, slice 1-1-1 A+B) ─────────────────────────
     //
     // Each backend implements these with its own optimal SQL: postgres.rs uses
@@ -3246,6 +3325,49 @@ fn holder_allowed(holder: &str, allow_list: &Option<Vec<String>>) -> bool {
     match allow_list {
         None => true,
         Some(list) => list.iter().any(|h| h == holder),
+    }
+}
+
+/// Shared `FactListOpts` predicate for the in-memory fact-list family
+/// (`list_facts_by_entity` inlines the same logic; the newer methods share
+/// this helper). Mirrors the SQL filters in libsql's
+/// `append_fact_list_filters`.
+fn fact_passes_list_filters(f: &FactRow, opts: &FactListOpts) -> bool {
+    if opts.active_only.unwrap_or(false) && (f.expired_at.is_some() || f.superseded_by.is_some()) {
+        return false;
+    }
+    if let Some(ks) = opts.kinds.as_ref() {
+        if !ks.iter().any(|k| f.kind == *k) {
+            return false;
+        }
+    }
+    if let Some(vs) = opts.visibility.as_ref() {
+        if !vs.iter().any(|v| f.visibility == *v) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Newest first (mirrors SQL `ORDER BY created_at DESC`).
+fn sort_facts_newest_first(rows: &mut [FactRow]) {
+    rows.sort_by(|a, b| {
+        b.created_at
+            .as_deref()
+            .unwrap_or("")
+            .cmp(&a.created_at.as_deref().unwrap_or(""))
+    });
+}
+
+/// Apply `offset` + `limit` paging from `FactListOpts` (mirrors SQL
+/// `LIMIT ? OFFSET ?`).
+fn apply_fact_paging(rows: &mut Vec<FactRow>, opts: &FactListOpts) {
+    let offset = opts.offset.unwrap_or(0) as usize;
+    if offset > 0 {
+        *rows = rows.split_off(offset.min(rows.len()));
+    }
+    if let Some(limit) = opts.limit {
+        rows.truncate(limit as usize);
     }
 }
 
@@ -5452,6 +5574,86 @@ impl BrainEngine for InMemoryEngine {
         }
 
         Ok(rows)
+    }
+
+    async fn list_facts_since(
+        &self,
+        source_id: &str,
+        since_iso: &str,
+        opts: &FactListOpts,
+    ) -> crate::Result<Vec<FactRow>> {
+        let store = self.facts_store.lock().expect("poisoned");
+        let mut rows: Vec<FactRow> = store
+            .iter()
+            .filter(|f| f.source_id == source_id)
+            .filter(|f| f.created_at.as_deref().unwrap_or("") >= since_iso)
+            .filter(|f| fact_passes_list_filters(f, opts))
+            .cloned()
+            .collect();
+        sort_facts_newest_first(&mut rows);
+        apply_fact_paging(&mut rows, opts);
+        Ok(rows)
+    }
+
+    async fn list_facts_by_session(
+        &self,
+        source_id: &str,
+        session_id: &str,
+        opts: &FactListOpts,
+    ) -> crate::Result<Vec<FactRow>> {
+        let store = self.facts_store.lock().expect("poisoned");
+        let mut rows: Vec<FactRow> = store
+            .iter()
+            .filter(|f| f.source_id == source_id)
+            .filter(|f| f.source_session.as_deref() == Some(session_id))
+            .filter(|f| fact_passes_list_filters(f, opts))
+            .cloned()
+            .collect();
+        sort_facts_newest_first(&mut rows);
+        apply_fact_paging(&mut rows, opts);
+        Ok(rows)
+    }
+
+    async fn list_supersessions(
+        &self,
+        source_id: &str,
+        opts: &crate::types::SupersessionOpts,
+    ) -> crate::Result<Vec<FactRow>> {
+        let store = self.facts_store.lock().expect("poisoned");
+        let mut rows: Vec<FactRow> = store
+            .iter()
+            .filter(|f| f.source_id == source_id)
+            .filter(|f| f.expired_at.is_some() && f.superseded_by.is_some())
+            .filter(|f| {
+                opts.since
+                    .as_deref()
+                    .map_or(true, |s| f.expired_at.as_deref().unwrap_or("") >= s)
+            })
+            .cloned()
+            .collect();
+        // Newest first by expiry (mirrors TS ORDER BY expired_at DESC)
+        rows.sort_by(|a, b| {
+            b.expired_at
+                .as_deref()
+                .unwrap_or("")
+                .cmp(&a.expired_at.as_deref().unwrap_or(""))
+        });
+        if let Some(limit) = opts.limit {
+            rows.truncate(limit as usize);
+        }
+        Ok(rows)
+    }
+
+    async fn count_unconsolidated_facts(&self, source_id: &str) -> crate::Result<i64> {
+        let store = self.facts_store.lock().expect("poisoned");
+        Ok(store
+            .iter()
+            .filter(|f| {
+                f.source_id == source_id
+                    && f.consolidated_at.is_none()
+                    && f.expired_at.is_none()
+            })
+            .count() as i64)
     }
 
     async fn get_facts_health(&self, source_id: &str) -> crate::Result<FactsHealth> {

@@ -3481,6 +3481,16 @@ pub fn register_all(registry: &mut OperationRegistry) {
     registry.register(GetHealthOperation);
     registry.register(GetStatsOperation);
     registry.register(GetRecentSalienceOperation);
+    registry.register(CodeCallersOperation);
+    registry.register(CodeCalleesOperation);
+    registry.register(CodeDefOperation);
+    registry.register(CodeRefsOperation);
+    registry.register(FindTrajectoryOperation);
+    registry.register(RecallOperation);
+    registry.register(CodeBlastOperation);
+    registry.register(CodeFlowOperation);
+    registry.register(CodeTraversalCacheClearOperation);
+    registry.register(WhoamiOperation);
 
     // 1-6-7-4 — jobs / minions (11)
     registry.register(SubmitJobOperation);
@@ -5229,6 +5239,1551 @@ impl TypedOperation for GetRecentSalienceOperation {
             )
             .await?;
         Ok(salience)
+    }
+}
+
+// ─── Code intelligence (1-6-7-10) ──────────────────────────────────────────
+// Mirrors TS code-intel ops (src/commands/code-{callers,callees,def,refs}.ts).
+// Engine methods get_callers_of / get_callees_of / find_code_def / find_code_refs
+// are implemented on libsql + postgres backends. InMemory has no code graph and
+// returns Err(Unsupported) — callers get a clear error, acceptable for the op.
+
+#[derive(Debug, Clone)]
+pub struct CodeCallersOperation;
+
+#[derive(Debug, serde::Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct CodeCallersParams {
+    /// Symbol to query callers for (qualified name preferred).
+    pub symbol: String,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub all_sources: Option<bool>,
+    #[serde(default)]
+    pub source_id: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct CodeCallersOutput {
+    pub symbol: String,
+    pub count: usize,
+    pub callers: Vec<crate::import::CodeEdgeResult>,
+}
+
+impl ValidateParams for CodeCallersParams {
+    fn validate(&self) -> OperationResult<()> {
+        if self.symbol.trim().is_empty() {
+            return Err(OperationError::invalid_params("symbol must not be empty"));
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TypedOperation for CodeCallersOperation {
+    type Params = CodeCallersParams;
+    type Output = CodeCallersOutput;
+
+    fn name(&self) -> &'static str {
+        "code_callers"
+    }
+    fn description(&self) -> &'static str {
+        "Find symbols that call the given symbol (callers graph query)."
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "required": ["symbol"],
+            "properties": {
+                "symbol": { "type": "string" },
+                "limit": { "type": "integer" },
+                "all_sources": { "type": "boolean" },
+                "source_id": { "type": "string" }
+            }
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let opts = crate::import::CodeGraphQueryOpts {
+            limit: params.limit.map(|x| x as usize),
+            all_sources: params.all_sources.unwrap_or(false),
+            source_id: params.source_id.clone(),
+        };
+        let callers = engine.get_callers_of(&params.symbol, &opts).await?;
+        let count = callers.len();
+        Ok(CodeCallersOutput {
+            symbol: params.symbol,
+            count,
+            callers,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CodeCalleesOperation;
+
+#[derive(Debug, serde::Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct CodeCalleesParams {
+    pub symbol: String,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub all_sources: Option<bool>,
+    #[serde(default)]
+    pub source_id: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct CodeCalleesOutput {
+    pub symbol: String,
+    pub count: usize,
+    pub callees: Vec<crate::import::CodeEdgeResult>,
+}
+
+impl ValidateParams for CodeCalleesParams {
+    fn validate(&self) -> OperationResult<()> {
+        if self.symbol.trim().is_empty() {
+            return Err(OperationError::invalid_params("symbol must not be empty"));
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TypedOperation for CodeCalleesOperation {
+    type Params = CodeCalleesParams;
+    type Output = CodeCalleesOutput;
+
+    fn name(&self) -> &'static str {
+        "code_callees"
+    }
+    fn description(&self) -> &'static str {
+        "Find symbols that the given symbol calls (callees graph query)."
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "required": ["symbol"],
+            "properties": {
+                "symbol": { "type": "string" },
+                "limit": { "type": "integer" },
+                "all_sources": { "type": "boolean" },
+                "source_id": { "type": "string" }
+            }
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let opts = crate::import::CodeGraphQueryOpts {
+            limit: params.limit.map(|x| x as usize),
+            all_sources: params.all_sources.unwrap_or(false),
+            source_id: params.source_id.clone(),
+        };
+        let callees = engine.get_callees_of(&params.symbol, &opts).await?;
+        let count = callees.len();
+        Ok(CodeCalleesOutput {
+            symbol: params.symbol,
+            count,
+            callees,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CodeDefOperation;
+
+#[derive(Debug, serde::Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct CodeDefParams {
+    pub symbol: String,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub language: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct CodeDefOutput {
+    pub symbol: String,
+    pub count: usize,
+    pub defs: Vec<crate::import::CodeDefResult>,
+}
+
+impl ValidateParams for CodeDefParams {
+    fn validate(&self) -> OperationResult<()> {
+        if self.symbol.trim().is_empty() {
+            return Err(OperationError::invalid_params("symbol must not be empty"));
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TypedOperation for CodeDefOperation {
+    type Params = CodeDefParams;
+    type Output = CodeDefOutput;
+
+    fn name(&self) -> &'static str {
+        "code_def"
+    }
+    fn description(&self) -> &'static str {
+        "Find definition sites of the given symbol."
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "required": ["symbol"],
+            "properties": {
+                "symbol": { "type": "string" },
+                "limit": { "type": "integer" },
+                "language": { "type": "string" }
+            }
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let opts = crate::import::CodeSymbolQueryOpts {
+            limit: params.limit.map(|x| x as i64),
+            language: params.language.clone(),
+        };
+        let defs = engine.find_code_def(&params.symbol, &opts).await?;
+        let count = defs.len();
+        Ok(CodeDefOutput {
+            symbol: params.symbol,
+            count,
+            defs,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CodeRefsOperation;
+
+#[derive(Debug, serde::Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct CodeRefsParams {
+    pub symbol: String,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub language: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct CodeRefsOutput {
+    pub symbol: String,
+    pub count: usize,
+    pub refs: Vec<crate::import::CodeRefResult>,
+}
+
+impl ValidateParams for CodeRefsParams {
+    fn validate(&self) -> OperationResult<()> {
+        if self.symbol.trim().is_empty() {
+            return Err(OperationError::invalid_params("symbol must not be empty"));
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TypedOperation for CodeRefsOperation {
+    type Params = CodeRefsParams;
+    type Output = CodeRefsOutput;
+
+    fn name(&self) -> &'static str {
+        "code_refs"
+    }
+    fn description(&self) -> &'static str {
+        "Find reference sites (usages) of the given symbol."
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "required": ["symbol"],
+            "properties": {
+                "symbol": { "type": "string" },
+                "limit": { "type": "integer" },
+                "language": { "type": "string" }
+            }
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let opts = crate::import::CodeSymbolQueryOpts {
+            limit: params.limit.map(|x| x as i64),
+            language: params.language.clone(),
+        };
+        let refs = engine.find_code_refs(&params.symbol, &opts).await?;
+        let count = refs.len();
+        Ok(CodeRefsOutput {
+            symbol: params.symbol,
+            count,
+            refs,
+        })
+    }
+}
+
+// ─── find_trajectory (cutover batch 4) ────────────────────────────────────
+// Mirrors TS `find_trajectory` op (v0.35.4, D-CDX-6 / D-CDX-1). The engine
+// method fetches typed-claim / event rows for an entity; the op layers on the
+// derived stats (regressions + drift_score) and strips per-point embeddings
+// from the wire output.
+
+#[derive(Debug, Clone)]
+pub struct FindTrajectoryOperation;
+
+#[derive(Debug, serde::Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct FindTrajectoryParams {
+    pub entity_slug: String,
+    #[serde(default)]
+    pub metric: Option<String>,
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub since: Option<String>,
+    #[serde(default)]
+    pub until: Option<String>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+impl ValidateParams for FindTrajectoryParams {
+    fn validate(&self) -> OperationResult<()> {
+        if self.entity_slug.trim().is_empty() {
+            return Err(OperationError::invalid_params("entity_slug is required"));
+        }
+        if let Some(k) = &self.kind {
+            if k != "metric" && k != "event" && k != "all" {
+                return Err(OperationError::invalid_params(format!(
+                    "kind must be one of metric|event|all, got {k}"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct FindTrajectoryOutput {
+    pub points: Vec<serde_json::Value>,
+    pub regressions: Vec<crate::types::TrajectoryRegression>,
+    pub drift_score: Option<f64>,
+    pub schema_version: u8,
+}
+
+#[async_trait]
+impl TypedOperation for FindTrajectoryOperation {
+    type Params = FindTrajectoryParams;
+    type Output = FindTrajectoryOutput;
+
+    fn name(&self) -> &'static str {
+        "find_trajectory"
+    }
+    fn description(&self) -> &'static str {
+        "Chart the typed-claim / event trajectory of an entity over time. \
+         Returns points plus derived regressions and a drift score."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "entity_slug": {
+                    "type": "string",
+                    "description": "Required. Entity slug to chart (e.g. 'companies/acme-example')."
+                },
+                "metric": {
+                    "type": "string",
+                    "description": "Optional. Filter to a single canonical metric (e.g. 'mrr', 'arr')."
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": ["metric", "event", "all"],
+                    "description": "Optional. Row shape filter. Default 'all'."
+                },
+                "since": {
+                    "type": "string",
+                    "description": "Optional lower bound on valid_from (YYYY-MM-DD or ISO)."
+                },
+                "until": {
+                    "type": "string",
+                    "description": "Optional upper bound on valid_from."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max points returned. Default 100, max 500."
+                }
+            },
+            "required": ["entity_slug"]
+        })
+    }
+
+    fn cli_hints(&self) -> Option<CliHints> {
+        Some(CliHints {
+            name: "find-trajectory",
+            positional: &[],
+            flags: &[],
+            stdin: None,
+        })
+    }
+
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        p: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let kind = match p.kind.as_deref() {
+            Some("metric") => crate::types::TrajectoryKind::Metric,
+            Some("event") => crate::types::TrajectoryKind::Event,
+            _ => crate::types::TrajectoryKind::All,
+        };
+        let opts = crate::types::TrajectoryOpts {
+            entity_slug: p.entity_slug,
+            source_id: Some(ctx.source_id.clone()),
+            source_ids: None,
+            remote: ctx.remote,
+            metric: p.metric,
+            kind,
+            since: p.since,
+            until: p.until,
+            limit: p.limit,
+        };
+
+        let engine = ctx.engine()?;
+        let points = engine.find_trajectory(&opts).await?;
+
+        let threshold = crate::trajectory_stats::resolve_regression_threshold();
+        let stats = crate::trajectory_stats::compute_trajectory_stats(&points, threshold);
+
+        // Wire points keep TS's snake_case key shape and strip embeddings.
+        let wire_points: Vec<serde_json::Value> = points
+            .iter()
+            .map(|pt| {
+                serde_json::json!({
+                    "fact_id": pt.fact_id,
+                    "valid_from": pt.valid_from,
+                    "metric": pt.metric,
+                    "value": pt.value,
+                    "unit": pt.unit,
+                    "period": pt.period,
+                    "event_type": pt.event_type,
+                    "text": pt.text,
+                    "source_session": pt.source_session,
+                    "source_markdown_slug": pt.source_markdown_slug,
+                })
+            })
+            .collect();
+
+        Ok(FindTrajectoryOutput {
+            points: wire_points,
+            regressions: stats.regressions,
+            drift_score: stats.drift_score,
+            schema_version: crate::trajectory_stats::TRAJECTORY_SCHEMA_VERSION,
+        })
+    }
+}
+
+// ─── recall (cutover batch: final phase-A facts op) ─────────────────────────
+// Mirrors TS `recall` op (v0.31, v0.32 include_pending). Surfaces the
+// fact-list engine family (list_facts_by_entity / list_facts_by_session /
+// list_facts_since / list_supersessions + count_unconsolidated_facts).
+//
+// NOTE: entity resolution (TS `resolveEntitySlug` — exact/fuzzy/prefix across
+// the pages table via pg_trgm) is NOT ported here; `entity` is used verbatim
+// as the entity_slug, matching the `find_trajectory` op contract. Registered
+// in docs/plans/KNOWN-GAPS.md as a facts-domain gap (G53).
+
+/// Port of TS `parseSinceParam` (operations.ts). Accepts ISO 8601, a
+/// date-only `YYYY-MM-DD`, or a relative shorthand ("8 hours ago", "30m",
+/// "1h", "2d", "7d"). Returns an RFC3339 ISO string, or `None` when
+/// unparseable.
+fn parse_since_param(raw: &str) -> Option<String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return None;
+    }
+    // ISO 8601 / RFC3339. `parse_from_str(.., "%+")` is part of core chrono (no
+    // `clock` feature required), unlike `parse_from_rfc3339`.
+    if let Ok(dt) = chrono::DateTime::<chrono::FixedOffset>::parse_from_str(s, "%+") {
+        return Some(dt.with_timezone(&chrono::Utc).to_rfc3339());
+    }
+    // Date-only "YYYY-MM-DD" → midnight UTC.
+    if let Ok(d) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        let dt = chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(
+            d.and_hms_opt(0, 0, 0)?,
+            chrono::Utc,
+        );
+        return Some(dt.to_rfc3339());
+    }
+    // Relative shorthand: ^(\d+)\s*(unit)(?:\s+ago)?$
+    let re = regex::Regex::new(
+        r"(?i)^(\d+)\s*(s|sec|secs|seconds?|m|min|mins|minutes?|h|hr|hrs|hours?|d|days?)(?:\s+ago)?$",
+    )
+    .ok()?;
+    let caps = re.captures(s)?;
+    let n: i64 = caps.get(1)?.as_str().parse().ok()?;
+    let unit = caps.get(2)?.as_str().to_ascii_lowercase();
+    let ms = if unit.starts_with('s') {
+        n * 1_000
+    } else if unit.starts_with('m') {
+        n * 60_000
+    } else if unit.starts_with('h') {
+        n * 3_600_000
+    } else if unit.starts_with('d') {
+        n * 86_400_000
+    } else {
+        return None;
+    };
+    let dt = chrono::Utc::now() - chrono::Duration::milliseconds(ms);
+    Some(dt.to_rfc3339())
+}
+
+#[derive(Debug, Clone)]
+pub struct RecallOperation;
+
+#[derive(Debug, serde::Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct RecallParams {
+    #[serde(default)]
+    pub entity: Option<String>,
+    #[serde(default)]
+    pub since: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub include_expired: bool,
+    #[serde(default)]
+    pub supersessions: bool,
+    #[serde(default)]
+    pub limit: Option<i64>,
+    #[serde(default)]
+    pub grep: Option<String>,
+    #[serde(default)]
+    pub include_pending: bool,
+}
+
+impl ValidateParams for RecallParams {
+    fn validate(&self) -> OperationResult<()> {
+        Ok(())
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecallFact {
+    pub id: i64,
+    pub fact: String,
+    pub kind: String,
+    pub entity_slug: Option<String>,
+    pub visibility: String,
+    pub notability: String,
+    pub valid_from: Option<String>,
+    pub valid_until: Option<String>,
+    pub expired_at: Option<String>,
+    pub superseded_by: Option<i64>,
+    pub consolidated_at: Option<String>,
+    pub consolidated_into: Option<i64>,
+    pub source: String,
+    pub source_session: Option<String>,
+    pub confidence: f64,
+    pub created_at: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct RecallOutput {
+    pub facts: Vec<RecallFact>,
+    pub pending_consolidation_count: Option<i64>,
+}
+
+#[async_trait]
+impl TypedOperation for RecallOperation {
+    type Params = RecallParams;
+    type Output = RecallOutput;
+
+    fn name(&self) -> &'static str {
+        "recall"
+    }
+    fn description(&self) -> &'static str {
+        "v0.31: query per-source hot memory (facts). Filters by entity / since / \
+         session. Remote callers see only visibility=world facts. v0.32 adds \
+         include_pending to return pending_consolidation_count alongside facts."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "entity": {
+                    "type": "string",
+                    "description": "Entity slug (canonical). Returns facts about this entity newest first."
+                },
+                "since": {
+                    "type": "string",
+                    "description": "ISO datetime or duration shorthand (e.g. \"8 hours ago\"). Returns facts created since."
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "Source session id. Returns facts captured in that session."
+                },
+                "include_expired": {
+                    "type": "boolean",
+                    "description": "When true, include expired_at IS NOT NULL rows. Default false."
+                },
+                "supersessions": {
+                    "type": "boolean",
+                    "description": "When true, return only the supersession audit log (expired_at + superseded_by both set)."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max rows to return. Default 50, cap 500."
+                },
+                "grep": {
+                    "type": "string",
+                    "description": "Substring filter on fact text (case-insensitive). Applied after recall."
+                },
+                "include_pending": {
+                    "type": "boolean",
+                    "description": "v0.32: include pending_consolidation_count in the response (best-effort)."
+                }
+            }
+        })
+    }
+
+    fn cli_hints(&self) -> Option<CliHints> {
+        Some(CliHints {
+            name: "recall",
+            positional: &[],
+            flags: &[],
+            stdin: None,
+        })
+    }
+
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        p: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let source_id = ctx.source_id.clone();
+        let limit = p.limit.unwrap_or(50).clamp(1, 500);
+        let visibility = if ctx.remote {
+            Some(vec![crate::types::FactVisibility::World])
+        } else {
+            None
+        };
+        let opts = crate::types::FactListOpts {
+            active_only: Some(!p.include_expired),
+            limit: Some(limit),
+            offset: None,
+            kinds: None,
+            visibility,
+        };
+
+        let engine = ctx.engine()?;
+
+        // Mirrors the TS branch order: supersessions → entity → session → since.
+        let rows: Vec<crate::types::FactRow> = if p.supersessions {
+            let since_iso = p.since.as_deref().and_then(parse_since_param);
+            engine
+                .list_supersessions(
+                    &source_id,
+                    &crate::types::SupersessionOpts {
+                        since: since_iso,
+                        limit: Some(limit),
+                    },
+                )
+                .await?
+        } else if let Some(entity) = p.entity.as_deref().filter(|e| !e.is_empty()) {
+            // Entity resolution is not ported; use the slug verbatim.
+            engine
+                .list_facts_by_entity(&source_id, entity, &opts)
+                .await?
+        } else if let Some(sid) = p.session_id.as_deref().filter(|s| !s.is_empty()) {
+            engine
+                .list_facts_by_session(&source_id, sid, &opts)
+                .await?
+        } else {
+            let since_iso = p
+                .since
+                .as_deref()
+                .and_then(parse_since_param)
+                .unwrap_or_else(|| "1970-01-01T00:00:00Z".to_string());
+            engine
+                .list_facts_since(&source_id, &since_iso, &opts)
+                .await?
+        };
+
+        // grep (case-insensitive substring on fact text).
+        let rows = if let Some(grep) = p.grep.as_deref() {
+            let g = grep.to_lowercase();
+            rows.into_iter()
+                .filter(|r| r.fact.to_lowercase().contains(&g))
+                .collect()
+        } else {
+            rows
+        };
+
+        // include_pending: best-effort; field stays None on failure so callers
+        // can distinguish "0 pending" from "couldn't ask".
+        let pending_consolidation_count = if p.include_pending {
+            match engine.count_unconsolidated_facts(&source_id).await {
+                Ok(n) => Some(n),
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+
+        let facts = rows
+            .into_iter()
+            .map(|r| RecallFact {
+                id: r.id,
+                fact: r.fact,
+                kind: r.kind.to_string(),
+                entity_slug: r.entity_slug,
+                visibility: r.visibility.to_string(),
+                notability: r.notability,
+                valid_from: r.valid_from,
+                valid_until: r.valid_until,
+                expired_at: r.expired_at,
+                superseded_by: r.superseded_by,
+                consolidated_at: r.consolidated_at,
+                consolidated_into: r.consolidated_into,
+                source: r.source,
+                source_session: r.source_session,
+                confidence: r.confidence,
+                created_at: r.created_at,
+            })
+            .collect();
+
+        Ok(RecallOutput {
+            facts,
+            pending_consolidation_count,
+        })
+    }
+}
+
+#[cfg(test)]
+mod recall_op_tests {
+    use super::*;
+    use crate::engine::InMemoryEngine;
+    use crate::types::{FactKind, FactRow, FactVisibility};
+
+    fn fact(id: i64, source_id: &str, slug: &str, text: &str) -> FactRow {
+        FactRow {
+            id,
+            source_id: source_id.to_string(),
+            entity_slug: Some(slug.to_string()),
+            fact: text.to_string(),
+            kind: FactKind::Preference,
+            visibility: FactVisibility::Private,
+            notability: "medium".to_string(),
+            context: None,
+            valid_from: None,
+            valid_until: None,
+            expired_at: None,
+            superseded_by: None,
+            consolidated_at: None,
+            consolidated_into: None,
+            source: "test".to_string(),
+            source_session: None,
+            confidence: 1.0,
+            created_at: Some(format!("2026-07-0{}T00:00:00Z", (id % 9).max(1))),
+        }
+    }
+
+    fn ctx_with(engine: InMemoryEngine) -> OperationContext {
+        OperationContext::local_cli().with_engine(engine.into_arc())
+    }
+
+    #[test]
+    fn registry_registers_recall() {
+        let mut registry = OperationRegistry::new();
+        register_all(&mut registry);
+        assert!(registry.lookup("recall").is_some());
+    }
+
+    #[test]
+    fn parse_since_param_shapes() {
+        // ISO passthrough.
+        assert!(parse_since_param("2026-07-01T12:00:00Z").is_some());
+        // Date-only → midnight UTC.
+        let d = parse_since_param("2026-07-01").unwrap();
+        assert!(d.starts_with("2026-07-01T00:00:00"));
+        // Relative shorthands.
+        for s in ["30m", "1h", "2d", "8 hours ago", "45 s", "7 days"] {
+            assert!(parse_since_param(s).is_some(), "should parse: {s}");
+        }
+        // Garbage.
+        assert!(parse_since_param("").is_none());
+        assert!(parse_since_param("yesterday-ish").is_none());
+        assert!(parse_since_param("h30").is_none());
+    }
+
+    #[tokio::test]
+    async fn recall_default_branch_lists_all_facts_newest_first() {
+        let engine = InMemoryEngine::new();
+        engine.add_fact(fact(1, "default", "alice", "old fact"));
+        engine.add_fact(fact(3, "default", "bob", "new fact"));
+        engine.add_fact(fact(2, "other-source", "alice", "foreign fact"));
+        let ctx = ctx_with(engine);
+
+        let out = RecallOperation
+            .execute(&ctx, RecallParams::default())
+            .await
+            .unwrap();
+        assert_eq!(out.facts.len(), 2, "source-scoped");
+        assert_eq!(out.facts[0].fact, "new fact", "newest first");
+        assert!(out.pending_consolidation_count.is_none());
+    }
+
+    #[tokio::test]
+    async fn recall_entity_branch_uses_slug_verbatim() {
+        let engine = InMemoryEngine::new();
+        engine.add_fact(fact(1, "default", "alice", "about alice"));
+        engine.add_fact(fact(2, "default", "bob", "about bob"));
+        let ctx = ctx_with(engine);
+
+        let out = RecallOperation
+            .execute(
+                &ctx,
+                RecallParams {
+                    entity: Some("alice".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.facts.len(), 1);
+        assert_eq!(out.facts[0].entity_slug.as_deref(), Some("alice"));
+    }
+
+    #[tokio::test]
+    async fn recall_session_branch_filters_by_session() {
+        let engine = InMemoryEngine::new();
+        let mut in_session = fact(1, "default", "alice", "session fact");
+        in_session.source_session = Some("sess-42".to_string());
+        engine.add_fact(in_session);
+        engine.add_fact(fact(2, "default", "alice", "no session"));
+        let ctx = ctx_with(engine);
+
+        let out = RecallOperation
+            .execute(
+                &ctx,
+                RecallParams {
+                    session_id: Some("sess-42".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.facts.len(), 1);
+        assert_eq!(out.facts[0].fact, "session fact");
+    }
+
+    #[tokio::test]
+    async fn recall_since_branch_cuts_older_facts() {
+        let engine = InMemoryEngine::new();
+        let mut old = fact(1, "default", "alice", "ancient");
+        old.created_at = Some("2020-01-01T00:00:00Z".to_string());
+        engine.add_fact(old);
+        let mut recent = fact(2, "default", "alice", "recent");
+        recent.created_at = Some("2026-07-20T00:00:00Z".to_string());
+        engine.add_fact(recent);
+        let ctx = ctx_with(engine);
+
+        let out = RecallOperation
+            .execute(
+                &ctx,
+                RecallParams {
+                    since: Some("2026-01-01".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.facts.len(), 1);
+        assert_eq!(out.facts[0].fact, "recent");
+    }
+
+    #[tokio::test]
+    async fn recall_supersessions_branch_returns_audit_log_only() {
+        let engine = InMemoryEngine::new();
+        let mut superseded = fact(1, "default", "alice", "was true once");
+        superseded.expired_at = Some("2026-07-10T00:00:00Z".to_string());
+        superseded.superseded_by = Some(2);
+        engine.add_fact(superseded);
+        engine.add_fact(fact(2, "default", "alice", "current truth"));
+        let ctx = ctx_with(engine);
+
+        let out = RecallOperation
+            .execute(
+                &ctx,
+                RecallParams {
+                    supersessions: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.facts.len(), 1);
+        assert_eq!(out.facts[0].fact, "was true once");
+        assert_eq!(out.facts[0].superseded_by, Some(2));
+    }
+
+    #[tokio::test]
+    async fn recall_include_expired_toggles_active_only() {
+        let engine = InMemoryEngine::new();
+        let mut expired = fact(1, "default", "alice", "expired fact");
+        expired.expired_at = Some("2026-07-10T00:00:00Z".to_string());
+        engine.add_fact(expired);
+        engine.add_fact(fact(2, "default", "alice", "live fact"));
+        let ctx = ctx_with(engine);
+
+        let active = RecallOperation
+            .execute(&ctx, RecallParams::default())
+            .await
+            .unwrap();
+        assert_eq!(active.facts.len(), 1, "default hides expired");
+
+        let all = RecallOperation
+            .execute(
+                &ctx,
+                RecallParams {
+                    include_expired: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(all.facts.len(), 2, "include_expired shows both");
+    }
+
+    #[tokio::test]
+    async fn recall_grep_filters_fact_text_case_insensitive() {
+        let engine = InMemoryEngine::new();
+        engine.add_fact(fact(1, "default", "alice", "Loves Rust deeply"));
+        engine.add_fact(fact(2, "default", "alice", "prefers tea"));
+        let ctx = ctx_with(engine);
+
+        let out = RecallOperation
+            .execute(
+                &ctx,
+                RecallParams {
+                    grep: Some("rust".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.facts.len(), 1);
+        assert_eq!(out.facts[0].fact, "Loves Rust deeply");
+    }
+
+    #[tokio::test]
+    async fn recall_include_pending_returns_count() {
+        let engine = InMemoryEngine::new();
+        // Unconsolidated + active → counts.
+        engine.add_fact(fact(1, "default", "alice", "pending one"));
+        // Consolidated → excluded.
+        let mut done = fact(2, "default", "alice", "already promoted");
+        done.consolidated_at = Some("2026-07-01T00:00:00Z".to_string());
+        engine.add_fact(done);
+        // Expired → excluded.
+        let mut dead = fact(3, "default", "alice", "expired");
+        dead.expired_at = Some("2026-07-01T00:00:00Z".to_string());
+        engine.add_fact(dead);
+        let ctx = ctx_with(engine);
+
+        let out = RecallOperation
+            .execute(
+                &ctx,
+                RecallParams {
+                    include_pending: true,
+                    include_expired: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.pending_consolidation_count, Some(1));
+    }
+
+    #[tokio::test]
+    async fn recall_remote_sees_world_only() {
+        let engine = InMemoryEngine::new();
+        engine.add_fact(fact(1, "src1", "alice", "private fact"));
+        let mut world = fact(2, "src1", "alice", "world fact");
+        world.visibility = FactVisibility::World;
+        engine.add_fact(world);
+        let ctx = OperationContext::remote_mcp("src1").with_engine(engine.into_arc());
+
+        let out = RecallOperation
+            .execute(&ctx, RecallParams::default())
+            .await
+            .unwrap();
+        assert_eq!(out.facts.len(), 1, "remote must not see private facts");
+        assert_eq!(out.facts[0].fact, "world fact");
+        assert_eq!(out.facts[0].visibility, "world");
+    }
+
+    #[tokio::test]
+    async fn recall_limit_clamps_to_range() {
+        let engine = InMemoryEngine::new();
+        for i in 1..=5 {
+            engine.add_fact(fact(i, "default", "alice", &format!("fact {i}")));
+        }
+        let ctx = ctx_with(engine);
+
+        let out = RecallOperation
+            .execute(
+                &ctx,
+                RecallParams {
+                    limit: Some(2),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.facts.len(), 2);
+
+        // limit below 1 clamps to 1 (not 0 / not error).
+        let out = RecallOperation
+            .execute(
+                &ctx,
+                RecallParams {
+                    limit: Some(0),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.facts.len(), 1);
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// WHOAMI — introspect calling identity (v0.28 trust-boundary contract)
+//
+// Mirrors TS `whoami` op. Pure ctx check — no engine call. Fail-closed posture
+// for remote callers that did not thread `ctx.auth` (throws unknown_transport),
+// mirroring the v0.26.9 trust-boundary contract.
+
+#[derive(Debug, Clone)]
+pub struct WhoamiOperation;
+
+#[derive(Debug, serde::Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct WhoamiParams {}
+
+impl ValidateParams for WhoamiParams {
+    fn validate(&self) -> OperationResult<()> {
+        Ok(())
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct WhoamiOutput {
+    pub transport: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scopes: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
+}
+
+#[async_trait]
+impl TypedOperation for WhoamiOperation {
+    type Params = WhoamiParams;
+    type Output = WhoamiOutput;
+
+    fn name(&self) -> &'static str {
+        "whoami"
+    }
+    fn description(&self) -> &'static str {
+        "Introspect the calling identity. Returns one of three transport shapes: \
+         local (scopes []), oauth (client_id, client_name, scopes, expires_at), or \
+         legacy (token_name, scopes). Fail-closed: a remote call without threaded \
+         auth throws unknown_transport."
+    }
+    fn cli_hints(&self) -> Option<CliHints> {
+        Some(CliHints::new("whoami"))
+    }
+    async fn execute(&self, ctx: &OperationContext, _p: Self::Params) -> OperationResult<Self::Output> {
+        // Trusted local CLI surface. Returning an empty scopes array forces
+        // clients to special-case `transport: 'local'` rather than trusting on
+        // `scopes.includes('admin')` — the v0.26.9 footgun.
+        if ctx.remote == false {
+            return Ok(WhoamiOutput {
+                transport: "local".into(),
+                scopes: Some(vec![]),
+                client_id: None,
+                client_name: None,
+                token_name: None,
+                expires_at: None,
+            });
+        }
+        let auth = ctx.auth.as_ref().ok_or_else(|| {
+            OperationError::new(
+                ErrorCode::UnknownTransport,
+                "whoami called over a remote transport that did not thread ctx.auth. \
+                 This is a transport bug — every remote call site must populate \
+                 ctx.auth or set ctx.remote === false.",
+            )
+        })?;
+        // OAuth tokens have client_id starting with 'zbrain_cl_'; legacy
+        // access_tokens reuse clientName as both clientId and clientName.
+        let is_oauth = auth.client_id.starts_with("zbrain_cl_");
+        if is_oauth {
+            Ok(WhoamiOutput {
+                transport: "oauth".into(),
+                scopes: Some(auth.scopes.clone()),
+                client_id: Some(auth.client_id.clone()),
+                client_name: Some(auth.client_name.clone().unwrap_or_else(|| auth.client_id.clone())),
+                token_name: None,
+                expires_at: auth.expires_at,
+            })
+        } else {
+            Ok(WhoamiOutput {
+                transport: "legacy".into(),
+                scopes: Some(auth.scopes.clone()),
+                client_id: None,
+                client_name: None,
+                token_name: Some(auth.client_name.clone().unwrap_or_else(|| auth.client_id.clone())),
+                expires_at: None,
+            })
+        }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// CODE_BLAST / CODE_FLOW — recursive call-graph traversal (v0.34 W3)
+//
+// Both wrap the engine `recursive_walk` method (implemented for libsql /
+// postgres; InMemory returns Err(Unsupported)). The TS layer memoizes walks in
+// a traversal cache (`traversal-cache.ts`); Rust's `recursive_walk` is
+// stateless, so we call it directly. The wire envelope matches TS:
+// { result, depth_groups?, truncation?, cycles_detected?, did_you_mean?,
+//   candidates?, terminal_nodes? }.
+
+#[derive(Debug, Serialize)]
+pub struct CodeWalkOutput {
+    pub result: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub depth_groups: Option<Vec<crate::import::DepthGroup>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cycles_detected: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub did_you_mean: Option<Vec<crate::import::DidYouMeanCandidate>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidates: Option<Vec<crate::import::AmbiguousCandidate>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_nodes: Option<Vec<crate::import::TerminalNode>>,
+}
+
+/// Map the engine `RecursiveWalkResult` enum into the flat TS-shaped envelope.
+fn map_walk_result(res: &crate::import::RecursiveWalkResult) -> CodeWalkOutput {
+    use crate::import::{RecursiveWalkResult, WalkTruncation};
+    match res {
+        RecursiveWalkResult::Ok { depth_groups, cycles_detected, truncation, terminal_nodes, .. } => {
+            let trunc = match truncation {
+                WalkTruncation::None => "none",
+                WalkTruncation::MaxNodes => "max_nodes",
+                WalkTruncation::DepthCap => "depth_cap",
+                WalkTruncation::Both => "both",
+            };
+            CodeWalkOutput {
+                result: "ok".into(),
+                depth_groups: Some(depth_groups.clone()),
+                truncation: Some(trunc.to_string()),
+                cycles_detected: Some(*cycles_detected),
+                did_you_mean: None,
+                candidates: None,
+                terminal_nodes: terminal_nodes.clone(),
+            }
+        }
+        RecursiveWalkResult::NotFound { did_you_mean } => CodeWalkOutput {
+            result: "not_found".into(),
+            depth_groups: None,
+            truncation: None,
+            cycles_detected: None,
+            did_you_mean: Some(did_you_mean.clone()),
+            candidates: None,
+            terminal_nodes: None,
+        },
+        RecursiveWalkResult::Ambiguous { candidates } => CodeWalkOutput {
+            result: "ambiguous".into(),
+            depth_groups: None,
+            truncation: None,
+            cycles_detected: None,
+            did_you_mean: None,
+            candidates: Some(candidates.clone()),
+            terminal_nodes: None,
+        },
+        RecursiveWalkResult::UnsupportedLanguage { .. } => CodeWalkOutput {
+            result: "unsupported_language".into(),
+            depth_groups: None,
+            truncation: None,
+            cycles_detected: None,
+            did_you_mean: None,
+            candidates: None,
+            terminal_nodes: None,
+        },
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CodeBlastOperation;
+
+#[derive(Debug, serde::Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct CodeBlastParams {
+    pub symbol: String,
+    #[serde(default)]
+    pub depth: Option<u32>,
+    #[serde(default)]
+    pub max_nodes: Option<u32>,
+    #[serde(default)]
+    pub exact: Option<bool>,
+}
+
+impl ValidateParams for CodeBlastParams {
+    fn validate(&self) -> OperationResult<()> {
+        if self.symbol.trim().is_empty() {
+            return Err(OperationError::invalid_params("symbol is required"));
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TypedOperation for CodeBlastOperation {
+    type Params = CodeBlastParams;
+    type Output = CodeWalkOutput;
+
+    fn name(&self) -> &'static str {
+        "code_blast"
+    }
+    fn description(&self) -> &'static str {
+        "BEFORE editing any function, run code_blast with the symbol name to surface every \
+         transitive caller grouped by depth (direct -> 2-hop -> 3-hop). Use during plan-mode \
+         to size the change. Returns up to 200 nodes. Direction: callers."
+    }
+    fn cli_hints(&self) -> Option<CliHints> {
+        Some(CliHints::new("code_blast").with_flags(&["exact"]))
+    }
+    async fn execute(&self, ctx: &OperationContext, p: Self::Params) -> OperationResult<Self::Output> {
+        // TS: depth = min(p.depth ?? 5, 8); max_nodes = min(p.max_nodes ?? 200, 200)
+        let depth = (p.depth.unwrap_or(5).min(8)) as usize;
+        let max_nodes = (p.max_nodes.unwrap_or(200).min(200)) as usize;
+        let opts = crate::import::RecursiveWalkOpts {
+            direction: crate::import::WalkDirection::Callers,
+            depth_cap: Some(depth),
+            max_nodes: Some(max_nodes),
+            source_id: ctx.source_id.clone(),
+            exact: p.exact,
+        };
+        let engine = ctx.engine()?;
+        let res = engine.recursive_walk(&p.symbol, &opts).await?;
+        Ok(map_walk_result(&res))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CodeFlowOperation;
+
+#[derive(Debug, serde::Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct CodeFlowParams {
+    pub entry_point: String,
+    #[serde(default)]
+    pub depth: Option<u32>,
+    #[serde(default)]
+    pub max_nodes: Option<u32>,
+    #[serde(default)]
+    pub exact: Option<bool>,
+}
+
+impl ValidateParams for CodeFlowParams {
+    fn validate(&self) -> OperationResult<()> {
+        if self.entry_point.trim().is_empty() {
+            return Err(OperationError::invalid_params("entry_point is required"));
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TypedOperation for CodeFlowOperation {
+    type Params = CodeFlowParams;
+    type Output = CodeWalkOutput;
+
+    fn name(&self) -> &'static str {
+        "code_flow"
+    }
+    fn description(&self) -> &'static str {
+        "When tracing how a request flows through the codebase from entry point to side effect \
+         (DB write, HTTP call, file I/O), run code_flow from the entry point. Returns ordered \
+         execution chain with terminal-node tags (sink_kind). Direction: callees."
+    }
+    fn cli_hints(&self) -> Option<CliHints> {
+        Some(CliHints::new("code_flow").with_flags(&["exact"]))
+    }
+    async fn execute(&self, ctx: &OperationContext, p: Self::Params) -> OperationResult<Self::Output> {
+        // TS: depth = min(p.depth ?? 8, 12); max_nodes = min(p.max_nodes ?? 200, 200)
+        let depth = (p.depth.unwrap_or(8).min(12)) as usize;
+        let max_nodes = (p.max_nodes.unwrap_or(200).min(200)) as usize;
+        let opts = crate::import::RecursiveWalkOpts {
+            direction: crate::import::WalkDirection::Callees,
+            depth_cap: Some(depth),
+            max_nodes: Some(max_nodes),
+            source_id: ctx.source_id.clone(),
+            exact: p.exact,
+        };
+        let engine = ctx.engine()?;
+        let res = engine.recursive_walk(&p.entry_point, &opts).await?;
+        Ok(map_walk_result(&res))
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// CODE_TRAVERSAL_CACHE_CLEAR — admin op to invalidate cached code-traversal
+// results (v0.34 W3b).
+//
+// TS keeps a memoized traversal cache (`traversal-cache.ts`) that this op
+// clears. Rust's `recursive_walk` is stateless (no cross-call cache), so there
+// is nothing to invalidate — we report deleted:0. The envelope matches TS so
+// callers see a clean shape. local-only + admin scope per TS.
+
+#[derive(Debug, Clone)]
+pub struct CodeTraversalCacheClearOperation;
+
+#[derive(Debug, serde::Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct CodeTraversalCacheClearParams {
+    #[serde(default)]
+    pub source_id: Option<String>,
+    #[serde(default)]
+    pub all_sources: Option<bool>,
+}
+
+impl ValidateParams for CodeTraversalCacheClearParams {
+    fn validate(&self) -> OperationResult<()> {
+        Ok(())
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct CodeTraversalCacheClearOutput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dry_run: Option<bool>,
+    pub action: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    pub all_sources: bool,
+    pub deleted: u64,
+}
+
+#[async_trait]
+impl TypedOperation for CodeTraversalCacheClearOperation {
+    type Params = CodeTraversalCacheClearParams;
+    type Output = CodeTraversalCacheClearOutput;
+
+    fn name(&self) -> &'static str {
+        "code_traversal_cache_clear"
+    }
+    fn description(&self) -> &'static str {
+        "Clear cached code_blast / code_flow traversal results. Source-scoped by default; \
+         pass all_sources=true to wipe everything. Rust's recursive_walk is stateless, so \
+         this reports deleted:0 (no persisted cache to invalidate)."
+    }
+    fn local_only(&self) -> bool {
+        true
+    }
+    fn mutating(&self) -> bool {
+        true
+    }
+    fn required_scope(&self) -> &'static str {
+        "admin"
+    }
+    fn cli_hints(&self) -> Option<CliHints> {
+        Some(CliHints::new("code_traversal_cache_clear").with_flags(&["all_sources"]))
+    }
+    async fn execute(&self, ctx: &OperationContext, p: Self::Params) -> OperationResult<Self::Output> {
+        let all_sources = p.all_sources.unwrap_or(false);
+        let source_id = if all_sources {
+            None
+        } else {
+            p.source_id.clone().or_else(|| Some(ctx.source_id.clone()))
+        };
+        if ctx.dry_run {
+            return Ok(CodeTraversalCacheClearOutput {
+                dry_run: Some(true),
+                action: "code_traversal_cache_clear".into(),
+                source_id,
+                all_sources,
+                deleted: 0,
+            });
+        }
+        // Rust has no persisted traversal cache (recursive_walk is stateless).
+        Ok(CodeTraversalCacheClearOutput {
+            dry_run: None,
+            action: "code_traversal_cache_clear".into(),
+            source_id,
+            all_sources,
+            deleted: 0,
+        })
+    }
+}
+
+#[cfg(test)]
+mod phase_a_code_ops_tests {
+    use super::*;
+
+    #[test]
+    fn registry_registers_code_ops() {
+        let mut registry = OperationRegistry::new();
+        registry.register(CodeBlastOperation);
+        registry.register(CodeFlowOperation);
+        registry.register(CodeTraversalCacheClearOperation);
+        registry.register(WhoamiOperation);
+        assert!(registry.lookup("code_blast").is_some());
+        assert!(registry.lookup("code_flow").is_some());
+        assert!(registry.lookup("code_traversal_cache_clear").is_some());
+        assert!(registry.lookup("whoami").is_some());
+    }
+
+    #[tokio::test]
+    async fn whoami_local_returns_local_transport() {
+        let ctx = OperationContext::local_cli();
+        let out = WhoamiOperation.execute(&ctx, WhoamiParams {}).await.unwrap();
+        assert_eq!(out.transport, "local");
+        assert_eq!(out.scopes, Some(vec![]));
+        assert!(out.client_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn whoami_remote_without_auth_throws_unknown_transport() {
+        let ctx = OperationContext::remote_mcp("src1");
+        let res = WhoamiOperation.execute(&ctx, WhoamiParams {}).await;
+        let err = res.unwrap_err();
+        assert_eq!(err.code, ErrorCode::UnknownTransport);
+    }
+
+    #[tokio::test]
+    async fn whoami_oauth_shape() {
+        let mut ctx = OperationContext::remote_mcp("src1");
+        ctx.auth = Some(AuthInfo {
+            token: "t".into(),
+            client_id: "zbrain_cl_abc".into(),
+            client_name: Some("App".into()),
+            scopes: vec!["read".into()],
+            expires_at: Some(123),
+            source_id: None,
+            allowed_sources: None,
+        });
+        let out = WhoamiOperation.execute(&ctx, WhoamiParams {}).await.unwrap();
+        assert_eq!(out.transport, "oauth");
+        assert_eq!(out.client_id, Some("zbrain_cl_abc".into()));
+        assert_eq!(out.client_name, Some("App".into()));
+        assert_eq!(out.expires_at, Some(123));
+        assert!(out.token_name.is_none());
+    }
+
+    #[tokio::test]
+    async fn whoami_legacy_shape() {
+        let mut ctx = OperationContext::remote_mcp("src1");
+        ctx.auth = Some(AuthInfo {
+            token: "t".into(),
+            client_id: "plain-client".into(),
+            client_name: Some("Legacy".into()),
+            scopes: vec!["read".into()],
+            expires_at: None,
+            source_id: None,
+            allowed_sources: None,
+        });
+        let out = WhoamiOperation.execute(&ctx, WhoamiParams {}).await.unwrap();
+        assert_eq!(out.transport, "legacy");
+        assert_eq!(out.token_name, Some("Legacy".into()));
+        assert!(out.client_id.is_none());
+        assert_eq!(out.expires_at, None);
+    }
+
+    #[test]
+    fn map_walk_ok_maps_fields() {
+        use crate::import::{DepthGroup, RecursiveWalkNode, RecursiveWalkResult, TerminalNode, WalkFreshness, WalkTruncation};
+        let res = RecursiveWalkResult::Ok {
+            depth_groups: vec![DepthGroup {
+                depth: 1,
+                nodes: vec![RecursiveWalkNode { symbol: "f".into(), chunk_id: None, sink_kind: None }],
+                confidence: 0.77,
+            }],
+            cycles_detected: false,
+            truncation: WalkTruncation::None,
+            freshness: WalkFreshness::Fresh,
+            terminal_nodes: Some(vec![TerminalNode { symbol: "g".into(), sink_kind: "db_call".into() }]),
+        };
+        let out = map_walk_result(&res);
+        assert_eq!(out.result, "ok");
+        assert_eq!(out.depth_groups.as_ref().unwrap().len(), 1);
+        assert_eq!(out.truncation.as_deref(), Some("none"));
+        assert_eq!(out.cycles_detected, Some(false));
+        assert_eq!(out.terminal_nodes.as_ref().unwrap().len(), 1);
+        assert!(out.did_you_mean.is_none());
+        assert!(out.candidates.is_none());
+    }
+
+    #[test]
+    fn map_walk_not_found_maps_did_you_mean() {
+        use crate::import::{DidYouMeanCandidate, RecursiveWalkResult};
+        let res = RecursiveWalkResult::NotFound {
+            did_you_mean: vec![DidYouMeanCandidate { symbol_qualified: "a::b".into(), score: 0.5 }],
+        };
+        let out = map_walk_result(&res);
+        assert_eq!(out.result, "not_found");
+        assert_eq!(out.did_you_mean.as_ref().unwrap().len(), 1);
+        assert!(out.depth_groups.is_none());
+    }
+
+    #[tokio::test]
+    async fn code_traversal_cache_clear_dry_run() {
+        let ctx = OperationContext::local_cli();
+        let p = CodeTraversalCacheClearParams { source_id: Some("src1".into()), all_sources: Some(false) };
+        // dry_run must be set on the ctx, not the params.
+        let mut ctx = ctx;
+        ctx.dry_run = true;
+        let out = CodeTraversalCacheClearOperation.execute(&ctx, p).await.unwrap();
+        assert_eq!(out.dry_run, Some(true));
+        assert_eq!(out.source_id, Some("src1".into()));
+        assert_eq!(out.all_sources, false);
+        assert_eq!(out.deleted, 0);
     }
 }
 

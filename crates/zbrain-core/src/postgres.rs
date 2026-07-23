@@ -3326,8 +3326,10 @@ impl BrainEngine for PostgresEngine {
              inserted AS ( \
                 INSERT INTO facts \
                     (source_id, entity_slug, fact, kind, visibility, notability, \
-                     context, valid_from, valid_until, source, source_session, confidence) \
-                SELECT $1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9::timestamptz, $10, $11, $12 \
+                     context, valid_from, valid_until, source, source_session, confidence, \
+                     claim_metric, claim_value, claim_unit, claim_period, event_type) \
+                SELECT $1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9::timestamptz, $10, $11, $12, \
+                       $13, $14, $15, $16, $17 \
                 WHERE NOT EXISTS (SELECT 1 FROM dup_check) \
                 RETURNING id \
              ), \
@@ -3355,6 +3357,11 @@ impl BrainEngine for PostgresEngine {
         .bind(input.source.as_str())
         .bind(input.source_session.as_deref().unwrap_or(""))
         .bind(confidence)
+        .bind(input.claim_metric.clone())
+        .bind(input.claim_value)
+        .bind(input.claim_unit.clone())
+        .bind(input.claim_period.clone())
+        .bind(input.event_type.clone())
         .fetch_one(pool)
         .await
         .map_err(|e| Error::engine(format!("insert_fact: {e}")))?;
@@ -3435,6 +3442,260 @@ impl BrainEngine for PostgresEngine {
             .map_err(|e| Error::engine(format!("list_facts_by_entity: {e}")))?;
 
         rows.iter().map(|r| pg_row_to_fact(r)).collect()
+    }
+
+    async fn find_trajectory(
+        &self,
+        opts: &crate::types::TrajectoryOpts,
+    ) -> Result<Vec<crate::types::TrajectoryPoint>> {
+        let pool = self.pool()?;
+
+        let mut builder = sqlx::QueryBuilder::new(
+            "SELECT id, valid_from::text AS valid_from, claim_metric, claim_value, \
+                    claim_unit, claim_period, event_type, fact, source_session, \
+                    source_markdown_slug, embedding::text AS embedding \
+             FROM facts \
+             WHERE ",
+        );
+
+        match &opts.source_ids {
+            Some(ids) if !ids.is_empty() => {
+                builder.push("source_id = ANY(");
+                builder.push_bind(ids.clone());
+                builder.push("::text[])");
+            }
+            _ => {
+                let sid = opts.source_id.clone().unwrap_or_else(|| "default".to_string());
+                builder.push("source_id = ");
+                builder.push_bind(sid);
+            }
+        }
+
+        builder.push(" AND entity_slug = ");
+        builder.push_bind(opts.entity_slug.clone());
+        builder.push(" AND expired_at IS NULL");
+
+        if opts.remote {
+            builder.push(" AND visibility = 'world'");
+        }
+        if let Some(ref metric) = opts.metric {
+            builder.push(" AND claim_metric = ");
+            builder.push_bind(metric.clone());
+        }
+        match opts.kind {
+            crate::types::TrajectoryKind::Metric => {
+                builder.push(" AND claim_metric IS NOT NULL");
+            }
+            crate::types::TrajectoryKind::Event => {
+                builder.push(" AND event_type IS NOT NULL");
+            }
+            crate::types::TrajectoryKind::All => {}
+        }
+        if let Some(ref since) = opts.since {
+            builder.push(" AND valid_from >= ");
+            builder.push_bind(since.clone());
+        }
+        if let Some(ref until) = opts.until {
+            builder.push(" AND valid_from <= ");
+            builder.push_bind(until.clone());
+        }
+
+        builder.push(" ORDER BY valid_from ASC, id ASC");
+
+        let limit = (opts.limit.unwrap_or(100) as i64).clamp(1, 500);
+        builder.push(" LIMIT ");
+        builder.push_bind(limit);
+
+        let rows = builder
+            .build()
+            .fetch_all(pool)
+            .await
+            .map_err(|e| Error::engine(format!("find_trajectory: {e}")))?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let valid_from: Option<String> = row.try_get("valid_from").ok().flatten();
+            let embedding = crate::trajectory_stats::parse_embedding_text(
+                row.try_get::<Option<String>, _>("embedding").ok().flatten(),
+            );
+            out.push(crate::types::TrajectoryPoint {
+                fact_id: row.try_get("id").map_err(|e| Error::engine(format!("ft id: {e}")))?,
+                valid_from: valid_from.map(|s| crate::trajectory_stats::iso_date_prefix(&s)),
+                metric: row.try_get("claim_metric").ok().flatten(),
+                value: row.try_get("claim_value").ok().flatten(),
+                unit: row.try_get("claim_unit").ok().flatten(),
+                period: row.try_get("claim_period").ok().flatten(),
+                event_type: row.try_get("event_type").ok().flatten(),
+                text: row.try_get::<String, _>("fact").unwrap_or_default(),
+                source_session: row.try_get("source_session").ok().flatten(),
+                source_markdown_slug: row.try_get("source_markdown_slug").ok().flatten(),
+                embedding,
+            });
+        }
+        Ok(out)
+    }
+
+    async fn list_facts_since(
+        &self,
+        source_id: &str,
+        since_iso: &str,
+        opts: &FactListOpts,
+    ) -> Result<Vec<FactRow>> {
+        let pool = self.pool()?;
+        let mut builder = sqlx::QueryBuilder::new(
+            "SELECT id, source_id, entity_slug, fact, kind, visibility, \
+                    notability, context, valid_from::text AS valid_from, \
+                    valid_until::text AS valid_until, expired_at::text AS expired_at, \
+                    superseded_by::bigint AS superseded_by, \
+                    consolidated_at::text AS consolidated_at, \
+                    consolidated_into::bigint AS consolidated_into, source, \
+                    source_session, confidence, created_at::text AS created_at \
+             FROM facts \
+             WHERE source_id = ",
+        );
+        builder.push_bind(source_id);
+        builder.push(" AND created_at >= ");
+        builder.push_bind(since_iso);
+        if opts.active_only.unwrap_or(false) {
+            builder.push(" AND expired_at IS NULL AND superseded_by IS NULL");
+        }
+        if let Some(ref kinds) = opts.kinds {
+            if !kinds.is_empty() {
+                builder.push(" AND kind IN (");
+                let mut separated = builder.separated(", ");
+                for k in kinds {
+                    separated.push_bind(k.to_string());
+                }
+                separated.push_unseparated(")");
+            }
+        }
+        if let Some(ref vs) = opts.visibility {
+            if !vs.is_empty() {
+                builder.push(" AND visibility IN (");
+                let mut separated = builder.separated(", ");
+                for v in vs {
+                    separated.push_bind(v.to_string());
+                }
+                separated.push_unseparated(")");
+            }
+        }
+        builder.push(" ORDER BY created_at DESC, id DESC");
+        if let Some(ref limit) = opts.limit {
+            builder.push(" LIMIT ");
+            builder.push_bind(*limit);
+        }
+        let rows = builder
+            .build()
+            .fetch_all(pool)
+            .await
+            .map_err(|e| Error::engine(format!("list_facts_since: {e}")))?;
+        rows.iter().map(|r| pg_row_to_fact(r)).collect()
+    }
+
+    async fn list_facts_by_session(
+        &self,
+        source_id: &str,
+        session_id: &str,
+        opts: &FactListOpts,
+    ) -> Result<Vec<FactRow>> {
+        let pool = self.pool()?;
+        let mut builder = sqlx::QueryBuilder::new(
+            "SELECT id, source_id, entity_slug, fact, kind, visibility, \
+                    notability, context, valid_from::text AS valid_from, \
+                    valid_until::text AS valid_until, expired_at::text AS expired_at, \
+                    superseded_by::bigint AS superseded_by, \
+                    consolidated_at::text AS consolidated_at, \
+                    consolidated_into::bigint AS consolidated_into, source, \
+                    source_session, confidence, created_at::text AS created_at \
+             FROM facts \
+             WHERE source_id = ",
+        );
+        builder.push_bind(source_id);
+        builder.push(" AND source_session = ");
+        builder.push_bind(session_id);
+        if opts.active_only.unwrap_or(false) {
+            builder.push(" AND expired_at IS NULL AND superseded_by IS NULL");
+        }
+        if let Some(ref kinds) = opts.kinds {
+            if !kinds.is_empty() {
+                builder.push(" AND kind IN (");
+                let mut separated = builder.separated(", ");
+                for k in kinds {
+                    separated.push_bind(k.to_string());
+                }
+                separated.push_unseparated(")");
+            }
+        }
+        if let Some(ref vs) = opts.visibility {
+            if !vs.is_empty() {
+                builder.push(" AND visibility IN (");
+                let mut separated = builder.separated(", ");
+                for v in vs {
+                    separated.push_bind(v.to_string());
+                }
+                separated.push_unseparated(")");
+            }
+        }
+        builder.push(" ORDER BY created_at DESC, id DESC");
+        if let Some(ref limit) = opts.limit {
+            builder.push(" LIMIT ");
+            builder.push_bind(*limit);
+        }
+        let rows = builder
+            .build()
+            .fetch_all(pool)
+            .await
+            .map_err(|e| Error::engine(format!("list_facts_by_session: {e}")))?;
+        rows.iter().map(|r| pg_row_to_fact(r)).collect()
+    }
+
+    async fn list_supersessions(
+        &self,
+        source_id: &str,
+        opts: &crate::types::SupersessionOpts,
+    ) -> Result<Vec<FactRow>> {
+        let pool = self.pool()?;
+        let mut builder = sqlx::QueryBuilder::new(
+            "SELECT id, source_id, entity_slug, fact, kind, visibility, \
+                    notability, context, valid_from::text AS valid_from, \
+                    valid_until::text AS valid_until, expired_at::text AS expired_at, \
+                    superseded_by::bigint AS superseded_by, \
+                    consolidated_at::text AS consolidated_at, \
+                    consolidated_into::bigint AS consolidated_into, source, \
+                    source_session, confidence, created_at::text AS created_at \
+             FROM facts \
+             WHERE source_id = ",
+        );
+        builder.push_bind(source_id);
+        builder.push(" AND expired_at IS NOT NULL AND superseded_by IS NOT NULL");
+        if let Some(ref since) = opts.since {
+            builder.push(" AND expired_at >= ");
+            builder.push_bind(since.clone());
+        }
+        builder.push(" ORDER BY expired_at DESC, id DESC");
+        if let Some(ref limit) = opts.limit {
+            builder.push(" LIMIT ");
+            builder.push_bind(*limit);
+        }
+        let rows = builder
+            .build()
+            .fetch_all(pool)
+            .await
+            .map_err(|e| Error::engine(format!("list_supersessions: {e}")))?;
+        rows.iter().map(|r| pg_row_to_fact(r)).collect()
+    }
+
+    async fn count_unconsolidated_facts(&self, source_id: &str) -> Result<i64> {
+        let pool = self.pool()?;
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM facts \
+             WHERE source_id = $1 AND consolidated_at IS NULL AND expired_at IS NULL",
+        )
+        .bind(source_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| Error::engine(format!("count_unconsolidated_facts: {e}")))?;
+        Ok(count)
     }
 
     async fn get_facts_health(&self, source_id: &str) -> Result<FactsHealth> {
