@@ -20,7 +20,7 @@ pub fn build_calibration_router() -> Router<AppState> {
 // ─── Handlers ──────────────────────────────────────────────────────────
 
 async fn get_profile_handler(State(state): State<AppState>) -> Response {
-    match state.calibration_queries.get_latest_profile("garry").await {
+    match state.calibration_queries.get_latest_profile("garry", None, None).await {
         Ok(profile) => Json(serde_json::json!({
             "ok": true,
             "data": profile,
@@ -39,7 +39,7 @@ async fn get_chart_handler(
     Path(chart_type): Path<String>,
 ) -> Response {
     // Fetch profile data for chart rendering
-    let profile = match state.calibration_queries.get_latest_profile("garry").await {
+    let profile = match state.calibration_queries.get_latest_profile("garry", None, None).await {
         Ok(p) => p,
         Err(e) => {
             return (
@@ -54,8 +54,7 @@ async fn get_chart_handler(
         "brier-trend" => {
             let series: Vec<zbrain_svg::BrierTrendPoint> = profile
                 .as_ref()
-                .and_then(|p| p.domain_scorecards.as_ref())
-                .and_then(|v| v.as_array())
+                .and_then(|p| p.domain_scorecards.as_array())
                 .map(|arr| {
                     arr.iter()
                         .filter_map(|item| {
@@ -75,8 +74,7 @@ async fn get_chart_handler(
         "domain-bars" => {
             let bars: Vec<zbrain_svg::DomainBar> = profile
                 .as_ref()
-                .and_then(|p| p.domain_scorecards.as_ref())
-                .and_then(|v| v.as_array())
+                .and_then(|p| p.domain_scorecards.as_array())
                 .map(|arr| {
                     arr.iter()
                         .filter_map(|item| {
@@ -97,27 +95,24 @@ async fn get_chart_handler(
         "pattern-statements" => {
             let stmts: Vec<zbrain_svg::PatternStatementsCardItem> = profile
                 .as_ref()
-                .and_then(|p| p.pattern_statements.as_ref())
-                .map(|ps| {
-                    ps.iter()
-                        .enumerate()
-                        .map(|(i, text)| zbrain_svg::PatternStatementsCardItem {
-                            text: text.clone(),
-                            drill_href: Some(format!(
-                                "/admin/calibration/pattern/{}",
-                                i + 1
-                            )),
-                        })
-                        .collect()
-                })
+                .map(|p| p.pattern_statements
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| zbrain_svg::PatternStatementsCardItem {
+                        text: s.to_string(),
+                        drill_href: Some(format!(
+                            "/admin/calibration/pattern/{}",
+                            i + 1
+                        )),
+                    })
+                    .collect())
                 .unwrap_or_default();
             zbrain_svg::render_pattern_statements_card(&stmts, 600)
         }
         "abandoned-threads" => {
             let threads: Vec<zbrain_svg::AbandonedThread> = profile
                 .as_ref()
-                .and_then(|p| p.domain_scorecards.as_ref())
-                .and_then(|v| v.as_array())
+                .and_then(|p| p.domain_scorecards.as_array())
                 .map(|arr| {
                     arr.iter()
                         .filter_map(|item| {

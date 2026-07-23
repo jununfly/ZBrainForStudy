@@ -48,6 +48,7 @@ hex = { workspace = true }
 rand = "0.8"
 regex = "1"
 serde_yaml = { workspace = true }
+erased-serde = { workspace = true }
 unicode-normalization = { workspace = true }
 walkdir = "2"
 # Slice 1-6-4-9 (publish command): self-contained shareable-HTML generation.

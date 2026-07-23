@@ -12,7 +12,10 @@
 //! so comments must stay self-explanatory.
 
 use crate::calibration_queries::{CalibrationProfileRow, CalibrationQueries, TakesScorecard};
-use serde::Serialize;
+use async_trait::async_trait;
+use crate::engine::BrainEngine;
+use serde::{Serialize, Deserialize};
+use std::collections::HashMap;
 use std::io::ErrorKind as IoErrorKind;
 use std::process::Command;
 
@@ -513,11 +516,23 @@ pub async fn batch_forecast<C: CalibrationQueries + ?Sized>(
 
 // ── cross-brain calibration query semantics (cross-brain.ts: canReadMountsForCtx + attributionSuffix) ──
 
-/// Minimal attribution projection a consumer surfaces. The full
-/// `CrossBrainProfileResult` carries the calibration row too; this pure
-/// formatter only needs the two attribution fields.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Combined trait for a mountable engine: BrainEngine + CalibrationQueries + Send + Sync.
+pub trait MountableBrainEngine: BrainEngine + CalibrationQueries + Send + Sync + 'static {}
+impl<T: BrainEngine + CalibrationQueries + Send + Sync + 'static> MountableBrainEngine for T {}
+
+/// Resolver that yields mounted brain engines for cross-brain fallback lookup.
+///
+/// Matches TS `mountResolver` contract: the resolver returns an ordered list of
+/// (brain_id, engine) pairs to query in priority order (first match wins).
+#[async_trait]
+pub trait MountResolver: Send + Sync {
+    async fn resolve_mounts(&self) -> crate::error::Result<Vec<(String, Box<dyn MountableBrainEngine>)>>;
+}
+
+/// Result of cross-brain query: the calibration profile plus attribution.
+#[derive(Debug, Clone, PartialEq)]
 pub struct CrossBrainProfileResult {
+    pub profile: CalibrationProfileRow,
     pub source_brain_id: String,
     pub from_mount: bool,
 }
@@ -550,6 +565,392 @@ pub fn attribution_suffix(result: &CrossBrainProfileResult) -> String {
         return String::new();
     }
     format!(" (from mounted brain: {})", result.source_brain_id)
+}
+
+/// Query calibration profile across local + mounted brains per D18 4-rule contract.
+///
+/// 1. Local-first: if a profile exists locally, return it immediately (no mount query).
+/// 2. Mount-fallback: only when local has no profile AND `can_read_mounts` is true.
+/// 3. Query mounts in priority order; first published profile wins.
+/// 4. Returns None when no reachable profile found.
+pub async fn query_across_brains(
+    local_engine: &dyn CalibrationQueries,
+    local_brain_id: String,
+    holder: &str,
+    can_read_mounts: bool,
+    mount_resolver: &dyn MountResolver,
+    source_id: Option<&str>,
+    source_ids: Option<&[String]>,
+) -> crate::error::Result<Option<CrossBrainProfileResult>> {
+    // 1. Local-first: check local engine first
+    let local_profile = local_engine.get_latest_profile(holder, source_id, source_ids).await?;
+    if let Some(profile) = local_profile {
+        return Ok(Some(CrossBrainProfileResult {
+            profile,
+            source_brain_id: local_brain_id,
+            from_mount: false,
+        }));
+    }
+
+    // 4. If can't read mounts, stop here
+    if !can_read_mounts {
+        return Ok(None);
+    }
+
+    // 2. Mount fallback: iterate priority order
+    let mounts = mount_resolver.resolve_mounts().await?;
+    for (brain_id, engine) in mounts {
+        let mount_profile = engine.get_latest_profile(holder, source_id, source_ids).await?;
+        if let Some(profile) = mount_profile {
+            if !profile.published {
+                continue;
+            }
+            // Found first matching published profile → return
+            return Ok(Some(CrossBrainProfileResult {
+                profile,
+                source_brain_id: brain_id,
+                from_mount: true,
+            }));
+        }
+    }
+
+    // No profile found anywhere
+    Ok(None)
+}
+
+// ── domain scorecard aggregation (aggregateDomainScorecards.ts) ──
+
+/// Aggregator algorithm kind (closed enum).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AggregatorKind {
+    /// Standard Brier score over resolved binary takes.
+    ScalarBrier,
+    /// Brier weighted by take conviction (ABS(weight - 0.5) * 2).
+    WeightedBrier,
+    /// Simple accuracy ratio (correct / resolved) for binary without probability semantics.
+    CountBased,
+    /// Descriptive rollup (tier counts) for domains without binary outcomes.
+    ClusterSummary,
+}
+
+impl std::fmt::Display for AggregatorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AggregatorKind::ScalarBrier => write!(f, "scalar_brier"),
+            AggregatorKind::WeightedBrier => write!(f, "weighted_brier"),
+            AggregatorKind::CountBased => write!(f, "count_based"),
+            AggregatorKind::ClusterSummary => write!(f, "cluster_summary"),
+        }
+    }
+}
+
+impl TryFrom<&str> for AggregatorKind {
+    type Error = crate::error::Error;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "scalar_brier" => Ok(AggregatorKind::ScalarBrier),
+            "weighted_brier" => Ok(AggregatorKind::WeightedBrier),
+            "count_based" => Ok(AggregatorKind::CountBased),
+            "cluster_summary" => Ok(AggregatorKind::ClusterSummary),
+            _ => Err(crate::error::StructuredError::new(
+                "InvalidAggregatorKind",
+                "invalid_aggregator_kind",
+                &format!("unknown aggregator kind '{}', expected one of: scalar_brier, weighted_brier, count_based, cluster_summary", value),
+            ).into()),
+        }
+    }
+}
+
+/// A single calibration domain declared in the pack manifest.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CalibrationDomain {
+    /// Domain name (lowercase snake_case).
+    pub name: String,
+    /// Aggregation algorithm to use.
+    pub aggregator: AggregatorKind,
+    /// Page types whose takes feed this domain.
+    pub page_types: Vec<String>,
+}
+
+/// Per-domain aggregated scorecard.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DomainScorecard {
+    /// Number of resolved takes contributing to this scorecard.
+    pub n: i32,
+    /// Brier score (lower = better), null when n = 0 or aggregator doesn't compute it.
+    pub brier: Option<f64>,
+    /// Accuracy fraction in [0, 1], null when n = 0 or aggregator doesn't compute it.
+    pub accuracy: Option<f64>,
+    /// Aggregator algorithm used (debugging).
+    pub aggregator: AggregatorKind,
+    /// Page types filtered for this domain.
+    pub page_types: Vec<String>,
+    /// Aggregator-specific extra data (tier_counts for cluster_summary).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extras: Option<serde_json::Value>,
+}
+
+/// Map from domain name to scorecard.
+pub type DomainScorecards = HashMap<String, DomainScorecard>;
+
+/// Result row for scalar_brier / weighted_brier / count_brier queries.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct AggregationRow {
+    n: i32,
+    brier: Option<f64>,
+    accuracy: Option<f64>,
+}
+
+/// Result row for cluster_summary query.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct ClusterSummaryRow {
+    n: i32,
+    t1: i32,
+    t2: i32,
+    t3: i32,
+    t4: i32,
+}
+
+/// Aggregate every declared calibration domain for the given holder + source.
+///
+/// - Fail-soft per domain: any error returns {n: 0, brier: null, accuracy: null, extras: {error: msg}}
+/// - Empty domains (n=0) are still included so consumers can distinguish
+///   "declared but no data" from "not declared".
+pub async fn aggregate_domain_scorecards(
+    engine: &dyn BrainEngine,
+    holder: &str,
+    domains: &[CalibrationDomain],
+    source_id: &str,
+) -> crate::error::Result<DomainScorecards> {
+    let mut out = DomainScorecards::new();
+    for domain in domains {
+        match aggregate_one_domain(engine, holder, domain, source_id).await {
+            Ok(scorecard) => {
+                out.insert(domain.name.clone(), scorecard);
+            }
+            Err(err) => {
+                out.insert(domain.name.clone(), DomainScorecard {
+                    n: 0,
+                    brier: None,
+                    accuracy: None,
+                    aggregator: domain.aggregator.clone(),
+                    page_types: domain.page_types.clone(),
+                    extras: Some(serde_json::json!({
+                        "error": err.to_string()
+                    })),
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
+async fn aggregate_one_domain(
+    engine: &dyn BrainEngine,
+    holder: &str,
+    domain: &CalibrationDomain,
+    source_id: &str,
+) -> crate::error::Result<DomainScorecard> {
+    match domain.aggregator {
+        AggregatorKind::ScalarBrier => aggregate_scalar_brier(engine, holder, domain, source_id).await,
+        AggregatorKind::WeightedBrier => aggregate_weighted_brier(engine, holder, domain, source_id).await,
+        AggregatorKind::CountBased => aggregate_count_based(engine, holder, domain, source_id).await,
+        AggregatorKind::ClusterSummary => aggregate_cluster_summary(engine, domain, source_id).await,
+    }
+}
+
+/// Standard Brier score: mean((p - outcome)^2).
+async fn aggregate_scalar_brier(
+    engine: &dyn BrainEngine,
+    holder: &str,
+    domain: &CalibrationDomain,
+    source_id: &str,
+) -> crate::error::Result<DomainScorecard> {
+    let sql = r#"
+        SELECT
+            COUNT(*)::int AS n,
+            AVG(POWER(t.weight - (t.resolved_outcome::int)::real, 2))::real AS brier,
+            (SUM(CASE WHEN (t.weight >= 0.5) = t.resolved_outcome THEN 1 ELSE 0 END)::real
+                / NULLIF(COUNT(*), 0))::real AS accuracy
+         FROM takes t
+         JOIN take_domain_assignments a ON a.take_id = t.id
+         JOIN pages p ON p.id = t.page_id
+         WHERE a.domain = $1
+           AND t.holder = $2
+           AND t.active = TRUE
+           AND t.resolved_outcome IS NOT NULL
+           AND p.type = ANY($3::text[])
+           AND p.source_id = $4
+    "#;
+    let params: &[&(dyn erased_serde::Serialize + Sync)] = &[
+        &domain.name,
+        &holder,
+        &domain.page_types,
+        &source_id,
+    ];
+    let json_rows = engine.execute_raw(sql, params).await?;
+    let mut rows = Vec::new();
+    for json in json_rows {
+        let row: AggregationRow = serde_json::from_value(json)
+            .map_err(|e| crate::error::Error::engine(format!("deserialize aggregation row: {}", e)))?;
+        rows.push(row);
+    }
+    let row = rows.first().unwrap_or(&AggregationRow { n: 0, brier: None, accuracy: None });
+    Ok(DomainScorecard {
+        n: row.n,
+        brier: if row.n > 0 { row.brier } else { None },
+        accuracy: if row.n > 0 { row.accuracy } else { None },
+        aggregator: AggregatorKind::ScalarBrier,
+        page_types: domain.page_types.clone(),
+        extras: None,
+    })
+}
+
+/// Weighted Brier: each prediction weighted by conviction (ABS(weight - 0.5) * 2).
+async fn aggregate_weighted_brier(
+    engine: &dyn BrainEngine,
+    holder: &str,
+    domain: &CalibrationDomain,
+    source_id: &str,
+) -> crate::error::Result<DomainScorecard> {
+    let sql = r#"
+        WITH scored AS (
+            SELECT
+                POWER(t.weight - (t.resolved_outcome::int)::real, 2) AS sq_err,
+                ABS(t.weight - 0.5) * 2.0 AS conviction,
+                (t.weight >= 0.5) = t.resolved_outcome AS hit
+            FROM takes t
+            JOIN take_domain_assignments a ON a.take_id = t.id
+            JOIN pages p ON p.id = t.page_id
+            WHERE a.domain = $1
+              AND t.holder = $2
+              AND t.active = TRUE
+              AND t.resolved_outcome IS NOT NULL
+              AND p.type = ANY($3::text[])
+              AND p.source_id = $4
+        )
+        SELECT
+            COUNT(*)::int AS n,
+            (SUM(sq_err * conviction) / NULLIF(SUM(conviction), 0))::real AS brier,
+            (SUM(CASE WHEN hit THEN 1 ELSE 0 END)::real / NULLIF(COUNT(*), 0))::real AS accuracy
+        FROM scored
+    "#;
+    let params: &[&(dyn erased_serde::Serialize + Sync)] = &[
+        &domain.name,
+        &holder,
+        &domain.page_types,
+        &source_id,
+    ];
+    let json_rows = engine.execute_raw(sql, params).await?;
+    let mut rows = Vec::new();
+    for json in json_rows {
+        let row: AggregationRow = serde_json::from_value(json)
+            .map_err(|e| crate::error::Error::engine(format!("deserialize aggregation row: {}", e)))?;
+        rows.push(row);
+    }
+    let row = rows.first().unwrap_or(&AggregationRow { n: 0, brier: None, accuracy: None });
+    Ok(DomainScorecard {
+        n: row.n,
+        brier: if row.n > 0 { row.brier } else { None },
+        accuracy: if row.n > 0 { row.accuracy } else { None },
+        aggregator: AggregatorKind::WeightedBrier,
+        page_types: domain.page_types.clone(),
+        extras: None,
+    })
+}
+
+/// Simple accuracy: (correct / resolved), no Brier.
+async fn aggregate_count_based(
+    engine: &dyn BrainEngine,
+    holder: &str,
+    domain: &CalibrationDomain,
+    source_id: &str,
+) -> crate::error::Result<DomainScorecard> {
+    let sql = r#"
+        SELECT
+            COUNT(*)::int AS n,
+            (SUM(CASE WHEN (t.weight >= 0.5) = t.resolved_outcome THEN 1 ELSE 0 END)::real
+                / NULLIF(COUNT(*), 0))::real AS accuracy
+         FROM takes t
+         JOIN take_domain_assignments a ON a.take_id = t.id
+         JOIN pages p ON p.id = t.page_id
+         WHERE a.domain = $1
+           AND t.holder = $2
+           AND t.active = TRUE
+           AND t.resolved_outcome IS NOT NULL
+           AND p.type = ANY($3::text[])
+           AND p.source_id = $4
+    "#;
+    let params: &[&(dyn erased_serde::Serialize + Sync)] = &[
+        &domain.name,
+        &holder,
+        &domain.page_types,
+        &source_id,
+    ];
+    let json_rows = engine.execute_raw(sql, params).await?;
+    let mut rows = Vec::new();
+    for json in json_rows {
+        let row: AggregationRow = serde_json::from_value(json)
+            .map_err(|e| crate::error::Error::engine(format!("deserialize aggregation row: {}", e)))?;
+        rows.push(row);
+    }
+    let row = rows.first().unwrap_or(&AggregationRow { n: 0, brier: None, accuracy: None });
+    Ok(DomainScorecard {
+        n: row.n,
+        brier: None,
+        accuracy: if row.n > 0 { row.accuracy } else { None },
+        aggregator: AggregatorKind::CountBased,
+        page_types: domain.page_types.clone(),
+        extras: None,
+    })
+}
+
+/// Cluster summary: descriptive rollup (tier counts) for domains without binary outcomes.
+async fn aggregate_cluster_summary(
+    engine: &dyn BrainEngine,
+    domain: &CalibrationDomain,
+    source_id: &str,
+) -> crate::error::Result<DomainScorecard> {
+    let sql = r#"
+        SELECT
+            COUNT(*)::int AS n,
+            SUM(CASE WHEN frontmatter->>'tier' = 'T1' OR frontmatter->>'tier' = '1' THEN 1 ELSE 0 END)::int AS t1,
+            SUM(CASE WHEN frontmatter->>'tier' = 'T2' OR frontmatter->>'tier' = '2' THEN 1 ELSE 0 END)::int AS t2,
+            SUM(CASE WHEN frontmatter->>'tier' = 'T3' OR frontmatter->>'tier' = '3' THEN 1 ELSE 0 END)::int AS t3,
+            SUM(CASE WHEN frontmatter->>'tier' = 'T4' OR frontmatter->>'tier' = '4' THEN 1 ELSE 0 END)::int AS t4
+         FROM pages
+         WHERE type = ANY($1::text[])
+           AND source_id = $2
+           AND deleted_at IS NULL
+    "#;
+    let params: &[&(dyn erased_serde::Serialize + Sync)] = &[
+        &domain.page_types,
+        &source_id,
+    ];
+    let json_rows = engine.execute_raw(sql, params).await?;
+    let mut rows = Vec::new();
+    for json in json_rows {
+        let row: ClusterSummaryRow = serde_json::from_value(json)
+            .map_err(|e| crate::error::Error::engine(format!("deserialize cluster row: {}", e)))?;
+        rows.push(row);
+    }
+    let row = rows.first().unwrap_or(&ClusterSummaryRow { n: 0, t1: 0, t2: 0, t3: 0, t4: 0 });
+    Ok(DomainScorecard {
+        n: row.n,
+        brier: None,
+        accuracy: None,
+        aggregator: AggregatorKind::ClusterSummary,
+        page_types: domain.page_types.clone(),
+        extras: Some(serde_json::json!({
+            "tier_counts": {
+                "T1": row.t1,
+                "T2": row.t2,
+                "T3": row.t3,
+                "T4": row.t4,
+            }
+        })),
+    })
 }
 
 // ── real-time pattern surfacing on take commit (nudge.ts: takeDomainHint + evaluateNudgeRule) ──
@@ -653,7 +1054,7 @@ pub fn evaluate_nudge_rule(
             matched_tag: None,
         };
     }
-    let tags = profile.active_bias_tags.as_deref().unwrap_or(&[]);
+    let tags = profile.active_bias_tags.as_slice();
     for tag in tags {
         if tag.to_lowercase().contains(&hint) {
             return NudgeRuleResult {
@@ -1285,12 +1686,35 @@ mod tests {
 
     #[test]
     fn attribution_suffix_local_empty_mount_has_suffix() {
+        let dummy_profile = CalibrationProfileRow {
+            id: 1,
+            source_id: "test".into(),
+            holder: "test".into(),
+            wave_version: "1".into(),
+            generated_at: "2024-01-01T00:00:00Z".into(),
+            published: false,
+            total_resolved: 0,
+            brier: None,
+            accuracy: None,
+            partial_rate: None,
+            grade_completion: 0.0,
+            domain_scorecards: serde_json::json!({}),
+            pattern_statements: vec![],
+            voice_gate_passed: false,
+            voice_gate_attempts: 0,
+            active_bias_tags: vec![],
+            model_id: "test".into(),
+            cost_usd: None,
+            judge_model_agreement: None,
+        };
         let local = CrossBrainProfileResult {
+            profile: dummy_profile.clone(),
             source_brain_id: "garry".into(),
             from_mount: false,
         };
         assert_eq!(attribution_suffix(&local), "");
         let mount = CrossBrainProfileResult {
+            profile: dummy_profile,
             source_brain_id: "team-x".into(),
             from_mount: true,
         };
@@ -1309,15 +1733,25 @@ mod tests {
 
     fn nudge_profile(holder: &str, tags: Vec<String>) -> CalibrationProfileRow {
         CalibrationProfileRow {
-            id: "1".into(),
+            id: 1,
             source_id: "s".into(),
             holder: holder.into(),
+            wave_version: "v0.36.1.0".into(),
             generated_at: "t".into(),
+            published: false,
+            total_resolved: 0,
             brier: None,
             accuracy: None,
-            pattern_statements: None,
-            active_bias_tags: Some(tags),
-            domain_scorecards: None,
+            partial_rate: None,
+            grade_completion: 1.0,
+            domain_scorecards: serde_json::json!({}),
+            pattern_statements: vec![],
+            voice_gate_passed: false,
+            voice_gate_attempts: 0,
+            active_bias_tags: tags,
+            model_id: "".into(),
+            cost_usd: None,
+            judge_model_agreement: None,
         }
     }
 
@@ -1588,7 +2022,7 @@ mod tests {
         }
     }
 
-    #[async_trait::async_trait]
+    #[async_trait]
     impl CalibrationQueries for FakeCalibrationEngine {
         async fn get_scorecard(
             &self,
@@ -1614,6 +2048,8 @@ mod tests {
         async fn get_latest_profile(
             &self,
             _holder: &str,
+            _source_id: Option<&str>,
+            _source_ids: Option<&[String]>,
         ) -> crate::error::Result<Option<CalibrationProfileRow>> {
             Ok(None)
         }

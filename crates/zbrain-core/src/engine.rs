@@ -11,6 +11,7 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use erased_serde::Serialize;
 use serde_json::{json, Map, Value};
 
 use crate::{
@@ -1073,8 +1074,10 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
     async fn get_calibration_profile(
         &self,
         _holder: &str,
+        _source_id: Option<&str>,
+        _source_ids: Option<&[String]>,
     ) -> crate::Result<Option<crate::calibration_queries::CalibrationProfileRow>> {
-        let _ = _holder;
+        let _ = (_holder, _source_id, _source_ids);
         Err(crate::error::StructuredError::new(
             "Unsupported",
             "unsupported",
@@ -1096,6 +1099,25 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
             "Unsupported",
             "unsupported",
             "get_scorecard not implemented for this engine",
+        ))
+    }
+
+    /// Execute a raw SQL query and return rows as JSON Values.
+    ///
+    /// This is needed for complex ad-hoc aggregations like calibration domain
+    /// scorecard aggregation that require joining multiple tables and cannot
+    /// be easily expressed through the typed query APIs.
+    ///
+    /// The caller is responsible for deserializing rows to the expected type.
+    async fn execute_raw(
+        &self,
+        _sql: &str,
+        _params: &[&(dyn erased_serde::Serialize + Sync)],
+    ) -> crate::Result<Vec<serde_json::Value>> {
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "execute_raw not implemented for this engine",
         ))
     }
 
@@ -3887,8 +3909,10 @@ impl BrainEngine for InMemoryEngine {
     async fn get_calibration_profile(
         &self,
         holder: &str,
+        source_id: Option<&str>,
+        source_ids: Option<&[String]>,
     ) -> crate::Result<Option<crate::calibration_queries::CalibrationProfileRow>> {
-        crate::calibration_queries::CalibrationQueries::get_latest_profile(self, holder).await
+        crate::calibration_queries::CalibrationQueries::get_latest_profile(self, holder, source_id, source_ids).await
     }
 
     async fn get_scorecard(
@@ -9292,6 +9316,8 @@ impl CalibrationQueries for InMemoryEngine {
     async fn get_latest_profile(
         &self,
         _holder: &str,
+        _source_id: Option<&str>,
+        _source_ids: Option<&[String]>,
     ) -> crate::error::Result<Option<CalibrationProfileRow>> {
         Ok(None)
     }

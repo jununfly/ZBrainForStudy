@@ -3449,6 +3449,9 @@ pub fn register_all(registry: &mut OperationRegistry) {
     // calibration Phase 2 (roadmap 1-3-3) — takes_scorecard: aggregate
     // calibration stats. Allow-list enforced server-side as a hard filter.
     registry.register(TakesScorecardOperation);
+    // calibration Phase 3 (roadmap 1-3-4) — takes_calibration: recompute
+    // domain-level aggregates from the latest published profile.
+    registry.register(TakesCalibrationOperation);
     // — Page domain WRAP (first batch, slice 1-6-7-1) —
     registry.register(SoftDeletePageOperation);
     registry.register(RewriteLinksOperation);
@@ -6610,8 +6613,117 @@ impl TypedOperation for GetCalibrationProfileOperation {
     ) -> OperationResult<Self::Output> {
         let engine = ctx.engine()?;
         let holder = params.holder.unwrap_or_else(|| "garry".to_string());
-        let profile = engine.get_calibration_profile(&holder).await?;
+        let profile = engine.get_calibration_profile(&holder, None, None).await?;
         Ok(profile)
+    }
+}
+
+// ── takes_calibration ───────────────────────────────────────────────────────
+
+/// Parameters for `takes_calibration`.
+///
+/// Recomputes domain-level aggregated scorecards from the latest published
+/// calibration profile's declared domains.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct TakesCalibrationParams {
+    #[serde(default)]
+    pub holder: Option<String>,
+    #[serde(default)]
+    pub source_id: Option<String>,
+}
+
+impl ValidateParams for TakesCalibrationParams {
+    fn validate(&self) -> OperationResult<()> {
+        if let Some(h) = &self.holder {
+            if h.trim().is_empty() {
+                return Err(OperationError::invalid_params(
+                    "takes_calibration.holder must be a non-empty string",
+                ));
+            }
+        }
+        if let Some(s) = &self.source_id {
+            if s.trim().is_empty() {
+                return Err(OperationError::invalid_params(
+                    "takes_calibration.source_id must be a non-empty string",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TakesCalibrationOperation;
+
+/// Output for `takes_calibration`.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TakesCalibrationOutput {
+    /// The latest profile (null if no profile exists).
+    pub profile: Option<crate::calibration_queries::CalibrationProfileRow>,
+    /// Aggregated domain scorecards from the profile's declared domains.
+    pub domain_scorecards: crate::calibration::DomainScorecards,
+}
+
+#[async_trait]
+impl TypedOperation for TakesCalibrationOperation {
+    type Params = TakesCalibrationParams;
+    type Output = TakesCalibrationOutput;
+
+    fn name(&self) -> &'static str {
+        "takes_calibration"
+    }
+    fn description(&self) -> &'static str {
+        "Recompute domain-level calibration aggregates from the latest published profile."
+    }
+    fn cli_hints(&self) -> Option<CliHints> {
+        Some(CliHints::new("takes-calibration"))
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "holder": { "type": "string", "description": "Holder slug (default 'garry')" },
+                "source_id": { "type": "string", "description": "Filter to this source ID" }
+            }
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let holder = params.holder.unwrap_or_else(|| "garry".to_string());
+        let source_id = params.source_id;
+
+        // 1. Get the latest published profile
+        let profile = engine.get_calibration_profile(&holder, source_id.as_deref(), None).await?;
+        let Some(profile) = profile else {
+            return Ok(TakesCalibrationOutput {
+                profile: None,
+                domain_scorecards: crate::calibration::DomainScorecards::new(),
+            });
+        };
+
+        // 2. Parse the declared domains from domain_scorecards field
+        let domains: Vec<crate::calibration::CalibrationDomain> =
+            serde_json::from_value(profile.domain_scorecards.clone())
+                .unwrap_or_else(|_| Vec::new());
+
+        // 3. Recompute aggregates for each domain
+        let domain_scorecards = crate::calibration::aggregate_domain_scorecards(
+            engine,
+            &holder,
+            &domains,
+            source_id.as_deref().unwrap_or(""),
+        ).await?;
+
+        Ok(TakesCalibrationOutput {
+            profile: Some(profile),
+            domain_scorecards,
+        })
     }
 }
 

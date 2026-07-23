@@ -2263,8 +2263,10 @@ impl BrainEngine for LibsqlEngine {
     async fn get_calibration_profile(
         &self,
         holder: &str,
+        source_id: Option<&str>,
+        source_ids: Option<&[String]>,
     ) -> Result<Option<crate::calibration_queries::CalibrationProfileRow>> {
-        crate::calibration_queries::CalibrationQueries::get_latest_profile(self, holder).await
+        crate::calibration_queries::CalibrationQueries::get_latest_profile(self, holder, source_id, source_ids).await
     }
 
     async fn get_scorecard(
@@ -8493,21 +8495,49 @@ impl CalibrationQueries for LibsqlEngine {
     }
 
     /// Latest calibration profile for a holder.
-    async fn get_latest_profile(&self, holder: &str) -> Result<Option<CalibrationProfileRow>> {
+    async fn get_latest_profile(&self, holder: &str, source_id: Option<&str>, source_ids: Option<&[String]>) -> Result<Option<CalibrationProfileRow>> {
         let conn = self.conn().await?;
+
+        use libsql::Value;
+        let mut sql = String::from(
+            "SELECT \
+                    id, source_id, holder, wave_version, generated_at, published, \
+                    total_resolved, brier, accuracy, partial_rate, grade_completion, \
+                    domain_scorecards, pattern_statements, voice_gate_passed, \
+                    voice_gate_attempts, active_bias_tags, model_id, cost_usd, \
+                    judge_model_agreement \
+             FROM calibration_profiles \
+             WHERE holder = ?1 "
+        );
+        let mut params: Vec<Value> = vec![Value::Text(holder.to_string())];
+        let mut param_idx = 2;
+
+        if let Some(s) = source_id {
+            sql.push_str(&format!(" AND source_id = ?{} ", param_idx));
+            params.push(Value::Text(s.to_string()));
+            param_idx += 1;
+        }
+        if let Some(sids) = source_ids {
+            if !sids.is_empty() {
+                sql.push_str(" AND source_id IN (");
+                for (i, sid) in sids.iter().enumerate() {
+                    if i > 0 {
+                        sql.push(',');
+                    }
+                    sql.push_str(&format!("?{}", param_idx));
+                    params.push(Value::Text(sid.to_string()));
+                    param_idx += 1;
+                }
+                sql.push_str(") ");
+            }
+        }
+
+        sql.push_str(" ORDER BY generated_at DESC LIMIT 1");
 
         let result = conn
             .query(
-                "SELECT \
-                        id, source_id, holder, generated_at, \
-                        brier, accuracy, \
-                        pattern_statements, active_bias_tags, \
-                        domain_scorecards \
-                 FROM calibration_profiles \
-                 WHERE holder = ?1 \
-                 ORDER BY generated_at DESC \
-                 LIMIT 1",
-                ::libsql::params![holder],
+                &sql,
+                params,
             )
             .await;
 
@@ -8523,23 +8553,35 @@ impl CalibrationQueries for LibsqlEngine {
             }
             Ok(mut rows) => {
                 if let Some(row) = rows.next().await.map_err(|e| Error::engine(format!("get_latest_profile row: {e}")))? {
-                    let pattern_json: Option<String> = row.get(6).unwrap_or(None);
-                    let bias_json: Option<String> = row.get(7).unwrap_or(None);
-                    let domain_json: Option<String> = row.get(8).unwrap_or(None);
+                    // SQLite arrays stored as JSON strings
+                    let pattern_json: String = row.get(11).unwrap_or_else(|_| "[]".into());
+                    let bias_json: String = row.get(14).unwrap_or_else(|_| "[]".into());
+                    let domain_json: String = row.get(10).unwrap_or_else(|_| "{}".into());
+
+                    let pattern_statements: Vec<String> = serde_json::from_str(&pattern_json).unwrap_or_default();
+                    let active_bias_tags: Vec<String> = serde_json::from_str(&bias_json).unwrap_or_default();
+                    let domain_scorecards: serde_json::Value = serde_json::from_str(&domain_json).unwrap_or_else(|_| serde_json::json!({}));
 
                     Ok(Some(CalibrationProfileRow {
-                        id: row.get::<String>(0).unwrap_or_default(),
+                        id: row.get::<i64>(0).unwrap_or_default(),
                         source_id: row.get::<String>(1).unwrap_or_default(),
                         holder: row.get::<String>(2).unwrap_or_default(),
-                        generated_at: row.get::<String>(3).unwrap_or_default(),
-                        brier: row.get::<Option<f64>>(4).unwrap_or(None),
-                        accuracy: row.get::<Option<f64>>(5).unwrap_or(None),
-                        pattern_statements: pattern_json
-                            .and_then(|s| serde_json::from_str::<Vec<String>>(s.as_str()).ok()),
-                        active_bias_tags: bias_json
-                            .and_then(|s| serde_json::from_str::<Vec<String>>(s.as_str()).ok()),
-                        domain_scorecards: domain_json
-                            .and_then(|s| serde_json::from_str::<serde_json::Value>(s.as_str()).ok()),
+                        wave_version: row.get::<String>(3).unwrap_or_default(),
+                        generated_at: row.get::<String>(4).unwrap_or_default(),
+                        published: row.get::<bool>(5).unwrap_or_default(),
+                        total_resolved: row.get::<i32>(6).unwrap_or_default(),
+                        brier: row.get::<Option<f64>>(7).unwrap_or(None),
+                        accuracy: row.get::<Option<f64>>(8).unwrap_or(None),
+                        partial_rate: row.get::<Option<f64>>(9).unwrap_or(None),
+                        grade_completion: row.get::<f64>(10).unwrap_or(1.0),
+                        domain_scorecards,
+                        pattern_statements,
+                        voice_gate_passed: row.get::<bool>(12).unwrap_or_default(),
+                        voice_gate_attempts: row.get::<i32>(13).unwrap_or_default() as i16,
+                        active_bias_tags,
+                        model_id: row.get::<String>(15).unwrap_or_default(),
+                        cost_usd: row.get::<Option<f64>>(16).unwrap_or(None),
+                        judge_model_agreement: row.get::<Option<f64>>(17).unwrap_or(None),
                     }))
                 } else {
                     Ok(None)
@@ -9042,6 +9084,130 @@ impl OAuthQueries for LibsqlEngine {
     }
 }
 
+// ── TokenQueries LibsqlEngine implementation ────────────────────────────
+
+use crate::{TokenQueries, AuthInfo, TokenError};
+
+#[async_trait::async_trait]
+impl TokenQueries for LibsqlEngine {
+    async fn verify_access_token(
+        &self,
+        token: &str,
+    ) -> std::result::Result<AuthInfo, TokenError> {
+        let token_hash = sha256_hex(token.as_bytes());
+        let now_secs = unix_now_secs();
+
+        let mut conn = self.conn().await.map_err(|e| TokenError::Storage(e.to_string()))?;
+
+        let mut rows = conn
+            .query(
+                "SELECT t.client_id, t.scopes, t.expires_at, \
+                    c.client_name, c.source_id, t.resource, c.federated_read \
+                 FROM oauth_tokens t \
+                 LEFT JOIN oauth_clients c ON c.client_id = t.client_id \
+                 WHERE t.token_hash = ?1 AND t.token_type = 'access'",
+                ::libsql::params![token_hash.clone()],
+            )
+            .await
+            .map_err(|e| TokenError::Storage(e.to_string()))?;
+
+        match rows.next().await {
+            Ok(Some(row)) => {
+            let expires_at: i64 = row.get(2).unwrap_or(0);
+            if expires_at == 0 || expires_at < now_secs {
+                return Err(TokenError::Expired);
+            }
+
+            let scopes_raw: String = row.get(3).unwrap_or_default();
+            let scopes: Vec<String> = serde_json::from_str(&scopes_raw).unwrap_or_default();
+
+            let client_id: String = row.get(0).unwrap_or_default();
+            let client_name: Option<String> = row.get(4).ok();
+            let source_id: Option<String> = row.get(5).ok();
+            let resource: Option<String> = row.get(6).ok();
+            let federated_read_raw: Option<String> = row.get(7).ok();
+            let allowed_sources: Option<Vec<String>> = federated_read_raw
+                .as_ref()
+                .and_then(|s| serde_json::from_str(s).ok());
+
+            return Ok(AuthInfo {
+                token: token.to_string(),
+                client_id,
+                client_name,
+                scopes,
+                expires_at,
+                source_id,
+                resource,
+                allowed_sources,
+            });
+            }
+            Ok(None) => {}
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("no such table") || msg.contains("does not exist") {
+                    return Err(TokenError::Invalid);
+                } else {
+                    return Err(TokenError::Storage(msg));
+                }
+            }
+        }
+
+        // Fallback: legacy access_tokens table.
+        let mut legacy_rows = conn
+            .query(
+                "SELECT name FROM access_tokens \
+                 WHERE token_hash = ?1 AND revoked_at IS NULL",
+                ::libsql::params![token_hash.clone()],
+            )
+            .await;
+
+        match legacy_rows {
+            Ok(mut rows) => {
+                match rows.next().await {
+                    Ok(Some(row)) => {
+                    let name: String = row.get(0).unwrap_or_default();
+                    // Update last_used_at (best-effort).
+                    let _ = conn
+                        .execute(
+                    "UPDATE access_tokens SET last_used_at = CURRENT_TIMESTAMP WHERE token_hash = ?1",
+                    ::libsql::params![token_hash.clone()],
+                        )
+                        .await;
+
+                    Ok(AuthInfo {
+                        token: token.to_string(),
+                        client_id: name.clone(),
+                        client_name: Some(name),
+                        scopes: vec!["read".into(), "write".into(), "admin".into()],
+                        expires_at: now_secs + 365 * 24 * 3600,
+                        source_id: Some("default".into()),
+                        resource: None,
+                        allowed_sources: Some(vec!["default".into()]),
+                    })
+                    }
+                    Ok(None) => Err(TokenError::Invalid),
+                    Err(e) => {
+                        let msg = e.to_string();
+                        if msg.contains("no such table") || msg.contains("does not exist") {
+                            Err(TokenError::Invalid)
+                        } else {
+                            Err(TokenError::Storage(msg))
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("no such table") || msg.contains("does not exist") {
+                    Err(TokenError::Invalid)
+                } else {
+                    Err(TokenError::Storage(msg))
+                }
+            }
+        }
+    }
+}
+
 // ── Internal: OAuth token issuance helper ─────────────────────────────────────
 
 impl LibsqlEngine {
@@ -9101,6 +9267,71 @@ impl LibsqlEngine {
             refresh_token,
         })
     }
+
+    async fn execute_raw(
+        &self,
+        sql: &str,
+        params: &[&(dyn erased_serde::Serialize + Sync)],
+    ) -> crate::Result<Vec<serde_json::Value>> {
+        use libsql::Value;
+
+        // Convert erased_serde parameters to libsql Values via JSON serialization.
+        let mut libsql_params: Vec<Value> = Vec::with_capacity(params.len());
+        for p in params {
+            let json = serde_json::to_value(p)
+                .map_err(|e| crate::Error::engine(format!("serialize parameter: {e}")))?;
+            let val = match json {
+                serde_json::Value::Null => Value::Null,
+                serde_json::Value::Bool(b) => Value::Integer(b as i64),
+                serde_json::Value::Number(n) => {
+                    if let Some(i) = n.as_i64() {
+                        Value::Integer(i)
+                    } else if let Some(f) = n.as_f64() {
+                        Value::Real(f)
+                    } else {
+                        Value::Text(n.to_string())
+                    }
+                }
+                serde_json::Value::String(s) => Value::Text(s),
+                // For complex types we just serialize them back to JSON text
+                _ => Value::Text(json.to_string()),
+            };
+            libsql_params.push(val);
+        }
+
+        let conn = self.conn().await?;
+        let mut rows = conn.query(sql, libsql_params).await
+            .map_err(|e| crate::Error::engine(format!("execute_raw query: {e}")))?;
+
+        let mut result = Vec::new();
+        while let Some(row) = rows.next().await
+            .map_err(|e| crate::Error::engine(format!("execute_raw read row: {e}")))?
+        {
+            // For each column, extract its value into a JSON Value
+            let mut map = serde_json::Map::new();
+            let mut col_idx = 0;
+            while let Some(col_name) = rows.column_name(col_idx) {
+                let val: Value = row.get(col_idx as i32)
+                    .map_err(|e| crate::Error::engine(format!("get column index {}: {}", col_idx, e)))?;
+                let json_val = match val {
+                    Value::Null => serde_json::Value::Null,
+                    Value::Integer(i) => serde_json::Value::Number(i.into()),
+                    Value::Real(f) => serde_json::Value::Number(
+                        serde_json::Number::from_f64(f).unwrap_or(serde_json::Number::from(0))
+                    ),
+                    Value::Text(t) => serde_json::Value::String(t),
+                    Value::Blob(b) => serde_json::Value::Array(
+                        b.iter().map(|&x| serde_json::Value::Number(x.into())).collect()
+                    ),
+                };
+                map.insert(col_name.to_string(), json_val);
+                col_idx += 1;
+            }
+            result.push(serde_json::Value::Object(map));
+        }
+
+        Ok(result)
+    }
 }
 
 // ── Helper: SHA-256 hex ──────────────────────────────────────────────────────
@@ -9122,126 +9353,3 @@ fn unix_now_secs() -> i64 {
 
 // ── TokenQueries ──────────────────────────────────────────────────────────────
 
-#[async_trait]
-impl crate::token_queries::TokenQueries for LibsqlEngine {
-    async fn verify_access_token(
-        &self,
-        token: &str,
-    ) -> std::result::Result<crate::token_queries::AuthInfo, crate::token_queries::TokenError> {
-        use crate::token_queries::{AuthInfo, TokenError};
-
-        // SHA-256 hash the raw token.
-        let token_hash = {
-            use sha2::{Digest, Sha256};
-            let mut h = Sha256::new();
-            h.update(token.as_bytes());
-            format!("{:x}", h.finalize())
-        };
-
-        let conn = self.conn().await.map_err(|e| TokenError::Storage(e.to_string()))?;
-
-        let now_secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-
-        // ── Primary lookup: oauth_tokens JOIN oauth_clients ────────────────
-        let mut rows = conn
-            .query(
-                "SELECT t.client_id, t.scopes, t.expires_at, \
-                        c.client_name, c.source_id, t.resource, c.federated_read \
-                 FROM oauth_tokens t \
-                 LEFT JOIN oauth_clients c ON c.client_id = t.client_id \
-                 WHERE t.token_hash = ?1 AND t.token_type = 'access'",
-                ::libsql::params![token_hash.clone()],
-            )
-            .await
-            .map_err(|e| TokenError::Storage(e.to_string()))?;
-
-        if let Some(row) = rows.next().await.map_err(|e| TokenError::Storage(e.to_string()))? {
-            // expires_at is stored as INTEGER (unix seconds) or ISO-8601 TEXT.
-            // Try INTEGER first, fall back to 0 (expired) on parse failure.
-            let expires_at: i64 = row.get::<i64>(2).unwrap_or(0);
-
-            if expires_at == 0 || expires_at < now_secs {
-                return Err(TokenError::Expired);
-            }
-
-            // Scopes: stored as JSON array TEXT, e.g. '["read","write"]'
-            let scopes_raw: String = row.get::<String>(1).unwrap_or_default();
-            let scopes: Vec<String> = serde_json::from_str(&scopes_raw).unwrap_or_default();
-
-            let client_id: String = row.get::<String>(0).unwrap_or_default();
-            let client_name: Option<String> = row.get::<String>(3).ok();
-            let source_id: Option<String> = row.get::<String>(4).ok();
-            let resource: Option<String> = row.get::<String>(5).ok();
-            let federated_read_raw: Option<String> = row.get::<String>(6).ok();
-            let allowed_sources: Option<Vec<String>> = federated_read_raw
-                .and_then(|s| serde_json::from_str(&s).ok());
-
-            return Ok(AuthInfo {
-                token: token.to_string(),
-                client_id,
-                client_name,
-                scopes,
-                expires_at,
-                source_id,
-                resource,
-                allowed_sources,
-            });
-        }
-
-        // ── Fallback: legacy access_tokens table ──────────────────────────
-        // This table may not exist in newer schemas — treat that as "not found".
-        let legacy_result = conn
-            .query(
-                "SELECT name FROM access_tokens \
-                 WHERE token_hash = ?1 AND revoked_at IS NULL",
-                ::libsql::params![token_hash],
-            )
-            .await;
-
-        let mut legacy_rows = match legacy_result {
-            Ok(r) => r,
-            Err(e) => {
-                let msg = e.to_string();
-                // "no such table" means legacy table was never created — return Invalid.
-                if msg.contains("no such table") {
-                    return Err(TokenError::Invalid);
-                }
-                return Err(TokenError::Storage(msg));
-            }
-        };
-
-        if let Some(row) =
-            legacy_rows.next().await.map_err(|e| TokenError::Storage(e.to_string()))?
-        {
-            let name: String = row.get::<String>(0).unwrap_or_default();
-            // Update last_used_at on legacy tokens (best-effort, ignore errors).
-            let _ = conn
-                .execute(
-                    "UPDATE access_tokens SET last_used_at = ?1 WHERE token_hash = ?2",
-                    ::libsql::params![crate::time::current_utc_iso8601(), {
-                        use sha2::{Digest, Sha256};
-                        let mut h = Sha256::new();
-                        h.update(token.as_bytes());
-                        format!("{:x}", h.finalize())
-                    }],
-                )
-                .await;
-
-            return Ok(AuthInfo {
-                token: token.to_string(),
-                client_id: name.clone(),
-                client_name: Some(name),
-                scopes: vec!["read".into(), "write".into(), "admin".into()],
-                expires_at: now_secs + 365 * 24 * 3600,
-                source_id: Some("default".into()),
-                resource: None,
-                allowed_sources: Some(vec!["default".into()]),
-            });
-        }
-
-        Err(TokenError::Invalid)
-    }
-}

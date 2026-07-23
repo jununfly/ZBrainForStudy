@@ -142,15 +142,25 @@ pub struct CalibrationBucket {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CalibrationProfileRow {
-    pub id: String,
+    pub id: i64,
     pub source_id: String,
     pub holder: String,
+    pub wave_version: String,
     pub generated_at: String,
+    pub published: bool,
+    pub total_resolved: i32,
     pub brier: Option<f64>,
     pub accuracy: Option<f64>,
-    pub pattern_statements: Option<Vec<String>>,
-    pub active_bias_tags: Option<Vec<String>>,
-    pub domain_scorecards: Option<serde_json::Value>,
+    pub partial_rate: Option<f64>,
+    pub grade_completion: f64,
+    pub domain_scorecards: serde_json::Value,
+    pub pattern_statements: Vec<String>,
+    pub voice_gate_passed: bool,
+    pub voice_gate_attempts: i16,
+    pub active_bias_tags: Vec<String>,
+    pub model_id: String,
+    pub cost_usd: Option<f64>,
+    pub judge_model_agreement: Option<f64>,
 }
 
 /// A summarized take for pattern drill-down.
@@ -225,7 +235,8 @@ pub trait CalibrationQueries: Debug + Send + Sync {
 
     /// Latest calibration profile for a holder.
     /// Returns None when the table does not exist or no profiles exist.
-    async fn get_latest_profile(&self, holder: &str) -> Result<Option<CalibrationProfileRow>>;
+    /// Optionally filter by source (cross-brain query uses this).
+    async fn get_latest_profile(&self, holder: &str, source_id: Option<&str>, source_ids: Option<&[String]>) -> Result<Option<CalibrationProfileRow>>;
 
     /// Pattern text + top-25 resolved takes for drill-down.
     /// `pattern_index` is 1-based.
@@ -248,7 +259,7 @@ mod tests {
     #[tokio::test]
     async fn contract_get_latest_profile_returns_none() {
         let engine = make_engine();
-        let result = engine.get_latest_profile("garry").await.unwrap();
+        let result = engine.get_latest_profile("garry", None, None).await.unwrap();
         assert_eq!(result, None);
     }
 

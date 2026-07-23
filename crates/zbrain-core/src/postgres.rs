@@ -35,7 +35,7 @@ use std::sync::{LazyLock, OnceLock};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use sqlx::postgres::PgPoolOptions;
-use sqlx::{PgPool, Row};
+use sqlx::{QueryBuilder, PgPool, Row};
 
 use crate::engine::{
     page_sort_sql, BrainEngine, CreateSourceInput, EngineConfig, EngineKind, GetPageOpts, Page,
@@ -52,6 +52,29 @@ use crate::oauth_queries::{
 };
 use crate::scope::{has_scope, parse_scope_string};
 use crate::token_queries::{AuthInfo, TokenError, TokenQueries};
+
+#[derive(Debug, sqlx::FromRow)]
+struct CalibrationProfileRowDb {
+    id: i64,
+    source_id: String,
+    holder: String,
+    wave_version: String,
+    generated_at: String,
+    published: bool,
+    total_resolved: i32,
+    brier: Option<f64>,
+    accuracy: Option<f64>,
+    partial_rate: Option<f64>,
+    grade_completion: f64,
+    domain_scorecards: serde_json::Value,
+    pattern_statements: Vec<String>,
+    voice_gate_passed: bool,
+    voice_gate_attempts: i32,
+    active_bias_tags: Vec<String>,
+    model_id: String,
+    cost_usd: Option<f64>,
+    judge_model_agreement: Option<f64>,
+}
 
 /// Split migration SQL into individual statements for Postgres.
 ///
@@ -1199,8 +1222,10 @@ impl BrainEngine for PostgresEngine {
     async fn get_calibration_profile(
         &self,
         holder: &str,
+        source_id: Option<&str>,
+        source_ids: Option<&[String]>,
     ) -> Result<Option<crate::calibration_queries::CalibrationProfileRow>> {
-        crate::calibration_queries::CalibrationQueries::get_latest_profile(self, holder).await
+        crate::calibration_queries::CalibrationQueries::get_latest_profile(self, holder, source_id, source_ids).await
     }
 
     async fn get_scorecard(
@@ -6603,30 +6628,41 @@ impl CalibrationQueries for PostgresEngine {
     ///
     /// The `calibration_profiles` table does not exist in the Postgres schema
     /// yet, so this degrades to `None`.
-    async fn get_latest_profile(&self, holder: &str) -> Result<Option<CalibrationProfileRow>> {
+    async fn get_latest_profile(&self, holder: &str, source_id: Option<&str>, source_ids: Option<&[String]>) -> Result<Option<CalibrationProfileRow>> {
         let pool = self.pool()?;
-        let result = sqlx::query_as::<
-            _,
-            (
-                String,
-                String,
-                String,
-                String,
-                Option<f64>,
-                Option<f64>,
-                Option<serde_json::Value>,
-                Option<serde_json::Value>,
-                Option<serde_json::Value>,
-            ),
-        >(
-            "SELECT id, source_id, holder, generated_at, brier, accuracy, \
-                    pattern_statements, active_bias_tags, domain_scorecards \
+        let mut builder = sqlx::QueryBuilder::new(
+            "SELECT id, source_id, holder, wave_version, generated_at, published, \
+                    total_resolved, brier, accuracy, partial_rate, grade_completion, \
+                    domain_scorecards, pattern_statements, voice_gate_passed, \
+                    voice_gate_attempts, active_bias_tags, model_id, cost_usd, \
+                    judge_model_agreement \
              FROM calibration_profiles \
-             WHERE holder = $1 \
-             ORDER BY generated_at DESC \
-             LIMIT 1",
-        )
-        .bind(holder)
+             WHERE holder = $1 "
+        );
+
+        let mut bind_count = 2;
+        if let Some(s) = source_id {
+            builder.push(" AND source_id = ");
+            builder.push_bind(s);
+        }
+        if let Some(sids) = source_ids {
+            if !sids.is_empty() {
+                builder.push(" AND source_id IN (");
+                let mut first = true;
+                for sid in sids {
+                    if !first {
+                        builder.push(',');
+                    }
+                    first = false;
+                    builder.push_bind(sid);
+                }
+                builder.push(')');
+            }
+        }
+
+        builder.push(" ORDER BY generated_at DESC LIMIT 1");
+
+        let result = builder.build_query_as::<CalibrationProfileRowDb>()
         .fetch_optional(pool)
         .await;
 
@@ -6635,19 +6671,25 @@ impl CalibrationQueries for PostgresEngine {
             Err(e) => Err(Error::engine(format!("get_latest_profile: {e}"))),
             Ok(None) => Ok(None),
             Ok(Some(row)) => Ok(Some(CalibrationProfileRow {
-                id: row.0,
-                source_id: row.1,
-                holder: row.2,
-                generated_at: row.3,
-                brier: row.4,
-                accuracy: row.5,
-                pattern_statements: row
-                    .6
-                    .and_then(|v| serde_json::from_value::<Vec<String>>(v).ok()),
-                active_bias_tags: row
-                    .7
-                    .and_then(|v| serde_json::from_value::<Vec<String>>(v).ok()),
-                domain_scorecards: row.8,
+                id: row.id,
+                source_id: row.source_id,
+                holder: row.holder,
+                wave_version: row.wave_version,
+                generated_at: row.generated_at,
+                published: row.published,
+                total_resolved: row.total_resolved,
+                brier: row.brier,
+                accuracy: row.accuracy,
+                partial_rate: row.partial_rate,
+                grade_completion: row.grade_completion,
+                domain_scorecards: row.domain_scorecards,
+                pattern_statements: row.pattern_statements,
+                voice_gate_passed: row.voice_gate_passed,
+                voice_gate_attempts: row.voice_gate_attempts as i16,
+                active_bias_tags: row.active_bias_tags,
+                model_id: row.model_id,
+                cost_usd: row.cost_usd,
+                judge_model_agreement: row.judge_model_agreement,
             })),
         }
     }
@@ -6764,6 +6806,55 @@ impl PostgresEngine {
         .await
         .map_err(|e| Error::engine(format!("log_budget_event: {e}")))?;
         Ok(())
+    }
+
+    async fn execute_raw(
+        &self,
+        sql: &str,
+        params: &[&(dyn erased_serde::Serialize + Sync)],
+    ) -> crate::Result<Vec<serde_json::Value>> {
+        use sqlx::{Column, Row};
+
+        // For each parameter, serialize it to JSON and then parse as sqlx::Value
+        let pool = self.pool.get().expect("pool not initialized");
+        let mut query = sqlx::query(sql);
+        for p in params {
+            let json = serde_json::to_value(p)
+                .map_err(|e| crate::Error::engine(format!("serialize parameter: {e}")))?;
+            query = match json {
+                serde_json::Value::Null => query.bind(None as Option<&str>),
+                serde_json::Value::Bool(b) => query.bind(b),
+                serde_json::Value::Number(n) => {
+                    if let Some(i) = n.as_i64() {
+                        query.bind(i)
+                    } else if let Some(f) = n.as_f64() {
+                        query.bind(f)
+                    } else {
+                        query.bind(n.to_string())
+                    }
+                }
+                serde_json::Value::String(s) => query.bind(s),
+                // For complex types, just bind as JSONB
+                _ => query.bind(serde_json::to_string(&json).unwrap()),
+            };
+        }
+
+        let rows = query.fetch_all(pool)
+            .await
+            .map_err(|e| crate::Error::engine(format!("execute_raw query: {e}")))?;
+
+        let mut result = Vec::new();
+        for row in rows {
+            let mut map = serde_json::Map::new();
+            for col in row.columns() {
+                let name = col.name();
+                let json_val = pg_cell_to_json(&row, name);
+                map.insert(name.to_string(), json_val);
+            }
+            result.push(serde_json::Value::Object(map));
+        }
+
+        Ok(result)
     }
 }
 
@@ -7395,4 +7486,61 @@ fn code_ref_row_to_result_pg(
         end_line: end_line.map(|v| v as i64),
         snippet: chunk_text.chars().take(500).collect(),
     })
+}
+
+/// Convert a Postgres cell to a serde_json::Value based on its type.
+fn pg_cell_to_json(row: &sqlx::postgres::PgRow, col_name: &str) -> serde_json::Value {
+    // Try common types first, then fall back to deserializing via FromRow
+    // This handles the most cases that come from calibration aggregations
+    if let Ok(v) = row.try_get::<bool, _>(col_name) {
+        return serde_json::Value::Bool(v);
+    }
+    if let Ok(v) = row.try_get::<i32, _>(col_name) {
+        return serde_json::Value::Number(v.into());
+    }
+    if let Ok(v) = row.try_get::<i64, _>(col_name) {
+        return serde_json::Value::Number(v.into());
+    }
+    if let Ok(v) = row.try_get::<f64, _>(col_name) {
+        return serde_json::Number::from_f64(v)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null);
+    }
+    if let Ok(v) = row.try_get::<String, _>(col_name) {
+        return serde_json::Value::String(v);
+    }
+    if let Ok(v) = row.try_get::<Option<bool>, _>(col_name) {
+        return match v {
+            Some(v) => serde_json::Value::Bool(v),
+            None => serde_json::Value::Null,
+        };
+    }
+    if let Ok(v) = row.try_get::<Option<i32>, _>(col_name) {
+        return match v {
+            Some(v) => serde_json::Value::Number(v.into()),
+            None => serde_json::Value::Null,
+        };
+    }
+    if let Ok(v) = row.try_get::<Option<i64>, _>(col_name) {
+        return match v {
+            Some(v) => serde_json::Value::Number(v.into()),
+            None => serde_json::Value::Null,
+        };
+    }
+    if let Ok(v) = row.try_get::<Option<f64>, _>(col_name) {
+        return match v {
+            Some(v) => serde_json::Number::from_f64(v)
+                .map(serde_json::Value::Number)
+                .unwrap_or(serde_json::Value::Null),
+            None => serde_json::Value::Null,
+        };
+    }
+    if let Ok(v) = row.try_get::<Option<String>, _>(col_name) {
+        return match v {
+            Some(v) => serde_json::Value::String(v),
+            None => serde_json::Value::Null,
+        };
+    }
+    // Fallback: just return null for unknown types
+    serde_json::Value::Null
 }
