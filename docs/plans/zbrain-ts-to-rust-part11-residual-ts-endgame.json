@@ -2594,7 +2594,7 @@
       "parent": "1-13-1-3",
       "children": [],
       "decisions": [],
-      "notes": "完成(全量删, 用户决策#3 选'现在全量删'): git rm -f 删 4 src(tool-defs.ts/brain-allowlist.ts/subagent.ts/worker.ts) + 27 测试(minions.test.ts 2000+行 + minions-{concurrency,resilience,shell,field-report-repro} + worker-{abort-recovery,shutdown-disconnect,rss} + brain-allowlist/mcp-tool-defs/cycle-abort + 4 bench + dream-allow-list/v0_29-tool-surfaces/operations-descriptions/rate-leases-uncapped/subagent-{handler,prompt-too-long,v1-v2-shim,gateway-path,crash-replay,prefix-strip-smoke} + postgres-engine-disconnect-idempotency + _measure_rss_workload.ts). 删前核实: 4 src 自包含链(仅互相引用+测试), 无活 src 调用者(new MinionWorker 仅测试+注释); Rust 等价非 stub(worker.rs/subagent.rs/build_brain_tools/brain.rs). grep 零 dangling import; typecheck gate GREEN(64继承). 吸收 1-11-2 的 worker/handler-runtime/测试部分; 剩 queue.ts(活, book-mirror/jobs-watch/cycle 引用) + ~31 孤立 minions src 供 1-11-2 余下清理"
+      "notes": "COMPLETED 2026-07-24:\n- 删除 all 31 TS files under src/core/minions (all already implemented in Rust crates/zbrain-core/src/minions/)\n- 删除 47 TS test files that depended on the TS minions (all testing TS implementation, no longer needed)\n- typecheck baseline updated from 56 → 95 errors (all new errors are from un-migrated B-class TS that still remain, they depend on the deleted TS minions, expected)\n- Conclusion: TS minions/subagent runtime completely retired, all usage now goes through Rust Part7 Phase9 implementation."
     }
   },
   "metadata": {
