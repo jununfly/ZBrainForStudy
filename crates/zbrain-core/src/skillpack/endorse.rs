@@ -46,7 +46,7 @@ pub struct EndorseOptions {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EndorseResult {
-    pub schema_version: &'static str,
+    pub schema_version: String,
     pub pack_name: String,
     pub prior_tier: Option<RegistryTier>,
     pub new_tier: RegistryTier,
@@ -187,7 +187,7 @@ pub fn run_endorse(opts: EndorseOptions) -> Result<EndorseResult, EndorseError> 
 
     if opts.dry_run {
         return Ok(EndorseResult {
-            schema_version: "skillpack-endorse-v1",
+            schema_version: "skillpack-endorse-v1".into(),
             pack_name: opts.pack_name,
             prior_tier,
             new_tier: tier,
@@ -259,7 +259,7 @@ pub fn run_endorse(opts: EndorseOptions) -> Result<EndorseResult, EndorseError> 
     }
 
     Ok(EndorseResult {
-        schema_version: "skillpack-endorse-v1",
+        schema_version: "skillpack-endorse-v1".into(),
         pack_name: opts.pack_name,
         prior_tier,
         new_tier: tier,

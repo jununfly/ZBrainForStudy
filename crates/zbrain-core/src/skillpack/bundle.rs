@@ -302,3 +302,31 @@ pub struct LoadedSkillSources {
     /// Validated source paths (relative).
     pub sources: Vec<String>,
 }
+
+/// Get bundled skill slugs from the root manifest.
+pub fn bundled_skill_slugs(zbrain_root: &Path) -> Result<(BundleManifest, Vec<String>)> {
+    let manifest = load_bundle_manifest(zbrain_root)?;
+    let slugs = manifest.skills.clone();
+    Ok((manifest, slugs))
+}
+
+/// Get the skill description from its SKILL.md frontmatter.
+pub fn get_skill_description(zbrain_root: &Path, slug: &str) -> Option<String> {
+    let skill_md = zbrain_root.join("skills").join(slug).join("SKILL.md");
+    if !skill_md.exists() {
+        return None;
+    }
+    let content = std::fs::read_to_string(&skill_md).ok()?;
+    // Look for frontmatter between ---
+    if let Some(fm) = content.split("---").nth(1) {
+        for line in fm.lines() {
+            if line.trim().starts_with("description:") {
+                let desc = line.splitn(2, ':').nth(1)?.trim().to_string();
+                // Strip quotes if present
+                let desc = desc.strip_prefix('"').unwrap_or(&desc).strip_suffix('"').unwrap_or(&desc).to_string();
+                return Some(desc);
+            }
+        }
+    }
+    None
+}

@@ -33,12 +33,15 @@ pub mod tarball;
 pub mod trust_prompt;
 
 // Re-export the public skillpack API consumed by the CLI and other callers.
+pub use crate::skillpack::bundle::{bundled_skill_slugs, find_zbrain_root, get_skill_description};
 pub use crate::skillpack::copy::CopyItem;
 pub use crate::skillpack::doctor::{run_doctor, DoctorOptions};
+pub use crate::skillpack::endorse::{run_endorse, EndorseOptions};
 pub use crate::skillpack::harvest::{run_harvest, HarvestOptions};
 pub use crate::skillpack::init_scaffold::{run_init_scaffold, InitScaffoldOptions};
 pub use crate::skillpack::pack_publish::{run_pack_publish, PackPublishOptions};
 pub use crate::skillpack::remote_source::{resolve_source, ResolveSourceOptions};
+pub use registry_schema::RegistryTier;
 pub use crate::skillpack::scaffold::{run_scaffold, ScaffoldOptions};
 pub use crate::skillpack::scaffold_third_party::{
     run_scaffold_third_party, ScaffoldThirdPartyOptions, ScaffoldThirdPartyStatus,

@@ -6,21 +6,12 @@ use std::path::PathBuf;
 use clap::Parser;
 use anyhow::{Result, anyhow};
 use zbrain_core::skillpack::{
-    self,
-    run_init_scaffold, run_scaffold, run_scaffold_third_party, run_harvest, run_scrub_legacy,
-    run_doctor, run_pack_publish,
-    load_registry, search_packs, find_pack_with_tier,
-    resolve_source,
-    DoctorOptions,
-    HarvestOptions,
-    PackPublishOptions,
-    ScrubLegacyOptions,
-    ScaffoldThirdPartyOptions, ScaffoldThirdPartyStatus,
+    load_registry, LoadRegistryOptions,
     SkillpackTier,
+    bundle::{self, find_zbrain_root},
+    registry_schema::{self, RegistryTier},
 };
 use zbrain_core::skillpack::doctor::DoctorMode;
-use zbrain_core::skillpack::registry_schema::RegistryTier;
-use zbrain_core::skillpack::bundle::find_zbrain_root;
 
 /// Subcommands for `zbrain skillpack`.
 #[derive(Debug, Clone, Parser)]
@@ -52,6 +43,24 @@ pub enum SkillpackSubcommand {
 
     /// Scrub legacy fence rows after migration to the frontmatter model (cleanup step).
     ScrubLegacyFenceRows(ScrubLegacyOptionsCli),
+
+    /// List every skill bundled in openclaw.plugin.json.
+    List(ListOptionsCli),
+
+    /// Read-only diff: compare bundled vs your local copy (--all to sweep all).
+    Reference(ReferenceOptionsCli),
+
+    /// One-shot conversion: strip legacy managed-block fence comments (upgrade v0.32 → v0.33).
+    MigrateFence(MigrateFenceOptionsCli),
+
+    /// Run skillpack conformance check (health report, --strict exits non-zero on drift).
+    Check(CheckOptionsCli),
+
+    /// Show/set the configured skillpack registry URL (writes to ~/.zbrain/config.json).
+    Registry(RegistryOptionsCli),
+
+    /// (Operator-only) Set the tier for a skillpack in a registry repo clone.
+    Endorse(EndorseOptionsCli),
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -222,6 +231,16 @@ pub async fn run_skillpack(cmd: SkillpackSubcommand) -> Result<()> {
         SkillpackSubcommand::Pack(opts) => run_pack(opts).await,
         SkillpackSubcommand::Harvest(opts) => run_harvest_cli(opts),
         SkillpackSubcommand::ScrubLegacyFenceRows(opts) => run_scrub_legacy_cli(opts),
+        SkillpackSubcommand::List(opts) => run_list(opts),
+        SkillpackSubcommand::Reference(opts) => run_reference_cli(opts),
+        SkillpackSubcommand::MigrateFence(_opts) => {
+            anyhow::bail!("migrate-fence not implemented yet — core exists but CLI wiring incomplete");
+        }
+        SkillpackSubcommand::Check(_opts) => {
+            anyhow::bail!("check not implemented yet — routes to skillpack-check still in TS");
+        }
+        SkillpackSubcommand::Registry(opts) => run_registry(opts).await,
+        SkillpackSubcommand::Endorse(opts) => run_endorse(opts),
     }
 }
 
@@ -256,7 +275,7 @@ fn run_init(opts: InitOptions) -> Result<()> {
     }
 }
 
-async fn run_scaffold_cli(mut opts: ScaffoldOptionsCli) -> Result<()> {
+async fn run_scaffold_cli(opts: ScaffoldOptionsCli) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let target_workspace = opts.workspace.unwrap_or_else(|| cwd.clone());
 
@@ -275,18 +294,18 @@ async fn run_scaffold_cli(mut opts: ScaffoldOptionsCli) -> Result<()> {
 
     // If spec is a registry name, resolve it then scaffold third-party.
     // Otherwise it's a direct spec (git URL / local / tarball).
-    if let Some((entry, tier)) = zbrain_core::skillpack::find_pack_with_tier(&loaded, &opts.spec) {
-        // It's a registry name - use third-party scaffold.
-        let resolved = zbrain_core::skillpack::resolve_source(&entry.source.url, zbrain_core::skillpack::ResolveSourceOptions::default()).await?;
-        let result = zbrain_core::skillpack::run_scaffold_third_party(zbrain_core::skillpack::ScaffoldThirdPartyOptions {
-            resolved,
-            target_workspace: target_workspace.clone(),
-            tier: Some(registry_to_skillpack_tier(tier)),
-            trust_flag: if opts.trust { Some(true) } else { None },
-            is_tty: None,
-            state_path: None,
-            dry_run: opts.dry_run,
-        }, env!("CARGO_PKG_VERSION")).await?;
+        if let Some((entry, tier)) = zbrain_core::skillpack::find_pack_with_tier(&loaded, &opts.spec) {
+            // It's a registry name - use third-party scaffold.
+            let resolved = zbrain_core::skillpack::resolve_source(&entry.source.url, zbrain_core::skillpack::ResolveSourceOptions::default()).await?;
+            let result = zbrain_core::skillpack::run_scaffold_third_party(zbrain_core::skillpack::ScaffoldThirdPartyOptions {
+                resolved,
+                target_workspace: target_workspace.clone(),
+                tier: Some(registry_to_skillpack_tier(tier)),
+                trust_flag: if opts.trust { Some(true) } else { None },
+                is_tty: None,
+                state_path: None,
+                dry_run: opts.dry_run,
+            }, env!("CARGO_PKG_VERSION")).await?;
 
         match result.status {
             zbrain_core::skillpack::ScaffoldThirdPartyStatus::WroteNew => {
@@ -394,7 +413,7 @@ async fn run_info(opts: InfoOptionsCli) -> Result<()> {
     Ok(())
 }
 
-async fn run_install(mut opts: InstallOptionsCli) -> Result<()> {
+async fn run_install(opts: InstallOptionsCli) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let target_workspace = opts.workspace.unwrap_or(cwd);
 
@@ -410,11 +429,11 @@ async fn run_install(mut opts: InstallOptionsCli) -> Result<()> {
         None
     };
 
-    let tier = if let Some(loaded) = &loaded {
-        zbrain_core::skillpack::find_pack_with_tier(loaded, &opts.spec).map(|(_, t)| registry_to_skillpack_tier(t))
-    } else {
-        None
-    };
+        let tier = if let Some(loaded) = &loaded {
+            zbrain_core::skillpack::find_pack_with_tier(loaded, &opts.spec).map(|(_, t)| registry_to_skillpack_tier(t))
+        } else {
+            None
+        };
 
     let result = zbrain_core::skillpack::run_scaffold_third_party(zbrain_core::skillpack::ScaffoldThirdPartyOptions {
         resolved,
@@ -586,4 +605,335 @@ fn run_scrub_legacy_cli(opts: ScrubLegacyOptionsCli) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[derive(Debug, Clone, Parser)]
+pub struct ListOptionsCli {
+    /// Output JSON instead of human-readable list.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Clone, Parser)]
+pub struct ReferenceOptionsCli {
+    /// Skillpack name to diff.
+    pub name: Option<String>,
+    /// Sweep over every bundled skill instead of a single one.
+    #[arg(long)]
+    pub all: bool,
+    /// Only apply clean (non-conflicting) hunks automatically.
+    #[arg(long)]
+    pub apply_clean_hunks: bool,
+    /// Restrict to skills changed since this version (only with --all).
+    #[arg(long)]
+    pub since: Option<String>,
+    /// Target workspace directory (defaults to auto-detected).
+    #[arg(long)]
+    pub workspace: Option<PathBuf>,
+    /// Dry-run: show diffs without writing.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Output stable JSON envelope instead of text.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Clone, Parser)]
+pub struct MigrateFenceOptionsCli {
+    /// Target workspace directory (defaults to auto-detected).
+    #[arg(long)]
+    pub workspace: Option<PathBuf>,
+    /// Dry-run: report what would change without writing.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Output JSON instead of text.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Clone, Parser)]
+pub struct CheckOptionsCli {
+    /// Exit non-zero if any drift detected (CI gating).
+    #[arg(long)]
+    pub strict: bool,
+}
+
+#[derive(Debug, Clone, Parser)]
+pub struct RegistryOptionsCli {
+    /// Set a new registry URL (persists to ~/.zbrain/config.json).
+    #[arg(long)]
+    pub url: Option<String>,
+    /// Force fresh fetch from the current registry.
+    #[arg(long)]
+    pub refresh: bool,
+    /// Output JSON instead of text.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Clone, Parser)]
+pub struct EndorseOptionsCli {
+    /// Skillpack name as it appears in registry.json.
+    pub name: String,
+    /// Target tier (default: endorsed).
+    #[arg(long)]
+    pub tier: Option<String>,
+    /// Path to a clone of the registry repo (default: current directory).
+    #[arg(long)]
+    pub repo: Option<PathBuf>,
+    /// Optional human note recorded in endorsements.json.
+    #[arg(long)]
+    pub note: Option<String>,
+    /// git push after committing (only makes sense in a clone).
+    #[arg(long)]
+    pub push: bool,
+    /// Dry-run: report what would change without committing.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Output JSON instead of text.
+    #[arg(long)]
+    pub json: bool,
+}
+
+fn run_list(opts: ListOptionsCli) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let zbrain_root = find_zbrain_root(Some(&cwd))
+        .ok_or_else(|| anyhow!("Could not find zbrain repo root (looking for openclaw.plugin.json)"))?;
+
+    let (manifest, slugs) = bundle::bundled_skill_slugs(&zbrain_root)
+        .map_err(|e| anyhow!("Failed to load bundle manifest: {}", e))?;
+
+    if opts.json {
+        use serde_json::json;
+        let mut entries = Vec::new();
+        for slug in &slugs {
+            let description = zbrain_core::skillpack::bundle::get_skill_description(&zbrain_root, slug);
+            entries.push(json!({
+                "name": slug,
+                "description": description
+            }));
+        }
+        println!("{}", serde_json::to_string_pretty(&json!({
+            "name": manifest.name,
+            "version": manifest.version,
+            "skills": entries
+        }))?);
+    } else {
+        println!("{} {} — {} skills:", manifest.name, manifest.version, slugs.len());
+        for slug in slugs {
+            println!("  {}", slug);
+        }
+    }
+
+    Ok(())
+}
+
+fn run_reference_cli(opts: ReferenceOptionsCli) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let zbrain_root = find_zbrain_root(Some(&cwd))
+        .ok_or_else(|| anyhow!("Could not find zbrain repo root (looking for openclaw.plugin.json)"))?;
+    let target_workspace = opts.workspace.unwrap_or_else(|| cwd.clone());
+
+    let core_opts = zbrain_core::skillpack::reference::ReferenceOptions {
+        zbrain_root,
+        target_workspace,
+        skill_slug: opts.name.clone(),
+    };
+
+    let result = zbrain_core::skillpack::reference::run_reference(&core_opts)?;
+
+    if opts.json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        println!("{}", result.framing);
+        println!();
+        println!("  Summary: {} identical, {} differ, {} missing",
+            result.summary.identical, result.summary.differs, result.summary.missing);
+        for f in &result.files {
+            let status = match f.status {
+                zbrain_core::skillpack::reference::ReferenceStatus::Identical => "✅",
+                zbrain_core::skillpack::reference::ReferenceStatus::Differs => "⚠️",
+                zbrain_core::skillpack::reference::ReferenceStatus::Missing => "❌",
+            };
+            println!("  {} {}", status, f.target.display());
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_registry(opts: RegistryOptionsCli) -> Result<()> {
+    use std::fs;
+    use std::path::PathBuf;
+
+    if let Some(url) = opts.url {
+        let cfg_path = if let Some(home) = crate::config::zbrain_home() {
+            home.join("config.json")
+        } else {
+            anyhow::bail!("Could not find zbrain home directory");
+        };
+        let mut cfg: serde_json::Value = if cfg_path.exists() {
+            let content = fs::read_to_string(&cfg_path)?;
+            serde_json::from_str(&content).unwrap_or_default()
+        } else {
+            serde_json::json!({})
+        };
+
+        // Update or insert skillpack.registry_url
+        if let Some(obj) = cfg.as_object_mut() {
+            obj.insert("skillpack".into(), serde_json::json!({
+                "registry_url": url
+            }));
+        }
+
+        let tmp = PathBuf::from(format!("{}.tmp", cfg_path.display()));
+        fs::create_dir_all(cfg_path.parent().unwrap())?;
+        fs::write(&tmp, serde_json::to_string_pretty(&cfg)? + "\n")?;
+        fs::rename(tmp, &cfg_path)?;
+        println!("Set skillpack.registry_url = {}", url);
+    }
+
+    let loaded = load_registry(LoadRegistryOptions {
+        refresh: opts.refresh,
+        ..Default::default()
+    }).await?;
+
+    if opts.json {
+        use serde_json::json;
+        println!("{}", serde_json::to_string_pretty(&json!({
+            "registry_url": loaded.registry_url,
+            "origin": loaded.origin,
+            "cache_age_ms": loaded.cache_age_ms,
+            "skillpack_count": loaded.catalog.skillpacks.len(),
+            "bundles": loaded.catalog.bundles.as_ref().map(|b| b.keys().collect::<Vec<_>>()).unwrap_or_default(),
+        }))?);
+    } else {
+        println!("Registry: {}", loaded.registry_url);
+        println!("Origin:   {}", loaded.origin);
+        if let Some(age) = loaded.cache_age_ms {
+            println!("Cache age: {}ms", age);
+        }
+        println!("Skillpacks: {}", loaded.catalog.skillpacks.len());
+        if let Some(bundles) = &loaded.catalog.bundles {
+            if !bundles.is_empty() {
+                println!("Bundles:   {}", bundles.keys().cloned().collect::<Vec<_>>().join(", "));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn run_endorse(opts: EndorseOptionsCli) -> Result<()> {
+    let repo_root = opts.repo.unwrap_or_else(|| std::env::current_dir().unwrap());
+    let tier = opts.tier.unwrap_or_else(|| "endorsed".into());
+
+    let tier_parsed = match tier.as_str() {
+        "endorsed" => registry_schema::RegistryTier::Endorsed,
+        "community" => registry_schema::RegistryTier::Community,
+        "experimental" => registry_schema::RegistryTier::Experimental,
+        "dead" => registry_schema::RegistryTier::Dead,
+        _ => anyhow::bail!("Invalid tier '{}' — must be endorsed|community|experimental|dead", tier),
+    };
+
+    let core_opts = zbrain_core::skillpack::EndorseOptions {
+        registry_repo_root: repo_root,
+        pack_name: opts.name,
+        tier: Some(tier_parsed),
+        note: opts.note.clone(),
+        push: opts.push,
+        dry_run: opts.dry_run,
+    };
+
+    let result = zbrain_core::skillpack::run_endorse(core_opts)
+        .map_err(|e| anyhow!("Endorse failed: {}", e))?;
+
+    if opts.json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        let verb = if opts.dry_run { "would endorse" } else { "endorsed" };
+        let from_to = if let Some(prior) = result.prior_tier {
+            format!("{} -> {}", prior, tier)
+        } else {
+            format!("(unset) -> {}", tier)
+        };
+        println!("{}: {} {}", verb, result.pack_name, from_to);
+        if let Some(commit_sha) = result.commit_sha {
+            println!("  commit: {}", commit_sha);
+        }
+        if result.pushed {
+            println!("  pushed to origin");
+        }
+        if opts.dry_run {
+            println!("  (no writes; dry-run)");
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    /// clap's own structural validation — catches duplicate flags, bad arg
+    /// definitions, and conflicting shorthands across all 15 subcommands.
+    #[test]
+    fn skillpack_subcommand_definition_is_valid() {
+        SkillpackSubcommand::command().debug_assert();
+    }
+
+    /// Every one of the 15 skillpack verbs must parse from its canonical
+    /// invocation. This is the wiring guard: adding the 6 missing verbs
+    /// (list/reference/migrate-fence/check/registry/endorse) must not have
+    /// regressed the 9 that already worked.
+    #[test]
+    fn all_skillpack_verbs_parse() {
+        let cases: &[&[&str]] = &[
+            &["skillpack", "init", "my-pack"],
+            &["skillpack", "scaffold", "some/repo"],
+            &["skillpack", "search", "query"],
+            &["skillpack", "info", "some-pack"],
+            &["skillpack", "install", "owner/repo"],
+            &["skillpack", "doctor", "/tmp/pack"],
+            &["skillpack", "pack", "/tmp/pack"],
+            &["skillpack", "harvest", "my-slug", "--from", "/tmp/host"],
+            &["skillpack", "scrub-legacy-fence-rows", "/tmp/ws"],
+            &["skillpack", "list"],
+            &["skillpack", "reference", "some-pack"],
+            &["skillpack", "migrate-fence"],
+            &["skillpack", "check"],
+            &["skillpack", "registry"],
+            &["skillpack", "endorse", "some-pack"],
+        ];
+        for argv in cases {
+            let parsed = SkillpackSubcommand::try_parse_from(*argv);
+            assert!(
+                parsed.is_ok(),
+                "skillpack verb failed to parse: {:?} -> {:?}",
+                argv,
+                parsed.err()
+            );
+        }
+    }
+
+    /// `list --json` and `registry --url <u>` prove the new subcommands expose
+    /// their documented flags (not just the bare verb).
+    #[test]
+    fn new_verbs_accept_documented_flags() {
+        assert!(SkillpackSubcommand::try_parse_from(["skillpack", "list", "--json"]).is_ok());
+        assert!(SkillpackSubcommand::try_parse_from([
+            "skillpack", "registry", "--url", "https://example.com/registry.json"
+        ])
+        .is_ok());
+        assert!(SkillpackSubcommand::try_parse_from([
+            "skillpack", "endorse", "pack", "--tier", "endorsed", "--dry-run"
+        ])
+        .is_ok());
+        assert!(SkillpackSubcommand::try_parse_from([
+            "skillpack", "reference", "--all", "--dry-run"
+        ])
+        .is_ok());
+    }
 }
