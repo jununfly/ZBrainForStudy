@@ -12,7 +12,7 @@ import {
   __testing,
   type CalibrationProfileRow,
 } from '../../src/commands/calibration.ts';
-import type { OperationContext } from '../../src/core/operations.ts';
+import type { OperationContext } from '../../src/core/operation-types.ts';
 import type { BrainEngine } from '../../src/core/engine.ts';
 import { ZBrainError } from '../../src/core/types.ts';
 

@@ -31,7 +31,7 @@
  */
 
 import { BudgetMeter, type SubmitEstimate, type BudgetCheckResult } from './budget-meter.ts';
-import { sourceScopeOpts, type OperationContext } from '../operations.ts';
+import { sourceScopeOpts, type OperationContext } from '../operation-types.ts';
 import type { BrainEngine } from '../engine.ts';
 import type { CyclePhase, PhaseResult, PhaseStatus, PhaseError } from '../cycle.ts';
 import type { ProgressReporter } from '../progress.ts';

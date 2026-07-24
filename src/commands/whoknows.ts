@@ -336,7 +336,7 @@ export async function runWhoknows(
     // per the silent-violation bug class Finding 1.3 closed). Local
     // CLI: ctx.remote=false so the trust gate accepts the resolution.
     const { loadActivePackBestEffort, expertTypesFromPack } = await import('../core/schema-pack/index.ts');
-    const fakeCtx = { engine, config: {}, logger: console, dryRun: false, remote: false, sourceId: undefined } as unknown as import('../core/operations.ts').OperationContext;
+    const fakeCtx = { engine, config: {}, logger: console, dryRun: false, remote: false, sourceId: undefined } as unknown as import('../core/operation-types.ts').OperationContext;
     const pack = await loadActivePackBestEffort(fakeCtx);
     const types = pack ? (expertTypesFromPack(pack.manifest) as PageType[]) : [];
     results = await findExperts(engine, {

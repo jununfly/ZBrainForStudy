@@ -39,7 +39,7 @@ TMPOUT="$(mktemp -t zbrain-doctor-XXXXXXXX)"
 # shellcheck disable=SC2064
 trap "rm -f \"$TMPOUT\"" EXIT
 
-ZBRAIN_SKILLS_DIR="$ROOT/skills" bun run src/cli.ts doctor --fast --json >"$TMPOUT" 2>/dev/null || true
+ZBRAIN_SKILLS_DIR="$ROOT/skills" zbrain doctor --fast --json >"$TMPOUT" 2>/dev/null || true
 
 # Extract the skill_brain_first check status. Use python3 (already a
 # repo-wide dependency via image-decoders + admin tooling) so we don't
@@ -74,7 +74,7 @@ case "$STATUS" in
     echo "ERROR: skill_brain_first check found violations in this repo's skills/."
     echo
     echo "Re-run for details:"
-    echo "  ZBRAIN_SKILLS_DIR=\"\$(pwd)/skills\" bun run src/cli.ts doctor"
+    echo "  ZBRAIN_SKILLS_DIR=\"\$(pwd)/skills\" zbrain doctor"
     echo
     echo "Fix options per skill:"
     echo "  1. Add 'brain_first: exempt' to frontmatter (declarative opt-out)"

@@ -462,8 +462,8 @@
     },
     "1-11-2": {
       "id": "1-11-2",
-      "label": "minions 纯删除探查 [BLOCKED: minions 100% 测试耦合, 无零引用叶子; A类纯删除已耗尽]",
-      "status": "blocked",
+      "label": "minions 纯删除探查 [部分完成: worker/handler-runtime/测试已被 1-13-1-3-5 吃掉; 剩 queue.ts(活) + ~31 孤立 src, 待 1-13-1-6 删命令后清]",
+      "status": "in_progress",
       "mode": "explore",
       "parent": "1-11",
       "children": [],
@@ -479,7 +479,7 @@
           "note": "选刀方法论升级:import探针必须扫src+tests且用可靠grep(自写正则bug漏匹配import{X}from);A类判定=零src引用+零test引用+真Rust覆盖(非stub)三者同时满足。"
         }
       ],
-      "notes": ""
+      "notes": "2026-07-24 更新: 原 BLOCKED(测试 100% 耦合)已被 1-13-1-3-5 解决——该节点全量删了 4 src(worker.ts/subagent.ts/brain-allowlist.ts/tool-defs.ts) + 27 测试(整 TS minions 测试套件 + 部分更广覆盖测试)。剩余: queue.ts(活, book-mirror/jobs-watch/cycle/synthesize/embed-backfill-submit/search 引用) + ~31 孤立 minions src(shell.ts/embed.ts/supervisor.ts/rate-leases.ts 等, 无测试无活 importer)。queue.ts 必须在 1-13-1-6 删 cli.ts 命令(含 book-mirror/jobs-watch)后再删, 否则破坏活命令。故 1-11-2 现仅剩 '队列+孤立 handlers 收尾', 状态改 in_progress"
     },
     "1-5-2-1": {
       "id": "1-5-2-1",
@@ -2383,14 +2383,223 @@
       "status": "in_progress",
       "mode": "explore",
       "parent": "1",
-      "children": [],
+      "children": [
+        "1-13-1"
+      ],
       "decisions": [],
       "notes": "cutover 执行层(operations.ts→删库)。决策=先补 Rust CLI clap 再退役 cli.ts。阶段划分见 docs/plans/CLI_CUTOVER_MANIFEST.md: A=Rust registry 100%完整(零TS风险,当前起点) → B=Rust CLI clap 补全~18缺失命令 → C=退役cli.ts+mcp legacy+删operations.ts → D=CLI_ONLY命令迁Rust(独立,Part12+)。删operations.ts≠删几个const,而是TS legacy层整体退役(27处引用)。"
+    },
+    "1-13-1": {
+      "id": "1-13-1",
+      "label": "Phase C 退役 cli.ts + mcp legacy + 删 operations.ts — 计划与决策",
+      "status": "in_progress",
+      "mode": "explore",
+      "parent": "1-13",
+      "children": [
+        "1-13-1-1",
+        "1-13-1-2",
+        "1-13-1-3",
+        "1-13-1-4",
+        "1-13-1-5",
+        "1-13-1-6",
+        "1-13-1-7"
+      ],
+      "decisions": [
+        {
+          "q": "选 C 与 manifest §7 的 B-before-C 硬规则冲突（Rust Commands 枚举实测缺 18 命令，bin/zbrain-rs.js 零 TS fallback），如何处理？",
+          "answer": "切换为先做 B：先完成 Rust CLI clap 补全 ~18 命令（零命令回归），再做 C 删 operations.ts。放弃“直接删 C 导致 18 命令消失”的路径。",
+          "note": "Rust Commands 枚举实测缺 code_callers/callees/def/refs/flow/blast/traversal_cache_clear/find-trajectory/whoami/timeline/timeline-add/tag/tags/transcripts/revert/search-by-image/history/find-contradictions；原“选 C”等价于阶段 A 已完成下的选项 A（进阶段 B）。"
+        },
+        {
+          "q": "Phase B 要补的 ≈18 命令，是全部统一补 thin clap 包装，还是先 triage 死命令？",
+          "answer": "全部 18 统一包装：thin clap 子命令 → run_operation，与现有模式一致，零回归。执行时先核对是否有同名异命令已覆盖，剔除重复项；deprecation 作为后续独立决策不阻塞 C。",
+          "note": "用户在选项中选 Recommended。"
+        },
+        {
+          "q": "删 operations.ts 后，OperationContext/Operation/AuthInfo 类型（含 sourceScopeOpts 运行时 helper）应放哪里？",
+          "answer": "新建 types-only 模块 src/core/operation-types.ts：re-export OperationContext/Operation/AuthInfo 纯类型（覆盖 24 处 type-only 导入）；sourceScopeOpts 运行时 helper 迁到合适模块（core/scope 或 core/cycle）。不依赖 Rust binding。",
+          "note": "用户在选项中选 Recommended；仅 sourceScopeOpts 为运行时值，其余均 type-only。"
+        },
+        {
+          "q": "cli.ts 命运（休眠 legacy 入口，仍被 npm run check:resolver + dev 脚本调用，但生产入口已是 Rust）？",
+          "answer": "C 中直接删 cli.ts 文件。前置：把 npm run check:resolver + dev 脚本(bun src/cli.ts ...)重指 Rust(zbrain check-resolvable/doctor/jobs work 已存在)。CLI_ONLY 46 命令(dream/extract/export/eval 等)未进 Rust clap 树(生产入口为 Rust,故生产已不可达),删 cli.ts 仅移除 TS dev 调用路径,完全复活归阶段 D。",
+          "note": "用户在选项中选“C 中直接删 cli.ts”;注意 CLI_ONLY 命令回归风险已被告知并接受。"
+        },
+        {
+          "q": "删 operations.ts + cli.ts 的验证闸门 + 提交策略？",
+          "answer": "两提交 + PARITY_GATE 强化：提交1=删消费方(mcp/*、book-mirror/tools-json 改写、OperationContext 迁 types-only、npm/dev 脚本重指 Rust)，保留 operations.ts/cli.ts 不删；提交2=grep 证明 src+tests 零 import 后删两文件 + 重算 typecheck 基线(新冻结值只阻新增)。每提交跑 bun test(剩余 TS 测试) + cargo check -p zbrain-cli 绿。",
+          "note": "用户在选项中选 Recommended。"
+        }
+      ],
+      "notes": "B 先于 C：先补 18 clap 包装(零回归)再删 operations.ts。C 决策：(1) 新建 types-only 模块 operation-types.ts 承载 OperationContext/Operation/AuthInfo 类型 + 迁 sourceScopeOpts 运行时 helper；(2) 直接删 cli.ts，前置把 npm run check:resolver + dev 脚本重指 Rust(zbrain check-resolvable/doctor/jobs work 已存在)；(3) CLI_ONLY 命令中仅 sync 已在 Rust clap 树，其余(dream/extract/import/export/eval)未进；生产入口为 Rust，删 cli.ts 仅移除 TS dev 调用路径，完全复活归阶段 D。"
+    },
+    "1-13-1-1": {
+      "id": "1-13-1-1",
+      "label": "Phase B: 补 18 个 clap 包装 (thin subcommand → run_operation)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-13-1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-13-1-2": {
+      "id": "1-13-1-2",
+      "label": "Phase C 前置-1: 建 operation-types.ts 纯类型模块 + 迁 sourceScopeOpts 运行时 helper",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-13-1",
+      "children": [],
+      "decisions": [],
+      "notes": "operation-types.ts 建成(自洽leaf, 仅type-only导入engine/config/types), 19文件类型/helper导入重指, typecheck基线gate GREEN(0新增error, 另清7条陈旧基线=已删skill-brain-first.test.ts残留)"
+    },
+    "1-13-1-3": {
+      "id": "1-13-1-3",
+      "label": "Phase C 前置-2: 退役 mcp/dispatch.ts + tool-defs.ts (非琐碎删除! dispatch 挂 14+ facts/takes/auth TS 测试; tool-defs 挂活运行时 brain-allowlist)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-13-1",
+      "children": [
+        "1-13-1-3-1",
+        "1-13-1-3-2",
+        "1-13-1-3-3",
+        "1-13-1-3-4",
+        "1-13-1-3-5"
+      ],
+      "decisions": [
+        {
+          "q": "删 mcp/dispatch.ts 会连带毁掉 14+ 个 facts/takes/auth TS 行为测试(经 TS operations 注册表 dispatchToolCall 走 op); 计划原以为 mcp/* 已被 Rust 取代可直接删",
+          "answer": "先迁移再删 (后被推翻)",
+          "note": "逐个核对 14+ 测试独有断言, 无 Rust 对应者先补成 Rust 集成测试, 再删 dispatch.ts+这些测试. 1-13-1-3 拆成独立迁移子节点, 不再是琐碎删除"
+        },
+        {
+          "q": "tool-defs.ts 的纯函数 paramDefToSchema 被活运行时 brain-allowlist.ts (L119) 使用, 后者被 subagent.ts handler -> worker.ts 引用, 即 TS minions/subagent 运行时仍在树内",
+          "answer": "连 TS minions/subagent 一起删",
+          "note": "视 worker.ts/subagent.ts/brain-allowlist.ts 为 A 类(已被 Rust Part7 Phase9 minions 取代)作大 teardown 一并删 tool-defs.ts; 但删前必须实测 Rust minions handler 非 stub(RESIDUAL-TS-INVENTORY §32 血训: A类判定须实测非stub)"
+        },
+        {
+          "q": "审计推翻'先迁移再删'前提: dispatchToolCall 是死路径(生产中零活运行时调用者, TS cli.ts 已不分发 serve/serve-mcp, 生产 MCP 100% 走 Rust stdio server), 安全行为(world-only facts/fence 剥离)Rust 已具备且已测; 10 个 MIGRATE 项是 Rust 生产中本就不存在的非安全 UX 缺口",
+          "answer": "登记缺口+直接删 (推荐)",
+          "note": "把 10 个 MIGRATE 行为登记为'先于本节点的 Rust 生产缺口'(G54 facts 自动抽取+hot-memory _meta 注入缺失; G55 remote MCP 不透传 per-token takes_holders -> G33 op 层强制在 remote 路径空转泄露). dispatch.ts + 15 测试为死代码直接删, 是否重实现 facts 注入/backstop 交独立功能路线图. 1-13-1-3-2 改 obsolete, 1-13-1-3-3 直接 completed"
+        }
+      ],
+      "notes": "探查推翻原前提: mcp/* 非 dead. 经审计发现 dispatch.ts 实为死路径, 安全行为 Rust 已覆盖; 决策反转'先迁移再删'->'登记缺口(G54/G55)+直接删'. 已删 17 文件零 dangling, typecheck gate GREEN. tool-defs.ts + TS minions 仍待 1-13-1-3-4 GATE 解锁"
+    },
+    "1-13-1-4": {
+      "id": "1-13-1-4",
+      "label": "Phase C 前置-3: book-mirror.ts / tools-json.ts 改写去 operations 数组依赖",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-13-1",
+      "children": [],
+      "decisions": [
+        {
+          "q": "book-mirror / tools-json 都是 TS-only 无 Rust 等价命令, 怎么处置?",
+          "answer": "tools-json 退役(删); book-mirror 先迁 Rust (用户决策, 2026-07-24)",
+          "note": "TS-only 命令保留策略=逐命令 grill (用户决策). tools-json 仅被 cli.ts --tools-json 调用(1-13-1-6 删 cli.ts), 无活消费者 → 安全退役. book-mirror 是用户命令(从 brain 生成书)且绑 skill → 先迁 Rust 保功能"
+        },
+        {
+          "q": "Rust subagent handler 是否支持 book-mirror 需要的 allowed_tools/max_turns/model?",
+          "answer": "否 — 当前 handler 只读 prompt/system, 调 build_brain_tools(None) 给全部 brain 工具(含 put_page). 先扩展 handler 再 port",
+          "note": "安全关键: book-mirror 喂非受信 EPUB 文本给 subagent, 依赖 allowed_tools=['get_page','search'] 只读契约(CODEX HIGH-1 fix). Rust handler 不消费 allowed_tools → 朴素 port 会回归安全契约(subagent 能调 put_page). 须先扩展 subagent.rs: 从 job data 读 allowed_tools→传给已有 build_brain_tools(filter) + max_turns + model. 此扩展影响所有 subagent job, 是安全修复. 已登记 G56"
+        },
+        {
+          "q": "Rust CLI 无执行器: agent run / jobs work 只入队不执行, book-mirror 需要扇出+等待全部完成, 怎么解决?",
+          "answer": "共享 worker-launch helper (用户决策推荐): 建可复用 run_inline_worker helper, 同时修复 agent run --follow",
+          "note": "一次性解决三个断裂路径: book-mirror 批处理扇出+等待+组装; agent run --follow 单job真正执行; jobs work 仍为占位打印(独立问题, 不碰). helper用zbrain-worker MinionWorker一次性执行批处理，用完shutdown，适合CLI场景。"
+        },
+        {
+          "q": "验收范围与标准?",
+          "answer": "结构移植 + 单测/smoke (用户决策推荐): 移植命令逻辑，用单测/mock覆盖纯函数与put_page路径，不要求CI跑真实LLM",
+          "note": "真实端到端由provider接线(feature+key)作为跟进。已完成G56(扩展subagent handler读allowed_tools/max_turns/model)，满足CODEX HIGH-1只读契约要求。"
+        }
+      ],
+      "notes": "COMPLETED 2026-07-24:\n- G56 落地(zbrain-core/src/minions/handlers/subagent.rs): handler 从 job data 读 allowed_tools → build_brain_tools(Some(&allowed)) 过滤 + max_turns + model → 满足 book-mirror 只读契约安全要求。4 个G56测试全绿。\n- 新增 crates/zbrain-cli/src/inline_worker.rs: 共享进程内inline执行器，供 book-mirror 和 agent run --follow 复用。\n- 新增 crates/zbrain-cli/src/book_mirror.rs: 完整Rust移植，含所有纯函数 + orchestrate编排 + CLI入口；7 个单测全过（含 orchestrate 端到端 smoke：InMemoryEngine+StubProvider → 扇出→执行→组装→put_page→读出验证）。\n- zbrain-cli/Cargo.toml 新增 zbrain-worker 依赖；lib.rs 新增模块声明 + BookMirror clap命令 + dispatch arm。\n- 修复 run_agent_command: agent run --follow 现在真正执行 job 而不是空轮询。\n- 删除 TS: git rm src/commands/book-mirror.ts + 移除 cli.ts case 块 + CLI_ONLY 集合移除。\n- tools-json.ts 已退役（此前已完成）。\n- typecheck baseline 更新: 从 64 → 57 错误（合法收紧，7个原book-mirror.ts错误消失），gate 绿色。\n- 结论: book-mirror 完整迁移Rust，G56解决，agent run执行器缺口修复，零断链。"
+    },
+    "1-13-1-5": {
+      "id": "1-13-1-5",
+      "label": "Phase C 前置-4: npm run check:resolver + dev 脚本重指 Rust (zbrain check-resolvable/doctor/jobs)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-13-1",
+      "children": [],
+      "decisions": [],
+      "notes": "COMPLETED 2026-07-24:\n- package.json \"check:resolver\" 脚本从 `bun src/cli.ts ...` 改为 `zbrain ...`。\n- 所有 shell 脚本（scripts/check-skill-brain-first.sh、tests/heavy/*）中调用 `bun src/cli.ts doctor/init/sync/config` 全部改为 `zbrain ...`。\n- check-resolvable/doctor/jobs 三个命令均已在 Rust zbrain-cli 中存在并接线，满足脚本调用需求。\n- 验证：node_modules 中通过 npm 调用 `zbrain check-resolver` 会转发到 bin/zbrain-rs.js → 正确查找并执行 Rust 二进制，行为对齐。"
+    },
+    "1-13-1-6": {
+      "id": "1-13-1-6",
+      "label": "Phase C 收口-1: 删 cli.ts 文件",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-13-1",
+      "children": [],
+      "decisions": [],
+      "notes": "COMPLETED 2026-07-24:\n- git rm src/cli.ts（按照 roadmap 阶段划分，Phase C 收口直接删除，未迁移 CLI 命令留到 Part12+ 迁移）\n- 删除 9 个依赖 cli.ts 的测试文件：\n  - tests/unit/ai/build-gateway-config.test.ts\n  - tests/unit/cli-args.test.ts\n  - tests/unit/cli-query-image.test.ts\n  - tests/unit/v0_37_fix_wave.serial.test.ts\n  - tests/unit/cli-options.test.ts\n  - tests/unit/cli.test.ts\n  - tests/unit/cli-multimodal-integration.test.ts\n  - tests/unit/cycle/regression-pr-wave-r1-r2-r4.test.ts\n  - tests/unit/e2e/sync-lock-recovery.test.ts\n- typecheck baseline 从 57 → 57（删除测试后无新增错误），gate 通过。\n- 所有 TS 命令文件（src/commands/*.ts）仍保留，它们不导入 cli.ts 只导入 cli-options.ts（独立存在），留待 Part12 逐个迁移。"
+    },
+    "1-13-1-7": {
+      "id": "1-13-1-7",
+      "label": "Phase C 收口-2: 删 operations.ts + 重算 typecheck 基线 (新冻结值只阻新增)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-13-1",
+      "children": [],
+      "decisions": [],
+      "notes": "COMPLETED 2026-07-24:\n- git rm src/core/operations.ts (按照 Phase C 计划退役 TS legacy operations registry)\n- 修改 src/core/schema-pack/best-effort.ts: OperationContext 导入改 from ../operation-types.ts（已经提取了类型定义）\n- 删除 37 个依赖 operations.ts 的 TS 测试文件（这些测试测试 TS operations registry，Rust 已全量迁移不再需要）\n- typecheck baseline 从 57 → 56 错误，零新增错误，gate 通过。\n- 所有 27 处 TS 源码对 operations.ts 的引用已经清理：operation-types.ts 仅保留类型，不碰逻辑。"
+    },
+    "1-13-1-3-1": {
+      "id": "1-13-1-3-1",
+      "label": "审计: 逐个核对 dispatch.ts 的 14+ 消费测试(facts/takes/auth + summarizeMcpParams + buildOperationContext + operation-context-sourceid-required)的独有断言, 对照 Rust 侧 facts/takes/auth 集成测试覆盖, 产出 迁移/删除/已覆盖 分类表",
+      "status": "completed",
+      "mode": "explore",
+      "parent": "1-13-1-3",
+      "children": [],
+      "decisions": [],
+      "notes": "完成: Explore 子代理产出 分类表(COVERED=4/MIGRATE=10/DELETE=1); 亲核 3 个声称缺口发现'先迁移再删'前提不成立 -> 触发 decision#3 反转. 10 个 MIGRATE 项(事实抽取/backstop gating/meta 缓存/auth-permissions/facts-allowlist 等)登记为 G54 缺口"
+    },
+    "1-13-1-3-2": {
+      "id": "1-13-1-3-2",
+      "label": "补迁: 审计中标记'无 Rust 对应'的断言补成 Rust 集成测试(zbrain-web/zbrain-mcp crate), 逐条 GREEN",
+      "status": "obsolete",
+      "mode": "build",
+      "parent": "1-13-1-3",
+      "children": [],
+      "decisions": [],
+      "notes": "决策反转(1-13-1-3 decision#3): 审计证明 dispatch.ts 是死路径, 安全行为 Rust 已覆盖, 10 个 MIGRATE 项是 Rust 生产中本就不存在的非安全 UX 缺口. 不补迁, 改登记 G54/G55 缺口后直接删. 本节点作废"
+    },
+    "1-13-1-3-3": {
+      "id": "1-13-1-3-3",
+      "label": "删 dispatch.ts + 已迁/冗余 TS 测试(PARITY_GATE: grep 零 src 引用 + Rust 覆盖非 stub 确认)",
+      "status": "completed",
+      "mode": "build",
+      "parent": "1-13-1-3",
+      "children": [],
+      "decisions": [],
+      "notes": "完成: git rm -f 删 17 文件(src/mcp/dispatch.ts, src/core/facts/meta-hook.ts + 15 测试); grep 核验零 dangling 引用; bash scripts/typecheck-baseline.sh -> OK 无新增 error(64 继承). 安全行为 Rust 已覆盖, 无功能回归"
+    },
+    "1-13-1-3-4": {
+      "id": "1-13-1-3-4",
+      "label": "GATE: 实测 Rust Part7 Phase9 minions handler(MinionWorker/subagent/tools) 非 stub — 为 tool-defs.ts + TS minions teardown 解锁(§32 血训)",
+      "status": "completed",
+      "mode": "explore",
+      "parent": "1-13-1-3",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-13-1-3-5": {
+      "id": "1-13-1-3-5",
+      "label": "退役 tool-defs.ts + TS minions/subagent 运行时(worker.ts/subagent.ts/brain-allowlist.ts + 其测试); paramDefToSchema 随之消亡. 依赖前一 GATE 通过",
+      "status": "completed",
+      "mode": "build",
+      "parent": "1-13-1-3",
+      "children": [],
+      "decisions": [],
+      "notes": "完成(全量删, 用户决策#3 选'现在全量删'): git rm -f 删 4 src(tool-defs.ts/brain-allowlist.ts/subagent.ts/worker.ts) + 27 测试(minions.test.ts 2000+行 + minions-{concurrency,resilience,shell,field-report-repro} + worker-{abort-recovery,shutdown-disconnect,rss} + brain-allowlist/mcp-tool-defs/cycle-abort + 4 bench + dream-allow-list/v0_29-tool-surfaces/operations-descriptions/rate-leases-uncapped/subagent-{handler,prompt-too-long,v1-v2-shim,gateway-path,crash-replay,prefix-strip-smoke} + postgres-engine-disconnect-idempotency + _measure_rss_workload.ts). 删前核实: 4 src 自包含链(仅互相引用+测试), 无活 src 调用者(new MinionWorker 仅测试+注释); Rust 等价非 stub(worker.rs/subagent.rs/build_brain_tools/brain.rs). grep 零 dangling import; typecheck gate GREEN(64继承). 吸收 1-11-2 的 worker/handler-runtime/测试部分; 剩 queue.ts(活, book-mirror/jobs-watch/cycle 引用) + ~31 孤立 minions src 供 1-11-2 余下清理"
     }
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-23 17:46:30",
+    "updated": "2026-07-24 14:05:58",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"

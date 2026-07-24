@@ -80,7 +80,7 @@ echo "[fm_wallclock] fixture seeded in ${SEED_ELAPSED}s" | tee -a "$LOG"
 
 # Step 2: init brain + register the source.
 echo "[fm_wallclock] init brain..." | tee -a "$LOG"
-timeout 120s bun run src/cli.ts init --pglite --yes >> "$LOG" 2>&1 || {
+timeout 120s zbrain init --pglite --yes >> "$LOG" 2>&1 || {
   echo "[fm_wallclock] FAIL: zbrain init exited non-zero" >&2
   echo "Log tail:" >&2
   tail -30 "$LOG" >&2
@@ -107,7 +107,7 @@ console.log('source registered');
 echo "[fm_wallclock] running zbrain doctor (budget ${WALLCLOCK_BUDGET_S}s)..." | tee -a "$LOG"
 DOCTOR_START_NS=$(date +%s%N)
 set +e
-timeout "${WALLCLOCK_BUDGET_S}s" bun run src/cli.ts doctor --json > "$LOG.doctor" 2>>"$LOG"
+timeout "${WALLCLOCK_BUDGET_S}s" zbrain doctor --json > "$LOG.doctor" 2>>"$LOG"
 DOCTOR_RC=$?
 set -e
 DOCTOR_END_NS=$(date +%s%N)

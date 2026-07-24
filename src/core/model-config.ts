@@ -82,7 +82,7 @@ export const TIER_DEFAULTS: Record<ModelTier, string> = {
  *
  * Returns true if a resolved `provider:model` (or bare model id) points at
  * an Anthropic-shape API. The subagent loop in
- * `src/core/minions/handlers/subagent.ts` makes Anthropic Messages API calls
+ * `crates/zbrain-core/src/minions/handlers/subagent.rs` makes Anthropic Messages API calls
  * with prompt caching on system + tools; routing it elsewhere silently
  * breaks. When `tier === 'subagent'` resolves to a non-Anthropic provider,
  * we log a stderr warn AND fall back to `TIER_DEFAULTS.subagent`.

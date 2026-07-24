@@ -20,7 +20,7 @@
 
 import type { BrainEngine } from '../core/engine.ts';
 import { runPhaseCalibrationProfile } from '../core/cycle/calibration-profile.ts';
-import { sourceScopeOpts, type OperationContext } from '../core/operations.ts';
+import { sourceScopeOpts, type OperationContext } from '../core/operation-types.ts';
 import type { ZBrainConfig } from '../core/config.ts';
 import { ZBrainError } from '../core/types.ts';
 

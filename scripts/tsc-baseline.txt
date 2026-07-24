@@ -1,6 +1,5 @@
 src/commands/init-mode-picker.ts: error TS2307: Cannot find module './init.ts' or its corresponding type declarations.
 src/commands/reinit-pglite.ts: error TS2307: Cannot find module './init.ts' or its corresponding type declarations.
-src/core/operations.ts: error TS2307: Cannot find module '../commands/doctor.ts' or its corresponding type declarations.
 src/core/search/mode-switch-ux.ts: error TS2307: Cannot find module '../../commands/init.ts' or its corresponding type declarations.
 tests/unit/config.test.ts: error TS2307: Cannot find module '../../src/commands/config.ts' or its corresponding type declarations.
 tests/unit/contextual-retrieval-doctor.serial.test.ts: error TS2307: Cannot find module '../../src/commands/doctor.ts' or its corresponding type declarations.
@@ -55,10 +54,3 @@ tests/unit/doctor.test.ts: error TS2307: Cannot find module '../../src/commands/
 tests/unit/e2e/fresh-install-pglite.test.ts: error TS2307: Cannot find module '../../../src/commands/init.ts' or its corresponding type declarations.
 tests/unit/e2e/fresh-install-pglite.test.ts: error TS2307: Cannot find module '../../../src/commands/init.ts' or its corresponding type declarations.
 tests/unit/e2e/orphan-reduction.test.ts: error TS2307: Cannot find module '../../../src/commands/doctor.ts' or its corresponding type declarations.
-tests/unit/e2e/skill-brain-first.test.ts: error TS2307: Cannot find module '../../../src/commands/doctor.ts' or its corresponding type declarations.
-tests/unit/e2e/skill-brain-first.test.ts: error TS7006: Parameter 'i' implicitly has an 'any' type.
-tests/unit/e2e/skill-brain-first.test.ts: error TS7006: Parameter 'i' implicitly has an 'any' type.
-tests/unit/e2e/skill-brain-first.test.ts: error TS7006: Parameter 'i' implicitly has an 'any' type.
-tests/unit/e2e/skill-brain-first.test.ts: error TS7006: Parameter 'i' implicitly has an 'any' type.
-tests/unit/e2e/skill-brain-first.test.ts: error TS7006: Parameter 'i' implicitly has an 'any' type.
-tests/unit/e2e/skill-brain-first.test.ts: error TS7006: Parameter 'i' implicitly has an 'any' type.

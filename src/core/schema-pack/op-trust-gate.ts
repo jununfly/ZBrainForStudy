@@ -13,9 +13,9 @@
 // Undefined/missing `remote` defaults to REMOTE (fail-closed per v0.26.9
 // F7b — anything not strictly false is treated as untrusted).
 
-import type { OperationContext } from '../operations.ts';
+import type { OperationContext } from '../operation-types.ts';
 import { loadActivePack, type LoadActivePackInput } from './load-active.ts';
-import { sourceScopeOpts } from '../operations.ts';
+import { sourceScopeOpts } from '../operation-types.ts';
 import type { ResolvedPack } from './registry.ts';
 import { loadConfig } from '../config.ts';
 

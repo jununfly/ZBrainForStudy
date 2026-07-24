@@ -977,7 +977,7 @@ export class MinionQueue {
    *
    * This method is the workhorse fix: status → `delayed`, jittered backoff
    * via `delay_until`, `attempts_made` UNCHANGED. The handler comment at
-   * `src/core/minions/handlers/subagent.ts:425` ("treat as renewable
+   * `crates/zbrain-core/src/minions/handlers/subagent.rs` ("treat as renewable
    * error so the worker re-claims") is now actually true.
    *
    * Audit row write to `minion_lease_pressure_log` is the caller's

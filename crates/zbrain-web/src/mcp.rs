@@ -212,6 +212,12 @@ async fn handle_tools_call(
         .unwrap_or_else(|| "default".to_string());
     let mut ctx = zbrain_core::operation::OperationContext::remote_mcp(source_id);
     ctx.auth = Some(auth_info);
+    // KNOWN GAP: registered in docs/plans/KNOWN-GAPS.md (G55). We do NOT populate
+    // ctx.takes_holders_allow_list here, so for remote callers it stays None and
+    // engine.rs holder_allowed(None) == true — i.e. G33's op-layer holder filter
+    // is a no-op on the remote MCP path (all takes holders leak). Fix requires
+    // AuthInfo to carry per-token takes_holders (from access_tokens.permissions,
+    // defaulting to Some(vec!["world"]) fail-closed) and threading it here.
 
     // Step 4: Dispatch
     let tool_result = mcp.registry.dispatch_tool_call(&name, &ctx, arguments).await;

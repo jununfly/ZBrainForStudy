@@ -17,7 +17,7 @@
 
 import type { BrainEngine } from '../engine.ts';
 import { loadActivePackBestEffort } from './best-effort.ts';
-import type { OperationContext } from '../operations.ts';
+import type { OperationContext } from '../operation-types.ts';
 
 export interface StatsOpts {
   /** Single source scope. Omit + omit sourceIds for whole-brain aggregate. */

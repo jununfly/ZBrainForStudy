@@ -50,7 +50,7 @@ echo "[sync_lock_regression] spawning $NUM_PARALLEL parallel sync processes..."
 
 # Step 1: ensure schema is up-to-date by running doctor once
 echo "[sync_lock_regression] init schema via zbrain doctor..." | tee -a "$LOG"
-timeout 180s bun run src/cli.ts doctor --json > /dev/null 2>>"$LOG"
+timeout 180s zbrain doctor --json > /dev/null 2>>"$LOG"
 
 # Step 2: create a tiny brain dir + register it as sync.repo_path so each sync
 # call has something legitimate to do.
@@ -79,7 +79,7 @@ EOF
 (cd "$BRAIN_DIR" && git init -q && git add . && git -c user.email=test@test -c user.name=test commit -q -m "seed" >/dev/null 2>&1) || true
 
 # Tell zbrain to use this brain dir
-bun run src/cli.ts config set sync.repo_path "$BRAIN_DIR" >/dev/null 2>&1 || true
+zbrain config set sync.repo_path "$BRAIN_DIR" >/dev/null 2>&1 || true
 
 # Step 3: spawn N parallel sync processes. Capture each one's exit code +
 # stdout/stderr. The race for the lock happens during their startup window.
@@ -91,7 +91,7 @@ for ((i=1; i<=NUM_PARALLEL; i+=1)); do
   OUT_F=$(mktemp -t sync-lock-out-XXXXXX)
   EXIT_FILES+=("$EXIT_F")
   OUT_FILES+=("$OUT_F")
-  ( bun run src/cli.ts sync --dir "$BRAIN_DIR" >"$OUT_F" 2>&1; echo $? > "$EXIT_F" ) &
+  ( zbrain sync --dir "$BRAIN_DIR" >"$OUT_F" 2>&1; echo $? > "$EXIT_F" ) &
   PIDS+=($!)
 done
 

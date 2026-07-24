@@ -65,7 +65,7 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -c 'DROP SCHEMA public CASCADE; CREAT
 # + zero migrations (already at LATEST).
 # NOTE: `--fast` short-circuits schema init checks; we deliberately omit it.
 echo "[build_legacy_fixtures] initializing to LATEST via zbrain doctor..."
-timeout 180s bun run src/cli.ts doctor --json > /dev/null
+timeout 180s zbrain doctor --json > /dev/null
 
 # Step 3: down-mutate to the target shape
 echo "[build_legacy_fixtures] applying down-mutate from $SQL_FILE..."

@@ -2,7 +2,7 @@
  * Provider capability detection for the gateway-native subagent tool loop.
  *
  * Pre-v0.38 the subagent loop was Anthropic-direct (`new Anthropic()` instantiated
- * in `src/core/minions/handlers/subagent.ts`). The three-layer pin
+ * in `crates/zbrain-core/src/minions/handlers/subagent.rs`). The three-layer pin
  * (`queue.ts:87-106` + `subagent.ts:149-167` + `doctor.ts:1190-1225` enforced
  * Anthropic-only because crash-replay relied on Anthropic's stable `tool_use_id`s
  * for reconciliation. v0.38 (D11) moves the stable-ID generation zbrain-side

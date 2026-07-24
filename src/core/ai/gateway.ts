@@ -2111,7 +2111,7 @@ export async function generateOcrText(imageBytes: Buffer, mime: string): Promise
 // inner closure and restore the outer tracker on exit.
 //
 // IMPORTANT (A1): for the subagent path, reserve() runs implicitly via the
-// gateway BEFORE acquireLease() in src/core/minions/handlers/subagent.ts —
+// gateway BEFORE acquireLease() in crates/zbrain-core/src/minions/handlers/subagent.rs —
 // budget throw → no lease attempted, no rate-lease window held.
 
 const __budgetStore = new AsyncLocalStorage<BudgetTracker>();
@@ -2563,7 +2563,7 @@ export interface ToolLoopResult {
  *   - capability-driven cache_control (Anthropic only)
  *
  * This replaces the direct `new Anthropic()` + `client.create()` path in
- * `src/core/minions/handlers/subagent.ts`. The provider abstraction lives in
+ * `crates/zbrain-core/src/minions/handlers/subagent.rs`. The provider abstraction lives in
  * `gateway.chat()` (Vercel AI SDK); this function is just the loop control.
  *
  * Designed so the caller (subagent handler) supplies persistence callbacks —

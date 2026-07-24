@@ -20,6 +20,19 @@
 //! The job's `data` field is expected to have:
 //! - `prompt` (required): the user-facing task description.
 //! - `system` (optional): override the default subagent system prompt.
+//! - `allowed_tools` (optional): array of brain op names (e.g. `["get_page",
+//!   "search"]`) restricting which brain tools the subagent may call. When
+//!   present, it is intersected with
+//!   [`BRAIN_TOOL_ALLOWLIST`](crate::minions::tools::BRAIN_TOOL_ALLOWLIST) via
+//!   `build_brain_tools(Some(&names))`. When absent, the subagent gets the full
+//!   allowlisted set (incl. `put_page`). Callers that hand untrusted content to
+//!   the subagent (e.g. `book-mirror` feeding EPUB/text) MUST set this to a
+//!   read-only subset to preserve the CODEX HIGH-1 trust contract — otherwise
+//!   a prompt-injection could make the subagent write pages.
+//! - `max_turns` (optional): hard cap on tool-loop iterations. Defaults to the
+//!   [`ToolLoopOpts`] default (20) when absent.
+//! - `model` (optional): `provider:modelId` override; `None` lets the provider
+//!   pick its default.
 //!
 //! Missing `prompt` → the handler returns an error (no implicit empty-task).
 
@@ -72,9 +85,37 @@ impl MinionHandler for SubagentHandler {
             .and_then(|v| v.as_str())
             .unwrap_or(DEFAULT_SUBAGENT_SYSTEM);
 
+        // Optional `allowed_tools`: restrict the brain tool surface to a subset
+        // (intersected with BRAIN_TOOL_ALLOWLIST). Absent → full allowlist.
+        // Untrusted-content callers (book-mirror) rely on this to enforce a
+        // read-only tool set (CODEX HIGH-1).
+        let allowed_tools: Option<Vec<String>> = ctx
+            .data
+            .get("allowed_tools")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            });
+
+        // Optional `max_turns`: hard cap on loop iterations. Absent → default.
+        let max_turns = ctx
+            .data
+            .get("max_turns")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok());
+
+        // Optional `model`: `provider:modelId` override. Absent → provider default.
+        let model = ctx
+            .data
+            .get("model")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
         // Build brain tools from the engine backing this job.
         let engine = Arc::clone(ctx.engine());
-        let brain_tools = build_brain_tools(None);
+        let brain_tools = build_brain_tools(allowed_tools.as_deref());
         let (chat_tool_defs, handlers_map) =
             to_gateway_tools(&brain_tools, Arc::clone(&engine), ctx.signal.clone());
 
@@ -83,12 +124,16 @@ impl MinionHandler for SubagentHandler {
         let signal = ctx.signal.clone();
         let abort = move || signal.is_cancelled();
 
-        let opts = ToolLoopOpts {
+        let mut opts = ToolLoopOpts {
             system: Some(system.to_string()),
             initial_messages: vec![ChatMessage::text(ChatRole::User, prompt)],
             tools: chat_tool_defs,
+            model,
             ..Default::default()
         };
+        if let Some(cap) = max_turns {
+            opts.max_turns = cap;
+        }
 
         let result = tool_loop(
             self.chat_provider.as_ref(),
@@ -228,5 +273,140 @@ mod tests {
 
         let result = handler.handle(&context).await.expect("handle should succeed");
         assert_eq!(result["result"], "object safe");
+    }
+
+    // ── G56: job-data contract (allowed_tools / max_turns / model) ──────────
+
+    use crate::ai::chat::{
+        ChatBlock, ChatError, ChatOpts, ChatResult, ChatToolDef, ChatUsage, StopReason,
+    };
+    use std::sync::Mutex;
+
+    /// A mock provider that records every `ChatOpts` it is handed, so a test can
+    /// assert the subagent handler forwarded `allowed_tools` (→ `tools`) and
+    /// `model` from job data into the tool-loop. Returns a text-only End turn
+    /// so the loop terminates after one round.
+    #[derive(Debug)]
+    struct RecordingProvider {
+        last_opts: Mutex<Option<ChatOpts>>,
+    }
+
+    impl RecordingProvider {
+        fn new() -> Self {
+            Self { last_opts: Mutex::new(None) }
+        }
+    }
+
+    #[async_trait]
+    impl ChatProvider for RecordingProvider {
+        async fn chat(&self, opts: ChatOpts) -> std::result::Result<ChatResult, ChatError> {
+            *self.last_opts.lock().unwrap() = Some(opts);
+            Ok(ChatResult {
+                text: "recorded".to_string(),
+                blocks: vec![ChatBlock::Text { text: "recorded".to_string() }],
+                stop_reason: StopReason::End,
+                usage: ChatUsage::default(),
+                model: "mock:mock-model".to_string(),
+                provider_id: "mock".to_string(),
+                provider_metadata: None,
+            })
+        }
+    }
+
+    fn recorded_tool_names(opts: &ChatOpts) -> Vec<String> {
+        opts.tools.iter().map(|t: &ChatToolDef| t.name.clone()).collect()
+    }
+
+    #[tokio::test]
+    async fn subagent_handler_restricts_tools_via_allowed_tools() {
+        // book-mirror feeds untrusted text with allowed_tools: read-only subset.
+        let engine = engine();
+        let provider = Arc::new(RecordingProvider::new());
+        let handler = SubagentHandler::new(provider.clone());
+        let context = ctx(
+            &engine,
+            json!({
+                "prompt": "summarize this chapter",
+                "allowed_tools": ["get_page", "search"]
+            }),
+        );
+
+        handler.handle(&context).await.expect("handle should succeed");
+        let opts = provider.last_opts.lock().unwrap();
+        let tools = recorded_tool_names(opts.as_ref().expect("provider was called"));
+        assert!(tools.contains(&"brain_get_page".to_string()), "get_page should be allowed: {tools:?}");
+        assert!(tools.contains(&"brain_search".to_string()), "search should be allowed: {tools:?}");
+        assert!(
+            !tools.iter().any(|n| n == "brain_put_page"),
+            "put_page MUST be excluded under read-only allowed_tools (CODEX HIGH-1): {tools:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn subagent_handler_gets_full_allowlist_when_allowed_tools_absent() {
+        let engine = engine();
+        let provider = Arc::new(RecordingProvider::new());
+        let handler = SubagentHandler::new(provider.clone());
+        let context = ctx(&engine, json!({"prompt": "do anything"}));
+
+        handler.handle(&context).await.expect("handle should succeed");
+        let opts = provider.last_opts.lock().unwrap();
+        let tools = recorded_tool_names(opts.as_ref().expect("provider was called"));
+        assert!(
+            tools.iter().any(|n| n == "brain_put_page"),
+            "without allowed_tools the full allowlist (incl put_page) is exposed: {tools:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn subagent_handler_propagates_model() {
+        let engine = engine();
+        let provider = Arc::new(RecordingProvider::new());
+        let handler = SubagentHandler::new(provider.clone());
+        let context = ctx(
+            &engine,
+            json!({"prompt": "task", "model": "anthropic:claude-3-5-sonnet"}),
+        );
+
+        handler.handle(&context).await.expect("handle should succeed");
+        let opts = provider.last_opts.lock().unwrap();
+        assert_eq!(
+            opts.as_ref().unwrap().model.as_deref(),
+            Some("anthropic:claude-3-5-sonnet"),
+            "model should be propagated into ChatOpts"
+        );
+    }
+
+    #[tokio::test]
+    async fn subagent_handler_honors_max_turns_cap() {
+        // A provider that always requests a tool call → the loop only stops on
+        // the max_turns cap. With max_turns:2 in job data, the loop must report
+        // MaxTurns after 2 turns (proving job-data max_turns overrode default 20).
+        let engine = engine();
+        let mock = Arc::new(MockChatProvider::new("never reached"));
+        for _ in 0..5 {
+            mock.queue_result(ChatResult {
+                text: String::new(),
+                blocks: vec![ChatBlock::ToolCall {
+                    tool_call_id: "tc".to_string(),
+                    tool_name: "brain_search".to_string(),
+                    input: json!({"query": "x"}),
+                }],
+                stop_reason: StopReason::ToolCalls,
+                usage: ChatUsage::default(),
+                model: "mock:mock-model".to_string(),
+                provider_id: "mock".to_string(),
+                provider_metadata: None,
+            });
+        }
+        let handler = SubagentHandler::new(mock);
+        let context = ctx(&engine, json!({"prompt": "loop forever", "max_turns": 2}));
+
+        let result = handler.handle(&context).await.expect("handle should succeed");
+        assert_eq!(result["total_turns"], 2, "loop should stop at the job-data cap");
+        assert!(
+            result["stop_reason"].as_str().unwrap_or("").contains("MaxTurns"),
+            "expected MaxTurns stop_reason, got: {result}"
+        );
     }
 }

@@ -22,7 +22,7 @@ import {
   type BiasTagsGenerator,
 } from '../../src/core/cycle/calibration-profile.ts';
 import type { VoiceGateJudge } from '../../src/core/calibration/voice-gate.ts';
-import type { OperationContext } from '../../src/core/operations.ts';
+import type { OperationContext } from '../../src/core/operation-types.ts';
 import type { BrainEngine, TakesScorecard } from '../../src/core/engine.ts';
 
 interface CapturedSql {

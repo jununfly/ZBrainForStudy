@@ -23,6 +23,7 @@ path = "src/lib.rs"
 zbrain-core = { path = "../zbrain-core", features = ["rerank", "embedding", "resolvers", "anthropic", "openai", "google", "skillpack"] }
 zbrain-mcp = { path = "../zbrain-mcp" }
 zbrain-web = { path = "../zbrain-web" }
+zbrain-worker = { path = "../zbrain-worker" }
 clap = { version = "4", features = ["derive", "color"] }
 tokio = { workspace = true }
 serde = { workspace = true }

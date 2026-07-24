@@ -23,7 +23,7 @@
 // user intent).
 
 import { loadConfig } from '../config.ts';
-import type { OperationContext } from '../operations.ts';
+import type { OperationContext } from '../operation-types.ts';
 import { loadActivePack } from './load-active.ts';
 import type { ResolvedPack } from './registry.ts';
 

@@ -34,7 +34,7 @@ import { patternStatementTemplate, type PatternStatementSlots } from '../calibra
 // extras scorecards stored in calibration_profiles.domain_scorecards JSONB.
 import { aggregateDomainScorecards, type DomainScorecards } from '../calibration/domain-aggregators.ts';
 import { ZBrainError } from '../types.ts';
-import type { OperationContext } from '../operations.ts';
+import type { OperationContext } from '../operation-types.ts';
 import type { BrainEngine, TakesScorecard } from '../engine.ts';
 import type { PhaseStatus, CyclePhase } from '../cycle.ts';
 

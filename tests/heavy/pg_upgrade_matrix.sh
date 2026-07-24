@@ -76,7 +76,7 @@ for SHAPE in "${SHAPES[@]}"; do
   # in the JSON output.
   DOCTOR_OUT="$LOG_DIR/heavy-pg_upgrade_doctor-${TS}-${SHAPE}.json"
   set +e
-  timeout 120s bun run src/cli.ts doctor --json > "$DOCTOR_OUT" 2>>"$LOG_FILE"
+  timeout 120s zbrain doctor --json > "$DOCTOR_OUT" 2>>"$LOG_FILE"
   DOCTOR_RC=$?
   set -e
   if [ "$DOCTOR_RC" -ne 0 ]; then

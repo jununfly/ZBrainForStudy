@@ -42,7 +42,7 @@ import { BaseCyclePhase, type ScopedReadOpts, type BasePhaseOpts } from './base-
 import { chat as gatewayChat } from '../ai/gateway.ts';
 import { ZBrainError } from '../types.ts';
 import type { Page, PageFilters } from '../types.ts';
-import type { OperationContext } from '../operations.ts';
+import type { OperationContext } from '../operation-types.ts';
 import type { BrainEngine } from '../engine.ts';
 import type { PhaseStatus, CyclePhase } from '../cycle.ts';
 

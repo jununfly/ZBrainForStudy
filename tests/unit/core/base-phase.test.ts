@@ -9,7 +9,7 @@
 
 import { describe, test, expect } from 'bun:test';
 import { BaseCyclePhase, type ScopedReadOpts, type BasePhaseOpts } from '../../../src/core/cycle/base-phase.ts';
-import type { OperationContext } from '../../../src/core/operations.ts';
+import type { OperationContext } from '../../../src/core/operation-types.ts';
 import type { BrainEngine } from '../../../src/core/engine.ts';
 import type { CyclePhase } from '../../../src/core/cycle.ts';
 

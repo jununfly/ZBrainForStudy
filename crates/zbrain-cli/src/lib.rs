@@ -13,8 +13,10 @@ pub mod update_check;
 pub mod models;
 pub mod apply_migrations;
 pub mod mounts;
+pub mod book_mirror;
 pub mod check_brain_first;
 pub mod check_resolvable;
+pub mod inline_worker;
 pub mod routing_eval;
 
 use anyhow::Context;
@@ -501,6 +503,83 @@ pub enum Commands {
     /// Skillpack management — install, scaffold, search, harvest from third-party repos.
     #[command(subcommand)]
     Skillpack(skillpack::SkillpackSubcommand),
+
+    // ── Phase B: commands previously served by TS cli.ts / operations.ts ──
+    // Each is a thin clap wrapper that builds a params JSON and routes through
+    // `run_operation`. See the `phase_b_commands_registered` parity test.
+
+    /// Show which identity is currently authenticated
+    Whoami,
+
+    /// Show version history of a page
+    History(HistoryArgs),
+
+    /// Revert a page to a specific version
+    Revert(RevertArgs),
+
+    /// Add a tag to a page
+    Tag(TagArgs),
+
+    /// Remove a tag from a page (TS `untag`)
+    Untag(UntagArgs),
+
+    /// List tags on a page
+    Tags(TagsArgs),
+
+    /// Show a page's timeline
+    Timeline(TimelineArgs),
+
+    /// Add a timeline entry to a page
+    #[command(name = "timeline-add")]
+    TimelineAdd(TimelineAddArgs),
+
+    /// Browse recent transcripts
+    #[command(subcommand)]
+    Transcripts(TranscriptsAction),
+
+    /// Find logical contradictions across pages
+    #[command(name = "find-contradictions")]
+    FindContradictions(FindContradictionsArgs),
+
+    /// Trace an entity's trajectory over time
+    #[command(name = "find-trajectory")]
+    FindTrajectory(FindTrajectoryArgs),
+
+    /// Locate a code symbol definition
+    #[command(name = "code-def")]
+    CodeDef(CodeDefArgs),
+
+    /// Find references to a code symbol
+    #[command(name = "code-refs")]
+    CodeRefs(CodeRefsArgs),
+
+    /// Find callers of a code symbol
+    #[command(name = "code-callers")]
+    CodeCallers(CodeCallersArgs),
+
+    /// Find callees of a code symbol
+    #[command(name = "code-callees")]
+    CodeCallees(CodeCalleesArgs),
+
+    /// Blast out from a symbol across the call graph
+    #[command(name = "code-blast")]
+    CodeBlast(CodeBlastArgs),
+
+    /// Walk the call graph from an entry point
+    #[command(name = "code-flow")]
+    CodeFlow(CodeFlowArgs),
+
+    /// Clear the (TS-only) code traversal cache
+    #[command(name = "code-traversal-cache-clear")]
+    CodeTraversalCacheClear(CodeTraversalCacheClearArgs),
+
+    /// Search pages by image
+    #[command(name = "search-by-image")]
+    SearchByImage(SearchByImageArgs),
+
+    /// Personalized chapter-by-chapter book analysis (fan-out subagents).
+    #[command(name = "book-mirror")]
+    BookMirror(book_mirror::BookMirrorArgs),
 }
 
 /// Subcommands for `zbrain jobs`.
@@ -1705,10 +1784,583 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Mounts(cmd) => {
             mounts::run_mounts_command(&cmd, cli.config.as_deref()).await?
         }
+        // ── Phase B: thin wrappers previously served by TS cli.ts ──
+        Commands::Whoami => run_whoami_command(cli.config.as_deref(), timeout_ms).await?,
+        Commands::History(args) => {
+            run_history_command(args, cli.config.as_deref(), timeout_ms).await?
+        }
+        Commands::Revert(args) => run_revert_command(args, cli.config.as_deref(), timeout_ms).await?,
+        Commands::Tag(args) => run_tag_command(args, cli.config.as_deref(), timeout_ms).await?,
+        Commands::Untag(args) => run_untag_command(args, cli.config.as_deref(), timeout_ms).await?,
+        Commands::Tags(args) => run_tags_command(args, cli.config.as_deref(), timeout_ms).await?,
+        Commands::Timeline(args) => {
+            run_timeline_command(args, cli.config.as_deref(), timeout_ms).await?
+        }
+        Commands::TimelineAdd(args) => {
+            run_timeline_add_command(args, cli.config.as_deref(), timeout_ms).await?
+        }
+        Commands::Transcripts(action) => {
+            run_transcripts_command(action, cli.config.as_deref(), timeout_ms).await?
+        }
+        Commands::FindContradictions(args) => {
+            run_find_contradictions_command(args, cli.config.as_deref(), timeout_ms).await?
+        }
+        Commands::FindTrajectory(args) => {
+            run_find_trajectory_command(args, cli.config.as_deref(), timeout_ms).await?
+        }
+        Commands::CodeDef(args) => {
+            run_code_def_command(args, cli.config.as_deref(), timeout_ms).await?
+        }
+        Commands::CodeRefs(args) => {
+            run_code_refs_command(args, cli.config.as_deref(), timeout_ms).await?
+        }
+        Commands::CodeCallers(args) => {
+            run_code_callers_command(args, cli.config.as_deref(), timeout_ms).await?
+        }
+        Commands::CodeCallees(args) => {
+            run_code_callees_command(args, cli.config.as_deref(), timeout_ms).await?
+        }
+        Commands::CodeBlast(args) => {
+            run_code_blast_command(args, cli.config.as_deref(), timeout_ms).await?
+        }
+        Commands::CodeFlow(args) => {
+            run_code_flow_command(args, cli.config.as_deref(), timeout_ms).await?
+        }
+        Commands::CodeTraversalCacheClear(args) => {
+            run_code_traversal_cache_clear_command(args, cli.config.as_deref(), timeout_ms).await?
+        }
+        Commands::SearchByImage(args) => {
+            run_search_by_image_command(args, cli.config.as_deref(), timeout_ms).await?
+        }
         Commands::Skillpack(cmd) => {
             skillpack::run_skillpack(cmd).await?
         }
+        Commands::BookMirror(args) => {
+            run_book_mirror_command(args, cli.config.as_deref()).await?
+        }
     }
+    Ok(())
+}
+
+/// Execute `zbrain book-mirror`: build the engine, then delegate to the
+/// self-contained fan-out orchestration in [`book_mirror`].
+async fn run_book_mirror_command(
+    args: book_mirror::BookMirrorArgs,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = zbrain_core::engine::EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    let engine: std::sync::Arc<dyn zbrain_core::engine::BrainEngine> = std::sync::Arc::new(engine);
+    let result = book_mirror::run_book_mirror(std::sync::Arc::clone(&engine), args).await;
+    engine.disconnect().await?;
+    result
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase B: thin clap wrappers for the commands previously served by TS cli.ts.
+// Each builds a params JSON and routes through `run_operation`, mirroring the
+// pre-cutover TS dispatch. Flag → param-key mappings match operations.ts.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, clap::Args)]
+pub struct HistoryArgs {
+    /// Page slug
+    pub slug: String,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct RevertArgs {
+    /// Page slug
+    pub slug: String,
+    /// Version id to revert to
+    pub version_id: u64,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct TagArgs {
+    /// Page slug
+    pub slug: String,
+    /// Tag to add
+    pub tag: String,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct UntagArgs {
+    /// Page slug
+    pub slug: String,
+    /// Tag to remove
+    pub tag: String,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct TagsArgs {
+    /// Page slug
+    pub slug: String,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct TimelineArgs {
+    /// Page slug
+    pub slug: String,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct TimelineAddArgs {
+    /// Page slug
+    pub slug: String,
+    /// Entry date (YYYY-MM-DD)
+    pub date: String,
+    /// One-line summary
+    pub summary: String,
+    /// Optional longer detail (markdown)
+    #[arg(long)]
+    pub detail: Option<String>,
+    /// Optional source attribution
+    #[arg(long)]
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TranscriptsAction {
+    /// Show recent transcripts
+    Recent(TranscriptsRecentArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct TranscriptsRecentArgs {
+    /// Look-back window in days
+    #[arg(long, default_value_t = 7)]
+    pub days: u64,
+    /// Max entries to return
+    #[arg(long, default_value_t = 50)]
+    pub limit: u64,
+    /// Show full (non-summarized) transcripts
+    #[arg(long)]
+    pub full: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct FindContradictionsArgs {
+    #[arg(long)]
+    pub slug: Option<String>,
+    #[arg(long, value_parser = ["low", "med", "high"])]
+    pub severity: Option<String>,
+    #[arg(long, default_value_t = 20)]
+    pub limit: u32,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct FindTrajectoryArgs {
+    /// Entity slug to trace (required)
+    #[arg(long)]
+    pub entity_slug: String,
+    #[arg(long)]
+    pub metric: Option<String>,
+    #[arg(long, value_parser = ["metric", "event", "all"])]
+    pub kind: Option<String>,
+    #[arg(long)]
+    pub since: Option<String>,
+    #[arg(long)]
+    pub until: Option<String>,
+    #[arg(long, default_value_t = 100)]
+    pub limit: u32,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct CodeDefArgs {
+    /// Symbol to locate
+    pub symbol: String,
+    #[arg(long)]
+    pub lang: Option<String>,
+    #[arg(long, default_value_t = 20)]
+    pub limit: u32,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct CodeRefsArgs {
+    /// Symbol to locate
+    pub symbol: String,
+    #[arg(long)]
+    pub lang: Option<String>,
+    #[arg(long, default_value_t = 50)]
+    pub limit: u32,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct CodeCallersArgs {
+    /// Symbol to locate
+    pub symbol: String,
+    #[arg(long)]
+    pub source: Option<String>,
+    #[arg(long)]
+    pub all_sources: bool,
+    #[arg(long, default_value_t = 100)]
+    pub limit: u32,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct CodeCalleesArgs {
+    /// Symbol to locate
+    pub symbol: String,
+    #[arg(long)]
+    pub source: Option<String>,
+    #[arg(long)]
+    pub all_sources: bool,
+    #[arg(long, default_value_t = 100)]
+    pub limit: u32,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct CodeBlastArgs {
+    #[arg(long)]
+    pub symbol: String,
+    #[arg(long, default_value_t = 5)]
+    pub depth: u32,
+    #[arg(long, default_value_t = 200)]
+    pub max_nodes: u32,
+    #[arg(long)]
+    pub exact: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct CodeFlowArgs {
+    #[arg(long)]
+    pub entry_point: String,
+    #[arg(long, default_value_t = 8)]
+    pub depth: u32,
+    #[arg(long, default_value_t = 200)]
+    pub max_nodes: u32,
+    #[arg(long)]
+    pub exact: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct CodeTraversalCacheClearArgs {
+    #[arg(long)]
+    pub source_id: Option<String>,
+    #[arg(long)]
+    pub all_sources: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SearchByImageArgs {
+    #[arg(long)]
+    pub image_path: Option<String>,
+    #[arg(long)]
+    pub image_url: Option<String>,
+    #[arg(long)]
+    pub image_data: Option<String>,
+    #[arg(long)]
+    pub image_mime: Option<String>,
+    #[arg(long)]
+    pub query: Option<String>,
+    #[arg(long, default_value_t = 20)]
+    pub limit: u32,
+    #[arg(long, default_value_t = 0)]
+    pub offset: u32,
+    #[arg(long)]
+    pub source_id: Option<String>,
+}
+
+/// Execute `zbrain whoami` command.
+async fn run_whoami_command(
+    config_path: Option<&Path>,
+    timeout_ms: Option<u64>,
+) -> anyhow::Result<()> {
+    let params = serde_json::json!({});
+    let output = run_operation("whoami", params, config_path, timeout_ms).await?;
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+/// Execute `zbrain history` command.
+async fn run_history_command(
+    args: HistoryArgs,
+    config_path: Option<&Path>,
+    timeout_ms: Option<u64>,
+) -> anyhow::Result<()> {
+    let params = serde_json::json!({ "slug": args.slug });
+    let output = run_operation("get_versions", params, config_path, timeout_ms).await?;
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+/// Execute `zbrain revert` command.
+async fn run_revert_command(
+    args: RevertArgs,
+    config_path: Option<&Path>,
+    timeout_ms: Option<u64>,
+) -> anyhow::Result<()> {
+    let params = serde_json::json!({ "slug": args.slug, "version_id": args.version_id });
+    let output = run_operation("revert_version", params, config_path, timeout_ms).await?;
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+/// Execute `zbrain tag` command.
+async fn run_tag_command(
+    args: TagArgs,
+    config_path: Option<&Path>,
+    timeout_ms: Option<u64>,
+) -> anyhow::Result<()> {
+    let params = serde_json::json!({ "slug": args.slug, "tag": args.tag });
+    let output = run_operation("add_tag", params, config_path, timeout_ms).await?;
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+/// Execute `zbrain untag` command.
+async fn run_untag_command(
+    args: UntagArgs,
+    config_path: Option<&Path>,
+    timeout_ms: Option<u64>,
+) -> anyhow::Result<()> {
+    let params = serde_json::json!({ "slug": args.slug, "tag": args.tag });
+    let output = run_operation("remove_tag", params, config_path, timeout_ms).await?;
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+/// Execute `zbrain tags` command.
+async fn run_tags_command(
+    args: TagsArgs,
+    config_path: Option<&Path>,
+    timeout_ms: Option<u64>,
+) -> anyhow::Result<()> {
+    let params = serde_json::json!({ "slug": args.slug });
+    let output = run_operation("get_tags", params, config_path, timeout_ms).await?;
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+/// Execute `zbrain timeline` command.
+async fn run_timeline_command(
+    args: TimelineArgs,
+    config_path: Option<&Path>,
+    timeout_ms: Option<u64>,
+) -> anyhow::Result<()> {
+    let params = serde_json::json!({ "slug": args.slug });
+    let output = run_operation("get_timeline", params, config_path, timeout_ms).await?;
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+/// Execute `zbrain timeline-add` command.
+async fn run_timeline_add_command(
+    args: TimelineAddArgs,
+    config_path: Option<&Path>,
+    timeout_ms: Option<u64>,
+) -> anyhow::Result<()> {
+    let params = serde_json::json!({
+        "slug": args.slug,
+        "date": args.date,
+        "summary": args.summary,
+        "detail": args.detail,
+        "source": args.source,
+    });
+    let output = run_operation("add_timeline_entry", params, config_path, timeout_ms).await?;
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+/// Execute `zbrain transcripts` command.
+async fn run_transcripts_command(
+    action: TranscriptsAction,
+    config_path: Option<&Path>,
+    timeout_ms: Option<u64>,
+) -> anyhow::Result<()> {
+    match action {
+        TranscriptsAction::Recent(args) => {
+            let params = serde_json::json!({
+                "days": args.days,
+                "limit": args.limit,
+                "summary": !args.full,
+            });
+            let output =
+                run_operation("get_recent_transcripts", params, config_path, timeout_ms).await?;
+            println!("{}", serde_json::to_string_pretty(&output)?);
+            Ok(())
+        }
+    }
+}
+
+/// Execute `zbrain find-contradictions` command.
+async fn run_find_contradictions_command(
+    args: FindContradictionsArgs,
+    config_path: Option<&Path>,
+    timeout_ms: Option<u64>,
+) -> anyhow::Result<()> {
+    let params = serde_json::json!({
+        "slug": args.slug,
+        "severity": args.severity,
+        "limit": args.limit,
+    });
+    let output = run_operation("find_contradictions", params, config_path, timeout_ms).await?;
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+/// Execute `zbrain find-trajectory` command.
+async fn run_find_trajectory_command(
+    args: FindTrajectoryArgs,
+    config_path: Option<&Path>,
+    timeout_ms: Option<u64>,
+) -> anyhow::Result<()> {
+    let params = serde_json::json!({
+        "entity_slug": args.entity_slug,
+        "metric": args.metric,
+        "kind": args.kind,
+        "since": args.since,
+        "until": args.until,
+        "limit": args.limit,
+    });
+    let output = run_operation("find_trajectory", params, config_path, timeout_ms).await?;
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+/// Execute `zbrain code-def` command.
+async fn run_code_def_command(
+    args: CodeDefArgs,
+    config_path: Option<&Path>,
+    timeout_ms: Option<u64>,
+) -> anyhow::Result<()> {
+    let params = serde_json::json!({
+        "symbol": args.symbol,
+        "lang": args.lang,
+        "limit": args.limit,
+    });
+    let output = run_operation("code_def", params, config_path, timeout_ms).await?;
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+/// Execute `zbrain code-refs` command.
+async fn run_code_refs_command(
+    args: CodeRefsArgs,
+    config_path: Option<&Path>,
+    timeout_ms: Option<u64>,
+) -> anyhow::Result<()> {
+    let params = serde_json::json!({
+        "symbol": args.symbol,
+        "lang": args.lang,
+        "limit": args.limit,
+    });
+    let output = run_operation("code_refs", params, config_path, timeout_ms).await?;
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+/// Execute `zbrain code-callers` command.
+async fn run_code_callers_command(
+    args: CodeCallersArgs,
+    config_path: Option<&Path>,
+    timeout_ms: Option<u64>,
+) -> anyhow::Result<()> {
+    let params = serde_json::json!({
+        "symbol": args.symbol,
+        "source_id": args.source,
+        "all_sources": args.all_sources,
+        "limit": args.limit,
+    });
+    let output = run_operation("code_callers", params, config_path, timeout_ms).await?;
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+/// Execute `zbrain code-callees` command.
+async fn run_code_callees_command(
+    args: CodeCalleesArgs,
+    config_path: Option<&Path>,
+    timeout_ms: Option<u64>,
+) -> anyhow::Result<()> {
+    let params = serde_json::json!({
+        "symbol": args.symbol,
+        "source_id": args.source,
+        "all_sources": args.all_sources,
+        "limit": args.limit,
+    });
+    let output = run_operation("code_callees", params, config_path, timeout_ms).await?;
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+/// Execute `zbrain code-blast` command.
+async fn run_code_blast_command(
+    args: CodeBlastArgs,
+    config_path: Option<&Path>,
+    timeout_ms: Option<u64>,
+) -> anyhow::Result<()> {
+    let params = serde_json::json!({
+        "symbol": args.symbol,
+        "depth": args.depth,
+        "max_nodes": args.max_nodes,
+        "exact": args.exact,
+    });
+    let output = run_operation("code_blast", params, config_path, timeout_ms).await?;
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+/// Execute `zbrain code-flow` command.
+async fn run_code_flow_command(
+    args: CodeFlowArgs,
+    config_path: Option<&Path>,
+    timeout_ms: Option<u64>,
+) -> anyhow::Result<()> {
+    let params = serde_json::json!({
+        "entry_point": args.entry_point,
+        "depth": args.depth,
+        "max_nodes": args.max_nodes,
+        "exact": args.exact,
+    });
+    let output = run_operation("code_flow", params, config_path, timeout_ms).await?;
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+/// Execute `zbrain code-traversal-cache-clear` command.
+async fn run_code_traversal_cache_clear_command(
+    args: CodeTraversalCacheClearArgs,
+    config_path: Option<&Path>,
+    timeout_ms: Option<u64>,
+) -> anyhow::Result<()> {
+    let params = serde_json::json!({
+        "source_id": args.source_id,
+        "all_sources": args.all_sources,
+    });
+    let output =
+        run_operation("code_traversal_cache_clear", params, config_path, timeout_ms).await?;
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+/// Execute `zbrain search-by-image` command.
+async fn run_search_by_image_command(
+    args: SearchByImageArgs,
+    config_path: Option<&Path>,
+    timeout_ms: Option<u64>,
+) -> anyhow::Result<()> {
+    let params = serde_json::json!({
+        "image_path": args.image_path,
+        "image_url": args.image_url,
+        "image_data": args.image_data,
+        "image_mime": args.image_mime,
+        "query": args.query,
+        "limit": args.limit,
+        "offset": args.offset,
+        "source_id": args.source_id,
+    });
+    let output = run_operation("search_by_image", params, config_path, timeout_ms).await?;
+    println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }
 
@@ -6192,15 +6844,23 @@ async fn run_agent_command(
     let engine = zbrain_core::libsql::LibsqlEngine::new();
     engine.connect(&engine_config).await?;
     engine.init_schema().await?;
+    let engine: std::sync::Arc<dyn zbrain_core::engine::BrainEngine> = std::sync::Arc::new(engine);
 
     use zbrain_core::minions::queue::MinionQueue;
     use zbrain_core::minions::types::*;
 
     match action {
         AgentAction::Run(args) => {
+            // The subagent handler reads `model` from job data. When unset we
+            // fall back to a concrete default so the in-process executor below
+            // can build a matching provider (there is otherwise no default).
+            let effective_model = args
+                .model
+                .clone()
+                .unwrap_or_else(|| "anthropic:claude-opus-4-7".to_string());
             let data = serde_json::json!({
                 "prompt": args.prompt,
-                "model": args.model,
+                "model": effective_model,
                 "max_turns": args.max_turns,
             });
 
@@ -6224,8 +6884,10 @@ async fn run_agent_command(
                 idempotency_key: None,
             };
 
-            let queue = MinionQueue::new(&engine);
-            let job = queue.add(&input).await?;
+            let job = {
+                let queue = MinionQueue::new(&*engine);
+                queue.add(&input).await?
+            };
 
             if args.json {
                 println!("{}", serde_json::to_string_pretty(&serde_json::json!({
@@ -6235,42 +6897,52 @@ async fn run_agent_command(
                 println!("Submitted subagent job #{} ({})", job.id, job.status.as_str());
             }
 
-            // Follow mode: poll until terminal
+            // Follow mode: actually EXECUTE the job in-process, then report.
+            // The Rust CLI has no external worker (`jobs work` only launches a
+            // placeholder), so `agent run --follow` runs a short-lived inline
+            // worker itself — the same executor `book-mirror` uses.
             if args.follow {
                 let start = std::time::Instant::now();
-                let mut last_status = job.status;
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-                    let current = queue.get_job(job.id).await?;
-                    match current {
-                        Some(j) => {
-                            if j.status != last_status {
-                                last_status = j.status;
-                                if !args.json {
-                                    eprintln!("  job #{} -> {}", j.id, j.status.as_str());
-                                }
-                            }
-                            let terminal = matches!(j.status,
-                                MinionJobStatus::Completed |
-                                MinionJobStatus::Failed |
-                                MinionJobStatus::Dead |
-                                MinionJobStatus::Cancelled);
-                            if terminal {
-                                let ok = j.status == MinionJobStatus::Completed;
-                                if !args.json {
-                                    if ok {
-                                        println!("\nSubagent completed ({}s).", start.elapsed().as_secs());
-                                    } else {
-                                        println!("\nSubagent ended: {}.", j.status.as_str());
-                                    }
-                                }
-                                std::process::exit(if ok { 0 } else { 1 });
+
+                let (parsed, recipe) =
+                    zbrain_core::ai::resolver::resolve_recipe_strict(&effective_model)
+                        .map_err(|e| anyhow::anyhow!(e.message))?;
+                let provider = zbrain_core::ai::chat::instantiate_chat(
+                    recipe,
+                    &parsed.model_id,
+                    |k| std::env::var(k).ok(),
+                )
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+
+                let jobs = crate::inline_worker::run_subagent_jobs(
+                    std::sync::Arc::clone(&engine),
+                    std::sync::Arc::from(provider),
+                    &[job.id],
+                    crate::inline_worker::InlineWorkerOpts {
+                        concurrency: 1,
+                        ..Default::default()
+                    },
+                )
+                .await?;
+
+                let final_job = jobs.into_iter().next().flatten();
+                match final_job {
+                    Some(j) => {
+                        let ok = j.status == MinionJobStatus::Completed;
+                        if !args.json {
+                            if ok {
+                                println!("\nSubagent completed ({}s).", start.elapsed().as_secs());
+                            } else {
+                                println!("\nSubagent ended: {}.", j.status.as_str());
                             }
                         }
-                        None => {
-                            eprintln!("Job #{} disappeared.", job.id);
-                            std::process::exit(1);
-                        }
+                        engine.disconnect().await?;
+                        std::process::exit(if ok { 0 } else { 1 });
+                    }
+                    None => {
+                        eprintln!("Job #{} disappeared.", job.id);
+                        engine.disconnect().await?;
+                        std::process::exit(1);
                     }
                 }
             }
@@ -6301,6 +6973,52 @@ mod tests {
     #[test]
     fn cli_parses_successfully() {
         Cli::command().debug_assert();
+    }
+
+    /// Phase B parity guard (TDD spec for the cli.ts → Rust cutover).
+    ///
+    /// Every TS `cli.ts` command that has a registered Rust operation must be
+    /// wired into the clap `Commands` enum, so deleting `cli.ts` (and
+    /// `operations.ts`) drops *zero* product commands. If any command
+    /// regresses, `find_subcommand` returns `None` and this fails loudly.
+    ///
+    /// `transcripts` is a parent subcommand (`transcripts recent`), so it gets
+    /// its own nested assertion.
+    #[test]
+    fn phase_b_commands_registered() {
+        let cmd = Cli::command();
+        for name in [
+            "code-blast",
+            "code-callees",
+            "code-callers",
+            "code-def",
+            "code-flow",
+            "code-refs",
+            "code-traversal-cache-clear",
+            "find-contradictions",
+            "find-trajectory",
+            "history",
+            "revert",
+            "tag",
+            "tags",
+            "timeline",
+            "timeline-add",
+            "transcripts",
+            "untag",
+            "search-by-image",
+            "whoami",
+        ] {
+            assert!(
+                cmd.find_subcommand(name).is_some(),
+                "Phase B parity regression: CLI subcommand `{name}` is not wired"
+            );
+        }
+        assert!(
+            cmd.find_subcommand("transcripts")
+                .and_then(|c| c.find_subcommand("recent"))
+                .is_some(),
+            "Phase B parity regression: `transcripts recent` subcommand missing"
+        );
     }
 
     // ── --timeout parsing (mirrors TS parseTimeout in src/core/cli-options.ts) ──
@@ -6638,8 +7356,8 @@ mod tests {
         // subsystem is migrated, its entry moves out into a real check.
         let n = UNMIGRATED_TS_DOCTOR_CHECKS.len();
         assert!(
-            (6..=12).contains(&n),
-            "expected 6-12 subsystem-aggregated entries, got {n}"
+            (5..=12).contains(&n),
+            "expected 5-12 subsystem-aggregated entries, got {n}"
         );
     }
 
