@@ -6033,6 +6033,7 @@ async fn run_autopilot_command(
         engine_kind: zbrain_core::engine::EngineKind::Libsql,
         nightly_quality_probe_enabled: false,
         nightly_probe_max_usd: 5.0,
+        audit_dir: Some(resolve_audit_dir()),
     };
 
     // ── --once: single tick ───────────────────────────────────────────

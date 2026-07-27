@@ -1,8 +1,15 @@
 //! Nightly quality probe — once per 24h, runs canonical quality pipeline.
 //!
 //! Ported from `src/core/cycle/nightly-quality-probe.ts` (v0.40.1.0 T6).
+//!
+//! Audit trail: writes one [`QualityProbeAuditEvent`] per probe run as JSONL
+//! to `<audit_dir>/quality-probe-YYYY-Www.jsonl`, ISO-week rotated. Best-effort
+//! writes: failures go to stderr but never crash the probe. The file format is
+//! byte-compatible with the TS `audit-quality-probe.ts` writer so both runtimes
+//! can read rows the other wrote from the same `~/.zbrain/audit/` directory.
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Datelike, Duration, Utc};
+use std::path::Path;
 
 // ── Constants ───────────────────────────────────────────────────────────
 
@@ -98,6 +105,86 @@ pub struct QualityProbeAuditEvent {
     pub fixture_sha8: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+}
+
+// ── Audit filesystem (JSONL, ISO-week rotation) ─────────────────────────
+
+/// Compute the ISO-week-rotated audit filename `quality-probe-YYYY-Www.jsonl`.
+///
+/// Uses chrono's ISO-8601 week, byte-compatible with the TS
+/// `computeQualityProbeAuditFilename` output. Mirrors [`crate::rerank_audit`]'s
+/// filename convention (same `%G-W%V` ISO-week rule).
+#[must_use]
+pub fn quality_probe_audit_filename(now: DateTime<Utc>) -> String {
+    let iso = now.iso_week();
+    format!("quality-probe-{:04}-W{:02}.jsonl", iso.year(), iso.week())
+}
+
+/// Append one quality-probe event to the current ISO week's JSONL file under
+/// `audit_dir`. Best-effort: on any I/O/serialize error a warning is written
+/// to stderr and `()` is returned — the probe must continue regardless.
+pub fn log_quality_probe_event(audit_dir: &Path, event: &QualityProbeAuditEvent) {
+    if let Err(e) = append_audit_event(audit_dir, event) {
+        eprintln!("[zbrain] quality-probe audit write failed ({e}); probe continues");
+    }
+}
+
+fn append_audit_event(audit_dir: &Path, event: &QualityProbeAuditEvent) -> std::io::Result<()> {
+    use std::io::Write;
+    std::fs::create_dir_all(audit_dir)?;
+    let now = parse_iso_utc(&event.ts).unwrap_or_else(Utc::now);
+    let path = audit_dir.join(quality_probe_audit_filename(now));
+    let mut line = serde_json::to_string(event)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    line.push('\n');
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
+    file.write_all(line.as_bytes())?;
+    Ok(())
+}
+
+/// Read quality-probe events from the last `days` window under `audit_dir`.
+///
+/// Walks the current + previous ISO-week files (so a window straddling the
+/// Monday-midnight boundary stays covered), keeping only rows whose `ts`
+/// parses and is `>= now - days`. Missing files / corrupt rows are skipped
+/// silently — the audit trail is informational and must never block the probe.
+/// Mirrors the TS `readRecentQualityProbeEvents`.
+#[must_use]
+pub fn read_recent_quality_probe_events(
+    audit_dir: &Path,
+    days: i64,
+    now: DateTime<Utc>,
+) -> Vec<QualityProbeAuditEvent> {
+    let cutoff = now - Duration::days(days);
+    let filenames = [
+        quality_probe_audit_filename(now),
+        quality_probe_audit_filename(now - Duration::days(7)),
+    ];
+    let mut out = Vec::new();
+    for filename in filenames {
+        let path = audit_dir.join(&filename);
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue; // missing file — skip
+        };
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let Ok(event) = serde_json::from_str::<QualityProbeAuditEvent>(line) else {
+                continue; // corrupt row — skip
+            };
+            if let Some(ts) = parse_iso_utc(&event.ts) {
+                if ts >= cutoff {
+                    out.push(event);
+                }
+            }
+        }
+    }
+    out
 }
 
 // ── NightlyProbeDeps ────────────────────────────────────────────────────
@@ -219,9 +306,20 @@ pub async fn run_nightly_quality_probe(deps: &dyn NightlyProbeDeps) -> NightlyPr
     let max_usd = deps.resolve_max_usd().await;
 
     // 5. Run evaluations.
-    // Placeholder work_dir — production adapter creates tempdir.
-    let lme_out = format!("{}/lme-output.jsonl", "tmp");
-    let summary_path = format!("{}/summary.json", "tmp");
+    // Scratch files live under the OS temp dir, namespaced by the probe's
+    // `now` timestamp so concurrent/repeat runs never clobber each other.
+    // The production adapter (bun spawn) reads the fixture + writes these;
+    // test stubs ignore the paths entirely.
+    let scratch = std::env::temp_dir();
+    let stamp = now.timestamp_millis();
+    let lme_out = scratch
+        .join(format!("zbrain-nightly-lme-{stamp}.jsonl"))
+        .to_string_lossy()
+        .into_owned();
+    let summary_path = scratch
+        .join(format!("zbrain-nightly-summary-{stamp}.json"))
+        .to_string_lossy()
+        .into_owned();
 
     match deps.run_long_mem_eval(&fixture_path, &lme_out).await {
         Ok(()) => {}
@@ -666,6 +764,119 @@ mod tests {
             should_run_nightly(now, &recent, Duration::hours(1)),
             RateLimitDecision::Run
         );
+    }
+
+    // ── Audit filesystem (JSONL, ISO-week rotation) ─────────────────────
+
+    fn sample_event(ts: &str, outcome: NightlyProbeOutcome) -> QualityProbeAuditEvent {
+        QualityProbeAuditEvent {
+            ts: ts.to_string(),
+            outcome,
+            exit_code: 0,
+            pass_count: 3,
+            fail_count: 1,
+            inconclusive_count: 0,
+            error_count: 0,
+            est_cost_usd: 0.42,
+            fixture_sha8: Some("abcd1234".into()),
+            detail: None,
+        }
+    }
+
+    #[test]
+    fn audit_filename_uses_iso_week() {
+        // 2026-07-14 is in ISO week 29 of 2026.
+        let now = dt("2026-07-14T12:00:00Z");
+        assert_eq!(
+            quality_probe_audit_filename(now),
+            "quality-probe-2026-W29.jsonl"
+        );
+    }
+
+    #[test]
+    fn audit_filename_iso_year_boundary() {
+        // 2027-01-01 belongs to ISO week 53 of *2026* (week of first Thursday
+        // rule), byte-compatible with the TS computeQualityProbeAuditFilename.
+        let now = dt("2027-01-01T00:00:00Z");
+        assert_eq!(
+            quality_probe_audit_filename(now),
+            "quality-probe-2026-W53.jsonl"
+        );
+    }
+
+    #[test]
+    fn audit_log_then_read_roundtrip() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let now = dt("2026-07-14T12:00:00Z");
+        log_quality_probe_event(
+            dir.path(),
+            &sample_event("2026-07-14T12:00:00Z", NightlyProbeOutcome::Pass),
+        );
+        let events = read_recent_quality_probe_events(dir.path(), 2, now);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].outcome, NightlyProbeOutcome::Pass);
+        assert_eq!(events[0].pass_count, 3);
+        assert_eq!(events[0].fixture_sha8.as_deref(), Some("abcd1234"));
+    }
+
+    #[test]
+    fn audit_read_filters_out_old_events() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let now = dt("2026-07-14T12:00:00Z");
+        // Recent (12h ago) — kept.
+        log_quality_probe_event(
+            dir.path(),
+            &sample_event("2026-07-14T00:00:00Z", NightlyProbeOutcome::Pass),
+        );
+        // 5 days ago — outside a 2-day window, dropped. Same ISO week so it
+        // lands in the same file (exercises the per-row cutoff, not just the
+        // file selection).
+        log_quality_probe_event(
+            dir.path(),
+            &sample_event("2026-07-09T12:00:00Z", NightlyProbeOutcome::Fail),
+        );
+        let events = read_recent_quality_probe_events(dir.path(), 2, now);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].outcome, NightlyProbeOutcome::Pass);
+    }
+
+    #[test]
+    fn audit_read_skips_corrupt_rows() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let now = dt("2026-07-14T12:00:00Z");
+        let path = dir.path().join(quality_probe_audit_filename(now));
+        // One valid row, one garbage row, one blank line.
+        let valid =
+            serde_json::to_string(&sample_event("2026-07-14T09:00:00Z", NightlyProbeOutcome::Pass))
+                .unwrap();
+        std::fs::write(&path, format!("{valid}\nnot json at all\n\n")).unwrap();
+        let events = read_recent_quality_probe_events(dir.path(), 2, now);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].outcome, NightlyProbeOutcome::Pass);
+    }
+
+    #[test]
+    fn audit_read_missing_dir_returns_empty() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let missing = dir.path().join("does-not-exist");
+        let now = dt("2026-07-14T12:00:00Z");
+        assert!(read_recent_quality_probe_events(&missing, 2, now).is_empty());
+    }
+
+    #[test]
+    fn audit_log_appends_multiple_rows() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let now = dt("2026-07-14T12:00:00Z");
+        log_quality_probe_event(
+            dir.path(),
+            &sample_event("2026-07-14T08:00:00Z", NightlyProbeOutcome::Pass),
+        );
+        log_quality_probe_event(
+            dir.path(),
+            &sample_event("2026-07-14T10:00:00Z", NightlyProbeOutcome::Fail),
+        );
+        let events = read_recent_quality_probe_events(dir.path(), 2, now);
+        assert_eq!(events.len(), 2);
     }
 }
 

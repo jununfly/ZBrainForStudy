@@ -348,6 +348,11 @@ pub struct AutopilotOpts {
     pub nightly_quality_probe_enabled: bool,
     /// Max USD per nightly probe run (default 5.0).
     pub nightly_probe_max_usd: f64,
+    /// Directory for quality-probe audit JSONL (`~/.zbrain/audit` or
+    /// `ZBRAIN_AUDIT_DIR`). CLI resolves + passes it in so the writer/reader
+    /// share the same layout as the TS runtime. `None` = audit disabled
+    /// (rate limit never fires, no rows written) — used by unit tests.
+    pub audit_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for AutopilotOpts {
@@ -363,6 +368,7 @@ impl Default for AutopilotOpts {
             engine_kind: EngineKind::InMemory,
             nightly_quality_probe_enabled: false,
             nightly_probe_max_usd: 5.0,
+            audit_dir: None,
         }
     }
 }
@@ -488,6 +494,7 @@ pub async fn run_autopilot_tick(
             enabled: true,
             repo_root: opts.repo_path.clone(),
             max_usd: opts.nightly_probe_max_usd,
+            audit_dir: opts.audit_dir.clone(),
         };
         let probe_result = run_nightly_quality_probe(&probe_deps).await;
         events.push(TickEvent::NightlyProbeResult {
@@ -510,6 +517,9 @@ struct NightlyProbeRunnerDeps {
     enabled: bool,
     repo_root: String,
     max_usd: f64,
+    /// Directory for quality-probe audit JSONL. `None` = audit disabled
+    /// (rate limit never fires, no rows written) — used by unit tests.
+    audit_dir: Option<std::path::PathBuf>,
 }
 
 #[async_trait::async_trait]
@@ -519,11 +529,11 @@ impl NightlyProbeDeps for NightlyProbeRunnerDeps {
     }
 
     async fn has_embedding_provider(&self) -> bool {
-        // Delegate to brain_score's embedding_provider_configured — but
-        // we don't have access to env in the runner deps. For now, return
-        // false to signal "not configured", which short-circuits the probe
-        // with outcome=no_embedding_key.
-        false
+        // Check for any embedding provider API key in the environment.
+        // Mirrors the TS probe's embedding-key check (nightly-quality-probe.ts).
+        std::env::var("OPENAI_API_KEY").is_ok()
+            || std::env::var("VOYAGE_API_KEY").is_ok()
+            || std::env::var("ZEROENTROPY_API_KEY").is_ok()
     }
 
     async fn resolve_max_usd(&self) -> f64 {
@@ -539,8 +549,28 @@ impl NightlyProbeDeps for NightlyProbeRunnerDeps {
         _fixture_path: &str,
         _output_path: &str,
     ) -> Result<(), String> {
-        // Eval CLI not yet ported — stub returns unimplemented.
-        Err("eval longmemeval not yet ported to Rust".into())
+        // registered in docs/plans/KNOWN-GAPS.md (G58)
+        //
+        // The TS longmemeval command (`src/commands/eval-longmemeval.ts`) is
+        // NOT runnable after the Phase11 minions teardown (commit 45fe955):
+        // it imports the deleted `src/core/cli-options.ts`, so `bun test
+        // tests/unit/eval-longmemeval-e2e.slow.test.ts` fails with
+        // "Cannot find module '../core/cli-options.ts'". That breakage is a
+        // deliberately-accepted baseline entry (tsc-baseline.txt froze it as
+        // inherited debt), so spawning the TS via `bun` would only surface
+        // module-not-found.
+        //
+        // Per the eval-disposition decision (KNOWN-GAPS G58): do NOT re-spawn
+        // the dead TS. When the nightly probe genuinely needs to run, the
+        // longmemeval pipeline must be ported to Rust natively (PGLite → an
+        // embedded engine + hybrid search + the LLM answer step), not shelled
+        // out to bun. Until then this returns a probe-level error; the caller
+        // records an `error` outcome and never crashes autopilot.
+        Err(
+            "longmemeval not runnable: TS command broken by Phase11 minions \
+             teardown (missing src/core/cli-options.ts); needs native Rust port"
+                .into(),
+        )
     }
 
     async fn run_cross_modal_batch(
@@ -549,17 +579,36 @@ impl NightlyProbeDeps for NightlyProbeRunnerDeps {
         _summary_path: &str,
         _max_usd: f64,
     ) -> Result<(i32, Option<super::nightly_probe::CrossModalSummary>), String> {
-        Err("eval cross-modal not yet ported to Rust".into())
+        // registered in docs/plans/KNOWN-GAPS.md (G58)
+        //
+        // See `run_long_mem_eval` above. The cross-modal batch depends on the
+        // longmemeval output that we can no longer produce, and its own TS
+        // pipeline (`src/commands/eval-cross-modal.ts`, ~1543 lines, 15 LLM
+        // calls) shares the same un-migrated-TS fate. Honest error until a
+        // native Rust cross-modal batch runner exists.
+        Err(
+            "cross-modal batch not runnable: depends on longmemeval output \
+             (broken by Phase11) + un-migrated TS; needs native Rust port"
+                .into(),
+        )
     }
 
-    fn read_recent_events(&self, _days: u32) -> Vec<QualityProbeAuditEvent> {
-        // Audit filesystem not yet ported — return empty list so rate
-        // limit never fires.
-        vec![]
+    fn read_recent_events(&self, days: u32) -> Vec<QualityProbeAuditEvent> {
+        let Some(ref audit_dir) = self.audit_dir else {
+            return vec![];
+        };
+        super::nightly_probe::read_recent_quality_probe_events(
+            audit_dir,
+            days as i64,
+            chrono::Utc::now(),
+        )
     }
 
-    fn log_event(&self, _event: QualityProbeAuditEvent) {
-        // Audit filesystem not yet ported — no-op stub.
+    fn log_event(&self, event: QualityProbeAuditEvent) {
+        let Some(ref audit_dir) = self.audit_dir else {
+            return;
+        };
+        super::nightly_probe::log_quality_probe_event(audit_dir, &event);
     }
 
     fn now(&self) -> chrono::DateTime<chrono::Utc> {
