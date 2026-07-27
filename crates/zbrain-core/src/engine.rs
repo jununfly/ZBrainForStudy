@@ -1103,6 +1103,20 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
         ))
     }
 
+    /// Write a calibration profile row. Mirrors TS `runPhaseCalibrationProfile`.
+    /// Default: `Err(`Unsupported`)` — engines that implement `CalibrationQueries`
+    /// override this to delegate to `insert_calibration_profile`.
+    async fn insert_calibration_profile(
+        &self,
+        _row: &crate::calibration_queries::CalibrationProfileInsert<'_>,
+    ) -> crate::Result<i64> {
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "insert_calibration_profile not implemented for this engine",
+        ))
+    }
+
     /// Calibration curve (observed vs predicted per weight bucket). Mirrors TS
     /// `getCalibrationCurve`. Default: `Err(`Unsupported`)` — engines that
     /// implement `CalibrationQueries` override this to delegate to
@@ -4110,6 +4124,13 @@ impl BrainEngine for InMemoryEngine {
         query: &crate::calibration_queries::ScorecardQuery<'_>,
     ) -> crate::Result<crate::calibration_queries::TakesScorecard> {
         crate::calibration_queries::CalibrationQueries::get_scorecard(self, query).await
+    }
+
+    async fn insert_calibration_profile(
+        &self,
+        row: &crate::calibration_queries::CalibrationProfileInsert<'_>,
+    ) -> crate::Result<i64> {
+        crate::calibration_queries::CalibrationQueries::insert_calibration_profile(self, row).await
     }
 
     async fn get_calibration_curve(
@@ -9639,6 +9660,13 @@ impl CalibrationQueries for InMemoryEngine {
                 resolved_quality: t.resolved_quality.clone(),
             });
         Ok(aggregate_scorecard(rows))
+    }
+
+    async fn insert_calibration_profile(
+        &self,
+        row: &crate::calibration_queries::CalibrationProfileInsert<'_>,
+    ) -> crate::error::Result<i64> {
+        crate::calibration_queries::CalibrationQueries::insert_calibration_profile(self, row).await
     }
 
     async fn get_calibration_curve(

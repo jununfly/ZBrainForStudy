@@ -76,7 +76,7 @@
     "1-3": {
       "id": "1-3",
       "label": "calibration 算法迁移 (10 文件，当前仅 DB 层)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [
@@ -344,7 +344,7 @@
     "1-3-3": {
       "id": "1-3-3",
       "label": "calibration Phase 2 引擎/LLM 基建 (5 函数 + schema + cycle + op，见 1-3-3-1..7)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-3",
       "children": [
@@ -2393,11 +2393,52 @@
     "1-3-3-7": {
       "id": "1-3-3-7",
       "label": "calibration-profile 循环 runPhaseCalibrationProfile (port; 串联 getScorecard + gateVoice + biasTagsGenerator + aggregateDomainScorecards + 写 calibration_profiles; cold-brain<5 skip; budget gate)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-3-3",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "移植边界：独立编排函数还是 Rust cycle Phase 集成?",
+          "answer": "独立编排函数 run_calibration_profile 落 calibration/calibration_profile.rs（与 1-3-3-6 同胞一致）；不做 cycle Phase 集成（cycle 大迁移属 Part12 blocked）",
+          "note": "与集群兄弟节点同构；cycle 集成归 Part12"
+        },
+        {
+          "q": "pattern statements + bias tags 的 LLM 依赖如何注入?",
+          "answer": "trait DI：PatternStatementsGenerator / BiasTagsGenerator 两个 async trait 注入；生产 ChatBackedPatternStatementsGenerator / ChatBackedBiasTagsGenerator 包裹 Arc<dyn ChatProvider> + model id（patterns=Sonnet, judge/bias 复用 patterns model, judge 走 LlmBackedVoiceJudge Haiku）",
+          "note": "延续 Q4 的 trait DI 形态"
+        },
+        {
+          "q": "pattern_statement_template / PatternStatementSlots 是否复用?",
+          "answer": "复用 Rust 已有 pattern_statement_template + PatternStatementSlots（calibration.rs:50/100）；pick_fallback_slots 移植进新模块",
+          "note": "不重复造轮子"
+        },
+        {
+          "q": "budget gate 如何处理（TS 是 BaseCyclePhase.checkBudget 读 config+周期累加）?",
+          "answer": "拆为 BudgetGate trait DI：run_calibration_profile 接受 Option<Arc<dyn BudgetGate>>，默认 PermissiveBudgetGate（总放行）；真实 config+周期累加器接线归 Part12 cycle 集成",
+          "note": "独立函数无 cycle-spend 累加器，必须解耦"
+        },
+        {
+          "q": "domain_scorecards 聚合如何接入?",
+          "answer": "复用已有 aggregate_domain_scorecards(engine,holder,domains,source_id)；run_calibration_profile 接受 domains: Option<Vec<CalibrationDomain>>，非空则调用（fail-soft：错误→warning+写{}），否则写{}；active-pack 加载为调用方职责",
+          "note": "fail-soft 对齐 TS R1 字节一致"
+        },
+        {
+          "q": "calibration_profiles 写入方式?",
+          "answer": "typed CalibrationQueries::insert_calibration_profile(row)（守 Q3 禁 execute_raw）；libsql 实写 RETURNING id，postgres→Unsupported（PG 无此表），InMemory→Unsupported；未知 source_id→FK 报错不伪造(G52)",
+          "note": "对齐 think_ab 的 typed 方法打法"
+        },
+        {
+          "q": "返回形态与 op 接线?",
+          "answer": "run_calibration_profile 返回 ZbResult<CalibrationProfileResult>（data+warnings+skipped+status）；不接 op handler（归 1-3-3-5 takes_calibration op）",
+          "note": "纯移植+测试，不跨节点"
+        },
+        {
+          "q": "测试策略?",
+          "answer": "D 风格：纯单测 parsers+pick_fallback_slots；集成 tests/calibration_profile.rs（真实 libsql 串行）覆盖 cold-brain 跳过 / 完整写入+read-back / budget-exhausted / FK 违规；无 LLM 调用",
+          "note": "gate 已在内联单测覆盖"
+        }
+      ],
       "notes": ""
     },
     "1-6-7-16-2": {
@@ -2666,7 +2707,7 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-27 21:37:32",
+    "updated": "2026-07-27 22:19:04",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"

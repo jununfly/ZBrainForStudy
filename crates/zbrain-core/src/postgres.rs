@@ -1242,6 +1242,13 @@ impl BrainEngine for PostgresEngine {
         crate::calibration_queries::CalibrationQueries::get_scorecard(self, query).await
     }
 
+    async fn insert_calibration_profile(
+        &self,
+        row: &crate::calibration_queries::CalibrationProfileInsert<'_>,
+    ) -> Result<i64> {
+        crate::calibration_queries::CalibrationQueries::insert_calibration_profile(self, row).await
+    }
+
     async fn get_calibration_curve(
         &self,
         query: &crate::calibration_queries::CalibrationCurveQuery<'_>,

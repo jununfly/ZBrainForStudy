@@ -28,6 +28,7 @@ use crate::calibration_queries::{
     aggregate_calibration_curve, aggregate_scorecard, CalibrationBucket, CalibrationCurveQuery,
     CalibrationProfileRow, CalibrationQueries, CalibrationRow, CalibrationWaveQueries,
     PatternDetail, ScorecardQuery, ScorecardRow, TakeSummary, TakesScorecard, ThinkAbInsert,
+    CalibrationProfileInsert,
 };
 use crate::oauth_queries::{
     OAuthQueries, RegisterClientRequest, RegisterClientResponse, RevokeClientResponse,
@@ -2288,6 +2289,13 @@ impl BrainEngine for LibsqlEngine {
         query: &crate::calibration_queries::CalibrationCurveQuery<'_>,
     ) -> Result<Vec<crate::calibration_queries::CalibrationBucket>> {
         crate::calibration_queries::CalibrationQueries::get_calibration_curve(self, query).await
+    }
+
+    async fn insert_calibration_profile(
+        &self,
+        row: &crate::calibration_queries::CalibrationProfileInsert<'_>,
+    ) -> Result<i64> {
+        crate::calibration_queries::CalibrationQueries::insert_calibration_profile(self, row).await
     }
 
     // ── undo-wave reversal bridge (1-3-3-2) ──
@@ -9231,6 +9239,50 @@ impl CalibrationQueries for LibsqlEngine {
                 Ok(out)
             }
         }
+    }
+
+    /// Insert one calibration-profile row (1-3-3-7). `generated_at` defaults to
+    /// now() and `published` to false (SQLite `DEFAULT`); `cost_usd` /
+    /// `judge_model_agreement` are NULL — matching the canonical TS INSERT.
+    /// `source_id` is a NOT NULL FK to `sources(id)`; an unknown source surfaces
+    /// as an error (G52), never a fabricated row.
+    async fn insert_calibration_profile(&self, row: &CalibrationProfileInsert<'_>) -> Result<i64> {
+        let conn = self.conn().await?;
+        let pattern_json = serde_json::to_string(&row.pattern_statements)
+            .map_err(|e| Error::engine(format!("insert_calibration_profile ser: {e}")))?;
+        let bias_json = serde_json::to_string(&row.active_bias_tags)
+            .map_err(|e| Error::engine(format!("insert_calibration_profile ser: {e}")))?;
+        let domain_json = serde_json::to_string(&row.domain_scorecards)
+            .map_err(|e| Error::engine(format!("insert_calibration_profile ser: {e}")))?;
+        let mut rows = conn
+            .query(
+                "INSERT INTO calibration_profiles \
+                 (source_id, holder, total_resolved, brier, accuracy, partial_rate, grade_completion, domain_scorecards, pattern_statements, voice_gate_passed, voice_gate_attempts, active_bias_tags, model_id, cost_usd, judge_model_agreement) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, NULL, NULL) RETURNING id",
+                ::libsql::params![
+                    row.source_id,
+                    row.holder,
+                    row.total_resolved,
+                    row.brier,
+                    row.accuracy,
+                    row.partial_rate,
+                    row.grade_completion,
+                    domain_json,
+                    pattern_json,
+                    row.voice_gate_passed,
+                    row.voice_gate_attempts,
+                    bias_json,
+                    row.model_id,
+                ],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("insert_calibration_profile: {e}")))?;
+        let id = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("insert_calibration_profile id row: {e}")))?
+            .and_then(|r| r.get::<i64>(0).ok());
+        id.ok_or_else(|| Error::engine("insert_calibration_profile: no id returned"))
     }
 }
 

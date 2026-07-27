@@ -15,11 +15,13 @@
 //! roadmap JSON is a temporary working file and will be cleared on completion,
 //! so comments must stay self-explanatory.
 
+pub mod calibration_profile;
 pub mod think_ab;
 pub mod voice_gate;
 
 // Re-export the Phase 2 engine/LLM calibration functions at the `calibration`
 // module root so callers (tests, future ops) import from one path.
+pub use calibration_profile::*;
 pub use think_ab::*;
 pub use voice_gate::*;
 

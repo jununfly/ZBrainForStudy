@@ -235,6 +235,31 @@ pub struct CalibrationProfileRow {
     pub judge_model_agreement: Option<f64>,
 }
 
+/// Insert payload for [`CalibrationQueries::insert_calibration_profile`].
+///
+/// Mirrors the columns the canonical TS `runPhaseCalibrationProfile` writes to
+/// `calibration_profiles`. `generated_at` / `published` / `cost_usd` /
+/// `judge_model_agreement` / `wave_version` are left to DB defaults (or set
+/// NULL) to match the canonical INSERT exactly. `source_id` is a NOT NULL FK to
+/// `sources(id)` — an unknown source surfaces as an error, never a fabricated
+/// row (G52).
+#[derive(Debug, Clone)]
+pub struct CalibrationProfileInsert<'a> {
+    pub source_id: &'a str,
+    pub holder: &'a str,
+    pub total_resolved: i32,
+    pub brier: Option<f64>,
+    pub accuracy: Option<f64>,
+    pub partial_rate: Option<f64>,
+    pub grade_completion: f64,
+    pub domain_scorecards: serde_json::Value,
+    pub pattern_statements: Vec<String>,
+    pub voice_gate_passed: bool,
+    pub voice_gate_attempts: i16,
+    pub active_bias_tags: Vec<String>,
+    pub model_id: &'a str,
+}
+
 /// A summarized take for pattern drill-down.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -390,6 +415,19 @@ pub trait CalibrationQueries: Debug + Send + Sync {
     /// Default: empty (read path degrades like the other calibration reads).
     async fn think_ab_preference_counts(&self, _cutoff_iso: &str) -> Result<Vec<(String, u64)>> {
         Ok(Vec::new())
+    }
+
+    /// Insert one calibration-profile row into `calibration_profiles`, returning
+    /// the new row id when the backend supports `RETURNING`.
+    ///
+    /// Default: unsupported error — a write must never be silently dropped, so
+    /// backends without the table (InMemory, and Postgres which has no
+    /// `calibration_profiles` table) fail loudly. `source_id` is a NOT NULL FK
+    /// to `sources(id)`; an unknown source surfaces as an error (G52).
+    async fn insert_calibration_profile(&self, _row: &CalibrationProfileInsert<'_>) -> Result<i64> {
+        Err(crate::error::Error::unsupported(
+            "insert_calibration_profile not implemented for this engine",
+        ))
     }
 }
 
