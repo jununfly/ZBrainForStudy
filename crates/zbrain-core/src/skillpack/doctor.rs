@@ -160,6 +160,7 @@ mod tests {
 "#).unwrap();
         std::fs::create_dir(pack_root.join("test-skill")).unwrap();
         std::fs::write(pack_root.join("test-skill").join("SKILL.md"), "test").unwrap();
+        std::fs::write(pack_root.join("LICENSE"), "MIT").unwrap();
         let result = run_doctor(&DoctorOptions {
             pack_root: pack_root.to_path_buf(),
             mode: DoctorMode::Quick,
@@ -168,7 +169,7 @@ mod tests {
         });
         assert!(result.is_ok());
         let result = result.unwrap();
-        assert_eq!(result.total, 6); // 5 core + 5 badges = 6/10
+        assert_eq!(result.score, 5); // minimal valid pack clears all 5 core dims, 0 badges
         assert!(result.tier_eligibility != rubric::RubricTier::Blocked);
     }
 }

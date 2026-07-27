@@ -395,13 +395,17 @@ mod tests {
                 llm_evals: None,
                 routing_evals: None,
                 runbooks: None,
+                e2e_tests: None,
+                eval_schema_version: None,
+                runbook_schema_version: None,
                 changelog: None,
             },
         };
         let score = walk_rubric(&input);
-        // core check 1 (manifest) passes, other core checks pass by default (no deps/skills missing checked here)
+        // Only the manifest core check passes; with core_passed != 5 the pack is Blocked
+        // (tier formula requires all 5 core dims to clear the Blocked tier).
         assert_eq!(score.total, 1);
         assert_eq!(score.core_passed, 1);
-        assert_eq!(score.tier_eligibility, RubricTier::Experimental);
+        assert_eq!(score.tier_eligibility, RubricTier::Blocked);
     }
 }

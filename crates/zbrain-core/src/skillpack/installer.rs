@@ -352,7 +352,7 @@ pub fn execute_install(plan: &InstallPlan, opts: &InstallOptions) -> Result<Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::tempfile::tempdir;
+    use tempfile::tempdir;
 
     #[test]
     fn test_lock_acquire_empty() {

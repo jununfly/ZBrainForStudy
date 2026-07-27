@@ -301,7 +301,7 @@ fn path_relative_from<'a>(child: &'a Path, base: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::tempfile::tempdir;
+    use tempfile::tempdir;
 
     #[test]
     fn test_walk() {

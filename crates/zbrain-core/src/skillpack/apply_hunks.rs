@@ -224,6 +224,9 @@ pub struct ApplyHunksResult {
 /// Only applies a hunk when the pre-change context (lines starting with ' ' or '-')
 /// matches exactly in the input file at the expected position.
 pub fn apply_hunks(original: &str, diff: &ParsedDiff) -> ApplyHunksResult {
+    // str::lines() drops a trailing newline; remember it so we can restore it,
+    // otherwise patching a file silently strips its final newline.
+    let trailing_newline = original.ends_with('\n');
     let mut original_lines: Vec<&str> = original.lines().collect();
     let mut result = Vec::new();
     let mut applied = 0;
@@ -329,6 +332,11 @@ pub fn apply_hunks(original: &str, diff: &ParsedDiff) -> ApplyHunksResult {
         output.truncate(output.len() - 1);
     }
 
+    // Restore a trailing newline the original had (str::lines() dropped it).
+    if trailing_newline {
+        output.push('\n');
+    }
+
     ApplyHunksResult {
         text: output,
         applied,
@@ -351,7 +359,7 @@ mod tests {
         assert_eq!(hunk.old_count, 3);
         assert_eq!(hunk.new_start, 1);
         assert_eq!(hunk.new_count, 3);
-        assert_eq!(hunk.lines.len(), 3);
+        assert_eq!(hunk.lines.len(), 4);
     }
 
     #[test]
