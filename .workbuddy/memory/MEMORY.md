@@ -23,7 +23,7 @@
 
 ## 迁移进度（摘要）
 - 迁移全 12 Part。主线已完成：Sources/Capture、Facts/Takes/Timeline/Salience/Graph、Search/Retrieval 生产后端复活、minions、autopilot、Part7 Phase9、Part9 Phase11（残留 TS 终局）、Part10 Phase12 Schema-Pack 路线图。
-- **当前最前沿**：Part11 calibration 簇（1-3）+ 残留 TS 终局（1-3-3-5 takes_calibration op 已完成，1-3-3-2 undoWave 已完成，1-3-3-4 queryAcrossBrains 已完成；剩 1-3-3-6 gateVoice/runAbTrial、1-3-3-7 calibration-profile 循环）；Part12 cycle 大迁移已拆独立路线图未启动。
+- **当前最前沿**：Part11 calibration 簇（1-3）已收口——1-3-3-2/4/5/6/7 全 completed（1-3-3-1 schema 迁移此前已补 migration 0023 注册）；残留 TS 终局主线已完成。Part12 cycle 大迁移已拆独立路线图未启动。
 
 ## 其他
 - Admin 路由差异：Rust admin API 在 `/*`（如 `/register-client`），TS 在 `/admin/api/*`；路线图 Q6 决策"保持 /admin/api/*"，待对齐。
