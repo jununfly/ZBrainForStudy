@@ -1,29 +1,31 @@
 # zbrain 项目记忆
 
-- 用户明确要求：当前在 `zbrain` 项目内工作时，不要与其他项目或跨项目路线图混淆；继续工作应优先使用本仓库上下文、`.workbuddy/memory/` 和项目文件，而不是套用其他项目任务。
-- 项目方向：当前处于 TS -> Rust 迁移过程，选择“Rust 重写线 ZBrain”；整个仓库语言统一迁到 ZBrain，所有 GBrain 品牌都改名为 ZBrain。
-- 品牌迁移策略：目前没有线上用户，第一阶段可以包含破坏性接口改名（CLI/bin/package/env/dotfile/config/public examples 等），不需要默认保留 GBrain 兼容别名；历史 GBrain CHANGELOG 内容意义不大，直接删除/reset，从 ZBrain 首个 release 重新记录。
-- 命名迁移范围：连文件名一起改。第一阶段彻底迁移 `gbrain.yml -> zbrain.yml`、`docs/GBRAIN_*.md -> docs/ZBRAIN_*.md`、package name/bin/env/dotfile/path/docs/test 引用等；TS 代码部分先不直接动，随“完成 TS -> Rust”PRD 迁移成功一部分就删除一部分。执行分层：配置/包名/bin；env/dotfile/path；docs 文件名与引用；测试脚本引用；最后验证断链。
-- 配置兼容策略：`gbrain.yml`、`.gbrain*`、`GBRAIN_*`、`~/.gbrain` 全部迁到 ZBrain 命名，不保留 alias/fallback/兼容读取；`brain` 和 `source` 作为领域词不改。
-- 下个 PRD：`docs/prd/complete-ts-to-rust.md`。核心原则：TS 代码先不直接动；Rust 迁移成功一部分就对应删除一部分 TS；不适合直接删的内容到时讨论并记录决策。
-- 测试目录迁移：整体物理迁移 `test/` 到 `tests/unit/`，这只是目录规范迁移，不等于删除 TS 测试；现有 `tests/heavy/` 保持，scripts 测试 glob 和文档引用同步改。物理迁移与 runner/config 改动均已完成。**bun 已可用**（2026-07-20 确认：`~/.bun/bin/bun` v1.3.14，node_modules 在；`bun test` 与 `bash scripts/typecheck-baseline.sh` 均可在本机实跑），此前"无 bun 阻塞"记录已过时。
-- Plans 清理：将 `docs/plans/20260526/` 提炼为 canonical 文档 `docs/plans/20260526-rust-rewrite-plan.md`（目标范围、slice 列表、已确认决策、当前状态/后续切片、废弃/关闭调查结论），提炼后删除连续过程文件；唯一且仍有效的决策必须先提炼再删。
-- Roadmap 拆 plan 约定：若审计或拆解时发现与当前节点目标存在语义偏差，且有跟进价值，应拆成 sub-node 跟踪，而不是吸收到当前 plan 中。
-- **Roadmap 文件位置铁律（2026-07-13 约定）**：所有 roadmap 的 `.json` 和 `.md` **统一放 `docs/plans/`**（不再放 `.workbuddy/roadmaps/`，该目录已清空删除）。JSON 命名 `zbrain-ts-to-rust-partN-*.json`，md 命名 `ZBRAIN_TS_TO_RUST_PARTN_*.md`（**md 与对应 JSON 同名转大写下划线**，全 7 part 统一，无 `ZJ_ROADMAP.md` 特例——已废弃）。
-- **Roadmap「一 part 一 md」铁律（2026-07-13 约定，踩坑后立）**：每个 part 的 roadmap JSON 必须 `link` 到**各自独立**的 md 文件。**严禁多个 JSON 共用同一个 md_file**——`roadmap_cli.py render`（`roadmap.py write_markdown_section()`）**只认带 `⚠️` 的 marker 对** `<!-- ⚠️ ROADMAP_SECTION_START/END -->` 做替换（**不是**纯 `<!-- ROADMAP_SECTION_START -->`，那种是死地层永不更新）。多 part 共享一 md 会导致命不中的旧地层永久残留、叠层污染（曾致 `ZJ_ROADMAP.md` 叠了 Part5/6/7 三套不同格式共 23KB）。`ZJ_ROADMAP.md` 只保留**当前活跃 part**。修复手法：给残留 part 各自 `link` 独立 md 后 render；共享 md 直接 `rm` 后让当前 part render 全新重建（render 对不存在文件走纯新写，天然清叠层）；若同一 md 内混入纯 marker + `⚠️` marker 两套（2026-07-16 part11 踩坑），Edit 删掉纯 marker 陈旧段只留 `⚠️` 段后 render 即可。CLI 用法：`link/render/decide/add/tree` 第一个 positional 是 **JSON 完整路径**（非 roadmap 名）；render 必须从项目根 cwd 运行（md_file 相对路径基于 cwd）。**md_file key 真相（2026-07-16 更正）：CLI 读取的是 JSON 根级 `md_file` key（`link` 命令写入的绝对路径），NOT `metadata.md_file`（后者只是信息性副本）——切勿把根级 key 当脏 dupe 删掉，删了 render 会报 "No md_file linked"，须重新 `link` 恢复。**
-- **代码注释禁止引用 roadmap 编号（2026-07-06 约定）**：roadmap JSON（`.workbuddy/roadmaps/*.json`）是**临时文件，工作完成后会清理**。因此**源码注释里绝不能引用 roadmap 编号**（如 "roadmap 1-2-3"、"Tracked by roadmap 1-2-2"、"see roadmap 1-8"）——清理后就成悬空死链。必要信息必须**直接自解释写进注释**（TS 行号锚点、行为原因、将来怎么做的技术路径），不依赖外部临时文档。同理 `FUTURE(tag)` 就近锚点也应自解释。docs/plans/ 下的 canonical 文档是持久的，可以引用。
-- **已知缺口 SSOT = `docs/plans/KNOWN-GAPS.md`（2026-07-08 约定）**：目标范围外、又不值得单独建 roadmap 节点的已知缺口，集中登记到这份**无日期前缀活文档**（原则"毒草要长在阳光之下"）。散落 `FUTURE(tag)` 注释瘦身为一行指路牌（冗长背景移进 KNOWN-GAPS），`UNMIGRATED_TS_*` 常量+锚点测试**原样保留**（有硬 CI 防漂移，删了失去防护），仅在文档登记并指向。双向指针：代码锚点加 `// registered in docs/plans/KNOWN-GAPS.md (Gn)`，文档"现载体"列反指代码。文档是治理活文档非运行时契约，不加解析 markdown 的脆测试，防线是 code review+约定。当前登记 G1-G25（G23 postgres search_pages 未实现 / G24 libsql put_page 不持久化 page.embedding / G25 import_from_content 不生成 chunk embedding）。
-- Admin 路由路径差异（2026-06-30 发现）：Rust admin API 路由当前在 `/*`（如 `/register-client`），TS 对应路由在 `/admin/api/*`。admin/mod.rs 注释写 "mounted under `/admin/api/*`" 但实际 merge 在顶层无前缀。需后续对齐：要么加 `/admin/api` 前缀层，要么接受当前裸路径。路线图 Q6 决策是"方案A: 保持 /admin/api/*"。
-- 1-7-1-1~1-7-1-5 全部完成（Source CRUD, Import/Clone, Capture Pipeline, Content Extraction, Sync Engine）。
-- 1-7-1-7 完成：zbrain sources add/list/remove/status + zbrain capture CLI commands（5 子命令，68 CLI tests）。
-- **Phase 7（Facts/Takes/Timeline/Salience/Graph）全部完成（2026-07-09）**：7A Takes 引擎层、7B Backlinks+Facts、7C Graph+Salience 收尾+CLI 接线+PG 集成测试。收尾节点 1-3-5 用 PG mirror 测试捕获并修复 4 个真实 postgres.rs 问题（timestamptz text-bind、valid_until NULL、INT4→bigint、takes CHECK 分歧 G22）。**经验：PG 强类型+约束强制能揪出 SQLite 无类型环境掩盖的 bug，PG mirror 测试有独立价值**。
-- **Part4 Phase 6 Search/Retrieval 生产后端复活全部完成（2026-07-09，roadmap 1-3 四子节点）**：核心发现 = 生产后端 search_pages 是 trait default 空实现，只有 InMemory 有真实检索，CLI query 走 LibsqlEngine 返回空（生产搜索是死的）。修复：抽后端无关 `fuse_and_boost(&dyn BrainEngine, &[Page], opts)` 融合 helper（lexical+RRF+vector cosine+snippet+salience/recency boost），InMemory 改薄委托、LibsqlEngine 实 SQL 拉候选+调 helper，三后端零重复。query embedding 照抄 rerank 先例接线（from_env 软关闭 + fail-open lexical-only）。设计：search 拆"后端相关半（拿候选）+后端无关半（融合）"；embedding 只做 query 路，索引路降级由 G24/G25 待补。10+7+17 测试全绿。Part4 Phase 6（节点 1）10/10 全 completed。
-- **1-4 全部完成（2026-07-14，5/5 nodes）**：1-4-1 Brain tools (22 tests)、1-4-2 低复杂度 handlers (15, 10 tests)、1-4-3 Autopilot+phase (7 smoke)、1-4-4 Registry+Subagent v1 (9 tests)、1-4-5 中复杂度 handlers (2 real + 3 smoke)。minions 全量 89 tests 全绿，zbrain-core lib 1015 tests 全绿。Registry 注册 28 handlers（TS 29 个去掉 debug noop=28）。ingest_capture 完整实现（import_from_content）、shell v1 完整实现（tokio::process+timeout）。runCycle 5000+ 行子系统留独立 cycle port 节点。
-- **1-5 全部完成（2026-07-14，7/7 nodes）**：autopilot 模块完整迁移。1-5-1 fanout 纯函数 (16 tests)、1-5-2 BrainHealth+brain-score-recommendations (35 tests)、1-5-3 Cycle 模块 (13 tests)、1-5-4 主循环+模式判定+reconnect 分类 (63 tests)、1-5-5 Daemon install/uninstall (38 tests)、1-5-6 CLI 接线 (5 tests)、1-5-7 Nightly quality probe (21 tests, 见下)。autopilot 模块 5 个文件: fanout.rs / brain_score.rs / cycle.rs / runner.rs / daemon.rs / nightly_probe.rs。runner.rs 含 11 纯函数 + run_autopilot_tick + NightlyProbeDeps 对接。nightly_probe.rs (671 lines) 纯 DI 架构: should_run_nightly + NightlyProbeDeps async trait + run_nightly_quality_probe 8-outcome 状态机。eval 适配器 stub，真实实现后续独立节点。lib 1201 tests, CLI 165 tests 全绿。
-- **Part7 Phase9 全部完成（2026-07-14，35/35 nodes）**：1-1 MinionQueue (3/3)、1-2 MinionWorker (5/5)、1-3 Budget+rate leases (3/3)、1-4 Handlers+tools (5/5)、1-5 Autopilot+fanout (7/7, 含 1-5-7 Nightly quality probe)、1-6 Remote execution (ping+doctor, 20 CLI tests)、1-7 jobs/agent CLI (8 jobs subcommands + agent run, 15 CLI tests)、1-8 G7 收口 webhook→MinionQueue (ingest_capture + sync priority=-10, 92 web tests)。KNOWN-GAPS G7 resolved。lib 1201 tests, CLI 165 tests, web 92 tests 全绿。
-- **Part9 Phase11 全部完成（2026-07-15，4/4 nodes）**：1-1 package.json cutover（删 main/exports，JS 库身份移除）；1-2 重算闭包；1-3 分批删 src/core 已迁 impl（六轮累计净删 ~10152 行，D=0 安全删除全集消化归零）；1-4 final 收尾（typecheck 改 baseline 硬 gate 冻结 64 既有 error 只阻新增 + 删 cutover assert 脚手架）。**关键认知**：残留 TS 仍 1300+ 文件是活的迁移中间态（src 529 + tests/unit 783），TS 单测仍 bun test 实跑，typecheck 不能删只能改 baseline gate。残留 TS 盘点见 `docs/plans/RESIDUAL-TS-INVENTORY.md`（A=已迁待删 / B=真正待迁=eval+schema-pack+skillpack+doctor / C=部分覆盖 / D=有意保留G36）。
-- **Part10 Phase12 Schema-Pack 迁移 roadmap 建成（2026-07-15）**：G4 解决路线。TS schema-pack = 26 源文件(~4929行) + 32 CLI verb 全未实现（Rust 无 schema_pack 模块）。6 节点：1-1 数据模型(manifest+loader+primitives+closure) → 1-2 Registry+resolution(7层链+缓存+extendsBFS) → 1-3 Inspection verbs(9只读,tracer bullet) → 1-4 Activation+Authoring(3+15=18变更) → 1-5 Discovery+repair(5verb,清空UNMIGRATED常量) → 1-6 Consumer rewiring+TS删除(解决G4)。gate=operations.ts(4243行,最重消费者)迁移状态。
+## 项目方向
+- 当前处于 TS → Rust 迁移（"Rust 重写线 ZBrain"），整仓统一迁到 ZBrain，所有 GBrain 品牌改名 ZBrain（无线上用户，第一阶段可破坏性改名、不留兼容别名）。`brain`/`source` 作领域词不改。
+- 下个 PRD：`docs/prd/complete-ts-to-rust.md`。原则：TS 先不动，Rust 迁成一块删一块；不适合删的到时讨论记录决策。
 
-- **TS 子进程调用 Rust 命令铁律（2026-07-20 立，1-6-5-9 踩坑）**：`src/cli.ts`（TS 入口）**不代理任何 Rust 子命令**——对它跑 `bun src/cli.ts check-resolvable` 会直接报 `Unknown command`。TS 代码要调 Rust CLI 必须解析二进制本身，统一用新加的 `src/core/zbrain-bin.ts` 的 `resolveZbrainBin()`（顺序：`$ZBRAIN_BIN` → `target/debug/zbrain[.exe]` → `target/release/zbrain[.exe]` → PATH 回退）。`skillify-check.ts` 的 check-resolvable / check-brain-first 两处 spawn 都已切换到它。测试里同理（openclaw-reference-compat 之前错误地 spawn `bun src/cli.ts`，已改）。`cargo test` 只编 test 二进制不编 `zbrain` 主二进制——改了 Rust 子命令后务必 `cargo build -p zbrain-cli` 重建 `target/debug/zbrain.exe`，否则测试会因 clap 不识新子命令拿 exit 2。
-- **提交完整性铁律（2026-07-24 踩坑后立）**：迁移工作里若在 lib.rs 加了 `pub mod X;` / Cargo.toml 加了依赖 / 删了 TS 文件，**必须确认新增的被引用文件本身也 `git add` 进去了**。曾出事故：`db3dd7b`/`331331f` 提交了 book-mirror 的 `pub mod book_mirror;`/`pub mod inline_worker;` 声明 + `zbrain-worker` 依赖 + TS 删除，却漏 add 了 `book_mirror.rs`/`inline_worker.rs`/`operation-types.ts` 三个新文件本身 → HEAD 破损（干净检出因"找不到模块"编译失败，本地能过纯因工作区有 untracked 文件掩盖）。`cd1f6e1` 补 add 修复。**教训：commit 前对新增源文件跑 `git status` 确认没 untracked 遗漏；尤其 message 里声称"new file X"时，务必核实 X 真在 `git show --stat` 的文件列表里（不是只在 message 文字里）。** 检查手法：`git cat-file -e HEAD:<path>` 验证文件真在 HEAD。
-- **skillpack CLI 接线完成（2026-07-24）**：core 26 模块 7499 行完整实现，CLI 15 verb 中 **13 真实接线**（init/scaffold/search/info/install/doctor/pack/harvest/scrub-legacy-fence-rows/list/reference/registry/endorse），**2 占位**（migrate-fence/check——core 确无对应实现，bail 明说）。踩坑：本地包装 `fn run_endorse` 与 core `run_endorse` 名字冲突，解法=删顶层导入 + 删 `run_skillpack` 内 `use zbrain_core::skillpack::*;` glob（glob 会把 core 版带入作用域覆盖本地函数）。**debug 构建 Windows `zbrain.exe --help` 栈溢出是预存问题**（大型 clap 枚举 + 1MB 主线程栈），非改动引入；clap 结构验证走测试线程（栈更大），已由 `Cli::command().debug_assert()` 测试覆盖。TS 端 skillify-check.ts 等消费者仍在，暂不删 TS。
+## 命名 / 品牌迁移
+- 连文件名一起改：`gbrain.yml→zbrain.yml`、`docs/GBRAIN_*.md→docs/ZBRAIN_*.md`、package/bin/env/dotfile/path/docs/test 引用。分层执行：配置/包名/bin → env/dotfile/path → docs 文件名与引用 → 测试脚本引用 → 验证断链。
+
+## Roadmap 铁律
+- **位置**：所有 `.json`/`.md` 统一放 `docs/plans/`（JSON `zbrain-ts-to-rust-partN-*.json`，md `ZBRAIN_TS_TO_RUST_PARTN_*.md`，同名转大写下划线，无 `ZJ_ROADMAP.md` 特例）。
+- **一 part 一 md**：每个 part JSON 必须 `link` 到各自独立 md；严禁多 JSON 共用一 md（`roadmap_cli.py render` 只认带 `⚠️` 的 `<!-- ⚠️ ROADMAP_SECTION_START/END -->` marker 对替换，纯 marker 是死地层）。CLI：`link/render/decide/add/tree` 第一 positional 是 **JSON 完整路径**；render 从项目根 cwd 跑；读的是 JSON 根级 `md_file` key（非 `metadata.md_file`）。
+- **代码注释禁引 roadmap 编号**（roadmap JSON 是临时文件，清理后成死链）；必要信息自解释写进注释。docs/plans/ 下 canonical 文档可引用。
+- **拆分约定**：审计/拆解发现与当前节点语义偏差且有跟进价值 → 拆 sub-node，不吸收进当前 plan。
+- **进度 SSOT**：各 part 完成状态以 roadmap JSON 为准；历史 phase 完成明细在每日 `YYYY-MM-DD.md`，不在本文件重复。
+
+## 已知缺口 SSOT
+- 目标范围外、不值得单建 roadmap 节点的缺口，集中登记 `docs/plans/KNOWN-GAPS.md`（活文档，无日期前缀；双向指针：代码锚点 `// registered in docs/plans/KNOWN-GAPS.md (Gn)` ↔ 文档"现载体"列）。`FUTURE(tag)` 注释瘦身为一行指路牌；`UNMIGRATED_TS_*` 常量+锚点测试原样保留（CI 防漂移）。
+
+## 工程铁律
+- **TS 子进程调 Rust 命令**：`src/cli.ts` 不代理 Rust 子命令。TS 调 Rust CLI 用 `src/core/zbrain-bin.ts` 的 `resolveZbrainBin()`（`$ZBRAIN_BIN`→`target/debug/zbrain[.exe]`→`target/release`→PATH）。改了 Rust 子命令后必 `cargo build -p zbrain-cli` 重建主二进制，否则测试 exit 2。
+- **提交完整性**：lib.rs 加 `pub mod X;` / Cargo.toml 加依赖 / 删 TS 文件时，必确认新增被引用文件本身也已 `git add`；commit 前 `git status` 确认无 untracked 遗漏，`git cat-file -e HEAD:<path>` 验证文件真在 HEAD。
+
+## 迁移进度（摘要）
+- 迁移全 12 Part。主线已完成：Sources/Capture、Facts/Takes/Timeline/Salience/Graph、Search/Retrieval 生产后端复活、minions、autopilot、Part7 Phase9、Part9 Phase11（残留 TS 终局）、Part10 Phase12 Schema-Pack 路线图。
+- **当前最前沿**：Part11 calibration 簇（1-3）+ 残留 TS 终局（1-3-3-5 takes_calibration op 已完成，剩 1-3-3-2/4/6/7）；Part12 cycle 大迁移已拆独立路线图未启动。
+
+## 其他
+- Admin 路由差异：Rust admin API 在 `/*`（如 `/register-client`），TS 在 `/admin/api/*`；路线图 Q6 决策"保持 /admin/api/*"，待对齐。
+- bun 已可用（`~/.bun/bin/bun` v1.3.14）：`bun test` 与 `bash scripts/typecheck-baseline.sh` 本机可跑。
+- skillpack 测试仅 `--all-features` 下编译；`std::tempfile` 等预存 bug 已于 2026-07-27 修复（见当日日志）。
