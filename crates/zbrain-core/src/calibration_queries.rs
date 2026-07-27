@@ -354,6 +354,78 @@ pub trait CalibrationQueries: Debug + Send + Sync {
     ) -> Result<Option<PatternDetail>>;
 }
 
+// ── undo-wave reversal (1-3-3-2) ─────────────────────────────────────────
+
+/// Options for [`undo_wave`]. Mirrors the canonical TS `UndoWaveOpts`.
+#[derive(Debug, Clone)]
+pub struct UndoWaveOpts {
+    /// Wave version to reverse (e.g. `v0.36.1.0`).
+    pub wave_version: String,
+    /// When true, compute counts only — no writes.
+    pub dry_run: bool,
+    /// When true, attempt the gstack-learnings scrub. Skipped in the Rust
+    /// port (external binary unavailable) — recorded as KNOWN-GAP.
+    pub scrub_gstack: bool,
+    /// The `resolved_by` label identifying wave-applied resolutions.
+    /// `None` → default `'zbrain:grade_takes'`.
+    pub resolved_by_label: Option<String>,
+}
+
+/// Result of [`undo_wave`]. Mirrors the canonical TS `UndoWaveResult`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UndoWaveResult {
+    pub wave_version: String,
+    pub dry_run: bool,
+    /// Number of take rows whose resolution was reverted.
+    pub resolutions_reverted: u64,
+    /// Number of `calibration_profiles` rows deleted.
+    pub profiles_deleted: u64,
+    /// Number of `take_nudge_log` rows purged.
+    pub nudges_purged: u64,
+    /// Number of `take_grade_cache` rows marked `applied=false`.
+    pub grade_cache_unapplied: u64,
+    /// True when the gstack scrub step ran. Always `false` in the Rust port.
+    pub gstack_scrub_attempted: bool,
+    /// Non-fatal warnings (e.g. skipped gstack scrub).
+    pub warnings: Vec<String>,
+}
+
+/// Typed, backend-specific reversal writes for [`undo_wave`].
+///
+/// Mirrors the canonical TS `undoWave` four-step reversal but delegates the
+/// SQL to each backend (InMemory has no wave tables → returns 0). Each
+/// method takes `(wave_version, dry_run)` and returns the affected-row count.
+#[async_trait]
+pub trait CalibrationWaveQueries: Debug + Send + Sync {
+    /// Step 1 — revert auto-applied take resolutions written by this wave.
+    /// Unsets `takes.resolved_*` for takes flagged via `take_grade_cache`
+    /// (applied=true + wave_version), but only where `resolved_by` matches
+    /// `resolved_by` (manual resolutions persist). On `dry_run`, returns the
+    /// count without writing.
+    async fn revert_wave_resolutions(
+        &self,
+        wave_version: &str,
+        resolved_by: &str,
+        dry_run: bool,
+    ) -> Result<u64>;
+
+    /// Step 1b — mark `take_grade_cache` rows `applied=false` for this wave
+    /// (audit trail kept). On `dry_run`, returns the count without writing.
+    async fn unapply_wave_grade_cache(&self, wave_version: &str, dry_run: bool) -> Result<u64>;
+
+    /// Step 2 — delete `calibration_profiles` rows for this wave. On
+    /// `dry_run`, returns the count without writing.
+    async fn delete_calibration_profiles_for_wave(
+        &self,
+        wave_version: &str,
+        dry_run: bool,
+    ) -> Result<u64>;
+
+    /// Step 3 — purge `take_nudge_log` rows for this wave. On `dry_run`,
+    /// returns the count without writing.
+    async fn purge_nudge_log_for_wave(&self, wave_version: &str, dry_run: bool) -> Result<u64>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

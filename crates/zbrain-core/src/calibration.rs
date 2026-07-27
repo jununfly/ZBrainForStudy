@@ -11,7 +11,10 @@
 //! roadmap JSON is a temporary working file and will be cleared on completion,
 //! so comments must stay self-explanatory.
 
-use crate::calibration_queries::{CalibrationProfileRow, CalibrationQueries, TakesScorecard};
+use crate::calibration_queries::{
+    CalibrationProfileRow, CalibrationQueries, CalibrationWaveQueries, TakesScorecard, UndoWaveOpts,
+    UndoWaveResult,
+};
 use async_trait::async_trait;
 use crate::engine::BrainEngine;
 use serde::{Serialize, Deserialize};
@@ -744,6 +747,76 @@ pub async fn aggregate_domain_scorecards(
         }
     }
     Ok(out)
+}
+
+/// Reverse a calibration wave's mutations on canonical state.
+///
+/// Port of the canonical TS `undoWave` (`src/core/calibration/undo-wave.ts`).
+/// Four steps, each delegated to [`CalibrationWaveQueries`] on the engine:
+///
+/// 1. `revert_wave_resolutions` — unset `takes.resolved_*` for wave-applied
+///    resolutions (cross-checked against `resolved_by` so manual writes
+///    persist).
+/// 2. `unapply_wave_grade_cache` — mark `take_grade_cache.applied=false`.
+/// 3. `delete_calibration_profiles_for_wave` — delete this wave's profiles.
+/// 4. `purge_nudge_log_for_wave` — purge this wave's nudge log.
+///
+/// The optional gstack-learnings scrub (TS `execFileSync('gstack-learnings-prune')`)
+/// is **skipped** in the Rust port — the external binary is not available and
+/// the best-effort filesystem write is out of scope. Recorded as KNOWN-GAP;
+/// `gstack_scrub_attempted` stays `false` and a warning notes the skip.
+///
+/// Each step is idempotent: re-running against a wave with no matching rows
+/// returns all-zero counts. `dry_run` short-circuits every write.
+pub async fn undo_wave(
+    engine: &dyn BrainEngine,
+    opts: &UndoWaveOpts,
+) -> crate::error::Result<UndoWaveResult> {
+    let wave_version = opts.wave_version.as_str();
+    let resolved_by = opts
+        .resolved_by_label
+        .as_deref()
+        .unwrap_or("zbrain:grade_takes");
+
+    let mut result = UndoWaveResult {
+        wave_version: wave_version.to_string(),
+        dry_run: opts.dry_run,
+        resolutions_reverted: 0,
+        profiles_deleted: 0,
+        nudges_purged: 0,
+        grade_cache_unapplied: 0,
+        gstack_scrub_attempted: false,
+        warnings: Vec::new(),
+    };
+
+    result.resolutions_reverted = engine
+        .revert_wave_resolutions(wave_version, resolved_by, opts.dry_run)
+        .await?;
+    result.grade_cache_unapplied = engine
+        .unapply_wave_grade_cache(wave_version, opts.dry_run)
+        .await?;
+    result.profiles_deleted = engine
+        .delete_calibration_profiles_for_wave(wave_version, opts.dry_run)
+        .await?;
+    result.nudges_purged = engine
+        .purge_nudge_log_for_wave(wave_version, opts.dry_run)
+        .await?;
+
+    if opts.scrub_gstack && !opts.dry_run {
+        // Skipped in the Rust port — the external `gstack-learnings-prune`
+        // binary is not spawned here. Kept as a no-op so the operator's
+        // intent (passed flag) is visible in the result, but the step never
+        // executes. registered in docs/plans/KNOWN-GAPS.md (G59)
+        result.gstack_scrub_attempted = false;
+        result.warnings.push(
+            "gstack-learnings-prune scrub is not implemented in the Rust port; run \
+             `gstack-learnings-prune --key-prefix <namespace>` manually if needed \
+             (registered as KNOWN-GAP G59)."
+                .into(),
+        );
+    }
+
+    Ok(result)
 }
 
 async fn aggregate_one_domain(

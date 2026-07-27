@@ -26,8 +26,8 @@ use crate::admin_queries::{
 };
 use crate::calibration_queries::{
     aggregate_calibration_curve, aggregate_scorecard, CalibrationBucket, CalibrationCurveQuery,
-    CalibrationProfileRow, CalibrationQueries, CalibrationRow, PatternDetail, ScorecardQuery,
-    ScorecardRow, TakeSummary, TakesScorecard,
+    CalibrationProfileRow, CalibrationQueries, CalibrationRow, CalibrationWaveQueries,
+    PatternDetail, ScorecardQuery, ScorecardRow, TakeSummary, TakesScorecard,
 };
 use crate::oauth_queries::{
     OAuthQueries, RegisterClientRequest, RegisterClientResponse, RevokeClientResponse,
@@ -137,6 +137,7 @@ const MIGRATION_0020: &str = include_str!("../migrations-sqlite/0020_ingest_log.
 const MIGRATION_0021: &str = include_str!("../migrations-sqlite/0021_code_edges.sql");
 /// 1-6-7-11: search_by_image — image-search spend log table for daily budget tracking.
 const MIGRATION_0022: &str = include_str!("../migrations-sqlite/0022_image_search_spend_log.sql");
+const MIGRATION_0023: &str = include_str!("../migrations-sqlite/0023_calibration_tables.sql");
 
 /// Legacy string array — REMOVED in favor of MigrationRegistry.
 /// Use LIBQL_MIGRATIONS instead.
@@ -272,6 +273,11 @@ pub static LIBQL_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 22,
         name: "mcp_spend_log",
         sql: MIGRATION_0022,
+    }));
+    registry.add(Box::new(LibsqlMigration {
+        version: 23,
+        name: "calibration_tables",
+        sql: MIGRATION_0023,
     }));
 
     registry
@@ -2275,6 +2281,40 @@ impl BrainEngine for LibsqlEngine {
         query: &crate::calibration_queries::ScorecardQuery<'_>,
     ) -> Result<crate::calibration_queries::TakesScorecard> {
         crate::calibration_queries::CalibrationQueries::get_scorecard(self, query).await
+    }
+
+    async fn get_calibration_curve(
+        &self,
+        query: &crate::calibration_queries::CalibrationCurveQuery<'_>,
+    ) -> Result<Vec<crate::calibration_queries::CalibrationBucket>> {
+        crate::calibration_queries::CalibrationQueries::get_calibration_curve(self, query).await
+    }
+
+    // ── undo-wave reversal bridge (1-3-3-2) ──
+
+    async fn revert_wave_resolutions(
+        &self,
+        wave_version: &str,
+        resolved_by: &str,
+        dry_run: bool,
+    ) -> Result<u64> {
+        crate::calibration_queries::CalibrationWaveQueries::revert_wave_resolutions(self, wave_version, resolved_by, dry_run).await
+    }
+
+    async fn unapply_wave_grade_cache(&self, wave_version: &str, dry_run: bool) -> Result<u64> {
+        crate::calibration_queries::CalibrationWaveQueries::unapply_wave_grade_cache(self, wave_version, dry_run).await
+    }
+
+    async fn delete_calibration_profiles_for_wave(
+        &self,
+        wave_version: &str,
+        dry_run: bool,
+    ) -> Result<u64> {
+        crate::calibration_queries::CalibrationWaveQueries::delete_calibration_profiles_for_wave(self, wave_version, dry_run).await
+    }
+
+    async fn purge_nudge_log_for_wave(&self, wave_version: &str, dry_run: bool) -> Result<u64> {
+        crate::calibration_queries::CalibrationWaveQueries::purge_nudge_log_for_wave(self, wave_version, dry_run).await
     }
 
     async fn find_duplicate_page(
@@ -8597,6 +8637,193 @@ fn decode_cr_mode(value: &str) -> Result<CRMode> {
         other => Err(Error::engine(format!(
             "unknown contextual_retrieval_mode value {other:?}"
         ))),
+    }
+}
+
+// ─── CalibrationWaveQueries impl for LibsqlEngine ──────────────────────
+//
+// Placeholder bodies (return 0) — each step's real SQL is filled in by its
+// TDD slice against the libsql behavior tests. `undo_wave` drives these.
+
+#[async_trait]
+impl CalibrationWaveQueries for LibsqlEngine {
+    async fn revert_wave_resolutions(
+        &self,
+        wave_version: &str,
+        resolved_by: &str,
+        dry_run: bool,
+    ) -> Result<u64> {
+        let conn = self.conn().await?;
+
+        // Locate the takes this wave auto-resolved via the grade cache
+        // (applied=true + wave match), mirroring canonical TS `undoWave`
+        // Step 1. The resolved_by cross-check below protects takes that a
+        // manual `takes resolve` overrode after grade_takes wrote them.
+        let mut rows = conn
+            .query(
+                "SELECT DISTINCT take_id FROM take_grade_cache \
+                 WHERE wave_version = ?1 AND applied = true",
+                ::libsql::params![wave_version],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("revert_wave_resolutions (targets): {e}")))?;
+        let mut take_ids: Vec<i64> = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("revert_wave_resolutions (targets): {e}")))?
+        {
+            take_ids.push(
+                row.get(0)
+                    .map_err(|e| Error::engine(format!("revert_wave_resolutions (targets): {e}")))?,
+            );
+        }
+        if take_ids.is_empty() {
+            return Ok(0);
+        }
+
+        // Build a parameterized IN list: ?1 = resolved_by, ?2.. = take ids.
+        let placeholders = (0..take_ids.len())
+            .map(|i| format!("?{}", i + 2))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut params: Vec<::libsql::Value> =
+            vec![::libsql::Value::Text(resolved_by.to_string())];
+        params.extend(take_ids.into_iter().map(::libsql::Value::Integer));
+
+        if dry_run {
+            let sql = format!(
+                "SELECT COUNT(*) FROM takes WHERE resolved_by = ?1 AND id IN ({placeholders})"
+            );
+            let mut rows = conn
+                .query(&sql, params)
+                .await
+                .map_err(|e| Error::engine(format!("revert_wave_resolutions (dry): {e}")))?;
+            let row = rows
+                .next()
+                .await
+                .map_err(|e| Error::engine(format!("revert_wave_resolutions (dry): {e}")))?
+                .ok_or_else(|| Error::engine("revert_wave_resolutions: COUNT returned no row"))?;
+            let n: i64 = row
+                .get(0)
+                .map_err(|e| Error::engine(format!("revert_wave_resolutions (dry): {e}")))?;
+            return Ok(u64::try_from(n).unwrap_or(0));
+        }
+
+        // NOTE: the canonical TS UPDATE also NULLs `resolved_source`; the
+        // Rust takes schema (0012_takes_full_columns) has no such column,
+        // so the reset covers the six resolved_* columns that exist here.
+        let sql = format!(
+            "UPDATE takes SET \
+                resolved_at = NULL, \
+                resolved_outcome = NULL, \
+                resolved_quality = NULL, \
+                resolved_value = NULL, \
+                resolved_unit = NULL, \
+                resolved_by = NULL \
+             WHERE resolved_by = ?1 AND id IN ({placeholders})"
+        );
+        let affected = conn
+            .execute(&sql, params)
+            .await
+            .map_err(|e| Error::engine(format!("revert_wave_resolutions: {e}")))?;
+        Ok(affected)
+    }
+
+    async fn unapply_wave_grade_cache(&self, wave_version: &str, dry_run: bool) -> Result<u64> {
+        let conn = self.conn().await?;
+        if dry_run {
+            let mut rows = conn
+                .query(
+                    "SELECT COUNT(*) FROM take_grade_cache \
+                     WHERE wave_version = ?1 AND applied = true",
+                    ::libsql::params![wave_version],
+                )
+                .await
+                .map_err(|e| Error::engine(format!("unapply_wave_grade_cache (dry): {e}")))?;
+            let row = rows
+                .next()
+                .await
+                .map_err(|e| Error::engine(format!("unapply_wave_grade_cache (dry): {e}")))?
+                .ok_or_else(|| Error::engine("unapply_wave_grade_cache: COUNT returned no row"))?;
+            let n: i64 = row
+                .get(0)
+                .map_err(|e| Error::engine(format!("unapply_wave_grade_cache (dry): {e}")))?;
+            return Ok(u64::try_from(n).unwrap_or(0));
+        }
+        let affected = conn
+            .execute(
+                "UPDATE take_grade_cache SET applied = false \
+                 WHERE wave_version = ?1 AND applied = true",
+                ::libsql::params![wave_version],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("unapply_wave_grade_cache: {e}")))?;
+        Ok(affected)
+    }
+
+    async fn delete_calibration_profiles_for_wave(
+        &self,
+        wave_version: &str,
+        dry_run: bool,
+    ) -> Result<u64> {
+        let conn = self.conn().await?;
+        if dry_run {
+            let mut rows = conn
+                .query(
+                    "SELECT COUNT(*) FROM calibration_profiles WHERE wave_version = ?1",
+                    ::libsql::params![wave_version],
+                )
+                .await
+                .map_err(|e| Error::engine(format!("delete_calibration_profiles_for_wave (dry): {e}")))?;
+            let row = rows
+                .next()
+                .await
+                .map_err(|e| Error::engine(format!("delete_calibration_profiles_for_wave (dry): {e}")))?
+                .ok_or_else(|| Error::engine("delete_calibration_profiles_for_wave: COUNT returned no row"))?;
+            let n: i64 = row
+                .get(0)
+                .map_err(|e| Error::engine(format!("delete_calibration_profiles_for_wave (dry): {e}")))?;
+            return Ok(u64::try_from(n).unwrap_or(0));
+        }
+        let affected = conn
+            .execute(
+                "DELETE FROM calibration_profiles WHERE wave_version = ?1",
+                ::libsql::params![wave_version],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("delete_calibration_profiles_for_wave: {e}")))?;
+        Ok(affected)
+    }
+
+    async fn purge_nudge_log_for_wave(&self, wave_version: &str, dry_run: bool) -> Result<u64> {
+        let conn = self.conn().await?;
+        if dry_run {
+            let mut rows = conn
+                .query(
+                    "SELECT COUNT(*) FROM take_nudge_log WHERE wave_version = ?1",
+                    ::libsql::params![wave_version],
+                )
+                .await
+                .map_err(|e| Error::engine(format!("purge_nudge_log_for_wave (dry): {e}")))?;
+            let row = rows
+                .next()
+                .await
+                .map_err(|e| Error::engine(format!("purge_nudge_log_for_wave (dry): {e}")))?
+                .ok_or_else(|| Error::engine("purge_nudge_log_for_wave: COUNT returned no row"))?;
+            let n: i64 = row
+                .get(0)
+                .map_err(|e| Error::engine(format!("purge_nudge_log_for_wave (dry): {e}")))?;
+            return Ok(u64::try_from(n).unwrap_or(0));
+        }
+        let affected = conn
+            .execute(
+                "DELETE FROM take_nudge_log WHERE wave_version = ?1",
+                ::libsql::params![wave_version],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("purge_nudge_log_for_wave: {e}")))?;
+        Ok(affected)
     }
 }
 

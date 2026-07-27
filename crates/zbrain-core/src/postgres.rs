@@ -44,8 +44,8 @@ use crate::engine::{
 };
 use crate::calibration_queries::{
     aggregate_calibration_curve, aggregate_scorecard, CalibrationBucket, CalibrationCurveQuery,
-    CalibrationProfileRow, CalibrationQueries, CalibrationRow, PatternDetail, ScorecardQuery,
-    ScorecardRow, TakesScorecard,
+    CalibrationProfileRow, CalibrationQueries, CalibrationRow, CalibrationWaveQueries,
+    PatternDetail, ScorecardQuery, ScorecardRow, TakesScorecard,
 };
 use crate::oauth_queries::{
     ExchangeTokens, OAuthClientInfo, OAuthQueries, RegisterClientRequest,
@@ -257,6 +257,7 @@ const MIGRATION_0020: &str = include_str!("../migrations/0020_ingest_log.sql");
 const MIGRATION_0021: &str = include_str!("../migrations/0021_code_edges.sql");
 /// 1-6-7-11: search_by_image — image-search spend log table for daily budget tracking.
 const MIGRATION_0022: &str = include_str!("../migrations/0022_image_search_spend_log.sql");
+const MIGRATION_0023: &str = include_str!("../migrations/0023_calibration_tables.sql");
 
 /// FNV-1a 64-bit hash of a lease key, mapped to a signed int64 for
 /// `pg_advisory_xact_lock`. Matches the TS implementation bit-for-bit.
@@ -383,6 +384,11 @@ pub static POSTGRES_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 22,
         name: "mcp_spend_log",
         sql: MIGRATION_0022,
+    }));
+    registry.add(Box::new(PostgresMigration {
+        version: 23,
+        name: "calibration_tables",
+        sql: MIGRATION_0023,
     }));
 
     registry
@@ -1234,6 +1240,40 @@ impl BrainEngine for PostgresEngine {
         query: &crate::calibration_queries::ScorecardQuery<'_>,
     ) -> Result<crate::calibration_queries::TakesScorecard> {
         crate::calibration_queries::CalibrationQueries::get_scorecard(self, query).await
+    }
+
+    async fn get_calibration_curve(
+        &self,
+        query: &crate::calibration_queries::CalibrationCurveQuery<'_>,
+    ) -> Result<Vec<crate::calibration_queries::CalibrationBucket>> {
+        crate::calibration_queries::CalibrationQueries::get_calibration_curve(self, query).await
+    }
+
+    // ── undo-wave reversal bridge (1-3-3-2) ──
+
+    async fn revert_wave_resolutions(
+        &self,
+        wave_version: &str,
+        resolved_by: &str,
+        dry_run: bool,
+    ) -> Result<u64> {
+        crate::calibration_queries::CalibrationWaveQueries::revert_wave_resolutions(self, wave_version, resolved_by, dry_run).await
+    }
+
+    async fn unapply_wave_grade_cache(&self, wave_version: &str, dry_run: bool) -> Result<u64> {
+        crate::calibration_queries::CalibrationWaveQueries::unapply_wave_grade_cache(self, wave_version, dry_run).await
+    }
+
+    async fn delete_calibration_profiles_for_wave(
+        &self,
+        wave_version: &str,
+        dry_run: bool,
+    ) -> Result<u64> {
+        crate::calibration_queries::CalibrationWaveQueries::delete_calibration_profiles_for_wave(self, wave_version, dry_run).await
+    }
+
+    async fn purge_nudge_log_for_wave(&self, wave_version: &str, dry_run: bool) -> Result<u64> {
+        crate::calibration_queries::CalibrationWaveQueries::purge_nudge_log_for_wave(self, wave_version, dry_run).await
     }
 
     async fn find_duplicate_page(
@@ -6772,6 +6812,137 @@ impl OAuthQueries for PostgresEngine {
 /// (42703); both contain the substring `does not exist`.
 fn pg_is_missing_schema(err: &sqlx::Error) -> bool {
     err.to_string().contains("does not exist")
+}
+
+/// Wave reversal queries (undo-wave, 1-3-3-2). PG mirror of the libsql
+/// implementation, reverse-mapped per the standard dialect table:
+/// `?N` → `$N`, parameterized `IN (…)` → `= ANY($N)`, INTEGER booleans →
+/// native BOOLEAN. Behavior is pinned by the libsql temp-db suite
+/// (`tests/libsql_undo_wave.rs`); the SQL here mirrors it clause-for-clause.
+#[async_trait]
+impl CalibrationWaveQueries for PostgresEngine {
+    async fn revert_wave_resolutions(
+        &self,
+        wave_version: &str,
+        resolved_by: &str,
+        dry_run: bool,
+    ) -> Result<u64> {
+        let pool = self.pool()?;
+
+        // Locate wave-applied takes via the grade cache (canonical TS Step 1);
+        // the resolved_by cross-check protects manual re-resolutions.
+        let take_ids: Vec<i64> = sqlx::query_scalar(
+            "SELECT DISTINCT take_id FROM take_grade_cache \
+             WHERE wave_version = $1 AND applied = true",
+        )
+        .bind(wave_version)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("revert_wave_resolutions (targets): {e}")))?;
+        if take_ids.is_empty() {
+            return Ok(0);
+        }
+
+        if dry_run {
+            let n: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM takes WHERE id = ANY($1) AND resolved_by = $2",
+            )
+            .bind(&take_ids)
+            .bind(resolved_by)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| Error::engine(format!("revert_wave_resolutions (dry): {e}")))?;
+            return Ok(u64::try_from(n).unwrap_or(0));
+        }
+
+        // NOTE: the canonical TS UPDATE also NULLs `resolved_source`; the
+        // Rust takes schema (0012_takes_full_columns) has no such column,
+        // so the reset covers the six resolved_* columns that exist here.
+        let res = sqlx::query(
+            "UPDATE takes SET \
+                resolved_at = NULL, \
+                resolved_outcome = NULL, \
+                resolved_quality = NULL, \
+                resolved_value = NULL, \
+                resolved_unit = NULL, \
+                resolved_by = NULL \
+             WHERE id = ANY($1) AND resolved_by = $2",
+        )
+        .bind(&take_ids)
+        .bind(resolved_by)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("revert_wave_resolutions: {e}")))?;
+        Ok(res.rows_affected())
+    }
+
+    async fn unapply_wave_grade_cache(&self, wave_version: &str, dry_run: bool) -> Result<u64> {
+        let pool = self.pool()?;
+        if dry_run {
+            let n: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM take_grade_cache \
+                 WHERE wave_version = $1 AND applied = true",
+            )
+            .bind(wave_version)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| Error::engine(format!("unapply_wave_grade_cache (dry): {e}")))?;
+            return Ok(u64::try_from(n).unwrap_or(0));
+        }
+        let res = sqlx::query(
+            "UPDATE take_grade_cache SET applied = false \
+             WHERE wave_version = $1 AND applied = true",
+        )
+        .bind(wave_version)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("unapply_wave_grade_cache: {e}")))?;
+        Ok(res.rows_affected())
+    }
+
+    async fn delete_calibration_profiles_for_wave(
+        &self,
+        wave_version: &str,
+        dry_run: bool,
+    ) -> Result<u64> {
+        let pool = self.pool()?;
+        if dry_run {
+            let n: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM calibration_profiles WHERE wave_version = $1",
+            )
+            .bind(wave_version)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| Error::engine(format!("delete_calibration_profiles_for_wave (dry): {e}")))?;
+            return Ok(u64::try_from(n).unwrap_or(0));
+        }
+        let res = sqlx::query("DELETE FROM calibration_profiles WHERE wave_version = $1")
+            .bind(wave_version)
+            .execute(pool)
+            .await
+            .map_err(|e| Error::engine(format!("delete_calibration_profiles_for_wave: {e}")))?;
+        Ok(res.rows_affected())
+    }
+
+    async fn purge_nudge_log_for_wave(&self, wave_version: &str, dry_run: bool) -> Result<u64> {
+        let pool = self.pool()?;
+        if dry_run {
+            let n: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM take_nudge_log WHERE wave_version = $1",
+            )
+            .bind(wave_version)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| Error::engine(format!("purge_nudge_log_for_wave (dry): {e}")))?;
+            return Ok(u64::try_from(n).unwrap_or(0));
+        }
+        let res = sqlx::query("DELETE FROM take_nudge_log WHERE wave_version = $1")
+            .bind(wave_version)
+            .execute(pool)
+            .await
+            .map_err(|e| Error::engine(format!("purge_nudge_log_for_wave: {e}")))?;
+        Ok(res.rows_affected())
+    }
 }
 
 #[async_trait]

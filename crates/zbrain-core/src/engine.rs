@@ -17,7 +17,7 @@ use serde_json::{json, Map, Value};
 use crate::{
     calibration_queries::{aggregate_calibration_curve, aggregate_scorecard, CalibrationBucket,
         CalibrationCurveQuery, CalibrationProfileRow, CalibrationQueries, CalibrationRow,
-        PatternDetail, ScorecardQuery, ScorecardRow, TakeSummary,
+        CalibrationWaveQueries, PatternDetail, ScorecardQuery, ScorecardRow, TakeSummary,
         TakesScorecard},
     oauth_queries::{ExchangeTokens, OAuthClientInfo, OAuthQueries, RegisterClientRequest,
         RegisterClientResponse, RevokeClientResponse, UpdateClientTtlResponse},
@@ -1118,6 +1118,55 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
             "Unsupported",
             "unsupported",
             "get_calibration_curve not implemented for this engine",
+        ))
+    }
+
+    // ── undo-wave reversal bridge (1-3-3-2) ──────────────────────────────
+    // Default = unsupported; each concrete engine overrides to delegate to
+    // `CalibrationWaveQueries`. Lets `undo_wave` stay on `&dyn BrainEngine`.
+
+    /// Step 1 of `undo_wave`. See [`crate::calibration_queries::CalibrationWaveQueries`].
+    async fn revert_wave_resolutions(
+        &self,
+        _wave_version: &str,
+        _resolved_by: &str,
+        _dry_run: bool,
+    ) -> crate::Result<u64> {
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "revert_wave_resolutions not implemented for this engine",
+        ))
+    }
+
+    /// Step 1b of `undo_wave`. See [`crate::calibration_queries::CalibrationWaveQueries`].
+    async fn unapply_wave_grade_cache(&self, _wave_version: &str, _dry_run: bool) -> crate::Result<u64> {
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "unapply_wave_grade_cache not implemented for this engine",
+        ))
+    }
+
+    /// Step 2 of `undo_wave`. See [`crate::calibration_queries::CalibrationWaveQueries`].
+    async fn delete_calibration_profiles_for_wave(
+        &self,
+        _wave_version: &str,
+        _dry_run: bool,
+    ) -> crate::Result<u64> {
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "delete_calibration_profiles_for_wave not implemented for this engine",
+        ))
+    }
+
+    /// Step 3 of `undo_wave`. See [`crate::calibration_queries::CalibrationWaveQueries`].
+    async fn purge_nudge_log_for_wave(&self, _wave_version: &str, _dry_run: bool) -> crate::Result<u64> {
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "purge_nudge_log_for_wave not implemented for this engine",
         ))
     }
 
@@ -4068,6 +4117,33 @@ impl BrainEngine for InMemoryEngine {
         query: &crate::calibration_queries::CalibrationCurveQuery<'_>,
     ) -> crate::Result<Vec<crate::calibration_queries::CalibrationBucket>> {
         crate::calibration_queries::CalibrationQueries::get_calibration_curve(self, query).await
+    }
+
+    // ── undo-wave reversal bridge (1-3-3-2) ──
+
+    async fn revert_wave_resolutions(
+        &self,
+        wave_version: &str,
+        resolved_by: &str,
+        dry_run: bool,
+    ) -> crate::Result<u64> {
+        crate::calibration_queries::CalibrationWaveQueries::revert_wave_resolutions(self, wave_version, resolved_by, dry_run).await
+    }
+
+    async fn unapply_wave_grade_cache(&self, wave_version: &str, dry_run: bool) -> crate::Result<u64> {
+        crate::calibration_queries::CalibrationWaveQueries::unapply_wave_grade_cache(self, wave_version, dry_run).await
+    }
+
+    async fn delete_calibration_profiles_for_wave(
+        &self,
+        wave_version: &str,
+        dry_run: bool,
+    ) -> crate::Result<u64> {
+        crate::calibration_queries::CalibrationWaveQueries::delete_calibration_profiles_for_wave(self, wave_version, dry_run).await
+    }
+
+    async fn purge_nudge_log_for_wave(&self, wave_version: &str, dry_run: bool) -> crate::Result<u64> {
+        crate::calibration_queries::CalibrationWaveQueries::purge_nudge_log_for_wave(self, wave_version, dry_run).await
     }
 
     async fn find_duplicate_page(
@@ -9455,6 +9531,37 @@ impl crate::admin_queries::AdminQueries for InMemoryEngine {
             top_errors: vec![],
             budget_owners: vec![],
         })
+    }
+}
+
+/// In-memory wave reversal — no wave tables in the in-memory store, so every
+/// step is a no-op returning 0. Real behavior is exercised via the libsql /
+/// postgres backends (see `undo_wave` tests).
+#[async_trait]
+impl CalibrationWaveQueries for InMemoryEngine {
+    async fn revert_wave_resolutions(
+        &self,
+        _wave_version: &str,
+        _resolved_by: &str,
+        _dry_run: bool,
+    ) -> crate::Result<u64> {
+        Ok(0)
+    }
+
+    async fn unapply_wave_grade_cache(&self, _wave_version: &str, _dry_run: bool) -> crate::Result<u64> {
+        Ok(0)
+    }
+
+    async fn delete_calibration_profiles_for_wave(
+        &self,
+        _wave_version: &str,
+        _dry_run: bool,
+    ) -> crate::Result<u64> {
+        Ok(0)
+    }
+
+    async fn purge_nudge_log_for_wave(&self, _wave_version: &str, _dry_run: bool) -> crate::Result<u64> {
+        Ok(0)
     }
 }
 
