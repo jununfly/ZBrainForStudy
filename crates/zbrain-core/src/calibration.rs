@@ -532,8 +532,24 @@ pub trait MountResolver: Send + Sync {
     async fn resolve_mounts(&self) -> crate::error::Result<Vec<(String, Box<dyn MountableBrainEngine>)>>;
 }
 
+/// Resolver that yields no mounts. Used as the default when no production
+/// `MountResolver` is injected into the `OperationContext` (e.g. tests, or a
+/// deployment with no `~/.zbrain/mounts.json`), so cross-brain lookup degrades
+/// to local-only without special-casing the caller.
+pub struct NoMountsResolver;
+
+#[async_trait]
+impl MountResolver for NoMountsResolver {
+    async fn resolve_mounts(
+        &self,
+    ) -> crate::error::Result<Vec<(String, Box<dyn MountableBrainEngine>)>> {
+        Ok(Vec::new())
+    }
+}
+
 /// Result of cross-brain query: the calibration profile plus attribution.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CrossBrainProfileResult {
     pub profile: CalibrationProfileRow,
     pub source_brain_id: String,
@@ -577,7 +593,7 @@ pub fn attribution_suffix(result: &CrossBrainProfileResult) -> String {
 /// 3. Query mounts in priority order; first published profile wins.
 /// 4. Returns None when no reachable profile found.
 pub async fn query_across_brains(
-    local_engine: &dyn CalibrationQueries,
+    local_engine: &dyn BrainEngine,
     local_brain_id: String,
     holder: &str,
     can_read_mounts: bool,
@@ -585,8 +601,13 @@ pub async fn query_across_brains(
     source_id: Option<&str>,
     source_ids: Option<&[String]>,
 ) -> crate::error::Result<Option<CrossBrainProfileResult>> {
-    // 1. Local-first: check local engine first
-    let local_profile = local_engine.get_latest_profile(holder, source_id, source_ids).await?;
+    // 1. Local-first: check local engine first. `get_calibration_profile` is
+    // the `BrainEngine` bridge that delegates to `get_latest_profile` on the
+    // concrete engine — so both local and mount paths use one uniform call
+    // surface (TS `getLatestProfile`) without downcasting.
+    let local_profile = local_engine
+        .get_calibration_profile(holder, source_id, source_ids)
+        .await?;
     if let Some(profile) = local_profile {
         return Ok(Some(CrossBrainProfileResult {
             profile,
@@ -603,7 +624,9 @@ pub async fn query_across_brains(
     // 2. Mount fallback: iterate priority order
     let mounts = mount_resolver.resolve_mounts().await?;
     for (brain_id, engine) in mounts {
-        let mount_profile = engine.get_latest_profile(holder, source_id, source_ids).await?;
+        let mount_profile = engine
+            .get_calibration_profile(holder, source_id, source_ids)
+            .await?;
         if let Some(profile) = mount_profile {
             if !profile.published {
                 continue;

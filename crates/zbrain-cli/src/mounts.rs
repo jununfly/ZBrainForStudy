@@ -19,7 +19,13 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{bail, Context, Result};
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use zbrain_core::calibration::{MountResolver, MountableBrainEngine};
+use zbrain_core::engine::{BrainEngine, EngineConfig};
+use zbrain_core::error::Result as ZbResult;
+use zbrain_core::libsql::LibsqlEngine;
+use zbrain_core::postgres::PostgresEngine;
 
 /// Host brain id. Reserved — users cannot create a mount with this id.
 const HOST_BRAIN_ID: &str = "host";
@@ -279,6 +285,91 @@ pub fn read_mounts_file(path: &Path) -> Result<MountsFile> {
         version: 1,
         mounts: entries,
     })
+}
+
+// ── production mount resolver (1-3-3-4) ────────────────────────────────────
+//
+// Resolves `~/.zbrain/mounts.json` into live engine instances for cross-brain
+// calibration fallback. This is the engine-construction half of the TS
+// `mountResolver` contract (the cache-publish half is the separate G52 gap,
+// which we never fake). Fault-tolerant: a single mount that fails to connect is
+// skipped with a warning rather than failing the whole resolve, so one bad
+// mount can never take down the local-first primary path.
+
+/// Production mount resolver backed by `~/.zbrain/mounts.json`.
+pub struct ProductionMountResolver {
+    mounts_path: PathBuf,
+}
+
+impl ProductionMountResolver {
+    pub fn new(mounts_path: PathBuf) -> Self {
+        Self { mounts_path }
+    }
+}
+
+#[async_trait]
+impl MountResolver for ProductionMountResolver {
+    async fn resolve_mounts(&self) -> ZbResult<Vec<(String, Box<dyn MountableBrainEngine>)>> {
+        let mounts = read_mounts_file(&self.mounts_path).map_err(|e| {
+            zbrain_core::error::StructuredError::new(
+                "MountConfig",
+                "mount_config",
+                &format!("failed to read mounts.json: {e}"),
+            )
+        })?;
+        let mut out: Vec<(String, Box<dyn MountableBrainEngine>)> = Vec::new();
+        for entry in mounts.mounts.into_iter().filter(|m| m.enabled) {
+            match build_mount_engine(&entry).await {
+                Ok(engine) => out.push((entry.id, engine)),
+                Err(e) => {
+                    tracing::warn!(
+                        "mount '{}' could not be resolved (skipped): {e}",
+                        entry.id
+                    );
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
+async fn build_mount_engine(entry: &MountEntry) -> ZbResult<Box<dyn MountableBrainEngine>> {
+    match entry.engine {
+        MountEngine::Pglite => {
+            let path = entry.database_path.clone().ok_or_else(|| {
+                zbrain_core::error::StructuredError::new(
+                    "MountConfig",
+                    "mount_config",
+                    &format!("mount '{}' is pglite but has no database_path", entry.id),
+                )
+            })?;
+            let engine = LibsqlEngine::new();
+            engine
+                .connect(&EngineConfig {
+                    database_url: None,
+                    database_path: Some(path),
+                })
+                .await?;
+            Ok(Box::new(engine))
+        }
+        MountEngine::Postgres => {
+            let url = entry.database_url.clone().ok_or_else(|| {
+                zbrain_core::error::StructuredError::new(
+                    "MountConfig",
+                    "mount_config",
+                    &format!("mount '{}' is postgres but has no database_url", entry.id),
+                )
+            })?;
+            let engine = PostgresEngine::new();
+            engine
+                .connect(&EngineConfig {
+                    database_url: Some(url),
+                    database_path: None,
+                })
+                .await?;
+            Ok(Box::new(engine))
+        }
+    }
 }
 
 /// Parse + validate mounts.json. Returns an empty list if the file is

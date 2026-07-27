@@ -9,7 +9,7 @@
 
 ## Roadmap 铁律
 - **位置**：所有 `.json`/`.md` 统一放 `docs/plans/`（JSON `zbrain-ts-to-rust-partN-*.json`，md `ZBRAIN_TS_TO_RUST_PARTN_*.md`，同名转大写下划线，无 `ZJ_ROADMAP.md` 特例）。
-- **一 part 一 md**：每个 part JSON 必须 `link` 到各自独立 md；严禁多 JSON 共用一 md（`roadmap_cli.py render` 只认带 `⚠️` 的 `<!-- ⚠️ ROADMAP_SECTION_START/END -->` marker 对替换，纯 marker 是死地层）。CLI：`link/render/decide/add/tree` 第一 positional 是 **JSON 完整路径**；render 从项目根 cwd 跑；读的是 JSON 根级 `md_file` key（非 `metadata.md_file`）。
+- **一 part 一 md**：每个 part JSON 必须 `link` 到各自独立 md；严禁多 JSON 共用一 md。`roadmap_cli.py render` 重写的是**纯** `<!-- ROADMAP_SECTION_START/END -->` marker 段落（"ZJ Roadmap" 树，`write_markdown_section` roadmap.py:622 即用此 marker），而 `⚠️` marker 包裹的是**手动维护**段（顶部叙述 + 子节点 checkbox 列表），render 不碰。故 `update`+`render` 后若 `⚠️` 段的 checkbox 与树不一致，需手动同步勾选（render 不会回写 ⚠️ 段）。CLI：`link/render/decide/add/tree` 第一 positional 是 **JSON 完整路径**；render 从项目根 cwd 跑；读的是 JSON 根级 `md_file` key（非 `metadata.md_file`）。
 - **代码注释禁引 roadmap 编号**（roadmap JSON 是临时文件，清理后成死链）；必要信息自解释写进注释。docs/plans/ 下 canonical 文档可引用。
 - **拆分约定**：审计/拆解发现与当前节点语义偏差且有跟进价值 → 拆 sub-node，不吸收进当前 plan。
 - **进度 SSOT**：各 part 完成状态以 roadmap JSON 为准；历史 phase 完成明细在每日 `YYYY-MM-DD.md`，不在本文件重复。
@@ -23,7 +23,7 @@
 
 ## 迁移进度（摘要）
 - 迁移全 12 Part。主线已完成：Sources/Capture、Facts/Takes/Timeline/Salience/Graph、Search/Retrieval 生产后端复活、minions、autopilot、Part7 Phase9、Part9 Phase11（残留 TS 终局）、Part10 Phase12 Schema-Pack 路线图。
-- **当前最前沿**：Part11 calibration 簇（1-3）+ 残留 TS 终局（1-3-3-5 takes_calibration op 已完成，剩 1-3-3-2/4/6/7）；Part12 cycle 大迁移已拆独立路线图未启动。
+- **当前最前沿**：Part11 calibration 簇（1-3）+ 残留 TS 终局（1-3-3-5 takes_calibration op 已完成，1-3-3-2 undoWave 已完成，1-3-3-4 queryAcrossBrains 已完成；剩 1-3-3-6 gateVoice/runAbTrial、1-3-3-7 calibration-profile 循环）；Part12 cycle 大迁移已拆独立路线图未启动。
 
 ## 其他
 - Admin 路由差异：Rust admin API 在 `/*`（如 `/register-client`），TS 在 `/admin/api/*`；路线图 Q6 决策"保持 /admin/api/*"，待对齐。

@@ -472,6 +472,13 @@ pub struct OperationContext {
     /// Arc, wired at CLI/dispatch construction, exactly like `rerank`.
     #[serde(skip)]
     pub embedding: Option<std::sync::Arc<crate::embedding::EmbeddingClient>>,
+    /// Production mount resolver for cross-brain calibration fallback (1-3-3-4).
+    ///
+    /// `None` → cross-brain mount fallback is disabled (local-only). Wired at
+    /// CLI/dispatch construction from `~/.zbrain/mounts.json`; when absent the
+    /// `get_cross_brain_profile` op degrades to local-only via `NoMountsResolver`.
+    #[serde(skip)]
+    pub mount_resolver: Option<std::sync::Arc<dyn crate::calibration::MountResolver>>,
 }
 
 impl fmt::Debug for OperationContext {
@@ -490,6 +497,7 @@ impl fmt::Debug for OperationContext {
             .field("source_id", &self.source_id)
             .field("engine", &self.engine.as_ref().map(|_| "Arc<dyn BrainEngine>"))
             .field("logger", &self.logger.as_ref().map(|_| "Arc<dyn Logger>"))
+            .field("mount_resolver", &self.mount_resolver.is_some())
             .finish()
     }
 }
@@ -518,6 +526,7 @@ impl OperationContext {
             llm_client: None,
             rerank: None,
             embedding: None,
+            mount_resolver: None,
         }
     }
 
@@ -544,6 +553,7 @@ impl OperationContext {
             llm_client: None,
             rerank: None,
             embedding: None,
+            mount_resolver: None,
         }
     }
 
@@ -570,6 +580,18 @@ impl OperationContext {
         embedding: std::sync::Arc<crate::embedding::EmbeddingClient>,
     ) -> Self {
         self.embedding = Some(embedding);
+        self
+    }
+
+    /// Attach a production mount resolver for cross-brain calibration fallback
+    /// (1-3-3-4). Absent this, `get_cross_brain_profile` degrades to local-only
+    /// via `NoMountsResolver`.
+    #[must_use]
+    pub fn with_mount_resolver(
+        mut self,
+        resolver: std::sync::Arc<dyn crate::calibration::MountResolver>,
+    ) -> Self {
+        self.mount_resolver = Some(resolver);
         self
     }
 
@@ -3513,6 +3535,7 @@ pub fn register_all(registry: &mut OperationRegistry) {
     registry.register(FileUploadOperation);
     registry.register(FileUrlOperation);
     registry.register(GetCalibrationProfileOperation);
+    registry.register(GetCrossBrainProfileOperation);
     registry.register(GetRecentTranscriptsOperation);
     // 1-6-7-8: commands-misc gap ops (engine methods already exist)
     registry.register(ResolveSlugsOperation);
@@ -8170,6 +8193,98 @@ impl TypedOperation for GetCalibrationProfileOperation {
         let holder = params.holder.unwrap_or_else(|| "garry".to_string());
         let profile = engine.get_calibration_profile(&holder, None, None).await?;
         Ok(profile)
+    }
+}
+
+// ── get_cross_brain_profile (1-3-3-4) ──────────────────────────────────────
+
+/// Parameters for `get_cross_brain_profile`.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct GetCrossBrainProfileParams {
+    #[serde(default)]
+    pub holder: Option<String>,
+    #[serde(default)]
+    pub source_id: Option<String>,
+}
+
+impl ValidateParams for GetCrossBrainProfileParams {
+    fn validate(&self) -> OperationResult<()> {
+        if let Some(h) = &self.holder {
+            if h.trim().is_empty() {
+                return Err(OperationError::invalid_params(
+                    "get_cross_brain_profile.holder must be a non-empty string",
+                ));
+            }
+        }
+        if let Some(s) = &self.source_id {
+            if s.trim().is_empty() {
+                return Err(OperationError::invalid_params(
+                    "get_cross_brain_profile.source_id must be a non-empty string",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GetCrossBrainProfileOperation;
+
+#[async_trait]
+impl TypedOperation for GetCrossBrainProfileOperation {
+    type Params = GetCrossBrainProfileParams;
+    type Output = Option<crate::calibration::CrossBrainProfileResult>;
+
+    fn name(&self) -> &'static str {
+        "get_cross_brain_profile"
+    }
+    fn description(&self) -> &'static str {
+        "Query the active calibration profile across local + mounted brains (D18 4-rule \
+         contract). Local-first; falls back to mounted brains (published profiles only) when \
+         the local brain has none and the caller may read mounts. Returns null when no \
+         reachable profile exists."
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "holder": { "type": "string", "description": "Holder slug (default 'garry')" },
+                "source_id": { "type": "string", "description": "Optional source scope" }
+            }
+        })
+    }
+    async fn execute(
+        &self,
+        ctx: &OperationContext,
+        params: Self::Params,
+    ) -> OperationResult<Self::Output> {
+        let engine = ctx.engine()?;
+        let local_brain_id = ctx
+            .brain_id
+            .clone()
+            .unwrap_or_else(|| "host".to_string());
+        let holder = params.holder.unwrap_or_else(|| "garry".to_string());
+        let can_read_mounts = crate::calibration::can_read_mounts_for_ctx(
+            ctx.remote,
+            ctx.via_subagent,
+            ctx.allowed_slug_prefixes.as_deref(),
+        );
+        let no_mounts = crate::calibration::NoMountsResolver;
+        let resolver: &dyn crate::calibration::MountResolver =
+            ctx.mount_resolver.as_deref().unwrap_or(&no_mounts);
+        let source_id = params.source_id.as_deref();
+        let result = crate::calibration::query_across_brains(
+            engine,
+            local_brain_id,
+            &holder,
+            can_read_mounts,
+            resolver,
+            source_id,
+            None,
+        )
+        .await?;
+        Ok(result)
     }
 }
 
@@ -13354,6 +13469,37 @@ Outro."#;
             assert!(res.is_ok(), "resolve_slugs failed: {:?}", res);
             let slugs: Vec<String> = serde_json::from_value(res.unwrap()).unwrap();
             assert!(slugs.iter().any(|s| s == "wiki/notes/alpha"), "got: {:?}", slugs);
+        }
+
+        // ── 1-3-3-4: get_cross_brain_profile op wiring smoke test ──
+        // InMemoryEngine has no calibration seed path, so an empty brain yields
+        // Ok(None) -> JSON null. This guards three things that would otherwise
+        // break silently: (1) the op is registered in the registry, (2)
+        // GetCrossBrainProfileParams deserializes from dispatch JSON, and (3) the
+        // Output type Option<CrossBrainProfileResult> serializes without panicking
+        // (it must derive Serialize). The meaningful read paths (local-first,
+        // mount-fallback, published-skip, subagent-deny) are covered by the libsql
+        // D18 integration tests in tests/libsql_cross_brain.rs.
+        #[tokio::test]
+        async fn get_cross_brain_profile_op_is_registered_and_serializes() {
+            let (registry, ctx) = ingestion_ctx().await;
+            let res = registry
+                .dispatch_json(
+                    "get_cross_brain_profile",
+                    &ctx,
+                    serde_json::json!({ "holder": "garry" }),
+                )
+                .await;
+            assert!(
+                res.is_ok(),
+                "get_cross_brain_profile dispatch failed (op not registered?): {:?}",
+                res
+            );
+            assert_eq!(
+                res.unwrap(),
+                serde_json::Value::Null,
+                "empty in-memory brain should yield a null profile"
+            );
         }
 
         #[tokio::test]

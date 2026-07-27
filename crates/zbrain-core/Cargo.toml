@@ -103,6 +103,9 @@ skillpack = ["dep:reqwest"]
 tokio = { workspace = true }
 sqlx = { workspace = true }
 tempfile = { workspace = true }
+# `query_across_brains` D18 behavior tests define a `#[async_trait]` stub
+# `MountResolver` (1-3-3-4).
+async-trait = { workspace = true }
 # Attachment CRUD contract tests base64-encode fixture payloads before feeding
 # them through the facade (1-1-3-2).
 base64 = { workspace = true }

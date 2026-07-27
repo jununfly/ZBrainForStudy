@@ -9040,10 +9040,12 @@ impl CalibrationQueries for LibsqlEngine {
             }
             Ok(mut rows) => {
                 if let Some(row) = rows.next().await.map_err(|e| Error::engine(format!("get_latest_profile row: {e}")))? {
-                    // SQLite arrays stored as JSON strings
-                    let pattern_json: String = row.get(11).unwrap_or_else(|_| "[]".into());
-                    let bias_json: String = row.get(14).unwrap_or_else(|_| "[]".into());
-                    let domain_json: String = row.get(10).unwrap_or_else(|_| "{}".into());
+                    // SQLite arrays stored as JSON strings. Map by SELECT column
+                    // index: 11=domain_scorecards, 12=pattern_statements,
+                    // 15=active_bias_tags (see the SELECT column order above).
+                    let domain_json: String = row.get(11).unwrap_or_else(|_| "{}".into());
+                    let pattern_json: String = row.get(12).unwrap_or_else(|_| "[]".into());
+                    let bias_json: String = row.get(15).unwrap_or_else(|_| "[]".into());
 
                     let pattern_statements: Vec<String> = serde_json::from_str(&pattern_json).unwrap_or_default();
                     let active_bias_tags: Vec<String> = serde_json::from_str(&bias_json).unwrap_or_default();
@@ -9055,7 +9057,9 @@ impl CalibrationQueries for LibsqlEngine {
                         holder: row.get::<String>(2).unwrap_or_default(),
                         wave_version: row.get::<String>(3).unwrap_or_default(),
                         generated_at: row.get::<String>(4).unwrap_or_default(),
-                        published: row.get::<bool>(5).unwrap_or_default(),
+                        // SQLite stores BOOLEAN as INTEGER; libsql's `get::<bool>`
+                        // rejects integer values, so read as i64 and coerce.
+                        published: row.get::<i64>(5).unwrap_or_default() != 0,
                         total_resolved: row.get::<i32>(6).unwrap_or_default(),
                         brier: row.get::<Option<f64>>(7).unwrap_or(None),
                         accuracy: row.get::<Option<f64>>(8).unwrap_or(None),
@@ -9063,12 +9067,12 @@ impl CalibrationQueries for LibsqlEngine {
                         grade_completion: row.get::<f64>(10).unwrap_or(1.0),
                         domain_scorecards,
                         pattern_statements,
-                        voice_gate_passed: row.get::<bool>(12).unwrap_or_default(),
-                        voice_gate_attempts: row.get::<i32>(13).unwrap_or_default() as i16,
+                        voice_gate_passed: row.get::<i64>(13).unwrap_or_default() != 0,
+                        voice_gate_attempts: row.get::<i32>(14).unwrap_or_default() as i16,
                         active_bias_tags,
-                        model_id: row.get::<String>(15).unwrap_or_default(),
-                        cost_usd: row.get::<Option<f64>>(16).unwrap_or(None),
-                        judge_model_agreement: row.get::<Option<f64>>(17).unwrap_or(None),
+                        model_id: row.get::<String>(16).unwrap_or_default(),
+                        cost_usd: row.get::<Option<f64>>(17).unwrap_or(None),
+                        judge_model_agreement: row.get::<Option<f64>>(18).unwrap_or(None),
                     }))
                 } else {
                     Ok(None)

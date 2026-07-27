@@ -2296,12 +2296,43 @@
     "1-3-3-4": {
       "id": "1-3-3-4",
       "label": "queryAcrossBrains (DI mountResolver trait 返回 Vec<(brain_id,engine)>; 全 4 规则逻辑 local-first/mount-fallback/published/SUBAGENT 禁; canReadMountsForCtx + attributionSuffix; 生产 resolver 接 mounts 配置为后续小节点)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-3-3",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "本次完成边界？",
+          "answer": "测试+接线+本次做生产 resolver（扩大范围，合并后续小节点）",
+          "note": "用户确认 q-0：补 D18 四用例行为测试 + 接线 op handler + 实现生产 MountResolver（接 mounts 配置）。roadmap 标签原写 resolver 为后续小节点，本次一并吸收。"
+        },
+        {
+          "q": "生产 MountResolver 构造+错误处理策略？",
+          "answer": "急切构造+容错跳过：对每个 enabled MountEntry 逐个 connect engine，单 mount 失败记 warning 并 skip，返回成功构造子集",
+          "note": "q-0 推荐方案。匹配 cross-brain best-effort 加速源语义，避免一个坏 mount 瘫痪 local-first。"
+        },
+        {
+          "q": "query_across_brains 行为测试选型？",
+          "answer": "真实 libsql 临时库 + stub MountResolver（返回预构造真实 LibsqlEngine）",
+          "note": "q-0 推荐。端到端验证跨 engine 查询+published 过滤+归因，与 undoWave 选型一致。"
+        },
+        {
+          "q": "query_across_brains op 接线形态？",
+          "answer": "新增独立 op get_cross_brain_profile，返回 CrossBrainProfileResult JSON",
+          "note": "q-0 推荐。不破坏现有 get_calibration_profile 契约；生产 MountResolver 从 mounts.json 构造，can_read_mounts 从 OperationContext 算。"
+        },
+        {
+          "q": "TS 侧 queryAcrossBrains 现状？",
+          "answer": "仅 tests/unit/cross-brain-calibration.test.ts 调用，localBrainId 测试硬编码 'garry-personal'，生产路径无 consumer（无 op 接线）",
+          "note": "Rust OperationContext.brain_id 是 TS opts.localBrainId 的生产对应物；TS 无权威生产来源模式可对齐，Rust 端口自行决定（推荐 ctx.brain_id 优先+fallback）。"
+        },
+        {
+          "q": "get_cross_brain_profile op 的 local_brain_id 来源？",
+          "answer": "ctx.brain_id 优先 + fallback 'host'",
+          "note": "q-0 推荐。OperationContext.brain_id 是 TS opts.localBrainId 的生产对应物；TS 侧 queryAcrossBrains 仅测试调用、localBrainId 硬编码 'garry-personal'、生产路径无 consumer，无权威生产来源模式可对齐。op 不要求调用方传 local_brain_id。"
+        }
+      ],
+      "notes": "2026-07-27 完成(在审计基础上): Rust query_across_brains 已实现(parity 4 规则)。本次收口 = D18 四用例行为测试(真实 libsql + StubMountResolver: local-first/mount-fallback/published-skip/subagent-deny 全绿) + 接独立 op get_cross_brain_profile(返回 CrossBrainProfileResult JSON, 注册于 operation.rs, ctx.brain_id 优先+fallback host, can_read_mounts 从 OperationContext 算) + 生产 ProductionMountResolver(mounts.json 构造 Libsql/Postgres engine, 单 mount 失败 warning skip) 经 zbrain-cli/src/lib.rs:2902 唯一 ctx 构造点注入。附带修复 libsql.rs get_latest_profile 行映射索引错位 + bool 列读 INTEGER 崩(影响真实 profile 读取/get_calibration_profile op), 现 62 calibration lib + undoWave 8 + cross_brain 4 + op dispatch 冒烟 1 全绿。op 另补 lib 级 dispatch 测试 guards 注册+Serialize derive。"
     },
     "1-3-3-5": {
       "id": "1-3-3-5",
@@ -2599,7 +2630,7 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-27 14:04:41",
+    "updated": "2026-07-27 20:43:58",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"

@@ -2901,6 +2901,18 @@ async fn run_operation(
 
     let mut ctx = OperationContext::local_cli().with_engine(std::sync::Arc::new(engine));
 
+    // Wire the production cross-brain mount resolver (1-3-3-4) from
+    // ~/.zbrain/mounts.json. Fault-tolerant: a missing/unreadable mounts file
+    // or an unreachable mount degrades to local-only (the op falls back to
+    // NoMountsResolver semantics). Sole production construction site for the
+    // resolver, mirroring the rerank/embedding wiring above.
+    if let Some(home) = zbrain_core::paths::zbrain_home() {
+        let mounts_path = home.join("mounts.json");
+        ctx = ctx.with_mount_resolver(std::sync::Arc::new(
+            crate::mounts::ProductionMountResolver::new(mounts_path),
+        ));
+    }
+
     // Wire the cross-encoder reranker when it is enabled in config AND the API
     // key is present in the environment (secrets never live in the config
     // file). Missing key with reranker_enabled = leave it off rather than fail
