@@ -78,14 +78,14 @@
 - [x] 1-3-3-3. aggregateDomainScorecards (CalibrationQueries bespoke typed 方法; 4 aggregator 变体 scalar_brier/weighted_brier/count_based/cluster_summary; 三后端 SQL; InMemory 内存迭代/Unsupported)
 - [x] 1-3-3-4. queryAcrossBrains (DI mountResolver trait 返回 Vec<(brain_id,engine)>; 全 4 规则逻辑 local-first/mount-fallback/published/SUBAGENT 禁; canReadMountsForCtx + attributionSuffix; 生产 resolver 接 mounts 配置为后续小节点)
 - [x] 1-3-3-5. takes_calibration op (对齐 get_calibration_curve 到 canonical weight/resolved_quality + bucketSize + allowList + holder 可选; 新增 op handler; 解锁 1-6-7-16)
-- [ ] 1-3-3-6. gateVoice + runAbTrial (trait DI VoiceGenerator+VoiceJudge via instantiate_chat 复用 parse_judge_output; runAbTrial 编排 + think_ab_results INSERT, thinkRunner DI; Rust 无 runThink 故生产 think 接线后续)
+- [x] 1-3-3-6. gateVoice + runAbTrial (trait DI VoiceGenerator+VoiceJudge via instantiate_chat 复用 parse_judge_output; runAbTrial 编排 + think_ab_results INSERT, thinkRunner DI; Rust 无 runThink 故生产 think 接线后续)
 - [ ] 1-3-3-7. calibration-profile 循环 runPhaseCalibrationProfile (port; 串联 getScorecard + gateVoice + biasTagsGenerator + aggregateDomainScorecards + 写 calibration_profiles; cold-brain<5 skip; budget gate)
 <!-- ⚠️ ROADMAP_SECTION_END -->
 
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-07-27 20:43:58
+> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-07-27 21:06:13
 
 [~][X+] 1. Part11 — 残留 TS 收尾 (综合容器)
 ├── [~][X+] 1-1. skillpack / skillify 迁移 (27+ 文件 Schema/Subagent 包)
@@ -124,25 +124,14 @@
 └── [~][X+] 1-13. cutover 执行层: Rust CLI clap 层补全(映射 cli.ts 全部命令到 run_operation) + 退役 cli.ts + 删 operations.ts
     └── [~][X+] 1-13-1. Phase C 退役 cli.ts + mcp legacy + 删 operations.ts — 计划与决策
 
-### 当前施工：1-3-3. calibration Phase 2 引擎/LLM 基建 (5 函数 + schema + cycle + op，见 1-3-3-1..7)
-
-已 grill 完成，8 分叉全定。序列：先 schema(1-3-3-1) 再函数。execute_raw 禁止(走 bespoke typed CalibrationQueries 方法)；LLM 走 trait DI(VoiceGenerator/VoiceJudge via instantiate_chat)；queryAcrossBrains 走 DI mountResolver + 全 4 规则逻辑；undoWave gstack scrub 记 KNOWN-GAP；takes_calibration op 实际只依赖 getCalibrationCurve(已存在但语义过时)，仍按用户决按全做。三道门 gate 工作流：lib test / cli build / mcp build。
+### 当前施工：1-3-3-6. gateVoice + runAbTrial (trait DI VoiceGenerator+VoiceJudge via instantiate_chat 复用 parse_judge_output; runAbTrial 编排 + think_ab_results INSERT, thinkRunner DI; Rust 无 runThink 故生产 think 接线后续)
 
 **决策：**
-- Q: 1-3-3 第一刀先动哪块? → 先补 calibration schema 迁移 (独立 precursor 1-3-3-1) (5 张 calibration 表在 Rust migrations 全不存在；3/5 函数 + takes_calibration op 硬前置；execute_raw 架构决策延后到真要写时。)
-- Q: calibration schema 保真度? → 全量 parity，去不可满足 FK (take_nudge_log.proposal_id 去 REFERENCES take_proposals(Rust 无该表)改 nullable BIGINT + 保留 XOR CHECK；take_domain_assignments 先定位 TS 真实定义；版本 0023 双后端。)
-- Q: 3 函数依赖 raw SQL，BrainEngine 故意不放 execute_raw，怎么给 DB 访问? → bespoke typed 方法挂 CalibrationQueries trait (尊重 no-escape-hatch 设计；三后端各写 SQL；InMemory 读聚合走内存迭代、admin 写 Unsupported(对齐 minion queue/get_scorecard 模式)。)
-- Q: gateVoice/runAbTrial 的 LLM 依赖注入怎么接? → trait-based DI (VoiceGenerator+VoiceJudge async trait，生产 impl 走 instantiate_chat) (复用已有 parse_judge_output；对齐 Rust 既有 DI 约定(NightlyProbeDeps)；测试注入 stub。)
-- Q: queryAcrossBrains 的 mount 依赖怎么处理? → DI mountResolver trait + 全 4 规则逻辑 port (mountResolver 返回 Vec<(brain_id,engine)>；canReadMountsForCtx + attributionSuffix 全 port；生产 resolver 接 Rust mounts 配置(mounts.rs)为后续小节点。)
-- Q: undoWave 的 gstack-learnings-prune 外部二进制 scrub? → 本刀跳过，记 KNOWN-GAP (DB 反转核心(Step 1-3)先 port；外部二进制 best-effort 非阻断项，后续节点补。)
-- Q: takes_calibration op 节点边界? → 全做 (schema+5函数+cycle+op) (grill 发现 op 实际调 getCalibrationCurve(已存在于 Rust 但语义过时/签名不全)，不依赖 5 函数；用户决仍按全做，op 切片额外对齐 get_calibration_curve。)
-
-**当前子树：**
-├── [x][X+] 1-3-3-1. calibration schema 迁移 (5 表 calibration_profiles/take_nudge_log/think_ab_results/take_grade_cache/take_domain_assignments; 版本 0023 双后端 pg+sqlite; 全量 parity 去不可满足 FK; take_domain_assignments 先定位 TS 真实定义)
-├── [x][X+] 1-3-3-2. undoWave (bespoke typed 写 revert_wave_resolutions/delete_calibration_profiles_for_wave/purge_nudge_log_for_wave + take_grade_cache unapply; gstack scrub 记 KNOWN-GAP 跳过)
-├── [x][X+] 1-3-3-3. aggregateDomainScorecards (CalibrationQueries bespoke typed 方法; 4 aggregator 变体 scalar_brier/weighted_brier/count_based/cluster_summary; 三后端 SQL; InMemory 内存迭代/Unsupported)
-├── [x][X+] 1-3-3-4. queryAcrossBrains (DI mountResolver trait 返回 Vec<(brain_id,engine)>; 全 4 规则逻辑 local-first/mount-fallback/published/SUBAGENT 禁; canReadMountsForCtx + attributionSuffix; 生产 resolver 接 mounts 配置为后续小节点)
-├── [x][Y+] 1-3-3-5. takes_calibration op (对齐 get_calibration_curve 到 canonical weight/resolved_quality + bucketSize + allowList + holder 可选; 新增 op handler; 解锁 1-6-7-16)
-├── [ ][X+] 1-3-3-6. gateVoice + runAbTrial (trait DI VoiceGenerator+VoiceJudge via instantiate_chat 复用 parse_judge_output; runAbTrial 编排 + think_ab_results INSERT, thinkRunner DI; Rust 无 runThink 故生产 think 接线后续)
-└── [ ][X+] 1-3-3-7. calibration-profile 循环 runPhaseCalibrationProfile (port; 串联 getScorecard + gateVoice + biasTagsGenerator + aggregateDomainScorecards + 写 calibration_profiles; cold-brain<5 skip; budget gate)
+- Q: 完成边界？ → 两者都移植（q-0） (gateVoice 全量(trait+ChatProvider生产实现+parse_judge_output+模板兜底+VoiceGateMode/DEFAULT_RUBRICS) + runAbTrial 全量(编排+think_ab_results INSERT+buildAbReport; ThinkRunner 作 DI trait; 生产真实 runThink 接线延后仅留 DI 接口)。补 D 风格行为测试(gateVoice 用 stub trait; runAbTrial 用真实 libsql)。)
+- Q: 模块布局？ → calibration/ 下两个子模块（q-0） (新建 crates/zbrain-core/src/calibration/voice_gate.rs + think_ab.rs，calibration.rs 用 pub mod 声明。对应 TS voice-gate.ts/think-ab.ts 分文件；calibration.rs 已过大不宜再膨胀。)
+- Q: DI trait 设计？ → 三个独立 trait 入参注入（q-0） (VoiceGenerator/VoiceJudge/ThinkRunner 三个独立 async trait；以 Arc<dyn Trait> 作 gateVoice/runAbTrial 入参(不存 ctx)。忠实对齐 TS opts.generate/opts.judge/thinkRunner 注入分离。)
+- Q: 生产 backing？ → 包裹 ChatProvider（q-0） (LlmBackedVoiceJudge+VoiceGenerator 包裹 Box<dyn ChatProvider>(instantiate_chat 构造)。judge 用 HAIKU_GATE_PROMPT+parse_judge_output，haiku 模型 claude-haiku-4-5-20251001；chat 出错/不可解析→verdict academic(复用 parse 语义)。)
+- Q: source_id FK 处理？ → 调用方提供合法 source（q-0） (runAbTrial 收 source_id:&str 参数; 调用方负责合法已存在 source; FK 失败返回 Err(绝不伪造, G52)。测试在 libsql 先 INSERT 真实 sources 行。)
+- Q: buildAbReport 日期过滤？ → Rust 算 cutoff 绑定（q-0） (cutoff=Utc::now()-Duration::days(days) 格式化为 ISO8601 Z, 绑定 WHERE ran_at>=。ISO8601 字典序可比, 双后端通用;  占位符与 calibration.rs 一致。)
+- Q: 测试策略？ → D 风格行为测试（q-0） (gateVoice 纯单测 stub trait(首过/失则模板兜底/maxAttempts耗尽/empty-gen处理); runAbTrial 真实 libsql 临时库+stub ThinkRunner+stub preferenceResolver 断言 INSERT+读回+buildAbReport 聚合(baseline胜/net_negative阈值)。不接 op(生产延后)。镜像 D18 跨 brain 范式。)
 <!-- ROADMAP_SECTION_END -->

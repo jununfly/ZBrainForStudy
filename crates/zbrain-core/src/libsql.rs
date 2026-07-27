@@ -27,7 +27,7 @@ use crate::admin_queries::{
 use crate::calibration_queries::{
     aggregate_calibration_curve, aggregate_scorecard, CalibrationBucket, CalibrationCurveQuery,
     CalibrationProfileRow, CalibrationQueries, CalibrationRow, CalibrationWaveQueries,
-    PatternDetail, ScorecardQuery, ScorecardRow, TakeSummary, TakesScorecard,
+    PatternDetail, ScorecardQuery, ScorecardRow, TakeSummary, TakesScorecard, ThinkAbInsert,
 };
 use crate::oauth_queries::{
     OAuthQueries, RegisterClientRequest, RegisterClientResponse, RevokeClientResponse,
@@ -9167,6 +9167,70 @@ impl CalibrationQueries for LibsqlEngine {
             pattern_text,
             top_takes,
         }))
+    }
+
+    /// Insert one A/B trial row (1-3-3-6). FK violations (unknown source_id)
+    /// surface as errors — we never fabricate a source (G52).
+    async fn insert_think_ab_result(&self, row: &ThinkAbInsert<'_>) -> Result<Option<i64>> {
+        let conn = self.conn().await?;
+        let mut rows = conn
+            .query(
+                "INSERT INTO think_ab_results \
+                 (source_id, question, baseline_answer, with_calibration_answer, preferred, model_id, notes) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) RETURNING id",
+                ::libsql::params![
+                    row.source_id,
+                    row.question,
+                    row.baseline_answer,
+                    row.with_calibration_answer,
+                    row.preferred,
+                    row.model_id.map(|s| s.to_string()),
+                    row.notes.map(|s| s.to_string()),
+                ],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("insert_think_ab_result: {e}")))?;
+        let id = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("insert_think_ab_result id row: {e}")))?
+            .and_then(|r| r.get::<i64>(0).ok());
+        Ok(id)
+    }
+
+    /// `(preferred, count)` pairs since `cutoff_iso`. `ran_at` is ISO8601 TEXT
+    /// on this backend, so the lexicographic `>=` matches chronological order.
+    async fn think_ab_preference_counts(&self, cutoff_iso: &str) -> Result<Vec<(String, u64)>> {
+        let conn = self.conn().await?;
+        let result = conn
+            .query(
+                "SELECT preferred, COUNT(*) FROM think_ab_results \
+                 WHERE ran_at >= ?1 GROUP BY preferred",
+                ::libsql::params![cutoff_iso],
+            )
+            .await;
+        match result {
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("no such table") {
+                    return Ok(Vec::new());
+                }
+                Err(Error::engine(format!("think_ab_preference_counts: {msg}")))
+            }
+            Ok(mut rows) => {
+                let mut out = Vec::new();
+                while let Some(row) = rows
+                    .next()
+                    .await
+                    .map_err(|e| Error::engine(format!("think_ab_preference_counts row: {e}")))?
+                {
+                    let preferred: String = row.get(0).unwrap_or_default();
+                    let count: i64 = row.get(1).unwrap_or(0);
+                    out.push((preferred, count.max(0) as u64));
+                }
+                Ok(out)
+            }
+        }
     }
 }
 

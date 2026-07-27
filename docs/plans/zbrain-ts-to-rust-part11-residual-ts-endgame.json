@@ -2347,11 +2347,47 @@
     "1-3-3-6": {
       "id": "1-3-3-6",
       "label": "gateVoice + runAbTrial (trait DI VoiceGenerator+VoiceJudge via instantiate_chat 复用 parse_judge_output; runAbTrial 编排 + think_ab_results INSERT, thinkRunner DI; Rust 无 runThink 故生产 think 接线后续)",
-      "status": "pending",
-      "mode": "explore",
+      "status": "completed",
+      "mode": "exploit",
       "parent": "1-3-3",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "完成边界？",
+          "answer": "两者都移植（q-0）",
+          "note": "gateVoice 全量(trait+ChatProvider生产实现+parse_judge_output+模板兜底+VoiceGateMode/DEFAULT_RUBRICS) + runAbTrial 全量(编排+think_ab_results INSERT+buildAbReport; ThinkRunner 作 DI trait; 生产真实 runThink 接线延后仅留 DI 接口)。补 D 风格行为测试(gateVoice 用 stub trait; runAbTrial 用真实 libsql)。"
+        },
+        {
+          "q": "模块布局？",
+          "answer": "calibration/ 下两个子模块（q-0）",
+          "note": "新建 crates/zbrain-core/src/calibration/voice_gate.rs + think_ab.rs，calibration.rs 用 pub mod 声明。对应 TS voice-gate.ts/think-ab.ts 分文件；calibration.rs 已过大不宜再膨胀。"
+        },
+        {
+          "q": "DI trait 设计？",
+          "answer": "三个独立 trait 入参注入（q-0）",
+          "note": "VoiceGenerator/VoiceJudge/ThinkRunner 三个独立 async trait；以 Arc<dyn Trait> 作 gateVoice/runAbTrial 入参(不存 ctx)。忠实对齐 TS opts.generate/opts.judge/thinkRunner 注入分离。"
+        },
+        {
+          "q": "生产 backing？",
+          "answer": "包裹 ChatProvider（q-0）",
+          "note": "LlmBackedVoiceJudge+VoiceGenerator 包裹 Box<dyn ChatProvider>(instantiate_chat 构造)。judge 用 HAIKU_GATE_PROMPT+parse_judge_output，haiku 模型 claude-haiku-4-5-20251001；chat 出错/不可解析→verdict academic(复用 parse 语义)。"
+        },
+        {
+          "q": "source_id FK 处理？",
+          "answer": "调用方提供合法 source（q-0）",
+          "note": "runAbTrial 收 source_id:&str 参数; 调用方负责合法已存在 source; FK 失败返回 Err(绝不伪造, G52)。测试在 libsql 先 INSERT 真实 sources 行。"
+        },
+        {
+          "q": "buildAbReport 日期过滤？",
+          "answer": "Rust 算 cutoff 绑定（q-0）",
+          "note": "cutoff=Utc::now()-Duration::days(days) 格式化为 ISO8601 Z, 绑定 WHERE ran_at>=。ISO8601 字典序可比, 双后端通用;  占位符与 calibration.rs 一致。"
+        },
+        {
+          "q": "测试策略？",
+          "answer": "D 风格行为测试（q-0）",
+          "note": "gateVoice 纯单测 stub trait(首过/失则模板兜底/maxAttempts耗尽/empty-gen处理); runAbTrial 真实 libsql 临时库+stub ThinkRunner+stub preferenceResolver 断言 INSERT+读回+buildAbReport 聚合(baseline胜/net_negative阈值)。不接 op(生产延后)。镜像 D18 跨 brain 范式。"
+        }
+      ],
       "notes": ""
     },
     "1-3-3-7": {
@@ -2630,7 +2666,7 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-27 20:43:58",
+    "updated": "2026-07-27 21:37:32",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"

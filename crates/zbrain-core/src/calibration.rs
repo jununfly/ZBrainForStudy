@@ -4,12 +4,24 @@
 //! Phase 1 scope: the pure, side-effect-free formatters/parsers that need no
 //! `BrainEngine` and no LLM. These mirror the TS templates verbatim so the
 //! web admin / CLI can call Rust instead of the TS module. Engine-backed and
-//! LLM-backed calibration functions (e.g. `forecastForTake`, `gateVoice`,
-//! `runAbTrial`) are Phase 2 and may surface as KNOWN-GAPs.
+//! LLM-backed calibration functions now live in submodules:
+//! - `calibration/voice_gate.rs` port of `gateVoice` (voice gate: retry loop +
+//!   injected judge + template fallback, `VoiceGenerator`/`VoiceJudge` traits,
+//!   ChatProvider-backed production impls, `parse_judge_output`).
+//! - `calibration/think_ab.rs` port of `runAbTrial` (A/B harness: think runner +
+//!   preference resolver + `think_ab_results` write, `build_ab_report` aggregation).
 //!
 //! Note: no roadmap node number is referenced here on purpose — the Part11
 //! roadmap JSON is a temporary working file and will be cleared on completion,
 //! so comments must stay self-explanatory.
+
+pub mod think_ab;
+pub mod voice_gate;
+
+// Re-export the Phase 2 engine/LLM calibration functions at the `calibration`
+// module root so callers (tests, future ops) import from one path.
+pub use think_ab::*;
+pub use voice_gate::*;
 
 use crate::calibration_queries::{
     CalibrationProfileRow, CalibrationQueries, CalibrationWaveQueries, TakesScorecard, UndoWaveOpts,

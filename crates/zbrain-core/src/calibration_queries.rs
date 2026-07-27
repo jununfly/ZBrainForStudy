@@ -321,6 +321,25 @@ impl<'a> CalibrationCurveQuery<'a> {
     }
 }
 
+// ── think A/B rows (1-3-3-6) ─────────────────────────────────────────────
+
+/// One `think_ab_results` row to insert. Mirrors the canonical TS
+/// `runAbTrial` INSERT column list (`wave_version` and `ran_at` use their
+/// schema defaults).
+#[derive(Debug, Clone)]
+pub struct ThinkAbInsert<'a> {
+    /// Must reference an existing `sources(id)` row — a FK violation is
+    /// returned as an error, never papered over (G52).
+    pub source_id: &'a str,
+    pub question: &'a str,
+    pub baseline_answer: &'a str,
+    pub with_calibration_answer: &'a str,
+    /// One of `baseline|with_calibration|neither|tie` (CHECK-constrained).
+    pub preferred: &'a str,
+    pub model_id: Option<&'a str>,
+    pub notes: Option<&'a str>,
+}
+
 // ── trait ────────────────────────────────────────────────────────────────
 
 /// Calibration-oriented queries against calibration_profiles and takes tables.
@@ -352,6 +371,26 @@ pub trait CalibrationQueries: Debug + Send + Sync {
         holder: &str,
         pattern_index: usize,
     ) -> Result<Option<PatternDetail>>;
+
+    /// Insert one A/B trial row into `think_ab_results`, returning the new
+    /// row id when the backend supports `RETURNING` (both SQL backends do).
+    ///
+    /// Default: unsupported error — a write must never be silently dropped,
+    /// so backends without the table (InMemory) fail loudly.
+    async fn insert_think_ab_result(&self, _row: &ThinkAbInsert<'_>) -> Result<Option<i64>> {
+        Err(crate::error::Error::unsupported(
+            "insert_think_ab_result not implemented for this engine",
+        ))
+    }
+
+    /// `(preferred, count)` pairs for `think_ab_results` rows with
+    /// `ran_at >= cutoff_iso` (ISO8601 UTC, computed by the caller — sorts
+    /// lexicographically on libsql TEXT and casts to timestamptz on postgres).
+    ///
+    /// Default: empty (read path degrades like the other calibration reads).
+    async fn think_ab_preference_counts(&self, _cutoff_iso: &str) -> Result<Vec<(String, u64)>> {
+        Ok(Vec::new())
+    }
 }
 
 // ── undo-wave reversal (1-3-3-2) ─────────────────────────────────────────

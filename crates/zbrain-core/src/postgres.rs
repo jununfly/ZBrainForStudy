@@ -45,7 +45,7 @@ use crate::engine::{
 use crate::calibration_queries::{
     aggregate_calibration_curve, aggregate_scorecard, CalibrationBucket, CalibrationCurveQuery,
     CalibrationProfileRow, CalibrationQueries, CalibrationRow, CalibrationWaveQueries,
-    PatternDetail, ScorecardQuery, ScorecardRow, TakesScorecard,
+    PatternDetail, ScorecardQuery, ScorecardRow, TakesScorecard, ThinkAbInsert,
 };
 use crate::oauth_queries::{
     ExchangeTokens, OAuthClientInfo, OAuthQueries, RegisterClientRequest,
@@ -7164,6 +7164,49 @@ impl CalibrationQueries for PostgresEngine {
             Err(e) => Err(Error::engine(format!("get_pattern_detail: {e}"))),
             // Table exists but no profile — treat as no detail available.
             Ok(_) => Ok(None),
+        }
+    }
+
+    /// Insert one A/B trial row (1-3-3-6). FK violations (unknown source_id)
+    /// surface as errors — we never fabricate a source (G52).
+    async fn insert_think_ab_result(&self, row: &ThinkAbInsert<'_>) -> Result<Option<i64>> {
+        let pool = self.pool()?;
+        let rec = sqlx::query_as::<_, (i64,)>(
+            "INSERT INTO think_ab_results \
+             (source_id, question, baseline_answer, with_calibration_answer, preferred, model_id, notes) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+        )
+        .bind(row.source_id)
+        .bind(row.question)
+        .bind(row.baseline_answer)
+        .bind(row.with_calibration_answer)
+        .bind(row.preferred)
+        .bind(row.model_id)
+        .bind(row.notes)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| Error::engine(format!("insert_think_ab_result: {e}")))?;
+        Ok(Some(rec.0))
+    }
+
+    /// `(preferred, count)` pairs since `cutoff_iso`. `ran_at` is TIMESTAMPTZ
+    /// on this backend, so the ISO8601 string is cast server-side.
+    async fn think_ab_preference_counts(&self, cutoff_iso: &str) -> Result<Vec<(String, u64)>> {
+        let pool = self.pool()?;
+        let result = sqlx::query_as::<_, (String, i64)>(
+            "SELECT preferred, COUNT(*) FROM think_ab_results \
+             WHERE ran_at >= $1::timestamptz GROUP BY preferred",
+        )
+        .bind(cutoff_iso)
+        .fetch_all(pool)
+        .await;
+        match result {
+            Err(e) if pg_is_missing_schema(&e) => Ok(Vec::new()),
+            Err(e) => Err(Error::engine(format!("think_ab_preference_counts: {e}"))),
+            Ok(rows) => Ok(rows
+                .into_iter()
+                .map(|(preferred, count)| (preferred, count.max(0) as u64))
+                .collect()),
         }
     }
 }
