@@ -15,8 +15,9 @@ use erased_serde::Serialize;
 use serde_json::{json, Map, Value};
 
 use crate::{
-    calibration_queries::{aggregate_scorecard, CalibrationBucket, CalibrationProfileRow,
-        CalibrationQueries, PatternDetail, ScorecardQuery, ScorecardRow, TakeSummary,
+    calibration_queries::{aggregate_calibration_curve, aggregate_scorecard, CalibrationBucket,
+        CalibrationCurveQuery, CalibrationProfileRow, CalibrationQueries, CalibrationRow,
+        PatternDetail, ScorecardQuery, ScorecardRow, TakeSummary,
         TakesScorecard},
     oauth_queries::{ExchangeTokens, OAuthClientInfo, OAuthQueries, RegisterClientRequest,
         RegisterClientResponse, RevokeClientResponse, UpdateClientTtlResponse},
@@ -1099,6 +1100,24 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
             "Unsupported",
             "unsupported",
             "get_scorecard not implemented for this engine",
+        ))
+    }
+
+    /// Calibration curve (observed vs predicted per weight bucket). Mirrors TS
+    /// `getCalibrationCurve`. Default: `Err(`Unsupported`)` — engines that
+    /// implement `CalibrationQueries` override this to delegate to
+    /// `CalibrationQueries::get_calibration_curve`.
+    ///
+    /// This is the bridge the `takes_calibration` operation calls; it lets the
+    /// op stay on `&dyn BrainEngine` without downcasting to `CalibrationQueries`.
+    async fn get_calibration_curve(
+        &self,
+        _query: &crate::calibration_queries::CalibrationCurveQuery<'_>,
+    ) -> crate::Result<Vec<crate::calibration_queries::CalibrationBucket>> {
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "get_calibration_curve not implemented for this engine",
         ))
     }
 
@@ -4042,6 +4061,13 @@ impl BrainEngine for InMemoryEngine {
         query: &crate::calibration_queries::ScorecardQuery<'_>,
     ) -> crate::Result<crate::calibration_queries::TakesScorecard> {
         crate::calibration_queries::CalibrationQueries::get_scorecard(self, query).await
+    }
+
+    async fn get_calibration_curve(
+        &self,
+        query: &crate::calibration_queries::CalibrationCurveQuery<'_>,
+    ) -> crate::Result<Vec<crate::calibration_queries::CalibrationBucket>> {
+        crate::calibration_queries::CalibrationQueries::get_calibration_curve(self, query).await
     }
 
     async fn find_duplicate_page(
@@ -9510,9 +9536,38 @@ impl CalibrationQueries for InMemoryEngine {
 
     async fn get_calibration_curve(
         &self,
-        _holder: &str,
+        query: &CalibrationCurveQuery<'_>,
     ) -> crate::error::Result<Vec<CalibrationBucket>> {
-        Ok(vec![])
+        let store = self
+            .takes_store
+            .lock()
+            .expect("InMemoryEngine takes_store mutex poisoned");
+        let rows = store
+            .iter()
+            .filter(|t| {
+                if let Some(h) = query.holder {
+                    if t.holder != h {
+                        return false;
+                    }
+                }
+                // Allow-list membership (canonical `AND holder = ANY($list)`,
+                // D4 defense-in-depth). Applied per row so it composes with an
+                // absent holder filter (all-holders-within-allow-list).
+                if let Some(list) = query.holders_allow_list {
+                    if !list.iter().any(|h| h == &t.holder) {
+                        return false;
+                    }
+                }
+                true
+            })
+            .map(|t| CalibrationRow {
+                weight: t.weight,
+                resolved_quality: t.resolved_quality.clone(),
+            });
+        Ok(aggregate_calibration_curve(
+            rows,
+            query.bucket_size.unwrap_or(0.1),
+        ))
     }
 
     async fn get_latest_profile(

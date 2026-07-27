@@ -8219,6 +8219,9 @@ pub struct TakesCalibrationOutput {
     pub profile: Option<crate::calibration_queries::CalibrationProfileRow>,
     /// Aggregated domain scorecards from the profile's declared domains.
     pub domain_scorecards: crate::calibration::DomainScorecards,
+    /// Calibration curve (observed vs predicted per weight bucket) computed
+    /// directly from the holder's resolved bets — independent of the profile.
+    pub curve: Vec<crate::calibration_queries::CalibrationBucket>,
 }
 
 #[async_trait]
@@ -8253,12 +8256,24 @@ impl TypedOperation for TakesCalibrationOperation {
         let holder = params.holder.unwrap_or_else(|| "garry".to_string());
         let source_id = params.source_id;
 
+        // Calibration curve computed directly from the holder's resolved bets,
+        // independent of the profile. Server-side allow-list is enforced as a
+        // hard holder filter (D4 defense-in-depth for remote callers).
+        let curve = engine
+            .get_calibration_curve(&crate::calibration_queries::CalibrationCurveQuery {
+                holder: Some(&holder),
+                bucket_size: None,
+                holders_allow_list: ctx.takes_holders_allow_list.as_deref(),
+            })
+            .await?;
+
         // 1. Get the latest published profile
         let profile = engine.get_calibration_profile(&holder, source_id.as_deref(), None).await?;
         let Some(profile) = profile else {
             return Ok(TakesCalibrationOutput {
                 profile: None,
                 domain_scorecards: crate::calibration::DomainScorecards::new(),
+                curve,
             });
         };
 
@@ -8278,6 +8293,7 @@ impl TypedOperation for TakesCalibrationOperation {
         Ok(TakesCalibrationOutput {
             profile: Some(profile),
             domain_scorecards,
+            curve,
         })
     }
 }
@@ -11483,6 +11499,71 @@ mod tests {
             .expect("dispatch");
         assert_eq!(output["resolved"], 1, "allow-list must exclude bob's bet");
         assert_eq!(output["correct"], 1);
+    }
+
+    // ── TakesCalibration Operation (calibration Phase 3, roadmap 1-3-4) ──────
+
+    #[tokio::test]
+    async fn dispatch_json_takes_calibration_returns_curve() {
+        use crate::engine::{BrainEngine, InMemoryEngine};
+
+        let engine = InMemoryEngine::default();
+        engine
+            .add_takes_batch(1, &[bet(0.5, 1), bet(0.5, 2), bet(0.5, 3)])
+            .await
+            .expect("add");
+        // 2 correct + 1 incorrect, all at weight 0.5 (bucket 0.5).
+        engine.resolve_take(1, 1, &resolve_outcome(1, true)).await.expect("r1");
+        engine.resolve_take(1, 2, &resolve_outcome(2, true)).await.expect("r2");
+        engine.resolve_take(1, 3, &resolve_outcome(3, false)).await.expect("r3");
+
+        let mut registry = OperationRegistry::new();
+        registry.register(super::TakesCalibrationOperation);
+        let ctx = OperationContext::local_cli().with_engine(engine.into_arc());
+
+        let output = registry
+            .dispatch_json("takes_calibration", &ctx, serde_json::json!({ "holder": "alice" }))
+            .await
+            .expect("dispatch");
+
+        // Curve is computed directly from resolved bets, independent of the
+        // (absent) calibration profile.
+        let curve = output["curve"].as_array().expect("curve array");
+        assert_eq!(curve.len(), 1, "all bets fall in bucket 0.5");
+        let bucket = &curve[0];
+        assert_eq!(bucket["n"], 3);
+        assert!((bucket["observed"].as_f64().unwrap() - (2.0 / 3.0)).abs() < 1e-9);
+        assert!((bucket["predicted"].as_f64().unwrap() - 0.5).abs() < 1e-9);
+        // No profile seeded → profile is null.
+        assert!(output["profile"].is_null());
+    }
+
+    #[tokio::test]
+    async fn dispatch_json_takes_calibration_allow_list_fail_closed() {
+        use crate::engine::{BrainEngine, InMemoryEngine};
+
+        let engine = InMemoryEngine::default();
+        engine
+            .add_takes_batch(1, &[bet(0.5, 1), bet(0.5, 2)])
+            .await
+            .expect("add");
+        engine.resolve_take(1, 1, &resolve_outcome(1, true)).await.expect("r1");
+        engine.resolve_take(1, 2, &resolve_outcome(2, false)).await.expect("r2");
+
+        let mut registry = OperationRegistry::new();
+        registry.register(super::TakesCalibrationOperation);
+        // Remote token allow-list excludes alice → curve must be empty.
+        let ctx = OperationContext::local_cli()
+            .with_engine(engine.into_arc())
+            .with_takes_holders_allow_list(Some(vec!["someone_else".to_string()]));
+
+        let output = registry
+            .dispatch_json("takes_calibration", &ctx, serde_json::json!({ "holder": "alice" }))
+            .await
+            .expect("dispatch");
+
+        let curve = output["curve"].as_array().expect("curve array");
+        assert!(curve.is_empty(), "allow-list must exclude alice's bets");
     }
 
     // ── G33 / G34 security regression tests ─────────────────────────────────

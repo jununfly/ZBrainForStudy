@@ -25,8 +25,9 @@ use crate::admin_queries::{
     RequestLogFilters, Stats, WatchSnapshot,
 };
 use crate::calibration_queries::{
-    aggregate_scorecard, CalibrationBucket, CalibrationProfileRow, CalibrationQueries,
-    PatternDetail, ScorecardQuery, ScorecardRow, TakeSummary, TakesScorecard,
+    aggregate_calibration_curve, aggregate_scorecard, CalibrationBucket, CalibrationCurveQuery,
+    CalibrationProfileRow, CalibrationQueries, CalibrationRow, PatternDetail, ScorecardQuery,
+    ScorecardRow, TakeSummary, TakesScorecard,
 };
 use crate::oauth_queries::{
     OAuthQueries, RegisterClientRequest, RegisterClientResponse, RevokeClientResponse,
@@ -8685,42 +8686,70 @@ impl CalibrationQueries for LibsqlEngine {
         }
     }
 
-    /// Confidence-bucket accuracy curve.
-    async fn get_calibration_curve(&self, holder: &str) -> Result<Vec<CalibrationBucket>> {
+    /// Confidence-bucket accuracy curve (observed vs predicted per weight bucket).
+    ///
+    /// Pulls the scoped `(weight, resolved_quality)` rows (only
+    /// `resolved_quality IN ('correct','incorrect')`), then delegates the
+    /// canonical binning to `aggregate_calibration_curve`, so InMemory, Libsql,
+    /// and Postgres are bit-identical. Scoping mirrors canonical TS
+    /// `getCalibrationCurve`: optional holder + server-side allow-list.
+    async fn get_calibration_curve(&self, query: &CalibrationCurveQuery<'_>) -> Result<Vec<CalibrationBucket>> {
         let conn = self.conn().await?;
 
-        let result = conn
-            .query(
-                "SELECT \
-                        CAST(confidence * 10 AS INTEGER) / 10.0 || '-' || (CAST(confidence * 10 AS INTEGER) + 1) / 10.0 AS bucket_label, \
-                        COUNT(*) as n, \
-                        AVG(CASE WHEN resolution = 'correct' THEN 1.0 ELSE 0.0 END) as accuracy \
-                 FROM takes \
-                 WHERE holder = ?1 AND resolved_at IS NOT NULL AND confidence BETWEEN 0.0 AND 1.0 \
-                 GROUP BY CAST(confidence * 10 AS INTEGER) \
-                 ORDER BY CAST(confidence * 10 AS INTEGER)",
-                ::libsql::params![holder],
-            )
-            .await;
+        let mut sql = String::from(
+            "SELECT t.weight, t.resolved_quality FROM takes t WHERE 1=1",
+        );
+        let mut params: Vec<::libsql::Value> = Vec::new();
+        // Optional single-holder filter (omitted when None, canonical parity).
+        if let Some(holder) = query.holder {
+            params.push(::libsql::Value::from(holder.to_string()));
+            sql.push_str(&format!(" AND t.holder = ?{}", params.len()));
+        }
+        // Allow-list membership (`AND holder = ANY($list)`, expanded to an IN
+        // list on SQLite). Empty list fails closed (no rows).
+        if let Some(list) = query.holders_allow_list {
+            if list.is_empty() {
+                sql.push_str(" AND 0=1");
+            } else {
+                let start = params.len();
+                let placeholders: Vec<String> =
+                    (0..list.len()).map(|i| format!("?{}", start + i + 1)).collect();
+                sql.push_str(&format!(" AND t.holder IN ({})", placeholders.join(", ")));
+                for h in list {
+                    params.push(::libsql::Value::from(h.clone()));
+                }
+            }
+        }
+        sql.push_str(" AND t.resolved_quality IN ('correct','incorrect')");
+
+        let result = conn.query(&sql, ::libsql::params_from_iter(params)).await;
 
         match result {
             Err(e) => {
                 let msg = e.to_string();
-                if msg.contains("no such table") {
-                    return Ok(vec![]);
+                // Graceful degradation: `takes` table or a column may not exist
+                // in the current schema — degrade to the empty curve.
+                if msg.contains("no such table") || msg.contains("no such column") {
+                    return Ok(Vec::new());
                 }
                 Err(Error::engine(format!("get_calibration_curve: {msg}")))
             }
             Ok(mut rows) => {
-                let mut buckets = Vec::new();
-                while let Some(row) = rows.next().await.map_err(|e| Error::engine(format!("get_calibration_curve row: {e}")))? {
-                    buckets.push(CalibrationBucket {
-                        bucket_label: row.get::<String>(0).unwrap_or_default(),
-                        n: row.get::<i64>(1).unwrap_or(0),
-                        accuracy: row.get::<f64>(2).unwrap_or(0.0),
+                let mut scored: Vec<CalibrationRow> = Vec::new();
+                while let Some(row) = rows
+                    .next()
+                    .await
+                    .map_err(|e| Error::engine(format!("get_calibration_curve row: {e}")))?
+                {
+                    scored.push(CalibrationRow {
+                        weight: row.get::<f64>(0).unwrap_or(0.0),
+                        resolved_quality: row.get::<Option<String>>(1).unwrap_or(None),
                     });
                 }
-                Ok(buckets)
+                Ok(aggregate_calibration_curve(
+                    scored,
+                    query.bucket_size.unwrap_or(0.1),
+                ))
             }
         }
     }

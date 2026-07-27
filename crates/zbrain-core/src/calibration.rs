@@ -2040,7 +2040,7 @@ mod tests {
 
         async fn get_calibration_curve(
             &self,
-            _holder: &str,
+            _query: &crate::calibration_queries::CalibrationCurveQuery<'_>,
         ) -> crate::error::Result<Vec<CalibrationBucket>> {
             Ok(vec![])
         }

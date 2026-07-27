@@ -129,13 +129,85 @@ pub fn aggregate_scorecard<I: IntoIterator<Item = ScorecardRow>>(rows: I) -> Tak
     }
 }
 
+/// Minimal per-take projection needed for calibration-curve bucketing.
+/// Backends pull these rows already scoped (holder/allow-list applied by the
+/// query layer) then hand them to [`aggregate_calibration_curve`].
+#[derive(Debug, Clone)]
+pub struct CalibrationRow {
+    pub weight: f64,
+    pub resolved_quality: Option<String>,
+}
+
+/// Backend-agnostic calibration-curve aggregation — the single source of truth
+/// for the curve math across InMemory/Libsql/Postgres.
+///
+/// Mirrors the canonical TS `getCalibrationCurve` binned CTE
+/// (`src/core/pglite-engine.ts`):
+///   - only `resolved_quality IN ('correct','incorrect')` rows count
+///   - `bucket_idx = LEAST(floor(weight / bucketSize), maxIdx)` where
+///     `maxIdx = floor(1/bucketSize) - 1`. We compute `floor(weight * scale)`
+///     with `scale = round(1/bucketSize)` (an integer) so decimal weights like
+///     `0.7` land in bucket 7 rather than 6 — this reproduces the TS Postgres
+///     `weight::numeric / $1::numeric` exactness on SQLite/InMemory (double
+///     `weight / bucketSize` would FP-round `0.7/0.1` to 6.999…→6).
+///   - `observed = sum(correct)/n`, `predicted = mean(weight)`; both `None`
+///     when `n == 0`.
+pub fn aggregate_calibration_curve<I: IntoIterator<Item = CalibrationRow>>(
+    rows: I,
+    bucket_size: f64,
+) -> Vec<CalibrationBucket> {
+    let bucket_size = if bucket_size > 0.0 && bucket_size <= 1.0 {
+        bucket_size
+    } else {
+        0.1
+    };
+    let scale = (1.0 / bucket_size).round() as i64;
+    let max_idx = (1.0 / bucket_size).floor() as i64 - 1;
+    // bucket_idx -> (n, sum_hit, sum_weight)
+    let mut buckets: std::collections::BTreeMap<i64, (i64, f64, f64)> = Default::default();
+    for r in rows {
+        let hit = match r.resolved_quality.as_deref() {
+            Some("correct") => 1.0,
+            Some("incorrect") => 0.0,
+            _ => continue,
+        };
+        let mut idx = (r.weight * scale as f64).floor() as i64;
+        if idx > max_idx {
+            idx = max_idx;
+        }
+        // Only an upper clamp (TS `LEAST`, not a lower clamp) — negative
+        // weights are nonsensical but we mirror TS's single-sided clamp.
+        let entry = buckets.entry(idx).or_insert((0, 0.0, 0.0));
+        entry.0 += 1;
+        entry.1 += hit;
+        entry.2 += r.weight;
+    }
+    buckets
+        .into_iter()
+        .map(|(idx, (n, sum_hit, sum_weight))| CalibrationBucket {
+            bucket_lo: idx as f64 * bucket_size,
+            bucket_hi: (idx + 1) as f64 * bucket_size,
+            n,
+            observed: if n > 0 { Some(sum_hit / n as f64) } else { None },
+            predicted: if n > 0 { Some(sum_weight / n as f64) } else { None },
+        })
+        .collect()
+}
+
 /// A single confidence-bucket entry for the calibration curve.
+///
+/// Field names + shape mirror the canonical TS `CalibrationBucket`
+/// (`src/core/engine.ts`) exactly — snake_case/lowercase JSON, so NO
+/// `rename_all`. `observed`/`predicted` are `None` only when `n == 0` (a
+/// bucket can collapse to zero rows after scoping); otherwise they mirror
+/// `correct/n` and `mean(weight)` respectively.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
 pub struct CalibrationBucket {
-    pub bucket_label: String,
+    pub bucket_lo: f64,
+    pub bucket_hi: f64,
     pub n: i64,
-    pub accuracy: f64,
+    pub observed: Option<f64>,
+    pub predicted: Option<f64>,
 }
 
 /// A single row from the `calibration_profiles` table.
@@ -217,6 +289,38 @@ impl<'a> ScorecardQuery<'a> {
     }
 }
 
+/// Query scope for [`CalibrationQueries::get_calibration_curve`].
+///
+/// Mirrors the canonical TS `CalibrationCurveOpts` (`holder`/`bucketSize`) plus
+/// the server-side holder allow-list that TS passes as
+/// `getCalibrationCurve(opts, allowList)`'s second argument. Bundled into one
+/// struct so the trait signature stays stable as scoping grows.
+#[derive(Debug, Clone, Default)]
+pub struct CalibrationCurveQuery<'a> {
+    /// Holder to scope to (`world|garry|brain|<slug>`). `None` aggregates over
+    /// all holders, matching canonical TS where `opts.holder === undefined`
+    /// omits the `AND holder = $N` clause entirely.
+    pub holder: Option<&'a str>,
+    /// Bucket width in `(0,1]` (default `0.1`). Canonical TS clamps to `0.1`
+    /// when out of range.
+    pub bucket_size: Option<f64>,
+    /// Server-side holder allow-list. When `Some`, only rows whose holder is
+    /// in the list are counted (`AND holder = ANY($list)` parity, D4
+    /// defense-in-depth for remote callers). `None` disables the filter
+    /// (trusted local callers).
+    pub holders_allow_list: Option<&'a [String]>,
+}
+
+impl<'a> CalibrationCurveQuery<'a> {
+    /// Convenience: curve for a single holder with default bucket size.
+    pub fn for_holder(holder: &'a str) -> Self {
+        Self {
+            holder: Some(holder),
+            ..Default::default()
+        }
+    }
+}
+
 // ── trait ────────────────────────────────────────────────────────────────
 
 /// Calibration-oriented queries against calibration_profiles and takes tables.
@@ -230,8 +334,11 @@ pub trait CalibrationQueries: Debug + Send + Sync {
     /// operation share one path.
     async fn get_scorecard(&self, query: &ScorecardQuery<'_>) -> Result<TakesScorecard>;
 
-    /// Confidence-bucket accuracy curve.
-    async fn get_calibration_curve(&self, holder: &str) -> Result<Vec<CalibrationBucket>>;
+    /// Confidence-bucket accuracy curve (observed vs predicted per weight bucket).
+    ///
+    /// Scoped by [`CalibrationCurveQuery`]. Mirrors the canonical TS
+    /// `getCalibrationCurve({ holder, bucketSize }, allowList)` surface.
+    async fn get_calibration_curve(&self, query: &CalibrationCurveQuery<'_>) -> Result<Vec<CalibrationBucket>>;
 
     /// Latest calibration profile for a holder.
     /// Returns None when the table does not exist or no profiles exist.
@@ -286,7 +393,10 @@ mod tests {
     #[tokio::test]
     async fn contract_get_calibration_curve_returns_empty() {
         let engine = make_engine();
-        let result = engine.get_calibration_curve("garry").await.unwrap();
+        let result = engine
+            .get_calibration_curve(&CalibrationCurveQuery::for_holder("garry"))
+            .await
+            .unwrap();
         assert!(result.is_empty());
     }
 
@@ -295,5 +405,147 @@ mod tests {
         let engine = make_engine();
         let result = engine.get_pattern_detail("garry", 1).await.unwrap();
         assert_eq!(result, None);
+    }
+
+    // ── canonical bucketing math (backend-agnostic) ─────────────────────────
+
+    #[test]
+    fn aggregate_calibration_curve_buckets_correctly() {
+        // `0.7` must land in bucket 7 — the FP-edge case where naive
+        // `floor(weight / 0.1)` on doubles rounds `0.7/0.1` to 6.999…→6, while
+        // the integer-scale trick reproduces TS Postgres `numeric` exactness (7).
+        let rows = vec![
+            CalibrationRow { weight: 0.05, resolved_quality: Some("correct".into()) }, // bucket 0
+            CalibrationRow { weight: 0.10, resolved_quality: Some("correct".into()) }, // bucket 1
+            CalibrationRow { weight: 0.70, resolved_quality: Some("correct".into()) }, // bucket 7
+            CalibrationRow { weight: 0.70, resolved_quality: Some("incorrect".into()) }, // bucket 7
+            CalibrationRow { weight: 0.70, resolved_quality: Some("partial".into()) }, // excluded
+            CalibrationRow { weight: 0.95, resolved_quality: Some("incorrect".into()) }, // bucket 9 (maxIdx)
+            CalibrationRow { weight: 1.00, resolved_quality: Some("correct".into()) }, // bucket 9 (clamp)
+            CalibrationRow { weight: 0.30, resolved_quality: Some("incorrect".into()) }, // bucket 3
+        ];
+        let curve = aggregate_calibration_curve(rows, 0.1);
+
+        let b0 = curve.iter().find(|b| b.bucket_lo == 0.0).expect("bucket 0");
+        assert_eq!(b0.n, 1);
+        assert_eq!(b0.observed, Some(1.0));
+        assert_eq!(b0.predicted, Some(0.05));
+
+        let b7 = curve
+            .iter()
+            .find(|b| (b.bucket_lo - 0.7).abs() < 1e-9)
+            .expect("bucket 7");
+        assert_eq!(b7.n, 2);
+        assert_eq!(b7.observed, Some(0.5));
+        assert_eq!(b7.predicted, Some(0.7));
+
+        let b9 = curve
+            .iter()
+            .find(|b| (b.bucket_lo - 0.9).abs() < 1e-9)
+            .expect("bucket 9");
+        assert_eq!(b9.n, 2);
+        assert_eq!(b9.observed, Some(0.5));
+        assert!((b9.predicted.unwrap() - 0.975).abs() < 1e-9);
+
+        // partial excluded; total resolved counted = 7 (8 input rows − 1 partial).
+        let total: i64 = curve.iter().map(|b| b.n).sum();
+        assert_eq!(total, 7);
+    }
+
+    #[test]
+    fn aggregate_calibration_curve_clamps_bucket_size() {
+        // bucket_size out of range falls back to 0.1.
+        let rows = vec![CalibrationRow {
+            weight: 0.55,
+            resolved_quality: Some("correct".into()),
+        }];
+        let curve = aggregate_calibration_curve(rows, 0.0);
+        assert_eq!(curve.len(), 1);
+        assert!((curve[0].bucket_lo - 0.5).abs() < 1e-9);
+        assert_eq!(curve[0].n, 1);
+    }
+
+    // ── InMemory engine end-to-end (scoping + math) ─────────────────────────
+
+    use crate::types::Take;
+
+    fn mk_take(id: u64, holder: &str, weight: f64, quality: Option<&str>) -> Take {
+        let ts = "2026-01-01T00:00:00Z".to_string();
+        Take {
+            id,
+            page_id: id,
+            row_num: 1,
+            claim: format!("take {id}"),
+            kind: "bet".into(),
+            holder: holder.into(),
+            weight,
+            since_date: None,
+            until_date: None,
+            source: None,
+            superseded_by: None,
+            active: true,
+            resolved_at: Some(ts.clone()),
+            resolved_quality: quality.map(|s| s.into()),
+            resolved_outcome: None,
+            resolved_evidence: None,
+            resolved_value: None,
+            resolved_unit: None,
+            resolved_by: None,
+            created_at: ts.clone(),
+            updated_at: ts,
+        }
+    }
+
+    #[tokio::test]
+    async fn inmemory_get_calibration_curve_filters_holder_and_quality() {
+        let engine = make_engine();
+        engine.add_take(mk_take(1, "garry", 0.5, Some("correct")));
+        engine.add_take(mk_take(2, "garry", 0.5, Some("correct")));
+        engine.add_take(mk_take(3, "garry", 0.5, Some("incorrect")));
+        engine.add_take(mk_take(4, "world", 0.5, Some("correct"))); // other holder
+        engine.add_take(mk_take(5, "garry", 0.5, Some("partial"))); // excluded
+
+        let curve = engine
+            .get_calibration_curve(&CalibrationCurveQuery::for_holder("garry"))
+            .await
+            .unwrap();
+
+        assert_eq!(curve.len(), 1, "all seeded takes fall in bucket 0.5");
+        let b5 = &curve[0];
+        assert_eq!(b5.n, 3); // 2 correct + 1 incorrect (partial excluded)
+        assert_eq!(b5.observed, Some(2.0 / 3.0));
+        assert!((b5.predicted.unwrap() - 0.5).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn inmemory_get_calibration_curve_allow_list_fail_closed() {
+        let engine = make_engine();
+        engine.add_take(mk_take(1, "garry", 0.5, Some("correct")));
+        engine.add_take(mk_take(2, "world", 0.5, Some("correct")));
+
+        // Empty allow-list → hard fail-closed (no rows).
+        let empty: Vec<String> = vec![];
+        let curve = engine
+            .get_calibration_curve(&CalibrationCurveQuery {
+                holder: None,
+                bucket_size: None,
+                holders_allow_list: Some(&empty),
+            })
+            .await
+            .unwrap();
+        assert!(curve.is_empty());
+
+        // Non-empty allow-list restricts to the listed holder only.
+        let list = vec!["garry".to_string()];
+        let curve = engine
+            .get_calibration_curve(&CalibrationCurveQuery {
+                holder: None,
+                bucket_size: None,
+                holders_allow_list: Some(&list),
+            })
+            .await
+            .unwrap();
+        let total: i64 = curve.iter().map(|b| b.n).sum();
+        assert_eq!(total, 1);
     }
 }

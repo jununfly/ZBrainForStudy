@@ -43,8 +43,9 @@ use crate::engine::{
     UpdateSourceInput, fuse_and_boost, is_valid_source_id,
 };
 use crate::calibration_queries::{
-    aggregate_scorecard, CalibrationBucket, CalibrationProfileRow, CalibrationQueries,
-    PatternDetail, ScorecardQuery, ScorecardRow, TakesScorecard,
+    aggregate_calibration_curve, aggregate_scorecard, CalibrationBucket, CalibrationCurveQuery,
+    CalibrationProfileRow, CalibrationQueries, CalibrationRow, PatternDetail, ScorecardQuery,
+    ScorecardRow, TakesScorecard,
 };
 use crate::oauth_queries::{
     ExchangeTokens, OAuthClientInfo, OAuthQueries, RegisterClientRequest,
@@ -6850,38 +6851,52 @@ impl CalibrationQueries for PostgresEngine {
         }
     }
 
-    /// Confidence-bucket accuracy curve.
+    /// Confidence-bucket accuracy curve (observed vs predicted per weight bucket).
     ///
-    /// The Postgres `takes` schema has no `confidence`/`resolution` columns yet
-    /// (see migrations/0012), so this degrades to an empty curve. Kept as a
-    /// symmetric trait impl so callers don't branch on backend.
-    async fn get_calibration_curve(&self, holder: &str) -> Result<Vec<CalibrationBucket>> {
+    /// Pulls the scoped `(weight, resolved_quality)` rows (only
+    /// `resolved_quality IN ('correct','incorrect')`), then delegates the
+    /// canonical binning to `aggregate_calibration_curve`, so InMemory, Libsql,
+    /// and Postgres are bit-identical. Scoping mirrors canonical TS
+    /// `getCalibrationCurve`: optional holder + server-side allow-list.
+    async fn get_calibration_curve(&self, query: &CalibrationCurveQuery<'_>) -> Result<Vec<CalibrationBucket>> {
         let pool = self.pool()?;
-        let result = sqlx::query_as::<_, (String, i64, f64)>(
-            "SELECT \
-                    (FLOOR(confidence * 10) / 10.0)::text || '-' || ((FLOOR(confidence * 10) + 1) / 10.0)::text AS bucket_label, \
-                    COUNT(*)::bigint AS n, \
-                    AVG(CASE WHEN resolution = 'correct' THEN 1.0 ELSE 0.0 END)::double precision AS accuracy \
-             FROM takes \
-             WHERE holder = $1 AND resolved_at IS NOT NULL AND confidence BETWEEN 0.0 AND 1.0 \
-             GROUP BY FLOOR(confidence * 10) \
-             ORDER BY FLOOR(confidence * 10)",
-        )
-        .bind(holder)
-        .fetch_all(pool)
-        .await;
 
-        match result {
-            Err(e) if pg_is_missing_schema(&e) => Ok(vec![]),
+        let mut sql = String::from(
+            "SELECT t.weight, t.resolved_quality FROM takes t WHERE 1=1",
+        );
+        let mut n = 0;
+        if let Some(holder) = query.holder {
+            n += 1;
+            sql.push_str(&format!(" AND t.holder = ${n}"));
+        }
+        // Allow-list membership (`AND holder = ANY($list)`, D4 defense-in-depth).
+        let has_allow_list = query.holders_allow_list.is_some();
+        if has_allow_list {
+            n += 1;
+            sql.push_str(&format!(" AND t.holder = ANY(${n}::text[])"));
+        }
+        sql.push_str(" AND t.resolved_quality IN ('correct','incorrect')");
+
+        let mut q = sqlx::query_as::<_, (f64, Option<String>)>(&sql);
+        if let Some(holder) = query.holder {
+            q = q.bind(holder);
+        }
+        if let Some(list) = query.holders_allow_list {
+            q = q.bind(list.to_vec());
+        }
+
+        match q.fetch_all(pool).await {
+            Err(e) if pg_is_missing_schema(&e) => Ok(Vec::new()),
             Err(e) => Err(Error::engine(format!("get_calibration_curve: {e}"))),
-            Ok(rows) => Ok(rows
-                .into_iter()
-                .map(|(bucket_label, n, accuracy)| CalibrationBucket {
-                    bucket_label,
-                    n,
-                    accuracy,
-                })
-                .collect()),
+            Ok(rows) => {
+                let scored = rows
+                    .into_iter()
+                    .map(|(weight, resolved_quality)| CalibrationRow { weight, resolved_quality });
+                Ok(aggregate_calibration_curve(
+                    scored,
+                    query.bucket_size.unwrap_or(0.1),
+                ))
+            }
         }
     }
 

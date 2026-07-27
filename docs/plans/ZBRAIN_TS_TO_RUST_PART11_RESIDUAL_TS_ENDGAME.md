@@ -44,7 +44,7 @@
     └── [~][X+] 1-13-1. Phase C 退役 cli.ts + mcp legacy + 删 operations.ts — 计划与决策
 ```
 
-### 🔨 当前施工: 1-3-3-1. calibration schema 迁移 (5 表 calibration_profiles/take_nudge_log/think_ab_results/take_grade_cache/take_domain_assignments; 版本 0023 双后端 pg+sqlite; 全量 parity 去不可满足 FK; take_domain_assignments 先定位 TS 真实定义)
+### 🔨 当前施工: 1-3-3-6. gateVoice + runAbTrial (trait DI VoiceGenerator+VoiceJudge via instantiate_chat 复用 parse_judge_output; runAbTrial 编排 + think_ab_results INSERT; Rust 无 runThink 故生产 think 接线后续) — 1-3-3-5 已 completed
 **Status:** `in_progress` | **Mode:** `explore`
 <!-- ⚠️ ROADMAP_SECTION_END -->
 
@@ -90,5 +90,5 @@
 └── [~][X+] 1-13. cutover 执行层: Rust CLI clap 层补全(映射 cli.ts 全部命令到 run_operation) + 退役 cli.ts + 删 operations.ts
     └── [~][X+] 1-13-1. Phase C 退役 cli.ts + mcp legacy + 删 operations.ts — 计划与决策
 
-### 当前施工：1-3-3-1. calibration schema 迁移 (5 表 calibration_profiles/take_nudge_log/think_ab_results/take_grade_cache/take_domain_assignments; 版本 0023 双后端 pg+sqlite; 全量 parity 去不可满足 FK; take_domain_assignments 先定位 TS 真实定义)
+### 当前施工：1-3-3-6. gateVoice + runAbTrial (trait DI VoiceGenerator+VoiceJudge via instantiate_chat 复用 parse_judge_output; runAbTrial 编排 + think_ab_results INSERT; Rust 无 runThink 故生产 think 接线后续) — 1-3-3-5 已 completed
 <!-- ROADMAP_SECTION_END -->

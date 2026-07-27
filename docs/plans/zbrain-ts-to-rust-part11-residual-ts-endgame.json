@@ -2266,7 +2266,7 @@
     "1-3-3-1": {
       "id": "1-3-3-1",
       "label": "calibration schema 迁移 (5 表 calibration_profiles/take_nudge_log/think_ab_results/take_grade_cache/take_domain_assignments; 版本 0023 双后端 pg+sqlite; 全量 parity 去不可满足 FK; take_domain_assignments 先定位 TS 真实定义)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-3-3",
       "children": [],
@@ -2306,12 +2306,12 @@
     "1-3-3-5": {
       "id": "1-3-3-5",
       "label": "takes_calibration op (对齐 get_calibration_curve 到 canonical weight/resolved_quality + bucketSize + allowList + holder 可选; 新增 op handler; 解锁 1-6-7-16)",
-      "status": "pending",
-      "mode": "explore",
+      "status": "completed",
+      "mode": "exploit",
       "parent": "1-3-3",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "2026-07-27 完成: get_calibration_curve 对齐到 canonical(三后端统一委托 aggregate_calibration_curve 纯函数; CalibrationBucket 改为 {bucket_lo,bucket_hi,n,observed,predicted}; 新增 CalibrationCurveQuery{holder,bucket_size,holders_allow_list} + for_holder); TakesCalibrationOutput 扩 curve 字段并接线(op 已注册, 解锁 1-6-7-16); 5 单测(纯分箱含 0.7→bucket7 FP-edge + InMemory holder/quality 过滤 + allowList fail-closed 空 list 返回空)+ 2 op dispatch 测试全绿; cargo check/build zbrain-core+zbrain-cli 通过。"
     },
     "1-3-3-6": {
       "id": "1-3-3-6",
