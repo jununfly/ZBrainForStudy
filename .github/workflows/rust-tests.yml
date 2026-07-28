@@ -1,0 +1,97 @@
+name: Rust Tests
+
+# Runs the Rust (cargo test) suite that covers the TS→Rust migration crates.
+# Historically UNCOVERED in CI — the other workflows only run `bun test`
+# (TypeScript) and `cargo build --release`; no `cargo test` ran anywhere.
+#
+# Why ubuntu-latest (Linux) and not windows-latest:
+#   The libsql native FFI has an intermittent crash (STATUS_ACCESS_VIOLATION /
+#   segfault, exit 0xc0000005) on Windows under parallel `cargo test` that
+#   CANNOT be fixed in code. Verified empirically (4 groups × 3 runs each):
+#     - body-level mutex serializing each binary's tests → still crashes
+#     - #[tokio::test(flavor = "current_thread")] → still crashes
+#     - --test-threads=1 (single OS thread) → still crashes (2/3)
+#     - leaking the temp DB file (no delete race) → still crashes (2/3)
+#   Root cause is the libsql/SQLite native library on Windows itself. Running
+#   on Linux sidesteps it entirely (Linux does not exhibit the crash).
+#
+# Retry guard (defense-in-depth): even on Linux a transient crash could
+# theoretically occur, so the run is wrapped in a max-3 retry loop. A real
+# failure still surfaces after the retries; flakiness is absorbed.
+#
+# Scope: libsql-backed integration tests + the crate's lib unit tests. The
+# postgres-backed tests (pg-embed) are intentionally excluded — they have
+# their own environment requirements and are out of scope for this flake fix.
+
+on:
+  push:
+    branches: [master, rust-rewrite]
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  pull_request:
+    branches: [master, rust-rewrite]
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cargo-test:
+    name: cargo test (zbrain-core, Linux + retry)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684  # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      - name: Run cargo test (libsql targets) with flake retry
+        run: |
+          # Collect integration-test binaries that exercise LibsqlEngine — the
+          # flaky FFI surface. Postgres-backed tests (pg-embed) are excluded.
+          mapfile -t TESTS < <(grep -rl "LibsqlEngine" crates/zbrain-core/tests --include=*.rs | sed 's#.*/##; s#\.rs$##')
+          echo "Libsql-backed test targets (${#TESTS[@]}): ${TESTS[*]}"
+
+          ARGS=(--lib)
+          for t in "${TESTS[@]}"; do ARGS+=(--test "$t"); done
+
+          MAX=3
+          for i in $(seq 1 "$MAX"); do
+            echo "::group::cargo test attempt $i/$MAX"
+            if cargo test -p zbrain-core "${ARGS[@]}"; then
+              echo "::endgroup::"
+              echo "✓ cargo test passed on attempt $i"
+              exit 0
+            fi
+            code=$?
+            echo "::endgroup::"
+            echo "⚠️ cargo test attempt $i failed (exit $code)"
+            if [ "$i" -lt "$MAX" ]; then
+              echo "retrying..."
+              sleep 3
+            fi
+          done
+          echo "✗ cargo test failed after $MAX attempts"
+          exit 1
