@@ -20,6 +20,7 @@
 ## 工程铁律
 - **TS 子进程调 Rust 命令**：`src/cli.ts` 不代理 Rust 子命令。TS 调 Rust CLI 用 `src/core/zbrain-bin.ts` 的 `resolveZbrainBin()`（`$ZBRAIN_BIN`→`target/debug/zbrain[.exe]`→`target/release`→PATH）。改了 Rust 子命令后必 `cargo build -p zbrain-cli` 重建主二进制，否则测试 exit 2。
 - **提交完整性**：lib.rs 加 `pub mod X;` / Cargo.toml 加依赖 / 删 TS 文件时，必确认新增被引用文件本身也已 `git add`；commit 前 `git status` 确认无 untracked 遗漏，`git cat-file -e HEAD:<path>` 验证文件真在 HEAD。
+- **libsql FFI flake（CI 层已处理）**：该崩溃是 **Windows 原生 libsql/SQLite FFI 的间歇性崩溃**（exit 0xc0000005），代码层无法根除（实测 body-mutex / current_thread / `--test-threads=1` / 泄漏 temp 文件均仍崩）。各 libsql 集成测试已加进程级 `OnceLock<Mutex<()>>` 锁作降频缓解，但不可承诺稳定。`cargo test` 此前完全没进 CI；已新增 `.github/workflows/rust-tests.yml`：在 `ubuntu-latest`(Linux，不触发该崩溃) + 外层 max-3 重试守卫，动态收集引用 `LibsqlEngine` 的 52 个测试 target（+ `--lib`）运行，有意排除 pg-embed postgres 测试。改动未提交（等指令）。
 
 ## 迁移进度（摘要）
 - 迁移全 12 Part。主线已完成：Sources/Capture、Facts/Takes/Timeline/Salience/Graph、Search/Retrieval 生产后端复活、minions、autopilot、Part7 Phase9、Part9 Phase11（残留 TS 终局）、Part10 Phase12 Schema-Pack 路线图。
