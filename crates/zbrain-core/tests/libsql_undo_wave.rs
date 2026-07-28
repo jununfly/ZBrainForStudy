@@ -17,6 +17,20 @@ use zbrain_core::calibration_queries::UndoWaveOpts;
 use zbrain_core::engine::{BrainEngine, EngineConfig};
 use zbrain_core::libsql::LibsqlEngine;
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 /// Fresh `LibsqlEngine` backed by a temp file, schema fully migrated.
 async fn temp_engine() -> (NamedTempFile, LibsqlEngine) {
     let temp = NamedTempFile::new().expect("alloc temp db file");
@@ -150,6 +164,7 @@ fn opts(wave: &str) -> UndoWaveOpts {
 
 #[tokio::test]
 async fn undo_wave_deletes_profiles_for_that_wave_only() {
+    let _guard = libsql_test_guard();
     let (temp, engine) = temp_engine().await;
     let conn = raw_conn(temp.path()).await;
     seed_source(&conn, "wiki").await;
@@ -179,6 +194,7 @@ async fn undo_wave_deletes_profiles_for_that_wave_only() {
 
 #[tokio::test]
 async fn undo_wave_purges_nudge_log_for_that_wave_only() {
+    let _guard = libsql_test_guard();
     let (temp, engine) = temp_engine().await;
     let conn = raw_conn(temp.path()).await;
     seed_source(&conn, "wiki").await;
@@ -209,6 +225,7 @@ async fn undo_wave_purges_nudge_log_for_that_wave_only() {
 
 #[tokio::test]
 async fn undo_wave_unapplies_grade_cache_keeping_audit_rows() {
+    let _guard = libsql_test_guard();
     let (temp, engine) = temp_engine().await;
     let conn = raw_conn(temp.path()).await;
     seed_grade_cache(&conn, 1, "v1.0.0", true).await;
@@ -247,6 +264,7 @@ async fn undo_wave_unapplies_grade_cache_keeping_audit_rows() {
 
 #[tokio::test]
 async fn undo_wave_reverts_only_wave_applied_auto_resolutions() {
+    let _guard = libsql_test_guard();
     let (temp, engine) = temp_engine().await;
     let conn = raw_conn(temp.path()).await;
     let page_id = seed_page(&engine, "note/a").await;
@@ -292,6 +310,7 @@ async fn undo_wave_reverts_only_wave_applied_auto_resolutions() {
 /// `dry_run` reports the same counts as a real run but writes nothing.
 #[tokio::test]
 async fn undo_wave_dry_run_counts_without_writing() {
+    let _guard = libsql_test_guard();
     let (temp, engine) = temp_engine().await;
     let conn = raw_conn(temp.path()).await;
     seed_source(&conn, "wiki").await;
@@ -346,6 +365,7 @@ async fn undo_wave_dry_run_counts_without_writing() {
 /// Re-running against an already-undone wave yields all-zero counts.
 #[tokio::test]
 async fn undo_wave_is_idempotent() {
+    let _guard = libsql_test_guard();
     let (temp, engine) = temp_engine().await;
     let conn = raw_conn(temp.path()).await;
     seed_source(&conn, "wiki").await;
@@ -382,6 +402,7 @@ async fn undo_wave_is_idempotent() {
 /// A custom `resolved_by_label` targets that label instead of the default.
 #[tokio::test]
 async fn undo_wave_honors_custom_resolved_by_label() {
+    let _guard = libsql_test_guard();
     let (temp, engine) = temp_engine().await;
     let conn = raw_conn(temp.path()).await;
     let page_id = seed_page(&engine, "note/label").await;
@@ -410,6 +431,7 @@ async fn undo_wave_honors_custom_resolved_by_label() {
 /// surfaced as a warning (registered KNOWN-GAP).
 #[tokio::test]
 async fn undo_wave_gstack_scrub_is_skipped_with_warning() {
+    let _guard = libsql_test_guard();
     let (_temp, engine) = temp_engine().await;
 
     let mut o = opts("v1.0.0");

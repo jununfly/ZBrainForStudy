@@ -17,6 +17,20 @@ use zbrain_core::engine::{BrainEngine, EngineConfig};
 use zbrain_core::error::Result as ZbResult;
 use zbrain_core::libsql::LibsqlEngine;
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 async fn temp_engine() -> (NamedTempFile, LibsqlEngine) {
     let temp = NamedTempFile::new().expect("alloc temp db file");
     let path = temp.path().to_string_lossy().to_string();
@@ -91,6 +105,7 @@ impl MountResolver for StubMountResolver {
 // 1. Local-first: a local published profile wins even if a mount also has one.
 #[tokio::test]
 async fn cross_brain_local_first_wins_over_mount() {
+    let _guard = libsql_test_guard();
     let (local_temp, local) = temp_engine().await;
     let (mount_temp, _mount) = temp_engine().await;
     let local_conn = raw_conn(local_temp.path()).await;
@@ -131,6 +146,7 @@ async fn cross_brain_local_first_wins_over_mount() {
 // 2. Mount-fallback: no local profile → first published mount profile wins.
 #[tokio::test]
 async fn cross_brain_mount_fallback_when_local_empty() {
+    let _guard = libsql_test_guard();
     let (local_temp, local) = temp_engine().await;
     let (mount_temp, _mount) = temp_engine().await;
     let _local_conn = raw_conn(local_temp.path()).await; // local has NO profile
@@ -165,6 +181,7 @@ async fn cross_brain_mount_fallback_when_local_empty() {
 // 3. published=false is skipped: an unpublished mount profile yields None.
 #[tokio::test]
 async fn cross_brain_skips_unpublished_mount() {
+    let _guard = libsql_test_guard();
     let (local_temp, local) = temp_engine().await;
     let (mount_temp, _mount) = temp_engine().await;
     let _local_conn = raw_conn(local_temp.path()).await;
@@ -199,6 +216,7 @@ async fn cross_brain_skips_unpublished_mount() {
 // 4. Subagent gate: when mounts may not be read, mount fallback never runs.
 #[tokio::test]
 async fn cross_brain_subagent_cannot_read_mounts() {
+    let _guard = libsql_test_guard();
     let (local_temp, local) = temp_engine().await;
     let (mount_temp, _mount) = temp_engine().await;
     let _local_conn = raw_conn(local_temp.path()).await;

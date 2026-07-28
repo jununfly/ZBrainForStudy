@@ -10,6 +10,20 @@ use zbrain_core::engine::{BrainEngine, EngineConfig, GetPageOpts, PageInput};
 use zbrain_core::libsql::LibsqlEngine;
 use zbrain_core::InMemoryEngine;
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -58,6 +72,7 @@ async fn init_clean_libsql() -> (LibsqlEngine, NamedTempFile) {
 
 #[tokio::test]
 async fn inmem_touch_salience_bumps_timestamp() {
+    let _guard = libsql_test_guard();
     let engine = init_in_memory().await;
     seed_page(&engine, "alpha", "default").await;
 
@@ -70,6 +85,7 @@ async fn inmem_touch_salience_bumps_timestamp() {
 
 #[tokio::test]
 async fn inmem_touch_salience_returns_false_for_missing_page() {
+    let _guard = libsql_test_guard();
     let engine = init_in_memory().await;
     let result = engine.touch_salience("nonexistent", "default").await.expect("touch");
     assert!(!result, "should return false when page doesn't exist");
@@ -77,6 +93,7 @@ async fn inmem_touch_salience_returns_false_for_missing_page() {
 
 #[tokio::test]
 async fn inmem_touch_salience_returns_false_for_wrong_source() {
+    let _guard = libsql_test_guard();
     let engine = init_in_memory().await;
     seed_page(&engine, "beta", "src-a").await;
 
@@ -90,6 +107,7 @@ async fn inmem_touch_salience_returns_false_for_wrong_source() {
 
 #[tokio::test]
 async fn libsql_touch_salience_bumps_timestamp() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     seed_page(&engine, "alpha", "default").await;
 
@@ -102,6 +120,7 @@ async fn libsql_touch_salience_bumps_timestamp() {
 
 #[tokio::test]
 async fn libsql_touch_salience_returns_false_for_missing_page() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
 
     let result = engine.touch_salience("nonexistent", "default").await.expect("touch");
@@ -115,6 +134,7 @@ async fn libsql_touch_salience_returns_false_for_missing_page() {
 
 #[tokio::test]
 async fn inmem_get_recent_salience_returns_empty_for_fresh_brain() {
+    let _guard = libsql_test_guard();
     let engine = init_in_memory().await;
     let results = engine
         .get_recent_salience(14, 20, None)
@@ -125,6 +145,7 @@ async fn inmem_get_recent_salience_returns_empty_for_fresh_brain() {
 
 #[tokio::test]
 async fn inmem_get_recent_salience_includes_recent_pages() {
+    let _guard = libsql_test_guard();
     let engine = init_in_memory().await;
     seed_page(&engine, "recent", "default").await;
     seed_page(&engine, "old", "default").await;
@@ -141,6 +162,7 @@ async fn inmem_get_recent_salience_includes_recent_pages() {
 
 #[tokio::test]
 async fn inmem_get_recent_salience_respects_limit() {
+    let _guard = libsql_test_guard();
     let engine = init_in_memory().await;
     for i in 0..10 {
         seed_page(&engine, &format!("page_{i}"), "default").await;
@@ -156,6 +178,7 @@ async fn inmem_get_recent_salience_respects_limit() {
 
 #[tokio::test]
 async fn inmem_get_recent_salience_respects_slug_prefix() {
+    let _guard = libsql_test_guard();
     let engine = init_in_memory().await;
     seed_page(&engine, "wiki/foo", "default").await;
     seed_page(&engine, "wiki/bar", "default").await;
@@ -172,6 +195,7 @@ async fn inmem_get_recent_salience_respects_slug_prefix() {
 
 #[tokio::test]
 async fn inmem_get_recent_salience_sorts_by_score_desc() {
+    let _guard = libsql_test_guard();
     let engine = init_in_memory().await;
     seed_page(&engine, "low", "default").await;
     seed_page(&engine, "high", "default").await;
@@ -192,6 +216,7 @@ async fn inmem_get_recent_salience_sorts_by_score_desc() {
 
 #[tokio::test]
 async fn inmem_get_recent_salience_has_correct_fields() {
+    let _guard = libsql_test_guard();
     let engine = init_in_memory().await;
     seed_page(&engine, "check_fields", "default").await;
 
@@ -217,6 +242,7 @@ async fn inmem_get_recent_salience_has_correct_fields() {
 
 #[tokio::test]
 async fn libsql_get_recent_salience_returns_empty_for_fresh_brain() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
 
     let results = engine
@@ -229,6 +255,7 @@ async fn libsql_get_recent_salience_returns_empty_for_fresh_brain() {
 
 #[tokio::test]
 async fn libsql_get_recent_salience_includes_recent_pages() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     seed_page(&engine, "recent", "default").await;
     seed_page(&engine, "old", "default").await;
@@ -246,6 +273,7 @@ async fn libsql_get_recent_salience_includes_recent_pages() {
 
 #[tokio::test]
 async fn libsql_get_recent_salience_respects_limit() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     for i in 0..10 {
         seed_page(&engine, &format!("page_{i}"), "default").await;
@@ -262,6 +290,7 @@ async fn libsql_get_recent_salience_respects_limit() {
 
 #[tokio::test]
 async fn libsql_get_recent_salience_respects_slug_prefix() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     seed_page(&engine, "wiki/foo", "default").await;
     seed_page(&engine, "wiki/bar", "default").await;
@@ -279,6 +308,7 @@ async fn libsql_get_recent_salience_respects_slug_prefix() {
 
 #[tokio::test]
 async fn libsql_get_recent_salience_sorts_by_score_desc() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     seed_page(&engine, "low", "default").await;
     seed_page(&engine, "high", "default").await;
@@ -296,6 +326,7 @@ async fn libsql_get_recent_salience_sorts_by_score_desc() {
 
 #[tokio::test]
 async fn libsql_get_recent_salience_touch_affects_window() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     seed_page(&engine, "touched", "default").await;
 
@@ -317,6 +348,7 @@ async fn libsql_get_recent_salience_touch_affects_window() {
 
 #[tokio::test]
 async fn libsql_get_recent_salience_has_correct_fields() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     seed_page(&engine, "check_fields", "default").await;
 

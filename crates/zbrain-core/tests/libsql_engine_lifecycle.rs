@@ -14,6 +14,20 @@ use tempfile::NamedTempFile;
 use zbrain_core::engine::{BrainEngine, EngineConfig, EngineKind};
 use zbrain_core::libsql::LibsqlEngine;
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 /// Allocate a fresh temp file path. Returned `NamedTempFile` must outlive
 /// the engine — dropping it deletes the underlying file.
 fn temp_db() -> NamedTempFile {
@@ -22,12 +36,14 @@ fn temp_db() -> NamedTempFile {
 
 #[tokio::test]
 async fn kind_reports_libsql() {
+    let _guard = libsql_test_guard();
     let engine = LibsqlEngine::new();
     assert_eq!(engine.kind(), EngineKind::Libsql);
 }
 
 #[tokio::test]
 async fn connect_succeeds_against_local_file() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let engine = LibsqlEngine::new();
     let cfg = EngineConfig {
@@ -43,6 +59,7 @@ async fn connect_succeeds_against_local_file() {
 
 #[tokio::test]
 async fn connect_without_path_errors() {
+    let _guard = libsql_test_guard();
     let engine = LibsqlEngine::new();
     let cfg = EngineConfig::default();
     let result = engine.connect(&cfg).await;
@@ -54,6 +71,7 @@ async fn connect_without_path_errors() {
 
 #[tokio::test]
 async fn init_schema_creates_pages_and_sources_tables() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let path_str = path.path().to_string_lossy().into_owned();
 
@@ -119,6 +137,7 @@ async fn init_schema_creates_pages_and_sources_tables() {
 
 #[tokio::test]
 async fn init_schema_is_idempotent() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let engine = LibsqlEngine::new();
     let cfg = EngineConfig {
@@ -177,6 +196,7 @@ const SLICE_6A_TRIGGERS: &[&str] = &["bump_page_generation_insert", "bump_page_g
 
 #[tokio::test]
 async fn slice_6a_migration_adds_all_pages_columns() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let path_str = path.path().to_string_lossy().into_owned();
 
@@ -217,6 +237,7 @@ async fn slice_6a_migration_adds_all_pages_columns() {
 
 #[tokio::test]
 async fn slice_6a_migration_creates_all_indexes() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let path_str = path.path().to_string_lossy().into_owned();
 
@@ -259,6 +280,7 @@ async fn slice_6a_migration_creates_all_indexes() {
 
 #[tokio::test]
 async fn slice_6a_migration_creates_generation_triggers() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let path_str = path.path().to_string_lossy().into_owned();
 
@@ -301,6 +323,7 @@ async fn slice_6a_migration_creates_generation_triggers() {
 
 #[tokio::test]
 async fn slice_6a_generation_trigger_bumps_on_insert_and_update() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let path_str = path.path().to_string_lossy().into_owned();
 
@@ -433,6 +456,7 @@ async fn slice_6a_generation_trigger_bumps_on_insert_and_update() {
 
 #[tokio::test]
 async fn slice_6a_s3_migration_adds_salience_score_column() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let path_str = path.path().to_string_lossy().into_owned();
 
@@ -489,6 +513,7 @@ const SLICE_6A_S3_TRIGGER_COLUMNS: &[&str] = &[
 
 #[tokio::test]
 async fn slice_6a_s3_generation_trigger_covers_full_pg_allow_list() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let path_str = path.path().to_string_lossy().into_owned();
 
@@ -536,6 +561,7 @@ async fn slice_6a_s3_generation_trigger_covers_full_pg_allow_list() {
 
 #[tokio::test]
 async fn slice_6a_s3_trigger_bumps_on_type_and_skips_salience() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let path_str = path.path().to_string_lossy().into_owned();
 

@@ -7,6 +7,20 @@ use tempfile::NamedTempFile;
 use zbrain_core::engine::{BrainEngine, EngineConfig, GetPageOpts, InMemoryEngine, PageInput};
 use zbrain_core::libsql::LibsqlEngine;
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 fn assert_in_memory_iso8601_timestamp(ts: &str) {
     assert_eq!(ts.len(), "2026-01-01T00:00:00Z".len());
     assert_eq!(&ts[4..5], "-");
@@ -92,6 +106,7 @@ async fn fetch_libsql_deleted_at(
 
 #[tokio::test]
 async fn libsql_soft_delete_page_marks_live_row_and_returns_slug() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = init_clean_engine().await;
     seed_libsql_page(&tmp, "src-1", "live-slug", None).await;
 
@@ -113,6 +128,7 @@ async fn libsql_soft_delete_page_marks_live_row_and_returns_slug() {
 
 #[tokio::test]
 async fn libsql_soft_delete_page_returns_none_for_missing_or_already_deleted_rows() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = init_clean_engine().await;
     seed_libsql_page(
         &tmp,
@@ -146,6 +162,7 @@ async fn libsql_soft_delete_page_returns_none_for_missing_or_already_deleted_row
 
 #[tokio::test]
 async fn libsql_soft_delete_page_honors_source_id_filter() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = init_clean_engine().await;
     seed_libsql_page(&tmp, "src-1", "scoped-slug", None).await;
 
@@ -167,6 +184,7 @@ async fn libsql_soft_delete_page_honors_source_id_filter() {
 
 #[tokio::test]
 async fn in_memory_put_page_uses_current_timestamp_shape_not_old_sentinel() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::default();
     engine
         .connect(&EngineConfig::default())
@@ -194,6 +212,7 @@ async fn in_memory_put_page_uses_current_timestamp_shape_not_old_sentinel() {
 
 #[tokio::test]
 async fn in_memory_soft_delete_page_matches_libsql_contract() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::default();
     engine
         .connect(&EngineConfig::default())
@@ -295,6 +314,7 @@ async fn pg_fetch_deleted_at(
 
 #[tokio::test]
 async fn postgres_soft_delete_page_marks_live_row_and_returns_slug() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     let engine = &fix.engine;
     pg_seed_source(&fix.url, "src-1").await;
@@ -329,6 +349,7 @@ async fn postgres_soft_delete_page_marks_live_row_and_returns_slug() {
 
 #[tokio::test]
 async fn postgres_soft_delete_page_returns_none_for_missing_or_already_deleted_rows() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     let engine = &fix.engine;
     pg_seed_source(&fix.url, "src-1").await;
@@ -380,6 +401,7 @@ async fn postgres_soft_delete_page_returns_none_for_missing_or_already_deleted_r
 
 #[tokio::test]
 async fn postgres_soft_delete_page_honors_source_id_filter() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     let engine = &fix.engine;
     pg_seed_source(&fix.url, "src-1").await;

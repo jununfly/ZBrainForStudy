@@ -16,6 +16,20 @@ use zbrain_core::types::PageKind;
 mod support;
 use support::pg_fixture::PgFixture;
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 /// Fresh LibsqlEngine backed by a temp file.
 async fn temp_engine() -> (NamedTempFile, LibsqlEngine) {
     let temp = NamedTempFile::new().expect("alloc temp db file");
@@ -90,6 +104,7 @@ async fn seed_chunk(
 /// by `find_code_def`, joined to its page slug + `frontmatter->>'file'`.
 #[tokio::test]
 async fn libsql_find_code_def_returns_definition() {
+    let _guard = libsql_test_guard();
     let (temp, engine) = temp_engine().await;
     let page_id = seed_code_page(&engine, "foo", "src/foo.rs").await;
     seed_chunk(
@@ -124,6 +139,7 @@ async fn libsql_find_code_def_returns_definition() {
 /// chunk store joined to code-kind pages and returns the definition.
 #[tokio::test]
 async fn inmemory_find_code_def_returns_definition() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::new();
     engine
         .put_page(
@@ -175,6 +191,7 @@ async fn inmemory_find_code_def_returns_definition() {
 /// (substring / case-insensitive), restricted to code pages.
 #[tokio::test]
 async fn libsql_find_code_refs_returns_references() {
+    let _guard = libsql_test_guard();
     let (temp, engine) = temp_engine().await;
     let page_id = seed_code_page(&engine, "bar", "src/bar.rs").await;
     seed_chunk(
@@ -205,6 +222,7 @@ async fn libsql_find_code_refs_returns_references() {
 /// InMemory mirror of the refs query.
 #[tokio::test]
 async fn inmemory_find_code_refs_returns_references() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::new();
     engine
         .put_page(
@@ -253,6 +271,7 @@ async fn inmemory_find_code_refs_returns_references() {
 /// a usage-site chunk (e.g. `local`) with the same `symbol_name` is excluded.
 #[tokio::test]
 async fn libsql_find_code_def_excludes_non_def_symbol_type() {
+    let _guard = libsql_test_guard();
     let (temp, engine) = temp_engine().await;
     let page_id = seed_code_page(&engine, "foo", "src/foo.rs").await;
     seed_chunk(temp.path(), page_id, "fn render() {}", "Rust", "render", "function", 10, 20).await;
@@ -269,6 +288,7 @@ async fn libsql_find_code_def_excludes_non_def_symbol_type() {
 /// `find_code_def` ignores symbols on non-code pages (`page_kind != 'code'`).
 #[tokio::test]
 async fn libsql_find_code_def_excludes_non_code_pages() {
+    let _guard = libsql_test_guard();
     let (temp, engine) = temp_engine().await;
     // Markdown page with the same symbol_name + def type → must be skipped.
     let md = engine
@@ -295,6 +315,7 @@ async fn libsql_find_code_def_excludes_non_code_pages() {
 /// `--lang` restricts both def and refs to a single language.
 #[tokio::test]
 async fn libsql_find_code_def_language_filter() {
+    let _guard = libsql_test_guard();
     let (temp, engine) = temp_engine().await;
     let page_id = seed_code_page(&engine, "foo", "src/foo.rs").await;
     seed_chunk(temp.path(), page_id, "fn render() {}", "Rust", "render", "function", 10, 20).await;
@@ -318,6 +339,7 @@ async fn libsql_find_code_def_language_filter() {
 /// smaller start_line (deterministic type-rank ordering, mirroring TS).
 #[tokio::test]
 async fn libsql_find_code_def_orders_by_type_rank() {
+    let _guard = libsql_test_guard();
     let (temp, engine) = temp_engine().await;
     let page_id = seed_code_page(&engine, "foo", "src/foo.rs").await;
     // Same symbol_name "render", two def kinds. Class has the smaller line
@@ -378,6 +400,7 @@ async fn pg_seed_chunk(
 
 #[tokio::test]
 async fn postgres_find_code_def_returns_definition() {
+    let _guard = libsql_test_guard();
     let fix = PgFixture::start().await;
     let page = fix
         .engine
@@ -421,6 +444,7 @@ async fn postgres_find_code_def_returns_definition() {
 
 #[tokio::test]
 async fn postgres_find_code_refs_returns_references() {
+    let _guard = libsql_test_guard();
     let fix = PgFixture::start().await;
     let page = fix
         .engine

@@ -88,6 +88,7 @@ async fn seed_sources(path: &std::path::Path, ids: &[&str]) {
 
 #[tokio::test]
 async fn libsql_get_callers_of_unions_resolved_and_unresolved() {
+    let _guard = libsql_test_guard();
     let (temp, engine) = temp_engine().await;
     seed_chunks(temp.path(), &[1, 2, 3]).await;
     seed_sources(temp.path(), &["s1"]).await;
@@ -117,6 +118,7 @@ async fn libsql_get_callers_of_unions_resolved_and_unresolved() {
 
 #[tokio::test]
 async fn libsql_get_callees_of_matches_from_symbol() {
+    let _guard = libsql_test_guard();
     let (temp, engine) = temp_engine().await;
     seed_chunks(temp.path(), &[1, 2, 3, 4, 5]).await;
 
@@ -141,6 +143,7 @@ async fn libsql_get_callees_of_matches_from_symbol() {
 
 #[tokio::test]
 async fn libsql_get_edges_by_chunk_direction_and_type() {
+    let _guard = libsql_test_guard();
     let (temp, engine) = temp_engine().await;
     seed_chunks(temp.path(), &[10, 20, 30]).await;
 
@@ -214,6 +217,20 @@ async fn libsql_get_edges_by_chunk_direction_and_type() {
 mod support;
 use support::pg_fixture::PgFixture;
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 /// Seed a source row (satisfies `code_edges_chunk.source_id` FK) and the
 /// referenced `content_chunks` rows (satisfies `code_edges_chunk.from_chunk_id`
 /// / `to_chunk_id` FK). Postgres enforces these; libsql does not by default.
@@ -244,6 +261,7 @@ async fn pg_seed_chunks(url: &str, source_id: &str, chunk_ids: &[i64]) {
 
 #[tokio::test]
 async fn postgres_get_callers_of_unions_resolved_and_unresolved() {
+    let _guard = libsql_test_guard();
     let fix = PgFixture::start().await;
     pg_seed_chunks(&fix.url, "s1", &[1, 2, 3]).await;
 
@@ -270,6 +288,7 @@ async fn postgres_get_callers_of_unions_resolved_and_unresolved() {
 
 #[tokio::test]
 async fn postgres_get_edges_by_chunk_direction_and_type() {
+    let _guard = libsql_test_guard();
     let fix = PgFixture::start().await;
     pg_seed_chunks(&fix.url, "s1", &[10, 20, 30]).await;
 

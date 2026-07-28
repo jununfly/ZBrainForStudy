@@ -11,6 +11,20 @@ use zbrain_core::libsql::LibsqlEngine;
 use zbrain_core::types::LinkBatchInput;
 use zbrain_core::InMemoryEngine;
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -201,18 +215,21 @@ async fn run_adjacency_boosts_full(engine: &dyn BrainEngine) {
 
 #[tokio::test]
 async fn inmem_adjacency_boosts_empty_and_no_links() {
+    let _guard = libsql_test_guard();
     let engine = init_in_memory().await;
     run_adjacency_boosts_contract(&engine).await;
 }
 
 #[tokio::test]
 async fn inmem_adjacency_boosts_reciprocal() {
+    let _guard = libsql_test_guard();
     let engine = init_in_memory().await;
     run_adjacency_boosts_full(&engine).await;
 }
 
 #[tokio::test]
 async fn inmem_adjacency_boosts_many_to_one() {
+    let _guard = libsql_test_guard();
     let engine = init_in_memory().await;
     let a = seed_and_get(&engine, "alpha", Some("default")).await;
     let b = seed_and_get(&engine, "bravo", Some("default")).await;
@@ -239,6 +256,7 @@ async fn inmem_adjacency_boosts_many_to_one() {
 
 #[tokio::test]
 async fn inmem_adjacency_boosts_cross_source() {
+    let _guard = libsql_test_guard();
     let engine = init_in_memory().await;
     seed_source(&engine, "source-one").await;
     seed_source(&engine, "source-two").await;
@@ -267,6 +285,7 @@ async fn inmem_adjacency_boosts_cross_source() {
 
 #[tokio::test]
 async fn inmem_adjacency_boosts_same_source_exclusion() {
+    let _guard = libsql_test_guard();
     let engine = init_in_memory().await;
     seed_source(&engine, "team-src").await;
     let a = seed_and_get(&engine, "a-same", Some("team-src")).await;
@@ -289,6 +308,7 @@ async fn inmem_adjacency_boosts_same_source_exclusion() {
 
 #[tokio::test]
 async fn inmem_adjacency_boosts_not_in_input_filtered() {
+    let _guard = libsql_test_guard();
     let engine = init_in_memory().await;
     let a = seed_and_get(&engine, "a-filter", Some("default")).await;
     let _d = seed_and_get(&engine, "d-filter", Some("default")).await;
@@ -308,6 +328,7 @@ async fn inmem_adjacency_boosts_not_in_input_filtered() {
 
 #[tokio::test]
 async fn inmem_adjacency_boosts_chain_topology() {
+    let _guard = libsql_test_guard();
     let engine = init_in_memory().await;
     let a = seed_and_get(&engine, "a-chain", Some("default")).await;
     let b = seed_and_get(&engine, "b-chain", Some("default")).await;
@@ -335,6 +356,7 @@ async fn inmem_adjacency_boosts_chain_topology() {
 
 #[tokio::test]
 async fn inmem_adjacency_boosts_mixed_cross_source() {
+    let _guard = libsql_test_guard();
     let engine = init_in_memory().await;
     seed_source(&engine, "s1").await;
     seed_source(&engine, "s3").await;
@@ -363,6 +385,7 @@ async fn inmem_adjacency_boosts_mixed_cross_source() {
 
 #[tokio::test]
 async fn inmem_adjacency_boosts_null_source_coalesced() {
+    let _guard = libsql_test_guard();
     let engine = init_in_memory().await;
     let a = seed_and_get(&engine, "a-null", None).await;
     let b = seed_and_get(&engine, "b-null", None).await;
@@ -388,18 +411,21 @@ async fn inmem_adjacency_boosts_null_source_coalesced() {
 
 #[tokio::test]
 async fn libsql_adjacency_boosts_empty_and_no_links() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     run_adjacency_boosts_contract(&engine).await;
 }
 
 #[tokio::test]
 async fn libsql_adjacency_boosts_reciprocal() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     run_adjacency_boosts_full(&engine).await;
 }
 
 #[tokio::test]
 async fn libsql_adjacency_boosts_many_to_one() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     let a = seed_and_get(&engine, "alpha", Some("default")).await;
     let b = seed_and_get(&engine, "bravo", Some("default")).await;
@@ -426,6 +452,7 @@ async fn libsql_adjacency_boosts_many_to_one() {
 
 #[tokio::test]
 async fn libsql_adjacency_boosts_cross_source() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     seed_source(&engine, "source-one").await;
     seed_source(&engine, "source-two").await;
@@ -454,6 +481,7 @@ async fn libsql_adjacency_boosts_cross_source() {
 
 #[tokio::test]
 async fn libsql_adjacency_boosts_same_source_exclusion() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     seed_source(&engine, "team-src").await;
     let a = seed_and_get(&engine, "a-se", Some("team-src")).await;
@@ -476,6 +504,7 @@ async fn libsql_adjacency_boosts_same_source_exclusion() {
 
 #[tokio::test]
 async fn libsql_adjacency_boosts_not_in_input_filtered() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     let a = seed_and_get(&engine, "a-filt", Some("default")).await;
     let _d = seed_and_get(&engine, "d-filt", Some("default")).await;
@@ -495,6 +524,7 @@ async fn libsql_adjacency_boosts_not_in_input_filtered() {
 
 #[tokio::test]
 async fn libsql_adjacency_boosts_chain_topology() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     let a = seed_and_get(&engine, "a-chain", Some("default")).await;
     let b = seed_and_get(&engine, "b-chain", Some("default")).await;
@@ -522,6 +552,7 @@ async fn libsql_adjacency_boosts_chain_topology() {
 
 #[tokio::test]
 async fn libsql_adjacency_boosts_mixed_cross_source() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     seed_source(&engine, "s1").await;
     seed_source(&engine, "s3").await;
@@ -549,6 +580,7 @@ async fn libsql_adjacency_boosts_mixed_cross_source() {
 
 #[tokio::test]
 async fn libsql_adjacency_boosts_null_source_coalesced() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     let a = seed_and_get(&engine, "a-null", None).await;
     let b = seed_and_get(&engine, "b-null", None).await;
@@ -574,6 +606,7 @@ async fn libsql_adjacency_boosts_null_source_coalesced() {
 
 #[tokio::test]
 async fn inmem_traverse_paths_single_hop_forward() {
+    let _guard = libsql_test_guard();
     let engine = init_in_memory().await;
     seed_page(&engine, "start").await;
     seed_page(&engine, "target").await;
@@ -597,6 +630,7 @@ async fn inmem_traverse_paths_single_hop_forward() {
 
 #[tokio::test]
 async fn inmem_traverse_paths_chain_depth_2() {
+    let _guard = libsql_test_guard();
     let engine = init_in_memory().await;
     seed_page(&engine, "a").await;
     seed_page(&engine, "b").await;
@@ -627,6 +661,7 @@ async fn inmem_traverse_paths_chain_depth_2() {
 
 #[tokio::test]
 async fn inmem_traverse_paths_depth_0_returns_empty() {
+    let _guard = libsql_test_guard();
     let engine = init_in_memory().await;
     seed_page(&engine, "a").await;
     seed_page(&engine, "b").await;
@@ -646,6 +681,7 @@ async fn inmem_traverse_paths_depth_0_returns_empty() {
 
 #[tokio::test]
 async fn inmem_traverse_paths_reverse_direction() {
+    let _guard = libsql_test_guard();
     let engine = init_in_memory().await;
     seed_page(&engine, "a").await;
     seed_page(&engine, "b").await;
@@ -669,6 +705,7 @@ async fn inmem_traverse_paths_reverse_direction() {
 
 #[tokio::test]
 async fn inmem_traverse_paths_both_directions() {
+    let _guard = libsql_test_guard();
     let engine = init_in_memory().await;
     seed_page(&engine, "center").await;
     seed_page(&engine, "left").await;
@@ -693,6 +730,7 @@ async fn inmem_traverse_paths_both_directions() {
 
 #[tokio::test]
 async fn inmem_traverse_paths_unknown_slug_returns_empty() {
+    let _guard = libsql_test_guard();
     let engine = init_in_memory().await;
     let paths = engine
         .traverse_paths("nonexistent", Some(1), None, None, Some("default"), None)
@@ -703,6 +741,7 @@ async fn inmem_traverse_paths_unknown_slug_returns_empty() {
 
 #[tokio::test]
 async fn inmem_traverse_paths_link_type_filter() {
+    let _guard = libsql_test_guard();
     let engine = init_in_memory().await;
     seed_page(&engine, "a").await;
     seed_page(&engine, "b").await;
@@ -729,6 +768,7 @@ async fn inmem_traverse_paths_link_type_filter() {
 
 #[tokio::test]
 async fn inmem_traverse_paths_respects_depth_limit() {
+    let _guard = libsql_test_guard();
     let engine = init_in_memory().await;
     seed_page(&engine, "d0").await;
     seed_page(&engine, "d1").await;
@@ -769,6 +809,7 @@ async fn inmem_traverse_paths_respects_depth_limit() {
 
 #[tokio::test]
 async fn libsql_traverse_paths_single_hop_forward() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     seed_page(&engine, "start").await;
     seed_page(&engine, "target").await;
@@ -792,6 +833,7 @@ async fn libsql_traverse_paths_single_hop_forward() {
 
 #[tokio::test]
 async fn libsql_traverse_paths_chain_depth_2() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     seed_page(&engine, "a").await;
     seed_page(&engine, "b").await;
@@ -827,6 +869,7 @@ async fn libsql_traverse_paths_chain_depth_2() {
 
 #[tokio::test]
 async fn libsql_traverse_paths_depth_zero_returns_empty() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     seed_page(&engine, "a").await;
     seed_page(&engine, "b").await;
@@ -846,6 +889,7 @@ async fn libsql_traverse_paths_depth_zero_returns_empty() {
 
 #[tokio::test]
 async fn libsql_traverse_paths_reverse_direction() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     seed_page(&engine, "a").await;
     seed_page(&engine, "b").await;
@@ -867,6 +911,7 @@ async fn libsql_traverse_paths_reverse_direction() {
 
 #[tokio::test]
 async fn libsql_traverse_paths_both_directions() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     seed_page(&engine, "center").await;
     seed_page(&engine, "left").await;
@@ -890,6 +935,7 @@ async fn libsql_traverse_paths_both_directions() {
 
 #[tokio::test]
 async fn libsql_traverse_paths_unknown_slug_returns_empty() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     let paths = engine
         .traverse_paths("nonexistent", Some(1), None, None, Some("default"), None)
@@ -900,6 +946,7 @@ async fn libsql_traverse_paths_unknown_slug_returns_empty() {
 
 #[tokio::test]
 async fn libsql_traverse_paths_link_type_filter() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     seed_page(&engine, "a").await;
     seed_page(&engine, "b").await;
@@ -925,6 +972,7 @@ async fn libsql_traverse_paths_link_type_filter() {
 
 #[tokio::test]
 async fn libsql_traverse_paths_respects_depth_limit() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     seed_page(&engine, "d0").await;
     seed_page(&engine, "d1").await;

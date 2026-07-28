@@ -40,6 +40,20 @@ use tempfile::NamedTempFile;
 use zbrain_core::engine::{BrainEngine, EngineConfig, PageFilters, PageInput, PageSort};
 use zbrain_core::libsql::LibsqlEngine;
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 /// Build a connected, schema-initialized engine on a fresh temp file.
 async fn init_clean_engine() -> (LibsqlEngine, NamedTempFile) {
     let path = NamedTempFile::new().expect("alloc temp db file");
@@ -75,6 +89,7 @@ fn topic_input(title: &str, body: &str) -> PageInput {
 
 #[tokio::test]
 async fn list_pages_projects_all_30_columns() {
+    let _guard = libsql_test_guard();
     // A single row inserted via `put_page` should come back with non-default
     // 30-column fields.  Specifically we assert on columns that the 7-col stub
     // always leaves at `Default::default()`:
@@ -129,6 +144,7 @@ async fn list_pages_projects_all_30_columns() {
 
 #[tokio::test]
 async fn list_pages_filters_by_page_type() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     engine
         .put_page("note-a", None, &note_input("NoteA", "n"))
@@ -173,6 +189,7 @@ async fn list_pages_filters_by_page_type() {
 
 #[tokio::test]
 async fn list_pages_respects_limit() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     for i in 0..5 {
         engine
@@ -210,6 +227,7 @@ async fn list_pages_respects_limit() {
 
 #[tokio::test]
 async fn list_pages_respects_offset() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     for i in 0..5 {
         engine
@@ -254,6 +272,7 @@ async fn list_pages_respects_offset() {
 
 #[tokio::test]
 async fn list_pages_excludes_soft_deleted_by_default() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     engine
         .put_page("alive", None, &note_input("Alive", "b"))
@@ -289,6 +308,7 @@ async fn list_pages_excludes_soft_deleted_by_default() {
 
 #[tokio::test]
 async fn list_pages_includes_soft_deleted_when_flag_set() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     engine
         .put_page("alive", None, &note_input("Alive", "b"))
@@ -333,6 +353,7 @@ async fn list_pages_includes_soft_deleted_when_flag_set() {
 
 #[tokio::test]
 async fn list_pages_sort_by_updated_desc_default() {
+    let _guard = libsql_test_guard();
     // Insert pages, then verify that the default sort (UpdatedDesc) returns
     // them with the most-recently-updated first.  We insert in order and
     // rely on the auto-timestamp to give each row a distinct updated_at.
@@ -377,6 +398,7 @@ async fn list_pages_sort_by_updated_desc_default() {
 
 #[tokio::test]
 async fn list_pages_sort_by_slug_asc() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     engine
         .put_page("charlie", None, &note_input("C", "b"))
@@ -413,6 +435,7 @@ async fn list_pages_sort_by_slug_asc() {
 
 #[tokio::test]
 async fn list_pages_combined_page_type_limit_offset_sort() {
+    let _guard = libsql_test_guard();
     // Insert 2 notes + 2 topics, filter to notes, apply limit + offset + sort
     let (engine, _tmp) = init_clean_engine().await;
     engine
@@ -466,6 +489,7 @@ async fn list_pages_combined_page_type_limit_offset_sort() {
 
 #[tokio::test]
 async fn list_pages_filters_by_slug_prefix() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     engine
         .put_page("docs/readme", None, &note_input("Readme", "b"))
@@ -529,6 +553,7 @@ async fn list_pages_filters_by_slug_prefix() {
 
 #[tokio::test]
 async fn list_pages_filters_by_source_id() {
+    let _guard = libsql_test_guard();
     // `put_page` always inserts source_id = 'default' (schema default).
     // To test source_id filtering we need rows with different source_ids,
     // so we inject them via a raw libsql connection on the same file.
@@ -607,6 +632,7 @@ async fn list_pages_filters_by_source_id() {
 
 #[tokio::test]
 async fn list_pages_filters_by_source_ids() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = init_clean_engine().await;
 
     // Insert default row via put_page
@@ -702,6 +728,7 @@ async fn list_pages_filters_by_source_ids() {
 
 #[tokio::test]
 async fn list_pages_non_empty_source_ids_take_precedence_over_source_id() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = init_clean_engine().await;
 
     engine
@@ -767,6 +794,7 @@ async fn list_pages_non_empty_source_ids_take_precedence_over_source_id() {
 
 #[tokio::test]
 async fn list_pages_empty_source_ids_falls_back_to_source_id() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = init_clean_engine().await;
 
     engine
@@ -819,6 +847,7 @@ async fn list_pages_empty_source_ids_falls_back_to_source_id() {
 
 #[tokio::test]
 async fn list_pages_filters_by_updated_after() {
+    let _guard = libsql_test_guard();
     // SQLite CURRENT_TIMESTAMP is second-precision. We insert a row,
     // capture its updated_at, sleep 1.1s, insert another, then filter
     // by the first row's timestamp to isolate the second.
@@ -905,6 +934,7 @@ async fn raw_conn_for(tmp: &NamedTempFile) -> (::libsql::Database, ::libsql::Con
 
 #[tokio::test]
 async fn schema_creates_page_tags_table() {
+    let _guard = libsql_test_guard();
     // Verify that init_schema creates the `page_tags` table.
     let (engine, tmp) = init_clean_engine().await;
 
@@ -929,6 +959,7 @@ async fn schema_creates_page_tags_table() {
 
 #[tokio::test]
 async fn schema_page_tags_composite_pk() {
+    let _guard = libsql_test_guard();
     // Verify that (page_id, tag) composite PK prevents duplicate entries.
     let (engine, tmp) = init_clean_engine().await;
 
@@ -982,6 +1013,7 @@ async fn schema_page_tags_composite_pk() {
 
 #[tokio::test]
 async fn schema_page_tags_cascade_on_page_delete() {
+    let _guard = libsql_test_guard();
     // Verify ON DELETE CASCADE: deleting a page removes its page_tags rows.
     // This requires PRAGMA foreign_keys = ON, which conn() now enforces.
     let (engine, tmp) = init_clean_engine().await;
@@ -1035,6 +1067,7 @@ async fn schema_page_tags_cascade_on_page_delete() {
 
 #[tokio::test]
 async fn list_pages_filters_by_tag_basic() {
+    let _guard = libsql_test_guard();
     // Basic tag filter: only pages with the specified tag should appear.
     let (engine, tmp) = init_clean_engine().await;
 
@@ -1081,6 +1114,7 @@ async fn list_pages_filters_by_tag_basic() {
 
 #[tokio::test]
 async fn list_pages_tag_filter_excludes_others() {
+    let _guard = libsql_test_guard();
     // Page with tag 'ai' should NOT appear when filtering for tag 'rust'.
     let (engine, tmp) = init_clean_engine().await;
 
@@ -1130,6 +1164,7 @@ async fn list_pages_tag_filter_excludes_others() {
 
 #[tokio::test]
 async fn list_pages_tag_filter_no_dup_multi_tags() {
+    let _guard = libsql_test_guard();
     // A page with 3 tags should still appear exactly once when filtering
     // for any one of those tags — composite PK + single-tag exact match
     // guarantees at most 1 matching row per page, so JOIN produces no dups.
@@ -1177,6 +1212,7 @@ async fn list_pages_tag_filter_no_dup_multi_tags() {
 
 #[tokio::test]
 async fn list_pages_tag_filter_unknown_tag() {
+    let _guard = libsql_test_guard();
     // Filtering by a tag that no page has → empty result.
     let (engine, tmp) = init_clean_engine().await;
 
@@ -1217,6 +1253,7 @@ async fn list_pages_tag_filter_unknown_tag() {
 
 #[tokio::test]
 async fn list_pages_tag_filter_combines_page_type() {
+    let _guard = libsql_test_guard();
     // tag + page_type AND: only pages matching BOTH should appear.
     let (engine, tmp) = init_clean_engine().await;
 
@@ -1267,6 +1304,7 @@ async fn list_pages_tag_filter_combines_page_type() {
 
 #[tokio::test]
 async fn list_pages_tag_filter_with_include_deleted() {
+    let _guard = libsql_test_guard();
     // Tag filter should respect include_deleted semantics:
     // soft-deleted page should be excluded by default, included when flagged.
     let (engine, tmp) = init_clean_engine().await;
@@ -1333,6 +1371,7 @@ async fn list_pages_tag_filter_with_include_deleted() {
 
 #[tokio::test]
 async fn list_pages_tag_filter_with_limit_offset() {
+    let _guard = libsql_test_guard();
     // Tag filter + limit/offset: pagination works on tag-filtered results.
     let (engine, tmp) = init_clean_engine().await;
 

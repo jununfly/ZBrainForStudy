@@ -23,6 +23,20 @@ use zbrain_core::libsql::LibsqlEngine;
 use zbrain_core::whoknows::{find_experts, FindExpertsOpts};
 use zbrain_core::PageKind;
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 fn temp_db() -> NamedTempFile {
     NamedTempFile::new().expect("alloc temp db file")
 }
@@ -66,6 +80,7 @@ fn page(page_type: &str, title: &str, body: &str, effective_date: Option<&str>) 
 /// `get_health` before 1-6-4-5: a trait default that errors at runtime).
 #[tokio::test]
 async fn empty_brain_returns_empty() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let engine = connected_engine(&path).await;
     let out = find_experts(
@@ -85,6 +100,7 @@ async fn empty_brain_returns_empty() {
 /// candidate budget goes to routable pages, not transcripts.
 #[tokio::test]
 async fn type_filter_excludes_non_person_company() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let engine = connected_engine(&path).await;
 
@@ -142,6 +158,7 @@ async fn type_filter_excludes_non_person_company() {
 /// `["company"]` keeps only companies.
 #[tokio::test]
 async fn explicit_types_override_default() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let engine = connected_engine(&path).await;
 
@@ -176,6 +193,7 @@ async fn explicit_types_override_default() {
 /// into the ranker on the production backend.
 #[tokio::test]
 async fn recency_orders_equally_relevant_experts() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let engine = connected_engine(&path).await;
 
@@ -220,6 +238,7 @@ async fn recency_orders_equally_relevant_experts() {
 /// The `limit` is honored end-to-end (candidate over-fetch → rank → truncate).
 #[tokio::test]
 async fn limit_truncates_ranked_output() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let engine = connected_engine(&path).await;
 
@@ -252,6 +271,7 @@ async fn limit_truncates_ranked_output() {
 /// A topic that matches nothing returns empty (not the full person list).
 #[tokio::test]
 async fn no_topic_match_returns_empty() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let engine = connected_engine(&path).await;
     engine

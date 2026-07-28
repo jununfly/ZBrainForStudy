@@ -21,6 +21,20 @@ use tempfile::NamedTempFile;
 use zbrain_core::engine::{BrainEngine, EngineConfig, PageFilters, PageInput};
 use zbrain_core::libsql::LibsqlEngine;
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 async fn init_clean_engine() -> (LibsqlEngine, NamedTempFile) {
     let path = NamedTempFile::new().expect("alloc temp db file");
     let engine = LibsqlEngine::new();
@@ -66,6 +80,7 @@ async fn seed_source(tmp: &NamedTempFile, id: &str) {
 
 #[tokio::test]
 async fn put_page_with_some_source_id_writes_that_value() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = init_clean_engine().await;
     seed_source(&tmp, "notion").await;
     let inserted = engine
@@ -83,6 +98,7 @@ async fn put_page_with_some_source_id_writes_that_value() {
 
 #[tokio::test]
 async fn put_page_with_none_source_id_normalises_to_default() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     let inserted = engine
         .put_page("beta", None, &note_input("Beta", "body-2"))
@@ -99,6 +115,7 @@ async fn put_page_with_none_source_id_normalises_to_default() {
 
 #[tokio::test]
 async fn put_page_same_slug_different_source_ids_produces_two_rows() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = init_clean_engine().await;
     seed_source(&tmp, "src-a").await;
     seed_source(&tmp, "src-b").await;
@@ -140,6 +157,7 @@ async fn put_page_same_slug_different_source_ids_produces_two_rows() {
 
 #[tokio::test]
 async fn put_page_same_slug_same_source_id_updates_in_place() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = init_clean_engine().await;
     seed_source(&tmp, "notion").await;
 

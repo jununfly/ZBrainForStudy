@@ -14,6 +14,20 @@ use tempfile::NamedTempFile;
 use zbrain_core::engine::{BrainEngine, EngineConfig, PageInput};
 use zbrain_core::libsql::LibsqlEngine;
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 async fn init_clean_engine() -> (LibsqlEngine, NamedTempFile) {
     let path = NamedTempFile::new().expect("alloc temp db file");
     let engine = LibsqlEngine::new();
@@ -66,6 +80,7 @@ fn note_input(title: &str, body: &str) -> PageInput {
 
 #[tokio::test]
 async fn libsql_get_all_slugs_returns_every_slug_across_sources() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = init_clean_engine().await;
     libsql_seed_source(&tmp, "src-1").await;
     libsql_seed_source(&tmp, "src-2").await;
@@ -91,6 +106,7 @@ async fn libsql_get_all_slugs_returns_every_slug_across_sources() {
 
 #[tokio::test]
 async fn libsql_get_all_slugs_filters_by_source_id_when_provided() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = init_clean_engine().await;
     libsql_seed_source(&tmp, "src-1").await;
     libsql_seed_source(&tmp, "src-2").await;
@@ -116,6 +132,7 @@ async fn libsql_get_all_slugs_filters_by_source_id_when_provided() {
 
 #[tokio::test]
 async fn libsql_get_all_slugs_includes_soft_deleted_rows() {
+    let _guard = libsql_test_guard();
     // TS parity: `pglite-engine.ts` L1071-1086 does NOT filter
     // `deleted_at IS NULL`. libsql must keep the same quirk so analytics
     // queries see every slug ever written (PG-advanced-reads R1/R2).
@@ -153,6 +170,7 @@ async fn libsql_get_all_slugs_includes_soft_deleted_rows() {
 
 #[tokio::test]
 async fn libsql_get_all_slugs_returns_empty_set_when_no_rows_match() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = init_clean_engine().await;
     let empty = engine
         .get_all_slugs(None)
@@ -203,6 +221,7 @@ async fn pg_seed_source(url: &str, id: &str) {
 
 #[tokio::test]
 async fn postgres_get_all_slugs_returns_every_slug_across_sources() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     let engine = &fix.engine;
     pg_seed_source(&fix.url, "src-1").await;
@@ -237,6 +256,7 @@ async fn postgres_get_all_slugs_returns_every_slug_across_sources() {
 
 #[tokio::test]
 async fn postgres_get_all_slugs_filters_by_source_id_when_provided() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     let engine = &fix.engine;
     pg_seed_source(&fix.url, "src-1").await;
@@ -271,6 +291,7 @@ async fn postgres_get_all_slugs_filters_by_source_id_when_provided() {
 
 #[tokio::test]
 async fn postgres_get_all_slugs_includes_soft_deleted_rows() {
+    let _guard = libsql_test_guard();
     // TS `pglite-engine.ts` L1071-1086 does NOT filter `deleted_at IS NULL`;
     // PG mirror must keep that quirk so analytics queries see every slug
     // ever written (logged as PG-advanced-reads R1/R2 in plan §11.1).
@@ -322,6 +343,7 @@ async fn postgres_get_all_slugs_includes_soft_deleted_rows() {
 
 #[tokio::test]
 async fn postgres_get_all_slugs_returns_empty_set_when_no_rows_match() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     let engine = &fix.engine;
     let empty = engine

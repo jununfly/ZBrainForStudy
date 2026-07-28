@@ -20,6 +20,20 @@ use tempfile::NamedTempFile;
 use zbrain_core::engine::{BrainEngine, EngineConfig, PageInput};
 use zbrain_core::libsql::LibsqlEngine;
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 /// Build a connected, schema-initialized engine on a fresh temp file.
 /// Returns `(engine, NamedTempFile)` so the caller can keep the temp file
 /// alive for the duration of the test — dropping it deletes the DB.
@@ -50,6 +64,7 @@ fn note_input(title: &str, body: &str) -> PageInput {
 
 #[tokio::test]
 async fn s6t7_add_tag_succeeds_on_existing_page() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     engine
         .put_page("alpha", None, &note_input("Alpha", "body"))
@@ -67,6 +82,7 @@ async fn s6t7_add_tag_succeeds_on_existing_page() {
 
 #[tokio::test]
 async fn s6t7_add_tag_idempotent_on_duplicate() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     engine
         .put_page("beta", None, &note_input("Beta", "body"))
@@ -91,6 +107,7 @@ async fn s6t7_add_tag_idempotent_on_duplicate() {
 
 #[tokio::test]
 async fn s6t7_add_tag_page_not_found_returns_error() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     let err = engine
         .add_tag("ghost", "rust", None)
@@ -110,6 +127,7 @@ async fn s6t7_add_tag_page_not_found_returns_error() {
 
 #[tokio::test]
 async fn s6t7_add_tag_with_explicit_source_id() {
+    let _guard = libsql_test_guard();
     // put_page currently hard-codes source_id='default'. We use add_tag
     // with source_id=Some("default") which must match. A non-default
     // source must produce PageNotFound because no such page row exists.
@@ -146,6 +164,7 @@ async fn s6t7_add_tag_with_explicit_source_id() {
 
 #[tokio::test]
 async fn s6t7_add_tag_none_equivalent_to_default() {
+    let _guard = libsql_test_guard();
     // `None` and `Some("default")` must be semantically identical.
     let (engine, _tmp) = init_clean_engine().await;
     engine
@@ -174,6 +193,7 @@ async fn s6t7_add_tag_none_equivalent_to_default() {
 
 #[tokio::test]
 async fn s6t7_remove_tag_deletes_existing_tag() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     engine
         .put_page("eps", None, &note_input("Eps", "body"))
@@ -191,6 +211,7 @@ async fn s6t7_remove_tag_deletes_existing_tag() {
 
 #[tokio::test]
 async fn s6t7_remove_tag_absent_tag_is_silent() {
+    let _guard = libsql_test_guard();
     // TS removeTag uses a sub-select → DELETE … WHERE page_id=(SELECT …)
     // AND tag=$3. If the tag doesn't exist, affected=0, no error.
     let (engine, _tmp) = init_clean_engine().await;
@@ -207,6 +228,7 @@ async fn s6t7_remove_tag_absent_tag_is_silent() {
 
 #[tokio::test]
 async fn s6t7_remove_tag_page_missing_is_silent() {
+    let _guard = libsql_test_guard();
     // TS asymmetry: addTag throws on missing page, removeTag is silent.
     // The sub-select yields NULL → DELETE matches 0 rows → Ok(()).
     let (engine, _tmp) = init_clean_engine().await;
@@ -219,6 +241,7 @@ async fn s6t7_remove_tag_page_missing_is_silent() {
 
 #[tokio::test]
 async fn s6t7_remove_tag_source_mismatch_is_silent() {
+    let _guard = libsql_test_guard();
     // Page exists under source='default'; asking for source='other' means
     // the sub-select returns NULL → silent success, same as TS.
     let (engine, _tmp) = init_clean_engine().await;
@@ -247,6 +270,7 @@ async fn s6t7_remove_tag_source_mismatch_is_silent() {
 
 #[tokio::test]
 async fn s6t7_get_tags_returns_empty_for_page_with_no_tags() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     engine
         .put_page("theta", None, &note_input("Theta", "body"))
@@ -259,6 +283,7 @@ async fn s6t7_get_tags_returns_empty_for_page_with_no_tags() {
 
 #[tokio::test]
 async fn s6t7_get_tags_returns_sorted_tags() {
+    let _guard = libsql_test_guard();
     // TS: `ORDER BY tag`. Insert out-of-order to prove sorting.
     let (engine, _tmp) = init_clean_engine().await;
     engine
@@ -285,6 +310,7 @@ async fn s6t7_get_tags_returns_sorted_tags() {
 
 #[tokio::test]
 async fn s6t7_get_tags_page_missing_returns_empty() {
+    let _guard = libsql_test_guard();
     // TS getTags returns [] when the sub-select yields NULL (no matching
     // page). This is the second asymmetry vs addTag (which throws).
     let (engine, _tmp) = init_clean_engine().await;
@@ -298,6 +324,7 @@ async fn s6t7_get_tags_page_missing_returns_empty() {
 
 #[tokio::test]
 async fn s6t7_get_tags_source_mismatch_returns_empty() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     engine
         .put_page("kappa", None, &note_input("Kappa", "body"))
@@ -321,6 +348,7 @@ async fn s6t7_get_tags_source_mismatch_returns_empty() {
 
 #[tokio::test]
 async fn s6t7_add_tag_fails_on_soft_deleted_page() {
+    let _guard = libsql_test_guard();
     // A soft-deleted page should be invisible to add_tag (it only looks at
     // live pages), so add_tag must return PageNotFound.
     let (engine, _tmp) = init_clean_engine().await;
@@ -343,6 +371,7 @@ async fn s6t7_add_tag_fails_on_soft_deleted_page() {
 
 #[tokio::test]
 async fn s6t7_hard_delete_page_cascades_to_page_tags() {
+    let _guard = libsql_test_guard();
     // Schema contract: page_tags.page_id has `ON DELETE CASCADE` (migration
     // 0004). When a `pages` row is hard-deleted, every (page_id, tag) row in
     // page_tags must vanish.

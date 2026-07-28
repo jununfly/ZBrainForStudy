@@ -14,6 +14,20 @@ use zbrain_core::anomaly::{AnomaliesOpts, CohortKind};
 use zbrain_core::engine::{BrainEngine, EngineConfig, InMemoryEngine, PageInput};
 use zbrain_core::libsql::LibsqlEngine;
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 fn today_iso() -> String {
     chrono::Utc::now().date_naive().format("%Y-%m-%d").to_string()
 }
@@ -63,6 +77,7 @@ fn assert_brand_new_cohorts(rows: &[zbrain_core::anomaly::AnomalyResult]) {
 
 #[tokio::test]
 async fn inmemory_find_anomalies_brand_new_cohort() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::new();
     for i in 0..3 {
         let mut input = minimal_input("note");
@@ -84,6 +99,7 @@ async fn inmemory_find_anomalies_brand_new_cohort() {
 
 #[tokio::test]
 async fn libsql_find_anomalies_brand_new_cohort() {
+    let _guard = libsql_test_guard();
     let (engine, _path) = init_clean_libsql().await;
     for i in 0..3 {
         let input = minimal_input("note");
@@ -108,6 +124,7 @@ async fn libsql_find_anomalies_brand_new_cohort() {
 
 #[tokio::test]
 async fn libsql_find_anomalies_empty_store_returns_no_anomalies() {
+    let _guard = libsql_test_guard();
     let (engine, _path) = init_clean_libsql().await;
     let opts = AnomaliesOpts {
         since: Some(today_iso()),

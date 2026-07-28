@@ -19,6 +19,20 @@ use zbrain_core::calibration::{
 use zbrain_core::engine::{BrainEngine, EngineConfig};
 use zbrain_core::libsql::LibsqlEngine;
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 async fn temp_engine() -> (NamedTempFile, LibsqlEngine) {
     let temp = NamedTempFile::new().expect("alloc temp db file");
     let path = temp.path().to_string_lossy().to_string();
@@ -75,6 +89,7 @@ impl PreferenceResolver for StubPreferenceResolver {
 
 #[tokio::test]
 async fn run_ab_trial_inserts_and_reads_back() {
+    let _guard = libsql_test_guard();
     let (temp, engine) = temp_engine().await;
 
     let input = AbRunInput {
@@ -124,6 +139,7 @@ async fn run_ab_trial_inserts_and_reads_back() {
 /// fabricated source or a silent drop.
 #[tokio::test]
 async fn run_ab_trial_unknown_source_errors() {
+    let _guard = libsql_test_guard();
     let (_temp, engine) = temp_engine().await;
 
     let input = AbRunInput {
@@ -151,6 +167,7 @@ async fn run_ab_trial_unknown_source_errors() {
 
 #[tokio::test]
 async fn build_ab_report_aggregates_and_flags_net_negative() {
+    let _guard = libsql_test_guard();
     let (temp, engine) = temp_engine().await;
     let conn = raw_conn(temp.path()).await;
 
@@ -205,6 +222,7 @@ async fn build_ab_report_aggregates_and_flags_net_negative() {
 
 #[tokio::test]
 async fn build_ab_report_no_decisive_no_net_negative() {
+    let _guard = libsql_test_guard();
     let (temp, engine) = temp_engine().await;
     let conn = raw_conn(temp.path()).await;
 

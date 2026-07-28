@@ -13,6 +13,20 @@ use zbrain_core::libsql::LibsqlEngine;
 use zbrain_core::types::{GraphPath, LinkBatchInput};
 use zbrain_core::InMemoryEngine;
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -61,6 +75,7 @@ async fn seed_page(engine: &dyn BrainEngine, slug: &str, title: &str) {
 
 #[tokio::test]
 async fn inmem_add_links_batch_single_link_roundtrip() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::new();
     seed_page(&engine, "alpha", "Alpha").await;
     seed_page(&engine, "bravo", "Bravo").await;
@@ -82,6 +97,7 @@ async fn inmem_add_links_batch_single_link_roundtrip() {
 
 #[tokio::test]
 async fn inmem_add_links_batch_multiple_links() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::new();
     seed_page(&engine, "alpha", "Alpha").await;
     seed_page(&engine, "bravo", "Bravo").await;
@@ -107,6 +123,7 @@ async fn inmem_add_links_batch_multiple_links() {
 
 #[tokio::test]
 async fn inmem_add_links_batch_duplicate_suppression() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::new();
     seed_page(&engine, "alpha", "Alpha").await;
     seed_page(&engine, "bravo", "Bravo").await;
@@ -131,6 +148,7 @@ async fn inmem_add_links_batch_duplicate_suppression() {
 
 #[tokio::test]
 async fn inmem_add_links_batch_different_link_type_is_distinct() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::new();
     seed_page(&engine, "alpha", "Alpha").await;
     seed_page(&engine, "bravo", "Bravo").await;
@@ -154,6 +172,7 @@ async fn inmem_add_links_batch_different_link_type_is_distinct() {
 
 #[tokio::test]
 async fn inmem_add_links_batch_with_origin_fields() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::new();
     seed_page(&engine, "alpha", "Alpha").await;
     seed_page(&engine, "bravo", "Bravo").await;
@@ -188,6 +207,7 @@ async fn inmem_add_links_batch_with_origin_fields() {
 
 #[tokio::test]
 async fn inmem_get_links_filters_by_source_id() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::new();
     seed_page(&engine, "alpha", "Alpha").await;
     seed_page(&engine, "bravo", "Bravo").await;
@@ -209,6 +229,7 @@ async fn inmem_get_links_filters_by_source_id() {
 
 #[tokio::test]
 async fn inmem_get_links_unknown_slug_returns_empty() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::new();
     let links = engine.get_links("nonexistent", None).await.expect("get_links");
     assert!(links.is_empty());
@@ -216,6 +237,7 @@ async fn inmem_get_links_unknown_slug_returns_empty() {
 
 #[tokio::test]
 async fn inmem_get_backlinks_symmetry() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::new();
     seed_page(&engine, "alpha", "Alpha").await;
     seed_page(&engine, "bravo", "Bravo").await;
@@ -239,6 +261,7 @@ async fn inmem_get_backlinks_symmetry() {
 
 #[tokio::test]
 async fn inmem_get_backlinks_from_multiple_sources() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::new();
     seed_page(&engine, "alpha", "Alpha").await;
     seed_page(&engine, "bravo", "Bravo").await;
@@ -261,6 +284,7 @@ async fn inmem_get_backlinks_from_multiple_sources() {
 
 #[tokio::test]
 async fn inmem_get_backlink_counts_roundtrip() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::new();
     seed_page(&engine, "alpha", "Alpha").await;
     seed_page(&engine, "bravo", "Bravo").await;
@@ -294,6 +318,7 @@ async fn inmem_get_backlink_counts_roundtrip() {
 
 #[tokio::test]
 async fn inmem_remove_link_basic() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::new();
     seed_page(&engine, "alpha", "Alpha").await;
     seed_page(&engine, "bravo", "Bravo").await;
@@ -314,6 +339,7 @@ async fn inmem_remove_link_basic() {
 
 #[tokio::test]
 async fn inmem_remove_link_nonexistent_is_noop() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::new();
     seed_page(&engine, "alpha", "Alpha").await;
     seed_page(&engine, "bravo", "Bravo").await;
@@ -327,6 +353,7 @@ async fn inmem_remove_link_nonexistent_is_noop() {
 
 #[tokio::test]
 async fn inmem_traverse_paths_basic_bfs() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::new();
     seed_page(&engine, "alpha", "Alpha").await;
     seed_page(&engine, "bravo", "Bravo").await;
@@ -366,6 +393,7 @@ async fn inmem_traverse_paths_basic_bfs() {
 
 #[tokio::test]
 async fn inmem_traverse_paths_direction_in() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::new();
     seed_page(&engine, "alpha", "Alpha").await;
     seed_page(&engine, "bravo", "Bravo").await;
@@ -398,6 +426,7 @@ async fn inmem_traverse_paths_direction_in() {
 
 #[tokio::test]
 async fn inmem_traverse_paths_depth_limit() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::new();
     seed_page(&engine, "alpha", "Alpha").await;
     seed_page(&engine, "bravo", "Bravo").await;
@@ -423,6 +452,7 @@ async fn inmem_traverse_paths_depth_limit() {
 
 #[tokio::test]
 async fn inmem_traverse_paths_link_type_filter() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::new();
     seed_page(&engine, "alpha", "Alpha").await;
     seed_page(&engine, "bravo", "Bravo").await;
@@ -464,6 +494,7 @@ async fn init_clean_libsql() -> (LibsqlEngine, NamedTempFile) {
 
 #[tokio::test]
 async fn libsql_add_links_batch_roundtrip() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     seed_page(&engine, "alpha", "Alpha").await;
     seed_page(&engine, "bravo", "Bravo").await;
@@ -487,6 +518,7 @@ async fn libsql_add_links_batch_roundtrip() {
 
 #[tokio::test]
 async fn libsql_add_links_batch_empty_vec_returns_zero() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     let n = engine
         .add_links_batch(&[])
@@ -498,6 +530,7 @@ async fn libsql_add_links_batch_empty_vec_returns_zero() {
 
 #[tokio::test]
 async fn libsql_add_links_batch_duplicate_suppression() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     seed_page(&engine, "alpha", "Alpha").await;
     seed_page(&engine, "bravo", "Bravo").await;
@@ -522,6 +555,7 @@ async fn libsql_add_links_batch_duplicate_suppression() {
 
 #[tokio::test]
 async fn libsql_get_links_filters_deleted_pages() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = init_clean_libsql().await;
     seed_page(&engine, "alpha", "Alpha").await;
     seed_page(&engine, "bravo", "Bravo").await;
@@ -554,6 +588,7 @@ async fn libsql_get_links_filters_deleted_pages() {
 
 #[tokio::test]
 async fn libsql_get_backlinks_roundtrip() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     seed_page(&engine, "alpha", "Alpha").await;
     seed_page(&engine, "bravo", "Bravo").await;
@@ -581,6 +616,7 @@ async fn libsql_get_backlinks_roundtrip() {
 
 #[tokio::test]
 async fn libsql_get_backlink_counts_with_zeros() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     seed_page(&engine, "alpha", "Alpha").await;
     seed_page(&engine, "bravo", "Bravo").await;
@@ -603,6 +639,7 @@ async fn libsql_get_backlink_counts_with_zeros() {
 
 #[tokio::test]
 async fn libsql_remove_link_basic() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     seed_page(&engine, "alpha", "Alpha").await;
     seed_page(&engine, "bravo", "Bravo").await;
@@ -624,6 +661,7 @@ async fn libsql_remove_link_basic() {
 
 #[tokio::test]
 async fn libsql_remove_link_without_link_type_removes_all() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     seed_page(&engine, "alpha", "Alpha").await;
     seed_page(&engine, "bravo", "Bravo").await;
@@ -650,6 +688,7 @@ async fn libsql_remove_link_without_link_type_removes_all() {
 
 #[tokio::test]
 async fn libsql_remove_link_with_link_source_filter() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     seed_page(&engine, "alpha", "Alpha").await;
     seed_page(&engine, "bravo", "Bravo").await;
@@ -696,6 +735,7 @@ async fn libsql_remove_link_with_link_source_filter() {
 
 #[tokio::test]
 async fn libsql_traverse_paths_basic_bfs() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     seed_page(&engine, "alpha", "Alpha").await;
     seed_page(&engine, "bravo", "Bravo").await;
@@ -758,6 +798,7 @@ async fn pg_seed_default_source(url: &str) {
 
 #[tokio::test]
 async fn postgres_add_links_batch_and_get_links() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     let engine = &fix.engine;
     pg_seed_default_source(&fix.url).await;
@@ -778,6 +819,7 @@ async fn postgres_add_links_batch_and_get_links() {
 
 #[tokio::test]
 async fn postgres_get_backlinks_and_counts() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     let engine = &fix.engine;
     pg_seed_default_source(&fix.url).await;
@@ -809,6 +851,7 @@ async fn postgres_get_backlinks_and_counts() {
 
 #[tokio::test]
 async fn postgres_remove_link() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     let engine = &fix.engine;
     pg_seed_default_source(&fix.url).await;
@@ -830,6 +873,7 @@ async fn postgres_remove_link() {
 
 #[tokio::test]
 async fn postgres_traverse_paths_basic_bfs() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     let engine = &fix.engine;
     pg_seed_default_source(&fix.url).await;

@@ -15,6 +15,20 @@ use zbrain_core::engine::{BrainEngine, EngineConfig, PageInput};
 use zbrain_core::libsql::LibsqlEngine;
 use zbrain_core::{EffectiveDateSource, PageRef};
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 async fn init_clean_engine() -> (LibsqlEngine, NamedTempFile) {
     let path = NamedTempFile::new().expect("alloc temp db file");
     let engine = LibsqlEngine::new();
@@ -62,6 +76,7 @@ fn note_input_with_effective_date(title: &str, body: &str, effective_date: &str)
 
 #[tokio::test]
 async fn libsql_get_effective_dates_prefers_effective_date_before_row_timestamps() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = init_clean_engine().await;
     libsql_seed_source(&tmp, "src-1").await;
     engine
@@ -91,6 +106,7 @@ async fn libsql_get_effective_dates_prefers_effective_date_before_row_timestamps
 
 #[tokio::test]
 async fn libsql_get_effective_dates_returns_compound_key_for_each_ref() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = init_clean_engine().await;
     libsql_seed_source(&tmp, "src-1").await;
     libsql_seed_source(&tmp, "src-2").await;
@@ -132,6 +148,7 @@ async fn libsql_get_effective_dates_returns_compound_key_for_each_ref() {
 
 #[tokio::test]
 async fn libsql_get_effective_dates_disambiguates_same_slug_across_sources() {
+    let _guard = libsql_test_guard();
     // Two sources both have a page with slug `shared`. The implementation MUST
     // return BOTH and key them by `{source_id}::{slug}` so callers can tell
     // them apart.
@@ -168,6 +185,7 @@ async fn libsql_get_effective_dates_disambiguates_same_slug_across_sources() {
 
 #[tokio::test]
 async fn libsql_get_effective_dates_excludes_soft_deleted_rows() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = init_clean_engine().await;
     libsql_seed_source(&tmp, "src-1").await;
     for slug in ["live-slug", "tombstone-slug"] {
@@ -207,6 +225,7 @@ async fn libsql_get_effective_dates_excludes_soft_deleted_rows() {
 
 #[tokio::test]
 async fn libsql_get_effective_dates_returns_empty_map_for_empty_input() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
 
     let dates = engine
@@ -250,6 +269,7 @@ async fn pg_seed_source(url: &str, id: &str) {
 
 #[tokio::test]
 async fn postgres_get_effective_dates_prefers_effective_date_before_row_timestamps() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     let engine = &fix.engine;
     pg_seed_source(&fix.url, "src-1").await;
@@ -279,6 +299,7 @@ async fn postgres_get_effective_dates_prefers_effective_date_before_row_timestam
 
 #[tokio::test]
 async fn postgres_get_effective_dates_returns_compound_key_for_each_ref() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     let engine = &fix.engine;
     pg_seed_source(&fix.url, "src-1").await;
@@ -329,6 +350,7 @@ async fn postgres_get_effective_dates_returns_compound_key_for_each_ref() {
 
 #[tokio::test]
 async fn postgres_get_effective_dates_disambiguates_same_slug_across_sources() {
+    let _guard = libsql_test_guard();
     // Two sources both have a page with slug `shared`. The unnest join MUST
     // return BOTH and key them by `{source_id}::{slug}` so callers can tell
     // them apart.
@@ -374,6 +396,7 @@ async fn postgres_get_effective_dates_disambiguates_same_slug_across_sources() {
 
 #[tokio::test]
 async fn postgres_get_effective_dates_excludes_soft_deleted_rows() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     let engine = &fix.engine;
     pg_seed_source(&fix.url, "src-1").await;
@@ -422,6 +445,7 @@ async fn postgres_get_effective_dates_excludes_soft_deleted_rows() {
 
 #[tokio::test]
 async fn postgres_get_effective_dates_returns_empty_map_for_empty_input() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     let engine = &fix.engine;
 

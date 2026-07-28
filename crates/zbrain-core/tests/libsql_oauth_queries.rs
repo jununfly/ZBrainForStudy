@@ -9,6 +9,20 @@ use zbrain_core::libsql::LibsqlEngine;
 use zbrain_core::oauth_queries::OAuthQueries;
 use zbrain_core::RegisterClientRequest;
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 fn temp_db() -> NamedTempFile {
     NamedTempFile::new().expect("alloc temp db file")
 }
@@ -39,6 +53,7 @@ async fn raw_conn(temp: &NamedTempFile) -> ::libsql::Connection {
 
 #[tokio::test]
 async fn register_client_persists_and_returns_id_and_secret() {
+    let _guard = libsql_test_guard();
     let (_temp, engine) = temp_engine().await;
     engine.init_schema().await.unwrap();
 
@@ -65,6 +80,7 @@ async fn register_client_persists_and_returns_id_and_secret() {
 
 #[tokio::test]
 async fn register_client_persists_row_in_oauth_clients_table() {
+    let _guard = libsql_test_guard();
     let (_temp, engine) = temp_engine().await;
     engine.init_schema().await.unwrap();
 
@@ -104,6 +120,7 @@ async fn register_client_persists_row_in_oauth_clients_table() {
 
 #[tokio::test]
 async fn update_client_ttl_persists_and_returns() {
+    let _guard = libsql_test_guard();
     let (_temp, engine) = temp_engine().await;
     engine.init_schema().await.unwrap();
 
@@ -146,6 +163,7 @@ async fn update_client_ttl_persists_and_returns() {
 
 #[tokio::test]
 async fn update_client_ttl_null_resets_to_null() {
+    let _guard = libsql_test_guard();
     let (_temp, engine) = temp_engine().await;
     engine.init_schema().await.unwrap();
 
@@ -187,6 +205,7 @@ async fn update_client_ttl_null_resets_to_null() {
 
 #[tokio::test]
 async fn revoke_client_soft_deletes_and_clears_tokens() {
+    let _guard = libsql_test_guard();
     let (_temp, engine) = temp_engine().await;
     engine.init_schema().await.unwrap();
 
@@ -249,6 +268,7 @@ async fn revoke_client_soft_deletes_and_clears_tokens() {
 
 #[tokio::test]
 async fn revoked_client_cannot_be_revoked_again() {
+    let _guard = libsql_test_guard();
     let (_temp, engine) = temp_engine().await;
     engine.init_schema().await.unwrap();
 

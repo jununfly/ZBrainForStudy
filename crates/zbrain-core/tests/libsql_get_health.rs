@@ -21,6 +21,20 @@ use zbrain_core::libsql::LibsqlEngine;
 use zbrain_core::types::LinkBatchInput;
 use zbrain_core::PageKind;
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 fn temp_db() -> NamedTempFile {
     NamedTempFile::new().expect("alloc temp db file")
 }
@@ -79,6 +93,7 @@ fn link(from: &str, to: &str) -> LinkBatchInput {
 /// InMemory engine and TS pglite-engine behavior.
 #[tokio::test]
 async fn empty_brain_scores_perfect_100() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let engine = connected_engine(&path).await;
     let h = engine.get_health().await.expect("get_health");
@@ -102,6 +117,7 @@ async fn empty_brain_scores_perfect_100() {
 /// non-null embedding BLOB. missing_embeddings counts the rest.
 #[tokio::test]
 async fn embed_coverage_is_page_level() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let engine = connected_engine(&path).await;
 
@@ -126,6 +142,7 @@ async fn embed_coverage_is_page_level() {
 /// (deleted-aware). A link to a live page is not dead.
 #[tokio::test]
 async fn dead_links_are_deleted_aware() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let engine = connected_engine(&path).await;
 
@@ -163,6 +180,7 @@ async fn dead_links_are_deleted_aware() {
 /// outbound link is NOT an orphan.
 #[tokio::test]
 async fn orphan_is_islanded_not_merely_no_inbound() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let engine = connected_engine(&path).await;
 
@@ -194,6 +212,7 @@ async fn orphan_is_islanded_not_merely_no_inbound() {
 /// zero-link entities.
 #[tokio::test]
 async fn entity_coverage_and_most_connected() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let engine = connected_engine(&path).await;
 
@@ -235,6 +254,7 @@ async fn entity_coverage_and_most_connected() {
 /// fully-embedded/linked brain scores high.
 #[tokio::test]
 async fn brain_score_components_sum_to_total() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let engine = connected_engine(&path).await;
 

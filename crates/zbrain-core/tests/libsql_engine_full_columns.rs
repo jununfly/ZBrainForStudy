@@ -13,6 +13,20 @@ use zbrain_core::engine::{BrainEngine, EngineConfig, GetPageOpts, PageInput};
 use zbrain_core::libsql::LibsqlEngine;
 use zbrain_core::{EffectiveDateSource, PageKind};
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 async fn init_clean_engine() -> (LibsqlEngine, NamedTempFile, String) {
     let path = NamedTempFile::new().expect("alloc temp db file");
     let path_str = path.path().to_string_lossy().into_owned();
@@ -81,6 +95,7 @@ async fn page_column_info(path_str: &str, column: &str) -> (String, i64, Option<
 
 #[tokio::test]
 async fn put_page_persists_embedding_but_not_last_retrieved_at() {
+    let _guard = libsql_test_guard();
     // G24: put_page now DOES persist caller-provided `embedding` (f32-LE blob),
     // so the page-level vector path has a write route. `last_retrieved_at`
     // remains owned by the retrieval-tracker path and is still NOT written here.
@@ -124,6 +139,7 @@ async fn put_page_persists_embedding_but_not_last_retrieved_at() {
 
 #[tokio::test]
 async fn put_page_embedding_none_preserves_existing_on_update() {
+    let _guard = libsql_test_guard();
     // G24: an upsert with embedding = None must NOT clobber a previously stored
     // embedding (COALESCE-preserve semantics, matching PageInput.embedding doc).
     let (engine, _tmp, _path_str) = init_clean_engine().await;
@@ -154,6 +170,7 @@ async fn put_page_embedding_none_preserves_existing_on_update() {
 
 #[tokio::test]
 async fn ingested_at_server_stamped_when_any_ingestion_metadata_present() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp, _path_str) = init_clean_engine().await;
     let cases = [
         ("source-kind-only", Some("file".to_string()), None, None),
@@ -193,6 +210,7 @@ async fn ingested_at_server_stamped_when_any_ingestion_metadata_present() {
 
 #[tokio::test]
 async fn ingested_at_remains_none_without_ingestion_metadata() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp, _path_str) = init_clean_engine().await;
     let mut input = base_input();
     input.source_kind = None;
@@ -214,6 +232,7 @@ async fn ingested_at_remains_none_without_ingestion_metadata() {
 
 #[tokio::test]
 async fn frontmatter_defaults_to_empty_object_when_omitted() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp, _path_str) = init_clean_engine().await;
     let mut input = base_input();
     input.frontmatter = None;
@@ -244,6 +263,7 @@ async fn frontmatter_defaults_to_empty_object_when_omitted() {
 
 #[tokio::test]
 async fn frontmatter_column_is_text_not_null_default_empty_object() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp, path_str) = init_clean_engine().await;
 
     let (column_type, not_null, default_value) = page_column_info(&path_str, "frontmatter").await;
@@ -260,6 +280,7 @@ async fn frontmatter_column_is_text_not_null_default_empty_object() {
 
 #[tokio::test]
 async fn corpus_generation_column_is_text_and_decodes_as_string() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp, path_str) = init_clean_engine().await;
 
     let (column_type, _not_null, _default_value) =

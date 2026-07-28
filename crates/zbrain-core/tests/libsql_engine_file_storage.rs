@@ -4,6 +4,20 @@ use zbrain_core::engine::{BrainEngine, EngineConfig, PageInput};
 use zbrain_core::libsql::LibsqlEngine;
 use zbrain_core::FileSpec;
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 async fn init_clean_engine() -> (LibsqlEngine, NamedTempFile) {
     let path = NamedTempFile::new().expect("alloc temp db file");
     let engine = LibsqlEngine::new();
@@ -41,6 +55,7 @@ fn file_spec(storage_path: &str, content_hash: &str) -> FileSpec {
 
 #[tokio::test]
 async fn libsql_upsert_file_updates_existing_storage_path_in_place() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
 
     let first = engine
@@ -68,6 +83,7 @@ async fn libsql_upsert_file_updates_existing_storage_path_in_place() {
 
 #[tokio::test]
 async fn libsql_get_file_is_source_and_path_scoped() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     let mut spec = file_spec("photos/a.jpg", "sha256:a");
     spec.source_id = Some("default".to_string());
@@ -93,6 +109,7 @@ async fn libsql_get_file_is_source_and_path_scoped() {
 
 #[tokio::test]
 async fn libsql_list_files_for_page_returns_only_matching_page_id() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     let page = engine
         .put_page("page-7", None, &note_input("Page 7"))
@@ -132,6 +149,7 @@ async fn libsql_list_files_for_page_returns_only_matching_page_id() {
 
 #[tokio::test]
 async fn libsql_upsert_file_inserts_and_get_file_round_trips_metadata() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
 
     let inserted = engine

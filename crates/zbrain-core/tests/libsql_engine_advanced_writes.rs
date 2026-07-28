@@ -12,6 +12,20 @@ use tempfile::NamedTempFile;
 use zbrain_core::engine::{BrainEngine, EngineConfig, GetPageOpts, PageInput};
 use zbrain_core::libsql::LibsqlEngine;
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 async fn init() -> (LibsqlEngine, NamedTempFile) {
     let path = NamedTempFile::new().expect("alloc temp db file");
     let engine = LibsqlEngine::new();
@@ -37,6 +51,7 @@ fn note(title: &str, body: &str) -> PageInput {
 
 #[tokio::test]
 async fn libsql_put_raw_data_and_get_raw_data_round_trip() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init().await;
     engine
         .put_page("alpha", None, &note("Alpha", "body"))
@@ -65,6 +80,7 @@ async fn libsql_put_raw_data_and_get_raw_data_round_trip() {
 
 #[tokio::test]
 async fn libsql_put_raw_data_upserts_by_page_source() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init().await;
     engine
         .put_page("alpha", None, &note("Alpha", "body"))
@@ -99,6 +115,7 @@ async fn libsql_put_raw_data_upserts_by_page_source() {
 
 #[tokio::test]
 async fn libsql_get_raw_data_filtered_by_source() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init().await;
     engine
         .put_page("alpha", None, &note("Alpha", "body"))
@@ -123,6 +140,7 @@ async fn libsql_get_raw_data_filtered_by_source() {
 
 #[tokio::test]
 async fn libsql_get_raw_data_returns_empty_for_unknown_page() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init().await;
     let rows = engine.get_raw_data("ghost", None, None).await.expect("get");
     assert!(rows.is_empty());
@@ -130,6 +148,7 @@ async fn libsql_get_raw_data_returns_empty_for_unknown_page() {
 
 #[tokio::test]
 async fn libsql_put_raw_data_errors_for_unknown_page() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init().await;
     let result = engine
         .put_raw_data("ghost", "scraper", &json!({}), None)
@@ -141,6 +160,7 @@ async fn libsql_put_raw_data_errors_for_unknown_page() {
 
 #[tokio::test]
 async fn libsql_create_version_returns_snapshot() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init().await;
     engine
         .put_page("beta", None, &note("Beta", "v1 body"))
@@ -159,6 +179,7 @@ async fn libsql_create_version_returns_snapshot() {
 
 #[tokio::test]
 async fn libsql_get_versions_returns_newest_first() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init().await;
     engine
         .put_page("beta", None, &note("Beta", "v1 body"))
@@ -180,6 +201,7 @@ async fn libsql_get_versions_returns_newest_first() {
 
 #[tokio::test]
 async fn libsql_revert_to_version_restores_compiled_truth() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init().await;
     engine
         .put_page("beta", None, &note("Beta", "original body"))
@@ -207,6 +229,7 @@ async fn libsql_revert_to_version_restores_compiled_truth() {
 
 #[tokio::test]
 async fn libsql_revert_to_version_errors_for_unknown_version() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init().await;
     engine
         .put_page("beta", None, &note("Beta", "body"))
@@ -220,6 +243,7 @@ async fn libsql_revert_to_version_errors_for_unknown_version() {
 
 #[tokio::test]
 async fn libsql_update_slug_renames_the_page() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init().await;
     engine
         .put_page("old-slug", None, &note("Old", "body"))
@@ -247,6 +271,7 @@ async fn libsql_update_slug_renames_the_page() {
 
 #[tokio::test]
 async fn libsql_update_slug_errors_on_missing_page() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init().await;
     let result = engine.update_slug("ghost", "new-slug", None).await;
     assert!(result.is_err());
@@ -254,6 +279,7 @@ async fn libsql_update_slug_errors_on_missing_page() {
 
 #[tokio::test]
 async fn libsql_update_slug_errors_on_conflict() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init().await;
     engine
         .put_page("a", None, &note("A", "body"))
@@ -272,6 +298,7 @@ async fn libsql_update_slug_errors_on_conflict() {
 
 #[tokio::test]
 async fn libsql_rewrite_links_is_noop() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init().await;
     let result = engine.rewrite_links("old", "new").await;
     assert!(result.is_ok());

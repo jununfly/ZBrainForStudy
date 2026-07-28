@@ -16,6 +16,20 @@ use zbrain_core::engine::{BrainEngine, EngineConfig, PageInput};
 use zbrain_core::libsql::LibsqlEngine;
 use zbrain_core::PageKind;
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 fn temp_db() -> NamedTempFile {
     NamedTempFile::new().expect("alloc temp db file")
 }
@@ -63,6 +77,7 @@ fn page(
 /// exactly the null one from `list_stale_pages` (and NOT the embedded one).
 #[tokio::test]
 async fn list_stale_pages_returns_only_null_embedding() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let engine = connected_engine(&path).await;
     engine
@@ -94,6 +109,7 @@ async fn list_stale_pages_returns_only_null_embedding() {
 /// null (deleted rows are not re-embed candidates).
 #[tokio::test]
 async fn list_stale_pages_skips_deleted() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let engine = connected_engine(&path).await;
     engine
@@ -120,6 +136,7 @@ async fn list_stale_pages_skips_deleted() {
 /// columns (title / body survive the surgical UPDATE).
 #[tokio::test]
 async fn put_page_embedding_backfills_without_clobber() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let engine = connected_engine(&path).await;
     engine
@@ -157,6 +174,7 @@ async fn put_page_embedding_backfills_without_clobber() {
 /// preserving any prior content.
 #[tokio::test]
 async fn add_timeline_entry_appends_line() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let engine = connected_engine(&path).await;
     engine

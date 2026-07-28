@@ -58,6 +58,20 @@ use tokio::task::JoinSet;
 use zbrain_core::engine::{BrainEngine, EngineConfig};
 use zbrain_core::libsql::LibsqlEngine;
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 /// Number of parallel `init_schema` invocations.
 /// 32 is chosen to saturate a typical 8-12 core dev machine while staying
 /// well below the default fd limit. Adjust upward if the flake doesn't
@@ -89,6 +103,7 @@ async fn init_schema_once() -> Result<(), String> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn init_schema_survives_high_concurrency() {
+    let _guard = libsql_test_guard();
     // Spawn N independent attempts. Each runs to completion regardless of
     // siblings — we want to maximise the chance of two tasks hitting the
     // hot path of init_schema (PRAGMA read/write, migration apply, journal

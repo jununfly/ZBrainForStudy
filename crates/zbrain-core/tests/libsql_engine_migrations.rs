@@ -8,6 +8,20 @@ use tempfile::NamedTempFile;
 use zbrain_core::engine::{BrainEngine, EngineConfig};
 use zbrain_core::libsql::LibsqlEngine;
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 /// Allocate a fresh temp file path. Returned `NamedTempFile` must outlive
 /// the engine — dropping it deletes the underlying file.
 fn temp_db() -> NamedTempFile {
@@ -51,6 +65,7 @@ const EXPECTED_VERSION: i64 = 21;
 
 #[tokio::test]
 async fn fresh_db_runs_all_migrations_ends_at_expected_version() {
+    let _guard = libsql_test_guard();
     let (_temp, engine) = temp_engine().await;
     engine.init_schema().await.unwrap();
     let version = read_version_raw(_temp.path()).await;
@@ -59,6 +74,7 @@ async fn fresh_db_runs_all_migrations_ends_at_expected_version() {
 
 #[tokio::test]
 async fn idempotent_init_schema_applies_zero_migrations_second_run() {
+    let _guard = libsql_test_guard();
     let (_temp, engine) = temp_engine().await;
 
     // First run - should apply all migrations
@@ -74,6 +90,7 @@ async fn idempotent_init_schema_applies_zero_migrations_second_run() {
 
 #[tokio::test]
 async fn rust_schema_version_table_exists_after_init() {
+    let _guard = libsql_test_guard();
     let (_temp, engine) = temp_engine().await;
     engine.init_schema().await.unwrap();
 
@@ -98,6 +115,7 @@ async fn rust_schema_version_table_exists_after_init() {
 
 #[tokio::test]
 async fn rust_schema_version_has_applied_at_timestamp() {
+    let _guard = libsql_test_guard();
     let (_temp, engine) = temp_engine().await;
     engine.init_schema().await.unwrap();
 
@@ -121,6 +139,7 @@ async fn rust_schema_version_has_applied_at_timestamp() {
 
 #[tokio::test]
 async fn migrations_are_applied_in_ascending_version_order() {
+    let _guard = libsql_test_guard();
     let (_temp, engine) = temp_engine().await;
     engine.init_schema().await.unwrap();
 
@@ -177,6 +196,7 @@ async fn migrations_are_applied_in_ascending_version_order() {
 
 #[tokio::test]
 async fn code_edges_tables_exist_after_0021() {
+    let _guard = libsql_test_guard();
     let (_temp, engine) = temp_engine().await;
     engine.init_schema().await.unwrap();
 
@@ -204,6 +224,7 @@ async fn code_edges_tables_exist_after_0021() {
 
 #[tokio::test]
 async fn bootstrap_creates_version_zero_row() {
+    let _guard = libsql_test_guard();
     let temp = temp_db();
     let conn = Builder::new_local(temp.path())
         .build()

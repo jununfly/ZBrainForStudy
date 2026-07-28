@@ -20,6 +20,20 @@ use zbrain_core::minions::types::{
 use zbrain_core::minions::MinionQueue;
 use zbrain_core::InMemoryEngine;
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -1133,114 +1147,141 @@ async fn contract_get_stats(engine: &dyn BrainEngine) {
 
 #[tokio::test]
 async fn inmemory_enqueue_defaults() {
+    let _guard = libsql_test_guard();
     contract_enqueue_defaults(&InMemoryEngine::new()).await;
 }
 #[tokio::test]
 async fn inmemory_idempotency() {
+    let _guard = libsql_test_guard();
     contract_idempotency(&InMemoryEngine::new()).await;
 }
 #[tokio::test]
 async fn inmemory_delay() {
+    let _guard = libsql_test_guard();
     contract_delay_sets_delayed(&InMemoryEngine::new()).await;
 }
 #[tokio::test]
 async fn inmemory_claim_priority() {
+    let _guard = libsql_test_guard();
     contract_claim_priority_and_exclusive(&InMemoryEngine::new()).await;
 }
 #[tokio::test]
 async fn inmemory_claim_filters() {
+    let _guard = libsql_test_guard();
     contract_claim_filters(&InMemoryEngine::new()).await;
 }
 #[tokio::test]
 async fn inmemory_complete_token_fence() {
+    let _guard = libsql_test_guard();
     contract_complete_token_fence(&InMemoryEngine::new()).await;
 }
 #[tokio::test]
 async fn inmemory_fail_delayed() {
+    let _guard = libsql_test_guard();
     contract_fail_delayed_then_retry(&InMemoryEngine::new()).await;
 }
 #[tokio::test]
 async fn inmemory_fail_terminal_retry() {
+    let _guard = libsql_test_guard();
     contract_fail_terminal_then_retry(&InMemoryEngine::new()).await;
 }
 #[tokio::test]
 async fn inmemory_renew_lock() {
+    let _guard = libsql_test_guard();
     contract_renew_lock(&InMemoryEngine::new()).await;
 }
 #[tokio::test]
 async fn inmemory_promote_delayed() {
+    let _guard = libsql_test_guard();
     contract_promote_delayed(&InMemoryEngine::new()).await;
 }
 #[tokio::test]
 async fn inmemory_handle_stalled() {
+    let _guard = libsql_test_guard();
     contract_handle_stalled(&InMemoryEngine::new()).await;
 }
 #[tokio::test]
 async fn inmemory_handle_timeouts() {
+    let _guard = libsql_test_guard();
     contract_handle_timeouts(&InMemoryEngine::new()).await;
 }
 #[tokio::test]
 async fn inmemory_handle_wall_clock_timeouts() {
+    let _guard = libsql_test_guard();
     contract_handle_wall_clock_timeouts(&InMemoryEngine::new()).await;
 }
 
 // D-layer (1-1-3-1)
 #[tokio::test]
 async fn inmemory_spawn_child_blocks_parent() {
+    let _guard = libsql_test_guard();
     contract_spawn_child_blocks_parent(&InMemoryEngine::new()).await;
 }
 #[tokio::test]
 async fn inmemory_child_complete_resolves_parent() {
+    let _guard = libsql_test_guard();
     contract_child_complete_resolves_parent(&InMemoryEngine::new()).await;
 }
 #[tokio::test]
 async fn inmemory_child_fail_propagates_to_parent() {
+    let _guard = libsql_test_guard();
     contract_child_fail_propagates_to_parent(&InMemoryEngine::new()).await;
 }
 #[tokio::test]
 async fn inmemory_cancel_cascades_subtree() {
+    let _guard = libsql_test_guard();
     contract_cancel_cascades_subtree(&InMemoryEngine::new()).await;
 }
 #[tokio::test]
 async fn inmemory_inbox_send_and_read() {
+    let _guard = libsql_test_guard();
     contract_inbox_send_and_read(&InMemoryEngine::new()).await;
 }
 #[tokio::test]
 async fn inmemory_update_tokens_fenced() {
+    let _guard = libsql_test_guard();
     contract_update_tokens_fenced(&InMemoryEngine::new()).await;
 }
 #[tokio::test]
 async fn inmemory_attachment_crud_round_trip() {
+    let _guard = libsql_test_guard();
     contract_attachment_crud_round_trip(&InMemoryEngine::new()).await;
 }
 #[tokio::test]
 async fn inmemory_attachment_duplicate_rejected() {
+    let _guard = libsql_test_guard();
     contract_attachment_duplicate_rejected(&InMemoryEngine::new()).await;
 }
 #[tokio::test]
 async fn inmemory_attachment_job_not_found() {
+    let _guard = libsql_test_guard();
     contract_attachment_job_not_found(&InMemoryEngine::new()).await;
 }
 #[tokio::test]
 async fn inmemory_attachment_validation_rejected() {
+    let _guard = libsql_test_guard();
     contract_attachment_validation_rejected(&InMemoryEngine::new()).await;
 }
 
 // Ops (1-1-3-3)
 #[tokio::test]
 async fn inmemory_pause_resume() {
+    let _guard = libsql_test_guard();
     contract_pause_resume(&InMemoryEngine::new()).await;
 }
 #[tokio::test]
 async fn inmemory_prune() {
+    let _guard = libsql_test_guard();
     contract_prune(&InMemoryEngine::new()).await;
 }
 #[tokio::test]
 async fn inmemory_prune_cascades_attachments() {
+    let _guard = libsql_test_guard();
     contract_prune_cascades_attachments(&InMemoryEngine::new()).await;
 }
 #[tokio::test]
 async fn inmemory_get_stats() {
+    let _guard = libsql_test_guard();
     contract_get_stats(&InMemoryEngine::new()).await;
 }
 
@@ -1250,78 +1291,91 @@ async fn inmemory_get_stats() {
 
 #[tokio::test]
 async fn libsql_enqueue_defaults() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     contract_enqueue_defaults(&engine).await;
     engine.disconnect().await.expect("disconnect");
 }
 #[tokio::test]
 async fn libsql_idempotency() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     contract_idempotency(&engine).await;
     engine.disconnect().await.expect("disconnect");
 }
 #[tokio::test]
 async fn libsql_delay() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     contract_delay_sets_delayed(&engine).await;
     engine.disconnect().await.expect("disconnect");
 }
 #[tokio::test]
 async fn libsql_claim_priority() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     contract_claim_priority_and_exclusive(&engine).await;
     engine.disconnect().await.expect("disconnect");
 }
 #[tokio::test]
 async fn libsql_claim_filters() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     contract_claim_filters(&engine).await;
     engine.disconnect().await.expect("disconnect");
 }
 #[tokio::test]
 async fn libsql_complete_token_fence() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     contract_complete_token_fence(&engine).await;
     engine.disconnect().await.expect("disconnect");
 }
 #[tokio::test]
 async fn libsql_fail_delayed() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     contract_fail_delayed_then_retry(&engine).await;
     engine.disconnect().await.expect("disconnect");
 }
 #[tokio::test]
 async fn libsql_fail_terminal_retry() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     contract_fail_terminal_then_retry(&engine).await;
     engine.disconnect().await.expect("disconnect");
 }
 #[tokio::test]
 async fn libsql_renew_lock() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     contract_renew_lock(&engine).await;
     engine.disconnect().await.expect("disconnect");
 }
 #[tokio::test]
 async fn libsql_promote_delayed() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     contract_promote_delayed(&engine).await;
     engine.disconnect().await.expect("disconnect");
 }
 #[tokio::test]
 async fn libsql_handle_stalled() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     contract_handle_stalled(&engine).await;
     engine.disconnect().await.expect("disconnect");
 }
 #[tokio::test]
 async fn libsql_handle_timeouts() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     contract_handle_timeouts(&engine).await;
     engine.disconnect().await.expect("disconnect");
 }
 #[tokio::test]
 async fn libsql_handle_wall_clock_timeouts() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     contract_handle_wall_clock_timeouts(&engine).await;
     engine.disconnect().await.expect("disconnect");
@@ -1330,60 +1384,70 @@ async fn libsql_handle_wall_clock_timeouts() {
 // D-layer (1-1-3-1)
 #[tokio::test]
 async fn libsql_spawn_child_blocks_parent() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     contract_spawn_child_blocks_parent(&engine).await;
     engine.disconnect().await.expect("disconnect");
 }
 #[tokio::test]
 async fn libsql_child_complete_resolves_parent() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     contract_child_complete_resolves_parent(&engine).await;
     engine.disconnect().await.expect("disconnect");
 }
 #[tokio::test]
 async fn libsql_child_fail_propagates_to_parent() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     contract_child_fail_propagates_to_parent(&engine).await;
     engine.disconnect().await.expect("disconnect");
 }
 #[tokio::test]
 async fn libsql_cancel_cascades_subtree() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     contract_cancel_cascades_subtree(&engine).await;
     engine.disconnect().await.expect("disconnect");
 }
 #[tokio::test]
 async fn libsql_inbox_send_and_read() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     contract_inbox_send_and_read(&engine).await;
     engine.disconnect().await.expect("disconnect");
 }
 #[tokio::test]
 async fn libsql_update_tokens_fenced() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     contract_update_tokens_fenced(&engine).await;
     engine.disconnect().await.expect("disconnect");
 }
 #[tokio::test]
 async fn libsql_attachment_crud_round_trip() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     contract_attachment_crud_round_trip(&engine).await;
     engine.disconnect().await.expect("disconnect");
 }
 #[tokio::test]
 async fn libsql_attachment_duplicate_rejected() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     contract_attachment_duplicate_rejected(&engine).await;
     engine.disconnect().await.expect("disconnect");
 }
 #[tokio::test]
 async fn libsql_attachment_job_not_found() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     contract_attachment_job_not_found(&engine).await;
     engine.disconnect().await.expect("disconnect");
 }
 #[tokio::test]
 async fn libsql_attachment_validation_rejected() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     contract_attachment_validation_rejected(&engine).await;
     engine.disconnect().await.expect("disconnect");
@@ -1392,24 +1456,28 @@ async fn libsql_attachment_validation_rejected() {
 // Ops (1-1-3-3)
 #[tokio::test]
 async fn libsql_pause_resume() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     contract_pause_resume(&engine).await;
     engine.disconnect().await.expect("disconnect");
 }
 #[tokio::test]
 async fn libsql_prune() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     contract_prune(&engine).await;
     engine.disconnect().await.expect("disconnect");
 }
 #[tokio::test]
 async fn libsql_prune_cascades_attachments() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     contract_prune_cascades_attachments(&engine).await;
     engine.disconnect().await.expect("disconnect");
 }
 #[tokio::test]
 async fn libsql_get_stats() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     contract_get_stats(&engine).await;
     engine.disconnect().await.expect("disconnect");
@@ -1417,6 +1485,7 @@ async fn libsql_get_stats() {
 
 #[tokio::test]
 async fn libsql_job_survives_reconnect() {
+    let _guard = libsql_test_guard();
     let path = NamedTempFile::new().expect("alloc temp db file");
     let cfg = EngineConfig {
         database_url: None,
@@ -1446,66 +1515,79 @@ async fn libsql_job_survives_reconnect() {
 
 #[tokio::test]
 async fn postgres_enqueue_defaults() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     contract_enqueue_defaults(&fix.engine).await;
 }
 #[tokio::test]
 async fn postgres_idempotency() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     contract_idempotency(&fix.engine).await;
 }
 #[tokio::test]
 async fn postgres_delay() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     contract_delay_sets_delayed(&fix.engine).await;
 }
 #[tokio::test]
 async fn postgres_claim_priority() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     contract_claim_priority_and_exclusive(&fix.engine).await;
 }
 #[tokio::test]
 async fn postgres_claim_filters() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     contract_claim_filters(&fix.engine).await;
 }
 #[tokio::test]
 async fn postgres_complete_token_fence() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     contract_complete_token_fence(&fix.engine).await;
 }
 #[tokio::test]
 async fn postgres_fail_delayed() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     contract_fail_delayed_then_retry(&fix.engine).await;
 }
 #[tokio::test]
 async fn postgres_fail_terminal_retry() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     contract_fail_terminal_then_retry(&fix.engine).await;
 }
 #[tokio::test]
 async fn postgres_renew_lock() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     contract_renew_lock(&fix.engine).await;
 }
 #[tokio::test]
 async fn postgres_promote_delayed() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     contract_promote_delayed(&fix.engine).await;
 }
 #[tokio::test]
 async fn postgres_handle_stalled() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     contract_handle_stalled(&fix.engine).await;
 }
 #[tokio::test]
 async fn postgres_handle_timeouts() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     contract_handle_timeouts(&fix.engine).await;
 }
 #[tokio::test]
 async fn postgres_handle_wall_clock_timeouts() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     contract_handle_wall_clock_timeouts(&fix.engine).await;
 }
@@ -1513,51 +1595,61 @@ async fn postgres_handle_wall_clock_timeouts() {
 // D-layer (1-1-3-1)
 #[tokio::test]
 async fn postgres_spawn_child_blocks_parent() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     contract_spawn_child_blocks_parent(&fix.engine).await;
 }
 #[tokio::test]
 async fn postgres_child_complete_resolves_parent() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     contract_child_complete_resolves_parent(&fix.engine).await;
 }
 #[tokio::test]
 async fn postgres_child_fail_propagates_to_parent() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     contract_child_fail_propagates_to_parent(&fix.engine).await;
 }
 #[tokio::test]
 async fn postgres_cancel_cascades_subtree() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     contract_cancel_cascades_subtree(&fix.engine).await;
 }
 #[tokio::test]
 async fn postgres_inbox_send_and_read() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     contract_inbox_send_and_read(&fix.engine).await;
 }
 #[tokio::test]
 async fn postgres_update_tokens_fenced() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     contract_update_tokens_fenced(&fix.engine).await;
 }
 #[tokio::test]
 async fn postgres_attachment_crud_round_trip() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     contract_attachment_crud_round_trip(&fix.engine).await;
 }
 #[tokio::test]
 async fn postgres_attachment_duplicate_rejected() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     contract_attachment_duplicate_rejected(&fix.engine).await;
 }
 #[tokio::test]
 async fn postgres_attachment_job_not_found() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     contract_attachment_job_not_found(&fix.engine).await;
 }
 #[tokio::test]
 async fn postgres_attachment_validation_rejected() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     contract_attachment_validation_rejected(&fix.engine).await;
 }
@@ -1565,21 +1657,25 @@ async fn postgres_attachment_validation_rejected() {
 // Ops (1-1-3-3)
 #[tokio::test]
 async fn postgres_pause_resume() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     contract_pause_resume(&fix.engine).await;
 }
 #[tokio::test]
 async fn postgres_prune() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     contract_prune(&fix.engine).await;
 }
 #[tokio::test]
 async fn postgres_prune_cascades_attachments() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     contract_prune_cascades_attachments(&fix.engine).await;
 }
 #[tokio::test]
 async fn postgres_get_stats() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     contract_get_stats(&fix.engine).await;
 }

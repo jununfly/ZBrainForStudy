@@ -16,6 +16,20 @@ use zbrain_core::engine::{BrainEngine, EngineConfig, PageInput};
 use zbrain_core::libsql::LibsqlEngine;
 use zbrain_core::types::{FactListOpts, NewFact};
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 async fn init_clean_engine() -> (LibsqlEngine, NamedTempFile) {
     let path = NamedTempFile::new().expect("alloc temp db file");
     let engine = LibsqlEngine::new();
@@ -62,6 +76,7 @@ fn page_without_fence(title: &str) -> PageInput {
 
 #[tokio::test]
 async fn extract_facts_reconciles_fence_into_db() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     engine
         .put_page("alice", None, &page_with_fence("Alice"))
@@ -112,6 +127,7 @@ async fn extract_facts_reconciles_fence_into_db() {
 
 #[tokio::test]
 async fn extract_facts_page_without_fence_yields_zero() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     engine
         .put_page("bob", None, &page_without_fence("Bob"))
@@ -140,6 +156,7 @@ async fn extract_facts_page_without_fence_yields_zero() {
 
 #[tokio::test]
 async fn extract_facts_empty_brain_is_ok() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
 
     let r = run_extract_facts(&engine, &ExtractFactsOpts::default())
@@ -158,6 +175,7 @@ async fn extract_facts_empty_brain_is_ok() {
 
 #[tokio::test]
 async fn extract_facts_rerun_is_idempotent() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     engine
         .put_page("alice", None, &page_with_fence("Alice"))
@@ -189,6 +207,7 @@ async fn extract_facts_rerun_is_idempotent() {
 
 #[tokio::test]
 async fn extract_facts_dry_run_writes_nothing() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     engine
         .put_page("alice", None, &page_with_fence("Alice"))
@@ -222,6 +241,7 @@ async fn extract_facts_dry_run_writes_nothing() {
 
 #[tokio::test]
 async fn extract_facts_legacy_guard_blocks_reconcile() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     engine
         .put_page("alice", None, &page_with_fence("Alice"))

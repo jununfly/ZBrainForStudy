@@ -18,6 +18,20 @@ use zbrain_core::types::PageKind;
 mod support;
 use support::pg_fixture::PgFixture;
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 /// Fresh LibsqlEngine backed by a temp file.
 async fn temp_engine() -> (NamedTempFile, LibsqlEngine) {
     let temp = NamedTempFile::new().expect("alloc temp db file");
@@ -83,6 +97,7 @@ async fn seed_chunk(
 /// `symbol_name_qualified` in `matches`, with empty `suggestions`.
 #[tokio::test]
 async fn libsql_disambiguate_exact_returns_qualified() {
+    let _guard = libsql_test_guard();
     let (temp, engine) = temp_engine().await;
     let page_id = seed_code_page(&engine, "foo", "src/foo.rs", "default").await;
     seed_chunk(temp.path(), page_id, "render", Some("App::render")).await;
@@ -100,6 +115,7 @@ async fn libsql_disambiguate_exact_returns_qualified() {
 /// `ambiguous`).
 #[tokio::test]
 async fn libsql_disambiguate_multiple_exact_matches() {
+    let _guard = libsql_test_guard();
     let (temp, engine) = temp_engine().await;
     let page_id = seed_code_page(&engine, "foo", "src/foo.rs", "default").await;
     seed_chunk(temp.path(), page_id, "render", Some("App::render")).await;
@@ -120,6 +136,7 @@ async fn libsql_disambiguate_multiple_exact_matches() {
 /// (case-insensitive). `matches` stays empty.
 #[tokio::test]
 async fn libsql_disambiguate_fuzzy_suggestions_when_no_exact() {
+    let _guard = libsql_test_guard();
     let (temp, engine) = temp_engine().await;
     // symbol_name is "renderWidget", qualified "App::RenderWidget" — neither
     // equals the bare "render", but the qualified name contains it (case-insensitively).
@@ -139,6 +156,7 @@ async fn libsql_disambiguate_fuzzy_suggestions_when_no_exact() {
 /// `symbol_name`).
 #[tokio::test]
 async fn libsql_disambiguate_matches_on_qualified_exact() {
+    let _guard = libsql_test_guard();
     let (temp, engine) = temp_engine().await;
     let page_id = seed_code_page(&engine, "foo", "src/foo.rs", "default").await;
     // symbol_name differs, but symbol_name_qualified equals the bare input.
@@ -156,6 +174,7 @@ async fn libsql_disambiguate_matches_on_qualified_exact() {
 /// `symbol_name`.
 #[tokio::test]
 async fn libsql_disambiguate_scoped_to_source() {
+    let _guard = libsql_test_guard();
     let (temp, engine) = temp_engine().await;
     engine
         .create_source(&CreateSourceInput {
@@ -187,6 +206,7 @@ async fn libsql_disambiguate_scoped_to_source() {
 /// InMemory mirror of the libsql tracer.
 #[tokio::test]
 async fn inmemory_disambiguate_exact_returns_qualified() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::new();
     engine
         .put_page(
@@ -232,6 +252,7 @@ async fn inmemory_disambiguate_exact_returns_qualified() {
 /// InMemory mirror of the fuzzy `did_you_mean` path.
 #[tokio::test]
 async fn inmemory_disambiguate_fuzzy_suggestions_when_no_exact() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::new();
     engine
         .put_page(
@@ -302,6 +323,7 @@ async fn pg_seed_chunk(url: &str, page_id: i64, symbol_name: &str, symbol_name_q
 
 #[tokio::test]
 async fn postgres_disambiguate_exact_returns_qualified() {
+    let _guard = libsql_test_guard();
     let fix = PgFixture::start().await;
     let page = fix
         .engine
@@ -329,6 +351,7 @@ async fn postgres_disambiguate_exact_returns_qualified() {
 
 #[tokio::test]
 async fn postgres_disambiguate_fuzzy_suggestions_when_no_exact() {
+    let _guard = libsql_test_guard();
     let fix = PgFixture::start().await;
     let page = fix
         .engine

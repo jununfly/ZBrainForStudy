@@ -26,6 +26,20 @@ use zbrain_core::engine::{BrainEngine, EngineConfig, PageInput};
 use zbrain_core::libsql::LibsqlEngine;
 use zbrain_core::PageRef;
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 // ---------------------------------------------------------------------------
 // libsql helpers
 // ---------------------------------------------------------------------------
@@ -126,6 +140,7 @@ async fn libsql_page_id(tmp: &NamedTempFile, slug: &str, source_id: &str) -> i64
 
 #[tokio::test]
 async fn libsql_salience_n_active_takes() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = libsql_init_clean_engine().await;
     libsql_seed_source(&tmp, "src-1").await;
     engine
@@ -175,6 +190,7 @@ async fn libsql_salience_n_active_takes() {
 
 #[tokio::test]
 async fn libsql_salience_inactive_takes_excluded() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = libsql_init_clean_engine().await;
     libsql_seed_source(&tmp, "src-1").await;
     engine
@@ -223,6 +239,7 @@ async fn libsql_salience_inactive_takes_excluded() {
 
 #[tokio::test]
 async fn libsql_salience_cross_page_isolation() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = libsql_init_clean_engine().await;
     libsql_seed_source(&tmp, "src-1").await;
 
@@ -372,6 +389,7 @@ async fn pg_page_id(url: &str, slug: &str, source_id: &str) -> i64 {
 
 #[tokio::test]
 async fn postgres_salience_n_active_takes() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     let engine = &fix.engine;
     pg_seed_source(&fix.url, "src-1").await;
@@ -419,6 +437,7 @@ async fn postgres_salience_n_active_takes() {
 
 #[tokio::test]
 async fn postgres_salience_inactive_takes_excluded() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     let engine = &fix.engine;
     pg_seed_source(&fix.url, "src-1").await;
@@ -466,6 +485,7 @@ async fn postgres_salience_inactive_takes_excluded() {
 
 #[tokio::test]
 async fn postgres_salience_cross_page_isolation() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     let engine = &fix.engine;
     pg_seed_source(&fix.url, "src-1").await;

@@ -13,6 +13,20 @@ use zbrain_core::engine::{BrainEngine, EngineConfig};
 use zbrain_core::import::CodeEdgeInput;
 use zbrain_core::libsql::LibsqlEngine;
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 fn resolved_edge(from: i64, to: i64, edge_type: &str) -> CodeEdgeInput {
     CodeEdgeInput {
         from_chunk_id: from,
@@ -90,6 +104,7 @@ async fn seed_chunks(path: &std::path::Path, ids: &[i64]) {
 
 #[tokio::test]
 async fn add_code_edges_routes_resolved_and_unresolved() {
+    let _guard = libsql_test_guard();
     let (temp, engine) = temp_engine().await;
     seed_chunks(temp.path(), &[1, 2, 3]).await;
 
@@ -126,6 +141,7 @@ async fn add_code_edges_routes_resolved_and_unresolved() {
 
 #[tokio::test]
 async fn add_code_edges_dedup_via_unique_key() {
+    let _guard = libsql_test_guard();
     let (temp, engine) = temp_engine().await;
     seed_chunks(temp.path(), &[1, 2]).await;
 
@@ -151,6 +167,7 @@ async fn add_code_edges_dedup_via_unique_key() {
 
 #[tokio::test]
 async fn delete_code_edges_for_chunks_removes_touching_edges() {
+    let _guard = libsql_test_guard();
     let (temp, engine) = temp_engine().await;
     seed_chunks(temp.path(), &[10, 20, 30, 40, 50]).await;
 

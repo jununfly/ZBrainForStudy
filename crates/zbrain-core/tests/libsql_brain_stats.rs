@@ -18,6 +18,20 @@ use zbrain_core::libsql::LibsqlEngine;
 use zbrain_core::types::LinkBatchInput;
 use zbrain_core::PageKind;
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 fn temp_db() -> NamedTempFile {
     NamedTempFile::new().expect("alloc temp db file")
 }
@@ -78,12 +92,14 @@ fn link(from: &str, to: &str) -> LinkBatchInput {
 
 #[tokio::test]
 async fn kind_is_libsql() {
+    let _guard = libsql_test_guard();
     let engine = LibsqlEngine::new();
     assert_eq!(engine.kind(), EngineKind::Libsql);
 }
 
 #[tokio::test]
 async fn empty_brain_is_all_zero() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let engine = connected_engine(&path).await;
     let s = engine.get_brain_stats().await.expect("get_brain_stats");
@@ -98,6 +114,7 @@ async fn empty_brain_is_all_zero() {
 
 #[tokio::test]
 async fn counts_pages_chunks_embeddings_and_types() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let engine = connected_engine(&path).await;
 
@@ -130,6 +147,7 @@ async fn counts_pages_chunks_embeddings_and_types() {
 
 #[tokio::test]
 async fn counts_distinct_tags_and_links() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let engine = connected_engine(&path).await;
 
@@ -157,6 +175,7 @@ async fn counts_distinct_tags_and_links() {
 
 #[tokio::test]
 async fn timeline_entry_count_sums_json_array_lengths() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let engine = connected_engine(&path).await;
 
@@ -185,6 +204,7 @@ async fn timeline_entry_count_sums_json_array_lengths() {
 
 #[tokio::test]
 async fn page_count_excludes_soft_deleted_but_pages_by_type_does_not() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let engine = connected_engine(&path).await;
 

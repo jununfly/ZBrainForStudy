@@ -9,6 +9,20 @@ use zbrain_core::engine::{BrainEngine, EngineConfig};
 use zbrain_core::libsql::LibsqlEngine;
 use zbrain_core::token_queries::{TokenError, TokenQueries};
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 fn temp_db() -> NamedTempFile {
     NamedTempFile::new().expect("alloc temp db file")
 }
@@ -76,6 +90,7 @@ fn past_expires_at() -> i64 {
 
 #[tokio::test]
 async fn valid_oauth_token_returns_auth_info() {
+    let _guard = libsql_test_guard();
     let (temp, engine) = temp_engine().await;
     let conn = raw_conn(&temp).await;
 
@@ -102,6 +117,7 @@ async fn valid_oauth_token_returns_auth_info() {
 
 #[tokio::test]
 async fn unknown_token_returns_invalid() {
+    let _guard = libsql_test_guard();
     let (_temp, engine) = temp_engine().await;
     let err = engine.verify_access_token("no-such-token").await.unwrap_err();
     assert_eq!(err, TokenError::Invalid);
@@ -109,6 +125,7 @@ async fn unknown_token_returns_invalid() {
 
 #[tokio::test]
 async fn expired_token_returns_expired() {
+    let _guard = libsql_test_guard();
     let (temp, engine) = temp_engine().await;
     let conn = raw_conn(&temp).await;
 
@@ -130,6 +147,7 @@ async fn expired_token_returns_expired() {
 
 #[tokio::test]
 async fn legacy_access_token_returns_full_admin_scopes() {
+    let _guard = libsql_test_guard();
     let (temp, engine) = temp_engine().await;
     let conn = raw_conn(&temp).await;
 

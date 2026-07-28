@@ -16,6 +16,19 @@ use zbrain_core::{
     CalibrationQueries, InMemoryEngine, ScorecardQuery, TakeInput, TakeResolution, TakesScorecard,
 };
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 // ---------------------------------------------------------------------------
 // InMemoryEngine tests
 // ---------------------------------------------------------------------------
@@ -40,6 +53,7 @@ fn ti(weight: f64, claim: &str, row_num: i32) -> TakeInput {
 
 #[tokio::test]
 async fn inmem_roundtrip_single_take() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::new();
     let res = engine
         .add_takes_batch(1, &[ti(0.8, "claim-1", 0)])
@@ -66,6 +80,7 @@ async fn inmem_roundtrip_single_take() {
 
 #[tokio::test]
 async fn inmem_roundtrip_multiple_takes_ordered_by_row_num() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::new();
     let res = engine
         .add_takes_batch(
@@ -93,6 +108,7 @@ async fn inmem_roundtrip_multiple_takes_ordered_by_row_num() {
 
 #[tokio::test]
 async fn inmem_roundtrip_multi_page_isolation() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::new();
     engine
         .add_takes_batch(1, &[ti(0.5, "page-1-claim", 0)])
@@ -113,6 +129,7 @@ async fn inmem_roundtrip_multi_page_isolation() {
 
 #[tokio::test]
 async fn inmem_get_takes_for_nonexistent_page_returns_empty() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::new();
     let takes = engine.get_takes_for_page(999, None).await.expect("get_takes");
     assert!(takes.is_empty());
@@ -122,6 +139,7 @@ async fn inmem_get_takes_for_nonexistent_page_returns_empty() {
 
 #[tokio::test]
 async fn inmem_weight_clamped_to_0_1_range() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::new();
     let res = engine
         .add_takes_batch(
@@ -147,6 +165,7 @@ async fn inmem_weight_clamped_to_0_1_range() {
 
 #[tokio::test]
 async fn inmem_resolve_take_updates_fields() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::new();
     engine
         .add_takes_batch(1, &[ti(0.7, "resolve-me", 0)])
@@ -184,6 +203,7 @@ async fn inmem_resolve_take_updates_fields() {
 
 #[tokio::test]
 async fn inmem_resolve_nonexistent_returns_error() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::new();
     let res = TakeResolution {
         page_id: 1,
@@ -207,6 +227,7 @@ async fn inmem_resolve_nonexistent_returns_error() {
 
 #[tokio::test]
 async fn inmem_scorecard_empty_returns_zeros() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::new();
     let sc: TakesScorecard = CalibrationQueries::get_scorecard(&engine, &ScorecardQuery::for_holder("alice"))
         .await
@@ -221,6 +242,7 @@ async fn inmem_scorecard_empty_returns_zeros() {
 
 #[tokio::test]
 async fn inmem_scorecard_single_resolved_correct() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::new();
     engine
         .add_takes_batch(1, &[ti(0.8, "pred-1", 0)])
@@ -258,6 +280,7 @@ async fn inmem_scorecard_single_resolved_correct() {
 
 #[tokio::test]
 async fn inmem_scorecard_single_resolved_incorrect() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::new();
     engine
         .add_takes_batch(1, &[ti(0.9, "pred-1", 0)])
@@ -295,6 +318,7 @@ async fn inmem_scorecard_single_resolved_incorrect() {
 
 #[tokio::test]
 async fn inmem_scorecard_multiple_mixed() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::new();
     // Take 0: weight=0.6, resolved=true  → (0.6-1)² = 0.16, correct
     // Take 1: weight=0.8, resolved=false → (0.8-0)² = 0.64, incorrect
@@ -345,6 +369,7 @@ async fn inmem_scorecard_multiple_mixed() {
 
 #[tokio::test]
 async fn inmem_scorecard_filters_by_holder() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::new();
     // alice: 2 takes
     engine
@@ -389,6 +414,7 @@ async fn inmem_scorecard_filters_by_holder() {
 
 #[tokio::test]
 async fn inmem_scorecard_ignores_unresolved() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::new();
     engine
         .add_takes_batch(1, &[ti(0.5, "unresolved", 0)])
@@ -481,6 +507,7 @@ async fn libsql_seed_page(
 
 #[tokio::test]
 async fn libsql_roundtrip_single_take() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = libsql_init().await;
     let page_id = libsql_seed_page(&engine, &tmp, "test-page", "src-1").await;
 
@@ -523,6 +550,7 @@ async fn libsql_roundtrip_single_take() {
 
 #[tokio::test]
 async fn libsql_multiple_takes_ordered() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = libsql_init().await;
     let page_id = libsql_seed_page(&engine, &tmp, "multi", "src-1").await;
 
@@ -573,6 +601,7 @@ async fn libsql_multiple_takes_ordered() {
 
 #[tokio::test]
 async fn libsql_weight_clamping() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = libsql_init().await;
     let page_id = libsql_seed_page(&engine, &tmp, "clamp", "src-1").await;
 
@@ -607,6 +636,7 @@ async fn libsql_weight_clamping() {
 
 #[tokio::test]
 async fn libsql_resolve_take() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = libsql_init().await;
     let page_id = libsql_seed_page(&engine, &tmp, "resolve", "src-1").await;
 
@@ -665,6 +695,7 @@ async fn libsql_resolve_take() {
 
 #[tokio::test]
 async fn libsql_resolve_nonexistent_errors() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = libsql_init().await;
     let page_id = libsql_seed_page(&engine, &tmp, "no-resolve", "src-1").await;
 
@@ -695,6 +726,7 @@ async fn libsql_resolve_nonexistent_errors() {
 
 #[tokio::test]
 async fn libsql_get_takes_for_nonexistent_page_returns_empty() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = libsql_init().await;
     let takes = engine
         .get_takes_for_page(99999, None)
@@ -769,6 +801,7 @@ async fn pg_seed_page(
 
 #[tokio::test]
 async fn postgres_roundtrip_single_take() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     let engine = &fix.engine;
     let page_id = pg_seed_page(engine, &fix.url, "pg-take", "src-1").await;
@@ -806,6 +839,7 @@ async fn postgres_roundtrip_single_take() {
 
 #[tokio::test]
 async fn postgres_resolve_take() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     let engine = &fix.engine;
     let page_id = pg_seed_page(engine, &fix.url, "pg-resolve", "src-1").await;
@@ -860,6 +894,7 @@ async fn postgres_resolve_take() {
 
 #[tokio::test]
 async fn postgres_get_takes_for_nonexistent_page_returns_empty() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     let takes = fix
         .engine
@@ -877,6 +912,7 @@ async fn postgres_get_takes_for_nonexistent_page_returns_empty() {
 /// Postgres backend.
 #[tokio::test]
 async fn postgres_scorecard_aggregates_resolved_bets() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     let engine = &fix.engine;
     let page_id = pg_seed_page(engine, &fix.url, "pg-scorecard", "src-1").await;
@@ -933,6 +969,7 @@ async fn postgres_scorecard_aggregates_resolved_bets() {
 /// allow-list (`holder = ANY($list)`) fails closed for an out-of-list holder.
 #[tokio::test]
 async fn postgres_scorecard_allow_list_and_holder_scope() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     let engine = &fix.engine;
     let page_id = pg_seed_page(engine, &fix.url, "pg-scorecard-scope", "src-1").await;

@@ -88,6 +88,7 @@ async fn libsql_soft_delete(tmp: &NamedTempFile, slug: &str) {
 
 #[tokio::test]
 async fn libsql_find_orphan_pages_mirrors_ts_contract() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = init_clean_engine().await;
 
     for (slug, title, domain) in [
@@ -148,6 +149,20 @@ async fn libsql_find_orphan_pages_mirrors_ts_contract() {
 
 use serde_json::json;
 use zbrain_core::types::OrphanPage;
+
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 
 async fn pg_seed_source(url: &str, id: &str) {
     let pool = sqlx::postgres::PgPoolOptions::new()
@@ -224,6 +239,7 @@ async fn pg_soft_delete(url: &str, slug: &str) {
 /// C11 baseline: a page with zero inbound links is an orphan.
 #[tokio::test]
 async fn postgres_find_orphan_pages_returns_page_with_no_inbound_links() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     let engine = &fix.engine;
     pg_seed_source(&fix.url, "src-orphan").await;
@@ -252,6 +268,7 @@ async fn postgres_find_orphan_pages_returns_page_with_no_inbound_links() {
 /// A page that has an inbound link from a live page is NOT an orphan.
 #[tokio::test]
 async fn postgres_find_orphan_pages_excludes_page_with_live_inbound_link() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     let engine = &fix.engine;
     pg_seed_source(&fix.url, "src-link").await;
@@ -295,6 +312,7 @@ async fn postgres_find_orphan_pages_excludes_page_with_live_inbound_link() {
 /// page does NOT disqualify a page from being an orphan.
 #[tokio::test]
 async fn postgres_find_orphan_pages_treats_link_from_deleted_page_as_absent() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     let engine = &fix.engine;
     pg_seed_source(&fix.url, "src-c11").await;
@@ -349,6 +367,7 @@ async fn postgres_find_orphan_pages_treats_link_from_deleted_page_as_absent() {
 /// in practice an empty title stays empty (matches TS `findOrphanPages`).
 #[tokio::test]
 async fn postgres_find_orphan_pages_title_coalesce_and_domain_extraction() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     let engine = &fix.engine;
     pg_seed_source(&fix.url, "src-title").await;
@@ -400,6 +419,7 @@ async fn postgres_find_orphan_pages_title_coalesce_and_domain_extraction() {
 /// Results must be ordered by slug ascending.
 #[tokio::test]
 async fn postgres_find_orphan_pages_returns_results_ordered_by_slug() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     let engine = &fix.engine;
     pg_seed_source(&fix.url, "src-order").await;

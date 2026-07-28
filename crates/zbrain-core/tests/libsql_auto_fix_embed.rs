@@ -17,6 +17,20 @@ use zbrain_core::engine::{BrainEngine, EngineConfig, PageInput};
 use zbrain_core::libsql::LibsqlEngine;
 use zbrain_core::PageKind;
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 struct ConstProvider;
 
 #[async_trait::async_trait]
@@ -91,6 +105,7 @@ fn page(title: &str, body: &str, embedding: Option<Vec<u8>>) -> PageInput {
 /// client, and its vector is written back so it is no longer stale.
 #[tokio::test]
 async fn embed_stale_backfills_page_on_libsql() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let engine = connected_engine(&path).await;
     engine
@@ -126,6 +141,7 @@ async fn embed_stale_backfills_page_on_libsql() {
 /// `embed_stale` with `dry_run` counts but writes nothing on a real backend.
 #[tokio::test]
 async fn embed_stale_dry_run_leaves_db_untouched() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let engine = connected_engine(&path).await;
     engine
@@ -162,6 +178,7 @@ async fn embed_stale_dry_run_leaves_db_untouched() {
 /// existing slugs, and writes outgoing links on a real backend.
 #[tokio::test]
 async fn extract_links_creates_resolved_link_on_libsql() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let engine = connected_engine(&path).await;
     engine
@@ -184,6 +201,7 @@ async fn extract_links_creates_resolved_link_on_libsql() {
 /// Dangling wikilinks (target slug absent) are counted, not written.
 #[tokio::test]
 async fn extract_links_skips_dangling_on_libsql() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let engine = connected_engine(&path).await;
     engine
@@ -202,6 +220,7 @@ async fn extract_links_skips_dangling_on_libsql() {
 /// to `pages.timeline` on a real backend.
 #[tokio::test]
 async fn extract_timeline_appends_entries_on_libsql() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let engine = connected_engine(&path).await;
     engine
@@ -236,6 +255,7 @@ async fn extract_timeline_appends_entries_on_libsql() {
 /// `extract_timeline` is idempotent: a re-run adds nothing new.
 #[tokio::test]
 async fn extract_timeline_idempotent_on_libsql() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let engine = connected_engine(&path).await;
     engine

@@ -21,6 +21,20 @@ use zbrain_core::integrity::{scan_integrity, IntegrityScanOptions};
 use zbrain_core::libsql::LibsqlEngine;
 use zbrain_core::PageKind;
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 fn temp_db() -> NamedTempFile {
     NamedTempFile::new().expect("alloc temp db file")
 }
@@ -63,6 +77,7 @@ fn page(page_type: &str, title: &str, body: &str, frontmatter: serde_json::Value
 /// is live on the production backend.
 #[tokio::test]
 async fn empty_brain_scans_clean() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let engine = connected_engine(&path).await;
     let r = scan_integrity(&engine, &IntegrityScanOptions::default())
@@ -77,6 +92,7 @@ async fn empty_brain_scans_clean() {
 /// correct 1-based line and phrase.
 #[tokio::test]
 async fn bare_tweet_detected_on_real_page() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let engine = connected_engine(&path).await;
     engine
@@ -106,6 +122,7 @@ async fn bare_tweet_detected_on_real_page() {
 /// A page with a real tweet-status URL is NOT a bare hit (already cited).
 #[tokio::test]
 async fn cited_tweet_not_flagged() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let engine = connected_engine(&path).await;
     engine
@@ -131,6 +148,7 @@ async fn cited_tweet_not_flagged() {
 /// External markdown links are collected with their source slug + line.
 #[tokio::test]
 async fn external_links_collected() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let engine = connected_engine(&path).await;
     engine
@@ -160,6 +178,7 @@ async fn external_links_collected() {
 /// `frontmatter.validate: false` opts the page out of the integrity scan.
 #[tokio::test]
 async fn validate_false_skips_page() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let engine = connected_engine(&path).await;
     engine
@@ -186,6 +205,7 @@ async fn validate_false_skips_page() {
 /// `--type person` (slug prefix `person/`) restricts the scan.
 #[tokio::test]
 async fn type_filter_restricts_scan() {
+    let _guard = libsql_test_guard();
     let path = temp_db();
     let engine = connected_engine(&path).await;
     engine

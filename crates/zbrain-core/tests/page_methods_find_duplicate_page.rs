@@ -12,6 +12,20 @@ use zbrain_core::engine::{BrainEngine, EngineConfig, InMemoryEngine, PageInput};
 use zbrain_core::libsql::LibsqlEngine;
 use zbrain_core::{DuplicatePage, FindDuplicatePageOpts};
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 async fn init_clean_engine() -> (LibsqlEngine, NamedTempFile) {
     let path = NamedTempFile::new().expect("alloc temp db file");
     let engine = LibsqlEngine::new();
@@ -62,6 +76,7 @@ async fn seed_libsql_page(
 
 #[tokio::test]
 async fn libsql_find_duplicate_page_matches_content_hash() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = init_clean_engine().await;
     seed_libsql_page(
         &tmp,
@@ -95,6 +110,7 @@ async fn libsql_find_duplicate_page_matches_content_hash() {
 
 #[tokio::test]
 async fn libsql_find_duplicate_page_matches_frontmatter_id() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = init_clean_engine().await;
     seed_libsql_page(
         &tmp,
@@ -128,6 +144,7 @@ async fn libsql_find_duplicate_page_matches_frontmatter_id() {
 
 #[tokio::test]
 async fn libsql_find_duplicate_page_selects_lowest_id_when_multiple_rows_match() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = init_clean_engine().await;
     seed_libsql_page(
         &tmp,
@@ -169,6 +186,7 @@ async fn libsql_find_duplicate_page_selects_lowest_id_when_multiple_rows_match()
 
 #[tokio::test]
 async fn libsql_find_duplicate_page_returns_none_when_no_row_matches() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = init_clean_engine().await;
     seed_libsql_page(
         &tmp,
@@ -197,6 +215,7 @@ async fn libsql_find_duplicate_page_returns_none_when_no_row_matches() {
 
 #[tokio::test]
 async fn libsql_find_duplicate_page_ignores_soft_deleted_rows() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = init_clean_engine().await;
     seed_libsql_page(
         &tmp,
@@ -225,6 +244,7 @@ async fn libsql_find_duplicate_page_ignores_soft_deleted_rows() {
 
 #[tokio::test]
 async fn in_memory_find_duplicate_page_matches_content_hash_and_frontmatter_id() {
+    let _guard = libsql_test_guard();
     let engine = InMemoryEngine::default();
     engine
         .connect(&EngineConfig::default())
@@ -353,6 +373,7 @@ async fn pg_soft_delete_via_sql(url: &str, slug: &str) {
 
 #[tokio::test]
 async fn postgres_find_duplicate_page_matches_content_hash() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     let engine = &fix.engine;
     pg_seed_source(&fix.url, "src-1").await;
@@ -393,6 +414,7 @@ async fn postgres_find_duplicate_page_matches_content_hash() {
 
 #[tokio::test]
 async fn postgres_find_duplicate_page_matches_frontmatter_id() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     let engine = &fix.engine;
     pg_seed_source(&fix.url, "src-1").await;
@@ -433,6 +455,7 @@ async fn postgres_find_duplicate_page_matches_frontmatter_id() {
 
 #[tokio::test]
 async fn postgres_find_duplicate_page_selects_lowest_id_when_multiple_rows_match() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     let engine = &fix.engine;
     pg_seed_source(&fix.url, "src-1").await;
@@ -487,6 +510,7 @@ async fn postgres_find_duplicate_page_selects_lowest_id_when_multiple_rows_match
 
 #[tokio::test]
 async fn postgres_find_duplicate_page_returns_none_when_no_row_matches() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     let engine = &fix.engine;
     pg_seed_source(&fix.url, "src-1").await;
@@ -522,6 +546,7 @@ async fn postgres_find_duplicate_page_returns_none_when_no_row_matches() {
 
 #[tokio::test]
 async fn postgres_find_duplicate_page_ignores_soft_deleted_rows() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     let engine = &fix.engine;
     pg_seed_source(&fix.url, "src-1").await;

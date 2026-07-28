@@ -30,6 +30,20 @@ use tempfile::NamedTempFile;
 use zbrain_core::engine::{BrainEngine, CreateSourceInput, EngineConfig, PageInput, SearchOpts};
 use zbrain_core::libsql::LibsqlEngine;
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 /// Build a connected, schema-initialized engine on a fresh temp file.
 async fn init_clean_engine() -> (LibsqlEngine, NamedTempFile) {
     let path = NamedTempFile::new().expect("alloc temp db file");
@@ -76,6 +90,7 @@ fn keyword_opts(keywords: &[&str]) -> SearchOpts {
 
 #[tokio::test]
 async fn search_pages_finds_keyword_in_title() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     engine
         .put_page(
@@ -108,6 +123,7 @@ async fn search_pages_finds_keyword_in_title() {
 
 #[tokio::test]
 async fn search_pages_finds_keyword_in_content() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     engine
         .put_page(
@@ -140,6 +156,7 @@ async fn search_pages_finds_keyword_in_content() {
 
 #[tokio::test]
 async fn search_pages_returns_empty_for_no_match() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     engine
         .put_page("only-note", None, &note_input("Alpha", "beta gamma"))
@@ -158,6 +175,7 @@ async fn search_pages_returns_empty_for_no_match() {
 
 #[tokio::test]
 async fn search_pages_filters_by_source() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     seed_source(&engine, "alpha").await;
     seed_source(&engine, "beta").await;
@@ -193,6 +211,7 @@ async fn search_pages_filters_by_source() {
 
 #[tokio::test]
 async fn search_pages_excludes_soft_deleted() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     engine
         .put_page("live", None, &note_input("keeper keyword", "body"))
@@ -217,6 +236,7 @@ async fn search_pages_excludes_soft_deleted() {
 
 #[tokio::test]
 async fn search_pages_respects_limit() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     for i in 0..5 {
         engine
@@ -243,6 +263,7 @@ async fn search_pages_respects_limit() {
 
 #[tokio::test]
 async fn search_pages_vector_path_degrades_without_embeddings() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     engine
         .put_page("vec-note", None, &note_input("vector keyword note", "body"))
@@ -274,6 +295,7 @@ fn embed_le(v: &[f32]) -> Vec<u8> {
 
 #[tokio::test]
 async fn search_pages_vector_path_active_with_stored_embedding() {
+    let _guard = libsql_test_guard();
     // G24 write-path proof: a page whose embedding was persisted via put_page is
     // now retrievable through the vector half of fuse_and_boost. Two pages share
     // no lexical overlap with the query keyword; only the one whose stored vector

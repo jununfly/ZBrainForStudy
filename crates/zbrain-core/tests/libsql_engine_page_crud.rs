@@ -27,6 +27,20 @@ use zbrain_core::engine::{
 use zbrain_core::libsql::LibsqlEngine;
 use zbrain_core::{EffectiveDateSource, PageKind};
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 /// Build a connected, schema-initialized engine on a fresh temp file.
 /// Returns `(engine, NamedTempFile)` so the caller can keep the temp file
 /// alive for the duration of the test — dropping it deletes the DB.
@@ -95,6 +109,7 @@ async fn source_ids_for_slug(tmp: &NamedTempFile, slug: &str) -> Vec<String> {
 
 #[tokio::test]
 async fn get_page_returns_none_when_slug_missing() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     let got = engine
         .get_page("does-not-exist", &GetPageOpts::default())
@@ -106,6 +121,7 @@ async fn get_page_returns_none_when_slug_missing() {
 
 #[tokio::test]
 async fn get_page_round_trips_after_put() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     let inserted = engine
         .put_page("alpha", None, &note_input("Alpha", "body-1"))
@@ -126,6 +142,7 @@ async fn get_page_round_trips_after_put() {
 
 #[tokio::test]
 async fn get_page_default_excludes_soft_deleted() {
+    let _guard = libsql_test_guard();
     // Default GetPageOpts has include_deleted=false. A row that has been
     // soft-deleted must vanish from the default read path, mirroring the
     // trait doc: "Returns None if not found or soft-deleted (unless
@@ -154,6 +171,7 @@ async fn get_page_default_excludes_soft_deleted() {
 
 #[tokio::test]
 async fn get_page_with_include_deleted_returns_soft_deleted_row() {
+    let _guard = libsql_test_guard();
     // With include_deleted=true the row must be visible AND carry a
     // non-empty deleted_at marker, proving the column is actually projected
     // (not just defaulted by the stub `row_to_page`).
@@ -187,6 +205,7 @@ async fn get_page_with_include_deleted_returns_soft_deleted_row() {
 
 #[tokio::test]
 async fn get_page_with_matching_source_id_returns_row() {
+    let _guard = libsql_test_guard();
     // source_id filter must match the stored value. `put_page` uses the
     // schema default ('default') when PageInput leaves source_id None, so
     // requesting that exact source must succeed.
@@ -211,6 +230,7 @@ async fn get_page_with_matching_source_id_returns_row() {
 
 #[tokio::test]
 async fn get_page_with_mismatched_source_id_returns_none() {
+    let _guard = libsql_test_guard();
     // source_id scoping must filter out rows that belong to a different
     // source, even if the slug matches.
     let (engine, _tmp) = init_clean_engine().await;
@@ -232,6 +252,7 @@ async fn get_page_with_mismatched_source_id_returns_none() {
 
 #[tokio::test]
 async fn get_page_without_source_id_falls_back_to_unscoped_slug_lookup() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = init_clean_engine().await;
     seed_source(&tmp, "libsql-alt").await;
     engine
@@ -256,6 +277,7 @@ async fn get_page_without_source_id_falls_back_to_unscoped_slug_lookup() {
 
 #[tokio::test]
 async fn get_page_returns_full_column_projection() {
+    let _guard = libsql_test_guard();
     // Lock the 30-column projection: after S6-T4, get_page must hydrate
     // every documented Page field from the row instead of synthesising
     // defaults in `row_to_page`. We assert the schema-default values
@@ -314,6 +336,7 @@ async fn get_page_returns_full_column_projection() {
 
 #[tokio::test]
 async fn put_page_upsert_updates_existing_row() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     let first = engine
         .put_page("beta", None, &note_input("Beta v1", "body-v1"))
@@ -373,6 +396,7 @@ fn full_input() -> PageInput {
 
 #[tokio::test]
 async fn s6t6_insert_new_page_writes_19_columns() {
+    let _guard = libsql_test_guard();
     // INSERT path: all 19 columns must land in the row and be readable
     // via get_page (30-col projection). Source_id defaults to 'default'.
     let (engine, _tmp) = init_clean_engine().await;
@@ -432,6 +456,7 @@ async fn s6t6_insert_new_page_writes_19_columns() {
 
 #[tokio::test]
 async fn s6t6_update_same_slug_uses_update_branch() {
+    let _guard = libsql_test_guard();
     // Second put_page with the same slug must UPDATE (reuse id), not INSERT.
     let (engine, _tmp) = init_clean_engine().await;
     let first = engine
@@ -452,6 +477,7 @@ async fn s6t6_update_same_slug_uses_update_branch() {
 
 #[tokio::test]
 async fn s6t6_coalesce_preserve_effective_date() {
+    let _guard = libsql_test_guard();
     // On UPDATE, null input for effective_date must preserve the old value
     // (COALESCE-preserve). Conversely, a non-null input must overwrite.
     let (engine, _tmp) = init_clean_engine().await;
@@ -492,6 +518,7 @@ async fn s6t6_coalesce_preserve_effective_date() {
 
 #[tokio::test]
 async fn s6t6_coalesce_preserve_import_filename() {
+    let _guard = libsql_test_guard();
     // Null import_filename on UPDATE must not blank a previously set value.
     let (engine, _tmp) = init_clean_engine().await;
     let mut input = full_input();
@@ -517,6 +544,7 @@ async fn s6t6_coalesce_preserve_import_filename() {
 
 #[tokio::test]
 async fn s6t6_coalesce_preserve_ingested_at() {
+    let _guard = libsql_test_guard();
     // Null provenance on UPDATE must preserve the old ingested_at.
     let (engine, _tmp) = init_clean_engine().await;
     let mut input = full_input();
@@ -552,6 +580,7 @@ async fn s6t6_coalesce_preserve_ingested_at() {
 
 #[tokio::test]
 async fn s6t6_excluded_overwrites_title_and_compiled_truth() {
+    let _guard = libsql_test_guard();
     // title and compiled_truth are on the excluded-override list — they
     // must always reflect the latest input, even if it differs from the
     // stored value.
@@ -578,6 +607,7 @@ async fn s6t6_excluded_overwrites_title_and_compiled_truth() {
 
 #[tokio::test]
 async fn s6t6_updated_at_monotonically_increases() {
+    let _guard = libsql_test_guard();
     // updated_at on the second put must be >= the first. SQLite
     // CURRENT_TIMESTAMP has second granularity, so we only assert not-less.
     let (engine, _tmp) = init_clean_engine().await;
@@ -600,6 +630,7 @@ async fn s6t6_updated_at_monotonically_increases() {
 
 #[tokio::test]
 async fn s6t6_ingested_at_server_stamp_with_provenance() {
+    let _guard = libsql_test_guard();
     // When any of source_kind / source_uri / ingested_via is non-null, the
     // engine must compute ingested_at server-side (ignoring PageInput.ingested_at).
     let (engine, _tmp) = init_clean_engine().await;
@@ -630,6 +661,7 @@ async fn s6t6_ingested_at_server_stamp_with_provenance() {
 
 #[tokio::test]
 async fn s6t6_ingested_at_no_stamp_without_provenance() {
+    let _guard = libsql_test_guard();
     // When none of source_kind / source_uri / ingested_via are set, ingested_at
     // must remain null (server does not stamp).
     let (engine, _tmp) = init_clean_engine().await;
@@ -651,6 +683,7 @@ async fn s6t6_ingested_at_no_stamp_without_provenance() {
 
 #[tokio::test]
 async fn s6t6_chunker_version_defaults_to_1() {
+    let _guard = libsql_test_guard();
     // When chunker_version is None in PageInput, INSERT must use COALESCE
     // to default to 1 (matching TS COALESCE($13, 1)).
     let (engine, _tmp) = init_clean_engine().await;
@@ -678,6 +711,7 @@ async fn s6t6_chunker_version_defaults_to_1() {
 
 #[tokio::test]
 async fn s6t6_frontmatter_json_roundtrip() {
+    let _guard = libsql_test_guard();
     // frontmatter must survive a full JSON roundtrip: write via put_page,
     // read back via get_page, compare structure.
     let (engine, _tmp) = init_clean_engine().await;
@@ -706,6 +740,7 @@ async fn s6t6_frontmatter_json_roundtrip() {
 
 #[tokio::test]
 async fn s6t6_generation_bumps_on_watched_column_update() {
+    let _guard = libsql_test_guard();
     // The bump_page_generation_fn trigger (migration 0002+0003) bumps
     // generation when a watched column (e.g. compiled_truth) changes.
     // Two puts with different compiled_truth values must show generation >= 2.
@@ -734,6 +769,7 @@ async fn s6t6_generation_bumps_on_watched_column_update() {
 
 #[tokio::test]
 async fn s6t6_returning_projection_covers_all_30_columns() {
+    let _guard = libsql_test_guard();
     // The RETURNING clause must feed full_row_to_page so that every Page
     // field is populated (not defaulted). We assert a representative set
     // of columns that the 7-col stub would leave as schema defaults.
@@ -774,6 +810,7 @@ async fn s6t6_returning_projection_covers_all_30_columns() {
 
 #[tokio::test]
 async fn delete_page_removes_row() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     engine
         .put_page("gamma", None, &note_input("Gamma", "body"))
@@ -793,6 +830,7 @@ async fn delete_page_removes_row() {
 
 #[tokio::test]
 async fn delete_page_is_noop_on_missing_slug() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     engine
         .delete_page("never-existed", None)
@@ -803,6 +841,7 @@ async fn delete_page_is_noop_on_missing_slug() {
 
 #[tokio::test]
 async fn delete_page_with_source_id_only_removes_matching_source_row() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = init_clean_engine().await;
     seed_source(&tmp, "libsql-alt").await;
 
@@ -841,6 +880,7 @@ async fn delete_page_with_source_id_only_removes_matching_source_row() {
 
 #[tokio::test]
 async fn delete_page_without_source_id_only_removes_default_source_row() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = init_clean_engine().await;
     seed_source(&tmp, "libsql-alt").await;
 
@@ -889,6 +929,7 @@ async fn delete_page_without_source_id_only_removes_default_source_row() {
 
 #[tokio::test]
 async fn list_pages_empty_when_no_rows() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     let pages = engine
         .list_pages(&PageFilters::default())
@@ -900,6 +941,7 @@ async fn list_pages_empty_when_no_rows() {
 
 #[tokio::test]
 async fn list_pages_filters_by_page_type() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     engine
         .put_page("n1", None, &note_input("N1", "x"))
@@ -951,6 +993,7 @@ async fn list_pages_filters_by_page_type() {
 
 #[tokio::test]
 async fn list_pages_respects_limit() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     for i in 0..5 {
         engine
@@ -979,6 +1022,7 @@ async fn list_pages_respects_limit() {
 
 #[tokio::test]
 async fn resolve_slugs_exact_match_returns_before_fuzzy_candidates() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     engine
         .put_page("alpha-beta", None, &note_input("AB", "x"))
@@ -1009,6 +1053,7 @@ async fn resolve_slugs_exact_match_returns_before_fuzzy_candidates() {
 
 #[tokio::test]
 async fn resolve_slugs_exact_first_then_fuzzy_fallback() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     engine
         .put_page("alpha-beta", None, &note_input("Alpha exact", "x"))
@@ -1039,6 +1084,7 @@ async fn resolve_slugs_exact_first_then_fuzzy_fallback() {
 
 #[tokio::test]
 async fn resolve_slugs_fuzzy_fallback_limits_results_and_reports_no_match() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
 
     for idx in 0..6 {
@@ -1073,6 +1119,7 @@ async fn resolve_slugs_fuzzy_fallback_limits_results_and_reports_no_match() {
 
 #[tokio::test]
 async fn resolve_slugs_hides_soft_deleted_exact_match() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_engine().await;
     engine
         .put_page("resolve-soft-deleted", None, &note_input("Deleted", "x"))
@@ -1107,6 +1154,7 @@ async fn resolve_slugs_hides_soft_deleted_exact_match() {
 
 #[tokio::test]
 async fn resolve_slugs_exact_match_honors_source_scope() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = init_clean_engine().await;
     seed_source(&tmp, "libsql-alpha").await;
     seed_source(&tmp, "libsql-beta").await;

@@ -9,6 +9,20 @@ use zbrain_core::admin_queries::{
 };
 use zbrain_core::InMemoryEngine;
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 async fn init_in_memory_admin() -> Box<dyn AdminQueries> {
     let engine = InMemoryEngine::default();
     Box::new(engine)
@@ -16,6 +30,7 @@ async fn init_in_memory_admin() -> Box<dyn AdminQueries> {
 
 #[tokio::test]
 async fn inmemory_watch_returns_default_snapshot() {
+    let _guard = libsql_test_guard();
     let queries = init_in_memory_admin().await;
     let result = queries.get_watch_snapshot().await;
     assert!(result.is_ok(), "get_watch_snapshot should not error");
@@ -32,6 +47,7 @@ async fn inmemory_watch_returns_default_snapshot() {
 
 #[test]
 fn watch_snapshot_serializes_camel_case() {
+    let _guard = libsql_test_guard();
     let snap = WatchSnapshot {
         ts_ms: 1719705600000,
         by_type: vec![JobTypeSummary {
@@ -65,6 +81,7 @@ fn watch_snapshot_serializes_camel_case() {
 /// For unit-level cluster testing, see libsql.rs inline tests.
 #[tokio::test]
 async fn error_cluster_roundtrip_through_engine() {
+    let _guard = libsql_test_guard();
     // Test that the error classifier is callable through the public API.
     // Since there are no tables, top_errors will be empty — but the function
     // itself is exercised by the LibsqlEngine query path.

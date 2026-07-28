@@ -22,6 +22,20 @@ use zbrain_core::types::{
 };
 use zbrain_core::InMemoryEngine;
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -449,86 +463,103 @@ async fn test_expire_nonexistent_returns_false(engine: &dyn BrainEngine) {
 
 #[tokio::test]
 async fn inmem_insert_roundtrip() {
+    let _guard = libsql_test_guard();
     test_insert_roundtrip(&InMemoryEngine::new()).await;
 }
 
 #[tokio::test]
 async fn inmem_duplicate_detection() {
+    let _guard = libsql_test_guard();
     test_duplicate_detection(&InMemoryEngine::new()).await;
 }
 
 #[tokio::test]
 async fn inmem_duplicate_different_entity_inserted() {
+    let _guard = libsql_test_guard();
     test_duplicate_different_entity_inserted(&InMemoryEngine::new()).await;
 }
 
 #[tokio::test]
 async fn inmem_supersede_high_confidence() {
+    let _guard = libsql_test_guard();
     test_supersede_high_confidence(&InMemoryEngine::new()).await;
 }
 
 #[tokio::test]
 async fn inmem_supersede_low_confidence_noop() {
+    let _guard = libsql_test_guard();
     test_supersede_low_confidence_noop(&InMemoryEngine::new()).await;
 }
 
 #[tokio::test]
 async fn inmem_list_active_only() {
+    let _guard = libsql_test_guard();
     test_list_active_only(&InMemoryEngine::new()).await;
 }
 
 #[tokio::test]
 async fn inmem_list_kinds_filter() {
+    let _guard = libsql_test_guard();
     test_list_kinds_filter(&InMemoryEngine::new()).await;
 }
 
 #[tokio::test]
 async fn inmem_list_visibility_filter() {
+    let _guard = libsql_test_guard();
     test_list_visibility_filter(&InMemoryEngine::new()).await;
 }
 
 #[tokio::test]
 async fn inmem_list_limit_offset() {
+    let _guard = libsql_test_guard();
     test_list_limit_offset(&InMemoryEngine::new()).await;
 }
 
 #[tokio::test]
 async fn inmem_list_wrong_source_empty() {
+    let _guard = libsql_test_guard();
     test_list_wrong_source_empty(&InMemoryEngine::new()).await;
 }
 
 #[tokio::test]
 async fn inmem_health_counts() {
+    let _guard = libsql_test_guard();
     test_health_counts(&InMemoryEngine::new()).await;
 }
 
 #[tokio::test]
 async fn inmem_health_top_entities() {
+    let _guard = libsql_test_guard();
     test_health_top_entities(&InMemoryEngine::new()).await;
 }
 
 #[tokio::test]
 async fn inmem_health_empty_source() {
+    let _guard = libsql_test_guard();
     test_health_empty_source(&InMemoryEngine::new()).await;
 }
 
 #[tokio::test]
 async fn inmem_expire_basic() {
+    let _guard = libsql_test_guard();
     test_expire_basic(&InMemoryEngine::new()).await;
 }
 
 #[tokio::test]
 async fn inmem_expire_twice_returns_false() {
+    let _guard = libsql_test_guard();
     test_expire_twice_returns_false(&InMemoryEngine::new()).await;
 }
 
 #[tokio::test]
 async fn inmem_expire_wrong_source_returns_false() {
+    let _guard = libsql_test_guard();
     test_expire_wrong_source_returns_false(&InMemoryEngine::new()).await;
 }
 
 #[tokio::test]
 async fn inmem_expire_nonexistent_returns_false() {
+    let _guard = libsql_test_guard();
     test_expire_nonexistent_returns_false(&InMemoryEngine::new()).await;
 }
 
@@ -550,6 +581,7 @@ async fn init_clean_libsql() -> (LibsqlEngine, NamedTempFile) {
 
 #[tokio::test]
 async fn libsql_insert_roundtrip() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     test_insert_roundtrip(&engine).await;
     engine.disconnect().await.expect("disconnect");
@@ -557,6 +589,7 @@ async fn libsql_insert_roundtrip() {
 
 #[tokio::test]
 async fn libsql_duplicate_detection() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     test_duplicate_detection(&engine).await;
     engine.disconnect().await.expect("disconnect");
@@ -564,6 +597,7 @@ async fn libsql_duplicate_detection() {
 
 #[tokio::test]
 async fn libsql_duplicate_different_entity_inserted() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     test_duplicate_different_entity_inserted(&engine).await;
     engine.disconnect().await.expect("disconnect");
@@ -571,6 +605,7 @@ async fn libsql_duplicate_different_entity_inserted() {
 
 #[tokio::test]
 async fn libsql_supersede_high_confidence() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     test_supersede_high_confidence(&engine).await;
     engine.disconnect().await.expect("disconnect");
@@ -578,6 +613,7 @@ async fn libsql_supersede_high_confidence() {
 
 #[tokio::test]
 async fn libsql_supersede_low_confidence_noop() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     test_supersede_low_confidence_noop(&engine).await;
     engine.disconnect().await.expect("disconnect");
@@ -585,6 +621,7 @@ async fn libsql_supersede_low_confidence_noop() {
 
 #[tokio::test]
 async fn libsql_list_active_only() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     test_list_active_only(&engine).await;
     engine.disconnect().await.expect("disconnect");
@@ -592,6 +629,7 @@ async fn libsql_list_active_only() {
 
 #[tokio::test]
 async fn libsql_list_kinds_filter() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     test_list_kinds_filter(&engine).await;
     engine.disconnect().await.expect("disconnect");
@@ -599,6 +637,7 @@ async fn libsql_list_kinds_filter() {
 
 #[tokio::test]
 async fn libsql_list_visibility_filter() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     test_list_visibility_filter(&engine).await;
     engine.disconnect().await.expect("disconnect");
@@ -606,6 +645,7 @@ async fn libsql_list_visibility_filter() {
 
 #[tokio::test]
 async fn libsql_list_limit_offset() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     test_list_limit_offset(&engine).await;
     engine.disconnect().await.expect("disconnect");
@@ -613,6 +653,7 @@ async fn libsql_list_limit_offset() {
 
 #[tokio::test]
 async fn libsql_health_counts() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     test_health_counts(&engine).await;
     engine.disconnect().await.expect("disconnect");
@@ -620,6 +661,7 @@ async fn libsql_health_counts() {
 
 #[tokio::test]
 async fn libsql_health_top_entities() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     test_health_top_entities(&engine).await;
     engine.disconnect().await.expect("disconnect");
@@ -627,6 +669,7 @@ async fn libsql_health_top_entities() {
 
 #[tokio::test]
 async fn libsql_health_empty_source() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     test_health_empty_source(&engine).await;
     engine.disconnect().await.expect("disconnect");
@@ -634,6 +677,7 @@ async fn libsql_health_empty_source() {
 
 #[tokio::test]
 async fn libsql_expire_basic() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     test_expire_basic(&engine).await;
     engine.disconnect().await.expect("disconnect");
@@ -641,6 +685,7 @@ async fn libsql_expire_basic() {
 
 #[tokio::test]
 async fn libsql_expire_twice_returns_false() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     test_expire_twice_returns_false(&engine).await;
     engine.disconnect().await.expect("disconnect");
@@ -648,6 +693,7 @@ async fn libsql_expire_twice_returns_false() {
 
 #[tokio::test]
 async fn libsql_expire_wrong_source_returns_false() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     test_expire_wrong_source_returns_false(&engine).await;
     engine.disconnect().await.expect("disconnect");
@@ -655,6 +701,7 @@ async fn libsql_expire_wrong_source_returns_false() {
 
 #[tokio::test]
 async fn libsql_expire_nonexistent_returns_false() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     test_expire_nonexistent_returns_false(&engine).await;
     engine.disconnect().await.expect("disconnect");
@@ -664,6 +711,7 @@ async fn libsql_expire_nonexistent_returns_false() {
 
 #[tokio::test]
 async fn libsql_facts_survive_reconnect() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = init_clean_libsql().await;
 
     assert_inserted!(engine, "persist", "alice", nf("survives reboot"));
@@ -693,6 +741,7 @@ async fn libsql_facts_survive_reconnect() {
 
 #[tokio::test]
 async fn libsql_supersede_survives_reconnect() {
+    let _guard = libsql_test_guard();
     let (engine, tmp) = init_clean_libsql().await;
 
     engine
@@ -763,6 +812,7 @@ async fn pg_seed_sources(url: &str, ids: &[&str]) {
 
 #[tokio::test]
 async fn postgres_insert_roundtrip() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     pg_seed_sources(&fix.url, &["src-1"]).await;
     test_insert_roundtrip(&fix.engine).await;
@@ -770,6 +820,7 @@ async fn postgres_insert_roundtrip() {
 
 #[tokio::test]
 async fn postgres_supersede_high_confidence() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     pg_seed_sources(&fix.url, &["src-4"]).await;
     test_supersede_high_confidence(&fix.engine).await;
@@ -777,6 +828,7 @@ async fn postgres_supersede_high_confidence() {
 
 #[tokio::test]
 async fn postgres_list_active_only() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     pg_seed_sources(&fix.url, &["src-6"]).await;
     test_list_active_only(&fix.engine).await;
@@ -784,6 +836,7 @@ async fn postgres_list_active_only() {
 
 #[tokio::test]
 async fn postgres_health_counts() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     pg_seed_sources(&fix.url, &["h-src"]).await;
     test_health_counts(&fix.engine).await;
@@ -791,6 +844,7 @@ async fn postgres_health_counts() {
 
 #[tokio::test]
 async fn postgres_expire_basic() {
+    let _guard = libsql_test_guard();
     let fix = support::pg_fixture::PgFixture::start().await;
     pg_seed_sources(&fix.url, &["ex-1"]).await;
     test_expire_basic(&fix.engine).await;
@@ -907,6 +961,7 @@ async fn test_find_trajectory(engine: &dyn BrainEngine) {
 
 #[tokio::test]
 async fn libsql_find_trajectory() {
+    let _guard = libsql_test_guard();
     let (engine, _tmp) = init_clean_libsql().await;
     test_find_trajectory(&engine).await;
     engine.disconnect().await.expect("disconnect");

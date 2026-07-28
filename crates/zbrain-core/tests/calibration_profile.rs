@@ -25,6 +25,20 @@ use zbrain_core::calibration::voice_gate::{VoiceGateError, VoiceGateMode, VoiceG
 use zbrain_core::engine::{BrainEngine, EngineConfig};
 use zbrain_core::libsql::LibsqlEngine;
 
+/// Serialize all libsql FFI access in this binary. The `libsql` native
+/// library is not safe to drive from multiple OS threads concurrently on
+/// Windows (parallel `cargo test` threads crash with STATUS_ACCESS_VIOLATION
+/// 0xc0000005). Each test grabs this guard for its whole body so the suite
+/// stays green under default parallelism; serial runs are unaffected.
+static LIBSQL_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    LIBSQL_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+
 async fn temp_engine() -> (NamedTempFile, LibsqlEngine) {
     let temp = NamedTempFile::new().expect("alloc temp db file");
     let path = temp.path().to_string_lossy().to_string();
@@ -135,6 +149,7 @@ fn stub_opts(holder: &str, budget_gate: Option<Arc<dyn BudgetGate>>) -> Calibrat
 
 #[tokio::test]
 async fn calibration_profile_cold_brain_skips() {
+    let _guard = libsql_test_guard();
     // Empty DB: no resolved takes -> cold-brain short-circuit, no LLM, no write.
     let (_temp, engine) = temp_engine().await;
     let result = run_calibration_profile(&engine, &stub_opts("garry", None))
@@ -149,6 +164,7 @@ async fn calibration_profile_cold_brain_skips() {
 
 #[tokio::test]
 async fn calibration_profile_writes_and_reads_back() {
+    let _guard = libsql_test_guard();
     let (temp, engine) = temp_engine().await;
     let conn = raw_conn(temp.path()).await;
     seed_resolved_takes(&conn, "garry").await;
@@ -202,6 +218,7 @@ async fn calibration_profile_writes_and_reads_back() {
 
 #[tokio::test]
 async fn calibration_profile_budget_exhausted_skips() {
+    let _guard = libsql_test_guard();
     let (temp, engine) = temp_engine().await;
     let conn = raw_conn(temp.path()).await;
     seed_resolved_takes(&conn, "garry").await;
@@ -228,6 +245,7 @@ async fn calibration_profile_budget_exhausted_skips() {
 
 #[tokio::test]
 async fn calibration_profile_unknown_source_errors() {
+    let _guard = libsql_test_guard();
     let (temp, engine) = temp_engine().await;
     let conn = raw_conn(temp.path()).await;
     seed_resolved_takes(&conn, "garry").await;
