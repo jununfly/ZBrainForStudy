@@ -23,7 +23,7 @@
 
 ## 迁移进度（摘要）
 - 迁移全 12 Part。主线已完成：Sources/Capture、Facts/Takes/Timeline/Salience/Graph、Search/Retrieval 生产后端复活、minions、autopilot、Part7 Phase9、Part9 Phase11（残留 TS 终局）、Part10 Phase12 Schema-Pack 路线图。
-- **当前最前沿**：Part11 calibration 簇（1-3）已收口——1-3-3-2/4/5/6/7 全 completed（1-3-3-1 schema 迁移此前已补 migration 0023 注册）；残留 TS 终局主线已完成。Part12 cycle 大迁移已拆独立路线图未启动。
+- **当前最前沿**：Part11 calibration 簇已收口并 push（e7d7ffe/0e93162）。Part12 cycle 大迁移已启动：1-1 facts-extraction 簇 in_progress（6 sub-node + 7 grill 决策落盘），1-1-1 extract-facts 已落地未提交；下一步 1-1-2 extract-atoms。**迁移范式**：cycle phase = `execute_phase` 真实 match 臂 + `autopilot/phases/<name>.rs` 模块函数（Orphans/Purge 先例）；改一个 phase 为真实臂后 `run_cycle_empty_brain` 的 skipped 断言要 -1 并加该 phase 状态断言。libsql 加 trait 方法：inherent `_impl` + 既有 impl 块内委托（开第二个 `impl BrainEngine` 块必 E0119）。
 
 ## 其他
 - Admin 路由差异：Rust admin API 在 `/*`（如 `/register-client`），TS 在 `/admin/api/*`；路线图 Q6 决策"保持 /admin/api/*"，待对齐。
