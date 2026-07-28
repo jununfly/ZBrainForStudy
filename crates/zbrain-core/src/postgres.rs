@@ -6137,6 +6137,11 @@ fn pg_row_to_fact(row: &sqlx::postgres::PgRow) -> Result<FactRow> {
             row.try_get("created_at")
                 .map_err(|e| Error::engine(format!("fact created_at: {e}")))?
         },
+        // v51 fence columns — Postgres facts store does not yet carry these
+        // (no postgres facts migration). Hardcoded None keeps the read path
+        // compiling and safe; the libsql backend is the fidelity source.
+        row_num: None,
+        source_markdown_slug: None,
     })
 }
 

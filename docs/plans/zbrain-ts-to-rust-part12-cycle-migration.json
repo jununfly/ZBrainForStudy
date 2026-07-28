@@ -29,11 +29,54 @@
     "1-1": {
       "id": "1-1",
       "label": "facts-extraction 簇迁移 (extract-facts/atoms/takes + propose/grade-takes + conversation-facts-backfill; 消费者 v0_28_0->extract-takes)",
-      "status": "pending",
-      "mode": "explore",
+      "status": "in_progress",
+      "mode": "exploit",
       "parent": "1",
-      "children": [],
-      "decisions": [],
+      "children": [
+        "1-1-1",
+        "1-1-2",
+        "1-1-3",
+        "1-1-4",
+        "1-1-5",
+        "1-1-6"
+      ],
+      "decisions": [
+        {
+          "q": "Q1 分解粒度",
+          "answer": "拆 6 sub-node（extract-facts/atoms/takes/propose-takes/grade-takes/conversation-facts-backfill），每 phase 独立可测、独立提交",
+          "note": "mirrors 1-3-3-x cadence；父节点 1-1 仅作簇容器"
+        },
+        {
+          "q": "Q2 实现形态",
+          "answer": "每 phase = execute_phase 真实 match 臂，委托 autopilot/phases/<name>.rs 模块函数；对齐 Orphans/Purge 真实实现范式",
+          "note": "非 operation（cycle 内部 phase，非用户态 API）"
+        },
+        {
+          "q": "Q3 LLM 集成",
+          "answer": "走 Arc<dyn ChatProvider> trait DI（instantiate_chat），复用 1-3-3-7 同款抽象；phase 函数接收 chat 入参",
+          "note": "ChatProvider 已在 1-3-3 基建就绪"
+        },
+        {
+          "q": "Q4 实施顺序",
+          "answer": "按依赖从底向上：extract-facts(1-1-1)→extract-atoms(1-1-2)→extract-takes(1-1-3)→propose-takes(1-1-4)→grade-takes(1-1-5)→conversation-facts-backfill(1-1-6)",
+          "note": "extract-facts 无跨 phase 依赖，先行"
+        },
+        {
+          "q": "Q5 测试策略",
+          "answer": "tests/ 集成测试，ChatProvider stub 无真实 LLM；覆盖 happy path + 解析/错误分支",
+          "note": "对齐 1-3-3-7 calibration_profile 测试范式"
+        },
+        {
+          "q": "Q6 范围边界",
+          "answer": "1-1 仅覆盖标注的 6 函数；通用 Extract（HTML→text）阶段不在 1-1，留待独立节点",
+          "note": "节点 label 未含通用 extract"
+        },
+        {
+          "q": "Q7 消费者注册表 v0_28_0→extract-takes",
+          "answer": "注册表重映射归 1-6 orchestration 节点统一接线；1-1 只暴露 phase 函数与 label",
+          "note": "不在此节点改 engine 消费者注册"
+        }
+      ],
       "notes": ""
     },
     "1-2": {
@@ -85,11 +128,71 @@
       "children": [],
       "decisions": [],
       "notes": ""
+    },
+    "1-1-1": {
+      "id": "1-1-1",
+      "label": "extract-facts phase 实现 (port extract-facts.ts → autopilot/phases/extract_facts.rs; 接 execute_phase match 臂; ChatProvider trait DI)",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-1-2": {
+      "id": "1-1-2",
+      "label": "extract-atoms phase 实现 (port extract-atoms.ts → autopilot/phases/extract_atoms.rs; 接 execute_phase)",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-1-3": {
+      "id": "1-1-3",
+      "label": "extract-takes phase 实现 (port extract-takes.ts → autopilot/phases/extract_takes.rs; 接 execute_phase; 消费者 v0_28_0→extract-takes 映射归 1-6)",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-1-4": {
+      "id": "1-1-4",
+      "label": "propose-takes phase 实现 (port propose-takes.ts → autopilot/phases/propose_takes.rs; 接 execute_phase)",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-1-5": {
+      "id": "1-1-5",
+      "label": "grade-takes phase 实现 (port grade-takes.ts → autopilot/phases/grade_takes.rs; 接 execute_phase)",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-1-6": {
+      "id": "1-1-6",
+      "label": "conversation-facts-backfill phase 实现 (port conversation-facts-backfill.ts → autopilot/phases/conversation_facts_backfill.rs; 接 execute_phase)",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-23 17:12:54",
-    "updated": "2026-07-23 17:15:13",
+    "updated": "2026-07-27 23:06:51",
     "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_PART12_CYCLE_MIGRATION.md"
   }
 }

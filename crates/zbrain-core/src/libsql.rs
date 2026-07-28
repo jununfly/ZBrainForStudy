@@ -4255,8 +4255,9 @@ impl BrainEngine for LibsqlEngine {
             "INSERT INTO facts \
                   (source_id, entity_slug, fact, kind, visibility, notability, \
                    context, valid_from, valid_until, source, source_session, \
-                   confidence, claim_metric, claim_value, claim_unit, claim_period, event_type) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                   confidence, claim_metric, claim_value, claim_unit, claim_period, event_type, \
+                   row_num, source_markdown_slug) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
             ::libsql::params![
                 source_id,
                 entity_slug,
@@ -4275,6 +4276,8 @@ impl BrainEngine for LibsqlEngine {
                 input.claim_unit.clone(),
                 input.claim_period.clone(),
                 input.event_type.clone(),
+                input.row_num,
+                input.source_markdown_slug.clone(),
             ],
         )
         .await
@@ -4317,6 +4320,14 @@ impl BrainEngine for LibsqlEngine {
         }
     }
 
+    async fn delete_facts_for_page(&self, slug: &str, source_id: &str) -> Result<i64> {
+        self.delete_facts_for_page_impl(slug, source_id).await
+    }
+
+    async fn count_legacy_fact_rows(&self) -> Result<i64> {
+        self.count_legacy_fact_rows_impl().await
+    }
+
     async fn list_facts_by_entity(
         &self,
         source_id: &str,
@@ -4329,7 +4340,8 @@ impl BrainEngine for LibsqlEngine {
             "SELECT id, source_id, entity_slug, fact, kind, visibility, \
                     notability, context, valid_from, valid_until, expired_at, \
                     superseded_by, consolidated_at, consolidated_into, source, \
-                    source_session, confidence, created_at \
+                    source_session, confidence, created_at, \
+                    row_num, source_markdown_slug \
              FROM facts \
              WHERE source_id = ? AND entity_slug = ?",
         );
@@ -7327,7 +7339,50 @@ fn row_to_fact(row: &::libsql::Row) -> Result<FactRow> {
         created_at: row
             .get(17)
             .map_err(|e| Error::engine(format!("fact created_at: {e}")))?,
+        row_num: row.get(18).map_err(|e| Error::engine(format!("fact row_num: {e}")))?,
+        source_markdown_slug: row
+            .get(19)
+            .map_err(|e| Error::engine(format!("fact source_markdown_slug: {e}")))?,
     })
+}
+
+// ─── libsql extract_facts cycle-phase helpers (1-1-1) ─────────────────────────
+
+impl LibsqlEngine {
+    async fn delete_facts_for_page_impl(
+        &self,
+        slug: &str,
+        source_id: &str,
+    ) -> Result<i64> {
+        let conn = self.conn().await?;
+        let res = conn
+            .execute(
+                "DELETE FROM facts WHERE source_markdown_slug = ?1 AND source_id = ?2",
+                ::libsql::params![slug, source_id],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("delete_facts_for_page: {e}")))?;
+        Ok(res as i64)
+    }
+
+    async fn count_legacy_fact_rows_impl(&self) -> Result<i64> {
+        let conn = self.conn().await?;
+        let mut rows = conn
+            .query(
+                "SELECT COUNT(*) FROM facts WHERE row_num IS NULL AND entity_slug IS NOT NULL",
+                (),
+            )
+            .await
+            .map_err(|e| Error::engine(format!("count_legacy_fact_rows: {e}")))?;
+        let count: i64 = match rows.next().await {
+            Ok(Some(row)) => row
+                .get(0)
+                .map_err(|e| Error::engine(format!("count_legacy_fact_rows count: {e}")))?,
+            Ok(None) => 0,
+            Err(e) => return Err(Error::engine(format!("count_legacy_fact_rows row: {e}"))),
+        };
+        Ok(count)
+    }
 }
 
 // ─── libsql minion job helpers ─────────────────────────────────────────────

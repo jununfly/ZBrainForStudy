@@ -4985,6 +4985,8 @@ impl TypedOperation for ExtractFactsOperation {
                     claim_unit: None,
                     claim_period: None,
                     event_type: None,
+                    row_num: None,
+                    source_markdown_slug: None,
                 },
             )
             .await?;
@@ -6030,6 +6032,8 @@ mod recall_op_tests {
             source_session: None,
             confidence: 1.0,
             created_at: Some(format!("2026-07-0{}T00:00:00Z", (id % 9).max(1))),
+            row_num: None,
+            source_markdown_slug: None,
         }
     }
 

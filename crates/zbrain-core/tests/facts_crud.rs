@@ -44,6 +44,8 @@ fn nf(text: &str) -> NewFact {
         claim_unit: None,
         claim_period: None,
         event_type: None,
+        row_num: None,
+        source_markdown_slug: None,
     }
 }
 

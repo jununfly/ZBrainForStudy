@@ -5243,6 +5243,8 @@ async fn run_facts_add(args: FactsAddArgs, config_path: Option<&Path>) -> anyhow
         claim_unit: None,
         claim_period: None,
         event_type: None,
+        row_num: None,
+        source_markdown_slug: None,
     };
 
     let status = engine.insert_fact(&args.source, &args.entity, &input).await?;

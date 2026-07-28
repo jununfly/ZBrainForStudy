@@ -11,6 +11,14 @@ pub fn current_utc_iso8601() -> String {
     unix_seconds_to_utc_iso8601(secs)
 }
 
+/// Current UTC date as `YYYY-MM-DD`. Stable across timezones — used by the
+/// `extract_facts` forgotten-row `valid_until` derivation so re-running the
+/// mapping on the same fence in different zones produces an identical value.
+#[must_use]
+pub fn today_utc_date() -> String {
+    chrono::Utc::now().format("%Y-%m-%d").to_string()
+}
+
 /// Current wall-clock time as Unix epoch **milliseconds**.
 ///
 /// Used by the minion job queue's scheduling columns (lock_until /

@@ -330,6 +330,61 @@ async fn execute_phase(
             }
         }
 
+        CyclePhase::ExtractFacts => {
+            use crate::autopilot::phases::extract_facts::{run_extract_facts, ExtractFactsOpts};
+
+            match run_extract_facts(
+                engine,
+                &ExtractFactsOpts {
+                    dry_run,
+                    ..Default::default()
+                },
+            )
+            .await
+            {
+                Ok(r) => {
+                    let status = if r.guard_triggered || !r.warnings.is_empty() {
+                        PhaseStatus::Warn
+                    } else {
+                        PhaseStatus::Ok
+                    };
+                    PhaseResult {
+                        phase: label.into(),
+                        status,
+                        duration_ms: phase_start.elapsed().as_millis() as u64,
+                        summary: format!(
+                            "extract-facts: {} pages scanned, {} facts inserted, {} deleted",
+                            r.pages_scanned, r.facts_inserted, r.facts_deleted
+                        ),
+                        details: serde_json::json!({
+                            "pages_scanned": r.pages_scanned,
+                            "pages_with_facts": r.pages_with_facts,
+                            "facts_inserted": r.facts_inserted,
+                            "facts_deleted": r.facts_deleted,
+                            "legacy_rows_pending": r.legacy_rows_pending,
+                            "guard_triggered": r.guard_triggered,
+                            "warnings": r.warnings,
+                        }),
+                        error: None,
+                    }
+                }
+                Err(e) => PhaseResult {
+                    phase: label.into(),
+                    status: PhaseStatus::Fail,
+                    duration_ms: phase_start.elapsed().as_millis() as u64,
+                    summary: "extract-facts phase failed".into(),
+                    details: serde_json::json!({}),
+                    error: Some(PhaseError {
+                        class: "DatabaseConnection".into(),
+                        code: "UNKNOWN".into(),
+                        message: e.to_string(),
+                        hint: None,
+                        docs_url: None,
+                    }),
+                },
+            }
+        }
+
         CyclePhase::Purge => {
             if dry_run {
                 PhaseResult {
@@ -557,9 +612,12 @@ mod tests {
         // purge should be Ok
         let purge = report.phases.iter().find(|p| p.phase == "purge").unwrap();
         assert_eq!(purge.status, PhaseStatus::Ok);
+        // extract-facts is a real phase now: empty brain → 0 pages scanned, Ok
+        let extract_facts = report.phases.iter().find(|p| p.phase == "extract-facts").unwrap();
+        assert_eq!(extract_facts.status, PhaseStatus::Ok);
         // All other phases should be Skipped
         let skipped_count = report.phases.iter().filter(|p| p.status == PhaseStatus::Skipped).count();
-        assert_eq!(skipped_count, 18);
+        assert_eq!(skipped_count, 17);
     }
 
     #[tokio::test]

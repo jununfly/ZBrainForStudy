@@ -1947,6 +1947,34 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
         ))
     }
 
+    /// Wipe the DB facts index for a single page prior to re-inserting from
+    /// its `## Facts` fence. Scoped to `source_markdown_slug = slug` so
+    /// legacy NULL-`source_markdown_slug` rows (`v0.31` hot-memory facts
+    /// pending the `v0.32.2` backfill) survive the reconcile pass — matching
+    /// TS `deleteFactsForPage`. Returns the number of rows deleted.
+    /// Mirrors TS `deleteFactsForPage`.
+    async fn delete_facts_for_page(
+        &self,
+        _slug: &str,
+        _source_id: &str,
+    ) -> crate::Result<i64> {
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "delete_facts_for_page not yet implemented for this engine",
+        ))
+    }
+
+    /// Count legacy `v0.31` fact rows: `row_num IS NULL AND entity_slug IS
+    /// NOT NULL`. Used by the `extract_facts` cycle phase as an
+    /// empty-fence guard — if any linger, the destructive reconcile pass is
+    /// refused until `zbrain apply-migrations --yes` completes `v0.32.2`.
+    /// Mirrors TS `extract_facts` legacy pre-check. Returns `0` by default
+    /// for engines without a legacy-fact concept.
+    async fn count_legacy_fact_rows(&self) -> crate::Result<i64> {
+        Ok(0)
+    }
+
     /// List facts for an entity, ordered by `created_at DESC`.
     /// Supports `active_only`, `kinds`, `visibility`, `limit`, `offset`
     /// via `FactListOpts`. Mirrors TS `listFactsByEntity`.
@@ -5638,6 +5666,8 @@ impl BrainEngine for InMemoryEngine {
             source_session: input.source_session.clone(),
             confidence: input.confidence.unwrap_or(1.0),
             created_at: Some(now),
+            row_num: input.row_num,
+            source_markdown_slug: input.source_markdown_slug.clone(),
         };
         store.push(row);
 
@@ -5646,6 +5676,28 @@ impl BrainEngine for InMemoryEngine {
         } else {
             Ok(FactInsertStatus::Inserted)
         }
+    }
+
+    async fn delete_facts_for_page(
+        &self,
+        slug: &str,
+        source_id: &str,
+    ) -> crate::Result<i64> {
+        let mut store = self.facts_store.lock().expect("poisoned");
+        let before = store.len();
+        store.retain(|f| {
+            !(f.source_markdown_slug.as_deref() == Some(slug) && f.source_id == source_id)
+        });
+        Ok((before - store.len()) as i64)
+    }
+
+    async fn count_legacy_fact_rows(&self) -> crate::Result<i64> {
+        let store = self.facts_store.lock().expect("poisoned");
+        let n = store
+            .iter()
+            .filter(|f| f.row_num.is_none() && f.entity_slug.is_some())
+            .count();
+        Ok(n as i64)
     }
 
     async fn list_facts_by_entity(
@@ -8680,6 +8732,8 @@ mod tests {
             source_session: None,
             confidence: 1.0,
             created_at: Some("2026-07-09T00:00:00Z".to_string()),
+            row_num: None,
+            source_markdown_slug: None,
         }
     }
 
@@ -8707,6 +8761,8 @@ mod tests {
                     claim_unit: None,
                     claim_period: None,
                     event_type: None,
+                    row_num: None,
+                    source_markdown_slug: None,
                 },
             )
             .await
@@ -8742,6 +8798,8 @@ mod tests {
             claim_unit: None,
             claim_period: None,
             event_type: None,
+            row_num: None,
+            source_markdown_slug: None,
         };
 
         let s1 = engine.insert_fact("test-source", "alice", &new_fact()).await.unwrap();
@@ -8781,6 +8839,8 @@ mod tests {
                     claim_unit: None,
                     claim_period: None,
                     event_type: None,
+                    row_num: None,
+                    source_markdown_slug: None,
                 },
             )
             .await
@@ -8810,6 +8870,8 @@ mod tests {
                     claim_unit: None,
                     claim_period: None,
                     event_type: None,
+                    row_num: None,
+                    source_markdown_slug: None,
                 },
             )
             .await
@@ -8862,6 +8924,8 @@ mod tests {
                     claim_unit: None,
                     claim_period: None,
                     event_type: None,
+                    row_num: None,
+                    source_markdown_slug: None,
                 },
             )
             .await
@@ -8887,6 +8951,8 @@ mod tests {
                     claim_unit: None,
                     claim_period: None,
                     event_type: None,
+                    row_num: None,
+                    source_markdown_slug: None,
                 },
             )
             .await
@@ -8935,6 +9001,8 @@ mod tests {
                     claim_unit: None,
                     claim_period: None,
                     event_type: None,
+                    row_num: None,
+                    source_markdown_slug: None,
                 },
             )
             .await
@@ -8972,6 +9040,8 @@ mod tests {
                     claim_unit: None,
                     claim_period: None,
                     event_type: None,
+                    row_num: None,
+                    source_markdown_slug: None,
                 },
             )
             .await
@@ -8997,6 +9067,8 @@ mod tests {
                     claim_unit: None,
                     claim_period: None,
                     event_type: None,
+                    row_num: None,
+                    source_markdown_slug: None,
                 },
             )
             .await
@@ -9035,6 +9107,8 @@ mod tests {
                     claim_unit: None,
                     claim_period: None,
                     event_type: None,
+                    row_num: None,
+                    source_markdown_slug: None,
                 },
             )
             .await
@@ -9072,6 +9146,8 @@ mod tests {
                     claim_unit: None,
                     claim_period: None,
                     event_type: None,
+                    row_num: None,
+                    source_markdown_slug: None,
                 },
             )
             .await

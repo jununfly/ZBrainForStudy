@@ -698,6 +698,10 @@ pub struct FactRow {
     pub source_session: Option<String>,
     pub confidence: f64,
     pub created_at: Option<String>,
+    /// v51 fence column. Row position within the `## Facts` fence.
+    pub row_num: Option<i32>,
+    /// v51 fence column. The markdown slug the fact was reconciled from.
+    pub source_markdown_slug: Option<String>,
 }
 
 /// Input for `insertFact`. Mirrors TS `NewFact` interface.
@@ -721,6 +725,16 @@ pub struct NewFact {
     pub claim_unit: Option<String>,
     pub claim_period: Option<String>,
     pub event_type: Option<String>,
+    /// v51 fence column. Row position within the `## Facts` fence on the
+    /// source markdown page. Carried through so a fence-reconcile
+    /// re-insert preserves the author's row ordering (byte-identical DB
+    /// state after `zbrain rebuild`). `None` for non-fence inserts.
+    pub row_num: Option<i32>,
+    /// v51 fence column. The markdown slug the fact was reconciled from.
+    /// Enables `delete_facts_for_page` to scope the wipe to
+    /// `source_markdown_slug = slug` (legacy NULL rows survive the wipe,
+    /// matching TS `extract_facts` semantics).
+    pub source_markdown_slug: Option<String>,
 }
 
 /// Operational health snapshot for the facts domain.
