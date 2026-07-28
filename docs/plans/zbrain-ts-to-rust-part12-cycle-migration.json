@@ -142,11 +142,37 @@
     "1-1-2": {
       "id": "1-1-2",
       "label": "extract-atoms phase 实现 (port extract-atoms.ts → autopilot/phases/extract_atoms.rs; 接 execute_phase)",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-1",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "Q8 ChatProvider 注入点",
+          "answer": "CycleOpts 新增 chat: Option<Arc<dyn ChatProvider>> 字段（方案B，最小侵入，run_cycle/execute_phase 签名不变，7处测试零改动）；execute_phase ExtractAtoms 臂 match &_opts.chat { Some(chat) => run_extract_atoms(engine, chat.as_ref(), opts), None => skipped('no chat provider wired') }。空 brain 测试 chat=None → ExtractAtoms=skipped（no_work 也 skipped，对齐 TS），故 skipped_count 保持 17（ExtractAtoms 仍计 skipped，不递减）",
+          "note": "对齐 1-1 Q3 Arc<dyn ChatProvider> DI；生产 wiring（runner 构造真实 provider 填 opts.chat）归 1-6 orchestration"
+        },
+        {
+          "q": "Q9 transcript 路径是否迁移",
+          "answer": "不迁。TS extract-atoms 有两条源：transcripts（文件系统 discoverTranscripts + loadConfigWithEngine 读 session_corpus_dir/meeting_transcripts_dir）+ pages（DB discovery）。1-1-2 仅迁 pages 路径；transcript 路径登记 KNOWN-GAP G62（磁盘+config loader 复杂，与 phantom-redirect G61 同类）",
+          "note": "creator/everything pack 的 extract_atoms phase 基于 brain pages，pages 路径覆盖主场景"
+        },
+        {
+          "q": "Q10 idempotency 实现",
+          "answer": "新增 trait 方法 discover_extractable_pages(source_id, affected_slugs: Option<&[String]>) + atom_exists_for_hash(source_id, hash16)；libsql/postgres 各自真实 SQL（NOT EXISTS 幂等子查询，IN 列表内联避开 libsql 数组参数坑），inmemory 走默认 Err(Unsupported) → run_extract_atoms fail-soft 包成空（inmemory 下始终 no_work/skipped，与 run_cycle 测试兼容）",
+          "note": "对齐 1-1-1 delete_facts_for_page 范式"
+        },
+        {
+          "q": "Q11 预算",
+          "answer": "Haiku $0.30/source/run（DEFAULT_BUDGET_USD=0.3），超限 halt + PhaseStatus=Warn + 部分结果；estimated_spend_usd 累加 chat.usage(input*0.8+output*4.0)/1e6",
+          "note": "对齐 TS 成本估算"
+        },
+        {
+          "q": "Q12 atom slug 与字段",
+          "answer": "slug = atoms/{today_utc_date()}/{slugify(title)}（today_utc_date 已有时区函数）；atom_type/virality_score/emotional_register/source_quote/lesson 按 TS 映射进 frontmatter；source_hash=content_hash[..16]；source_slug（页面源）或 source_path（transcript，本批恒无）",
+          "note": "emotional_register 枚举集合与 TS 一致"
+        }
+      ],
       "notes": ""
     },
     "1-1-3": {
@@ -192,7 +218,8 @@
   },
   "metadata": {
     "created": "2026-07-23 17:12:54",
-    "updated": "2026-07-27 23:06:51",
+    "updated": "2026-07-28 12:08:10",
     "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_PART12_CYCLE_MIGRATION.md"
-  }
+  },
+  "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART12_CYCLE_MIGRATION.md"
 }

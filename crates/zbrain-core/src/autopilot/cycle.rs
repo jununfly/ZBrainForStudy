@@ -17,7 +17,9 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
+use crate::ai::chat::ChatProvider;
 use crate::engine::BrainEngine;
+use std::sync::Arc;
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -236,6 +238,11 @@ pub struct CycleOpts {
     pub pull: bool,
     /// Source ID for per-source lock scoping (optional).
     pub source_id: Option<String>,
+    /// LLM chat provider for LLM-heavy phases (extract-atoms, future
+    /// propose-takes/grade-takes). `None` → those phases return `Skipped`
+    /// (no chat provider wired). Production wiring lives in the runner
+    /// (1-6 orchestration) — see KNOWN-GAPS.
+    pub chat: Option<Arc<dyn ChatProvider>>,
 }
 
 // ── runCycle orchestrator ──────────────────────────────────────────────
@@ -382,6 +389,88 @@ async fn execute_phase(
                         docs_url: None,
                     }),
                 },
+            }
+        }
+
+        CyclePhase::ExtractAtoms => {
+            use crate::autopilot::phases::extract_atoms::{run_extract_atoms, ExtractAtomsOpts};
+
+            match &_opts.chat {
+                None => PhaseResult {
+                    phase: label.into(),
+                    status: PhaseStatus::Skipped,
+                    duration_ms: phase_start.elapsed().as_millis() as u64,
+                    summary: "extract-atoms: no chat provider wired (skipped)".into(),
+                    details: serde_json::json!({ "reason": "no_chat_provider" }),
+                    error: None,
+                },
+                Some(chat) => {
+                    match run_extract_atoms(
+                        engine,
+                        chat.as_ref(),
+                        &ExtractAtomsOpts {
+                            dry_run,
+                            source_id: _opts.source_id.clone(),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    {
+                        Ok(r) => {
+                            let status = if r.pages_total == 0 && r.transcripts_total == 0 {
+                                PhaseStatus::Skipped
+                            } else if r.failures.is_empty()
+                                && r.transcripts_skipped_budget == 0
+                                && r.pages_skipped_budget == 0
+                            {
+                                PhaseStatus::Ok
+                            } else {
+                                PhaseStatus::Warn
+                            };
+                            PhaseResult {
+                                phase: label.into(),
+                                status,
+                                duration_ms: phase_start.elapsed().as_millis() as u64,
+                                summary: format!(
+                                    "extract-atoms: {} atoms from {} pages ({} failed)",
+                                    r.atoms_extracted,
+                                    r.pages_processed,
+                                    r.failures.len()
+                                ),
+                                details: serde_json::json!({
+                                    "atoms_extracted": r.atoms_extracted,
+                                    "transcripts_processed": r.transcripts_processed,
+                                    "transcripts_total": r.transcripts_total,
+                                    "transcripts_skipped_budget": r.transcripts_skipped_budget,
+                                    "pages_processed": r.pages_processed,
+                                    "pages_total": r.pages_total,
+                                    "pages_skipped_budget": r.pages_skipped_budget,
+                                    "duplicates_skipped": r.duplicates_skipped,
+                                    "failures": r.failures,
+                                    "estimated_spend_usd": r.estimated_spend_usd,
+                                    "budget_usd": r.budget_usd,
+                                    "source_id": r.source_id,
+                                    "dry_run": r.dry_run,
+                                }),
+                                error: None,
+                            }
+                        }
+                        Err(e) => PhaseResult {
+                            phase: label.into(),
+                            status: PhaseStatus::Fail,
+                            duration_ms: phase_start.elapsed().as_millis() as u64,
+                            summary: "extract-atoms phase failed".into(),
+                            details: serde_json::json!({}),
+                            error: Some(PhaseError {
+                                class: "DatabaseConnection".into(),
+                                code: "UNKNOWN".into(),
+                                message: e.to_string(),
+                                hint: None,
+                                docs_url: None,
+                            }),
+                        },
+                    }
+                }
             }
         }
 
@@ -615,7 +704,13 @@ mod tests {
         // extract-facts is a real phase now: empty brain → 0 pages scanned, Ok
         let extract_facts = report.phases.iter().find(|p| p.phase == "extract-facts").unwrap();
         assert_eq!(extract_facts.status, PhaseStatus::Ok);
-        // All other phases should be Skipped
+        // extract-atoms is a real phase now, but the empty-brain test wires no
+        // chat provider → Skipped (it would call the LLM otherwise). When a
+        // provider is wired but there is no work, it still returns Skipped.
+        let extract_atoms = report.phases.iter().find(|p| p.phase == "extract-atoms").unwrap();
+        assert_eq!(extract_atoms.status, PhaseStatus::Skipped);
+        assert_eq!(extract_atoms.summary, "extract-atoms: no chat provider wired (skipped)");
+        // All other phases should be Skipped (17 = extract-atoms + 16 stubs)
         let skipped_count = report.phases.iter().filter(|p| p.status == PhaseStatus::Skipped).count();
         assert_eq!(skipped_count, 17);
     }

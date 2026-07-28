@@ -207,6 +207,16 @@ pub struct FileRow {
     pub created_at: String,
 }
 
+/// v0.41.2.1 (Part12 1-1-2): a brain page discovered as extractable for
+/// atom extraction. Returned by [`BrainEngine::discover_extractable_pages`].
+/// Mirrors TS `DiscoveredPage` in `src/core/cycle/extract-atoms.ts`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveredPage {
+    pub slug: String,
+    pub content: String,
+    pub content_hash: String,
+}
+
 /// File metadata write spec for [`BrainEngine::upsert_file`]. Mirrors TS
 /// `FileSpec` in `src/core/engine.ts`. File bytes never enter the DB;
 /// `storage_path` points to repo/external storage.

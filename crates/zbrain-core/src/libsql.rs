@@ -690,6 +690,104 @@ impl BrainEngine for LibsqlEngine {
         Ok(())
     }
 
+    // ── Part12 1-1-2: extract-atoms discovery ────────────────────────────
+
+    async fn discover_extractable_pages(
+        &self,
+        source_id: &str,
+        affected_slugs: Option<&[String]>,
+    ) -> crate::Result<Vec<crate::types::DiscoveredPage>> {
+        let conn = self.conn().await?;
+        let mut sql = String::from(
+            "SELECT p.slug, p.compiled_truth, p.content_hash \
+             FROM pages p \
+             WHERE p.source_id = ?1 \
+               AND p.type IN ('meeting','source','article','video','book','original') \
+               AND p.deleted_at IS NULL \
+               AND p.content_hash IS NOT NULL \
+               AND COALESCE(p.frontmatter->>'imported_from', '') <> 'markdown-greenfield' \
+               AND COALESCE(p.frontmatter->>'dream_generated', '') <> 'true' \
+               AND length(COALESCE(p.compiled_truth, '')) >= ?2 \
+               AND NOT EXISTS ( \
+                 SELECT 1 FROM pages atom \
+                 WHERE atom.type = 'atom' \
+                   AND atom.source_id = ?1 \
+                   AND atom.frontmatter->>'source_hash' = substring(p.content_hash, 1, 16) \
+                   AND atom.deleted_at IS NULL \
+               )",
+        );
+        let mut params: Vec<::libsql::Value> =
+            vec![::libsql::Value::Text(source_id.to_string()), ::libsql::Value::Integer(500)];
+        if let Some(slugs) = affected_slugs {
+            if !slugs.is_empty() {
+                sql.push_str(" AND p.slug IN (");
+                for (i, s) in slugs.iter().enumerate() {
+                    if i > 0 {
+                        sql.push(',');
+                    }
+                    sql.push('?');
+                    sql.push_str(&(params.len() + 1).to_string());
+                    params.push(::libsql::Value::Text(s.clone()));
+                }
+                sql.push(')');
+            }
+        }
+        sql.push_str(" ORDER BY p.updated_at DESC LIMIT ?");
+        sql.push_str(&(params.len() + 1).to_string());
+        params.push(::libsql::Value::Integer(50));
+        let mut rows = conn
+            .query(&sql, params)
+            .await
+            .map_err(|e| Error::engine(format!("discover_extractable_pages: {e}")))?;
+        let mut out = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("discover_extractable_pages read: {e}")))?
+        {
+            let slug: String = row
+                .get(0)
+                .map_err(|e| Error::engine(format!("discover slug: {e}")))?;
+            let content: String = row
+                .get(1)
+                .map_err(|e| Error::engine(format!("discover content: {e}")))?;
+            let content_hash: String = row
+                .get(2)
+                .map_err(|e| Error::engine(format!("discover hash: {e}")))?;
+            out.push(crate::types::DiscoveredPage {
+                slug,
+                content,
+                content_hash,
+            });
+        }
+        Ok(out)
+    }
+
+    async fn atom_exists_for_hash(
+        &self,
+        source_id: &str,
+        content_hash_16: &str,
+    ) -> crate::Result<bool> {
+        let conn = self.conn().await?;
+        let mut rows = conn
+            .query(
+                "SELECT 1 AS existing FROM pages \
+                 WHERE type = 'atom' \
+                   AND source_id = ?1 \
+                   AND frontmatter->>'source_hash' = ?2 \
+                   AND deleted_at IS NULL \
+                 LIMIT 1",
+                ::libsql::params![source_id, content_hash_16],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("atom_exists_for_hash: {e}")))?;
+        Ok(rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("atom_exists read: {e}")))?
+            .is_some())
+    }
+
     async fn get_source_by_github_repo(
         &self,
         github_repo: &str,

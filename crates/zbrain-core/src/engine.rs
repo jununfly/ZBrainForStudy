@@ -1975,6 +1975,44 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
         Ok(0)
     }
 
+    /// v0.41.2.1 (Part12 1-1-2): discover extractable brain pages whose
+    /// `content_hash` has no corresponding `atom` row yet (NOT EXISTS
+    /// idempotency subquery). Mirrors TS `discoverExtractablePages`.
+    ///
+    /// Default: `Err(Unsupported)`. `run_extract_atoms` treats this as
+    /// fail-soft (no pages), so engines without an implementation degrade
+    /// to `skipped` — matching the inmemory `run_cycle` test path.
+    async fn discover_extractable_pages(
+        &self,
+        _source_id: &str,
+        _affected_slugs: Option<&[String]>,
+    ) -> crate::Result<Vec<crate::types::DiscoveredPage>> {
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "discover_extractable_pages not implemented for this engine",
+        ))
+    }
+
+    /// v0.41.2.1 (Part12 1-1-2): transcript-side source-hash idempotency
+    /// check. Returns `true` if ANY `atom` row exists for
+    /// `(source_id, content_hash_16)`. Mirrors TS `atomsExistForHash`.
+    ///
+    /// Default: `Err(Unsupported)`. `run_extract_atoms` treats this as
+    /// fail-open (re-extract), matching TS `atomsExistForHash` error
+    /// behavior.
+    async fn atom_exists_for_hash(
+        &self,
+        _source_id: &str,
+        _content_hash_16: &str,
+    ) -> crate::Result<bool> {
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "atom_exists_for_hash not implemented for this engine",
+        ))
+    }
+
     /// List facts for an entity, ordered by `created_at DESC`.
     /// Supports `active_only`, `kinds`, `visibility`, `limit`, `offset`
     /// via `FactListOpts`. Mirrors TS `listFactsByEntity`.
