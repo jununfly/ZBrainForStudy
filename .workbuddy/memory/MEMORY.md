@@ -9,7 +9,7 @@
 
 ## Roadmap 铁律
 - **位置**：所有 `.json`/`.md` 统一放 `docs/plans/`（JSON `zbrain-ts-to-rust-partN-*.json`，md `ZBRAIN_TS_TO_RUST_PARTN_*.md`，同名转大写下划线，无 `ZJ_ROADMAP.md` 特例）。
-- **一 part 一 md**：每个 part JSON 必须 `link` 到各自独立 md；严禁多 JSON 共用一 md。`roadmap_cli.py render` 重写的是**纯** `<!-- ROADMAP_SECTION_START/END -->` marker 段落（"ZJ Roadmap" 树，`write_markdown_section` roadmap.py:622 即用此 marker），而 `⚠️` marker 包裹的是**手动维护**段（顶部叙述 + 子节点 checkbox 列表），render 不碰。故 `update`+`render` 后若 `⚠️` 段的 checkbox 与树不一致，需手动同步勾选（render 不会回写 ⚠️ 段）。CLI：`link/render/decide/add/tree` 第一 positional 是 **JSON 完整路径**；render 从项目根 cwd 跑；读的是 JSON 根级 `md_file` key（非 `metadata.md_file`）。
+- **一 part 一 md**：每个 part JSON 必须 `link` 到各自独立 md；严禁多 JSON 共用一 md。`roadmap_cli.py render`（经 `write_markdown_section` roadmap.py:539）**只**重写带 ⚠️ 的 `<!-- ⚠️ ROADMAP_SECTION_START/END -->` 段落——即由 JSON 状态自动生成的"树形视图"活段；**不碰**顶部纯 `<!-- ROADMAP_SECTION_START/END -->` 段。故顶部纯段已成**孤儿**（工具不再维护，会 stale）；`update`+`render` 后若顶部纯段树与 `⚠️` 段不一致，需**手动同步顶部纯段**（render 不回写它；`⚠️` 段自身由 JSON 驱动始终正确）。CLI：`link/render/decide/add/tree` 第一 positional 是 **JSON 完整路径**；render 从项目根 cwd 跑；读的是 JSON 根级 `md_file` key（非 `metadata.md_file`）。
 - **代码注释禁引 roadmap 编号**（roadmap JSON 是临时文件，清理后成死链）；必要信息自解释写进注释。docs/plans/ 下 canonical 文档可引用。
 - **拆分约定**：审计/拆解发现与当前节点语义偏差且有跟进价值 → 拆 sub-node，不吸收进当前 plan。
 - **进度 SSOT**：各 part 完成状态以 roadmap JSON 为准；历史 phase 完成明细在每日 `YYYY-MM-DD.md`，不在本文件重复。
@@ -23,7 +23,7 @@
 
 ## 迁移进度（摘要）
 - 迁移全 12 Part。主线已完成：Sources/Capture、Facts/Takes/Timeline/Salience/Graph、Search/Retrieval 生产后端复活、minions、autopilot、Part7 Phase9、Part9 Phase11（残留 TS 终局）、Part10 Phase12 Schema-Pack 路线图。
-- **当前最前沿**：Part11 calibration 簇已收口并 push（e7d7ffe/0e93162）。Part12 cycle 大迁移已启动：1-1 facts-extraction 簇 in_progress（6 sub-node + 7 grill 决策落盘），1-1-1 extract-facts 已落地未提交；下一步 1-1-2 extract-atoms。**迁移范式**：cycle phase = `execute_phase` 真实 match 臂 + `autopilot/phases/<name>.rs` 模块函数（Orphans/Purge 先例）；改一个 phase 为真实臂后 `run_cycle_empty_brain` 的 skipped 断言要 -1 并加该 phase 状态断言。libsql 加 trait 方法：inherent `_impl` + 既有 impl 块内委托（开第二个 `impl BrainEngine` 块必 E0119）。
+- **当前最前沿**：Part11 calibration 簇已收口并 push（e7d7ffe/0e93162）。Part12 cycle 大迁移已启动：1-1 facts-extraction 簇 in_progress（6 sub-node + 7 grill 决策落盘），1-1-1 extract-facts 与 1-1-2 extract-atoms 均已落地并 push（eca3650/34a931b feat + 1e991af/e747b70 chore）；下一步 1-1-3 extract-takes。**迁移范式**：cycle phase = `execute_phase` 真实 match 臂 + `autopilot/phases/<name>.rs` 模块函数（Orphans/Purge 先例）；改一个 phase 为真实臂后 `run_cycle_empty_brain` 的 skipped 断言要 -1 并加该 phase 状态断言。libsql 加 trait 方法：inherent `_impl` + 既有 impl 块内委托（开第二个 `impl BrainEngine` 块必 E0119）。
 
 ## 其他
 - Admin 路由差异：Rust admin API 在 `/*`（如 `/register-client`），TS 在 `/admin/api/*`；路线图 Q6 决策"保持 /admin/api/*"，待对齐。
