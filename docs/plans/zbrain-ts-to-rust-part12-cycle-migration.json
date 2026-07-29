@@ -209,12 +209,12 @@
     "1-1-6": {
       "id": "1-1-6",
       "label": "conversation-facts-backfill phase 实现 (port conversation-facts-backfill.ts → autopilot/phases/conversation_facts_backfill.rs; 接 execute_phase)",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "exploit",
       "parent": "1-1",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "实现完成待 push（铁律：等用户 commit+push 指令）。新建 autopilot/phases/conversation_facts_backfill.rs：忠实移植 runExtractConversationFactsCore —— 消息解析(parse_conversation_messages regex)/分段(split_into_segments 30min gap、MIN_SEGMENT_MESSAGES=2)/render/checkpoint 编解码(fingerprint=sha8)/extract_facts_from_turn(LLM 抽取→NewFact 数组，4 策略容错 parse_extractor_json)/process_page(body cap→分段→逐段抽取→budget record 超预算即中止不写刚抽 facts→insert_fact 写 facts 带 row_num+source_markdown_slug→终态 EXTRACTION_COMPLETE 审计行→checkpoint 追加)/run_extract_conversation_facts_core(brain-wide 或 local BudgetTracker；按 type 分页枚举续传)。cycle.rs 加 CyclePhase::ConversationFactsBackfill 真实臂（无 chat→Skipped；有 chat 传默认 enabled:false→Skipped，与 TS 默认一致）。**缺的 Rust 基建已补**：migration 0025 双 dialect 建 op_checkpoints 表；engine.rs 4 个 trait 默认方法(load/save/clear_op_checkpoint/peek_fact_row_num_start)+InMemory 字段/实现；libsql.rs/postgres.rs 的 MIGRATION_0025+registry+4 impl；EXPECTED_VERSION 24→25。Windows 单测全绿(autopilot 223 pass，含本节点 6 测试；libsql_engine_migrations 7 pass 确认升 v25)。"
     },
     "1-7": {
       "id": "1-7",
