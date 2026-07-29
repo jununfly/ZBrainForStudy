@@ -34,6 +34,7 @@ pub enum CyclePhase {
     Extract,
     ExtractFacts,
     ExtractAtoms,
+    ExtractTakes,
     ResolveSymbolEdges,
     Patterns,
     SynthesizeConcepts,
@@ -59,6 +60,7 @@ impl CyclePhase {
         CyclePhase::Extract,
         CyclePhase::ExtractFacts,
         CyclePhase::ExtractAtoms,
+        CyclePhase::ExtractTakes,
         CyclePhase::ResolveSymbolEdges,
         CyclePhase::Patterns,
         CyclePhase::SynthesizeConcepts,
@@ -84,6 +86,7 @@ impl CyclePhase {
             CyclePhase::Extract => "extract",
             CyclePhase::ExtractFacts => "extract-facts",
             CyclePhase::ExtractAtoms => "extract-atoms",
+            CyclePhase::ExtractTakes => "extract-takes",
             CyclePhase::ResolveSymbolEdges => "resolve-symbol-edges",
             CyclePhase::Patterns => "patterns",
             CyclePhase::SynthesizeConcepts => "synthesize-concepts",
@@ -116,6 +119,7 @@ impl CyclePhase {
             | CyclePhase::Extract
             | CyclePhase::ExtractFacts
             | CyclePhase::ExtractAtoms
+            | CyclePhase::ExtractTakes
             | CyclePhase::RecomputeEmotionalWeight
             | CyclePhase::Consolidate
             | CyclePhase::ProposeTakes
@@ -474,6 +478,62 @@ async fn execute_phase(
             }
         }
 
+        CyclePhase::ExtractTakes => {
+            use crate::autopilot::phases::extract_takes::{run_extract_takes, ExtractTakesOpts};
+
+            match run_extract_takes(
+                engine,
+                &ExtractTakesOpts {
+                    dry_run,
+                    source_id: _opts.source_id.clone(),
+                    ..Default::default()
+                },
+            )
+            .await
+            {
+                Ok(r) => {
+                    let status = if r.warnings.is_empty() {
+                        PhaseStatus::Ok
+                    } else {
+                        PhaseStatus::Warn
+                    };
+                    PhaseResult {
+                        phase: label.into(),
+                        status,
+                        duration_ms: phase_start.elapsed().as_millis() as u64,
+                        summary: format!(
+                            "extract-takes: {} pages scanned, {} takes upserted",
+                            r.pages_scanned, r.takes_upserted
+                        ),
+                        details: serde_json::json!({
+                            "pages_scanned": r.pages_scanned,
+                            "pages_with_takes": r.pages_with_takes,
+                            "takes_upserted": r.takes_upserted,
+                            "warnings": r.warnings,
+                            "failed_files": r.failed_files.iter().map(|f| serde_json::json!({
+                                "path": f.path, "error": f.error
+                            })).collect::<Vec<_>>(),
+                        }),
+                        error: None,
+                    }
+                }
+                Err(e) => PhaseResult {
+                    phase: label.into(),
+                    status: PhaseStatus::Fail,
+                    duration_ms: phase_start.elapsed().as_millis() as u64,
+                    summary: "extract-takes phase failed".into(),
+                    details: serde_json::json!({}),
+                    error: Some(PhaseError {
+                        class: "DatabaseConnection".into(),
+                        code: "UNKNOWN".into(),
+                        message: e.to_string(),
+                        hint: None,
+                        docs_url: None,
+                    }),
+                },
+            }
+        }
+
         CyclePhase::Purge => {
             if dry_run {
                 PhaseResult {
@@ -532,7 +592,6 @@ async fn execute_phase(
                     | CyclePhase::Lint
                     | CyclePhase::Backlinks
                     | CyclePhase::Extract
-                    | CyclePhase::ExtractFacts
                     | CyclePhase::Embed
                     | CyclePhase::RecomputeEmotionalWeight
                     | CyclePhase::Consolidate
@@ -656,8 +715,10 @@ mod tests {
 
     #[test]
     fn all_phases_count_matches_ts() {
-        // TS has 20 phases (lint through purge); Rust should match
-        assert_eq!(CyclePhase::ALL.len(), 20);
+        // TS has 20 phases (lint through purge). Rust adds `extract-takes` as
+        // a 21st dedicated cycle phase (see extract_takes.rs taxonomy note) —
+        // TS only consumes it via the v0_28_0 orchestrator, not runCycle.
+        assert_eq!(CyclePhase::ALL.len(), 21);
     }
 
     #[test]
@@ -693,7 +754,9 @@ mod tests {
         .await;
 
         assert_eq!(report.schema_version, "1");
-        assert_eq!(report.phases.len(), 20);
+        // 21 = 20 TS phases + extract-takes (elevated to a dedicated Rust
+        // cycle phase; see extract_takes.rs taxonomy note).
+        assert_eq!(report.phases.len(), 21);
         // orphans should be Ok (0 found)
         let orphans = report.phases.iter().find(|p| p.phase == "orphans").unwrap();
         assert_eq!(orphans.status, PhaseStatus::Ok);
@@ -704,6 +767,10 @@ mod tests {
         // extract-facts is a real phase now: empty brain → 0 pages scanned, Ok
         let extract_facts = report.phases.iter().find(|p| p.phase == "extract-facts").unwrap();
         assert_eq!(extract_facts.status, PhaseStatus::Ok);
+        // extract-takes is a real phase now: empty brain → 0 pages scanned, Ok
+        // (db path enumerates 0 page refs; no LLM, no warnings).
+        let extract_takes = report.phases.iter().find(|p| p.phase == "extract-takes").unwrap();
+        assert_eq!(extract_takes.status, PhaseStatus::Ok);
         // extract-atoms is a real phase now, but the empty-brain test wires no
         // chat provider → Skipped (it would call the LLM otherwise). When a
         // provider is wired but there is no work, it still returns Skipped.
