@@ -199,12 +199,12 @@
     "1-1-5": {
       "id": "1-1-5",
       "label": "grade-takes phase 实现 (port grade-takes.ts → autopilot/phases/grade_takes.rs; 接 execute_phase)",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-1",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "实现完成并 push：新建 grade_takes.rs(port grade-takes.ts 核心循环)——枚举 list_takes(resolved=false,active=true,按 since_date 升序)→逐 take 校验 take_is_old_enough(默认 6 月, 无 since_date 计 too_recent)→默认 evidence retriever 占位(取 claim)→evidence_signature=SHA-256(judge_id|evidence)→take_grade_cache_exists 幂等→chat judge 解析 verdict(correct/incorrect/partial/unresolvable)→add_take_grade_cache 写缓存(D17 auto_resolve 默认 false, 仅 high-confidence 经 resolve_take 写回 canonical takes)。新增 typed trait 方法 add_take_grade_cache+take_grade_cache_exists(三引擎, take_grade_cache 表已在 migration 0023, 无需新迁移)。纯函数 aggregate_ensemble 实现 T5 三模型集成陪审团(3/3 一致 + min conf>=0.85 才 auto-apply)。**未移植**: gstack-learnings 外部耦合(默认关闭, 非 zbrain-core 范围)。Windows 单测全绿(autopilot 217 pass, 含本节点 10 测试)。commit d9162a4(1-1-4)/687a4d9 之后的下一 feat/chore。"
     },
     "1-1-6": {
       "id": "1-1-6",
