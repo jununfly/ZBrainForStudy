@@ -927,6 +927,36 @@ pub struct TakeGradeCacheInput {
     pub cost_usd: Option<f64>,
 }
 
+/// A single take contributing to a page's emotional-weight computation.
+/// Shared by [`BrainEngine::batch_load_emotional_inputs`] and
+/// `compute_emotional_weight` (see `autopilot::phases::emotional_weight`).
+#[derive(Debug, Clone)]
+pub struct EmotionalWeightTake {
+    pub holder: String,
+    pub weight: f64,
+    pub kind: String,
+    pub active: bool,
+}
+
+/// Per-page inputs for emotional-weight recomputation, returned by
+/// [`BrainEngine::batch_load_emotional_inputs`].
+#[derive(Debug, Clone)]
+pub struct EmotionalInput {
+    pub slug: String,
+    pub source_id: String,
+    pub tags: Vec<String>,
+    pub takes: Vec<EmotionalWeightTake>,
+}
+
+/// A single emotional-weight write (composite key slug + source_id), consumed
+/// by [`BrainEngine::set_emotional_weight_batch`].
+#[derive(Debug, Clone)]
+pub struct EmotionalWeightWrite {
+    pub slug: String,
+    pub source_id: String,
+    pub emotional_weight: f64,
+}
+
 #[async_trait]
 pub trait BrainEngine: Send + Sync + std::fmt::Debug {
     // ── Identity ──────────────────────────────────────────────────────────
@@ -1817,6 +1847,27 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
             "add_takes_batch not yet implemented for this engine",
         ))
     }
+
+    /// Batch-load the inputs needed to recompute emotional weight for pages.
+    ///
+    /// `slugs` filters to specific pages (incremental mode); `None` => all
+    /// non-deleted pages (full-brain recompute). Each returned [`EmotionalInput`]
+    /// carries the page's tags (from `frontmatter["tags"]`) plus its active takes.
+    /// Mirrors TS `batchLoadEmotionalInputs`.
+    async fn batch_load_emotional_inputs(
+        &self,
+        slugs: Option<&[String]>,
+    ) -> crate::Result<Vec<EmotionalInput>>;
+
+    /// Write recomputed emotional weights back to pages. Keyed by the composite
+    /// `(slug, source_id)`, bumping `salience_touched_at` so salient old pages
+    /// surface in retrieval. Returns the number of pages updated.
+    ///
+    /// NOTE: TS also persists `emotional_weight_recomputed_at` here; that column
+    /// is consumed only by the `backfill-registry` consumer, whose Rust wiring is
+    /// deferred to the 1-6 orchestration node. See roadmap 1-2 notes.
+    /// Mirrors TS `setEmotionalWeightBatch`.
+    async fn set_emotional_weight_batch(&self, writes: &[EmotionalWeightWrite]) -> crate::Result<u64>;
 
     /// Insert a single proposed take into the `take_proposals` queue.
     /// Idempotency is enforced at the storage layer via the composite unique
@@ -3213,6 +3264,29 @@ fn set_page_tags(page: &mut Page, mut tags: Vec<String>) {
         metadata.insert("tags".to_string(), json!(tags));
     } else {
         page.frontmatter = json!({"tags": tags});
+    }
+}
+
+/// Extract the `tags` array from a parsed `frontmatter` JSON value. Shared by
+/// the libsql / postgres engine methods that read `frontmatter` as a column.
+pub(crate) fn frontmatter_tags(fm: &serde_json::Value) -> Vec<String> {
+    fm.get("tags")
+        .and_then(Value::as_array)
+        .map(|tags| {
+            tags.iter()
+                .filter_map(Value::as_str)
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Extract the `tags` array from a `frontmatter` JSON text. Parsing failures
+/// degrade to an empty tag list (matches `page_tags`).
+pub(crate) fn frontmatter_tags_text(text: &str) -> Vec<String> {
+    match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(v) => frontmatter_tags(&v),
+        Err(_) => Vec::new(),
     }
 }
 
@@ -5450,6 +5524,66 @@ impl BrainEngine for InMemoryEngine {
             upserted,
             weight_clamped,
         })
+    }
+
+    async fn batch_load_emotional_inputs(
+        &self,
+        slugs: Option<&[String]>,
+    ) -> crate::Result<Vec<EmotionalInput>> {
+        let store = self.store.lock().expect("InMemoryEngine store mutex poisoned");
+        let takes_store = self
+            .takes_store
+            .lock()
+            .expect("InMemoryEngine takes_store mutex poisoned");
+
+        let slug_set: Option<std::collections::HashSet<&String>> =
+            slugs.map(|s| s.iter().collect());
+
+        let mut out: Vec<EmotionalInput> = Vec::new();
+        for page in store.iter() {
+            if page.deleted_at.is_some() {
+                continue;
+            }
+            if let Some(set) = &slug_set {
+                if !set.contains(&page.slug) {
+                    continue;
+                }
+            }
+            let tags = page_tags(page);
+            let takes: Vec<EmotionalWeightTake> = takes_store
+                .iter()
+                .filter(|t| t.page_id == page.id && t.active)
+                .map(|t| EmotionalWeightTake {
+                    holder: t.holder.clone(),
+                    weight: t.weight,
+                    kind: t.kind.clone(),
+                    active: t.active,
+                })
+                .collect();
+            out.push(EmotionalInput {
+                slug: page.slug.clone(),
+                source_id: page.source_id.clone(),
+                tags,
+                takes,
+            });
+        }
+        Ok(out)
+    }
+
+    async fn set_emotional_weight_batch(&self, writes: &[EmotionalWeightWrite]) -> crate::Result<u64> {
+        let mut store = self.store.lock().expect("InMemoryEngine store mutex poisoned");
+        let now = crate::time::current_utc_iso8601();
+        let mut updated: u64 = 0;
+        for w in writes {
+            if let Some(page) = store.iter_mut().find(|p| {
+                p.slug == w.slug && p.source_id == w.source_id && p.deleted_at.is_none()
+            }) {
+                page.emotional_weight = Some(w.emotional_weight);
+                page.salience_touched_at = Some(now.clone());
+                updated += 1;
+            }
+        }
+        Ok(updated)
     }
 
     async fn take_proposal_exists(

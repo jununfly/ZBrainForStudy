@@ -4,3 +4,5 @@ pub mod extract_takes;
 pub mod propose_takes;
 pub mod grade_takes;
 pub mod conversation_facts_backfill;
+pub mod emotional_weight;
+pub mod recompute_emotional_weight;

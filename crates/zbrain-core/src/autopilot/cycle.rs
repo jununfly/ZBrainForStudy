@@ -742,6 +742,135 @@ async fn execute_phase(
             }
         }
 
+        CyclePhase::RecomputeEmotionalWeight => {
+            use crate::autopilot::phases::recompute_emotional_weight::{
+                run_phase_recompute_emotional_weight, RecomputeEmotionalWeightOpts,
+            };
+
+            // Deterministic phase, no LLM — runs regardless of chat wiring.
+            // Overrides (high_emotion_tags / user_holder) come from opts; the
+            // Rust cycle has no global config store, so defaults apply here
+            // (the calibration/backfill consumers supply overrides in 1-6).
+            match run_phase_recompute_emotional_weight(
+                engine,
+                &RecomputeEmotionalWeightOpts::default(),
+            )
+            .await
+            {
+                Ok(r) => {
+                    let status = match r.status.as_str() {
+                        "ok" => PhaseStatus::Ok,
+                        "fail" => PhaseStatus::Fail,
+                        _ => PhaseStatus::Warn,
+                    };
+                    PhaseResult {
+                        phase: label.into(),
+                        status,
+                        duration_ms: phase_start.elapsed().as_millis() as u64,
+                        summary: r.summary.clone(),
+                        details: serde_json::json!({
+                            "pages_recomputed": r.pages_recomputed,
+                            "mode": r.mode,
+                            "dry_run": r.dry_run,
+                        }),
+                        error: None,
+                    }
+                }
+                Err(e) => PhaseResult {
+                    phase: label.into(),
+                    status: PhaseStatus::Fail,
+                    duration_ms: phase_start.elapsed().as_millis() as u64,
+                    summary: "recompute_emotional_weight phase failed".into(),
+                    details: serde_json::json!({}),
+                    error: Some(PhaseError {
+                        class: "DatabaseConnection".into(),
+                        code: "UNKNOWN".into(),
+                        message: e.to_string(),
+                        hint: None,
+                        docs_url: None,
+                    }),
+                },
+            }
+        }
+
+        CyclePhase::CalibrationProfile => {
+            use crate::calibration::calibration_profile::{
+                run_calibration_profile, CalibrationProfileOpts, CalibrationProfileStatus,
+            };
+
+            // LLM-heavy phase: needs a chat provider to generate pattern
+            // statements / bias tags through the voice gate. No chat → skipped
+            // stub (mirrors extract-atoms / propose-takes behaviour). When a
+            // provider is wired but the brain is cold (insufficient resolved
+            // takes), `run_calibration_profile` short-circuits to Skipped.
+            match &_opts.chat {
+                None => PhaseResult {
+                    phase: label.into(),
+                    status: PhaseStatus::Skipped,
+                    duration_ms: 0,
+                    summary: "calibration-profile: no chat provider wired (skipped)".into(),
+                    details: serde_json::json!({ "reason": "no_chat_provider" }),
+                    error: None,
+                },
+                Some(chat) => {
+                    let cp_opts = CalibrationProfileOpts {
+                        chat: Some(chat.clone()),
+                        source_id: _opts.source_id.clone(),
+                        ..Default::default()
+                    };
+                    match run_calibration_profile(engine, &cp_opts).await {
+                        Ok(r) => {
+                            let status = match r.status {
+                                CalibrationProfileStatus::Ok => PhaseStatus::Ok,
+                                CalibrationProfileStatus::Warn => PhaseStatus::Warn,
+                                CalibrationProfileStatus::Skipped => PhaseStatus::Skipped,
+                            };
+                            let summary = if r.status == CalibrationProfileStatus::Skipped {
+                                format!(
+                                    "calibration-profile skipped ({})",
+                                    r.skipped.as_deref().unwrap_or("unknown")
+                                )
+                            } else {
+                                "calibration-profile".into()
+                            };
+                            PhaseResult {
+                                phase: label.into(),
+                                status,
+                                duration_ms: phase_start.elapsed().as_millis() as u64,
+                                summary,
+                                details: serde_json::json!({
+                                    "profile_written": r.profile_written,
+                                    "voice_gate_passed": r.voice_gate_passed,
+                                    "voice_gate_attempts": r.voice_gate_attempts,
+                                    "pattern_statements": r.pattern_statements.len(),
+                                    "active_bias_tags": r.active_bias_tags.len(),
+                                    "total_resolved": r.total_resolved,
+                                    "brier": r.brier,
+                                    "skipped": r.skipped,
+                                    "warnings": r.warnings,
+                                }),
+                                error: None,
+                            }
+                        }
+                        Err(e) => PhaseResult {
+                            phase: label.into(),
+                            status: PhaseStatus::Fail,
+                            duration_ms: phase_start.elapsed().as_millis() as u64,
+                            summary: "calibration-profile phase failed".into(),
+                            details: serde_json::json!({}),
+                            error: Some(PhaseError {
+                                class: "Calibration".into(),
+                                code: "UNKNOWN".into(),
+                                message: e.to_string(),
+                                hint: None,
+                                docs_url: None,
+                            }),
+                        },
+                    }
+                }
+            }
+        }
+
         CyclePhase::Purge => {
             if dry_run {
                 PhaseResult {
@@ -801,7 +930,6 @@ async fn execute_phase(
                     | CyclePhase::Backlinks
                     | CyclePhase::Extract
                     | CyclePhase::Embed
-                    | CyclePhase::RecomputeEmotionalWeight
                     | CyclePhase::Consolidate
             ) {
                 "not_migrated: needs orchestration function (syncRepo/recomputeBacklinks/embedBackfill etc.)"
@@ -1003,11 +1131,36 @@ mod tests {
             conv_backfill.summary,
             "conversation-facts-backfill: no chat provider wired (skipped)"
         );
-        // All other phases should be Skipped. Count stays 17: extract-atoms +
-        // propose-takes + conversation-facts-backfill (real LLM phases, no
-        // chat here) + 14 stubs.
+        // recompute-emotional-weight is a real (deterministic, no-LLM) phase:
+        // empty brain → 0 pages recomputed, Ok.
+        let recompute = report
+            .phases
+            .iter()
+            .find(|p| p.phase == "recompute-emotional-weight")
+            .unwrap();
+        assert_eq!(recompute.status, PhaseStatus::Ok);
+        assert_eq!(recompute.summary, "recompute_emotional_weight (0 pages)");
+        // calibration-profile is a real (LLM-heavy) phase now, but the
+        // empty-brain test wires no chat provider → Skipped.
+        let calibration = report
+            .phases
+            .iter()
+            .find(|p| p.phase == "calibration-profile")
+            .unwrap();
+        assert_eq!(calibration.status, PhaseStatus::Skipped);
+        assert_eq!(
+            calibration.summary,
+            "calibration-profile: no chat provider wired (skipped)"
+        );
+        // All other phases should be Skipped. Count is 16: extract-atoms +
+        // propose-takes + grade-takes + calibration-profile +
+        // conversation-facts-backfill (real LLM phases, no chat here) + 11
+        // stubs. recompute-emotional-weight is no longer skipped (it runs
+        // deterministically → Ok). calibration-profile was already Skipped
+        // via the catch-all and remains Skipped via its own arm, so the total
+        // count is unchanged.
         let skipped_count = report.phases.iter().filter(|p| p.status == PhaseStatus::Skipped).count();
-        assert_eq!(skipped_count, 17);
+        assert_eq!(skipped_count, 16);
     }
 
     #[tokio::test]

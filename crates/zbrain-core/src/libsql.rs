@@ -36,9 +36,9 @@ use crate::oauth_queries::{
 };
 use crate::engine::{
     fuse_and_boost, page_sort_sql, BrainEngine, CreateSourceInput, EngineConfig, EngineKind,
-    GetPageOpts, Page, PageFilters, PageInput, PageSort, ResolveSlugsOpts, SearchOpts,
-    SearchResult, SourceRow, TakeGradeCacheInput, TakeProposalInput, UpdateSourceInput,
-    is_valid_source_id,
+    EmotionalInput, EmotionalWeightTake, EmotionalWeightWrite, GetPageOpts, Page, PageFilters,
+    PageInput, PageSort, ResolveSlugsOpts, SearchOpts, SearchResult, SourceRow,
+    TakeGradeCacheInput, TakeProposalInput, UpdateSourceInput, is_valid_source_id,
 };
 use crate::error::{Error, Result};
 use crate::migration::{Migration, MigrationRegistry};
@@ -3926,6 +3926,121 @@ impl BrainEngine for LibsqlEngine {
         }
 
         Ok(UpsertTakesResult { upserted, weight_clamped })
+    }
+
+    async fn batch_load_emotional_inputs(
+        &self,
+        slugs: Option<&[String]>,
+    ) -> Result<Vec<EmotionalInput>> {
+        let conn = self.conn().await?;
+
+        // 1) Load matching pages (live only).
+        let mut page_sql = String::from(
+            "SELECT id, slug, source_id, frontmatter FROM pages WHERE deleted_at IS NULL",
+        );
+        let mut page_params: Vec<::libsql::Value> = Vec::new();
+        if let Some(slugs) = slugs {
+            if slugs.is_empty() {
+                return Ok(Vec::new());
+            }
+            let start = page_params.len();
+            let placeholders: Vec<String> = (0..slugs.len())
+                .map(|i| format!("?{}", start + i + 1))
+                .collect();
+            page_sql.push_str(&format!(" AND slug IN ({})", placeholders.join(", ")));
+            for s in slugs {
+                page_params.push(::libsql::Value::from(s.clone()));
+            }
+        }
+
+        let mut page_rows = conn
+            .query(&page_sql, ::libsql::params_from_iter(page_params))
+            .await
+            .map_err(|e| Error::engine(format!("batch_load_emotional_inputs pages: {e}")))?;
+
+        let mut page_ids: Vec<i64> = Vec::new();
+        let mut pages: Vec<(i64, String, String, String)> = Vec::new();
+        while let Some(row) = page_rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("batch_load_emotional_inputs page row: {e}")))?
+        {
+            let id: i64 = row.get(0).unwrap_or(0);
+            let slug: String = row.get(1).unwrap_or_default();
+            let source_id: String = row.get(2).unwrap_or_default();
+            let fm_text: String = row.get(3).unwrap_or_default();
+            page_ids.push(id);
+            pages.push((id, slug, source_id, fm_text));
+        }
+
+        // 2) Load active takes for those pages in a single round-trip (IN list).
+        let mut takes_by_page: std::collections::HashMap<i64, Vec<EmotionalWeightTake>> =
+            std::collections::HashMap::new();
+        if !page_ids.is_empty() {
+            let placeholders: Vec<String> = (0..page_ids.len())
+                .map(|i| format!("?{}", i + 1))
+                .collect();
+            let take_sql = format!(
+                "SELECT page_id, holder, weight, kind, active FROM takes \
+                 WHERE active = 1 AND page_id IN ({})",
+                placeholders.join(", ")
+            );
+            let take_params: Vec<::libsql::Value> =
+                page_ids.iter().map(|id| ::libsql::Value::from(*id)).collect();
+            let mut take_rows = conn
+                .query(&take_sql, ::libsql::params_from_iter(take_params))
+                .await
+                .map_err(|e| Error::engine(format!("batch_load_emotional_inputs takes: {e}")))?;
+            while let Some(row) = take_rows
+                .next()
+                .await
+                .map_err(|e| Error::engine(format!("batch_load_emotional_inputs take row: {e}")))?
+            {
+                let page_id: i64 = row.get(0).unwrap_or(0);
+                let holder: String = row.get(1).unwrap_or_default();
+                let weight: f64 = row.get(2).unwrap_or(0.0);
+                let kind: String = row.get(3).unwrap_or_default();
+                let active: i64 = row.get(4).unwrap_or(1);
+                takes_by_page.entry(page_id).or_default().push(EmotionalWeightTake {
+                    holder,
+                    weight,
+                    kind,
+                    active: active != 0,
+                });
+            }
+        }
+
+        // 3) Assemble per-page inputs.
+        let mut out: Vec<EmotionalInput> = Vec::new();
+        for (id, slug, source_id, fm_text) in pages {
+            let tags = crate::engine::frontmatter_tags_text(&fm_text);
+            let takes = takes_by_page.remove(&id).unwrap_or_default();
+            out.push(EmotionalInput {
+                slug,
+                source_id,
+                tags,
+                takes,
+            });
+        }
+        Ok(out)
+    }
+
+    async fn set_emotional_weight_batch(&self, writes: &[EmotionalWeightWrite]) -> Result<u64> {
+        let conn = self.conn().await?;
+        let mut updated: u64 = 0;
+        for w in writes {
+            let n = conn
+                .execute(
+                    "UPDATE pages \
+                     SET emotional_weight = ?1, salience_touched_at = datetime('now') \
+                     WHERE slug = ?2 AND source_id = ?3 AND deleted_at IS NULL",
+                    ::libsql::params![w.emotional_weight, w.slug.clone(), w.source_id.clone()],
+                )
+                .await
+                .map_err(|e| Error::engine(format!("set_emotional_weight_batch: {e}")))?;
+            updated += n;
+        }
+        Ok(updated)
     }
 
     async fn take_proposal_exists(
