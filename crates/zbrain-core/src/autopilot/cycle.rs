@@ -534,6 +534,74 @@ async fn execute_phase(
             }
         }
 
+        CyclePhase::ProposeTakes => {
+            use crate::autopilot::phases::propose_takes::{run_propose_takes, ProposeTakesOpts};
+
+            match &_opts.chat {
+                None => PhaseResult {
+                    phase: label.into(),
+                    status: PhaseStatus::Skipped,
+                    duration_ms: phase_start.elapsed().as_millis() as u64,
+                    summary: "propose-takes: no chat provider wired (skipped)".into(),
+                    details: serde_json::json!({ "reason": "no_chat_provider" }),
+                    error: None,
+                },
+                Some(chat) => {
+                    match run_propose_takes(
+                        engine,
+                        chat.as_ref(),
+                        &ProposeTakesOpts {
+                            dry_run,
+                            source_id: _opts.source_id.clone(),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    {
+                        Ok(r) => {
+                            let status = if r.budget_exhausted || !r.warnings.is_empty() {
+                                PhaseStatus::Warn
+                            } else {
+                                PhaseStatus::Ok
+                            };
+                            PhaseResult {
+                                phase: label.into(),
+                                status,
+                                duration_ms: phase_start.elapsed().as_millis() as u64,
+                                summary: format!(
+                                    "propose-takes: scanned {} pages, {} proposals inserted ({} cache hits)",
+                                    r.pages_scanned, r.proposals_inserted, r.cache_hits
+                                ),
+                                details: serde_json::json!({
+                                    "pages_scanned": r.pages_scanned,
+                                    "cache_hits": r.cache_hits,
+                                    "cache_misses": r.cache_misses,
+                                    "proposals_inserted": r.proposals_inserted,
+                                    "budget_exhausted": r.budget_exhausted,
+                                    "warnings": r.warnings,
+                                }),
+                                error: None,
+                            }
+                        }
+                        Err(e) => PhaseResult {
+                            phase: label.into(),
+                            status: PhaseStatus::Fail,
+                            duration_ms: phase_start.elapsed().as_millis() as u64,
+                            summary: "propose-takes phase failed".into(),
+                            details: serde_json::json!({}),
+                            error: Some(PhaseError {
+                                class: "DatabaseConnection".into(),
+                                code: "UNKNOWN".into(),
+                                message: e.to_string(),
+                                hint: None,
+                                docs_url: None,
+                            }),
+                        },
+                    }
+                }
+            }
+        }
+
         CyclePhase::Purge => {
             if dry_run {
                 PhaseResult {
@@ -777,7 +845,13 @@ mod tests {
         let extract_atoms = report.phases.iter().find(|p| p.phase == "extract-atoms").unwrap();
         assert_eq!(extract_atoms.status, PhaseStatus::Skipped);
         assert_eq!(extract_atoms.summary, "extract-atoms: no chat provider wired (skipped)");
-        // All other phases should be Skipped (17 = extract-atoms + 16 stubs)
+        // propose-takes is a real LLM phase now, but the empty-brain test wires
+        // no chat provider → Skipped (it would call the LLM otherwise).
+        let propose_takes = report.phases.iter().find(|p| p.phase == "propose-takes").unwrap();
+        assert_eq!(propose_takes.status, PhaseStatus::Skipped);
+        assert_eq!(propose_takes.summary, "propose-takes: no chat provider wired (skipped)");
+        // All other phases should be Skipped. Count stays 17: extract-atoms +
+        // propose-takes (both real LLM phases, no chat here) + 15 stubs.
         let skipped_count = report.phases.iter().filter(|p| p.status == PhaseStatus::Skipped).count();
         assert_eq!(skipped_count, 17);
     }

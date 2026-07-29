@@ -37,7 +37,7 @@ use crate::oauth_queries::{
 use crate::engine::{
     fuse_and_boost, page_sort_sql, BrainEngine, CreateSourceInput, EngineConfig, EngineKind,
     GetPageOpts, Page, PageFilters, PageInput, PageSort, ResolveSlugsOpts, SearchOpts,
-    SearchResult, SourceRow, UpdateSourceInput, is_valid_source_id,
+    SearchResult, SourceRow, TakeProposalInput, UpdateSourceInput, is_valid_source_id,
 };
 use crate::error::{Error, Result};
 use crate::migration::{Migration, MigrationRegistry};
@@ -139,6 +139,7 @@ const MIGRATION_0021: &str = include_str!("../migrations-sqlite/0021_code_edges.
 /// 1-6-7-11: search_by_image — image-search spend log table for daily budget tracking.
 const MIGRATION_0022: &str = include_str!("../migrations-sqlite/0022_image_search_spend_log.sql");
 const MIGRATION_0023: &str = include_str!("../migrations-sqlite/0023_calibration_tables.sql");
+const MIGRATION_0024: &str = include_str!("../migrations-sqlite/0024_take_proposals.sql");
 
 /// Legacy string array — REMOVED in favor of MigrationRegistry.
 /// Use LIBQL_MIGRATIONS instead.
@@ -279,6 +280,11 @@ pub static LIBQL_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 23,
         name: "calibration_tables",
         sql: MIGRATION_0023,
+    }));
+    registry.add(Box::new(LibsqlMigration {
+        version: 24,
+        name: "take_proposals",
+        sql: MIGRATION_0024,
     }));
 
     registry
@@ -3913,6 +3919,74 @@ impl BrainEngine for LibsqlEngine {
         }
 
         Ok(UpsertTakesResult { upserted, weight_clamped })
+    }
+
+    async fn take_proposal_exists(
+        &self,
+        source_id: &str,
+        page_slug: &str,
+        content_hash: &str,
+        prompt_version: &str,
+    ) -> Result<bool> {
+        let conn = self.conn().await?;
+        let mut rows = conn
+            .query(
+                "SELECT id FROM take_proposals \
+                 WHERE source_id = ?1 AND page_slug = ?2 AND content_hash = ?3 AND prompt_version = ?4 \
+                 LIMIT 1",
+                ::libsql::params![source_id, page_slug, content_hash, prompt_version],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("take_proposal_exists: {e}")))?;
+        Ok(rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("take_proposal_exists next: {e}")))?
+            .is_some())
+    }
+
+    async fn add_take_proposal(&self, proposal: &TakeProposalInput) -> Result<u64> {
+        let conn = self.conn().await?;
+        let mut rows = conn
+            .query(
+                "INSERT INTO take_proposals \
+                    (source_id, page_slug, content_hash, prompt_version, wave_version, proposed_at, \
+                     proposal_run_id, status, claim_text, kind, holder, weight, domain, \
+                     dedup_against_fence_rows, model_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15) \
+                 ON CONFLICT (source_id, page_slug, content_hash, prompt_version) DO NOTHING \
+                 RETURNING id",
+                ::libsql::params![
+                    proposal.source_id.clone(),
+                    proposal.page_slug.clone(),
+                    proposal.content_hash.clone(),
+                    proposal.prompt_version.clone(),
+                    "v0.36.1.0",
+                    current_utc_iso8601(),
+                    proposal.proposal_run_id.clone(),
+                    "pending",
+                    proposal.claim_text.clone(),
+                    proposal.kind.clone(),
+                    proposal.holder.clone(),
+                    proposal.weight,
+                    proposal.domain.clone(),
+                    proposal.dedup_against_fence_rows.clone(),
+                    proposal.model_id.clone(),
+                ],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("add_take_proposal insert: {e}")))?;
+        let id: i64 = match rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("add_take_proposal RETURNING id: {e}")))?
+        {
+            Some(row) => row
+                .get::<i64>(0)
+                .map_err(|e| Error::engine(format!("add_take_proposal decode id: {e}")))?,
+            None => 0,
+        };
+        Ok(id as u64)
     }
 
     async fn resolve_take(

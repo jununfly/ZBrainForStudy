@@ -885,6 +885,27 @@ pub struct UpdateSourceInput {
 ///
 /// Slices 4-8 will extend this trait with additional method groups (chunks,
 /// links, takes, facts, …) following the same append-only pattern.
+/// Input for [`BrainEngine::add_take_proposal`]. Mirrors the columns written
+/// by `propose-takes.ts` into the `take_proposals` queue. The idempotency key
+/// is the composite unique index `(source_id, page_slug, content_hash,
+/// prompt_version)` (see `src/schema.sql`).
+#[derive(Debug, Clone)]
+pub struct TakeProposalInput {
+    pub source_id: String,
+    pub page_slug: String,
+    pub content_hash: String,
+    pub prompt_version: String,
+    pub proposal_run_id: String,
+    pub claim_text: String,
+    pub kind: String,
+    pub holder: String,
+    pub weight: f64,
+    pub domain: Option<String>,
+    /// JSON-encoded list of existing fence rows used for dedup context.
+    pub dedup_against_fence_rows: Option<String>,
+    pub model_id: String,
+}
+
 #[async_trait]
 pub trait BrainEngine: Send + Sync + std::fmt::Debug {
     // ── Identity ──────────────────────────────────────────────────────────
@@ -1773,6 +1794,41 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
             "Unsupported",
             "unsupported",
             "add_takes_batch not yet implemented for this engine",
+        ))
+    }
+
+    /// Insert a single proposed take into the `take_proposals` queue.
+    /// Idempotency is enforced at the storage layer via the composite unique
+    /// index on `(source_id, page_slug, content_hash, prompt_version)`; the
+    /// INSERT is conflict-safe (`ON CONFLICT ... DO NOTHING`). Returns the
+    /// inserted row id (0 when the conflict guard swallowed the row). Callers
+    /// should pre-check [`BrainEngine::take_proposal_exists`] for the cache
+    /// hit/miss accounting, mirroring `propose-takes.ts`.
+    async fn add_take_proposal(&self, proposal: &TakeProposalInput) -> crate::Result<u64> {
+        let _ = proposal;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "add_take_proposal not yet implemented for this engine",
+        ))
+    }
+
+    /// Whether a proposal already exists for the exact idempotency tuple
+    /// `(source_id, page_slug, content_hash, prompt_version)`. Drives the
+    /// `propose-takes` cache hit/miss accounting so an unchanged page never
+    /// re-spends LLM tokens.
+    async fn take_proposal_exists(
+        &self,
+        source_id: &str,
+        page_slug: &str,
+        content_hash: &str,
+        prompt_version: &str,
+    ) -> crate::Result<bool> {
+        let _ = (source_id, page_slug, content_hash, prompt_version);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "take_proposal_exists not yet implemented for this engine",
         ))
     }
 
@@ -3122,6 +3178,31 @@ pub struct InMemoryEngine {
     // 1-6-7-11: image-search spend rows (in-memory, for testing the daily
     // budget cap without a real SQLite/Postgres backend).
     image_search_spend_store: Mutex<Vec<InternalImageSearchSpend>>,
+    // 1-1-4: propose_takes phase queue (in-memory, for testing). Mirrors the
+    // `take_proposals` table; idempotency key is
+    // (source_id, page_slug, content_hash, prompt_version).
+    take_proposals_store: Mutex<Vec<InternalTakeProposal>>,
+    next_take_proposal_id: Mutex<u64>,
+}
+
+/// In-memory `take_proposals` queue row (1-1-4: propose_takes phase).
+/// Mirrors the `take_proposals` table columns written by `propose-takes.ts`.
+#[derive(Debug, Clone)]
+struct InternalTakeProposal {
+    id: u64,
+    source_id: String,
+    page_slug: String,
+    content_hash: String,
+    prompt_version: String,
+    proposal_run_id: String,
+    claim_text: String,
+    kind: String,
+    holder: String,
+    weight: f64,
+    domain: Option<String>,
+    dedup_against_fence_rows: Option<String>,
+    model_id: String,
+    status: String,
 }
 
 /// In-memory code-graph edge row. `resolved == true` mirrors a `code_edges_chunk`
@@ -3265,6 +3346,9 @@ impl InMemoryEngine {
             next_code_edge_id: Mutex::new(1),
             // 1-6-7-11: image-search spend rows (in-memory, for testing)
             image_search_spend_store: Mutex::new(Vec::new()),
+            // 1-1-4: propose_takes phase queue (in-memory, for testing)
+            take_proposals_store: Mutex::new(Vec::new()),
+            next_take_proposal_id: Mutex::new(1),
         }
     }
 
@@ -5247,6 +5331,55 @@ impl BrainEngine for InMemoryEngine {
             upserted,
             weight_clamped,
         })
+    }
+
+    async fn take_proposal_exists(
+        &self,
+        source_id: &str,
+        page_slug: &str,
+        content_hash: &str,
+        prompt_version: &str,
+    ) -> crate::Result<bool> {
+        let store = self
+            .take_proposals_store
+            .lock()
+            .expect("InMemoryEngine take_proposals_store mutex poisoned");
+        Ok(store.iter().any(|p| {
+            p.source_id == source_id
+                && p.page_slug == page_slug
+                && p.content_hash == content_hash
+                && p.prompt_version == prompt_version
+        }))
+    }
+
+    async fn add_take_proposal(&self, proposal: &TakeProposalInput) -> crate::Result<u64> {
+        let mut store = self
+            .take_proposals_store
+            .lock()
+            .expect("InMemoryEngine take_proposals_store mutex poisoned");
+        let mut next_id = self
+            .next_take_proposal_id
+            .lock()
+            .expect("InMemoryEngine next_take_proposal_id mutex poisoned");
+        let id = *next_id;
+        *next_id += 1;
+        store.push(InternalTakeProposal {
+            id,
+            source_id: proposal.source_id.clone(),
+            page_slug: proposal.page_slug.clone(),
+            content_hash: proposal.content_hash.clone(),
+            prompt_version: proposal.prompt_version.clone(),
+            proposal_run_id: proposal.proposal_run_id.clone(),
+            claim_text: proposal.claim_text.clone(),
+            kind: proposal.kind.clone(),
+            holder: proposal.holder.clone(),
+            weight: proposal.weight,
+            domain: proposal.domain.clone(),
+            dedup_against_fence_rows: proposal.dedup_against_fence_rows.clone(),
+            model_id: proposal.model_id.clone(),
+            status: "pending".to_string(),
+        });
+        Ok(id)
     }
 
     async fn resolve_take(

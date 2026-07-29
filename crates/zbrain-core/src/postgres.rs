@@ -39,6 +39,7 @@ use sqlx::{QueryBuilder, PgPool, Row};
 
 use crate::engine::{
     page_sort_sql, BrainEngine, CreateSourceInput, EngineConfig, EngineKind, GetPageOpts, Page,
+    TakeProposalInput,
     PageFilters, PageInput, PageSort, ResolveSlugsOpts, SearchOpts, SearchResult, SourceRow,
     UpdateSourceInput, fuse_and_boost, is_valid_source_id,
 };
@@ -258,6 +259,7 @@ const MIGRATION_0021: &str = include_str!("../migrations/0021_code_edges.sql");
 /// 1-6-7-11: search_by_image — image-search spend log table for daily budget tracking.
 const MIGRATION_0022: &str = include_str!("../migrations/0022_image_search_spend_log.sql");
 const MIGRATION_0023: &str = include_str!("../migrations/0023_calibration_tables.sql");
+const MIGRATION_0024: &str = include_str!("../migrations/0024_take_proposals.sql");
 
 /// FNV-1a 64-bit hash of a lease key, mapped to a signed int64 for
 /// `pg_advisory_xact_lock`. Matches the TS implementation bit-for-bit.
@@ -389,6 +391,11 @@ pub static POSTGRES_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 23,
         name: "calibration_tables",
         sql: MIGRATION_0023,
+    }));
+    registry.add(Box::new(PostgresMigration {
+        version: 24,
+        name: "take_proposals",
+        sql: MIGRATION_0024,
     }));
 
     registry
@@ -2897,6 +2904,67 @@ impl BrainEngine for PostgresEngine {
         }
 
         Ok(UpsertTakesResult { upserted, weight_clamped })
+    }
+
+    async fn take_proposal_exists(
+        &self,
+        source_id: &str,
+        page_slug: &str,
+        content_hash: &str,
+        prompt_version: &str,
+    ) -> Result<bool> {
+        let pool = self.pool()?;
+        let row = sqlx::query(
+            "SELECT id FROM take_proposals \
+             WHERE source_id = $1 AND page_slug = $2 AND content_hash = $3 AND prompt_version = $4 \
+             LIMIT 1",
+        )
+        .bind(source_id)
+        .bind(page_slug)
+        .bind(content_hash)
+        .bind(prompt_version)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::engine(format!("take_proposal_exists: {e}")))?;
+        Ok(row.is_some())
+    }
+
+    async fn add_take_proposal(&self, proposal: &TakeProposalInput) -> Result<u64> {
+        let pool = self.pool()?;
+        let row = sqlx::query(
+            "INSERT INTO take_proposals \
+                (source_id, page_slug, content_hash, prompt_version, wave_version, proposed_at, \
+                 proposal_run_id, status, claim_text, kind, holder, weight, domain, \
+                 dedup_against_fence_rows, model_id) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, CAST($14 AS jsonb), $15) \
+             ON CONFLICT (source_id, page_slug, content_hash, prompt_version) DO NOTHING \
+             RETURNING id",
+        )
+        .bind(&proposal.source_id)
+        .bind(&proposal.page_slug)
+        .bind(&proposal.content_hash)
+        .bind(&proposal.prompt_version)
+        .bind("v0.36.1.0")
+        .bind(sqlx::types::chrono::Utc::now())
+        .bind(&proposal.proposal_run_id)
+        .bind("pending")
+        .bind(&proposal.claim_text)
+        .bind(&proposal.kind)
+        .bind(&proposal.holder)
+        .bind(proposal.weight)
+        .bind(&proposal.domain)
+        .bind(&proposal.dedup_against_fence_rows)
+        .bind(&proposal.model_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::engine(format!("add_take_proposal insert: {e}")))?;
+        let id = match row {
+            Some(r) => r
+                .try_get::<i64, _>("id")
+                .map_err(|e| Error::engine(format!("add_take_proposal decode id: {e}")))?,
+            None => 0,
+        };
+        Ok(id as u64)
     }
 
     async fn resolve_take(
