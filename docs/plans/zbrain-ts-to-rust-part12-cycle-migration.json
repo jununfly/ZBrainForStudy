@@ -15,7 +15,8 @@
         "1-3",
         "1-4",
         "1-5",
-        "1-6"
+        "1-6",
+        "1-7"
       ],
       "decisions": [
         {
@@ -214,11 +215,37 @@
       "children": [],
       "decisions": [],
       "notes": ""
+    },
+    "1-7": {
+      "id": "1-7",
+      "label": "验证线打通：rust-tests.yml修复 + pack_lock提交 + 5测试失败清算",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1",
+      "children": [],
+      "decisions": [
+        {
+          "q": "Linux验证暴露CI框架缺陷(一次跑所有target+无--skip postgres会被94个postgres PgInitFailure弄红)与5个真实测试失败(均属更早集群债务: migration期望21实际已23、oauth token查到None、disambiguation查到[])，与1-1-3正交。如何处理?",
+          "answer": "全清闸门：先修CI(pack_lock提交 + rust-tests.yml逐target循环+--skip postgres) + 全修5失败(含3真bug根因)，CI全绿后再回1-1-3",
+          "note": "用户选全清；5失败均非Part12内容，属schema-pack/search/code-graph早期集群债务"
+        },
+        {
+          "q": "若3个真bug(token None / disambiguation []×2)根因是Rust端口功能缺失/需新设计而非测试笔误，是否设兜底边界?",
+          "answer": "设兜底：该bug登记KNOWN-GAP + 建1-7子节点跟踪，闸门其余(CI+其他失败)照常推进并回1-1-3，不让单深bug阻塞",
+          "note": "保护momentum；pack_lock/CI/常量属一眼能修，不在此列"
+        },
+        {
+          "q": "全清闸门执行结果：5个失败是否均已修复、根因是否为端口笔误(触发Q2兜底转缺口)?",
+          "answer": "5失败全部直接修复，无一需转缺口：pack_lock改/proc(std-only,去libc+unsafe)、token列索引对齐JOIN、InMemory disambiguate改用chunk_store、migration常量21->23、CI改逐target+--skip postgres。均为移植笔误/cfg-gated漏编译,非功能缺失。WSL Linux验证全绿(lib1953+mig7+token7+disambig4,0 failed)。commit 868eb49。",
+          "note": "Q2兜底未触发；闸门完成,焦点回1-1-3 extract-takes"
+        }
+      ],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-23 17:12:54",
-    "updated": "2026-07-28 12:08:10",
+    "updated": "2026-07-29 14:41:32",
     "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_PART12_CYCLE_MIGRATION.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART12_CYCLE_MIGRATION.md"
