@@ -671,6 +671,77 @@ async fn execute_phase(
             }
         }
 
+        CyclePhase::ConversationFactsBackfill => {
+            use crate::autopilot::phases::conversation_facts_backfill::{
+                run_phase_conversation_facts_backfill, ConversationFactsBackfillOpts,
+            };
+
+            match &_opts.chat {
+                None => PhaseResult {
+                    phase: label.into(),
+                    status: PhaseStatus::Skipped,
+                    duration_ms: phase_start.elapsed().as_millis() as u64,
+                    summary: "conversation-facts-backfill: no chat provider wired (skipped)"
+                        .into(),
+                    details: serde_json::json!({ "reason": "no_chat_provider" }),
+                    error: None,
+                },
+                Some(chat) => {
+                    // No global config store in Rust yet: the TS gate
+                    // `cycle.conversation_facts_backfill.enabled` defaults to
+                    // false, so the cycle arm passes `enabled: false` and the
+                    // phase self-reports Skipped (same behavior as TS default).
+                    match run_phase_conversation_facts_backfill(
+                        engine,
+                        chat.as_ref(),
+                        &ConversationFactsBackfillOpts::default(),
+                    )
+                    .await
+                    {
+                        Ok(r) => {
+                            let status = match r.status.as_str() {
+                                "skipped" => PhaseStatus::Skipped,
+                                "ok" => PhaseStatus::Ok,
+                                _ => PhaseStatus::Warn,
+                            };
+                            PhaseResult {
+                                phase: label.into(),
+                                status,
+                                duration_ms: phase_start.elapsed().as_millis() as u64,
+                                summary: format!("conversation-facts-backfill: {}", r.summary),
+                                details: serde_json::json!({
+                                    "sources_count": r.sources_count,
+                                    "sources_processed": r.sources_processed,
+                                    "pages_processed": r.pages_processed,
+                                    "pages_skipped": r.pages_skipped,
+                                    "facts_inserted": r.facts_inserted,
+                                    "spent_usd": r.spent_usd,
+                                    "skipped_by_brain_wide_cap": r.skipped_by_brain_wide_cap,
+                                    "skipped_by_brain_wide_walltime": r.skipped_by_brain_wide_walltime,
+                                    "types": r.types,
+                                }),
+                                error: None,
+                            }
+                        }
+                        Err(e) => PhaseResult {
+                            phase: label.into(),
+                            status: PhaseStatus::Fail,
+                            duration_ms: phase_start.elapsed().as_millis() as u64,
+                            summary: "conversation-facts-backfill phase failed".into(),
+                            details: serde_json::json!({}),
+                            error: Some(PhaseError {
+                                class: "DatabaseConnection".into(),
+                                code: "UNKNOWN".into(),
+                                message: e.to_string(),
+                                hint: None,
+                                docs_url: None,
+                            }),
+                        },
+                    }
+                }
+            }
+        }
+
         CyclePhase::Purge => {
             if dry_run {
                 PhaseResult {
@@ -919,8 +990,22 @@ mod tests {
         let propose_takes = report.phases.iter().find(|p| p.phase == "propose-takes").unwrap();
         assert_eq!(propose_takes.status, PhaseStatus::Skipped);
         assert_eq!(propose_takes.summary, "propose-takes: no chat provider wired (skipped)");
+        // conversation-facts-backfill is a real phase now, but the empty-brain
+        // test wires no chat provider → Skipped. Even with a provider it stays
+        // Skipped by default (enabled=false gate, matching the TS default).
+        let conv_backfill = report
+            .phases
+            .iter()
+            .find(|p| p.phase == "conversation-facts-backfill")
+            .unwrap();
+        assert_eq!(conv_backfill.status, PhaseStatus::Skipped);
+        assert_eq!(
+            conv_backfill.summary,
+            "conversation-facts-backfill: no chat provider wired (skipped)"
+        );
         // All other phases should be Skipped. Count stays 17: extract-atoms +
-        // propose-takes (both real LLM phases, no chat here) + 15 stubs.
+        // propose-takes + conversation-facts-backfill (real LLM phases, no
+        // chat here) + 14 stubs.
         let skipped_count = report.phases.iter().filter(|p| p.status == PhaseStatus::Skipped).count();
         assert_eq!(skipped_count, 17);
     }

@@ -1888,6 +1888,47 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
         ))
     }
 
+    // ---- op_checkpoints (shared resume state for long-running ops) ----
+    // Ported for the conversation-facts-backfill cycle phase. The TS
+    // `runExtractConversationFactsCore` stores per-(source,slug) resume state
+    // as "<sourceId>|<slug>|<endIso>" string entries in `op_checkpoints`.
+
+    /// Load the `completed_keys` array for `(op, fingerprint)`. Returns an
+    /// empty vec when no row exists.
+    async fn load_op_checkpoint(
+        &self,
+        op: &str,
+        fingerprint: &str,
+    ) -> crate::Result<Vec<String>> {
+        let _ = (op, fingerprint);
+        Ok(Vec::new())
+    }
+
+    /// Upsert the `completed_keys` array for `(op, fingerprint)`.
+    async fn save_op_checkpoint(
+        &self,
+        op: &str,
+        fingerprint: &str,
+        completed_keys: &[String],
+    ) -> crate::Result<()> {
+        let _ = (op, fingerprint, completed_keys);
+        Ok(())
+    }
+
+    /// Delete the `op_checkpoints` row for `(op, fingerprint)`.
+    async fn clear_op_checkpoint(&self, op: &str, fingerprint: &str) -> crate::Result<()> {
+        let _ = (op, fingerprint);
+        Ok(())
+    }
+
+    /// Highest `row_num`+1 already stored for `(source_id, slug)` in `facts`,
+    /// used to continue the page-global row accumulator across resume runs.
+    /// Returns 0 when no facts exist for that (source_id, slug).
+    async fn peek_fact_row_num_start(&self, source_id: &str, slug: &str) -> crate::Result<i64> {
+        let _ = (source_id, slug);
+        Ok(0)
+    }
+
     /// Resolve a take by `(page_id, row_num)` — stores resolution
     /// quality/outcome/evidence/value fields. Mirrors TS `resolveTake`.
     async fn resolve_take(
@@ -3240,6 +3281,8 @@ pub struct InMemoryEngine {
     take_proposals_store: Mutex<Vec<InternalTakeProposal>>,
     next_take_proposal_id: Mutex<u64>,
     take_grade_cache_store: Mutex<Vec<InternalTakeGradeCache>>,
+    /// 1-1-6: op_checkpoints resume state (op, fingerprint) -> completed_keys.
+    op_checkpoints_store: Mutex<std::collections::HashMap<(String, String), Vec<String>>>,
 }
 
 /// In-memory `take_proposals` queue row (1-1-4: propose_takes phase).
@@ -3423,6 +3466,8 @@ impl InMemoryEngine {
             next_take_proposal_id: Mutex::new(1),
             // 1-1-5: grade_takes phase verdict cache (in-memory, for testing)
             take_grade_cache_store: Mutex::new(Vec::new()),
+            // 1-1-6: conversation_facts_backfill resume state (in-memory, for testing)
+            op_checkpoints_store: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -5502,6 +5547,48 @@ impl BrainEngine for InMemoryEngine {
             cost_usd: entry.cost_usd,
         });
         Ok(1)
+    }
+
+    async fn load_op_checkpoint(
+        &self,
+        op: &str,
+        fingerprint: &str,
+    ) -> crate::Result<Vec<String>> {
+        let store = self.op_checkpoints_store.lock().expect("poisoned");
+        Ok(store
+            .get(&(op.to_string(), fingerprint.to_string()))
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    async fn save_op_checkpoint(
+        &self,
+        op: &str,
+        fingerprint: &str,
+        completed_keys: &[String],
+    ) -> crate::Result<()> {
+        let mut store = self.op_checkpoints_store.lock().expect("poisoned");
+        store.insert(
+            (op.to_string(), fingerprint.to_string()),
+            completed_keys.to_vec(),
+        );
+        Ok(())
+    }
+
+    async fn clear_op_checkpoint(&self, op: &str, fingerprint: &str) -> crate::Result<()> {
+        let mut store = self.op_checkpoints_store.lock().expect("poisoned");
+        store.remove(&(op.to_string(), fingerprint.to_string()));
+        Ok(())
+    }
+
+    async fn peek_fact_row_num_start(&self, source_id: &str, slug: &str) -> crate::Result<i64> {
+        let store = self.facts_store.lock().expect("poisoned");
+        let max = store
+            .iter()
+            .filter(|f| f.source_id == source_id && f.source_markdown_slug.as_deref() == Some(slug))
+            .filter_map(|f| f.row_num)
+            .max();
+        Ok(max.map(|m| m as i64 + 1).unwrap_or(0))
     }
 
     async fn resolve_take(

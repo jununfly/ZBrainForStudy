@@ -260,6 +260,7 @@ const MIGRATION_0021: &str = include_str!("../migrations/0021_code_edges.sql");
 const MIGRATION_0022: &str = include_str!("../migrations/0022_image_search_spend_log.sql");
 const MIGRATION_0023: &str = include_str!("../migrations/0023_calibration_tables.sql");
 const MIGRATION_0024: &str = include_str!("../migrations/0024_take_proposals.sql");
+const MIGRATION_0025: &str = include_str!("../migrations/0025_op_checkpoints.sql");
 
 /// FNV-1a 64-bit hash of a lease key, mapped to a signed int64 for
 /// `pg_advisory_xact_lock`. Matches the TS implementation bit-for-bit.
@@ -396,6 +397,11 @@ pub static POSTGRES_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 24,
         name: "take_proposals",
         sql: MIGRATION_0024,
+    }));
+    registry.add(Box::new(PostgresMigration {
+        version: 25,
+        name: "op_checkpoints",
+        sql: MIGRATION_0025,
     }));
 
     registry
@@ -2978,6 +2984,87 @@ impl BrainEngine for PostgresEngine {
             Some(_) => 1,
             None => 0,
         })
+    }
+
+    async fn load_op_checkpoint(
+        &self,
+        op: &str,
+        fingerprint: &str,
+    ) -> Result<Vec<String>> {
+        let pool = self.pool()?;
+        let row = sqlx::query(
+            "SELECT completed_keys FROM op_checkpoints WHERE op = $1 AND fingerprint = $2",
+        )
+        .bind(op)
+        .bind(fingerprint)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::engine(format!("load_op_checkpoint: {e}")))?;
+        match row {
+            Some(r) => {
+                let raw: serde_json::Value = r
+                    .try_get("completed_keys")
+                    .map_err(|e| Error::engine(format!("load_op_checkpoint decode: {e}")))?;
+                Ok(serde_json::from_value(raw).unwrap_or_default())
+            }
+            None => Ok(Vec::new()),
+        }
+    }
+
+    async fn save_op_checkpoint(
+        &self,
+        op: &str,
+        fingerprint: &str,
+        completed_keys: &[String],
+    ) -> Result<()> {
+        let pool = self.pool()?;
+        let json: serde_json::Value = serde_json::to_value(completed_keys)
+            .map_err(|e| Error::engine(format!("save_op_checkpoint json: {e}")))?;
+        sqlx::query(
+            "INSERT INTO op_checkpoints (op, fingerprint, completed_keys, updated_at) \
+             VALUES ($1, $2, $3, now()) \
+             ON CONFLICT (op, fingerprint) DO UPDATE SET completed_keys = $3, updated_at = now()",
+        )
+        .bind(op)
+        .bind(fingerprint)
+        .bind(json)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("save_op_checkpoint: {e}")))?;
+        Ok(())
+    }
+
+    async fn clear_op_checkpoint(&self, op: &str, fingerprint: &str) -> Result<()> {
+        let pool = self.pool()?;
+        sqlx::query("DELETE FROM op_checkpoints WHERE op = $1 AND fingerprint = $2")
+            .bind(op)
+            .bind(fingerprint)
+            .execute(pool)
+            .await
+            .map_err(|e| Error::engine(format!("clear_op_checkpoint: {e}")))?;
+        Ok(())
+    }
+
+    async fn peek_fact_row_num_start(&self, source_id: &str, slug: &str) -> Result<i64> {
+        let pool = self.pool()?;
+        let row = sqlx::query(
+            "SELECT COALESCE(MAX(row_num), -1) AS max_row \
+             FROM facts WHERE source_id = $1 AND source_markdown_slug = $2",
+        )
+        .bind(source_id)
+        .bind(slug)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::engine(format!("peek_fact_row_num_start: {e}")))?;
+        match row {
+            Some(r) => {
+                let max_row: i64 = r
+                    .try_get("max_row")
+                    .map_err(|e| Error::engine(format!("peek_fact_row_num_start decode: {e}")))?;
+                Ok(max_row + 1)
+            }
+            None => Ok(0),
+        }
     }
 
     async fn add_take_proposal(&self, proposal: &TakeProposalInput) -> Result<u64> {

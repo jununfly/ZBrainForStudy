@@ -62,7 +62,7 @@ async fn read_version_raw(path: &std::path::Path) -> i64 {
 /// actual count is derived from the on-disk migrations/*.sql files; this
 /// constant must track the highest migration number so the fresh-db /
 /// idempotent tests assert the right version.
-const EXPECTED_VERSION: i64 = 24;
+const EXPECTED_VERSION: i64 = 25;
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
 

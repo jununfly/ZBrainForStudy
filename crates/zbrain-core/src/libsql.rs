@@ -141,6 +141,7 @@ const MIGRATION_0021: &str = include_str!("../migrations-sqlite/0021_code_edges.
 const MIGRATION_0022: &str = include_str!("../migrations-sqlite/0022_image_search_spend_log.sql");
 const MIGRATION_0023: &str = include_str!("../migrations-sqlite/0023_calibration_tables.sql");
 const MIGRATION_0024: &str = include_str!("../migrations-sqlite/0024_take_proposals.sql");
+const MIGRATION_0025: &str = include_str!("../migrations-sqlite/0025_op_checkpoints.sql");
 
 /// Legacy string array — REMOVED in favor of MigrationRegistry.
 /// Use LIBQL_MIGRATIONS instead.
@@ -286,6 +287,11 @@ pub static LIBQL_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 24,
         name: "take_proposals",
         sql: MIGRATION_0024,
+    }));
+    registry.add(Box::new(LibsqlMigration {
+        version: 25,
+        name: "op_checkpoints",
+        sql: MIGRATION_0025,
     }));
 
     registry
@@ -4050,6 +4056,88 @@ impl BrainEngine for LibsqlEngine {
         {
             Some(_) => Ok(1),
             None => Ok(0),
+        }
+    }
+
+    async fn load_op_checkpoint(
+        &self,
+        op: &str,
+        fingerprint: &str,
+    ) -> Result<Vec<String>> {
+        let conn = self.conn().await?;
+        let mut rows = conn
+            .query(
+                "SELECT completed_keys FROM op_checkpoints WHERE op = ?1 AND fingerprint = ?2",
+                ::libsql::params![op, fingerprint],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("load_op_checkpoint: {e}")))?;
+        if let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("load_op_checkpoint next: {e}")))?
+        {
+            let raw: String = row
+                .get(0)
+                .map_err(|e| Error::engine(format!("load_op_checkpoint decode: {e}")))?;
+            Ok(serde_json::from_str(&raw).unwrap_or_default())
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    async fn save_op_checkpoint(
+        &self,
+        op: &str,
+        fingerprint: &str,
+        completed_keys: &[String],
+    ) -> Result<()> {
+        let conn = self.conn().await?;
+        let json = serde_json::to_string(completed_keys)
+            .map_err(|e| Error::engine(format!("save_op_checkpoint json: {e}")))?;
+        conn.execute(
+            "INSERT INTO op_checkpoints (op, fingerprint, completed_keys, updated_at) \
+             VALUES (?1, ?2, ?3, CURRENT_TIMESTAMP) \
+             ON CONFLICT(op, fingerprint) DO UPDATE SET completed_keys = ?3, updated_at = CURRENT_TIMESTAMP",
+            ::libsql::params![op, fingerprint, json],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("save_op_checkpoint: {e}")))?;
+        Ok(())
+    }
+
+    async fn clear_op_checkpoint(&self, op: &str, fingerprint: &str) -> Result<()> {
+        let conn = self.conn().await?;
+        conn.execute(
+            "DELETE FROM op_checkpoints WHERE op = ?1 AND fingerprint = ?2",
+            ::libsql::params![op, fingerprint],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("clear_op_checkpoint: {e}")))?;
+        Ok(())
+    }
+
+    async fn peek_fact_row_num_start(&self, source_id: &str, slug: &str) -> Result<i64> {
+        let conn = self.conn().await?;
+        let mut rows = conn
+            .query(
+                "SELECT COALESCE(MAX(row_num), -1) AS max_row \
+                 FROM facts WHERE source_id = ?1 AND source_markdown_slug = ?2",
+                ::libsql::params![source_id, slug],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("peek_fact_row_num_start: {e}")))?;
+        if let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("peek_fact_row_num_start next: {e}")))?
+        {
+            let max_row: i64 = row
+                .get(0)
+                .map_err(|e| Error::engine(format!("peek_fact_row_num_start decode: {e}")))?;
+            Ok(max_row + 1)
+        } else {
+            Ok(0)
         }
     }
 
