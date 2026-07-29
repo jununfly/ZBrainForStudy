@@ -189,12 +189,12 @@
     "1-1-4": {
       "id": "1-1-4",
       "label": "propose-takes phase 实现 (port propose-takes.ts → autopilot/phases/propose_takes.rs; 接 execute_phase)",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-1",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "实现完成并 push：新建 propose_takes.rs(cycle db 路径: 枚举 pages→提取 compiled_truth+timeline→MockChatProvider 注入 extractor→解析 verdicts→逐页 add_take_proposal 幂等写 take_proposals 队列表, 无 chat→Skipped)。新增 typed trait 方法 add_take_proposal+take_proposal_exists(三引擎实现, 绕开 execute_raw 逃逸, 见 engine.rs:2505), 并补 migration 0024(双 dialect) 建 take_proposals 表(权威 DDL 来自 src/schema.sql, 此前 Rust migration 0023 注释明示'Rust 尚未建此表')。Windows 单测全绿(autopilot 207 pass + migration 7 pass)。偏差: TS parser kind 集合为 fact/take/bet/hunch, 但 TS PROMPT 写 prediction|judgment|bet(自身不一致)——忠实移植 parser, prediction 归一化入 take。"
     },
     "1-1-5": {
       "id": "1-1-5",
