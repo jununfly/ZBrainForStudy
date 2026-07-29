@@ -37,7 +37,8 @@ use crate::oauth_queries::{
 use crate::engine::{
     fuse_and_boost, page_sort_sql, BrainEngine, CreateSourceInput, EngineConfig, EngineKind,
     GetPageOpts, Page, PageFilters, PageInput, PageSort, ResolveSlugsOpts, SearchOpts,
-    SearchResult, SourceRow, TakeProposalInput, UpdateSourceInput, is_valid_source_id,
+    SearchResult, SourceRow, TakeGradeCacheInput, TakeProposalInput, UpdateSourceInput,
+    is_valid_source_id,
 };
 use crate::error::{Error, Result};
 use crate::migration::{Migration, MigrationRegistry};
@@ -3987,6 +3988,69 @@ impl BrainEngine for LibsqlEngine {
             None => 0,
         };
         Ok(id as u64)
+    }
+
+    async fn take_grade_cache_exists(
+        &self,
+        take_id: u64,
+        prompt_version: &str,
+        judge_model_id: &str,
+        evidence_signature: &str,
+    ) -> Result<bool> {
+        let conn = self.conn().await?;
+        let mut rows = conn
+            .query(
+                "SELECT take_id FROM take_grade_cache \
+                 WHERE take_id = ?1 AND prompt_version = ?2 AND judge_model_id = ?3 AND evidence_signature = ?4 \
+                 LIMIT 1",
+                ::libsql::params![
+                    take_id as i64,
+                    prompt_version,
+                    judge_model_id,
+                    evidence_signature
+                ],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("take_grade_cache_exists: {e}")))?;
+        Ok(rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("take_grade_cache_exists next: {e}")))?
+            .is_some())
+    }
+
+    async fn add_take_grade_cache(&self, entry: &TakeGradeCacheInput) -> Result<u64> {
+        let conn = self.conn().await?;
+        let mut rows = conn
+            .query(
+                "INSERT INTO take_grade_cache \
+                    (take_id, prompt_version, judge_model_id, evidence_signature, wave_version, \
+                     verdict, confidence, applied, cost_usd) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
+                 ON CONFLICT (take_id, prompt_version, judge_model_id, evidence_signature) DO NOTHING \
+                 RETURNING take_id",
+                ::libsql::params![
+                    entry.take_id as i64,
+                    entry.prompt_version.clone(),
+                    entry.judge_model_id.clone(),
+                    entry.evidence_signature.clone(),
+                    entry.wave_version.clone(),
+                    entry.verdict.clone(),
+                    entry.confidence,
+                    entry.applied,
+                    entry.cost_usd,
+                ],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("add_take_grade_cache insert: {e}")))?;
+        match rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("add_take_grade_cache RETURNING: {e}")))?
+        {
+            Some(_) => Ok(1),
+            None => Ok(0),
+        }
     }
 
     async fn resolve_take(

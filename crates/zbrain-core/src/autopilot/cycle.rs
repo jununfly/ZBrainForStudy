@@ -602,6 +602,75 @@ async fn execute_phase(
             }
         }
 
+        CyclePhase::GradeTakes => {
+            use crate::autopilot::phases::grade_takes::{run_grade_takes, GradeTakesOpts};
+
+            match &_opts.chat {
+                None => PhaseResult {
+                    phase: label.into(),
+                    status: PhaseStatus::Skipped,
+                    duration_ms: phase_start.elapsed().as_millis() as u64,
+                    summary: "grade-takes: no chat provider wired (skipped)".into(),
+                    details: serde_json::json!({ "reason": "no_chat_provider" }),
+                    error: None,
+                },
+                Some(chat) => {
+                    match run_grade_takes(
+                        engine,
+                        chat.as_ref(),
+                        &GradeTakesOpts {
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    {
+                        Ok(r) => {
+                            let status = if r.budget_exhausted || !r.warnings.is_empty() {
+                                PhaseStatus::Warn
+                            } else {
+                                PhaseStatus::Ok
+                            };
+                            PhaseResult {
+                                phase: label.into(),
+                                status,
+                                duration_ms: phase_start.elapsed().as_millis() as u64,
+                                summary: format!(
+                                    "grade-takes: scanned {} takes, {} verdicts written ({} cached, {} auto-applied)",
+                                    r.takes_scanned, r.verdicts_written, r.cache_hits, r.auto_applied
+                                ),
+                                details: serde_json::json!({
+                                    "takes_scanned": r.takes_scanned,
+                                    "cache_hits": r.cache_hits,
+                                    "verdicts_written": r.verdicts_written,
+                                    "auto_applied": r.auto_applied,
+                                    "too_recent": r.too_recent,
+                                    "budget_exhausted": r.budget_exhausted,
+                                    "ensemble_invoked": r.ensemble_invoked,
+                                    "ensemble_unanimous": r.ensemble_unanimous,
+                                    "warnings": r.warnings,
+                                }),
+                                error: None,
+                            }
+                        }
+                        Err(e) => PhaseResult {
+                            phase: label.into(),
+                            status: PhaseStatus::Fail,
+                            duration_ms: phase_start.elapsed().as_millis() as u64,
+                            summary: "grade-takes phase failed".into(),
+                            details: serde_json::json!({}),
+                            error: Some(PhaseError {
+                                class: "DatabaseConnection".into(),
+                                code: "UNKNOWN".into(),
+                                message: e.to_string(),
+                                hint: None,
+                                docs_url: None,
+                            }),
+                        },
+                    }
+                }
+            }
+        }
+
         CyclePhase::Purge => {
             if dry_run {
                 PhaseResult {

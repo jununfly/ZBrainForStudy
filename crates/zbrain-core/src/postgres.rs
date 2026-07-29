@@ -39,7 +39,7 @@ use sqlx::{QueryBuilder, PgPool, Row};
 
 use crate::engine::{
     page_sort_sql, BrainEngine, CreateSourceInput, EngineConfig, EngineKind, GetPageOpts, Page,
-    TakeProposalInput,
+    TakeProposalInput, TakeGradeCacheInput,
     PageFilters, PageInput, PageSort, ResolveSlugsOpts, SearchOpts, SearchResult, SourceRow,
     UpdateSourceInput, fuse_and_boost, is_valid_source_id,
 };
@@ -2927,6 +2927,57 @@ impl BrainEngine for PostgresEngine {
         .await
         .map_err(|e| Error::engine(format!("take_proposal_exists: {e}")))?;
         Ok(row.is_some())
+    }
+
+    async fn take_grade_cache_exists(
+        &self,
+        take_id: u64,
+        prompt_version: &str,
+        judge_model_id: &str,
+        evidence_signature: &str,
+    ) -> Result<bool> {
+        let pool = self.pool()?;
+        let row = sqlx::query(
+            "SELECT take_id FROM take_grade_cache \
+             WHERE take_id = $1 AND prompt_version = $2 AND judge_model_id = $3 AND evidence_signature = $4 \
+             LIMIT 1",
+        )
+        .bind(take_id as i64)
+        .bind(prompt_version)
+        .bind(judge_model_id)
+        .bind(evidence_signature)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::engine(format!("take_grade_cache_exists: {e}")))?;
+        Ok(row.is_some())
+    }
+
+    async fn add_take_grade_cache(&self, entry: &TakeGradeCacheInput) -> Result<u64> {
+        let pool = self.pool()?;
+        let row = sqlx::query(
+            "INSERT INTO take_grade_cache \
+                (take_id, prompt_version, judge_model_id, evidence_signature, wave_version, \
+                 verdict, confidence, applied, cost_usd) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+             ON CONFLICT (take_id, prompt_version, judge_model_id, evidence_signature) DO NOTHING \
+             RETURNING take_id",
+        )
+        .bind(entry.take_id as i64)
+        .bind(&entry.prompt_version)
+        .bind(&entry.judge_model_id)
+        .bind(&entry.evidence_signature)
+        .bind(&entry.wave_version)
+        .bind(&entry.verdict)
+        .bind(entry.confidence)
+        .bind(entry.applied)
+        .bind(entry.cost_usd)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::engine(format!("add_take_grade_cache insert: {e}")))?;
+        Ok(match row {
+            Some(_) => 1,
+            None => 0,
+        })
     }
 
     async fn add_take_proposal(&self, proposal: &TakeProposalInput) -> Result<u64> {

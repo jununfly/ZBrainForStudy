@@ -906,6 +906,27 @@ pub struct TakeProposalInput {
     pub model_id: String,
 }
 
+/// Input for [`BrainEngine::add_take_grade_cache`]. Mirrors the columns written
+/// by `grade-takes.ts` into the `take_grade_cache` verdict cache. The idempotency
+/// key is the composite primary key `(take_id, prompt_version, judge_model_id,
+/// evidence_signature)` (see `src/schema.sql` / migration 0023).
+#[derive(Debug, Clone)]
+pub struct TakeGradeCacheInput {
+    pub take_id: u64,
+    pub prompt_version: String,
+    pub judge_model_id: String,
+    pub evidence_signature: String,
+    /// Defaults to `v0.36.1.0` when not set.
+    pub wave_version: String,
+    pub verdict: String,
+    pub confidence: f64,
+    /// Whether this verdict was auto-applied to the canonical `takes` table via
+    /// `resolve_take`. D17 default: `false` (review-queue posture).
+    pub applied: bool,
+    /// Estimated LLM cost in USD for this verdict (optional, telemetry only).
+    pub cost_usd: Option<f64>,
+}
+
 #[async_trait]
 pub trait BrainEngine: Send + Sync + std::fmt::Debug {
     // ── Identity ──────────────────────────────────────────────────────────
@@ -1829,6 +1850,41 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
             "Unsupported",
             "unsupported",
             "take_proposal_exists not yet implemented for this engine",
+        ))
+    }
+
+    /// Insert a single verdict into the `take_grade_cache` cache. Idempotency is
+    /// enforced at the storage layer via the composite primary key
+    /// `(take_id, prompt_version, judge_model_id, evidence_signature)`; the
+    /// INSERT is conflict-safe (`ON CONFLICT ... DO NOTHING`). Returns the number
+    /// of rows written (0 when the conflict guard swallowed the row). Callers
+    /// should pre-check [`BrainEngine::take_grade_cache_exists`] for the cache
+    /// hit/miss accounting, mirroring `grade-takes.ts`.
+    async fn add_take_grade_cache(&self, entry: &TakeGradeCacheInput) -> crate::Result<u64> {
+        let _ = entry;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "add_take_grade_cache not yet implemented for this engine",
+        ))
+    }
+
+    /// Whether a verdict cache row already exists for the exact idempotency
+    /// tuple `(take_id, prompt_version, judge_model_id, evidence_signature)`.
+    /// Drives the `grade-takes` cache hit/miss accounting so a re-run with
+    /// unchanged evidence/verdict never re-spends LLM tokens.
+    async fn take_grade_cache_exists(
+        &self,
+        take_id: u64,
+        prompt_version: &str,
+        judge_model_id: &str,
+        evidence_signature: &str,
+    ) -> crate::Result<bool> {
+        let _ = (take_id, prompt_version, judge_model_id, evidence_signature);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "take_grade_cache_exists not yet implemented for this engine",
         ))
     }
 
@@ -3183,6 +3239,7 @@ pub struct InMemoryEngine {
     // (source_id, page_slug, content_hash, prompt_version).
     take_proposals_store: Mutex<Vec<InternalTakeProposal>>,
     next_take_proposal_id: Mutex<u64>,
+    take_grade_cache_store: Mutex<Vec<InternalTakeGradeCache>>,
 }
 
 /// In-memory `take_proposals` queue row (1-1-4: propose_takes phase).
@@ -3203,6 +3260,21 @@ struct InternalTakeProposal {
     dedup_against_fence_rows: Option<String>,
     model_id: String,
     status: String,
+}
+
+/// In-memory `take_grade_cache` row. Keyed by the composite
+/// `(take_id, prompt_version, judge_model_id, evidence_signature)`.
+#[derive(Debug, Clone)]
+struct InternalTakeGradeCache {
+    take_id: u64,
+    prompt_version: String,
+    judge_model_id: String,
+    evidence_signature: String,
+    wave_version: String,
+    verdict: String,
+    confidence: f64,
+    applied: bool,
+    cost_usd: Option<f64>,
 }
 
 /// In-memory code-graph edge row. `resolved == true` mirrors a `code_edges_chunk`
@@ -3349,6 +3421,8 @@ impl InMemoryEngine {
             // 1-1-4: propose_takes phase queue (in-memory, for testing)
             take_proposals_store: Mutex::new(Vec::new()),
             next_take_proposal_id: Mutex::new(1),
+            // 1-1-5: grade_takes phase verdict cache (in-memory, for testing)
+            take_grade_cache_store: Mutex::new(Vec::new()),
         }
     }
 
@@ -5380,6 +5454,54 @@ impl BrainEngine for InMemoryEngine {
             status: "pending".to_string(),
         });
         Ok(id)
+    }
+
+    async fn take_grade_cache_exists(
+        &self,
+        take_id: u64,
+        prompt_version: &str,
+        judge_model_id: &str,
+        evidence_signature: &str,
+    ) -> crate::Result<bool> {
+        let store = self
+            .take_grade_cache_store
+            .lock()
+            .expect("InMemoryEngine take_grade_cache_store mutex poisoned");
+        Ok(store.iter().any(|c| {
+            c.take_id == take_id
+                && c.prompt_version == prompt_version
+                && c.judge_model_id == judge_model_id
+                && c.evidence_signature == evidence_signature
+        }))
+    }
+
+    async fn add_take_grade_cache(&self, entry: &TakeGradeCacheInput) -> crate::Result<u64> {
+        let mut store = self
+            .take_grade_cache_store
+            .lock()
+            .expect("InMemoryEngine take_grade_cache_store mutex poisoned");
+        // Conflict-safe: never double-count a verdict already in the cache.
+        let exists = store.iter().any(|c| {
+            c.take_id == entry.take_id
+                && c.prompt_version == entry.prompt_version
+                && c.judge_model_id == entry.judge_model_id
+                && c.evidence_signature == entry.evidence_signature
+        });
+        if exists {
+            return Ok(0);
+        }
+        store.push(InternalTakeGradeCache {
+            take_id: entry.take_id,
+            prompt_version: entry.prompt_version.clone(),
+            judge_model_id: entry.judge_model_id.clone(),
+            evidence_signature: entry.evidence_signature.clone(),
+            wave_version: entry.wave_version.clone(),
+            verdict: entry.verdict.clone(),
+            confidence: entry.confidence,
+            applied: entry.applied,
+            cost_usd: entry.cost_usd,
+        });
+        Ok(1)
     }
 
     async fn resolve_take(
