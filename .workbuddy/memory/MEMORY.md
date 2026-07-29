@@ -13,6 +13,7 @@
 - **代码注释禁引 roadmap 编号**（roadmap JSON 是临时文件，清理后成死链）；必要信息自解释写进注释。docs/plans/ 下 canonical 文档可引用。
 - **拆分约定**：审计/拆解发现与当前节点语义偏差且有跟进价值 → 拆 sub-node，不吸收进当前 plan。
 - **进度 SSOT**：各 part 完成状态以 roadmap JSON 为准；历史 phase 完成明细在每日 `YYYY-MM-DD.md`，不在本文件重复。
+- **roadmap decisions 键格式坑（2026-07-29 实踩）**：JSON `nodes[*].decisions[*]` 必须用 `{"q","answer","note?"}` 键；`roadmap_cli.py render` 的 `_build_focus_section` 直接 `d['answer']` 索引，**用 `a` 键会 `KeyError: 'answer'` 崩**。且焦点节点（`status=="in_progress"` 的节点）的 decisions 才会在 render 时被读取——若某 in_progress 节点的 decisions 误用 `a` 键，整次 render 必崩（之前 1-1 是焦点掩盖了 1-3 的 `a` 键，标记 1-1 completed 后焦点转 1-3 才暴露）。修法：render 前先 `python` 归一化把所有 `a` 键 rename 为 `answer`；写入新 decisions 时一律用 `answer`。
 
 ## 已知缺口 SSOT
 - 目标范围外、不值得单建 roadmap 节点的缺口，集中登记 `docs/plans/KNOWN-GAPS.md`（活文档，无日期前缀；双向指针：代码锚点 `// registered in docs/plans/KNOWN-GAPS.md (Gn)` ↔ 文档"现载体"列）。`FUTURE(tag)` 注释瘦身为一行指路牌；`UNMIGRATED_TS_*` 常量+锚点测试原样保留（CI 防漂移）。
@@ -28,7 +29,7 @@
 
 ## 迁移进度（摘要）
 - 迁移全 12 Part。主线已完成：Sources/Capture、Facts/Takes/Timeline/Salience/Graph、Search/Retrieval 生产后端复活、minions、autopilot、Part7 Phase9、Part9 Phase11（残留 TS 终局）、Part10 Phase12 Schema-Pack 路线图。
-- **当前最前沿**：Part12 cycle 大迁移。**1-1 facts-extraction 簇已全 6 叶子 push 完成**（1-1-6 conversation-facts-backfill 已 push 至 dff29e4..4256e65）。**1-2 emotional-calibration 簇本会话迁完（working tree，待 commit+push）**：1-2-1 compute_emotional_weight 纯函数 + 1-2-2 引擎方法 `batch_load_emotional_inputs`/`set_emotional_weight_batch`(trait+InMemory+libsql+postgres) + 1-2-3 recompute_emotional_weight phase+cycle 真实臂 + 1-2-4 `run_calibration_profile` 接 cycle 真实臂；`get_config` 走 opts override（对齐 1-1-6）。autopilot lib 全量回归 239 测试全绿，skipped 计数保持 16（calibration 原已归 catch-all Skipped，接真实臂后仍 Skipped，故计数不变）。下一簇 **1-3 synthesis**（synthesize/synthesize-concepts/patterns/schema-suggest）。**迁移范式**：cycle phase = `execute_phase` 真实 match 臂 + `autopilot/phases/<name>.rs` 模块函数（Orphans/Purge 先例）；改一个 phase 为真实臂后 `run_cycle_empty_brain` 的 skipped 断言要 -1 并加该 phase 状态断言（但若该 phase 原已归 catch-all Skipped、接真实臂后仍 Skipped，则 skipped 计数不变）。libsql 加 trait 方法：inherent `_impl` + 既有 impl 块内委托（开第二个 `impl BrainEngine` 块必 E0119）。
+- **当前最前沿**：Part12 cycle 大迁移。**1-1 facts-extraction 簇已全 6 叶子 push 完成**（1-1-6 conversation-facts-backfill 已 push 至 dff29e4..4256e65）。**1-2 emotional-calibration 簇已 push（056a04d feat + 205e86f chore，push 4256e65..205e86f）**：1-2-1 compute_emotional_weight 纯函数 + 1-2-2 引擎方法 `batch_load_emotional_inputs`/`set_emotional_weight_batch`(trait+InMemory+libsql+postgres) + 1-2-3 recompute_emotional_weight phase+cycle 真实臂 + 1-2-4 `run_calibration_profile` 接 cycle 真实臂；`get_config` 走 opts override（对齐 1-1-6）。autopilot lib 全量回归 239 测试全绿，skipped 计数保持 16（calibration 原已归 catch-all Skipped，接真实臂后仍 Skipped，故计数不变）。**1-3 synthesis 簇进行中（working tree，未 push）**：1-3-1 synthesize-concepts 与 1-3-2 schema-suggest 已实现+接线+测试（空脑 skipped 计数仍 16）；按用户决策由易到难先做这俩，1-3-3 patterns 与 1-3-4 synthesize（explore，待拆 sub-sub）尚未做。**迁移范式**：cycle phase = `execute_phase` 真实 match 臂 + `autopilot/phases/<name>.rs` 模块函数（Orphans/Purge 先例）；改一个 phase 为真实臂后 `run_cycle_empty_brain` 的 skipped 断言要 -1 并加该 phase 状态断言（但若该 phase 原已归 catch-all Skipped、接真实臂后仍 Skipped，则 skipped 计数不变）。libsql 加 trait 方法：inherent `_impl` + 既有 impl 块内委托（开第二个 `impl BrainEngine` 块必 E0119）。
 
 ## 其他
 - Admin 路由差异：Rust admin API 在 `/*`（如 `/register-client`），TS 在 `/admin/api/*`；路线图 Q6 决策"保持 /admin/api/*"，待对齐。

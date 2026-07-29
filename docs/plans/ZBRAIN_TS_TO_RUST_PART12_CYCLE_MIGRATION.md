@@ -1,7 +1,7 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust-part12-cycle-migration.json` | 最后更新: 2026-07-29 14:41:32
+> 数据文件: `zbrain-ts-to-rust-part12-cycle-migration.json` | 最后更新: 2026-07-29 21:38:06
 
 [~][X+] 1. Part12 - cycle 大迁移 (按能力簇切)
 ├── [~][Y+] 1-1. facts-extraction 簇迁移 (extract-facts/atoms/takes + propose/grade-takes + conversation-facts-backfill; 消费者 v0_28_0->extract-takes)
@@ -16,30 +16,27 @@
 │   ├── [x][Y+] 1-2-2. 补引擎方法 batch_load_emotional_inputs + set_emotional_weight_batch (trait + InMemory + libsql + postgres; get_config 走 opts override)
 │   ├── [x][Y+] 1-2-3. recompute_emotional_weight phase 实现 (port recompute-emotional-weight.ts → autopilot/phases/recompute_emotional_weight.rs; 接 execute_phase)
 │   └── [x][Y+] 1-2-4. run_calibration_profile 接 cycle 真实臂 (calibration/calibration_profile.rs 已存在; cycle.rs CyclePhase::CalibrationProfile 真实臂 + 单测)
-├── [ ][X+] 1-3. synthesis 簇迁移 (synthesize/synthesize-concepts/patterns/schema-suggest)
+├── [~][X+] 1-3. synthesis 簇迁移 (synthesize/synthesize-concepts/patterns/schema-suggest)
+│   ├── [x] 1-3-1. synthesize-concepts phase 迁移 (port synthesize-concepts.ts → autopilot/phases/synthesize_concepts.rs; gatewayChat+execute_raw 查 atom 页+put_page 写 concept 页+deterministic 兜底; cycle 真实臂无 chat→Skipped)
+│   ├── [x] 1-3-2. schema-suggest phase 迁移 (先移植 schema-pack detect.ts+suggest.ts → schema_pack::detect/suggest; phase 层接 cycle 真实臂; 无 LLM heuristics 兜底; 不写 brain DB 只写 audit jsonl)
+│   ├── [x] 1-3-3. patterns phase 迁移 (TS 源 git 45fe955~1:src/core/cycle/patterns.ts 351行; 先移植 minions wait_for_completion(94行); 单 subagent job 经 MinionQueue; cycle 真实臂 + 补 handlers/patterns.rs)
+│   └── [ ][X+] 1-3-4. synthesize phase 迁移 (TS 源 git 45fe955~1:src/core/cycle/synthesize.ts 1247行; fan-out subagent per transcript; 需 dream_verdicts migration+transcript-discovery+磁盘双写+模型上下文预算; 待展开拆 sub-sub)
 ├── [ ][X+] 1-4. anomaly-transcript 簇迁移 (anomaly/transcript-discovery; 消费者 transcripts->transcript-discovery, pglite/postgres-engine->anomaly)
 ├── [ ][X+] 1-5. auto-think 簇迁移 (auto-think phase)
 ├── [ ][X+] 1-6. orchestration 主循环迁移 (runCycle 2057行 + base-phase/budget-meter/drift/phantom-redirect/phases/; 消费者 dream->runCycle; Rust cycle.rs 仅745行 dispatch 骨架)
 └── [x][Y+] 1-7. 验证线打通：rust-tests.yml修复 + pack_lock提交 + 5测试失败清算
 
-### 当前施工：1-1. facts-extraction 簇迁移 (extract-facts/atoms/takes + propose/grade-takes + conversation-facts-backfill; 消费者 v0_28_0->extract-takes)
+### 当前施工：1-3. synthesis 簇迁移 (synthesize/synthesize-concepts/patterns/schema-suggest)
 
 **决策：**
-- Q: Q1 分解粒度 → 拆 6 sub-node（extract-facts/atoms/takes/propose-takes/grade-takes/conversation-facts-backfill），每 phase 独立可测、独立提交 (mirrors 1-3-3-x cadence；父节点 1-1 仅作簇容器)
-- Q: Q2 实现形态 → 每 phase = execute_phase 真实 match 臂，委托 autopilot/phases/<name>.rs 模块函数；对齐 Orphans/Purge 真实实现范式 (非 operation（cycle 内部 phase，非用户态 API）)
-- Q: Q3 LLM 集成 → 走 Arc<dyn ChatProvider> trait DI（instantiate_chat），复用 1-3-3-7 同款抽象；phase 函数接收 chat 入参 (ChatProvider 已在 1-3-3 基建就绪)
-- Q: Q4 实施顺序 → 按依赖从底向上：extract-facts(1-1-1)→extract-atoms(1-1-2)→extract-takes(1-1-3)→propose-takes(1-1-4)→grade-takes(1-1-5)→conversation-facts-backfill(1-1-6) (extract-facts 无跨 phase 依赖，先行)
-- Q: Q5 测试策略 → tests/ 集成测试，ChatProvider stub 无真实 LLM；覆盖 happy path + 解析/错误分支 (对齐 1-3-3-7 calibration_profile 测试范式)
-- Q: Q6 范围边界 → 1-1 仅覆盖标注的 6 函数；通用 Extract（HTML→text）阶段不在 1-1，留待独立节点 (节点 label 未含通用 extract)
-- Q: Q7 消费者注册表 v0_28_0→extract-takes → 注册表重映射归 1-6 orchestration 节点统一接线；1-1 只暴露 phase 函数与 label (不在此节点改 engine 消费者注册)
+- Q: Q1 1-3 如何拆分？ → 勘察发现 synthesize.ts(1247行)/patterns.ts(351行) 已在 part11 TS minions teardown (45fe955) 被删（依赖 TS MinionQueue/subagent），TS 源需从 git 45fe955~1 取；synthesize-concepts.ts/schema-suggest.ts 仍在。拆 4 叶子：1-3-1 synthesize-concepts（直接 LLM，套 extract_atoms 范式）→ 1-3-2 schema-suggest（无 LLM，先移植 detect/suggest 进 schema_pack）→ 1-3-3 patterns（单 subagent，先补 wait_for_completion）→ 1-3-4 synthesize（最大件，独立 sub-node 待展开）。用户确认由易到难顺序。
+- Q: Q2 synthesize（fan-out subagent + dream_verdicts 表缺 migration + 磁盘双写 + 模型上下文预算）本簇是否做完？ → 用户决策：拆细分批做。本簇先完成另三叶子；1-3-4 synthesize 保留 explore 待展开（届时再拆 sub-sub：dream_verdicts migration / wait_for_completion 复用 / transcript-discovery / fan-out 编排 / 双写）。不做降级简化版（保持 TS 语义）。
 
 **当前子树：**
-├── [x][Y+] 1-1-1. extract-facts phase 实现 (port extract-facts.ts → autopilot/phases/extract_facts.rs; 接 execute_phase match 臂; ChatProvider trait DI)
-├── [x][Y+] 1-1-2. extract-atoms phase 实现 (port extract-atoms.ts → autopilot/phases/extract_atoms.rs; 接 execute_phase)
-├── [x][Y+] 1-1-3. extract-takes phase 实现 (port extract-takes.ts → autopilot/phases/extract_takes.rs; 接 execute_phase; 消费者 v0_28_0→extract-takes 映射归 1-6)
-├── [x][Y+] 1-1-4. propose-takes phase 实现 (port propose-takes.ts → autopilot/phases/propose_takes.rs; 接 execute_phase)
-├── [x][Y+] 1-1-5. grade-takes phase 实现 (port grade-takes.ts → autopilot/phases/grade_takes.rs; 接 execute_phase)
-└── [x][Y+] 1-1-6. conversation-facts-backfill phase 实现 (port conversation-facts-backfill.ts → autopilot/phases/conversation_facts_backfill.rs; 接 execute_phase)
+├── [x] 1-3-1. synthesize-concepts phase 迁移 (port synthesize-concepts.ts → autopilot/phases/synthesize_concepts.rs; gatewayChat+execute_raw 查 atom 页+put_page 写 concept 页+deterministic 兜底; cycle 真实臂无 chat→Skipped)
+├── [x] 1-3-2. schema-suggest phase 迁移 (先移植 schema-pack detect.ts+suggest.ts → schema_pack::detect/suggest; phase 层接 cycle 真实臂; 无 LLM heuristics 兜底; 不写 brain DB 只写 audit jsonl)
+├── [x] 1-3-3. patterns phase 迁移 (TS 源 git 45fe955~1:src/core/cycle/patterns.ts 351行; 先移植 minions wait_for_completion(94行); 单 subagent job 经 MinionQueue; cycle 真实臂 + 补 handlers/patterns.rs)
+└── [ ][X+] 1-3-4. synthesize phase 迁移 (TS 源 git 45fe955~1:src/core/cycle/synthesize.ts 1247行; fan-out subagent per transcript; 需 dream_verdicts migration+transcript-discovery+磁盘双写+模型上下文预算; 待展开拆 sub-sub)
 <!-- ROADMAP_SECTION_END -->
 
 <!-- ⚠️ ROADMAP_SECTION_START -->
@@ -50,7 +47,7 @@
 
 ```
 [~][X+] 1. Part12 - cycle 大迁移 (按能力簇切)
-├── [~][Y+] 1-1. facts-extraction 簇迁移 (extract-facts/atoms/takes + propose/grade-takes + conversation-facts-backfill; 消费者 v0_28_0->extract-takes)
+├── [x][Y+] 1-1. facts-extraction 簇迁移 (extract-facts/atoms/takes + propose/grade-takes + conversation-facts-backfill; 消费者 v0_28_0->extract-takes)
 │   ├── [x][Y+] 1-1-1. extract-facts phase 实现 (port extract-facts.ts → autopilot/phases/extract_facts.rs; 接 execute_phase match 臂; ChatProvider trait DI)
 │   ├── [x][Y+] 1-1-2. extract-atoms phase 实现 (port extract-atoms.ts → autopilot/phases/extract_atoms.rs; 接 execute_phase)
 │   ├── [x][Y+] 1-1-3. extract-takes phase 实现 (port extract-takes.ts → autopilot/phases/extract_takes.rs; 接 execute_phase; 消费者 v0_28_0→extract-takes 映射归 1-6)
@@ -62,44 +59,29 @@
 │   ├── [x][Y+] 1-2-2. 补引擎方法 batch_load_emotional_inputs + set_emotional_weight_batch (trait + InMemory + libsql + postgres; get_config 走 opts override)
 │   ├── [x][Y+] 1-2-3. recompute_emotional_weight phase 实现 (port recompute-emotional-weight.ts → autopilot/phases/recompute_emotional_weight.rs; 接 execute_phase)
 │   └── [x][Y+] 1-2-4. run_calibration_profile 接 cycle 真实臂 (calibration/calibration_profile.rs 已存在; cycle.rs CyclePhase::CalibrationProfile 真实臂 + 单测)
-├── [ ][X+] 1-3. synthesis 簇迁移 (synthesize/synthesize-concepts/patterns/schema-suggest)
+├── [~][X+] 1-3. synthesis 簇迁移 (synthesize/synthesize-concepts/patterns/schema-suggest)
+│   ├── [x] 1-3-1. synthesize-concepts phase 迁移 (port synthesize-concepts.ts → autopilot/phases/synthesize_concepts.rs; gatewayChat+execute_raw 查 atom 页+put_page 写 concept 页+deterministic 兜底; cycle 真实臂无 chat→Skipped)
+│   ├── [x] 1-3-2. schema-suggest phase 迁移 (先移植 schema-pack detect.ts+suggest.ts → schema_pack::detect/suggest; phase 层接 cycle 真实臂; 无 LLM heuristics 兜底; 不写 brain DB 只写 audit jsonl)
+│   ├── [x] 1-3-3. patterns phase 迁移 (TS 源 git 45fe955~1:src/core/cycle/patterns.ts 351行; 先移植 minions wait_for_completion(94行); 单 subagent job 经 MinionQueue; cycle 真实臂 + 补 handlers/patterns.rs)
+│   └── [ ][X+] 1-3-4. synthesize phase 迁移 (TS 源 git 45fe955~1:src/core/cycle/synthesize.ts 1247行; fan-out subagent per transcript; 需 dream_verdicts migration+transcript-discovery+磁盘双写+模型上下文预算; 待展开拆 sub-sub)
 ├── [ ][X+] 1-4. anomaly-transcript 簇迁移 (anomaly/transcript-discovery; 消费者 transcripts->transcript-discovery, pglite/postgres-engine->anomaly)
 ├── [ ][X+] 1-5. auto-think 簇迁移 (auto-think phase)
 ├── [ ][X+] 1-6. orchestration 主循环迁移 (runCycle 2057行 + base-phase/budget-meter/drift/phantom-redirect/phases/; 消费者 dream->runCycle; Rust cycle.rs 仅745行 dispatch 骨架)
 └── [x][Y+] 1-7. 验证线打通：rust-tests.yml修复 + pack_lock提交 + 5测试失败清算
 ```
 
-### 🔨 当前施工: 1-1. facts-extraction 簇迁移 (extract-facts/atoms/takes + propose/grade-takes + conversation-facts-backfill; 消费者 v0_28_0->extract-takes)
-**Status:** `in_progress` | **Mode:** `exploit`
+### 🔨 当前施工: 1-3. synthesis 簇迁移 (synthesize/synthesize-concepts/patterns/schema-suggest)
+**Status:** `in_progress` | **Mode:** `explore`
 
 **决策记录:**
-- Q: Q1 分解粒度
-  A: 拆 6 sub-node（extract-facts/atoms/takes/propose-takes/grade-takes/conversation-facts-backfill），每 phase 独立可测、独立提交
-  > mirrors 1-3-3-x cadence；父节点 1-1 仅作簇容器
-- Q: Q2 实现形态
-  A: 每 phase = execute_phase 真实 match 臂，委托 autopilot/phases/<name>.rs 模块函数；对齐 Orphans/Purge 真实实现范式
-  > 非 operation（cycle 内部 phase，非用户态 API）
-- Q: Q3 LLM 集成
-  A: 走 Arc<dyn ChatProvider> trait DI（instantiate_chat），复用 1-3-3-7 同款抽象；phase 函数接收 chat 入参
-  > ChatProvider 已在 1-3-3 基建就绪
-- Q: Q4 实施顺序
-  A: 按依赖从底向上：extract-facts(1-1-1)→extract-atoms(1-1-2)→extract-takes(1-1-3)→propose-takes(1-1-4)→grade-takes(1-1-5)→conversation-facts-backfill(1-1-6)
-  > extract-facts 无跨 phase 依赖，先行
-- Q: Q5 测试策略
-  A: tests/ 集成测试，ChatProvider stub 无真实 LLM；覆盖 happy path + 解析/错误分支
-  > 对齐 1-3-3-7 calibration_profile 测试范式
-- Q: Q6 范围边界
-  A: 1-1 仅覆盖标注的 6 函数；通用 Extract（HTML→text）阶段不在 1-1，留待独立节点
-  > 节点 label 未含通用 extract
-- Q: Q7 消费者注册表 v0_28_0→extract-takes
-  A: 注册表重映射归 1-6 orchestration 节点统一接线；1-1 只暴露 phase 函数与 label
-  > 不在此节点改 engine 消费者注册
+- Q: Q1: 1-3 如何拆分？勘察发现 synthesize.ts(1247行)/patterns.ts(351行) 已在 part11 TS minions teardown (45fe955) 被删（依赖 TS MinionQueue/subagent），TS 源需从 git 45fe955~1 取；synthesize-concepts.ts/schema-suggest.ts 仍在。
+  A: 拆 4 叶子：1-3-1 synthesize-concepts（直接 LLM，套 extract_atoms 范式）→ 1-3-2 schema-suggest（无 LLM，先移植 detect/suggest 进 schema_pack）→ 1-3-3 patterns（单 subagent，先补 wait_for_completion）→ 1-3-4 synthesize（最大件，独立 sub-node 待展开）。用户确认由易到难顺序。
+- Q: Q2: synthesize（fan-out subagent + dream_verdicts 表缺 migration + 磁盘双写 + 模型上下文预算）本簇是否做完？
+  A: 用户决策：拆细分批做。本簇先完成另三叶子；1-3-4 synthesize 保留 explore 待展开（届时再拆 sub-sub：dream_verdicts migration / wait_for_completion 复用 / transcript-discovery / fan-out 编排 / 双写）。不做降级简化版（保持 TS 语义）。
 
 **子节点:**
-- [x] 1-1-1. extract-facts phase 实现 (port extract-facts.ts → autopilot/phases/extract_facts.rs; 接 execute_phase match 臂; ChatProvider trait DI)
-- [x] 1-1-2. extract-atoms phase 实现 (port extract-atoms.ts → autopilot/phases/extract_atoms.rs; 接 execute_phase)
-- [x] 1-1-3. extract-takes phase 实现 (port extract-takes.ts → autopilot/phases/extract_takes.rs; 接 execute_phase; 消费者 v0_28_0→extract-takes 映射归 1-6)
-- [x] 1-1-4. propose-takes phase 实现 (port propose-takes.ts → autopilot/phases/propose_takes.rs; 接 execute_phase)
-- [x] 1-1-5. grade-takes phase 实现 (port grade-takes.ts → autopilot/phases/grade_takes.rs; 接 execute_phase)
-- [x] 1-1-6. conversation-facts-backfill phase 实现 (port conversation-facts-backfill.ts → autopilot/phases/conversation_facts_backfill.rs; 接 execute_phase)
+- [x] 1-3-1. synthesize-concepts phase 迁移 (port synthesize-concepts.ts → autopilot/phases/synthesize_concepts.rs; gatewayChat+execute_raw 查 atom 页+put_page 写 concept 页+deterministic 兜底; cycle 真实臂无 chat→Skipped)
+- [x] 1-3-2. schema-suggest phase 迁移 (先移植 schema-pack detect.ts+suggest.ts → schema_pack::detect/suggest; phase 层接 cycle 真实臂; 无 LLM heuristics 兜底; 不写 brain DB 只写 audit jsonl)
+- [x] 1-3-3. patterns phase 迁移 (TS 源 git 45fe955~1:src/core/cycle/patterns.ts 351行; 先移植 minions wait_for_completion(94行); 单 subagent job 经 MinionQueue; cycle 真实臂 + 补 handlers/patterns.rs)
+- [ ] 1-3-4. synthesize phase 迁移 (TS 源 git 45fe955~1:src/core/cycle/synthesize.ts 1247行; fan-out subagent per transcript; 需 dream_verdicts migration+transcript-discovery+磁盘双写+模型上下文预算; 待展开拆 sub-sub)
 <!-- ⚠️ ROADMAP_SECTION_END -->

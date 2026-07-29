@@ -30,7 +30,7 @@
     "1-1": {
       "id": "1-1",
       "label": "facts-extraction 簇迁移 (extract-facts/atoms/takes + propose/grade-takes + conversation-facts-backfill; 消费者 v0_28_0->extract-takes)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1",
       "children": [
@@ -149,11 +149,25 @@
     "1-3": {
       "id": "1-3",
       "label": "synthesis 簇迁移 (synthesize/synthesize-concepts/patterns/schema-suggest)",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "explore",
       "parent": "1",
-      "children": [],
-      "decisions": [],
+      "children": [
+        "1-3-1",
+        "1-3-2",
+        "1-3-3",
+        "1-3-4"
+      ],
+      "decisions": [
+        {
+          "q": "Q1: 1-3 如何拆分？勘察发现 synthesize.ts(1247行)/patterns.ts(351行) 已在 part11 TS minions teardown (45fe955) 被删（依赖 TS MinionQueue/subagent），TS 源需从 git 45fe955~1 取；synthesize-concepts.ts/schema-suggest.ts 仍在。",
+          "answer": "拆 4 叶子：1-3-1 synthesize-concepts（直接 LLM，套 extract_atoms 范式）→ 1-3-2 schema-suggest（无 LLM，先移植 detect/suggest 进 schema_pack）→ 1-3-3 patterns（单 subagent，先补 wait_for_completion）→ 1-3-4 synthesize（最大件，独立 sub-node 待展开）。用户确认由易到难顺序。"
+        },
+        {
+          "q": "Q2: synthesize（fan-out subagent + dream_verdicts 表缺 migration + 磁盘双写 + 模型上下文预算）本簇是否做完？",
+          "answer": "用户决策：拆细分批做。本簇先完成另三叶子；1-3-4 synthesize 保留 explore 待展开（届时再拆 sub-sub：dream_verdicts migration / wait_for_completion 复用 / transcript-discovery / fan-out 编排 / 双写）。不做降级简化版（保持 TS 语义）。"
+        }
+      ],
       "notes": ""
     },
     "1-4": {
@@ -297,11 +311,51 @@
         }
       ],
       "notes": ""
+    },
+    "1-3-1": {
+      "id": "1-3-1",
+      "label": "synthesize-concepts phase 迁移 (port synthesize-concepts.ts → autopilot/phases/synthesize_concepts.rs; gatewayChat+execute_raw 查 atom 页+put_page 写 concept 页+deterministic 兜底; cycle 真实臂无 chat→Skipped)",
+      "status": "completed",
+      "mode": "build",
+      "parent": "1-3",
+      "children": [],
+      "decisions": [],
+      "notes": "TS 源在 src/core/cycle/synthesize-concepts.ts (242行)。engine 方法 execute_raw/put_page 已有；InMemory execute_raw 未实现需注意测试策略。"
+    },
+    "1-3-2": {
+      "id": "1-3-2",
+      "label": "schema-suggest phase 迁移 (先移植 schema-pack detect.ts+suggest.ts → schema_pack::detect/suggest; phase 层接 cycle 真实臂; 无 LLM heuristics 兜底; 不写 brain DB 只写 audit jsonl)",
+      "status": "completed",
+      "mode": "build",
+      "parent": "1-3",
+      "children": [],
+      "decisions": [],
+      "notes": "TS 源 schema-suggest.ts(72)+suggest.ts(131)+detect.ts(177)。candidate_audit.rs 已在 Rust schema_pack。"
+    },
+    "1-3-3": {
+      "id": "1-3-3",
+      "label": "patterns phase 迁移 (TS 源 git 45fe955~1:src/core/cycle/patterns.ts 351行; 先移植 minions wait_for_completion(94行); 单 subagent job 经 MinionQueue; cycle 真实臂 + 补 handlers/patterns.rs)",
+      "status": "completed",
+      "mode": "build",
+      "parent": "1-3",
+      "children": [],
+      "decisions": [],
+      "notes": "wait_for_completion.rs + autopilot/phases/patterns.rs(load_patterns_config默认/gather_reflections via list_pages/build_patterns_prompt/enqueue_patterns_subagent/run_phase_patterns/collect_child_put_page_slugs fail-soft) + handlers/patterns.rs 委托 enqueue_patterns_subagent + cycle.rs Patterns 真实臂。Rust 偏差(无 get_config 表→用 TS 默认; model 字面 sonnet; 无磁盘双写→DB-canonical; patterns_written 最佳努力 0; subagent_tool_executions 表未镜像) 均写进模块 doc。测试: InMemory 6 项全绿(含 run_cycle_empty_brain skipped_count 保 15); 3 项 libsql 测试(Windows FFI 崩溃, CI/Linux 验证)。"
+    },
+    "1-3-4": {
+      "id": "1-3-4",
+      "label": "synthesize phase 迁移 (TS 源 git 45fe955~1:src/core/cycle/synthesize.ts 1247行; fan-out subagent per transcript; 需 dream_verdicts migration+transcript-discovery+磁盘双写+模型上下文预算; 待展开拆 sub-sub)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-3",
+      "children": [],
+      "decisions": [],
+      "notes": "簇内最大件，用户决策分批做，届时再拆。dream_verdicts 表 Rust migrations 缺失需新增。"
     }
   },
   "metadata": {
     "created": "2026-07-23 17:12:54",
-    "updated": "2026-07-29 14:41:32",
+    "updated": "2026-07-29 21:38:06",
     "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_PART12_CYCLE_MIGRATION.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART12_CYCLE_MIGRATION.md"
