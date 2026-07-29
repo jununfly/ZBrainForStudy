@@ -70,28 +70,49 @@ jobs:
       - name: Run cargo test (libsql targets) with flake retry
         run: |
           # Collect integration-test binaries that exercise LibsqlEngine — the
-          # flaky FFI surface. Postgres-backed tests (pg-embed) are excluded.
+          # flaky FFI surface. Postgres-backed tests (pg-embed) are excluded:
+          # they are run per-target with `--skip postgres` because pg-embed is
+          # not available on the runner and would otherwise turn CI red.
+          # Running each target separately (instead of one combined
+          # `cargo test --lib --test T1 ... --test T52`) also avoids cross-target
+          # state bleed between the serial libsql FFI lock holders.
           mapfile -t TESTS < <(grep -rl "LibsqlEngine" crates/zbrain-core/tests --include=*.rs | sed 's#.*/##; s#\.rs$##')
           echo "Libsql-backed test targets (${#TESTS[@]}): ${TESTS[*]}"
 
-          ARGS=(--lib)
-          for t in "${TESTS[@]}"; do ARGS+=(--test "$t"); done
-
-          MAX=3
-          for i in $(seq 1 "$MAX"); do
-            echo "::group::cargo test attempt $i/$MAX"
-            if cargo test -p zbrain-core "${ARGS[@]}"; then
+          run_with_retry() {
+            local desc="$1"; shift
+            local MAX=3
+            for i in $(seq 1 "$MAX"); do
+              echo "::group::$desc (attempt $i/$MAX)"
+              if "$@"; then
+                echo "::endgroup::"
+                echo "✓ $desc passed on attempt $i"
+                return 0
+              fi
               echo "::endgroup::"
-              echo "✓ cargo test passed on attempt $i"
-              exit 0
-            fi
-            code=$?
-            echo "::endgroup::"
-            echo "⚠️ cargo test attempt $i failed (exit $code)"
-            if [ "$i" -lt "$MAX" ]; then
-              echo "retrying..."
-              sleep 3
+              echo "⚠️ $desc attempt $i failed"
+              if [ "$i" -lt "$MAX" ]; then sleep 3; fi
+            done
+            echo "✗ $desc failed after $MAX attempts"
+            return 1
+          }
+
+          # 1) lib unit tests (own retry guard)
+          if ! run_with_retry "cargo test --lib" cargo test -p zbrain-core --lib; then
+            echo "lib unit tests failed"
+            exit 1
+          fi
+
+          # 2) each integration target separately, skipping postgres-backed tests
+          STATUS=0
+          for t in "${TESTS[@]}"; do
+            if ! run_with_retry "cargo test --test $t" \
+                 cargo test -p zbrain-core --test "$t" -- --skip postgres; then
+              STATUS=1
             fi
           done
-          echo "✗ cargo test failed after $MAX attempts"
-          exit 1
+          if [ "$STATUS" -ne 0 ]; then
+            echo "✗ one or more integration targets failed"
+            exit 1
+          fi
+          echo "✓ all cargo tests passed"

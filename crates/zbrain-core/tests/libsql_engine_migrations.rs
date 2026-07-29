@@ -58,8 +58,11 @@ async fn read_version_raw(path: &std::path::Path) -> i64 {
 }
 
 /// Current migration version. Bump when new migrations are added.
-/// 21 = through 0021_code_edges (1-6-7-10-1 code-graph edge storage).
-const EXPECTED_VERSION: i64 = 21;
+/// 23 = through 0023_calibration_tables (latest applied migration). The
+/// actual count is derived from the on-disk migrations/*.sql files; this
+/// constant must track the highest migration number so the fresh-db /
+/// idempotent tests assert the right version.
+const EXPECTED_VERSION: i64 = 23;
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
 

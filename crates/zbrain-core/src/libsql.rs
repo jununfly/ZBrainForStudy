@@ -9878,14 +9878,17 @@ impl TokenQueries for LibsqlEngine {
                 return Err(TokenError::Expired);
             }
 
-            let scopes_raw: String = row.get(3).unwrap_or_default();
+            // Column layout of the SELECT (0-based):
+            //   0=t.client_id 1=t.scopes 2=t.expires_at
+            //   3=c.client_name 4=c.source_id 5=t.resource 6=c.federated_read
+            let scopes_raw: String = row.get(1).unwrap_or_default();
             let scopes: Vec<String> = serde_json::from_str(&scopes_raw).unwrap_or_default();
 
             let client_id: String = row.get(0).unwrap_or_default();
-            let client_name: Option<String> = row.get(4).ok();
-            let source_id: Option<String> = row.get(5).ok();
-            let resource: Option<String> = row.get(6).ok();
-            let federated_read_raw: Option<String> = row.get(7).ok();
+            let client_name: Option<String> = row.get(3).ok();
+            let source_id: Option<String> = row.get(4).ok();
+            let resource: Option<String> = row.get(5).ok();
+            let federated_read_raw: Option<String> = row.get(6).ok();
             let allowed_sources: Option<Vec<String>> = federated_read_raw
                 .as_ref()
                 .and_then(|s| serde_json::from_str(s).ok());

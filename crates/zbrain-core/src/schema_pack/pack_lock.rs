@@ -352,10 +352,8 @@ fn default_is_pid_alive(pid: u32) -> bool {
     // For simplicity, we check if /proc/<pid> exists (Linux) or use a heuristic.
     #[cfg(unix)]
     {
-        // kill(pid, 0) returns 0 if process exists, -1 otherwise.
-        unsafe {
-            libc::kill(pid as i32, 0) == 0
-        }
+        // On Linux, /proc/<pid> exists iff the process is alive.
+        std::path::Path::new(&format!("/proc/{}", pid)).exists()
     }
     #[cfg(not(unix))]
     {

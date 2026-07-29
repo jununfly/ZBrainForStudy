@@ -7835,37 +7835,62 @@ impl BrainEngine for InMemoryEngine {
         bare: &str,
         source_id: &str,
     ) -> crate::Result<crate::import::SymbolDisambiguation> {
-        let store = self
-            .code_edges_store
-            .lock()
-            .expect("InMemoryEngine code_edges_store mutex poisoned");
+        // Scope chunks by source: chunk_store is keyed by slug, so resolve each
+        // chunk's owning source via its page before applying the rules (mirrors
+        // the libsql JOIN pages p ON p.id = cc.page_id WHERE p.source_id = ?1).
+        let slug_source: std::collections::HashMap<String, String> = {
+            let pages = self
+                .store
+                .lock()
+                .expect("InMemoryEngine store mutex poisoned");
+            pages
+                .iter()
+                .filter(|p| p.deleted_at.is_none())
+                .map(|p| (p.slug.clone(), p.source_id.clone()))
+                .collect()
+        };
 
+        let chunks = self
+            .chunk_store
+            .lock()
+            .expect("InMemoryEngine chunk_store mutex poisoned");
+
+        let lower_bare = bare.to_lowercase();
         let mut matches: Vec<String> = Vec::new();
         let mut suggestions: Vec<String> = Vec::new();
-        let lower_bare = bare.to_lowercase();
 
-        for edge in store.iter() {
-            // Check both from and to symbols because either could be the start
-            for sym in &[&edge.from_symbol_qualified, &edge.to_symbol_qualified] {
-                if *sym == bare {
-                    // Exact match
-                    if !matches.contains(sym) {
-                        matches.push(sym.to_string());
-                    }
+        for (slug, chs) in chunks.iter() {
+            let src = slug_source.get(slug).map(|s| s.as_str()).unwrap_or("");
+            if src != source_id {
+                continue;
+            }
+            for ch in chs {
+                let sym = ch.symbol_name.as_deref().unwrap_or("");
+                let qual = ch.symbol_name_qualified.as_deref().unwrap_or("");
+                if qual.is_empty() {
+                    // mirrors `symbol_name_qualified IS NOT NULL`
+                    continue;
                 }
-                if sym.to_lowercase().contains(&lower_bare) {
-                    // Did you mean suggestion
-                    if !suggestions.contains(sym) {
-                        suggestions.push(sym.to_string());
+                // Exact: symbol_name = bare OR symbol_name_qualified = bare.
+                let is_exact = sym == bare || qual == bare;
+                if is_exact {
+                    if !matches.contains(&qual.to_string()) {
+                        matches.push(qual.to_string());
+                    }
+                } else if qual.to_lowercase().contains(&lower_bare) {
+                    // Fuzzy did-you-mean suggestion (ILIKE '%bare%'); exact
+                    // hits are excluded from suggestions, matching libsql.
+                    if !suggestions.contains(&qual.to_string()) {
+                        suggestions.push(qual.to_string());
                     }
                 }
             }
         }
 
-        // Deduplicate already handled by the contains check above
         matches.sort();
         suggestions.sort();
-        suggestions.truncate(10);
+        matches.truncate(25);
+        suggestions.truncate(5);
 
         Ok(crate::import::SymbolDisambiguation {
             matches,
