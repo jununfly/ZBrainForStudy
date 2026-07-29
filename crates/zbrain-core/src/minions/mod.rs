@@ -37,6 +37,7 @@ pub mod handlers;
 pub mod queue;
 pub mod tools;
 pub mod types;
+pub mod wait_for_completion;
 
 pub use handler::{MinionHandler, MinionJobContext, MinionWorkerOpts};
 pub use queue::MinionQueue;
@@ -46,3 +47,4 @@ pub use types::{
     MinionJobStatus, NormalizedAttachment, QueueHealth, QueueStats, QueueTypeStat, StalledSweep,
     TokenUpdate,
 };
+pub use wait_for_completion::{wait_for_completion, WaitError, WaitOpts};

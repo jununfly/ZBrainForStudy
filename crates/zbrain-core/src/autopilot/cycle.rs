@@ -871,6 +871,118 @@ async fn execute_phase(
             }
         }
 
+        CyclePhase::SynthesizeConcepts => {
+            use crate::autopilot::phases::synthesize_concepts::{
+                run_synthesize_concepts, SynthesizeConceptsOpts,
+            };
+
+            // LLM phase (T1/T2 narratives). No chat → skipped stub, mirroring
+            // extract-atoms / propose-takes. With chat wired, atoms without
+            // an execute_raw-capable engine fail-soft to a clean skip.
+            match &_opts.chat {
+                None => PhaseResult {
+                    phase: label.into(),
+                    status: PhaseStatus::Skipped,
+                    duration_ms: phase_start.elapsed().as_millis() as u64,
+                    summary: "synthesize-concepts: no chat provider wired (skipped)".into(),
+                    details: serde_json::json!({ "reason": "no_chat_provider" }),
+                    error: None,
+                },
+                Some(chat) => {
+                    let sc_opts = SynthesizeConceptsOpts {
+                        dry_run,
+                        source_id: _opts.source_id.clone(),
+                        atoms: None,
+                    };
+                    match run_synthesize_concepts(engine, chat.as_ref(), &sc_opts).await {
+                        Ok(r) => PhaseResult {
+                            phase: label.into(),
+                            status: match r.status.as_str() {
+                                "ok" => PhaseStatus::Ok,
+                                "warn" => PhaseStatus::Warn,
+                                _ => PhaseStatus::Skipped,
+                            },
+                            duration_ms: phase_start.elapsed().as_millis() as u64,
+                            summary: r.summary.clone(),
+                            details: serde_json::json!({
+                                "reason": r.reason,
+                                "concepts_written": r.concepts_written,
+                                "tier_counts": {
+                                    "T1": r.tier_t1,
+                                    "T2": r.tier_t2,
+                                    "T3": r.tier_t3,
+                                },
+                                "groups_found": r.groups_found,
+                                "atoms_seen": r.atoms_seen,
+                                "failures": r.failures,
+                                "estimated_spend_usd": r.estimated_spend_usd,
+                                "budget_usd": r.budget_usd,
+                                "dry_run": r.dry_run,
+                            }),
+                            error: None,
+                        },
+                        Err(e) => PhaseResult {
+                            phase: label.into(),
+                            status: PhaseStatus::Fail,
+                            duration_ms: phase_start.elapsed().as_millis() as u64,
+                            summary: "synthesize-concepts phase failed".into(),
+                            details: serde_json::json!({}),
+                            error: Some(PhaseError {
+                                class: "DatabaseConnection".into(),
+                                code: "UNKNOWN".into(),
+                                message: e.to_string(),
+                                hint: None,
+                                docs_url: None,
+                            }),
+                        },
+                    }
+                }
+            }
+        }
+
+        CyclePhase::SchemaSuggest => {
+            use crate::autopilot::phases::schema_suggest::{
+                run_schema_suggest_phase, SchemaSuggestPhaseOpts,
+            };
+
+            // No LLM (hermetic heuristic library) — runs without a chat
+            // provider, unlike extract-atoms/propose-takes. Best-effort:
+            // library errors on the normal path surface as Skipped with a
+            // reason (never abort the cycle); dry-run errors → Fail.
+            let ss_opts = SchemaSuggestPhaseOpts {
+                source_id: _opts.source_id.clone(),
+                dry_run,
+            };
+            match run_schema_suggest_phase(engine, &ss_opts).await {
+                Ok(r) => PhaseResult {
+                    phase: label.into(),
+                    status: if r.skipped { PhaseStatus::Skipped } else { PhaseStatus::Ok },
+                    duration_ms: phase_start.elapsed().as_millis() as u64,
+                    summary: if r.skipped {
+                        format!("skipped: {}", r.reason.as_deref().unwrap_or("unknown"))
+                    } else {
+                        format!("{} suggestions emitted", r.suggestions_emitted)
+                    },
+                    details: serde_json::to_value(&r).unwrap_or_else(|_| serde_json::json!({})),
+                    error: None,
+                },
+                Err(e) => PhaseResult {
+                    phase: label.into(),
+                    status: PhaseStatus::Fail,
+                    duration_ms: phase_start.elapsed().as_millis() as u64,
+                    summary: format!("error: {e}"),
+                    details: serde_json::json!({ "error": e.to_string() }),
+                    error: Some(PhaseError {
+                        class: "DatabaseConnection".into(),
+                        code: "UNKNOWN".into(),
+                        message: e.to_string(),
+                        hint: None,
+                        docs_url: None,
+                    }),
+                },
+            }
+        }
+
         CyclePhase::Purge => {
             if dry_run {
                 PhaseResult {
@@ -918,6 +1030,56 @@ async fn execute_phase(
                         }),
                     }
                 }
+            }
+        }
+
+        CyclePhase::Patterns => {
+            use crate::autopilot::phases::patterns::{run_phase_patterns, PatternsPhaseOpts};
+
+            // Cross-session theme detection: enqueues a single subagent and
+            // waits for it (the subagent runs in the minion worker, which is
+            // wired with a chat provider — so this phase needs no chat here).
+            // Empty-brain / insufficient-reflection runs skip cleanly.
+            let p_opts = PatternsPhaseOpts {
+                brain_dir: Some(_opts.brain_dir.clone()),
+                dry_run,
+                wait_timeout_ms: None,
+            };
+            match run_phase_patterns(engine, &p_opts).await {
+                Ok(r) => PhaseResult {
+                    phase: label.into(),
+                    status: match r.status.as_str() {
+                        "ok" => PhaseStatus::Ok,
+                        "warn" => PhaseStatus::Warn,
+                        _ => PhaseStatus::Skipped,
+                    },
+                    duration_ms: phase_start.elapsed().as_millis() as u64,
+                    summary: r.summary.clone(),
+                    details: serde_json::json!({
+                        "reason": r.reason,
+                        "reflections_considered": r.reflections_considered,
+                        "patterns_written": r.patterns_written,
+                        "reverse_write_count": r.reverse_write_count,
+                        "child_outcome": r.child_outcome,
+                        "job_id": r.job_id,
+                        "dry_run": r.dry_run,
+                    }),
+                    error: None,
+                },
+                Err(e) => PhaseResult {
+                    phase: label.into(),
+                    status: PhaseStatus::Fail,
+                    duration_ms: phase_start.elapsed().as_millis() as u64,
+                    summary: "patterns phase failed".into(),
+                    details: serde_json::json!({}),
+                    error: Some(PhaseError {
+                        class: "InternalError".into(),
+                        code: "PATTERNS_PHASE_FAIL".into(),
+                        message: e.to_string(),
+                        hint: None,
+                        docs_url: None,
+                    }),
+                },
             }
         }
 
@@ -1079,6 +1241,10 @@ mod tests {
 
     #[tokio::test]
     async fn run_cycle_empty_brain() {
+        // schema-suggest is a real phase now and appends to the schema-events
+        // audit JSONL — isolate ~/.zbrain so the test never touches the real
+        // home (thread-local override; tokio::test runs current-thread).
+        let _home = crate::paths::ScopedTestHome::new();
         let engine = setup().await;
         let report = run_cycle(
             &engine,
@@ -1152,15 +1318,45 @@ mod tests {
             calibration.summary,
             "calibration-profile: no chat provider wired (skipped)"
         );
-        // All other phases should be Skipped. Count is 16: extract-atoms +
+        // synthesize-concepts is a real (LLM) phase now, but the empty-brain
+        // test wires no chat provider → Skipped.
+        let synth_concepts = report
+            .phases
+            .iter()
+            .find(|p| p.phase == "synthesize-concepts")
+            .unwrap();
+        assert_eq!(synth_concepts.status, PhaseStatus::Skipped);
+        assert_eq!(
+            synth_concepts.summary,
+            "synthesize-concepts: no chat provider wired (skipped)"
+        );
+        // schema-suggest is a real phase now with NO LLM dependency
+        // (hermetic heuristic library): empty brain → 0 suggestions, Ok.
+        let schema_suggest = report
+            .phases
+            .iter()
+            .find(|p| p.phase == "schema-suggest")
+            .unwrap();
+        assert_eq!(schema_suggest.status, PhaseStatus::Ok);
+        assert_eq!(schema_suggest.summary, "0 suggestions emitted");
+        // patterns is a real phase now: empty brain → 0 reflections <
+        // min_evidence(3) → Skipped (insufficient_evidence). It was already
+        // Skipped via the catch-all, so skipped_count is unchanged at 15.
+        let patterns = report
+            .phases
+            .iter()
+            .find(|p| p.phase == "patterns")
+            .unwrap();
+        assert_eq!(patterns.status, PhaseStatus::Skipped);
+        assert_eq!(patterns.summary, "0 reflections in last 30d (need ≥3)");
+        // All other phases should be Skipped. Count is 15: extract-atoms +
         // propose-takes + grade-takes + calibration-profile +
-        // conversation-facts-backfill (real LLM phases, no chat here) + 11
-        // stubs. recompute-emotional-weight is no longer skipped (it runs
-        // deterministically → Ok). calibration-profile was already Skipped
-        // via the catch-all and remains Skipped via its own arm, so the total
-        // count is unchanged.
+        // conversation-facts-backfill + synthesize-concepts (real LLM phases,
+        // no chat here) + 9 stubs. recompute-emotional-weight is no longer
+        // skipped (deterministic → Ok), and schema-suggest left the catch-all
+        // as a real no-LLM phase (→ Ok), dropping the count from 16 to 15.
         let skipped_count = report.phases.iter().filter(|p| p.status == PhaseStatus::Skipped).count();
-        assert_eq!(skipped_count, 16);
+        assert_eq!(skipped_count, 15);
     }
 
     #[tokio::test]

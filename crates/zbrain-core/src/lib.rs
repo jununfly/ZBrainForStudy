@@ -65,6 +65,7 @@ pub mod markdown_links;
 pub mod auto_fix;
 pub mod storage_status;
 pub mod publish;
+pub mod schema_events;
 pub mod schema_pack;
 #[cfg(feature = "skillpack")]
 pub mod skillpack;

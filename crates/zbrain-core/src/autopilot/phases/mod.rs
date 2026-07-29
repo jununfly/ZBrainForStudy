@@ -6,3 +6,6 @@ pub mod grade_takes;
 pub mod conversation_facts_backfill;
 pub mod emotional_weight;
 pub mod recompute_emotional_weight;
+pub mod synthesize_concepts;
+pub mod schema_suggest;
+pub mod patterns;
