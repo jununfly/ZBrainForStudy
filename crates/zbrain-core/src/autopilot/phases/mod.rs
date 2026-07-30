@@ -9,3 +9,4 @@ pub mod recompute_emotional_weight;
 pub mod synthesize_concepts;
 pub mod schema_suggest;
 pub mod patterns;
+pub mod transcript_discovery;

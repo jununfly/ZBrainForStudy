@@ -325,7 +325,9 @@ async fn collect_child_put_page_slugs(engine: &dyn BrainEngine, job_id: i64) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::{BrainEngine, EngineConfig, InMemoryEngine, PageInput};
+    use crate::engine::{
+        BrainEngine, DreamVerdictInput, EngineConfig, InMemoryEngine, PageInput,
+    };
     use crate::minions::queue::MinionQueue;
     use crate::minions::types::MinionJobStatus;
 
@@ -381,6 +383,57 @@ mod tests {
         .unwrap();
         assert_eq!(r.status, "skipped");
         assert_eq!(r.reason.as_deref(), Some("insufficient_evidence"));
+    }
+
+    #[tokio::test]
+    async fn dream_verdict_round_trip_inmemory() {
+        let engine = setup().await;
+        let fp = "/brain/transcripts/2026-07-30.md";
+        let hash = "ab12cd34ef56";
+
+        // Cache miss before any write.
+        assert!(engine.get_dream_verdict(fp, hash).await.unwrap().is_none());
+
+        engine
+            .put_dream_verdict(
+                fp,
+                hash,
+                &DreamVerdictInput {
+                    worth_processing: true,
+                    reasons: vec!["recurring theme X".to_string(), "high signal".to_string()],
+                },
+            )
+            .await
+            .unwrap();
+
+        let v = engine.get_dream_verdict(fp, hash).await.unwrap().unwrap();
+        assert!(v.worth_processing);
+        assert_eq!(v.reasons.len(), 2);
+        assert_eq!(v.reasons[0], "recurring theme X");
+        assert!(!v.judged_at.is_empty());
+
+        // Upsert refreshes rather than duplicating the (file_path, content_hash) key.
+        engine
+            .put_dream_verdict(
+                fp,
+                hash,
+                &DreamVerdictInput {
+                    worth_processing: false,
+                    reasons: vec![],
+                },
+            )
+            .await
+            .unwrap();
+        let v2 = engine.get_dream_verdict(fp, hash).await.unwrap().unwrap();
+        assert!(!v2.worth_processing);
+        assert!(v2.reasons.is_empty());
+
+        // A different content_hash is an independent cache entry.
+        assert!(engine
+            .get_dream_verdict(fp, "otherhash")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

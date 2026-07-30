@@ -38,10 +38,10 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::{QueryBuilder, PgPool, Row};
 
 use crate::engine::{
-    page_sort_sql, BrainEngine, CreateSourceInput, EngineConfig, EmotionalInput,
-    EmotionalWeightTake, EmotionalWeightWrite, EngineKind, GetPageOpts, Page, TakeProposalInput,
-    TakeGradeCacheInput, PageFilters, PageInput, PageSort, ResolveSlugsOpts, SearchOpts,
-    SearchResult, SourceRow, UpdateSourceInput, fuse_and_boost, is_valid_source_id,
+    page_sort_sql, BrainEngine, CreateSourceInput, DreamVerdict, DreamVerdictInput, EngineConfig,
+    EmotionalInput, EmotionalWeightTake, EmotionalWeightWrite, EngineKind, GetPageOpts, Page,
+    TakeProposalInput, TakeGradeCacheInput, PageFilters, PageInput, PageSort, ResolveSlugsOpts,
+    SearchOpts, SearchResult, SourceRow, UpdateSourceInput, fuse_and_boost, is_valid_source_id,
 };
 use crate::calibration_queries::{
     aggregate_calibration_curve, aggregate_scorecard, CalibrationBucket, CalibrationCurveQuery,
@@ -261,6 +261,7 @@ const MIGRATION_0022: &str = include_str!("../migrations/0022_image_search_spend
 const MIGRATION_0023: &str = include_str!("../migrations/0023_calibration_tables.sql");
 const MIGRATION_0024: &str = include_str!("../migrations/0024_take_proposals.sql");
 const MIGRATION_0025: &str = include_str!("../migrations/0025_op_checkpoints.sql");
+const MIGRATION_0026: &str = include_str!("../migrations/0026_dream_verdicts.sql");
 
 /// FNV-1a 64-bit hash of a lease key, mapped to a signed int64 for
 /// `pg_advisory_xact_lock`. Matches the TS implementation bit-for-bit.
@@ -402,6 +403,11 @@ pub static POSTGRES_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 25,
         name: "op_checkpoints",
         sql: MIGRATION_0025,
+    }));
+    registry.add(Box::new(PostgresMigration {
+        version: 26,
+        name: "dream_verdicts",
+        sql: MIGRATION_0026,
     }));
 
     registry
@@ -3096,6 +3102,71 @@ impl BrainEngine for PostgresEngine {
             Some(_) => 1,
             None => 0,
         })
+    }
+
+    async fn get_dream_verdict(
+        &self,
+        file_path: &str,
+        content_hash: &str,
+    ) -> Result<Option<DreamVerdict>> {
+        let pool = self.pool()?;
+        let row = sqlx::query(
+            "SELECT worth_processing, reasons, judged_at \
+             FROM dream_verdicts \
+             WHERE file_path = $1 AND content_hash = $2 \
+             LIMIT 1",
+        )
+        .bind(file_path)
+        .bind(content_hash)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_dream_verdict: {e}")))?;
+        let row = match row {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+        let worth_processing: bool = row.try_get("worth_processing").unwrap_or(false);
+        let reasons: Option<serde_json::Value> = row
+            .try_get::<Option<serde_json::Value>, _>("reasons")
+            .ok()
+            .flatten();
+        let reasons: Vec<String> = reasons
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default();
+        let judged_at: chrono::DateTime<chrono::Utc> =
+            row.try_get("judged_at").unwrap_or_else(|_| chrono::Utc::now());
+        Ok(Some(DreamVerdict {
+            worth_processing,
+            reasons,
+            judged_at: judged_at.to_rfc3339(),
+        }))
+    }
+
+    async fn put_dream_verdict(
+        &self,
+        file_path: &str,
+        content_hash: &str,
+        verdict: &DreamVerdictInput,
+    ) -> Result<()> {
+        let pool = self.pool()?;
+        let reasons_json = serde_json::to_string(&verdict.reasons)
+            .map_err(|e| Error::engine(format!("put_dream_verdict reasons json: {e}")))?;
+        sqlx::query(
+            "INSERT INTO dream_verdicts (file_path, content_hash, worth_processing, reasons) \
+             VALUES ($1, $2, $3, $4::jsonb) \
+             ON CONFLICT (file_path, content_hash) DO UPDATE SET \
+               worth_processing = EXCLUDED.worth_processing, \
+               reasons = EXCLUDED.reasons, \
+               judged_at = now()",
+        )
+        .bind(file_path)
+        .bind(content_hash)
+        .bind(verdict.worth_processing)
+        .bind(reasons_json)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("put_dream_verdict insert: {e}")))?;
+        Ok(())
     }
 
     async fn load_op_checkpoint(

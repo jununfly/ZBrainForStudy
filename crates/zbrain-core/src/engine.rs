@@ -927,6 +927,30 @@ pub struct TakeGradeCacheInput {
     pub cost_usd: Option<f64>,
 }
 
+/// Input for [`BrainEngine::put_dream_verdict`]. Mirrors the columns written by
+/// `synthesize.ts` into the `dream_verdicts` significance cache (v0.23). The
+/// idempotency key is the composite primary key `(file_path, content_hash)`
+/// (see `src/schema.sql` / migration 0026).
+#[derive(Debug, Clone)]
+pub struct DreamVerdictInput {
+    pub worth_processing: bool,
+    /// Free-text justifications for the verdict (e.g. why a transcript is or
+    /// isn't worth synthesizing). Empty when no reasons were recorded.
+    pub reasons: Vec<String>,
+}
+
+/// Returned by [`BrainEngine::get_dream_verdict`]. Mirrors `DreamVerdict` in
+/// `synthesize.ts`.
+#[derive(Debug, Clone)]
+pub struct DreamVerdict {
+    pub worth_processing: bool,
+    /// Free-text justifications (see [`DreamVerdictInput::reasons`]).
+    pub reasons: Vec<String>,
+    /// ISO-8601 timestamp (UTC). Stored as `TIMESTAMPTZ` in Postgres and `TEXT`
+    /// in SQLite.
+    pub judged_at: String,
+}
+
 /// A single take contributing to a page's emotional-weight computation.
 /// Shared by [`BrainEngine::batch_load_emotional_inputs`] and
 /// `compute_emotional_weight` (see `autopilot::phases::emotional_weight`).
@@ -1936,6 +1960,41 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
             "Unsupported",
             "unsupported",
             "take_grade_cache_exists not yet implemented for this engine",
+        ))
+    }
+
+    /// Read a cached dream-cycle significance verdict for the exact
+    /// `(file_path, content_hash)` pair. Returns `None` on a cache miss so the
+    /// caller can spend an LLM call to (re)judge. Mirrors `synthesize.ts`
+    /// `getDreamVerdict`.
+    async fn get_dream_verdict(
+        &self,
+        file_path: &str,
+        content_hash: &str,
+    ) -> crate::Result<Option<DreamVerdict>> {
+        let _ = (file_path, content_hash);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "get_dream_verdict not yet implemented for this engine",
+        ))
+    }
+
+    /// Upsert a dream-cycle significance verdict. The composite primary key
+    /// `(file_path, content_hash)` makes the write idempotent — a re-judge of
+    /// the same file+hash refreshes `worth_processing`/`reasons`/`judged_at`.
+    /// Mirrors `synthesize.ts` `putDreamVerdict`.
+    async fn put_dream_verdict(
+        &self,
+        file_path: &str,
+        content_hash: &str,
+        verdict: &DreamVerdictInput,
+    ) -> crate::Result<()> {
+        let _ = (file_path, content_hash, verdict);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "put_dream_verdict not yet implemented for this engine",
         ))
     }
 
@@ -3355,6 +3414,8 @@ pub struct InMemoryEngine {
     take_proposals_store: Mutex<Vec<InternalTakeProposal>>,
     next_take_proposal_id: Mutex<u64>,
     take_grade_cache_store: Mutex<Vec<InternalTakeGradeCache>>,
+    /// 1-3-4-1: dream-cycle significance verdict cache (in-memory, for testing).
+    dream_verdicts_store: Mutex<Vec<InternalDreamVerdict>>,
     /// 1-1-6: op_checkpoints resume state (op, fingerprint) -> completed_keys.
     op_checkpoints_store: Mutex<std::collections::HashMap<(String, String), Vec<String>>>,
 }
@@ -3392,6 +3453,17 @@ struct InternalTakeGradeCache {
     confidence: f64,
     applied: bool,
     cost_usd: Option<f64>,
+}
+
+/// In-memory `dream_verdicts` row. Keyed by the composite `(file_path,
+/// content_hash)`.
+#[derive(Debug, Clone)]
+struct InternalDreamVerdict {
+    file_path: String,
+    content_hash: String,
+    worth_processing: bool,
+    reasons: Vec<String>,
+    judged_at: String,
 }
 
 /// In-memory code-graph edge row. `resolved == true` mirrors a `code_edges_chunk`
@@ -3540,6 +3612,8 @@ impl InMemoryEngine {
             next_take_proposal_id: Mutex::new(1),
             // 1-1-5: grade_takes phase verdict cache (in-memory, for testing)
             take_grade_cache_store: Mutex::new(Vec::new()),
+            // 1-3-4-1: dream-cycle significance verdict cache (in-memory, for testing)
+            dream_verdicts_store: Mutex::new(Vec::new()),
             // 1-1-6: conversation_facts_backfill resume state (in-memory, for testing)
             op_checkpoints_store: Mutex::new(std::collections::HashMap::new()),
         }
@@ -5681,6 +5755,55 @@ impl BrainEngine for InMemoryEngine {
             cost_usd: entry.cost_usd,
         });
         Ok(1)
+    }
+
+    async fn get_dream_verdict(
+        &self,
+        file_path: &str,
+        content_hash: &str,
+    ) -> crate::Result<Option<DreamVerdict>> {
+        let store = self
+            .dream_verdicts_store
+            .lock()
+            .expect("InMemoryEngine dream_verdicts_store mutex poisoned");
+        Ok(store
+            .iter()
+            .find(|v| v.file_path == file_path && v.content_hash == content_hash)
+            .map(|v| DreamVerdict {
+                worth_processing: v.worth_processing,
+                reasons: v.reasons.clone(),
+                judged_at: v.judged_at.clone(),
+            }))
+    }
+
+    async fn put_dream_verdict(
+        &self,
+        file_path: &str,
+        content_hash: &str,
+        verdict: &DreamVerdictInput,
+    ) -> crate::Result<()> {
+        let mut store = self
+            .dream_verdicts_store
+            .lock()
+            .expect("InMemoryEngine dream_verdicts_store mutex poisoned");
+        let judged_at = chrono::Utc::now().to_rfc3339();
+        if let Some(existing) = store
+            .iter_mut()
+            .find(|v| v.file_path == file_path && v.content_hash == content_hash)
+        {
+            existing.worth_processing = verdict.worth_processing;
+            existing.reasons = verdict.reasons.clone();
+            existing.judged_at = judged_at;
+        } else {
+            store.push(InternalDreamVerdict {
+                file_path: file_path.to_string(),
+                content_hash: content_hash.to_string(),
+                worth_processing: verdict.worth_processing,
+                reasons: verdict.reasons.clone(),
+                judged_at,
+            });
+        }
+        Ok(())
     }
 
     async fn load_op_checkpoint(

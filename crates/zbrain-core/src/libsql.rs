@@ -35,10 +35,11 @@ use crate::oauth_queries::{
     UpdateClientTtlResponse,
 };
 use crate::engine::{
-    fuse_and_boost, page_sort_sql, BrainEngine, CreateSourceInput, EngineConfig, EngineKind,
-    EmotionalInput, EmotionalWeightTake, EmotionalWeightWrite, GetPageOpts, Page, PageFilters,
-    PageInput, PageSort, ResolveSlugsOpts, SearchOpts, SearchResult, SourceRow,
-    TakeGradeCacheInput, TakeProposalInput, UpdateSourceInput, is_valid_source_id,
+    fuse_and_boost, page_sort_sql, BrainEngine, CreateSourceInput, DreamVerdict,
+    DreamVerdictInput, EngineConfig, EngineKind, EmotionalInput, EmotionalWeightTake,
+    EmotionalWeightWrite, GetPageOpts, Page, PageFilters, PageInput, PageSort, ResolveSlugsOpts,
+    SearchOpts, SearchResult, SourceRow, TakeGradeCacheInput, TakeProposalInput,
+    UpdateSourceInput, is_valid_source_id,
 };
 use crate::error::{Error, Result};
 use crate::migration::{Migration, MigrationRegistry};
@@ -142,6 +143,7 @@ const MIGRATION_0022: &str = include_str!("../migrations-sqlite/0022_image_searc
 const MIGRATION_0023: &str = include_str!("../migrations-sqlite/0023_calibration_tables.sql");
 const MIGRATION_0024: &str = include_str!("../migrations-sqlite/0024_take_proposals.sql");
 const MIGRATION_0025: &str = include_str!("../migrations-sqlite/0025_op_checkpoints.sql");
+const MIGRATION_0026: &str = include_str!("../migrations-sqlite/0026_dream_verdicts.sql");
 
 /// Legacy string array — REMOVED in favor of MigrationRegistry.
 /// Use LIBQL_MIGRATIONS instead.
@@ -292,6 +294,11 @@ pub static LIBQL_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 25,
         name: "op_checkpoints",
         sql: MIGRATION_0025,
+    }));
+    registry.add(Box::new(LibsqlMigration {
+        version: 26,
+        name: "dream_verdicts",
+        sql: MIGRATION_0026,
     }));
 
     registry
@@ -4172,6 +4179,70 @@ impl BrainEngine for LibsqlEngine {
             Some(_) => Ok(1),
             None => Ok(0),
         }
+    }
+
+    async fn get_dream_verdict(
+        &self,
+        file_path: &str,
+        content_hash: &str,
+    ) -> Result<Option<DreamVerdict>> {
+        let conn = self.conn().await?;
+        let mut rows = conn
+            .query(
+                "SELECT worth_processing, reasons, judged_at \
+                 FROM dream_verdicts \
+                 WHERE file_path = ?1 AND content_hash = ?2 \
+                 LIMIT 1",
+                ::libsql::params![file_path, content_hash],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("get_dream_verdict: {e}")))?;
+        let row = match rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("get_dream_verdict next: {e}")))?
+        {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+        let worth_processing = row
+            .get::<i64>(0)
+            .map_err(|e| Error::engine(format!("get_dream_verdict worth_processing: {e}")))?
+            != 0;
+        let reasons_text: Option<String> = row.get(1).unwrap_or(None);
+        let reasons: Vec<String> = reasons_text
+            .as_deref()
+            .and_then(|t| serde_json::from_str(t).ok())
+            .unwrap_or_default();
+        let judged_at: String = row.get(2).unwrap_or_default();
+        Ok(Some(DreamVerdict {
+            worth_processing,
+            reasons,
+            judged_at,
+        }))
+    }
+
+    async fn put_dream_verdict(
+        &self,
+        file_path: &str,
+        content_hash: &str,
+        verdict: &DreamVerdictInput,
+    ) -> Result<()> {
+        let conn = self.conn().await?;
+        let reasons_json = serde_json::to_string(&verdict.reasons)
+            .map_err(|e| Error::engine(format!("put_dream_verdict reasons json: {e}")))?;
+        conn.execute(
+            "INSERT INTO dream_verdicts (file_path, content_hash, worth_processing, reasons) \
+             VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT (file_path, content_hash) DO UPDATE SET \
+               worth_processing = EXCLUDED.worth_processing, \
+               reasons = EXCLUDED.reasons, \
+               judged_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')",
+            ::libsql::params![file_path, content_hash, verdict.worth_processing, reasons_json],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("put_dream_verdict insert: {e}")))?;
+        Ok(())
     }
 
     async fn load_op_checkpoint(

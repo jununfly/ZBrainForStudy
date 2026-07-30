@@ -5,7 +5,7 @@
 
 use libsql::Builder;
 use tempfile::NamedTempFile;
-use zbrain_core::engine::{BrainEngine, EngineConfig};
+use zbrain_core::engine::{BrainEngine, DreamVerdictInput, EngineConfig};
 use zbrain_core::libsql::LibsqlEngine;
 
 /// Serialize all libsql FFI access in this binary. The `libsql` native
@@ -58,11 +58,11 @@ async fn read_version_raw(path: &std::path::Path) -> i64 {
 }
 
 /// Current migration version. Bump when new migrations are added.
-/// 24 = through 0024_take_proposals (latest applied migration). The
+/// 26 = through 0026_dream_verdicts (latest applied migration). The
 /// actual count is derived from the on-disk migrations/*.sql files; this
 /// constant must track the highest migration number so the fresh-db /
 /// idempotent tests assert the right version.
-const EXPECTED_VERSION: i64 = 25;
+const EXPECTED_VERSION: i64 = 26;
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
@@ -256,4 +256,57 @@ INSERT OR IGNORE INTO rust_schema_version (version) VALUES (0);
         .unwrap();
     let version: i64 = rows.next().await.unwrap().unwrap().get(0).unwrap();
     assert_eq!(version, 0);
+}
+
+#[tokio::test]
+async fn dream_verdict_round_trip_libsql() {
+    let _guard = libsql_test_guard();
+    let (_temp, engine) = temp_engine().await;
+    engine.init_schema().await.unwrap();
+
+    let fp = "/brain/transcripts/2026-07-30.md";
+    let hash = "ab12cd34ef56";
+
+    // Cache miss before any write.
+    assert!(engine.get_dream_verdict(fp, hash).await.unwrap().is_none());
+
+    engine
+        .put_dream_verdict(
+            fp,
+            hash,
+            &DreamVerdictInput {
+                worth_processing: true,
+                reasons: vec!["recurring theme X".to_string()],
+            },
+        )
+        .await
+        .unwrap();
+
+    let v = engine.get_dream_verdict(fp, hash).await.unwrap().unwrap();
+    assert!(v.worth_processing);
+    assert_eq!(v.reasons, vec!["recurring theme X".to_string()]);
+    assert!(!v.judged_at.is_empty());
+
+    // Upsert refreshes rather than duplicating the (file_path, content_hash) key.
+    engine
+        .put_dream_verdict(
+            fp,
+            hash,
+            &DreamVerdictInput {
+                worth_processing: false,
+                reasons: vec![],
+            },
+        )
+        .await
+        .unwrap();
+    let v2 = engine.get_dream_verdict(fp, hash).await.unwrap().unwrap();
+    assert!(!v2.worth_processing);
+    assert!(v2.reasons.is_empty());
+
+    // A different content_hash is an independent cache entry.
+    assert!(engine
+        .get_dream_verdict(fp, "otherhash")
+        .await
+        .unwrap()
+        .is_none());
 }
