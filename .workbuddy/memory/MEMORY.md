@@ -32,7 +32,7 @@
 - **Windows 验证 zbrain-core 测试**：复用默认 `target/` 的 libsql-ffi/aws-lc-sys 编译缓存；**勿用全新 `CARGO_TARGET_DIR`（如 target_alt2）**——全新目录会触发 libsql-ffi（Permission denied）/aws-lc-sys（缺 NASM、`lib.exe` 1114）完整重编而 EXIT=101。孤儿 cargo 锁进程退出后默认 `target/` 锁即释放，不必另开 target dir。测试用 `InMemoryEngine` 时不碰 libsql 运行时（避开 Windows FFI 崩溃），纯函数测试 Windows 直跑即可。
 
 ## 迁移进度（摘要）
-- Part12 cycle 大迁移是当前最前沿。**1-3 synthesis 簇整体收口**（2026-07-30：1-3-4-6 完整复刻引擎 config）；**1-4 anomaly-transcript 簇完成**（2026-07-30：验证 Rust 实现等价 + 合并重复 dream-guard + 补 brain_find_anomalies minion tool）。下一 pending：1-5 auto-think、1-6 orchestration 主循环（含 TS 引擎 pglite/postgres 迁移，anomaly/transcript-discovery 的 TS 删除受此阻塞）。详细进度见 roadmap JSON + 每日 `YYYY-MM-DD.md`。
+- Part12 cycle 大迁移是当前最前沿。**1-3 synthesis 簇整体收口**（2026-07-30：1-3-4-6 完整复刻引擎 config）；**1-4 anomaly-transcript 簇完成**（2026-07-30：验证 Rust 实现等价 + 合并重复 dream-guard + 补 brain_find_anomalies minion tool）；**1-5 auto-think 簇完成**（2026-07-30：T1-T6 全绿——auto_think.rs + CyclePhase::AutoThink + zbrain auto-think CLI + 0029 migration + roadmap）。下一 pending：1-6 orchestration 主循环（含 TS 引擎 pglite/postgres 迁移，anomaly/transcript-discovery 的 TS 删除受此阻塞）。详细进度见 roadmap JSON + 每日 `YYYY-MM-DD.md`。
 - **opts 覆盖铁律**：phase 接真实引擎 config 时，ad-hoc opts 覆盖必须逐字段保留优先级（`opts.X.or_else(|| stored)`），丢一个就回归既有测试（1-3-4-6 chunked 测试教训）。
 - 迁移范式：cycle phase = `execute_phase` 真实 match 臂 + `autopilot/phases/<name>.rs` 模块。接真实臂后 `run_cycle_empty_brain` skipped 断言 -1（若该 phase 原已 catch-all Skipped 且接臂后仍 Skipped，则计数不变）。libsql 加 trait 方法：inherent `_impl` + 既有 impl 块内委托（开第二个 `impl` 块必 E0119）。
 
