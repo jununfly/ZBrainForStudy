@@ -266,6 +266,8 @@ const MIGRATION_0026: &str = include_str!("../migrations/0026_dream_verdicts.sql
 const MIGRATION_0027: &str = include_str!("../migrations/0027_config.sql");
 /// 1-3-4-6: subagent tool-execution log (read path for child put_page slugs).
 const MIGRATION_0028: &str = include_str!("../migrations/0028_subagent_tool_executions.sql");
+/// 1-5: synthesis_evidence — take→synthesis citation FK table (auto-think persistSynthesis).
+const MIGRATION_0029: &str = include_str!("../migrations/0029_synthesis_evidence.sql");
 
 /// FNV-1a 64-bit hash of a lease key, mapped to a signed int64 for
 /// `pg_advisory_xact_lock`. Matches the TS implementation bit-for-bit.
@@ -422,6 +424,11 @@ pub static POSTGRES_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 28,
         name: "subagent_tool_executions",
         sql: MIGRATION_0028,
+    }));
+    registry.add(Box::new(PostgresMigration {
+        version: 29,
+        name: "synthesis_evidence",
+        sql: MIGRATION_0029,
     }));
 
     registry
@@ -3269,6 +3276,33 @@ impl BrainEngine for PostgresEngine {
             out.push((slug, "default".to_string()));
         }
         Ok(out)
+    }
+
+    async fn add_synthesis_evidence(
+        &self,
+        rows: &[crate::engine::SynthesisEvidenceInput],
+    ) -> Result<u64> {
+        if rows.is_empty() {
+            return Ok(0);
+        }
+        let pool = self.pool()?;
+        let mut inserted: u64 = 0;
+        for r in rows {
+            let q = sqlx::query(
+                "INSERT INTO synthesis_evidence \
+                 (synthesis_page_id, take_page_id, take_row_num, citation_index) \
+                 VALUES ($1, $2, $3, $4)",
+            )
+            .bind(r.synthesis_page_id)
+            .bind(r.take_page_id)
+            .bind(r.take_row_num)
+            .bind(r.citation_index);
+            q.execute(pool)
+                .await
+                .map_err(|e| Error::engine(format!("add_synthesis_evidence: {e}")))?;
+            inserted += 1;
+        }
+        Ok(inserted)
     }
 
     async fn load_op_checkpoint(

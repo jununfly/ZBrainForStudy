@@ -32,6 +32,21 @@ use crate::{
 
 // ─── Value types ─────────────────────────────────────────────────────────────
 
+/// Input row for [`BrainEngine::add_synthesis_evidence`].
+/// Mirrors TS `SynthesisEvidenceInput` (think/index.ts:186).
+#[derive(Debug, Clone)]
+pub struct SynthesisEvidenceInput {
+    /// Page id of the synthesis page (type='synthesis').
+    pub synthesis_page_id: i64,
+    /// Page id of the cited take page.
+    pub take_page_id: i64,
+    /// Row number within the take page; `None` for page-level citations
+    /// (which are NOT persisted - synthesis_evidence is a take->synthesis FK).
+    pub take_row_num: Option<i32>,
+    /// Ordinal index of the citation within the answer.
+    pub citation_index: i32,
+}
+
 /// Discriminates engine backend. Lets migrations / diagnostics branch without
 /// `instanceof` / dynamic dispatch tricks. Mirrors the TS `'postgres'|'pglite'`
 /// literal union; `InMemory` is Rust-only (test double).
@@ -2032,6 +2047,21 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
             "Unsupported",
             "unsupported",
             "unset_config not yet implemented for this engine",
+        ))
+    }
+
+    /// Evidence rows linking a synthesis page to the take pages it cited.
+    /// Written by `persistSynthesis` (auto-think auto_commit path). Mirrors
+    /// TS `engine.addSynthesisEvidence`.
+    async fn add_synthesis_evidence(
+        &self,
+        rows: &[SynthesisEvidenceInput],
+    ) -> crate::Result<u64> {
+        let _ = rows;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "add_synthesis_evidence not yet implemented for this engine",
         ))
     }
 

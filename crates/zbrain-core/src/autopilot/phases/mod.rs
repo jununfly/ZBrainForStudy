@@ -12,3 +12,4 @@ pub mod patterns;
 pub mod transcript_discovery;
 pub mod context_budget;
 pub mod synthesize;
+pub mod auto_think;

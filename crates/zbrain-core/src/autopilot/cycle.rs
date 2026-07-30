@@ -37,6 +37,7 @@ pub enum CyclePhase {
     ExtractTakes,
     ResolveSymbolEdges,
     Patterns,
+    AutoThink,
     SynthesizeConcepts,
     RecomputeEmotionalWeight,
     Consolidate,
@@ -63,6 +64,7 @@ impl CyclePhase {
         CyclePhase::ExtractTakes,
         CyclePhase::ResolveSymbolEdges,
         CyclePhase::Patterns,
+        CyclePhase::AutoThink,
         CyclePhase::SynthesizeConcepts,
         CyclePhase::RecomputeEmotionalWeight,
         CyclePhase::Consolidate,
@@ -89,6 +91,7 @@ impl CyclePhase {
             CyclePhase::ExtractTakes => "extract-takes",
             CyclePhase::ResolveSymbolEdges => "resolve-symbol-edges",
             CyclePhase::Patterns => "patterns",
+            CyclePhase::AutoThink => "auto-think",
             CyclePhase::SynthesizeConcepts => "synthesize-concepts",
             CyclePhase::RecomputeEmotionalWeight => "recompute-emotional-weight",
             CyclePhase::Consolidate => "consolidate",
@@ -132,7 +135,7 @@ impl CyclePhase {
             | CyclePhase::Orphans
             | CyclePhase::Purge
             | CyclePhase::SynthesizeConcepts => PhaseScope::Global,
-            CyclePhase::Synthesize | CyclePhase::Patterns => PhaseScope::Mixed,
+            CyclePhase::Synthesize | CyclePhase::Patterns | CyclePhase::AutoThink => PhaseScope::Mixed,
         }
     }
 }
@@ -940,6 +943,55 @@ async fn execute_phase(
             }
         }
 
+        CyclePhase::AutoThink => {
+            use crate::autopilot::phases::auto_think::{run_phase_auto_think, AutoThinkPhaseOpts};
+            let a_opts = AutoThinkPhaseOpts {
+                brain_dir: Some(_opts.brain_dir.clone()),
+                dry_run,
+                ..Default::default()
+            };
+            match run_phase_auto_think(engine, _opts.chat.as_deref(), &a_opts).await {
+                Ok(r) => PhaseResult {
+                    phase: label.into(),
+                    status: match r.status.as_str() {
+                        "complete" => PhaseStatus::Ok,
+                        "partial" => PhaseStatus::Warn,
+                        "failed" => PhaseStatus::Fail,
+                        _ => PhaseStatus::Skipped,
+                    },
+                    duration_ms: phase_start.elapsed().as_millis() as u64,
+                    summary: r.detail.clone(),
+                    details: serde_json::json!({
+                        "reason": r.reason,
+                        "questions_run": r.questions_run,
+                        "synthesized": r.synthesized,
+                        "dry_run": r.dry_run,
+                        "outcomes": r.outcomes.iter().map(|o| serde_json::json!({
+                            "question": o.question,
+                            "status": o.status,
+                            "slug": o.slug,
+                            "warnings": o.warnings,
+                        })).collect::<Vec<_>>(),
+                    }),
+                    error: None,
+                },
+                Err(e) => PhaseResult {
+                    phase: label.into(),
+                    status: PhaseStatus::Fail,
+                    duration_ms: phase_start.elapsed().as_millis() as u64,
+                    summary: "auto-think phase failed".into(),
+                    details: serde_json::json!({}),
+                    error: Some(PhaseError {
+                        class: "DatabaseConnection".into(),
+                        code: "AUTO_THINK_PHASE_FAIL".into(),
+                        message: e.to_string(),
+                        hint: None,
+                        docs_url: None,
+                    }),
+                },
+            }
+        }
+
         CyclePhase::SchemaSuggest => {
             use crate::autopilot::phases::schema_suggest::{
                 run_schema_suggest_phase, SchemaSuggestPhaseOpts,
@@ -1281,7 +1333,7 @@ mod tests {
         // TS has 20 phases (lint through purge). Rust adds `extract-takes` as
         // a 21st dedicated cycle phase (see extract_takes.rs taxonomy note) —
         // TS only consumes it via the v0_28_0 orchestrator, not runCycle.
-        assert_eq!(CyclePhase::ALL.len(), 21);
+        assert_eq!(CyclePhase::ALL.len(), 22);
     }
 
     #[test]
@@ -1323,7 +1375,7 @@ mod tests {
         assert_eq!(report.schema_version, "1");
         // 21 = 20 TS phases + extract-takes (elevated to a dedicated Rust
         // cycle phase; see extract_takes.rs taxonomy note).
-        assert_eq!(report.phases.len(), 21);
+        assert_eq!(report.phases.len(), 22);
         // orphans should be Ok (0 found)
         let orphans = report.phases.iter().find(|p| p.phase == "orphans").unwrap();
         assert_eq!(orphans.status, PhaseStatus::Ok);
@@ -1414,14 +1466,15 @@ mod tests {
             .unwrap();
         assert_eq!(patterns.status, PhaseStatus::Skipped);
         assert_eq!(patterns.summary, "0 reflections in last 30d (need ≥3)");
-        // All other phases should be Skipped. Count is 15: extract-atoms +
+        // All other phases should be Skipped. Count is 16: extract-atoms +
         // propose-takes + grade-takes + calibration-profile +
         // conversation-facts-backfill + synthesize-concepts (real LLM phases,
-        // no chat here) + 9 stubs. recompute-emotional-weight is no longer
-        // skipped (deterministic → Ok), and schema-suggest left the catch-all
-        // as a real no-LLM phase (→ Ok), dropping the count from 16 to 15.
+        // no chat here) + 9 stubs + auto-think (default-disabled → Skipped).
+        // recompute-emotional-weight is no longer skipped (deterministic →
+        // Ok), and schema-suggest left the catch-all as a real no-LLM phase
+        // (→ Ok), dropping the count from 17 to 16.
         let skipped_count = report.phases.iter().filter(|p| p.status == PhaseStatus::Skipped).count();
-        assert_eq!(skipped_count, 15);
+        assert_eq!(skipped_count, 16);
     }
 
     #[tokio::test]

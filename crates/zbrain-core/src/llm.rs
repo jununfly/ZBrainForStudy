@@ -110,6 +110,11 @@ pub struct ThinkOutput {
     /// Source page slugs that contributed to the answer
     #[serde(default)]
     pub sources: Vec<String>,
+    /// Structured citations (TS `ThinkResponse.citations`). Empty when the
+    /// model omitted the field — callers should run [`resolve_citations`]
+    /// to fall back to inline-marker scanning.
+    #[serde(default)]
+    pub citations: Vec<Citation>,
 }
 
 /// Prompt builder for Think operation.
@@ -664,5 +669,162 @@ Here's my answer:
         assert!(output.answer.contains("Rust rewrite"));
         assert_eq!(output.evidence_used, 1);
         assert!(output.sources.contains(&"rust-migration".to_string()));
+    }
+}
+
+/// A structured citation emitted by the model.
+///
+/// Mirrors TS `ParsedCitation` (src/core/think/cite-render.ts):
+/// `row_num == None` is a page-level citation (`[slug]` marker),
+/// `Some(n)` is a take citation (`[slug#n]`). `citation_index` is the
+/// 1-based order of the citation within the answer.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Citation {
+    /// Cited page slug (lowercase, validatePageSlug shape).
+    pub page_slug: String,
+    /// Row number for take citations; `None` for page-level citations.
+    #[serde(default, deserialize_with = "de_lenient_row_num")]
+    pub row_num: Option<i32>,
+    /// 1-based order in the answer body (0 when the model omitted it;
+    /// normalization re-indexes).
+    #[serde(default)]
+    pub citation_index: i32,
+}
+
+/// Lenient `row_num` deserializer mirroring TS `parseInt(String(row), 10)`:
+/// accepts a JSON number, numeric string, or null. Anything unparseable
+/// degrades to `None` (page-level) instead of failing the whole
+/// `ThinkOutput` parse — TS salvages malformed citations the same way.
+fn de_lenient_row_num<'de, D>(d: D) -> Result<Option<i32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize as _;
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(match v {
+        serde_json::Value::Number(n) => n.as_i64().and_then(|x| i32::try_from(x).ok()),
+        serde_json::Value::String(s) => s.trim().parse::<i32>().ok(),
+        _ => None,
+    })
+}
+
+/// Result of [`resolve_citations`]: the cleaned citation list, any
+/// normalization warnings, and whether the regex fallback was used.
+#[derive(Debug, Clone)]
+pub struct ResolvedCitations {
+    /// Cleaned, deduped, 1-indexed citations.
+    pub citations: Vec<Citation>,
+    /// Warnings about dropped/invalid entries (TS warning codes).
+    pub warnings: Vec<String>,
+    /// True when the structured list was empty and the answer body was
+    /// regex-scanned instead.
+    pub used_fallback: bool,
+}
+
+/// Extract citation markers from an answer body. Port of TS
+/// `parseInlineCitations` (cite-render.ts). Recognizes `[slug#3]` (take),
+/// `[slug]` (page), and multi-segment slugs `[a/b/c#7]`. Dedupes on
+/// `slug#row`, indexes 1-based in body order.
+pub fn parse_inline_citations(body: &str) -> Vec<Citation> {
+    static RX: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let rx = RX.get_or_init(|| {
+        // Same shape as validatePageSlug: lowercase alphanumeric + hyphens
+        // + forward-slash separators; optional #N suffix. (?i) mirrors the
+        // TS /gi flags; slugs are lowercased after match.
+        regex::Regex::new(r"(?i)\[([a-z0-9][a-z0-9\-]*(?:/[a-z0-9][a-z0-9\-]*)*)(?:#(\d+))?\]")
+            .expect("inline citation regex is valid")
+    });
+    let mut out: Vec<Citation> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut idx: i32 = 1;
+    for cap in rx.captures_iter(body) {
+        let slug = cap[1].to_lowercase();
+        let row_num: Option<i32> = match cap.get(2) {
+            // \d+ can only be positive; unparseable (i32 overflow) is
+            // skipped like the TS non-finite guard.
+            Some(m) => match m.as_str().parse::<i32>() {
+                Ok(n) if n > 0 => Some(n),
+                _ => continue,
+            },
+            None => None,
+        };
+        let key = format!(
+            "{slug}#{}",
+            row_num.map_or_else(|| "_".to_string(), |n| n.to_string())
+        );
+        if !seen.insert(key) {
+            continue;
+        }
+        out.push(Citation {
+            page_slug: slug,
+            row_num,
+            citation_index: idx,
+        });
+        idx += 1;
+    }
+    out
+}
+
+/// Validate + clean a structured citations list from the model. Port of TS
+/// `normalizeStructuredCitations`: lowercases slugs, drops empty slugs
+/// (`CITATION_MISSING_SLUG`) and non-positive rows
+/// (`CITATION_INVALID_ROW`), dedupes on `slug#row`, re-indexes 1-based.
+pub fn normalize_structured_citations(raw: &[Citation]) -> (Vec<Citation>, Vec<String>) {
+    let mut citations: Vec<Citation> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut idx: i32 = 1;
+    for c in raw {
+        let slug = c.page_slug.trim().to_lowercase();
+        if slug.is_empty() {
+            warnings.push("CITATION_MISSING_SLUG".to_string());
+            continue;
+        }
+        let row_num = match c.row_num {
+            Some(n) if n > 0 => Some(n),
+            Some(n) => {
+                warnings.push(format!("CITATION_INVALID_ROW({slug}: {n})"));
+                continue;
+            }
+            None => None,
+        };
+        let key = format!(
+            "{slug}#{}",
+            row_num.map_or_else(|| "_".to_string(), |n| n.to_string())
+        );
+        if !seen.insert(key) {
+            continue;
+        }
+        citations.push(Citation {
+            page_slug: slug,
+            row_num,
+            citation_index: idx,
+        });
+        idx += 1;
+    }
+    (citations, warnings)
+}
+
+/// Combine structured citations + body fallback into a single resolved
+/// list. Port of TS `resolveCitations` trust contract: prefer the
+/// structured field; if it yields nothing, regex-scan the answer body and
+/// emit `CITATIONS_REGEX_FALLBACK` so callers know the synthesis was
+/// rendered without explicit structured citations.
+pub fn resolve_citations(structured: &[Citation], answer_body: &str) -> ResolvedCitations {
+    let (citations, warnings) = normalize_structured_citations(structured);
+    if !citations.is_empty() {
+        return ResolvedCitations {
+            citations,
+            warnings,
+            used_fallback: false,
+        };
+    }
+    let fallback = parse_inline_citations(answer_body);
+    let mut warnings = warnings;
+    warnings.push("CITATIONS_REGEX_FALLBACK".to_string());
+    ResolvedCitations {
+        citations: fallback,
+        warnings,
+        used_fallback: true,
     }
 }

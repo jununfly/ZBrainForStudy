@@ -2484,7 +2484,7 @@ impl TypedOperation for SearchByImageOperation {
 /// 2. Filter out stopwords (common English/Chinese words)
 /// 3. Filter out short words (<2 chars)
 /// 4. Deduplicate and take top 5
-fn extract_keywords(query: &str) -> Vec<String> {
+pub(crate) fn extract_keywords(query: &str) -> Vec<String> {
     // Stopword list (common function words in English + Chinese)
     let stopwords: std::collections::HashSet<&str> = [
         // English

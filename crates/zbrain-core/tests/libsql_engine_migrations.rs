@@ -21,7 +21,6 @@ fn libsql_test_guard() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-
 /// Allocate a fresh temp file path. Returned `NamedTempFile` must outlive
 /// the engine — dropping it deletes the underlying file.
 fn temp_db() -> NamedTempFile {
@@ -62,7 +61,7 @@ async fn read_version_raw(path: &std::path::Path) -> i64 {
 /// actual count is derived from the on-disk migrations/*.sql files; this
 /// constant must track the highest migration number so the fresh-db /
 /// idempotent tests assert the right version.
-const EXPECTED_VERSION: i64 = 28;
+const EXPECTED_VERSION: i64 = 29;
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
 

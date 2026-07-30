@@ -402,6 +402,8 @@ pub enum Commands {
 
     /// Synthesize answers across the knowledge base
     Think(ThinkArgs),
+    /// Run the auto-think cycle phase (open questions → synthesis pages)
+    AutoThink(AutoThinkArgs),
     /// Search pages by keyword query
     Query(QueryArgs),
 
@@ -1330,6 +1332,30 @@ pub struct ThinkArgs {
     pub until: Option<String>,
 }
 
+/// Arguments for `zbrain auto-think` command.
+///
+/// Runs the auto-think cycle phase: pulls the configured open questions,
+/// thinks each one, and persists the synthesis pages + citations. Mirrors the
+/// TS `runPhaseAutoThink` entry point.
+#[derive(Parser, Debug, Clone)]
+pub struct AutoThinkArgs {
+    /// Model override for the think calls (provider-prefixed, e.g. anthropic:...).
+    #[arg(long)]
+    pub model: Option<String>,
+
+    /// Dry run: plan and validate without calling the LLM or persisting.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Brain directory (for parity with cycle; DB location still comes from config).
+    #[arg(long)]
+    pub brain_dir: Option<String>,
+
+    /// Emit machine-readable JSON instead of a human summary.
+    #[arg(long)]
+    pub json: bool,
+}
+
 /// Arguments for `zbrain query` command.
 ///
 /// `--explain` mirrors the TS global flag: it swaps the default JSON output for
@@ -1746,6 +1772,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::SchemaSql(args) => run_schema_command(args)?,
         Commands::GetPage(args) => run_get_page_command(args, cli.config.as_deref(), timeout_ms).await?,
         Commands::Think(args) => run_think_command(args, cli.config.as_deref(), timeout_ms).await?,
+        Commands::AutoThink(args) => {
+            run_auto_think_command(args, cli.config.as_deref()).await?
+        }
         Commands::Query(args) => run_query_command(args, cli.config.as_deref(), timeout_ms).await?,
         Commands::PutPage(args) => run_put_page_command(args, cli.config.as_deref(), timeout_ms).await?,
         Commands::DeletePage(args) => run_delete_page_command(args, cli.config.as_deref(), timeout_ms).await?,
@@ -2378,6 +2407,116 @@ async fn run_think_command(args: ThinkArgs, config_path: Option<&Path>, timeout_
     let output = run_operation("think", params, config_path, timeout_ms).await?;
 
     println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+/// Execute `zbrain auto-think` command.
+async fn run_auto_think_command(
+    args: AutoThinkArgs,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    use zbrain_core::ai::chat::instantiate_chat;
+    use zbrain_core::ai::model_config::{resolve_model, ModelTier, ResolveModelOpts};
+    use zbrain_core::ai::resolver::resolve_recipe_strict;
+    use zbrain_core::autopilot::phases::auto_think::{
+        prefetch_model_lookup, run_phase_auto_think, AutoThinkPhaseOpts,
+    };
+
+    // Engine setup mirrors `run_autopilot_command`.
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = zbrain_core::engine::EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    let opts = AutoThinkPhaseOpts {
+        brain_dir: args.brain_dir.clone(),
+        dry_run: args.dry_run,
+        model_override: args.model.clone(),
+        ..Default::default()
+    };
+
+    // Build a chat provider for the resolved auto-think model. In dry-run we
+    // never call the LLM, so skip the (potentially failing) provider build.
+    let chat: Option<Box<dyn zbrain_core::ai::chat::ChatProvider>> = if args.dry_run {
+        None
+    } else {
+        let lookup = prefetch_model_lookup(&engine).await?;
+        let model_id = resolve_model(
+            &lookup,
+            &ResolveModelOpts {
+                cli_flag: args.model.clone(),
+                config_key: Some("models.auto_think".to_string()),
+                tier: Some(ModelTier::Deep),
+                fallback: "opus".to_string(),
+                ..Default::default()
+            },
+        );
+        // Bare model ids (no `provider:` prefix) can't be turned into a recipe;
+        // surface a clear error rather than guessing the provider.
+        let recipe = match resolve_recipe_strict(&model_id) {
+            Ok((_parsed, recipe)) => recipe,
+            Err(e) => {
+                anyhow::bail!(
+                    "Cannot resolve a chat provider for auto-think model '{model_id}': {e}. \
+                     Set models.auto_think (or --model) to a 'provider:model' form, \
+                     e.g. 'anthropic:claude-opus-4'."
+                );
+            }
+        };
+        let provider =
+            instantiate_chat(recipe, &model_id, |k| std::env::var(k).ok()).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to build chat provider for '{model_id}': {}. \
+                     Check the provider's API key env var is set (see recipe setup hint).",
+                    e.message
+                )
+            })?;
+        Some(provider)
+    };
+
+    let result = run_phase_auto_think(&engine, chat.as_deref(), &opts).await?;
+
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "status": result.status,
+                "detail": result.detail,
+                "reason": result.reason,
+                "questions_run": result.questions_run,
+                "synthesized": result.synthesized,
+                "dry_run": result.dry_run,
+                "outcomes": result.outcomes.iter().map(|o| serde_json::json!({
+                    "question": o.question,
+                    "status": o.status,
+                    "slug": o.slug,
+                    "warnings": o.warnings,
+                })).collect::<Vec<_>>(),
+                "duration_ms": result.duration_ms,
+            }))?
+        );
+    } else {
+        println!("auto-think: {}", result.detail);
+        if !result.outcomes.is_empty() {
+            println!("---");
+            for o in &result.outcomes {
+                println!("[{}] {}", o.status, o.question);
+                if let Some(slug) = &o.slug {
+                    println!("    -> {slug}");
+                }
+                for w in &o.warnings {
+                    println!("    ! {w}");
+                }
+            }
+        }
+    }
+
+    engine.disconnect().await?;
     Ok(())
 }
 

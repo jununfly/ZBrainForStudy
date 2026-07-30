@@ -148,6 +148,8 @@ const MIGRATION_0026: &str = include_str!("../migrations-sqlite/0026_dream_verdi
 const MIGRATION_0027: &str = include_str!("../migrations-sqlite/0027_config.sql");
 /// 1-3-4-6: subagent tool-execution log (read path for child put_page slugs).
 const MIGRATION_0028: &str = include_str!("../migrations-sqlite/0028_subagent_tool_executions.sql");
+/// 1-5: synthesis_evidence — take→synthesis citation FK table (auto-think persistSynthesis).
+const MIGRATION_0029: &str = include_str!("../migrations-sqlite/0029_synthesis_evidence.sql");
 
 /// Legacy string array — REMOVED in favor of MigrationRegistry.
 /// Use LIBQL_MIGRATIONS instead.
@@ -313,6 +315,11 @@ pub static LIBQL_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 28,
         name: "subagent_tool_executions",
         sql: MIGRATION_0028,
+    }));
+    registry.add(Box::new(LibsqlMigration {
+        version: 29,
+        name: "synthesis_evidence",
+        sql: MIGRATION_0029,
     }));
 
     registry
@@ -4350,6 +4357,35 @@ impl BrainEngine for LibsqlEngine {
             out.push((slug, "default".to_string()));
         }
         Ok(out)
+    }
+
+    async fn add_synthesis_evidence(
+        &self,
+        rows: &[crate::engine::SynthesisEvidenceInput],
+    ) -> Result<u64> {
+        if rows.is_empty() {
+            return Ok(0);
+        }
+        let conn = self.conn().await?;
+        let mut inserted: u64 = 0;
+        for r in rows {
+            let sql = "INSERT INTO synthesis_evidence \
+                       (synthesis_page_id, take_page_id, take_row_num, citation_index) \
+                       VALUES (?1, ?2, ?3, ?4)";
+            conn.execute(
+                sql,
+                ::libsql::params![
+                    r.synthesis_page_id,
+                    r.take_page_id,
+                    r.take_row_num.unwrap_or(0),
+                    r.citation_index,
+                ],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("add_synthesis_evidence: {e}")))?;
+            inserted += 1;
+        }
+        Ok(inserted)
     }
 
     async fn load_op_checkpoint(
