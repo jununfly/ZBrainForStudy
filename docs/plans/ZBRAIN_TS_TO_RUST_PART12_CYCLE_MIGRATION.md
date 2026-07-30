@@ -1,7 +1,7 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust-part12-cycle-migration.json` | 最后更新: 2026-07-30 16:10:00
+> 数据文件: `zbrain-ts-to-rust-part12-cycle-migration.json` | 最后更新: 2026-07-30 16:20:00
 
 [~][X+] 1. Part12 - cycle 大迁移 (按能力簇切)
 ├── [x][Y+] 1-1. facts-extraction 簇迁移 (extract-facts/atoms/takes + propose/grade-takes + conversation-facts-backfill; 消费者 v0_28_0->extract-takes)
@@ -38,7 +38,7 @@
 ├── [x] 1-3-4-1. dream_verdicts migration + engine 方法 (get_dream_verdict/put_dream_verdict; 双 dialect migration 0026; InMemory+libsql+postgres; EXPECTED_VERSION 25->26)
 ├── [x] 1-3-4-2. transcript-discovery 模块 (移植 transcript-discovery.ts:214 discoverTranscripts; 纯 fs+sha256; 递归扫 corpusDir+meetingTranscriptsDir; 过滤 minChars/日期/自消费标记/excludePatterns)
 ├── [x] 1-3-4-3. 模型上下文预算纯函数 (computeChunkCharBudget / splitTranscriptByBudget / rewriteChunkedSlug + 单测; 无依赖可独立)
-├── [ ] 1-3-4-4. 扇出编排 run_phase_synthesize (复用 patterns 的 MinionQueue+wait_for_completion; 接 cycle 真实臂; 需 1-3-4-1/2/3 + ChatProvider 裁决入参)
+├── [x] 1-3-4-4. 扇出编排 run_phase_synthesize (复用 patterns 的 MinionQueue+wait_for_completion; 接 cycle 真实臂; 需 1-3-4-1/2/3 + ChatProvider 裁决入参)
 ├── [ ] 1-3-4-5. 磁盘双写 (reverseWriteRefs 写 brainDir/<slug>.md + writeSummaryPage 写 dream-cycle-summaries/<date>.md; 受 Q1 决策影响)
 └── [ ] 1-3-4-6. 配置/冷却 + subagent_tool_executions (loadSynthConfig 的 dream.synthesize.* 键 + cooldown 时间戳; 受 Q2 决策影响)
 <!-- ROADMAP_SECTION_END -->
