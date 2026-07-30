@@ -11,3 +11,4 @@ pub mod schema_suggest;
 pub mod patterns;
 pub mod transcript_discovery;
 pub mod context_budget;
+pub mod synthesize;

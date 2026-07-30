@@ -1083,6 +1083,70 @@ async fn execute_phase(
             }
         }
 
+        CyclePhase::Synthesize => {
+            use crate::autopilot::phases::synthesize::{run_phase_synthesize, SynthesizePhaseOpts};
+
+            // Fan-out orchestration: discovers transcripts, judges significance
+            // via the wired chat provider, and enqueues one "subagent" minion per
+            // worth-processing transcript/chunk (synthesis runs in the worker).
+            // corpus_dir is wired from the engine config store in 1-3-4-6, so until
+            // then real runs skip "not_configured".
+            let s_opts = SynthesizePhaseOpts {
+                brain_dir: Some(_opts.brain_dir.clone()),
+                dry_run,
+                ..Default::default()
+            };
+            match run_phase_synthesize(engine, _opts.chat.as_deref(), &s_opts).await {
+                Ok(r) => PhaseResult {
+                    phase: label.into(),
+                    status: match r.status.as_str() {
+                        "ok" => PhaseStatus::Ok,
+                        "warn" => PhaseStatus::Warn,
+                        _ => PhaseStatus::Skipped,
+                    },
+                    duration_ms: phase_start.elapsed().as_millis() as u64,
+                    summary: r.summary.clone(),
+                    details: serde_json::json!({
+                        "reason": r.reason,
+                        "transcripts_discovered": r.transcripts_discovered,
+                        "transcripts_processed": r.transcripts_processed,
+                        "children_submitted": r.children_submitted,
+                        "pages_written": r.pages_written,
+                        "dry_run": r.dry_run,
+                        "verdicts": r.verdicts.iter().map(|v| serde_json::json!({
+                            "file_path": v.file_path,
+                            "worth": v.worth,
+                            "reasons": v.reasons,
+                            "cached": v.cached,
+                        })).collect::<Vec<_>>(),
+                        "child_outcomes": r.child_outcomes.iter().map(|c| serde_json::json!({
+                            "job_id": c.job_id,
+                            "status": c.status,
+                        })).collect::<Vec<_>>(),
+                        "skips": r.skips.iter().map(|s| serde_json::json!({
+                            "file_path": s.file_path,
+                            "reason": s.reason,
+                        })).collect::<Vec<_>>(),
+                    }),
+                    error: None,
+                },
+                Err(e) => PhaseResult {
+                    phase: label.into(),
+                    status: PhaseStatus::Fail,
+                    duration_ms: phase_start.elapsed().as_millis() as u64,
+                    summary: "synthesize phase failed".into(),
+                    details: serde_json::json!({}),
+                    error: Some(PhaseError {
+                        class: "InternalError".into(),
+                        code: "SYNTH_PHASE_FAIL".into(),
+                        message: e.to_string(),
+                        hint: None,
+                        docs_url: None,
+                    }),
+                },
+            }
+        }
+
         // ── Skipped stubs (not yet migrated) ────────────────────────
         _ => {
             let reason = if matches!(
