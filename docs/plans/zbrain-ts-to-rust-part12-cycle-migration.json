@@ -378,12 +378,12 @@
     "1-3-4-3": {
       "id": "1-3-4-3",
       "label": "模型上下文预算纯函数 (computeChunkCharBudget / splitTranscriptByBudget / rewriteChunkedSlug + 单测; 无依赖可独立)",
-      "status": "pending",
+      "status": "completed",
       "mode": "build",
       "parent": "1-3-4",
       "children": [],
       "decisions": [],
-      "notes": "TS 常量 MODEL_CONTEXT_TOKENS/CHARS_PER_TOKEN=3.5/HEADROOM_RATIO=0.9/MIN_PROMPT_TOKENS=100000/DEFAULT_MAX_CHUNKS=24；splitTranscriptByBudget 三级切分(## Topic:/---/\\n)。纯函数+单测，独立可先行。"
+      "notes": "DONE。新建独立纯函数模块 crates/zbrain-core/src/autopilot/phases/context_budget.rs（mod.rs 注册 pub mod context_budget），忠实移植 TS synthesize.ts 三函数。\n实现：\n- compute_chunk_char_budget(model, Option<config_max_prompt_tokens>)->u32：常量 MODEL_CONTEXT_TOKENS(opus 1M/sonnet 200K)/CHARS_PER_TOKEN=3.5/HEADROOM_RATIO=0.9/UNKNOWN_MODEL_BUDGET_TOKENS=180K；config 优先(不在此 floor，MIN_PROMPT_TOKENS 由调用方负责)/model 查表×0.9/未知回退 180K，均 floor 成 char 数。去掉 TS 的全局 Set 'warn once' stderr 副作用以保纯函数。\n- split_transcript_by_budget(content, content_hash, max_chars)->Vec<String>：三级切分(\\n## Topic: → \\n---\\n → \\n)，hash 派生 searchStart 抖动(0.5×~0.6×budget) 保证 (content,hash,maxChars) 确定性；无边界则硬切到 max_chars 字符处。用**字符索引(Unicode scalar)**而非 TS 的 UTF-16 length，Rust 无 surrogate，safeSplitIndex 退化为 char 边界硬切。max_chars==0 panic!。\n- rewrite_chunked_slug(slug, hash6, idx)->String：已正确后缀/以 -hash6-cN 或 /hash6-cN 结尾→不变；裸 hash6(前导 start/'-'/'/')→追加 -cN；未知形状→passthrough。用手动前缀检查替代 TS 的 RegExp(规避 hash6 正则元字符转义坑)。\n- DEFAULT_MAX_CHUNKS=24 / MIN_PROMPT_TOKENS=100000 以 pub const 暴露供 1-3-4-4/6 使用。\n验证：Windows 直跑 cargo test -p zbrain-core --lib context_budget，19 测试全绿（budget 三档+config 覆盖/floor、split 零预算 panic/短内容单块/精确预算单块/topic 三级/HR 回退/纯换行回退/确定性/hash 抖动确定性/无边界硬切、slug 空/已正确/完整后缀/裸 hash/未知形状/idx 使用）。纯新增、未改既有代码，无回归。"
     },
     "1-3-4-4": {
       "id": "1-3-4-4",
@@ -418,7 +418,7 @@
   },
   "metadata": {
     "created": "2026-07-23 17:12:54",
-    "updated": "2026-07-30 15:14:34",
+    "updated": "2026-07-30 16:10:00",
     "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_PART12_CYCLE_MIGRATION.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART12_CYCLE_MIGRATION.md"
