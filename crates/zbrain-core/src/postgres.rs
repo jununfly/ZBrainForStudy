@@ -262,6 +262,10 @@ const MIGRATION_0023: &str = include_str!("../migrations/0023_calibration_tables
 const MIGRATION_0024: &str = include_str!("../migrations/0024_take_proposals.sql");
 const MIGRATION_0025: &str = include_str!("../migrations/0025_op_checkpoints.sql");
 const MIGRATION_0026: &str = include_str!("../migrations/0026_dream_verdicts.sql");
+/// 1-3-4-6: engine key/value config store backing dream.synthesize.* + cooldown.
+const MIGRATION_0027: &str = include_str!("../migrations/0027_config.sql");
+/// 1-3-4-6: subagent tool-execution log (read path for child put_page slugs).
+const MIGRATION_0028: &str = include_str!("../migrations/0028_subagent_tool_executions.sql");
 
 /// FNV-1a 64-bit hash of a lease key, mapped to a signed int64 for
 /// `pg_advisory_xact_lock`. Matches the TS implementation bit-for-bit.
@@ -408,6 +412,16 @@ pub static POSTGRES_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 26,
         name: "dream_verdicts",
         sql: MIGRATION_0026,
+    }));
+    registry.add(Box::new(PostgresMigration {
+        version: 27,
+        name: "config",
+        sql: MIGRATION_0027,
+    }));
+    registry.add(Box::new(PostgresMigration {
+        version: 28,
+        name: "subagent_tool_executions",
+        sql: MIGRATION_0028,
     }));
 
     registry
@@ -3167,6 +3181,94 @@ impl BrainEngine for PostgresEngine {
         .await
         .map_err(|e| Error::engine(format!("put_dream_verdict insert: {e}")))?;
         Ok(())
+    }
+
+    // ---- engine config store (1-3-4-6) ----
+
+    async fn get_config(&self, key: &str) -> Result<Option<String>> {
+        let pool = self.pool()?;
+        let row = sqlx::query("SELECT value FROM config WHERE key = $1 LIMIT 1")
+            .bind(key)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| Error::engine(format!("get_config: {e}")))?;
+        match row {
+            Some(r) => {
+                let value: String = r
+                    .try_get("value")
+                    .map_err(|e| Error::engine(format!("get_config value: {e}")))?;
+                Ok(Some(value))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn set_config(&self, key: &str, value: &str) -> Result<()> {
+        let pool = self.pool()?;
+        sqlx::query(
+            "INSERT INTO config (key, value) VALUES ($1, $2) \
+             ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value",
+        )
+        .bind(key)
+        .bind(value)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("set_config: {e}")))?;
+        Ok(())
+    }
+
+    async fn unset_config(&self, key: &str) -> Result<u64> {
+        let pool = self.pool()?;
+        let n = sqlx::query("DELETE FROM config WHERE key = $1")
+            .bind(key)
+            .execute(pool)
+            .await
+            .map_err(|e| Error::engine(format!("unset_config: {e}")))?;
+        Ok(n.rows_affected())
+    }
+
+    async fn collect_child_put_page_slugs(
+        &self,
+        child_ids: &[i64],
+    ) -> Result<Vec<(String, String)>> {
+        if child_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders: String = (0..child_ids.len())
+            .map(|i| format!("${}", i + 1))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let k = child_ids.len();
+        let tool_ph = format!("${}", k + 1);
+        let status_ph = format!("${}", k + 2);
+        let sql = format!(
+            "SELECT DISTINCT COALESCE(input->>'slug', input->'input'->>'slug', '') AS slug \
+             FROM subagent_tool_executions \
+             WHERE job_id IN ({placeholders}) AND tool_name = {tool_ph} AND status = {status_ph} \
+             ORDER BY 1"
+        );
+        let pool = self.pool()?;
+        let mut q = sqlx::query(&sql);
+        for id in child_ids {
+            q = q.bind(*id);
+        }
+        q = q.bind("brain_put_page");
+        q = q.bind("complete");
+        let rows = q
+            .fetch_all(pool)
+            .await
+            .map_err(|e| Error::engine(format!("collect_child_put_page_slugs: {e}")))?;
+        let mut out: Vec<(String, String)> = Vec::new();
+        for row in rows {
+            let slug: String = row
+                .try_get("slug")
+                .map_err(|e| Error::engine(format!("collect_child_put_page_slugs slug: {e}")))?;
+            if slug.is_empty() {
+                continue;
+            }
+            out.push((slug, "default".to_string()));
+        }
+        Ok(out)
     }
 
     async fn load_op_checkpoint(

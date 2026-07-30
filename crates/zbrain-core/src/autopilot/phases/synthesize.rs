@@ -12,8 +12,10 @@
 //! 4. fan out one `"subagent"` minion job per worth-processing transcript (or
 //!    per chunk for chunked transcripts) via [`MinionQueue`] + poll to
 //!    completion via [`wait_for_completion`] (mirrors the `patterns` phase)
-//! 5. best-effort slug collection (the `subagent_tool_executions` table is not
-//!    mirrored in Rust; 1-3-4-6 decision)
+//! 5. best-effort slug collection via
+//!    [`BrainEngine::collect_child_put_page_slugs`] over the
+//!    `subagent_tool_executions` table (read side wired in 1-3-4-6; the write
+//!    side is registered in docs/plans/KNOWN-GAPS.md (G63))
 //! 6. disk dual-write: [`reverse_write_refs`] mirrors each synthesized page
 //!    back to `brainDir/<slug>.md` (or `brainDir/.sources/<id>/<slug>.md` for
 //!    non-default sources), and [`write_summary_page`] writes the
@@ -22,23 +24,25 @@
 //!
 //! ## Rust deviations (documented so the port stays honest)
 //!
-//! - **Config**: TS reads `dream.synthesize.*` (corpus_dir, model,
-//!   verdict_model, cooldown, …) from the engine config store via
-//!   `engine.getConfig`. Rust still has **no engine config store** (1-3-4-6
-//!   will wire it), so [`load_synth_config`] returns the TS *defaults*.
-//!   `corpus_dir` defaults to `None` → the phase returns `Skipped(
-//!   "not_configured")` unless an override is supplied via
-//!   [`SynthesizePhaseOpts`] (ad-hoc path, mirrors TS `inputFile`). This is the
-//!   documented seam to wire real config lookup.
+//! - **Config (1-3-4-6, wired)**: [`load_synth_config`] now reads
+//!   `dream.synthesize.*` from the engine config store via
+//!   `engine.get_config` (defaulting to TS values when unset). Ad-hoc overrides
+//!   in [`SynthesizePhaseOpts`] still win (mirrors TS `inputFile`). The engine
+//!   config store (`config` table) is backed by `get_config`/`set_config`/
+//!   `unset_config` on `BrainEngine`, so the phase is fully config-driven.
 //! - **Disk dual-write**: implemented faithfully (1-3-4-5). When `brain_dir`
 //!   is `None` (config not wired yet), the disk mirror is skipped per-page but
 //!   the summary `put_page` still runs (engine-canonical, no disk needed).
-//!   `pages_written` is best-effort harvested from `subagent_tool_executions`
-//!   (empty until 1-3-4-6 wires that table), so `reverse_write_refs` typically
-//!   has no refs to mirror in Rust today — the function is still exercised
-//!   directly by unit tests.
-//! - **Cooldown**: TS `checkCooldown` gates re-runs. That is **1-3-4-6** —
-//!   omitted here.
+//!   `pages_written` is harvested via `engine.collect_child_put_page_slugs`
+//!   over the `subagent_tool_executions` table (added in 1-3-4-6). The **write
+//!   path** (minion `brain_put_page` tool recording executions) is registered
+//!   in docs/plans/KNOWN-GAPS.md (G63), so the table is read but rarely
+//!   populated until that lands — `reverse_write_refs` typically has no refs
+//!   to mirror yet.
+//! - **Cooldown (1-3-4-6, wired)**: [`check_cooldown`] reads
+//!   `dream.synthesize.last_completion_ts` and skips with `cooldown_active`
+//!   when within `cooldown_hours`; the timestamp is written on successful
+//!   completion via `engine.set_config`.
 //! - **Prior contradictions block**: TS surfaces `loadPriorContradictionsBlock`
 //!   into the subagent prompt. Best-effort informational only; omitted here.
 //! - **Worker execution**: the subagent itself runs in the minion worker (wired
@@ -195,13 +199,59 @@ struct SynthConfig {
 /// Rust has no engine config store yet (see module docs) — returns TS
 /// defaults, with `corpus_dir` taken from the ad-hoc override when present.
 /// This is the documented seam to wire real `getConfig` in 1-3-4-6.
-fn load_synth_config(opts: &SynthesizePhaseOpts) -> SynthConfig {
-    SynthConfig {
-        enabled: true,
-        corpus_dir: opts.corpus_dir.clone(),
-        meeting_transcripts_dir: None,
-        min_chars: opts.min_chars.unwrap_or(2000),
-        exclude_patterns: Vec::new(),
+/// Load synth config from the engine config store (1-3-4-6).
+///
+/// Mirrors TS `loadSynthConfig` (synthesize.ts:598): reads `dream.synthesize.*`
+/// keys via `engine.get_config`. Ad-hoc overrides in `SynthesizePhaseOpts`
+/// still win over the stored value (mirrors TS `inputFile` path). Missing keys
+/// fall back to TS defaults.
+async fn load_synth_config(
+    engine: &dyn BrainEngine,
+    opts: &SynthesizePhaseOpts,
+) -> Result<SynthConfig> {
+    let enabled_raw = engine.get_config("dream.synthesize.enabled").await?;
+    let stored_corpus_dir = engine.get_config("dream.synthesize.session_corpus_dir").await?;
+    let meeting_transcripts_dir = engine
+        .get_config("dream.synthesize.meeting_transcripts_dir")
+        .await?;
+    let min_chars_raw = engine.get_config("dream.synthesize.min_chars").await?;
+    let exclude_raw = engine.get_config("dream.synthesize.exclude_patterns").await?;
+    let cooldown_raw = engine.get_config("dream.synthesize.cooldown_hours").await?;
+    let max_prompt_raw = engine.get_config("dream.synthesize.max_prompt_tokens").await?;
+    let max_chunks_raw = engine
+        .get_config("dream.synthesize.max_chunks_per_transcript")
+        .await?;
+
+    let enabled = match enabled_raw.as_deref() {
+        Some("false") | Some("0") => false,
+        _ => true,
+    };
+    // Ad-hoc override wins (mirrors TS inputFile), else stored corpus_dir.
+    let corpus_dir = opts.corpus_dir.clone().or(stored_corpus_dir);
+    let min_chars = opts
+        .min_chars
+        .or_else(|| min_chars_raw.and_then(|s| s.parse::<usize>().ok()))
+        .unwrap_or(2000);
+    let exclude_patterns = exclude_raw
+        .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+        .unwrap_or_default();
+    let cooldown_hours = cooldown_raw
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(12);
+    let max_prompt_tokens = opts
+        .max_prompt_tokens
+        .or_else(|| max_prompt_raw.and_then(|s| s.parse::<u32>().ok()));
+    let max_chunks_per_transcript = opts
+        .max_chunks_per_transcript
+        .or_else(|| max_chunks_raw.and_then(|s| s.parse::<usize>().ok()))
+        .unwrap_or(DEFAULT_MAX_CHUNKS);
+
+    Ok(SynthConfig {
+        enabled,
+        corpus_dir,
+        meeting_transcripts_dir,
+        min_chars,
+        exclude_patterns,
         model: opts
             .model
             .clone()
@@ -210,12 +260,56 @@ fn load_synth_config(opts: &SynthesizePhaseOpts) -> SynthConfig {
             .verdict_model
             .clone()
             .unwrap_or_else(|| "claude-haiku-4-5-20251001".to_string()),
-        cooldown_hours: 24,
-        max_prompt_tokens: opts.max_prompt_tokens,
-        max_chunks_per_transcript: opts
-            .max_chunks_per_transcript
-            .unwrap_or(DEFAULT_MAX_CHUNKS),
+        cooldown_hours,
+        max_prompt_tokens,
+        max_chunks_per_transcript,
+    })
+}
+
+/// Cooldown gate state (1-3-4-6). Mirrors TS `checkCooldown` (synthesize.ts:664).
+struct CooldownState {
+    active: bool,
+    expires_at: String,
+}
+
+/// Read `dream.synthesize.last_completion_ts`; if set and within
+/// `cooldown_hours`, returns `active = true` with the ISO expiry timestamp.
+/// Mirrors TS `checkCooldown`.
+async fn check_cooldown(
+    engine: &dyn BrainEngine,
+    cooldown_hours: u64,
+) -> Result<CooldownState> {
+    let last_raw = engine
+        .get_config("dream.synthesize.last_completion_ts")
+        .await?;
+    let Some(last) = last_raw else {
+        return Ok(CooldownState {
+            active: false,
+            expires_at: String::new(),
+        });
+    };
+    let last_ts = match chrono::DateTime::parse_from_rfc3339(&last) {
+        Ok(t) => t.with_timezone(&chrono::Utc),
+        Err(_) => {
+            return Ok(CooldownState {
+                active: false,
+                expires_at: String::new(),
+            })
+        }
+    };
+    let now = chrono::Utc::now();
+    let elapsed_hours = now.signed_duration_since(last_ts).num_hours();
+    if elapsed_hours < cooldown_hours as i64 {
+        let expires = last_ts + chrono::Duration::hours(cooldown_hours as i64);
+        return Ok(CooldownState {
+            active: true,
+            expires_at: expires.to_rfc3339(),
+        });
     }
+    Ok(CooldownState {
+        active: false,
+        expires_at: String::new(),
+    })
 }
 
 /// Allowed slug prefixes for the synthesis subagent.
@@ -432,7 +526,7 @@ pub async fn run_phase_synthesize(
     chat: Option<&dyn ChatProvider>,
     opts: &SynthesizePhaseOpts,
 ) -> Result<SynthesizePhaseResult> {
-    let config = load_synth_config(opts);
+    let config = load_synth_config(engine, opts).await?;
 
     if config.corpus_dir.is_none() {
         return Ok(SynthesizePhaseResult::skipped(
@@ -444,6 +538,19 @@ pub async fn run_phase_synthesize(
         return Ok(SynthesizePhaseResult::skipped(
             "not_configured",
             "dream.synthesize.enabled is explicitly false",
+        ));
+    }
+
+    // Cooldown gate (1-3-4-6). Mirrors TS checkCooldown: if the last
+    // completion is within `cooldown_hours`, skip with `cooldown_active`.
+    let cooldown = check_cooldown(engine, config.cooldown_hours).await?;
+    if cooldown.active {
+        return Ok(SynthesizePhaseResult::skipped(
+            "cooldown_active",
+            &format!(
+                "synthesize cooled down until {} ({}h cooldown)",
+                cooldown.expires_at, config.cooldown_hours
+            ),
         ));
     }
 
@@ -662,7 +769,7 @@ pub async fn run_phase_synthesize(
 
     // Best-effort slug+source collection (subagent_tool_executions not mirrored
     // — 1-3-4-6). Each entry is `(slug, source_id)`.
-    let written_refs = collect_child_put_page_slugs(engine, &child_ids).await;
+    let written_refs = engine.collect_child_put_page_slugs(&child_ids).await?;
     let written_slugs: Vec<String> = written_refs.iter().map(|(s, _)| s.clone()).collect();
 
     // Disk dual-write (1-3-4-5). Mirrors TS reverseWriteRefs + writeSummaryPage.
@@ -686,6 +793,14 @@ pub async fn run_phase_synthesize(
     )
     .await;
 
+    // Cooldown timestamp is updated only on a successful completion (TS:542).
+    let _ = engine
+        .set_config(
+            "dream.synthesize.last_completion_ts",
+            &chrono::Utc::now().to_rfc3339(),
+        )
+        .await;
+
     let submitted = worth_processing.len() - skips.len();
     let mut r = SynthesizePhaseResult::ok(&format!(
         "{} transcript(s) synthesized",
@@ -702,56 +817,8 @@ pub async fn run_phase_synthesize(
     Ok(r)
 }
 
-/// Harvest `(slug, source_id)` pairs the child subagents wrote via
-/// `brain_put_page`. Fail-soft (see module docs): returns an empty list when
-/// the engine lacks `execute_raw` or the `subagent_tool_executions` table. The
-/// subagents write pages to the engine DB directly (canonical), so
-/// `pages_written` is best-effort 0 in Rust until 1-3-4-6 wires that table.
-async fn collect_child_put_page_slugs(
-    engine: &dyn BrainEngine,
-    job_ids: &[i64],
-) -> Vec<(String, String)> {
-    if job_ids.is_empty() {
-        return Vec::new();
-    }
-    let placeholders = (0..job_ids.len())
-        .map(|_| "?")
-        .collect::<Vec<_>>()
-        .join(",");
-    let sql = format!(
-        "SELECT DISTINCT COALESCE(input->>'slug', '') AS slug, \
-         COALESCE(input->>'source_id', 'default') AS source_id \
-         FROM subagent_tool_executions \
-         WHERE job_id IN ({placeholders}) AND tool_name = 'brain_put_page' AND status = 'complete' \
-         ORDER BY 1"
-    );
-    let params: Vec<&(dyn erased_serde::Serialize + Sync)> = job_ids
-        .iter()
-        .map(|id| id as &(dyn erased_serde::Serialize + Sync))
-        .collect();
-    match engine.execute_raw(&sql, &params).await {
-        Ok(rows) => rows
-            .into_iter()
-            .filter_map(|r| match r {
-                Value::Object(map) => {
-                    let slug = map.get("slug").and_then(Value::as_str).unwrap_or("").to_string();
-                    let source_id = map
-                        .get("source_id")
-                        .and_then(Value::as_str)
-                        .unwrap_or("default")
-                        .to_string();
-                    if slug.is_empty() {
-                        None
-                    } else {
-                        Some((slug, source_id))
-                    }
-                }
-                _ => None,
-            })
-            .collect(),
-        Err(_) => Vec::new(),
-    }
-}
+// `collect_child_put_page_slugs` now lives on `BrainEngine` as a trait method
+// (1-3-4-6); the synthesize phase calls `engine.collect_child_put_page_slugs`.
 
 // ── Disk dual-write (1-3-4-5) ──────────────────────────────────────────────
 //
@@ -1039,6 +1106,54 @@ mod tests {
         .unwrap();
         assert_eq!(r.status, "skipped");
         assert_eq!(r.reason.as_deref(), Some("not_configured"));
+    }
+
+    #[tokio::test]
+    async fn config_session_corpus_dir_drives_run_when_override_unset() {
+        // load_synth_config now reads dream.synthesize.session_corpus_dir from
+        // the engine config store (1-3-4-6); opts.corpus_dir stays None.
+        let dir = tempfile::tempdir().unwrap();
+        let engine = setup().await;
+        engine
+            .set_config(
+                "dream.synthesize.session_corpus_dir",
+                dir.path().to_string_lossy().as_ref(),
+            )
+            .await
+            .unwrap();
+        let r = run_phase_synthesize(&engine, None, &SynthesizePhaseOpts::default())
+            .await
+            .unwrap();
+        // corpus_dir resolved from config (not not_configured); empty dir → ok.
+        assert_eq!(r.status, "ok");
+        assert_eq!(r.summary, "no transcripts to process");
+        assert_eq!(r.reason, None);
+    }
+
+    #[tokio::test]
+    async fn cooldown_active_skips_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = setup().await;
+        engine
+            .set_config(
+                "dream.synthesize.session_corpus_dir",
+                dir.path().to_string_lossy().as_ref(),
+            )
+            .await
+            .unwrap();
+        // recently completed → within default 12h cooldown
+        engine
+            .set_config(
+                "dream.synthesize.last_completion_ts",
+                &chrono::Utc::now().to_rfc3339(),
+            )
+            .await
+            .unwrap();
+        let r = run_phase_synthesize(&engine, None, &SynthesizePhaseOpts::default())
+            .await
+            .unwrap();
+        assert_eq!(r.status, "skipped");
+        assert_eq!(r.reason.as_deref(), Some("cooldown_active"));
     }
 
     #[tokio::test]

@@ -58,11 +58,11 @@ async fn read_version_raw(path: &std::path::Path) -> i64 {
 }
 
 /// Current migration version. Bump when new migrations are added.
-/// 26 = through 0026_dream_verdicts (latest applied migration). The
+/// 28 = through 0028_subagent_tool_executions (latest applied migration). The
 /// actual count is derived from the on-disk migrations/*.sql files; this
 /// constant must track the highest migration number so the fresh-db /
 /// idempotent tests assert the right version.
-const EXPECTED_VERSION: i64 = 26;
+const EXPECTED_VERSION: i64 = 28;
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
@@ -309,4 +309,50 @@ async fn dream_verdict_round_trip_libsql() {
         .await
         .unwrap()
         .is_none());
+}
+
+#[tokio::test]
+async fn config_round_trip_libsql() {
+    let _guard = libsql_test_guard();
+    let (_temp, engine) = temp_engine().await;
+    engine.init_schema().await.unwrap();
+
+    let key = "dream.synthesize.cooldown_hours";
+
+    // Missing key → None; unset on missing key → 0 rows.
+    assert!(engine.get_config(key).await.unwrap().is_none());
+    assert_eq!(engine.unset_config(key).await.unwrap(), 0);
+
+    // Set + get.
+    engine.set_config(key, "6").await.unwrap();
+    assert_eq!(engine.get_config(key).await.unwrap().as_deref(), Some("6"));
+
+    // Upsert overwrites in place.
+    engine.set_config(key, "24").await.unwrap();
+    assert_eq!(engine.get_config(key).await.unwrap().as_deref(), Some("24"));
+
+    // Unset removes exactly one row; key is gone afterwards.
+    assert_eq!(engine.unset_config(key).await.unwrap(), 1);
+    assert!(engine.get_config(key).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn collect_child_put_page_slugs_empty_and_missing_children() {
+    let _guard = libsql_test_guard();
+    let (_temp, engine) = temp_engine().await;
+    engine.init_schema().await.unwrap();
+
+    // Empty id list short-circuits without SQL.
+    assert!(engine
+        .collect_child_put_page_slugs(&[])
+        .await
+        .unwrap()
+        .is_empty());
+
+    // Table exists (migration 0028) but has no rows for these ids.
+    assert!(engine
+        .collect_child_put_page_slugs(&[101, 102])
+        .await
+        .unwrap()
+        .is_empty());
 }

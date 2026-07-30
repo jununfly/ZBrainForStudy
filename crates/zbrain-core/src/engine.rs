@@ -1998,6 +1998,60 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
         ))
     }
 
+    // ---- engine config store (1-3-4-6) ----
+    // Key/value store backing dream.synthesize.* settings and cooldown
+    // timestamps. Mirrors TS `engine.getConfig/setConfig/unsetConfig`
+    // (src/core/engine.ts:1589-1596) over the `config` table.
+
+    /// Read a config value by `key`. Returns `None` if the key is unset.
+    /// Mirrors TS `engine.getConfig`.
+    async fn get_config(&self, key: &str) -> crate::Result<Option<String>> {
+        let _ = key;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "get_config not yet implemented for this engine",
+        ))
+    }
+
+    /// Upsert a config value. Mirrors TS `engine.setConfig` (UPSERT on `key`).
+    async fn set_config(&self, key: &str, value: &str) -> crate::Result<()> {
+        let _ = (key, value);
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "set_config not yet implemented for this engine",
+        ))
+    }
+
+    /// Delete a config key, returning the number of affected rows (0 if the
+    /// key was absent). Mirrors TS `engine.unsetConfig`.
+    async fn unset_config(&self, key: &str) -> crate::Result<u64> {
+        let _ = key;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "unset_config not yet implemented for this engine",
+        ))
+    }
+
+    /// Collect `(slug, source_id)` pairs written by child minion jobs via the
+    /// `brain_put_page` tool (status = 'complete'). Mirrors TS
+    /// `collectChildPutPageSlugs` over `subagent_tool_executions`
+    /// (src/core/cycle/synthesize.ts:1022). The source_id is always `'default'`
+    /// because subagents are scoped to a single (default) source.
+    async fn collect_child_put_page_slugs(
+        &self,
+        child_ids: &[i64],
+    ) -> crate::Result<Vec<(String, String)>> {
+        let _ = child_ids;
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "collect_child_put_page_slugs not yet implemented for this engine",
+        ))
+    }
+
     // ---- op_checkpoints (shared resume state for long-running ops) ----
     // Ported for the conversation-facts-backfill cycle phase. The TS
     // `runExtractConversationFactsCore` stores per-(source,slug) resume state
@@ -3418,6 +3472,25 @@ pub struct InMemoryEngine {
     dream_verdicts_store: Mutex<Vec<InternalDreamVerdict>>,
     /// 1-1-6: op_checkpoints resume state (op, fingerprint) -> completed_keys.
     op_checkpoints_store: Mutex<std::collections::HashMap<(String, String), Vec<String>>>,
+    /// 1-3-4-6: engine config key/value store (in-memory, for testing).
+    config_store: Mutex<std::collections::HashMap<String, String>>,
+    /// 1-3-4-6: subagent tool-execution log (in-memory, for testing the read
+    /// path; the Rust minion does not yet write this table — KNOWN-GAP).
+    subagent_tool_executions_store: Mutex<Vec<InternalSubagentToolExecution>>,
+}
+
+/// In-memory `subagent_tool_executions` row (1-3-4-6, read-path testing).
+/// Only the fields the synthesize phase reads are modelled; the writer (Rust
+/// minion `brain_put_page` tool) is a tracked KNOWN-GAP.
+#[derive(Debug, Clone)]
+struct InternalSubagentToolExecution {
+    job_id: i64,
+    tool_name: String,
+    status: String,
+    /// JSON tool input. The subagent passes `{ slug, ... }`, occasionally
+    /// double-encoded as `{ input: { slug, ... } }`. Mirrors TS
+    /// `subagent_tool_executions.input` (synthesize.ts:1022).
+    input: serde_json::Value,
 }
 
 /// In-memory `take_proposals` queue row (1-1-4: propose_takes phase).
@@ -3616,6 +3689,9 @@ impl InMemoryEngine {
             dream_verdicts_store: Mutex::new(Vec::new()),
             // 1-1-6: conversation_facts_backfill resume state (in-memory, for testing)
             op_checkpoints_store: Mutex::new(std::collections::HashMap::new()),
+            // 1-3-4-6: engine config + subagent tool-execution log (in-memory)
+            config_store: Mutex::new(std::collections::HashMap::new()),
+            subagent_tool_executions_store: Mutex::new(Vec::new()),
         }
     }
 
@@ -5804,6 +5880,71 @@ impl BrainEngine for InMemoryEngine {
             });
         }
         Ok(())
+    }
+
+    // ---- engine config store (1-3-4-6) ----
+
+    async fn get_config(&self, key: &str) -> crate::Result<Option<String>> {
+        let store = self
+            .config_store
+            .lock()
+            .expect("InMemoryEngine config_store mutex poisoned");
+        Ok(store.get(key).cloned())
+    }
+
+    async fn set_config(&self, key: &str, value: &str) -> crate::Result<()> {
+        let mut store = self
+            .config_store
+            .lock()
+            .expect("InMemoryEngine config_store mutex poisoned");
+        store.insert(key.to_string(), value.to_string());
+        Ok(())
+    }
+
+    async fn unset_config(&self, key: &str) -> crate::Result<u64> {
+        let mut store = self
+            .config_store
+            .lock()
+            .expect("InMemoryEngine config_store mutex poisoned");
+        Ok(if store.remove(key).is_some() { 1 } else { 0 })
+    }
+
+    async fn collect_child_put_page_slugs(
+        &self,
+        child_ids: &[i64],
+    ) -> crate::Result<Vec<(String, String)>> {
+        let store = self
+            .subagent_tool_executions_store
+            .lock()
+            .expect("InMemoryEngine subagent_tool_executions_store mutex poisoned");
+        let ids: Vec<i64> = child_ids.to_vec();
+        let mut out: Vec<(String, String)> = Vec::new();
+        for row in store.iter() {
+            if !ids.contains(&row.job_id) {
+                continue;
+            }
+            if row.tool_name != "brain_put_page" || row.status != "complete" {
+                continue;
+            }
+            let slug = row
+                .input
+                .get("slug")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| {
+                    row.input
+                        .get("input")
+                        .and_then(|i| i.get("slug"))
+                        .and_then(serde_json::Value::as_str)
+                });
+            if let Some(slug) = slug {
+                if !slug.is_empty() {
+                    out.push((slug.to_string(), "default".to_string()));
+                }
+            }
+        }
+        out.sort();
+        out.dedup();
+        Ok(out)
     }
 
     async fn load_op_checkpoint(
@@ -8740,6 +8881,68 @@ mod tests {
             contextual_retrieval_mode: Some(CRMode::None),
             corpus_generation: None,
         }
+    }
+
+    #[tokio::test]
+    async fn config_get_set_unset_roundtrip() {
+        let engine = InMemoryEngine::new();
+        assert!(engine.get_config("k").await.unwrap().is_none());
+        engine.set_config("k", "v").await.unwrap();
+        assert_eq!(engine.get_config("k").await.unwrap().as_deref(), Some("v"));
+        assert_eq!(engine.unset_config("k").await.unwrap(), 1);
+        assert!(engine.get_config("k").await.unwrap().is_none());
+        // unset a missing key → 0 affected rows
+        assert_eq!(engine.unset_config("missing").await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn collect_child_put_page_slugs_reads_executions() {
+        let engine = InMemoryEngine::new();
+        // The write path (minion `brain_put_page` tool) is a tracked KNOWN-GAP;
+        // inject rows directly into the private store to exercise the read path.
+        {
+            let mut store = engine
+                .subagent_tool_executions_store
+                .lock()
+                .expect("poisoned");
+            store.push(InternalSubagentToolExecution {
+                job_id: 1,
+                tool_name: "brain_put_page".to_string(),
+                status: "complete".to_string(),
+                input: serde_json::json!({ "slug": "a" }),
+            });
+            store.push(InternalSubagentToolExecution {
+                job_id: 1,
+                tool_name: "brain_put_page".to_string(),
+                status: "complete".to_string(),
+                input: serde_json::json!({ "input": { "slug": "b" } }),
+            });
+            // incomplete status → excluded
+            store.push(InternalSubagentToolExecution {
+                job_id: 2,
+                tool_name: "brain_put_page".to_string(),
+                status: "pending".to_string(),
+                input: serde_json::json!({ "slug": "c" }),
+            });
+            // wrong tool → excluded
+            store.push(InternalSubagentToolExecution {
+                job_id: 9,
+                tool_name: "other_tool".to_string(),
+                status: "complete".to_string(),
+                input: serde_json::json!({ "slug": "d" }),
+            });
+        }
+        let mut out = engine.collect_child_put_page_slugs(&[1]).await.unwrap();
+        out.sort();
+        assert_eq!(
+            out,
+            vec![
+                ("a".to_string(), "default".to_string()),
+                ("b".to_string(), "default".to_string()),
+            ]
+        );
+        // empty child_ids → empty
+        assert!(engine.collect_child_put_page_slugs(&[]).await.unwrap().is_empty());
     }
 
     #[tokio::test]
