@@ -7620,21 +7620,9 @@ impl TypedOperation for ResumeJobOperation {
 // `file_upload` tightens its filesystem confinement via `validate_upload_path`
 // exactly like the TS original (strict when `ctx.remote`, loose for local CLI).
 
-/// Dream/LSD output markers (mirrors `src/core/cycle/transcript-discovery.ts`).
-/// Used by `get_recent_transcripts` to skip dream-generated corpus files so the
-/// synthesize loop never re-ingests its own output.
-fn is_dream_output(content: &str) -> bool {
-    use std::sync::OnceLock;
-    static LSD_RE: OnceLock<regex::Regex> = OnceLock::new();
-    static DREAM_RE: OnceLock<regex::Regex> = OnceLock::new();
-    let lsd = LSD_RE.get_or_init(|| {
-        regex::Regex::new(r#"^\u{feff}?-{3}\r?\n[\s\S]{0,2000}?mode\s*:\s*(?:"|'|)lsd(?:"|'|)\s*(?:\r?\n|$)"#).unwrap()
-    });
-    let dream = DREAM_RE.get_or_init(|| {
-        regex::Regex::new(r#"^\u{feff}?-{3}\r?\n[\s\S]{0,2000}?dream_generated\s*:\s*true\b"#).unwrap()
-    });
-    lsd.is_match(content) || dream.is_match(content)
-}
+// Self-consumption guard is now delegated to `transcript_discovery::is_dream_output`
+// (see the `get_recent_transcripts` call site below) — single source of truth for
+// the Dream/LSD markers instead of a hand-copied regex here.
 
 // ── get_chunks ─────────────────────────────────────────────────────────────
 
@@ -8543,7 +8531,7 @@ impl TypedOperation for GetRecentTranscriptsOperation {
                 Ok(r) => r,
                 Err(_) => continue,
             };
-            if is_dream_output(&raw) {
+            if crate::autopilot::phases::transcript_discovery::is_dream_output(&raw, false) {
                 continue;
             }
             let name = path

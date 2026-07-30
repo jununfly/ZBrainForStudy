@@ -15,11 +15,11 @@
 //! | `brain_search`         | `search_pages`                 | yes        |
 //! | `brain_traverse_graph` | `traverse_paths`               | yes        |
 //! | `brain_put_page`       | `put_page`                     | **no**     |
+//! | `brain_find_anomalies` | `find_anomalies`              | yes        |
 //!
 //! ## Deferred (KNOWN-GAPS)
 //!
 //! - `brain_query` (hybridSearchCached → too complex for v1, use brain_search)
-//! - `brain_find_anomalies` (engine method not yet ported)
 //! - `brain_get_ingest_log` (engine method not yet ported)
 //! - `brain_file_list` / `brain_file_url` (raw SQL, not engine)
 
@@ -62,6 +62,10 @@ fn optional_u32(input: &Value, field: &str) -> Option<u32> {
 
 fn optional_usize(input: &Value, field: &str) -> Option<usize> {
     input.get(field).and_then(|v| v.as_u64()).map(|n| n as usize)
+}
+
+fn optional_f64(input: &Value, field: &str) -> Option<f64> {
+    input.get(field).and_then(|v| v.as_f64())
 }
 
 // ─── brain_resolve_slugs ─────────────────────────────────────────────────────
@@ -560,6 +564,63 @@ impl ToolDef for PutPageTool {
     }
 }
 
+// ─── brain_find_anomalies ────────────────────────────────────────────────────
+
+struct FindAnomaliesTool;
+
+#[async_trait]
+impl ToolDef for FindAnomaliesTool {
+    fn name(&self) -> &str {
+        "brain_find_anomalies"
+    }
+
+    fn description(&self) -> &str {
+        "Find statistically anomalous page cohorts (grouped by tag or type) \
+         compared to a baseline window. Surfaces cohorts whose recent activity \
+         deviates from their historical mean by more than `sigma` standard \
+         deviations — useful for spotting sudden topical spikes."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "since": {
+                    "type": "string",
+                    "description": "Target day (YYYY-MM-DD). Defaults to today (UTC)."
+                },
+                "lookback_days": {
+                    "type": "integer",
+                    "description": "Baseline window in days (default 30, clamped to >= 1)."
+                },
+                "sigma": {
+                    "type": "number",
+                    "description": "Sigma threshold multiplier (default 3.0)."
+                }
+            }
+        })
+    }
+
+    fn usage_hint(&self) -> Option<&str> {
+        Some("Use to discover cohorts with unusual recent activity")
+    }
+
+    async fn execute(
+        &self,
+        input: Value,
+        engine: Arc<dyn BrainEngine>,
+        _signal: CancellationToken,
+    ) -> Result<Value> {
+        let opts = crate::anomaly::AnomaliesOpts {
+            since: optional_string(&input, "since"),
+            lookback_days: optional_u32(&input, "lookback_days"),
+            sigma: optional_f64(&input, "sigma"),
+        };
+        let results = engine.find_anomalies(opts).await?;
+        Ok(serde_json::to_value(results).unwrap_or(Value::Null))
+    }
+}
+
 // ─── Registration ────────────────────────────────────────────────────────────
 
 /// Register all brain tools. Called by [`super::build_brain_tools`] once per
@@ -573,6 +634,7 @@ pub fn register_all(tools: &mut Vec<Arc<dyn ToolDef>>) {
     tools.push(Arc::new(SearchTool));
     tools.push(Arc::new(TraverseGraphTool));
     tools.push(Arc::new(PutPageTool));
+    tools.push(Arc::new(FindAnomaliesTool));
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -614,6 +676,33 @@ mod tests {
             .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("partial"));
+    }
+
+    // ── find_anomalies ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn find_anomalies_succeeds_on_inmemory() {
+        // Smoke test for tool wiring: input parsing + dispatch to the engine.
+        // InMemory may implement find_anomalies (Ok) or return Unsupported;
+        // either proves the tool reached the engine rather than panicking.
+        let result = FindAnomaliesTool
+            .execute(json!({"sigma": 2.5, "lookback_days": 14}), engine(), signal())
+            .await;
+        let ok_or_unsupported = result.is_ok()
+            || result.as_ref().err().map_or(false, |e| e.to_string().contains("unsupported"));
+        assert!(ok_or_unsupported, "find_anomalies tool must reach engine: {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn find_anomalies_tolerates_non_numeric_sigma() {
+        // A non-numeric sigma must be treated as None (optional_f64 -> as_f64
+        // returns None) rather than crashing the tool.
+        let result = FindAnomaliesTool
+            .execute(json!({"sigma": "not-a-number"}), engine(), signal())
+            .await;
+        let ok_or_unsupported = result.is_ok()
+            || result.as_ref().err().map_or(false, |e| e.to_string().contains("unsupported"));
+        assert!(ok_or_unsupported, "find_anomalies tool must tolerate bad sigma type: {:?}", result);
     }
 
     // ── get_backlinks ───────────────────────────────────────────────────
@@ -720,13 +809,13 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ── register_all populates all 8 tools ──────────────────────────────
+    // ── register_all populates all 9 tools ──────────────────────────────
 
     #[test]
-    fn register_all_adds_eight_tools() {
+    fn register_all_adds_nine_tools() {
         let mut tools: Vec<Arc<dyn ToolDef>> = Vec::new();
         register_all(&mut tools);
-        assert_eq!(tools.len(), 8);
+        assert_eq!(tools.len(), 9);
 
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(names.contains(&"brain_resolve_slugs"));
@@ -737,6 +826,7 @@ mod tests {
         assert!(names.contains(&"brain_search"));
         assert!(names.contains(&"brain_traverse_graph"));
         assert!(names.contains(&"brain_put_page"));
+        assert!(names.contains(&"brain_find_anomalies"));
     }
 
     #[test]
