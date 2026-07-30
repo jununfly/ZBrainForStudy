@@ -1112,6 +1112,7 @@ async fn execute_phase(
                         "transcripts_processed": r.transcripts_processed,
                         "children_submitted": r.children_submitted,
                         "pages_written": r.pages_written,
+                        "disk_files_written": r.disk_files_written,
                         "dry_run": r.dry_run,
                         "verdicts": r.verdicts.iter().map(|v| serde_json::json!({
                             "file_path": v.file_path,

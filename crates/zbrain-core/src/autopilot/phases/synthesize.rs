@@ -14,6 +14,11 @@
 //!    completion via [`wait_for_completion`] (mirrors the `patterns` phase)
 //! 5. best-effort slug collection (the `subagent_tool_executions` table is not
 //!    mirrored in Rust; 1-3-4-6 decision)
+//! 6. disk dual-write: [`reverse_write_refs`] mirrors each synthesized page
+//!    back to `brainDir/<slug>.md` (or `brainDir/.sources/<id>/<slug>.md` for
+//!    non-default sources), and [`write_summary_page`] writes the
+//!    `dream-cycle-summaries/<date>.md` index page to both the engine and disk
+//!    (1-3-4-5, faithful port of TS `reverseWriteRefs` + `writeSummaryPage`).
 //!
 //! ## Rust deviations (documented so the port stays honest)
 //!
@@ -25,10 +30,13 @@
 //!   "not_configured")` unless an override is supplied via
 //!   [`SynthesizePhaseOpts`] (ad-hoc path, mirrors TS `inputFile`). This is the
 //!   documented seam to wire real config lookup.
-//! - **Disk dual-write**: TS `reverseWriteRefs` + `writeSummaryPage` render the
-//!   synthesized pages back to `brainDir/*.md`. That is **1-3-4-5** — omitted
-//!   here. The subagent writes pages to the engine DB directly (canonical), so
-//!   `pages_written` is best-effort harvested from `subagent_tool_executions`.
+//! - **Disk dual-write**: implemented faithfully (1-3-4-5). When `brain_dir`
+//!   is `None` (config not wired yet), the disk mirror is skipped per-page but
+//!   the summary `put_page` still runs (engine-canonical, no disk needed).
+//!   `pages_written` is best-effort harvested from `subagent_tool_executions`
+//!   (empty until 1-3-4-6 wires that table), so `reverse_write_refs` typically
+//!   has no refs to mirror in Rust today — the function is still exercised
+//!   directly by unit tests.
 //! - **Cooldown**: TS `checkCooldown` gates re-runs. That is **1-3-4-6** —
 //!   omitted here.
 //! - **Prior contradictions block**: TS surfaces `loadPriorContradictionsBlock`
@@ -39,7 +47,11 @@
 //!   Matches the TS design where the phase enqueues rather than calling the
 //!   LLM directly for synthesis.
 
-use serde_json::{json, Value};
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+use regex::Regex;
+use serde_json::{json, Map, Value};
 
 use crate::ai::chat::{ChatError, ChatMessage, ChatOpts, ChatProvider, ChatRole};
 use crate::autopilot::phases::context_budget::{
@@ -48,7 +60,9 @@ use crate::autopilot::phases::context_budget::{
 use crate::autopilot::phases::transcript_discovery::{
     discover_transcripts, DiscoveredTranscript, DiscoverOpts,
 };
-use crate::engine::{BrainEngine, DreamVerdict, DreamVerdictInput};
+use crate::engine::{
+    BrainEngine, DreamVerdict, DreamVerdictInput, GetPageOpts, Page, PageInput,
+};
 use crate::minions::queue::MinionQueue;
 use crate::minions::types::{ChildFailPolicy, MinionJobInput};
 use crate::minions::wait_for_completion::{wait_for_completion, WaitError, WaitOpts};
@@ -56,8 +70,10 @@ use crate::Result;
 
 /// Options for [`run_phase_synthesize`]. Mirrors TS `SynthesizePhaseOpts`.
 pub struct SynthesizePhaseOpts {
-    /// Brain directory for disk reverse-write (unused here — 1-3-4-5). Kept for
-    /// parity with the cycle arm.
+    /// Brain directory for disk reverse-write (1-3-4-5). When `Some`, the
+    /// synthesized pages and the summary index are mirrored to `*.md` files
+    /// under this dir; when `None`, disk writes are skipped (the engine DB
+    /// remains canonical). Mirrors TS `opts.brainDir`.
     pub brain_dir: Option<String>,
     /// If true, judge significance + enqueue nothing (mirrors TS `--dry-run`).
     pub dry_run: bool,
@@ -111,6 +127,7 @@ pub struct SynthesizePhaseResult {
     pub transcripts_discovered: u64,
     pub transcripts_processed: u64,
     pub pages_written: u64,
+    pub disk_files_written: u64,
     pub children_submitted: u64,
     pub dry_run: bool,
     pub verdicts: Vec<VerdictRecord>,
@@ -643,8 +660,31 @@ pub async fn run_phase_synthesize(
         });
     }
 
-    // Best-effort slug collection (subagent_tool_executions not mirrored — 1-3-4-6).
+    // Best-effort slug+source collection (subagent_tool_executions not mirrored
+    // — 1-3-4-6). Each entry is `(slug, source_id)`.
     let written_refs = collect_child_put_page_slugs(engine, &child_ids).await;
+    let written_slugs: Vec<String> = written_refs.iter().map(|(s, _)| s.clone()).collect();
+
+    // Disk dual-write (1-3-4-5). Mirrors TS reverseWriteRefs + writeSummaryPage.
+    // When brain_dir is unset, the disk mirror is skipped but the summary
+    // put_page (engine-canonical) still runs.
+    let brain_dir_path = opts.brain_dir.as_deref().map(Path::new);
+    let disk_files_written = if let Some(bd) = brain_dir_path {
+        reverse_write_refs(engine, bd, &written_refs).await
+    } else {
+        0
+    };
+    let summary_date = today();
+    let summary_slug = format!("dream-cycle-summaries/{summary_date}");
+    write_summary_page(
+        engine,
+        brain_dir_path,
+        &summary_slug,
+        &summary_date,
+        &written_slugs,
+        &child_outcomes,
+    )
+    .await;
 
     let submitted = worth_processing.len() - skips.len();
     let mut r = SynthesizePhaseResult::ok(&format!(
@@ -655,18 +695,22 @@ pub async fn run_phase_synthesize(
     r.transcripts_processed = submitted as u64;
     r.pages_written = written_refs.len() as u64;
     r.children_submitted = child_ids.len() as u64;
+    r.disk_files_written = disk_files_written as u64;
     r.verdicts = verdicts;
     r.child_outcomes = child_outcomes;
     r.skips = skips;
     Ok(r)
 }
 
-/// Harvest slugs the child subagents wrote via `brain_put_page`. Fail-soft
-/// (see module docs): returns an empty list when the engine lacks
-/// `execute_raw` or the `subagent_tool_executions` table. The subagents write
-/// pages to the engine DB directly (canonical), so `pages_written` is
-/// best-effort 0 in Rust.
-async fn collect_child_put_page_slugs(engine: &dyn BrainEngine, job_ids: &[i64]) -> Vec<String> {
+/// Harvest `(slug, source_id)` pairs the child subagents wrote via
+/// `brain_put_page`. Fail-soft (see module docs): returns an empty list when
+/// the engine lacks `execute_raw` or the `subagent_tool_executions` table. The
+/// subagents write pages to the engine DB directly (canonical), so
+/// `pages_written` is best-effort 0 in Rust until 1-3-4-6 wires that table.
+async fn collect_child_put_page_slugs(
+    engine: &dyn BrainEngine,
+    job_ids: &[i64],
+) -> Vec<(String, String)> {
     if job_ids.is_empty() {
         return Vec::new();
     }
@@ -675,7 +719,8 @@ async fn collect_child_put_page_slugs(engine: &dyn BrainEngine, job_ids: &[i64])
         .collect::<Vec<_>>()
         .join(",");
     let sql = format!(
-        "SELECT DISTINCT COALESCE(input->>'slug', input->>'slug') AS slug \
+        "SELECT DISTINCT COALESCE(input->>'slug', '') AS slug, \
+         COALESCE(input->>'source_id', 'default') AS source_id \
          FROM subagent_tool_executions \
          WHERE job_id IN ({placeholders}) AND tool_name = 'brain_put_page' AND status = 'complete' \
          ORDER BY 1"
@@ -688,15 +733,248 @@ async fn collect_child_put_page_slugs(engine: &dyn BrainEngine, job_ids: &[i64])
         Ok(rows) => rows
             .into_iter()
             .filter_map(|r| match r {
-                Value::Object(map) => map
-                    .get("slug")
-                    .and_then(Value::as_str)
-                    .map(|s| s.to_string()),
+                Value::Object(map) => {
+                    let slug = map.get("slug").and_then(Value::as_str).unwrap_or("").to_string();
+                    let source_id = map
+                        .get("source_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("default")
+                        .to_string();
+                    if slug.is_empty() {
+                        None
+                    } else {
+                        Some((slug, source_id))
+                    }
+                }
                 _ => None,
             })
-            .filter(|s| !s.is_empty())
             .collect(),
         Err(_) => Vec::new(),
+    }
+}
+
+// ── Disk dual-write (1-3-4-5) ──────────────────────────────────────────────
+//
+// Faithful port of TS `reverseWriteRefs` + `writeSummaryPage` from
+// src/core/cycle/synthesize.ts. These mirror the engine-canonical pages back
+// to `brainDir/*.md` so the on-disk vault stays in sync. All per-item failures
+// are non-fatal (stderr, continue) — mirroring TS.
+
+/// Current date as `YYYY-MM-DD` (TS `today()`).
+fn today() -> String {
+    chrono::Utc::now().format("%Y-%m-%d").to_string()
+}
+
+/// Canonical source_id regex (port of TS `SOURCE_ID_RE` in source-id.ts).
+/// 1-32 lowercase alnum, optional interior hyphens, no edge hyphens.
+fn source_id_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$").unwrap())
+}
+
+/// Validate a source_id is filesystem-safe. Port of TS `assertValidSourceId`.
+fn validate_source_id(s: &str) -> std::result::Result<(), String> {
+    if source_id_re().is_match(s) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Invalid source_id: {s:?}. Must be 1-32 lowercase alnum chars with optional \
+             interior hyphens (matches ^[a-z0-9](?:[a-z0-9-]{{0,30}}[a-z0-9])?$)"
+        ))
+    }
+}
+
+/// Compute the on-disk path for a `(brain_dir, slug, source_id)` tuple per the
+/// v0.32.8 multi-source filing layout. Port of TS `resolvePageFilePath`.
+fn resolve_page_file_path(brain_dir: &Path, slug: &str, source_id: &str) -> PathBuf {
+    if source_id == "default" {
+        brain_dir.join(format!("{slug}.md"))
+    } else {
+        brain_dir
+            .join(".sources")
+            .join(source_id)
+            .join(format!("{slug}.md"))
+    }
+}
+
+/// Render a `Page` row to its canonical on-disk markdown form. Port of TS
+/// `serializePageToMarkdown` (which delegates to `serializeMarkdown`). The
+/// dream-output identity stamp is applied via `overrides` so every reverse-write
+/// path carries the same marker that `transcript_discovery::is_dream_output`
+/// checks.
+fn render_page_to_markdown(page: &Page, tags: &[String], overrides: &Value) -> String {
+    let mut fm: Map<String, Value> = Map::new();
+    fm.insert("type".into(), Value::String(page.page_type.clone()));
+    fm.insert("title".into(), Value::String(page.title.clone()));
+    if let Value::Object(base) = &page.frontmatter {
+        for (k, v) in base {
+            fm.insert(k.clone(), v.clone());
+        }
+    }
+    if let Value::Object(ov) = overrides {
+        for (k, v) in ov {
+            fm.insert(k.clone(), v.clone());
+        }
+    }
+    if !tags.is_empty() {
+        fm.insert(
+            "tags".into(),
+            Value::Array(tags.iter().map(|t| Value::String(t.clone())).collect()),
+        );
+    }
+    serialize_markdown(&Value::Object(fm), &page.compiled_truth, &page.timeline, tags)
+}
+
+/// Build canonical on-disk markdown with a YAML frontmatter block. Port of TS
+/// `serializeMarkdown`: full frontmatter = `{type, title, ...frontmatter}`,
+/// body = `compiled_truth` (+ optional `<!-- timeline -->` block), wrapped in
+/// `---\n<yaml>\n---\n`.
+fn serialize_markdown(
+    frontmatter: &Value,
+    compiled_truth: &str,
+    timeline: &str,
+    tags: &[String],
+) -> String {
+    let mut fm: Map<String, Value> = match frontmatter {
+        Value::Object(m) => m.clone(),
+        _ => Map::new(),
+    };
+    if !tags.is_empty() {
+        fm.insert(
+            "tags".into(),
+            Value::Array(tags.iter().map(|t| Value::String(t.clone())).collect()),
+        );
+    }
+    let yaml = serde_yaml::to_string(&Value::Object(fm))
+        .unwrap_or_else(|e| format!("# yaml serialization error: {e}\n"));
+    let mut body = compiled_truth.to_string();
+    if !timeline.is_empty() {
+        body.push_str("\n\n<!-- timeline -->\n\n");
+        body.push_str(timeline);
+    }
+    format!("---\n{}\n---\n\n{}\n", yaml.trim_end(), body)
+}
+
+/// Mirror each synthesized `(slug, source_id)` page back to disk. Port of TS
+/// `reverseWriteRefs`. Returns the number of files written. Per-ref failures
+/// are non-fatal.
+async fn reverse_write_refs(
+    engine: &dyn BrainEngine,
+    brain_dir: &Path,
+    refs: &[(String, String)],
+) -> usize {
+    let mut count = 0;
+    for (slug, source_id) in refs {
+        if let Err(e) = validate_source_id(source_id) {
+            eprintln!("[dream] reverse-write {slug}@{source_id} skipped: {e}");
+            continue;
+        }
+        let page = match engine
+            .get_page(slug, &GetPageOpts {
+                source_id: Some(source_id.clone()),
+                include_deleted: false,
+            })
+            .await
+        {
+            Ok(Some(p)) => p,
+            Ok(None) => continue, // page gone → skip (non-fatal)
+            Err(e) => {
+                eprintln!("[dream] reverse-write {slug}@{source_id} get_page failed: {e}");
+                continue;
+            }
+        };
+        let tags = engine
+            .get_tags(slug, Some(source_id))
+            .await
+            .unwrap_or_default();
+        let md = render_page_to_markdown(&page, &tags, &json!({
+            "dream_generated": true,
+            "dream_cycle_date": today(),
+        }));
+        let path = resolve_page_file_path(brain_dir, slug, source_id);
+        if let Some(parent) = path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                eprintln!("[dream] reverse-write mkdir {parent:?} failed: {e}");
+                continue;
+            }
+        }
+        match std::fs::write(&path, md) {
+            Ok(()) => count += 1,
+            Err(e) => eprintln!("[dream] reverse-write {slug}@{source_id} write failed: {e}"),
+        }
+    }
+    count
+}
+
+/// Write the `dream-cycle-summaries/<date>` index page. Port of TS
+/// `writeSummaryPage`: builds the markdown summary, `put_page`s it to the
+/// engine (canonical), and (when `brain_dir` is set) also mirrors it to disk.
+/// Disk write failure is non-fatal.
+async fn write_summary_page(
+    engine: &dyn BrainEngine,
+    brain_dir: Option<&Path>,
+    summary_slug: &str,
+    summary_date: &str,
+    written_slugs: &[String],
+    child_outcomes: &[ChildOutcome],
+) {
+    let completed = child_outcomes
+        .iter()
+        .filter(|c| c.status == "completed")
+        .count();
+    let failed = child_outcomes.len() - completed;
+
+    let mut lines: Vec<String> = Vec::new();
+    lines.push(format!("# Dream cycle {summary_date}"));
+    lines.push(String::new());
+    lines.push(format!("**Children:** {completed} completed, {failed} failed/timeout."));
+    lines.push(format!("**Pages written:** {}.", written_slugs.len()));
+    lines.push(String::new());
+    if !written_slugs.is_empty() {
+        lines.push("## Pages".into());
+        lines.push(String::new());
+        for s in written_slugs {
+            lines.push(format!("- [[{s}]]"));
+        }
+        lines.push(String::new());
+    }
+    let body = lines.join("\n");
+
+    // Engine write (canonical) — direct orchestrator put_page, no allow-list.
+    let input = PageInput {
+        page_type: "note".to_string(),
+        title: format!("Dream cycle {summary_date}"),
+        compiled_truth: body.clone(),
+        timeline: None,
+        frontmatter: Some(json!({
+            "dream_generated": true,
+            "dream_cycle_date": summary_date,
+            "tags": ["dream-cycle"],
+        })),
+        ..Default::default()
+    };
+    if let Err(e) = engine.put_page(summary_slug, Some("default"), &input).await {
+        eprintln!("[dream] summary put_page failed: {e}");
+    }
+
+    // Disk mirror (orchestrator dual-write).
+    if let Some(bd) = brain_dir {
+        let md = serialize_markdown(
+            &json!({
+                "dream_generated": true,
+                "dream_cycle_date": summary_date,
+            }),
+            &body,
+            "",
+            &["dream-cycle".to_string()],
+        );
+        let path = bd.join(format!("{summary_slug}.md"));
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = std::fs::write(&path, md) {
+            eprintln!("[dream] summary file-write failed: {e}");
+        }
     }
 }
 
@@ -704,7 +982,7 @@ async fn collect_child_put_page_slugs(engine: &dyn BrainEngine, job_ids: &[i64])
 mod tests {
     use super::*;
     use crate::ai::chat::{ChatError, ChatResult, ChatUsage, StopReason};
-    use crate::engine::{BrainEngine, EngineConfig, InMemoryEngine};
+    use crate::engine::{EngineConfig, InMemoryEngine};
     use crate::minions::types::MinionJobStatus;
 
     async fn setup() -> InMemoryEngine {
@@ -922,5 +1200,164 @@ mod tests {
         assert!(r.children_submitted > 1, "expected multiple chunks → multiple jobs");
         // every child outcome is "timeout" (no worker in InMemory)
         assert!(r.child_outcomes.iter().all(|c| c.status == "timeout"));
+    }
+
+    // ── 1-3-4-5 disk dual-write ──────────────────────────────────────────
+
+    /// Build a minimal PageInput for seeding the engine.
+    fn page_input(title: &str, body: &str) -> PageInput {
+        PageInput {
+            page_type: "note".to_string(),
+            title: title.to_string(),
+            compiled_truth: body.to_string(),
+            timeline: None,
+            frontmatter: Some(json!({ "x": 1 })),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn reverse_write_refs_mirrors_page_to_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = setup().await;
+        engine
+            .put_page("wiki/foo", Some("default"), &page_input("Foo", "body text"))
+            .await
+            .unwrap();
+
+        let n = reverse_write_refs(
+            &engine,
+            dir.path(),
+            &[("wiki/foo".into(), "default".into())],
+        )
+        .await;
+        assert_eq!(n, 1);
+        let p = dir.path().join("wiki/foo.md");
+        assert!(p.exists(), "default-source page should write to brainDir/<slug>.md");
+        let content = std::fs::read_to_string(&p).unwrap();
+        assert!(content.contains("dream_generated: true"));
+        assert!(content.contains("body text"));
+    }
+
+    #[tokio::test]
+    async fn reverse_write_refs_uses_sources_subdir_for_nondefault() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = setup().await;
+        engine
+            .put_page("wiki/bar", Some("mysrc"), &page_input("Bar", "body"))
+            .await
+            .unwrap();
+
+        let n = reverse_write_refs(
+            &engine,
+            dir.path(),
+            &[("wiki/bar".into(), "mysrc".into())],
+        )
+        .await;
+        assert_eq!(n, 1);
+        let p = dir.path().join(".sources").join("mysrc").join("wiki/bar.md");
+        assert!(
+            p.exists(),
+            "non-default source should file under brainDir/.sources/<id>/<slug>.md"
+        );
+    }
+
+    #[tokio::test]
+    async fn reverse_write_refs_skips_missing_page() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = setup().await;
+        let n = reverse_write_refs(
+            &engine,
+            dir.path(),
+            &[("wiki/missing".into(), "default".into())],
+        )
+        .await;
+        assert_eq!(n, 0);
+        assert!(!dir.path().join("wiki/missing.md").exists());
+    }
+
+    #[tokio::test]
+    async fn write_summary_page_puts_engine_and_mirrors_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = setup().await;
+        let outcomes = vec![ChildOutcome {
+            job_id: 1,
+            status: "completed".into(),
+        }];
+        write_summary_page(
+            &engine,
+            Some(dir.path()),
+            "dream-cycle-summaries/2026-07-30",
+            "2026-07-30",
+            &["wiki/foo".into()],
+            &outcomes,
+        )
+        .await;
+
+        // Engine write (canonical).
+        let page = engine
+            .get_page(
+                "dream-cycle-summaries/2026-07-30",
+                &GetPageOpts {
+                    source_id: Some("default".into()),
+                    include_deleted: false,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(page.is_some());
+
+        // Disk mirror.
+        let p = dir.path().join("dream-cycle-summaries/2026-07-30.md");
+        assert!(p.exists());
+        let content = std::fs::read_to_string(&p).unwrap();
+        assert!(content.contains("Dream cycle 2026-07-30"));
+        assert!(content.contains("- [[wiki/foo]]"));
+    }
+
+    #[tokio::test]
+    async fn run_phase_mirrors_summary_index_to_disk() {
+        // brain_dir set → summary index mirrored to disk even with no
+        // harvested slugs (reverse_write_refs has nothing to mirror, but the
+        // summary page dual-write still runs).
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("2026-07-30-session.md");
+        std::fs::write(&p, long_content()).unwrap();
+
+        let engine = setup().await;
+        let stub = VerdictStub {
+            worth: true,
+            reasons: vec!["new mental model".into()],
+        };
+        let r = run_phase_synthesize(
+            &engine,
+            Some(&stub),
+            &SynthesizePhaseOpts {
+                corpus_dir: Some(dir.path().to_string_lossy().to_string()),
+                brain_dir: Some(dir.path().to_string_lossy().to_string()),
+                wait_timeout_ms: Some(150),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.status, "ok");
+        assert_eq!(r.children_submitted, 1);
+        assert_eq!(r.disk_files_written, 0); // no harvested slugs yet
+
+        // Summary index .md mirrored to disk.
+        let summary_dir = dir.path().join("dream-cycle-summaries");
+        let mut found = false;
+        if let Ok(entries) = std::fs::read_dir(&summary_dir) {
+            for e in entries.flatten() {
+                if e.path()
+                    .extension()
+                    .map_or(false, |x| x == "md")
+                {
+                    found = true;
+                }
+            }
+        }
+        assert!(found, "summary index .md should be mirrored to disk");
     }
 }
