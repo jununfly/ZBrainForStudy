@@ -189,12 +189,24 @@
     "1-5": {
       "id": "1-5",
       "label": "auto-think 簇迁移 (auto-think phase)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "1-5 接线形态？TS auto-think 是孤儿 phase（未接 dispatcher）",
+          "answer": "接入 CyclePhase + CLI",
+          "note": "2026-07-30 用户选最大范围：加 AutoThink 到 CyclePhase enum + zbrain auto-think 子命令 + 接 cycle dispatcher，不保留孤儿形态"
+        },
+        {
+          "q": "auto_commit 持久化缺口？Rust ThinkOperation read-only 无 persistSynthesis + synthesis_evidence 表缺失(0007 deferred)",
+          "answer": "完整补 persistSynthesis",
+          "note": "2026-07-30 用户选最大范围：补 synthesis_evidence migration(双dialect) + 完整 citation 持久化（写 synthesis 页 + evidence 关联），超出原始 phase 迁移边界但用户接受"
+        }
+      ],
+      "notes": "范围内扩(2026-07-30)：用户选最大范围，1-5 不再是孤儿 phase，而是完整复刻——\n① run_phase_auto_think 核心(三门禁+cooldown+budget预检+dryRun+think调用+cooldown写回仅anyComplete且非dryRun+detail串+status判定)；\n② 接 CyclePhase enum + cycle dispatcher + zbrain auto-think CLI 子命令；\n③ 完整补 persistSynthesis：synthesis_evidence 表 migration(0007 明示 deferred 现在补，双 dialect) + 写 synthesis/<slug>-YYYY-MM-DD 页 + evidence 关联(citation->page_id)；\n④ 预算预检用 BudgetTracker.reserve(已移植, budget.rs) + brain_score::estimate_anthropic_cost；模型解析用 resolve_model(models.auto_think 已登记)；\n⑤ 测试对齐 TS auto-think-phase.test.ts。\n连锁依赖(待调研)：synthesis_evidence 表 schema、TS persistSynthesis/citations 结构、ThinkOutput 是否需扩展 citations、CyclePhase dispatcher 调用点、zbrain-cli Commands 模式。\n\n【收口 2026-07-30】全簇完成(T1-T6)：\n• T1(#118) synthesis_evidence 表 + add_synthesis_evidence 引擎方法（双 dialect migration 0029 已登记，EXPECTED_VERSION=29）；\n• T2(#119) ThinkOutput citations 字段 + resolve_citations 接入；\n• T3(#115) run_phase_auto_think + persistSynthesis/persist_citations（auto_think.rs，7 单测全过：三门禁/dryRun/cooldown/complete/max_per_cycle/slug_safe）；\n• T4(#116) CyclePhase::AutoThink enum 变体 + execute_phase dispatcher 臂（status complete→Ok/partial→Warn/failed→Fail，details 含 outcomes）；cycle 测试同步（ALL 22 phases、skipped_count 16）；\n• T5(#114) zbrain auto-think CLI 子命令（AutoThinkArgs: --model/--dry-run/--brain-dir/--json；prefetch_model_lookup+resolve_model 解析模型并 instantiate_chat 构建 ChatProvider；Windows 主线程栈放大至 64MB 绕过 clap 巨型命令树栈溢出）；\n• T6(#117) migration 0029 接入 libsql 测试（EXPECTED_VERSION 已=29）+ roadmap 标 completed。\n验证：zbrain-core 编译通过；auto_think 7 测 + cycle 13 测全过。改动未提交，等显式 commit+push。",
+      "completed_at": "2026-07-30"
     },
     "1-6": {
       "id": "1-6",
