@@ -344,18 +344,81 @@
     },
     "1-3-4": {
       "id": "1-3-4",
-      "label": "synthesize phase 迁移 (TS 源 git 45fe955~1:src/core/cycle/synthesize.ts 1247行; fan-out subagent per transcript; 需 dream_verdicts migration+transcript-discovery+磁盘双写+模型上下文预算; 待展开拆 sub-sub)",
-      "status": "pending",
-      "mode": "explore",
+      "label": "synthesize phase 迁移 (TS 源 git 45fe955~1:src/core/cycle/synthesize.ts 1247行; fan-out subagent per transcript; 拆 6 子节点分批做)",
+      "status": "in_progress",
+      "mode": "build",
       "parent": "1-3",
+      "children": ["1-3-4-1", "1-3-4-2", "1-3-4-3", "1-3-4-4", "1-3-4-5", "1-3-4-6"],
+      "decisions": [
+        {"q": "Q1 磁盘双写是否复刻？", "answer": "待用户决策：复刻 TS 磁盘写(brainDir/<slug>.md + dream-cycle-summaries/<date>.md) 保持语义，或 DB-canonical 仅写引擎(patterns 先例)", "note": "影响 1-3-4-5"},
+        {"q": "Q2 配置/冷却与 subagent_tool_executions 表如何处理？", "answer": "待用户决策：完整复刻(加 BrainEngine getConfig/setConfig + 建 subagent_tool_executions 表) 或 patterns 先例(硬编码 TS 默认 + 登记 KNOWN-GAP)", "note": "影响 1-3-4-6；patterns 已用此先例"}
+      ],
+      "notes": "簇内最大件。Explore agent 已出结构化拆解：入口 runPhaseSynthesize(synthesize.ts:247)；扇出每 transcript/chunk 一个 subagent job(idempotency_key=dream:synth:<filePath>:<hash16>[:c<i>of<n>])；judgeSignificance 用 ChatProvider(Haiku)，合成 offload 给 worker 跑 subagent(Sonnet)。BLOCKER：dream_verdicts 表/引擎方法全缺；transcript-discovery 无；getConfig/setConfig 无；subagent_tool_executions 表无。"
+    },
+    "1-3-4-1": {
+      "id": "1-3-4-1",
+      "label": "dream_verdicts migration + engine 方法 (get_dream_verdict/put_dream_verdict; 双 dialect migration 0026; InMemory+libsql+postgres; EXPECTED_VERSION 25->26)",
+      "status": "completed",
+      "mode": "build",
+      "parent": "1-3-4",
       "children": [],
       "decisions": [],
-      "notes": "簇内最大件，用户决策分批做，届时再拆。dream_verdicts 表 Rust migrations 缺失需新增。"
+      "notes": "DONE。TS DDL(src/schema.sql:857): file_path TEXT, content_hash TEXT, worth_processing BOOLEAN, reasons JSONB, judged_at TIMESTAMPTZ, PK(file_path,content_hash)。\n实现：\n- migrations/0026_dream_verdicts.sql (PG: JSONB+TIMESTAMPTZ) + migrations-sqlite/0026_dream_verdicts.sql (SQLite: TEXT+strftime默认+BOOLEAN DEFAULT 0); 双 dialect 注册到 LIBQL_MIGRATIONS/POSTGRES_MIGRATIONS version=26。\n- engine.rs: pub struct DreamVerdictInput { worth_processing:bool, reasons:Vec<String> } + DreamVerdict { +judged_at:String }; trait 默认 Unsupported; InMemory 用 dream_verdicts_store (Mutex<Vec<InternalDreamVerdict>>) 实现 get/put(upsert, judged_at=chrono::Utc::now().to_rfc3339())。\n- libsql.rs: get 用 row.get::<i64>(0)!=0 读 bool + serde_json 解析 reasons TEXT; put 用 ON CONFLICT DO UPDATE + strftime 刷新 judged_at。\n- postgres.rs: get 用 try_get bool/jsonb/timestamptz; put 用 $4::jsonb 转换 + now() 刷新。\n- tests: EXPECTED_VERSION 25->26 (libsql_engine_migrations.rs); 新增 dream_verdict_round_trip_inmemory (patterns.rs) + dream_verdict_round_trip_libsql (libsql_engine_migrations.rs) 验证 miss/写/读/upsert/异 hash 独立。\n验证：WSL Linux 双测试绿（InMemory + libsql 均通过，含 0026 应用与幂等）。"
+    },
+    "1-3-4-2": {
+      "id": "1-3-4-2",
+      "label": "transcript-discovery 模块 (移植 transcript-discovery.ts:214 discoverTranscripts; 纯 fs+sha256; 递归扫 corpusDir+meetingTranscriptsDir; 过滤 minChars/日期/自消费标记/excludePatterns)",
+      "status": "completed",
+      "mode": "build",
+      "parent": "1-3-4",
+      "children": [],
+      "decisions": [],
+      "notes": "DONE。移植 TS transcript-discovery.ts(295行) 为纯 fs+crypto 模块 crates/zbrain-core/src/autopilot/phases/transcript_discovery.rs（mod.rs 注册 pub mod transcript_discovery）。\n实现：\n- DiscoveredTranscript{file_path:PathBuf, content_hash:String(sha256 hex), content, basename, inferred_date:Option<String>} + DiscoverOpts{corpus_dir, meeting_transcripts_dir?, min_chars?(默认2000), exclude_patterns, date?, from?, to?, bypass_guard}。\n- discover_transcripts(opts)：walkdir 递归扫 corpusDir+meetingTranscriptsDir，接受 .txt/.md，下降时 prune（隐藏目录'.'开头 / node_modules/.raw/ops / .raw 结尾 / 子模块 .git 文件），过滤：日期范围(basename YYYY-MM-DD 匹配 is_in_date_range) / min_chars(content.chars().count()) / dream_generated 自消费标记(is_dream_output; LSD 永跳过即使 bypass) / excludePatterns(compile_exclude_patterns 自动 \\b 词边界，大小写不敏感，坏正则 stderr 警告不崩)。结果按 file_path 排序。\n- read_single_transcript 支持 --input ad-hoc（同过滤除日期）。\n- 三个 marker regex (DREAM/LSD/BRAINSTORM) 用 lazy_static + r#\"...\"#（raw string 含内部 \" 不能用 r\"...\"）。\n- hash_content 用 sha2::Sha256 + hex::encode。\n验证：WSL Linux 10 个 hermetic 单元测试全绿（discovers_txt/md、min_chars、date 单/范围、dream marker 跳过、lsd 永跳过(含 bypass)、exclude 词边界、prune node_modules/.git、meeting 合并、read_single、hash 确定性）。\n踩坑：① raw string r\"...\" 内含 \" 会提前结束→改用 r#\"...\"#；② is_in_date_range 的 &str < &String Ord 报错→as_str()；③ tempfile 临时目录名以 '.' 开头被 pruneDir 误杀→filter_entry 对根(depth==0) 永不 prune（对齐 TS pruneDir 只过滤子目录）；④ meeting 测试用两个独立 TempDir 在 WSL 9P fs 下偶发竞态→改单 TempDir 双子目录（与 prunes 测试同构）。"
+    },
+    "1-3-4-3": {
+      "id": "1-3-4-3",
+      "label": "模型上下文预算纯函数 (computeChunkCharBudget / splitTranscriptByBudget / rewriteChunkedSlug + 单测; 无依赖可独立)",
+      "status": "pending",
+      "mode": "build",
+      "parent": "1-3-4",
+      "children": [],
+      "decisions": [],
+      "notes": "TS 常量 MODEL_CONTEXT_TOKENS/CHARS_PER_TOKEN=3.5/HEADROOM_RATIO=0.9/MIN_PROMPT_TOKENS=100000/DEFAULT_MAX_CHUNKS=24；splitTranscriptByBudget 三级切分(## Topic:/---/\\n)。纯函数+单测，独立可先行。"
+    },
+    "1-3-4-4": {
+      "id": "1-3-4-4",
+      "label": "扇出编排 run_phase_synthesize (复用 patterns 的 MinionQueue+wait_for_completion; 接 cycle 真实臂; 需 1-3-4-1/2/3 + ChatProvider 裁决入参)",
+      "status": "pending",
+      "mode": "build",
+      "parent": "1-3-4",
+      "children": [],
+      "decisions": [],
+      "notes": "核心循环。worker 执行器在 zbrain-worker crate，进程内单测超时(patterns 同，可接受)。subagent_tool_executions 表缺→slug 收集降级(1-3-4-6 决策)。"
+    },
+    "1-3-4-5": {
+      "id": "1-3-4-5",
+      "label": "磁盘双写 (reverseWriteRefs 写 brainDir/<slug>.md + writeSummaryPage 写 dream-cycle-summaries/<date>.md; 受 Q1 决策影响)",
+      "status": "pending",
+      "mode": "build",
+      "parent": "1-3-4",
+      "children": [],
+      "decisions": [],
+      "notes": "TS 写磁盘 .md 偏离 DB-canonical(patterns 已省略)。Q1 决策：复刻 or DB-canonical。"
+    },
+    "1-3-4-6": {
+      "id": "1-3-4-6",
+      "label": "配置/冷却 + subagent_tool_executions (loadSynthConfig 的 dream.synthesize.* 键 + cooldown 时间戳; 受 Q2 决策影响)",
+      "status": "pending",
+      "mode": "build",
+      "parent": "1-3-4",
+      "children": [],
+      "decisions": [],
+      "notes": "Rust BrainEngine 无 getConfig/setConfig(仅 trait 声明 engine.rs:961)。Q2 决策：完整复刻(加引擎方法) 或 patterns 先例(硬编码默认+KNOWN-GAP)。subagent_tool_executions 表缺失→slug 收集降级。"
     }
   },
   "metadata": {
     "created": "2026-07-23 17:12:54",
-    "updated": "2026-07-29 21:38:06",
+    "updated": "2026-07-30 15:14:34",
     "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_PART12_CYCLE_MIGRATION.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART12_CYCLE_MIGRATION.md"
