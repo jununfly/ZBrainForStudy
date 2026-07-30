@@ -149,7 +149,7 @@
     "1-3": {
       "id": "1-3",
       "label": "synthesis 簇迁移 (synthesize/synthesize-concepts/patterns/schema-suggest)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [
@@ -168,7 +168,7 @@
           "answer": "用户决策：拆细分批做。本簇先完成另三叶子；1-3-4 synthesize 保留 explore 待展开（届时再拆 sub-sub：dream_verdicts migration / wait_for_completion 复用 / transcript-discovery / fan-out 编排 / 双写）。不做降级简化版（保持 TS 语义）。"
         }
       ],
-      "notes": ""
+      "notes": "4 phase(synthesize-concepts/schema-suggest/patterns/synthesize)全部迁移完成(2026-07-30)。"
     },
     "1-4": {
       "id": "1-4",
@@ -345,15 +345,30 @@
     "1-3-4": {
       "id": "1-3-4",
       "label": "synthesize phase 迁移 (TS 源 git 45fe955~1:src/core/cycle/synthesize.ts 1247行; fan-out subagent per transcript; 拆 6 子节点分批做)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "build",
       "parent": "1-3",
-      "children": ["1-3-4-1", "1-3-4-2", "1-3-4-3", "1-3-4-4", "1-3-4-5", "1-3-4-6"],
-      "decisions": [
-        {"q": "Q1 磁盘双写是否复刻？", "answer": "待用户决策：复刻 TS 磁盘写(brainDir/<slug>.md + dream-cycle-summaries/<date>.md) 保持语义，或 DB-canonical 仅写引擎(patterns 先例)", "note": "影响 1-3-4-5"},
-        {"q": "Q2 配置/冷却与 subagent_tool_executions 表如何处理？", "answer": "待用户决策：完整复刻(加 BrainEngine getConfig/setConfig + 建 subagent_tool_executions 表) 或 patterns 先例(硬编码 TS 默认 + 登记 KNOWN-GAP)", "note": "影响 1-3-4-6；patterns 已用此先例"}
+      "children": [
+        "1-3-4-1",
+        "1-3-4-2",
+        "1-3-4-3",
+        "1-3-4-4",
+        "1-3-4-5",
+        "1-3-4-6"
       ],
-      "notes": "簇内最大件。Explore agent 已出结构化拆解：入口 runPhaseSynthesize(synthesize.ts:247)；扇出每 transcript/chunk 一个 subagent job(idempotency_key=dream:synth:<filePath>:<hash16>[:c<i>of<n>])；judgeSignificance 用 ChatProvider(Haiku)，合成 offload 给 worker 跑 subagent(Sonnet)。BLOCKER：dream_verdicts 表/引擎方法全缺；transcript-discovery 无；getConfig/setConfig 无；subagent_tool_executions 表无。"
+      "decisions": [
+        {
+          "q": "Q1 磁盘双写是否复刻？",
+          "answer": "待用户决策：复刻 TS 磁盘写(brainDir/<slug>.md + dream-cycle-summaries/<date>.md) 保持语义，或 DB-canonical 仅写引擎(patterns 先例)",
+          "note": "影响 1-3-4-5"
+        },
+        {
+          "q": "Q2 配置/冷却与 subagent_tool_executions 表如何处理？",
+          "answer": "待用户决策：完整复刻(加 BrainEngine getConfig/setConfig + 建 subagent_tool_executions 表) 或 patterns 先例(硬编码 TS 默认 + 登记 KNOWN-GAP)",
+          "note": "影响 1-3-4-6；patterns 已用此先例"
+        }
+      ],
+      "notes": "簇内最大件。Explore agent 已出结构化拆解：入口 runPhaseSynthesize(synthesize.ts:247)；扇出每 transcript/chunk 一个 subagent job(idempotency_key=dream:synth:<filePath>:<hash16>[:c<i>of<n>])；judgeSignificance 用 ChatProvider(Haiku)，合成 offload 给 worker 跑 subagent(Sonnet)。BLOCKER：dream_verdicts 表/引擎方法全缺；transcript-discovery 无；getConfig/setConfig 无；subagent_tool_executions 表无。 | 6 子节点(1-3-4-1..6)全部完成(2026-07-30)，synthesize phase 迁移收口；剩余缺口=G63 subagent_tool_executions 写入侧。"
     },
     "1-3-4-1": {
       "id": "1-3-4-1",
@@ -408,12 +423,18 @@
     "1-3-4-6": {
       "id": "1-3-4-6",
       "label": "配置/冷却 + subagent_tool_executions (loadSynthConfig 的 dream.synthesize.* 键 + cooldown 时间戳; 受 Q2 决策影响)",
-      "status": "pending",
+      "status": "completed",
       "mode": "build",
       "parent": "1-3-4",
       "children": [],
-      "decisions": [],
-      "notes": "Rust BrainEngine 无 getConfig/setConfig(仅 trait 声明 engine.rs:961)。Q2 决策：完整复刻(加引擎方法) 或 patterns 先例(硬编码默认+KNOWN-GAP)。subagent_tool_executions 表缺失→slug 收集降级。"
+      "decisions": [
+        {
+          "q": "Q2: Rust BrainEngine 无 getConfig/setConfig，配置/冷却怎么迁？完整复刻(加引擎方法) vs patterns 先例(硬编码默认+KNOWN-GAP)",
+          "answer": "完整复刻（加引擎方法）",
+          "note": "用户 2026-07-30 决策。get_config/set_config/unset_config + collect_child_put_page_slugs 四个 trait 方法（默认实现 Unsupported 保护外部 stub），三后端全实现；subagent_tool_executions 读取侧一并纳入，写入侧登记 KNOWN-GAPS G63"
+        }
+      ],
+      "notes": "完成(2026-07-30)：① migrations 0027_config + 0028_subagent_tool_executions 双 dialect（FK 到 minion_jobs 故意省略，写入端未落地）；② BrainEngine 加 get_config/set_config/unset_config/collect_child_put_page_slugs（照 dream_verdicts 模板；libsql params_from_iter + json_extract，postgres 链式 bind + jsonb ->>）；③ InMemoryEngine config_store HashMap + subagent_tool_executions_store Vec；④ load_synth_config 改 async 读 dream.synthesize.* 8 键（opts 覆盖优先：min_chars/max_prompt_tokens/max_chunks_per_transcript/corpus_dir）；⑤ check_cooldown 读 last_completion_ts（默认 12h），run_phase 完成后 set_config 写回时间戳；⑥ 收集 slug 走 engine.collect_child_put_page_slugs 替代旧 execute_raw free function。EXPECTED_VERSION 26→28。测试：lib 全量 2062 绿 + libsql 迁移集成 10 绿（新增 config_round_trip_libsql / collect_child_put_page_slugs_empty_and_missing_children）。坑：async 化 load_synth_config 时丢了 opts 覆盖导致 chunked 测试回归（E0609 的 meeting_transcripts_dir 字段不存在也在此修）。写入侧 KNOWN-GAPS G63。"
     }
   },
   "metadata": {
