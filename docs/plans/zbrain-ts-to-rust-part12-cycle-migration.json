@@ -576,12 +576,23 @@
     },
     "1-6-3-2": {
       "id": "1-6-3-2",
-      "label": "BaseCyclePhase 抽象（autopilot/base_phase.rs; BaseCyclePhase.process/run + checkBudget/tick/mapErrorCode + ScopedReadOpts; calibration_profile / propose_takes / grade_takes 改继承）",
-      "status": "pending",
+      "label": "BaseCyclePhase 抽象（autopilot/base_phase.rs; trait BaseCyclePhase.process/run + checkBudget/tick/mapErrorCode/mapErrorClass + ScopedReadOpts/BasePhaseCtx/BasePhaseOpts/BasePhaseOutput + ProgressReporter 薄 trait；drift(1-6-3-3) 等新 phase 默认继承。既有 synthesize/patterns 等 pre-v0.36 phase 暂不 retrofit，遵循 TS v0.36.1 约定）",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6-3",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "BaseCyclePhase 用 trait 还是基类？引擎/作用域如何隔离（TS 的 ctx.engine 泄漏类）？",
+          "answer": "Rust 无继承，用 trait BaseCyclePhase 端口。关键点：(1) 引擎不放在 ctx 上，而是作为 process(engine, scope, ctx, opts, meter) 的显式首参传入——子类无法从 ctx 读引擎，结构性杜绝 v0.34.1 作用域泄漏；(2) scope() 由 run() 从 ctx.source_id 派生为 ScopedReadOpts 后传入 process，是子类读源作用域的唯一合法途径；(3) BudgetMeter 由 run() 构建（budget_usd_key+default，或 opts.budget_usd 覆盖）后作为 &BudgetMeter 传入 process，子类经 check_budget() 在每次 LLM 提交前检查，预算耗尽则 status=Ok + details.budget_exhausted=true 干净中止。",
+          "note": "map_error_code/class 收 error 为 &dyn Error+'static，子类用 downcast_ref 特化（Box<dyn Error+Send+Sync> 默认 'static，兼容）。ProgressReporter 定义为最小 object-safe trait（tick(delta,message)），通过 BasePhaseOpts.reporter 注入，run 提供 tick() 转发——Rust 暂无全局 ProgressReporter，故不接真实消费者。"
+        },
+        {
+          "q": "是否把既有 phase（calibration_profile/propose_takes/grade_takes）改接到 BaseCyclePhase？",
+          "answer": "不改。TS base-phase.ts 头注释明确：v0.36.1 不 retrofit 既有 phase（churn 大于收益，待 v0.37+ 更多 phase 落地才值）。1-6-3-2 只交付抽象本身 + 单测（happy / error→Fail 带 code+class / 预算耗尽干净中止 / budget 覆盖放行 / scope 透传），首个真实消费者是 1-6-3-3 的 drift phase。",
+          "note": "execute_phase dispatcher 暂不动；新 phase 后续可在 dispatcher 里调用 phase.run(...) 接 BaseCyclePhase。"
+        }
+      ],
       "notes": ""
     },
     "1-6-3-3": {
@@ -597,7 +608,7 @@
   },
   "metadata": {
     "created": "2026-07-23 17:12:54",
-    "updated": "2026-07-31 14:54:13",
+    "updated": "2026-07-31 15:25:53",
     "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_PART12_CYCLE_MIGRATION.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART12_CYCLE_MIGRATION.md"
