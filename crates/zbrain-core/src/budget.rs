@@ -248,12 +248,18 @@ fn lookup_chat_pricing(model: &str) -> Option<ModelPricing> {
 /// of the TS `lookupPricing`.
 fn lookup_embed_pricing(model: &str) -> Option<ModelPricing> {
     if let Some(p) = crate::ai::lookup_pricing(model) {
-        return Some(ModelPricing { input: p.price_per_mtok_usd, output: 0.0 });
+        return Some(ModelPricing {
+            input: p.price_per_mtok_usd,
+            output: 0.0,
+        });
     }
     // Local-inference embed providers cost electricity, not tokens → $0.
     if let Some((provider, _)) = parse_model_id(model) {
         if FREE_LOCAL_EMBED_PROVIDERS.contains(&provider) {
-            return Some(ModelPricing { input: 0.0, output: 0.0 });
+            return Some(ModelPricing {
+                input: 0.0,
+                output: 0.0,
+            });
         }
     }
     None
@@ -283,14 +289,20 @@ fn lookup_rerank_pricing(model: &str) -> Option<ModelPricing> {
             || rr.default_model == model;
         if listed {
             if let Some(price) = rr.cost_per_1m_tokens_usd {
-                return Some(ModelPricing { input: price, output: 0.0 });
+                return Some(ModelPricing {
+                    input: price,
+                    output: 0.0,
+                });
             }
         }
     }
     // Local-inference rerank providers price at $0.
     if let Some((provider, _)) = parse_model_id(model) {
         if FREE_LOCAL_RERANK_PROVIDERS.contains(&provider) {
-            return Some(ModelPricing { input: 0.0, output: 0.0 });
+            return Some(ModelPricing {
+                input: 0.0,
+                output: 0.0,
+            });
         }
     }
     None
@@ -306,8 +318,16 @@ fn lookup_pricing_for_kind(model: &str, kind: BudgetKind) -> Option<ModelPricing
 }
 
 /// Compute USD cost for a usage tuple, or `None` when the model is unpriced.
-/// Mirrors the TS `costForUsage`.
-fn cost_for_usage(model: &str, input_tokens: u64, output_tokens: u64, kind: BudgetKind) -> Option<f64> {
+/// Mirrors the TS `costForUsage`. `pub(crate)` so the dream-cycle
+/// `autopilot::budget_meter` can reuse the registry-backed pricing as the
+/// single source of truth (the TS original used a standalone `ANTHROPIC_PRICING`
+/// map, which Rust has no equivalent of).
+pub(crate) fn cost_for_usage(
+    model: &str,
+    input_tokens: u64,
+    output_tokens: u64,
+    kind: BudgetKind,
+) -> Option<f64> {
     let p = lookup_pricing_for_kind(model, kind)?;
     let cost = (input_tokens as f64 / 1_000_000.0) * p.input
         + (output_tokens as f64 / 1_000_000.0) * p.output;
@@ -335,7 +355,10 @@ fn append_audit_line(audit_dir: &Path, now: DateTime<Utc>, entry: &serde_json::V
         let mut line = serde_json::to_string(entry)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         line.push('\n');
-        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
         file.write_all(line.as_bytes())?;
         Ok(())
     };
@@ -717,13 +740,17 @@ pub fn extract_usage_from_error(
                 .or_else(|| usage.get(b))
                 .and_then(serde_json::Value::as_u64)
         };
-        (get("input_tokens", "inputTokens"), get("output_tokens", "outputTokens"))
+        (
+            get("input_tokens", "inputTokens"),
+            get("output_tokens", "outputTokens"),
+        )
     };
     if let Some(err) = err {
-        let candidate = err
-            .get("usage")
-            .filter(|v| v.is_object())
-            .or_else(|| err.get("response").and_then(|r| r.get("usage")).filter(|v| v.is_object()));
+        let candidate = err.get("usage").filter(|v| v.is_object()).or_else(|| {
+            err.get("response")
+                .and_then(|r| r.get("usage"))
+                .filter(|v| v.is_object())
+        });
         if let Some(usage) = candidate {
             let (input, output) = read_tokens(usage);
             if input.is_some() || output.is_some() {
@@ -740,7 +767,11 @@ mod tests {
     use tempfile::TempDir;
 
     fn opts(max_cost: Option<f64>) -> BudgetTrackerOpts {
-        BudgetTrackerOpts { max_cost_usd: max_cost, max_runtime_ms: None, label: "test".to_string() }
+        BudgetTrackerOpts {
+            max_cost_usd: max_cost,
+            max_runtime_ms: None,
+            label: "test".to_string(),
+        }
     }
 
     fn chat_estimate(model: &str, inp: u64, out: u64) -> BudgetEstimate {
@@ -809,7 +840,9 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let t = BudgetTracker::new(opts(Some(100.0)), dir.path());
         // tiny call, well under $100.
-        assert!(t.reserve(&chat_estimate("openai:gpt-5.2", 1000, 1000)).is_ok());
+        assert!(t
+            .reserve(&chat_estimate("openai:gpt-5.2", 1000, 1000))
+            .is_ok());
     }
 
     #[test]
@@ -817,7 +850,9 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let t = BudgetTracker::new(opts(Some(0.001)), dir.path());
         // 1M input @1.25 → $1.25 projected, way over $0.001 cap.
-        let e = t.reserve(&chat_estimate("openai:gpt-5.2", 1_000_000, 0)).unwrap_err();
+        let e = t
+            .reserve(&chat_estimate("openai:gpt-5.2", 1_000_000, 0))
+            .unwrap_err();
         assert_eq!(e.reason, BudgetReason::Cost);
         assert!(e.message.contains("exceeds --max-cost"));
     }
@@ -826,7 +861,9 @@ mod tests {
     fn reserve_tx2_no_pricing_hard_fails_with_cap() {
         let dir = TempDir::new().unwrap();
         let t = BudgetTracker::new(opts(Some(10.0)), dir.path());
-        let e = t.reserve(&chat_estimate("nope:unpriced", 100, 100)).unwrap_err();
+        let e = t
+            .reserve(&chat_estimate("nope:unpriced", 100, 100))
+            .unwrap_err();
         assert_eq!(e.reason, BudgetReason::NoPricing);
         assert!(e.message.contains("no pricing entry"));
     }
@@ -847,7 +884,9 @@ mod tests {
         o.max_runtime_ms = Some(0); // any elapsed > 0 trips it
         let t = BudgetTracker::new(o, dir.path());
         std::thread::sleep(std::time::Duration::from_millis(2));
-        let e = t.reserve(&chat_estimate("openai:gpt-5.2", 10, 10)).unwrap_err();
+        let e = t
+            .reserve(&chat_estimate("openai:gpt-5.2", 10, 10))
+            .unwrap_err();
         assert_eq!(e.reason, BudgetReason::Runtime);
     }
 
@@ -857,9 +896,11 @@ mod tests {
     fn record_accumulates_cumulative() {
         let dir = TempDir::new().unwrap();
         let t = BudgetTracker::new(opts(Some(100.0)), dir.path());
-        t.record(&chat_actual("openai:gpt-5.2", 1_000_000, 0)).unwrap(); // $1.25
+        t.record(&chat_actual("openai:gpt-5.2", 1_000_000, 0))
+            .unwrap(); // $1.25
         assert!((t.total_spent() - 1.25).abs() < 1e-6);
-        t.record(&chat_actual("openai:gpt-5.2", 1_000_000, 0)).unwrap(); // +$1.25
+        t.record(&chat_actual("openai:gpt-5.2", 1_000_000, 0))
+            .unwrap(); // +$1.25
         assert!((t.total_spent() - 2.50).abs() < 1e-6);
         assert_eq!(t.snapshot().calls_recorded, 2);
     }
@@ -869,7 +910,9 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let t = BudgetTracker::new(opts(Some(1.0)), dir.path());
         // 1M input @1.25 = $1.25 > $1.00 cap → TX1.
-        let e = t.record(&chat_actual("openai:gpt-5.2", 1_000_000, 0)).unwrap_err();
+        let e = t
+            .record(&chat_actual("openai:gpt-5.2", 1_000_000, 0))
+            .unwrap_err();
         assert_eq!(e.reason, BudgetReason::Cost);
         assert!(e.message.contains("exceeded --max-cost"));
         // The spend is still recorded even though it threw.
@@ -881,7 +924,8 @@ mod tests {
         reset_budget_warnings_for_test();
         let dir = TempDir::new().unwrap();
         let t = BudgetTracker::new(opts(None), dir.path());
-        t.record(&chat_actual("nope:unpriced", 1_000_000, 0)).unwrap();
+        t.record(&chat_actual("nope:unpriced", 1_000_000, 0))
+            .unwrap();
         assert_eq!(t.total_spent(), 0.0);
         assert_eq!(t.snapshot().calls_recorded, 1);
     }
@@ -894,9 +938,14 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let t = BudgetTracker::new(opts(Some(1.0)), dir.path());
         let rec = t.record(&chat_actual("openai:gpt-5.2", 1_000_000, 0)); // $1.25 > $1
-        assert!(rec.is_err(), "record over cap returns Err (caller swallows)");
+        assert!(
+            rec.is_err(),
+            "record over cap returns Err (caller swallows)"
+        );
         // Next reserve sees cumulative 1.25 already > cap → denies.
-        let e = t.reserve(&chat_estimate("openai:gpt-5.2", 1000, 1000)).unwrap_err();
+        let e = t
+            .reserve(&chat_estimate("openai:gpt-5.2", 1000, 1000))
+            .unwrap_err();
         assert_eq!(e.reason, BudgetReason::Cost);
     }
 
@@ -913,7 +962,8 @@ mod tests {
     fn record_writes_audit_row() {
         let dir = TempDir::new().unwrap();
         let t = BudgetTracker::new(opts(Some(100.0)), dir.path());
-        t.record(&chat_actual("openai:gpt-5.2", 1_000_000, 0)).unwrap();
+        t.record(&chat_actual("openai:gpt-5.2", 1_000_000, 0))
+            .unwrap();
         // Find whichever ISO-week file was written.
         let files: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()

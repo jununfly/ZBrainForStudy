@@ -1,4 +1,5 @@
 pub mod brain_score;
+pub mod budget_meter;
 pub mod cycle;
 pub mod cycle_lock;
 pub mod daemon;
