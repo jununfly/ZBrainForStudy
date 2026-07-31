@@ -251,10 +251,7 @@ pub fn should_sleep(score: u32, plan_len: usize, minutes_since_last_full: i64) -
 ///   ticks — re-arms once a live worker is seen.
 ///
 /// Port of TS no-worker probe logic (lines 366-398).
-pub fn update_no_worker_probe(
-    consecutive_idle: u32,
-    live_worker_signal: u32,
-) -> (u32, bool) {
+pub fn update_no_worker_probe(consecutive_idle: u32, live_worker_signal: u32) -> (u32, bool) {
     if live_worker_signal > 0 {
         (0, false)
     } else {
@@ -389,10 +386,7 @@ pub enum TickEvent {
         score: u32,
     },
     #[serde(rename = "cycle_inline")]
-    CycleInline {
-        status: String,
-        duration_ms: u64,
-    },
+    CycleInline { status: String, duration_ms: u64 },
     #[serde(rename = "cycle")]
     Cycle {
         brain_score: u32,
@@ -889,12 +883,7 @@ mod tests {
     #[test]
     fn mode_minions_dispatch_when_postgres_and_not_off() {
         let mode = resolve_autopilot_mode("pain_triggered", "postgres", false, false);
-        assert_eq!(
-            mode,
-            AutopilotMode::MinionsDispatch {
-                spawn_worker: true
-            }
-        );
+        assert_eq!(mode, AutopilotMode::MinionsDispatch { spawn_worker: true });
     }
 
     #[test]
@@ -944,10 +933,7 @@ mod tests {
     #[test]
     fn inline_reason_display() {
         assert_eq!(InlineReason::MinionModeOff.to_string(), "minion_mode=off");
-        assert_eq!(
-            InlineReason::EngineNotPostgres.to_string(),
-            "engine=pglite"
-        );
+        assert_eq!(InlineReason::EngineNotPostgres.to_string(), "engine=pglite");
         assert_eq!(InlineReason::ForceInline.to_string(), "flag=--inline");
     }
 
@@ -1199,12 +1185,29 @@ mod tests {
         engine
     }
 
+    /// 1-6-2: unique per-test brain dir so the cycle advisory file lock
+    /// doesn't serialise parallel tests against a shared path.
+    fn tmp_brain(label: &str) -> String {
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "zbrain-runner-test-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).unwrap();
+        p.to_string_lossy().into_owned()
+    }
+
     #[tokio::test]
     async fn tick_inline_runs_cycle() {
         let engine = setup_engine().await;
         let mut state = AutopilotState::default();
         let opts = AutopilotOpts {
-            repo_path: "/tmp/brain".into(),
+            repo_path: tmp_brain("tick_inline_runs_cycle"),
             mode: AutopilotMode::Inline {
                 reason: InlineReason::EngineNotPostgres,
             },
@@ -1240,7 +1243,7 @@ mod tests {
         let engine = setup_engine().await;
         let mut state = AutopilotState::default();
         let opts = AutopilotOpts {
-            repo_path: "/tmp/brain".into(),
+            repo_path: tmp_brain("tick_inline_empty_brain_score_is_100"),
             mode: AutopilotMode::Inline {
                 reason: InlineReason::EngineNotPostgres,
             },
@@ -1261,7 +1264,7 @@ mod tests {
         state.consecutive_errors = 3;
 
         let opts = AutopilotOpts {
-            repo_path: "/tmp/brain".into(),
+            repo_path: tmp_brain("tick_inline_cycle_ok_does_not_set_errors"),
             mode: AutopilotMode::Inline {
                 reason: InlineReason::EngineNotPostgres,
             },
@@ -1283,10 +1286,8 @@ mod tests {
         let engine = setup_engine().await;
         let mut state = AutopilotState::default();
         let opts = AutopilotOpts {
-            repo_path: "/tmp/brain".into(),
-            mode: AutopilotMode::MinionsDispatch {
-                spawn_worker: true,
-            },
+            repo_path: tmp_brain("tick_minions_dispatch_empty_brain_full_cycle"),
+            mode: AutopilotMode::MinionsDispatch { spawn_worker: true },
             engine_kind: EngineKind::InMemory,
             base_interval: 300,
             ..Default::default()
@@ -1319,10 +1320,8 @@ mod tests {
         state.last_full_cycle_at = Some(Utc::now());
 
         let opts = AutopilotOpts {
-            repo_path: "/tmp/brain".into(),
-            mode: AutopilotMode::MinionsDispatch {
-                spawn_worker: true,
-            },
+            repo_path: tmp_brain("tick_minions_dispatch_sleeps_when_recently_cycled"),
+            mode: AutopilotMode::MinionsDispatch { spawn_worker: true },
             engine_kind: EngineKind::InMemory,
             base_interval: 300,
             ..Default::default()
@@ -1343,10 +1342,8 @@ mod tests {
         let engine = setup_engine().await;
         let mut state = AutopilotState::default();
         let opts = AutopilotOpts {
-            repo_path: "/tmp/brain".into(),
-            mode: AutopilotMode::MinionsDispatch {
-                spawn_worker: true,
-            },
+            repo_path: tmp_brain("tick_minions_dispatch_no_nightly_probe_when_disabled"),
+            mode: AutopilotMode::MinionsDispatch { spawn_worker: true },
             engine_kind: EngineKind::InMemory,
             nightly_quality_probe_enabled: false, // default
             ..Default::default()
@@ -1366,10 +1363,8 @@ mod tests {
         let engine = setup_engine().await;
         let mut state = AutopilotState::default();
         let opts = AutopilotOpts {
-            repo_path: "/tmp/brain".into(),
-            mode: AutopilotMode::MinionsDispatch {
-                spawn_worker: true,
-            },
+            repo_path: tmp_brain("tick_minions_dispatch_emits_nightly_probe_when_enabled"),
+            mode: AutopilotMode::MinionsDispatch { spawn_worker: true },
             engine_kind: EngineKind::InMemory,
             nightly_quality_probe_enabled: true,
             ..Default::default()

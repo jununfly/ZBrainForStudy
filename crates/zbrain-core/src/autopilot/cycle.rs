@@ -297,8 +297,11 @@ impl Default for CycleOpts {
 /// - `purge` phase → real implementation (`engine.purge_deleted_pages(72)`)
 /// - All other phases → `skipped("not_migrated")` stub
 ///
-/// Lock acquisition is simplified: InMemory engine skips the lock entirely
-/// (no concurrent cycles in tests). SQL backends can add advisory lock later.
+/// Lock acquisition (1-6-2): a per-source advisory file lock
+/// (`autopilot::cycle_lock`) guards cycles against concurrent runs. The
+/// lock is only consulted when at least one state-mutating phase is in
+/// scope (mirrors TS `needsLock = phases.some(NEEDS_LOCK_PHASES.has)`).
+/// `Orphans` is the only read-only phase and skips the lock entirely.
 pub async fn run_cycle(
     engine: &dyn BrainEngine,
     opts: &CycleOpts,
@@ -307,6 +310,62 @@ pub async fn run_cycle(
     let phases = opts.phases.as_deref().unwrap_or(CyclePhase::ALL);
     let dry_run = opts.dry_run;
     let timestamp = chrono::Utc::now().to_rfc3339();
+
+    // 1-6-2: acquire the cycle advisory lock if any mutating phase is in
+    // scope. Busy → `Skipped/cycle_already_running`; I/O failure →
+    // `Failed/lock_acquisition_error` (TS parity). A `None` brain_dir
+    // (legacy callers) skips the lock — same as TS `engine === null` path
+    // which used the no-DB file lock only.
+    if phases.iter().any(|p| p.needs_lock()) && !opts.brain_dir.is_empty() {
+        match crate::autopilot::cycle_lock::acquire_cycle_lock(
+            std::path::Path::new(&opts.brain_dir),
+            opts.source_id.as_deref(),
+        ) {
+            Ok(_lock) => {
+                // Held for the duration of the cycle (dropped at function
+                // exit). No refresh API is needed because the 30-minute TTL
+                // is well above any single phase's runtime.
+            }
+            Err(crate::autopilot::cycle_lock::AcquireCycleLockError::Busy(holder)) => {
+                let _ = holder; // holder is for the consumer's error message; we just early-return.
+                return CycleReport {
+                    schema_version: "1",
+                    timestamp,
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    status: CycleStatus::Skipped,
+                    reason: Some("cycle_already_running".into()),
+                    brain_dir: Some(opts.brain_dir.clone()),
+                    phases: Vec::new(),
+                    totals: CycleTotals::default(),
+                };
+            }
+            Err(crate::autopilot::cycle_lock::AcquireCycleLockError::Io(_e)) => {
+                return CycleReport {
+                    schema_version: "1",
+                    timestamp,
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    status: CycleStatus::Failed,
+                    reason: Some("lock_acquisition_error".into()),
+                    brain_dir: Some(opts.brain_dir.clone()),
+                    phases: vec![PhaseResult {
+                        phase: "sync".into(),
+                        status: PhaseStatus::Fail,
+                        duration_ms: 0,
+                        summary: "could not acquire cycle lock".into(),
+                        details: serde_json::json!({}),
+                        error: Some(PhaseError {
+                            class: "FilesystemError".into(),
+                            code: "CYCLE_LOCK_IO".into(),
+                            message: _e.to_string(),
+                            hint: None,
+                            docs_url: None,
+                        }),
+                    }],
+                    totals: CycleTotals::default(),
+                };
+            }
+        }
+    }
 
     let mut phase_results: Vec<PhaseResult> = Vec::new();
     let mut totals = CycleTotals::default();
@@ -1479,6 +1538,22 @@ async fn write_last_full_cycle_at(
 mod tests {
     use super::*;
     use crate::engine::{EngineConfig, InMemoryEngine, PageInput};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Unique per-test brain_dir so the cycle advisory file lock (1-6-2)
+    /// doesn't serialise parallel-running tests against a shared path.
+    fn unique_brain_dir(label: &str) -> String {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "zbrain-cycle-test-{label}-{}-{n}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).unwrap();
+        p.to_string_lossy().into_owned()
+    }
 
     async fn setup() -> InMemoryEngine {
         let engine = InMemoryEngine::new();
@@ -1556,7 +1631,7 @@ mod tests {
         let report = run_cycle(
             &engine,
             &CycleOpts {
-                brain_dir: "/tmp/brain".into(),
+                brain_dir: unique_brain_dir("empty_brain"),
                 ..Default::default()
             },
         )
@@ -1678,7 +1753,7 @@ mod tests {
             &engine,
             &CycleOpts {
                 phases: Some(vec![CyclePhase::Orphans]),
-                brain_dir: "/tmp/brain".into(),
+                brain_dir: unique_brain_dir("with_orphan_pages"),
                 ..Default::default()
             },
         )
@@ -1698,7 +1773,7 @@ mod tests {
             &engine,
             &CycleOpts {
                 phases: Some(vec![CyclePhase::Purge]),
-                brain_dir: "/tmp/brain".into(),
+                brain_dir: unique_brain_dir("dry_run_skips_purge"),
                 dry_run: true,
                 ..Default::default()
             },
@@ -1718,7 +1793,7 @@ mod tests {
             &engine,
             &CycleOpts {
                 phases: Some(vec![CyclePhase::Orphans, CyclePhase::Purge]),
-                brain_dir: "/tmp/brain".into(),
+                brain_dir: unique_brain_dir("phase_subset"),
                 ..Default::default()
             },
         )
@@ -1738,7 +1813,7 @@ mod tests {
             &engine,
             &CycleOpts {
                 phases: Some(vec![CyclePhase::Orphans, CyclePhase::Purge]),
-                brain_dir: "/tmp/brain".into(),
+                brain_dir: unique_brain_dir("status_partial_when_orphans_found"),
                 ..Default::default()
             },
         )
@@ -1756,7 +1831,7 @@ mod tests {
             &engine,
             &CycleOpts {
                 phases: Some(vec![CyclePhase::Orphans, CyclePhase::Purge]),
-                brain_dir: "/tmp/brain".into(),
+                brain_dir: unique_brain_dir("status_ok_when_no_issues"),
                 ..Default::default()
             },
         )
@@ -1768,6 +1843,63 @@ mod tests {
         assert_eq!(report.status, CycleStatus::Clean);
     }
 
+    // 1-6-2: cycle advisory lock — busy → `Skipped/cycle_already_running`.
+    // We hold the lock out-of-band then call `run_cycle`; the second call
+    // must short-circuit without touching any phase.
+    #[tokio::test]
+    async fn run_cycle_busy_lock_returns_skipped() {
+        let _home = crate::paths::ScopedTestHome::new();
+        let engine = setup().await;
+        let brain = unique_brain_dir("busy_lock");
+
+        // Hold the lock externally so the cycle cannot acquire it.
+        let _held = crate::autopilot::cycle_lock::acquire_cycle_lock(
+            std::path::Path::new(&brain),
+            None,
+        )
+        .expect("test setup: lock should be acquirable");
+
+        let report = run_cycle(
+            &engine,
+            &CycleOpts {
+                brain_dir: brain,
+                ..Default::default()
+            },
+        )
+        .await;
+
+        assert_eq!(report.status, CycleStatus::Skipped);
+        assert_eq!(report.reason.as_deref(), Some("cycle_already_running"));
+        assert!(report.phases.is_empty());
+    }
+
+    // 1-6-2: per-source lock scope — two sources may run concurrently.
+    #[tokio::test]
+    async fn run_cycle_per_source_locks_independent() {
+        let _home = crate::paths::ScopedTestHome::new();
+        let engine = setup().await;
+        let brain = unique_brain_dir("per_source");
+
+        // Hold a lock for source "a".
+        let _held = crate::autopilot::cycle_lock::acquire_cycle_lock(
+            std::path::Path::new(&brain),
+            Some("a"),
+        )
+        .expect("test setup: lock 'a' should be acquirable");
+
+        // A cycle for source "b" must still be able to run.
+        let report = run_cycle(
+            &engine,
+            &CycleOpts {
+                brain_dir: brain,
+                source_id: Some("b".into()),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_ne!(report.status, CycleStatus::Skipped);
+    }
+
     #[tokio::test]
     async fn run_cycle_all_skipped_status() {
         let engine = setup().await;
@@ -1776,7 +1908,7 @@ mod tests {
             &engine,
             &CycleOpts {
                 phases: Some(vec![CyclePhase::Lint, CyclePhase::Sync]),
-                brain_dir: "/tmp/brain".into(),
+                brain_dir: unique_brain_dir("all_skipped_status"),
                 ..Default::default()
             },
         )
