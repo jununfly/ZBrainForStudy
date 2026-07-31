@@ -214,8 +214,28 @@
       "status": "pending",
       "mode": "explore",
       "parent": "1",
-      "children": [],
-      "decisions": [],
+      "children": [
+        "1-6-1",
+        "1-6-2",
+        "1-6-3",
+        "1-6-4",
+        "1-6-5",
+        "1-6-6",
+        "1-6-7",
+        "1-6-8"
+      ],
+      "decisions": [
+        {
+          "q": "drift.ts 无 TS 调用者且 CyclePhase 不含 drift，是否迁移？",
+          "answer": "一并迁移",
+          "note": "用户决策：作为 1-6-7 子节点移植 findDriftCandidates；默认关闭 dream.drift.enabled 保持休眠语义"
+        },
+        {
+          "q": "phantom-redirect pre-pass (606行, 此前 extract_facts port 显式 DEFER) 是否纳入 1-6？",
+          "answer": "纳入 1-6-6 子节点",
+          "note": "Part12 收官需 extract_facts 达 TS 等价，TS cycle/ 目录才能全删"
+        }
+      ],
       "notes": ""
     },
     "1-1-1": {
@@ -453,11 +473,91 @@
         }
       ],
       "notes": "完成(2026-07-30)：① migrations 0027_config + 0028_subagent_tool_executions 双 dialect（FK 到 minion_jobs 故意省略，写入端未落地）；② BrainEngine 加 get_config/set_config/unset_config/collect_child_put_page_slugs（照 dream_verdicts 模板；libsql params_from_iter + json_extract，postgres 链式 bind + jsonb ->>）；③ InMemoryEngine config_store HashMap + subagent_tool_executions_store Vec；④ load_synth_config 改 async 读 dream.synthesize.* 8 键（opts 覆盖优先：min_chars/max_prompt_tokens/max_chunks_per_transcript/corpus_dir）；⑤ check_cooldown 读 last_completion_ts（默认 12h），run_phase 完成后 set_config 写回时间戳；⑥ 收集 slug 走 engine.collect_child_put_page_slugs 替代旧 execute_raw free function。EXPECTED_VERSION 26→28。测试：lib 全量 2062 绿 + libsql 迁移集成 10 绿（新增 config_round_trip_libsql / collect_child_put_page_slugs_empty_and_missing_children）。坑：async 化 load_synth_config 时丢了 opts 覆盖导致 chunked 测试回归（E0609 的 meeting_transcripts_dir 字段不存在也在此修）。写入侧 KNOWN-GAPS G63。"
+    },
+    "1-6-1": {
+      "id": "1-6-1",
+      "label": "编排骨架强化 (CycleOpts 补 signal/yield/synth 透传 + no_database 守卫 + pack 门控 extract_atoms/synthesize_concepts + resolveSourceForDir + extractTotals 回填 + makeErrorFromException 错误信封 hint/docs_url + deriveStatus 空列表→failed + last_full_cycle_at)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-6",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-2": {
+      "id": "1-6-2",
+      "label": "周期锁 (per-source cycle lock; busy→skipped/cycle_already_running, 失败→failed/lock_acquisition_error; 复用 sync/lock.rs 基建)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-6",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-3": {
+      "id": "1-6-3",
+      "label": "BudgetMeter 共享模块 (port budget-meter.ts 188行 → autopilot/budget_meter.rs; check/estimateMaxCostUsd/unpriced warn-once/审计 jsonl ~/.zbrain/audit/dream-budget-*.jsonl; auto_think/drift/calibration 三处消费)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-6",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-4": {
+      "id": "1-6-4",
+      "label": "简单 stub 臂接线 Sync/Lint/Backlinks/Extract/Embed (复用 sync/core.rs perform_sync、links backlinks、embedding.rs、ingestion; TS runPhaseSync/Extract/Embed/Lint/Backlinks 语义对齐)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-6",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-5": {
+      "id": "1-6-5",
+      "label": "consolidate phase 迁移 (port phases/consolidate.ts 297行 → autopilot/phases/consolidate.rs; (source_id,entity_slug) 桶 + 余弦0.85贪心聚类 + takes(kind=fact) + consolidated_at 标记不删除 + bitemporal valid_until + semantic upsert 去重)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-6",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-6": {
+      "id": "1-6-6",
+      "label": "phantom-redirect pre-pass (port phantom-redirect.ts 606行; extract_facts 顶部; syncLockId 单锁30s重试 + 上限50 + body-shape gate + resolvePhantomCanonical + 歧义检查 + fenceDbDrift + 8步提交链; 依赖 entities/resolve + facts-fence + phantom-audit)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-6",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-7": {
+      "id": "1-6-7",
+      "label": "drift phase 迁移 (port drift.ts 168行 → autopilot/phases/drift.rs; findDriftCandidates 软带0.3-0.85 + timeline 证据 takes 候选报告; 默认关闭 dream.drift.enabled; TS 无调用者但决策 q-0 定迁移)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-6",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-8": {
+      "id": "1-6-8",
+      "label": "消费者切换 (CLI dream 子命令 → Rust run_cycle; --json/--dry-run/--pull/--phase/--dir/--input/--date/--from/--to/--unsafe-bypass-dream-guard; printHuman totals; failed→exit 1; TS cycle.ts+cycle/ 目录+dream.ts 删除)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-6",
+      "children": [],
+      "decisions": [],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-23 17:12:54",
-    "updated": "2026-07-30 16:20:00",
+    "updated": "2026-07-31 11:37:06",
     "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_PART12_CYCLE_MIGRATION.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART12_CYCLE_MIGRATION.md"
