@@ -211,7 +211,7 @@
     "1-6": {
       "id": "1-6",
       "label": "orchestration 主循环迁移 (runCycle 2057行 + base-phase/budget-meter/drift/phantom-redirect/phases/; 消费者 dream->runCycle; Rust cycle.rs 仅745行 dispatch 骨架)",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "explore",
       "parent": "1",
       "children": [
@@ -497,10 +497,14 @@
     "1-6-3": {
       "id": "1-6-3",
       "label": "BudgetMeter 共享模块 (port budget-meter.ts 188行 → autopilot/budget_meter.rs; check/estimateMaxCostUsd/unpriced warn-once/审计 jsonl ~/.zbrain/audit/dream-budget-*.jsonl; auto_think/drift/calibration 三处消费)",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "explore",
       "parent": "1-6",
-      "children": [],
+      "children": [
+        "1-6-3-1",
+        "1-6-3-2",
+        "1-6-3-3"
+      ],
       "decisions": [],
       "notes": ""
     },
@@ -553,11 +557,47 @@
       "children": [],
       "decisions": [],
       "notes": ""
+    },
+    "1-6-3-1": {
+      "id": "1-6-3-1",
+      "label": "budget_meter.rs 薄装器（port budget-meter.ts 188行 → autopilot/budget_meter.rs; BudgetMeter + SubmitEstimate + BudgetCheckResult + audit jsonl ~/.zbrain/audit/dream-budget-*.jsonl; estimate_max_cost_usd + ANTHROPIC_PRICING 复用 budget.rs)",
+      "status": "completed",
+      "mode": "explore",
+      "parent": "1-6-3",
+      "children": [],
+      "decisions": [
+        {
+          "q": "BudgetMeter 与 BudgetTracker 的关系？能否合并？",
+          "answer": "不能合并。BudgetMeter 是 pre-call 最大成本门：check() 累加每次计划提交的 projected 最大成本，超 cycle cap 即拒绝下一次提交（拒绝时不累加）。BudgetTracker 是 post-call 实际用量累加器：reserve 只投影不累加、record 才加真实花费（TX1/TX2）。语义根本不同，故 BudgetMeter 独立成模块，复用 budget.rs 的 cost_for_usage 定价原语 + schema-v1 审计行格式，但写独立的 dream-budget-YYYY-Www.jsonl ledger（与 BudgetTracker 的 budget-*.jsonl 分离，对齐 TS 两文件分离）。",
+          "note": "TS 原 ANTHROPIC_PRICING 在 Rust 无对应表，改用 REGISTRY 单一来源（cost_for_usage chat kind）；unpriced 模型按 model 维度 warn-once 放行（BUDGET_METER_NO_PRICING）。auto_think 目前直用 BudgetTracker::reserve，是否改接 BudgetMeter 待 1-6-3-3 drift 接入时一并评估（消费者在父 1-6-3 范围，不在 1-6-3-1）。"
+        }
+      ],
+      "notes": ""
+    },
+    "1-6-3-2": {
+      "id": "1-6-3-2",
+      "label": "BaseCyclePhase 抽象（autopilot/base_phase.rs; BaseCyclePhase.process/run + checkBudget/tick/mapErrorCode + ScopedReadOpts; calibration_profile / propose_takes / grade_takes 改继承）",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-6-3",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-3-3": {
+      "id": "1-6-3-3",
+      "label": "drift phase 提前实装（原 1-6-7 并入 1-6-3-3; port drift.ts 168行 → autopilot/phases/drift.rs; find_drift_candidates 软带 0.3-0.85 + timeline 证据 takes 候选报告 + BudgetMeter 接入；默认关闭 dream.drift.enabled）",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-6-3",
+      "children": [],
+      "decisions": [],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-23 17:12:54",
-    "updated": "2026-07-31 12:10:31",
+    "updated": "2026-07-31 14:54:13",
     "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_PART12_CYCLE_MIGRATION.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART12_CYCLE_MIGRATION.md"
