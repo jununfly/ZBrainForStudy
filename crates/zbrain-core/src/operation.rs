@@ -3404,7 +3404,7 @@ impl TypedOperation for TakesScorecardOperation {
             };
 
             // 3. previous anchor (None → perform_sync falls back to full sync).
-            let previous_commit = crate::sync::anchor::get_sync_anchor(&engine, &source_id)
+            let previous_commit = crate::sync::anchor::get_sync_anchor(&*engine, &source_id)
                 .await
                 .map_err(|e| {
                     OperationError::new(
@@ -3429,7 +3429,7 @@ impl TypedOperation for TakesScorecardOperation {
                 failures_dir,
                 max_file_size: None,
             };
-            let result = crate::sync::core::perform_sync(&engine, &opts, None)
+            let result = crate::sync::core::perform_sync(&*engine, &opts, None)
                 .await
                 .map_err(|e| {
                     OperationError::new(ErrorCode::StorageError, &format!("sync failed: {e}"))

@@ -34,7 +34,7 @@ impl SyncConcurrency {
 pub const DEFAULT_POSTGRES_PARALLELISM: usize = 8;
 
 /// Determine the appropriate concurrency strategy for a given engine.
-pub fn detect_concurrency(engine: &Arc<dyn BrainEngine>) -> SyncConcurrency {
+pub fn detect_concurrency(engine: &dyn BrainEngine) -> SyncConcurrency {
     match engine.kind() {
         EngineKind::Postgres => SyncConcurrency::Parallel(DEFAULT_POSTGRES_PARALLELISM),
         EngineKind::Libsql | EngineKind::InMemory => SyncConcurrency::Serial,
@@ -47,7 +47,7 @@ pub fn detect_concurrency(engine: &Arc<dyn BrainEngine>) -> SyncConcurrency {
 /// regardless of engine type. If `Some(1)`, uses `Serial`.
 /// If `None`, auto-detects based on engine type.
 pub fn detect_concurrency_with_override(
-    engine: &Arc<dyn BrainEngine>,
+    engine: &dyn BrainEngine,
     user_parallelism: Option<usize>,
 ) -> SyncConcurrency {
     match user_parallelism {
@@ -69,7 +69,7 @@ mod tests {
     #[test]
     fn in_memory_is_serial() {
         let engine = test_engine();
-        assert_eq!(detect_concurrency(&engine), SyncConcurrency::Serial);
+        assert_eq!(detect_concurrency(&*engine), SyncConcurrency::Serial);
     }
 
     #[test]
@@ -86,28 +86,28 @@ mod tests {
     #[test]
     fn override_serial() {
         let engine = test_engine();
-        let strategy = detect_concurrency_with_override(&engine, Some(1));
+        let strategy = detect_concurrency_with_override(&*engine, Some(1));
         assert_eq!(strategy, SyncConcurrency::Serial);
     }
 
     #[test]
     fn override_parallel() {
         let engine = test_engine();
-        let strategy = detect_concurrency_with_override(&engine, Some(4));
+        let strategy = detect_concurrency_with_override(&*engine, Some(4));
         assert_eq!(strategy, SyncConcurrency::Parallel(4));
     }
 
     #[test]
     fn override_zero_is_serial() {
         let engine = test_engine();
-        let strategy = detect_concurrency_with_override(&engine, Some(0));
+        let strategy = detect_concurrency_with_override(&*engine, Some(0));
         assert_eq!(strategy, SyncConcurrency::Serial);
     }
 
     #[test]
     fn no_override_uses_auto_detect() {
         let engine = test_engine();
-        let strategy = detect_concurrency_with_override(&engine, None);
+        let strategy = detect_concurrency_with_override(&*engine, None);
         // InMemory → Serial
         assert_eq!(strategy, SyncConcurrency::Serial);
     }

@@ -15,7 +15,9 @@ use crate::progress::ProgressReporter;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::anchor::{get_sync_anchor, set_sync_anchor, is_anchor_current, is_chunker_stale, SyncAnchor};
+use super::anchor::{
+    get_sync_anchor, is_anchor_current, is_chunker_stale, set_sync_anchor, SyncAnchor,
+};
 use super::concurrency::{detect_concurrency, SyncConcurrency};
 use super::failures::{record_sync_failures, SyncFailure};
 use super::import::{import_one_path, ImportOnePathOpts};
@@ -58,18 +60,17 @@ pub struct SyncResult {
 /// - The source has no anchor (never synced before).
 /// - The chunker version has changed since the last sync.
 pub async fn needs_full_sync(
-    engine: &Arc<dyn BrainEngine>,
+    engine: &dyn BrainEngine,
     source_id: &str,
     current_chunker_version: &str,
 ) -> Result<bool, crate::error::Error> {
-    let source = engine
-        .get_source(source_id)
-        .await?
-        .ok_or_else(|| crate::error::StructuredError::new(
+    let source = engine.get_source(source_id).await?.ok_or_else(|| {
+        crate::error::StructuredError::new(
             "SourceNotFound",
             "source_not_found",
             format!("source not found: {source_id}"),
-        ))?;
+        )
+    })?;
 
     if source.last_commit.is_none() {
         return Ok(true);
@@ -91,7 +92,7 @@ pub async fn needs_full_sync(
 /// If `progress` is `Some`, emits human/JSON progress events via the
 /// reporter (`start` with total count, `tick` per path, `finish`).
 pub async fn perform_full_sync(
-    engine: &Arc<dyn BrainEngine>,
+    engine: &dyn BrainEngine,
     opts: &FullSyncOpts,
     mut progress: Option<&mut ProgressReporter>,
 ) -> Result<SyncResult, crate::error::Error> {
@@ -102,12 +103,13 @@ pub async fn perform_full_sync(
         max_file_size: opts.max_file_size,
     };
 
-    let entries = walk_source(&walk_opts, default_is_syncable)
-        .map_err(|e| crate::error::StructuredError::new(
+    let entries = walk_source(&walk_opts, default_is_syncable).map_err(|e| {
+        crate::error::StructuredError::new(
             "SyncWalkError",
             "sync_walk_error",
             format!("failed to walk source directory: {e}"),
-        ))?;
+        )
+    })?;
 
     let mut imported = 0usize;
     let mut failures = Vec::new();
@@ -155,7 +157,10 @@ pub async fn perform_full_sync(
     }
 
     // Update the sync anchor
-    let anchor = SyncAnchor::now(opts.current_commit.clone(), opts.chunker_version.map(|v| v.to_string()));
+    let anchor = SyncAnchor::now(
+        opts.current_commit.clone(),
+        opts.chunker_version.map(|v| v.to_string()),
+    );
     set_sync_anchor(engine, &opts.source_id, &anchor).await?;
 
     Ok(SyncResult {
@@ -189,7 +194,7 @@ pub struct IncrementalSyncOpts {
 ///
 /// If `previous_commit` is `None`, this falls back to a full sync.
 pub async fn perform_sync(
-    engine: &Arc<dyn BrainEngine>,
+    engine: &dyn BrainEngine,
     opts: &IncrementalSyncOpts,
     mut progress: Option<&mut ProgressReporter>,
 ) -> Result<SyncResult, crate::error::Error> {
@@ -215,11 +220,13 @@ pub async fn perform_sync(
 
     // Run git diff to get changed files
     let diff_output = run_git_diff(&opts.repo_path, &previous_commit, &opts.current_commit)
-        .map_err(|e| crate::error::StructuredError::new(
-            "SyncGitError",
-            "sync_git_error",
-            format!("failed to run git diff: {e}"),
-        ))?;
+        .map_err(|e| {
+            crate::error::StructuredError::new(
+                "SyncGitError",
+                "sync_git_error",
+                format!("failed to run git diff: {e}"),
+            )
+        })?;
 
     // Build manifest
     let manifest = build_manifest(&diff_output, default_is_syncable);
@@ -300,7 +307,10 @@ pub async fn perform_sync(
     }
 
     // Update the sync anchor
-    let anchor = SyncAnchor::now(opts.current_commit.clone(), opts.chunker_version.map(|v| v.to_string()));
+    let anchor = SyncAnchor::now(
+        opts.current_commit.clone(),
+        opts.chunker_version.map(|v| v.to_string()),
+    );
     set_sync_anchor(engine, &opts.source_id, &anchor).await?;
 
     Ok(SyncResult {
@@ -373,7 +383,7 @@ mod tests {
     #[tokio::test]
     async fn needs_full_sync_when_no_anchor() {
         let (engine, source_id, _dir) = setup_engine_with_source().await;
-        assert!(needs_full_sync(&engine, &source_id, "v1").await.unwrap());
+        assert!(needs_full_sync(&*engine, &source_id, "v1").await.unwrap());
     }
 
     #[tokio::test]
@@ -399,9 +409,9 @@ mod tests {
             .unwrap();
 
         // v2 is different → needs full sync
-        assert!(needs_full_sync(&engine, &source_id, "v2").await.unwrap());
+        assert!(needs_full_sync(&*engine, &source_id, "v2").await.unwrap());
         // v1 is same → no full sync needed
-        assert!(!needs_full_sync(&engine, &source_id, "v1").await.unwrap());
+        assert!(!needs_full_sync(&*engine, &source_id, "v1").await.unwrap());
     }
 
     #[tokio::test]
@@ -424,14 +434,14 @@ mod tests {
             max_file_size: None,
         };
 
-        let result = perform_full_sync(&engine, &opts, None).await.unwrap();
+        let result = perform_full_sync(&*engine, &opts, None).await.unwrap();
 
         assert_eq!(result.imported, 2); // readme.md + docs/guide.md
         assert_eq!(result.deleted, 0);
         assert!(result.full_sync);
 
         // Verify anchor was set
-        let anchor = get_sync_anchor(&engine, &source_id).await.unwrap();
+        let anchor = get_sync_anchor(&*engine, &source_id).await.unwrap();
         assert_eq!(anchor.last_commit.as_deref(), Some("abc123"));
     }
 
@@ -449,7 +459,7 @@ mod tests {
             max_file_size: None,
         };
 
-        let result = perform_full_sync(&engine, &opts, None).await.unwrap();
+        let result = perform_full_sync(&*engine, &opts, None).await.unwrap();
         assert_eq!(result.imported, 0);
     }
 }

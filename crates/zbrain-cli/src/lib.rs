@@ -2792,7 +2792,7 @@ async fn run_sync_command(args: SyncArgs, config_path: Option<&Path>, cli_opts: 
             failures_dir: failures_dir.clone(),
             max_file_size,
         };
-        perform_full_sync(&engine, &opts, Some(&mut reporter)).await?
+        perform_full_sync(&*engine, &opts, Some(&mut reporter)).await?
     } else {
         // Get previous anchor for incremental sync
         let source = engine
@@ -2817,7 +2817,7 @@ async fn run_sync_command(args: SyncArgs, config_path: Option<&Path>, cli_opts: 
             failures_dir: failures_dir.clone(),
             max_file_size,
         };
-        perform_sync(&engine, &opts, Some(&mut reporter)).await?
+        perform_sync(&*engine, &opts, Some(&mut reporter)).await?
     };
 
     // Print result

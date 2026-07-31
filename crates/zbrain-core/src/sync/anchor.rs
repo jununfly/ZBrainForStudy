@@ -32,17 +32,16 @@ impl SyncAnchor {
 
 /// Read the current sync anchor from the engine for a source.
 pub async fn get_sync_anchor(
-    engine: &Arc<dyn BrainEngine>,
+    engine: &dyn BrainEngine,
     source_id: &str,
 ) -> Result<SyncAnchor, crate::error::Error> {
-    let source = engine
-        .get_source(source_id)
-        .await?
-        .ok_or_else(|| crate::error::StructuredError::new(
+    let source = engine.get_source(source_id).await?.ok_or_else(|| {
+        crate::error::StructuredError::new(
             "SourceNotFound",
             "source_not_found",
             format!("source not found: {source_id}"),
-        ))?;
+        )
+    })?;
     Ok(SyncAnchor {
         last_commit: source.last_commit,
         last_sync_at: source.last_sync_at,
@@ -52,7 +51,7 @@ pub async fn get_sync_anchor(
 
 /// Write the sync anchor to the engine for a source.
 pub async fn set_sync_anchor(
-    engine: &Arc<dyn BrainEngine>,
+    engine: &dyn BrainEngine,
     source_id: &str,
     anchor: &SyncAnchor,
 ) -> Result<(), crate::error::Error> {
@@ -123,11 +122,9 @@ mod tests {
             chunker_version: Some("v2".to_string()),
         };
 
-        set_sync_anchor(&engine, &source_id, &anchor)
-            .await
-            .unwrap();
+        set_sync_anchor(&*engine, &source_id, &anchor).await.unwrap();
 
-        let read_back = get_sync_anchor(&engine, &source_id).await.unwrap();
+        let read_back = get_sync_anchor(&*engine, &source_id).await.unwrap();
         assert_eq!(read_back, anchor);
     }
 
@@ -140,11 +137,9 @@ mod tests {
         assert_eq!(anchor.last_commit.as_deref(), Some("def456"));
         assert_eq!(anchor.chunker_version.as_deref(), Some("v3"));
 
-        set_sync_anchor(&engine, &source_id, &anchor)
-            .await
-            .unwrap();
+        set_sync_anchor(&*engine, &source_id, &anchor).await.unwrap();
 
-        let read_back = get_sync_anchor(&engine, &source_id).await.unwrap();
+        let read_back = get_sync_anchor(&*engine, &source_id).await.unwrap();
         assert_eq!(read_back.last_commit.as_deref(), Some("def456"));
         assert_eq!(read_back.chunker_version.as_deref(), Some("v3"));
         assert!(read_back.last_sync_at.is_some());
@@ -161,11 +156,9 @@ mod tests {
             chunker_version: None,
         };
 
-        set_sync_anchor(&engine, &source_id, &anchor)
-            .await
-            .unwrap();
+        set_sync_anchor(&*engine, &source_id, &anchor).await.unwrap();
 
-        let read_back = get_sync_anchor(&engine, &source_id).await.unwrap();
+        let read_back = get_sync_anchor(&*engine, &source_id).await.unwrap();
         assert_eq!(read_back.last_commit, None);
         assert_eq!(read_back.last_sync_at, None);
         assert_eq!(read_back.chunker_version, None);

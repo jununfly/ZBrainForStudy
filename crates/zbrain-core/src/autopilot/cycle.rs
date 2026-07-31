@@ -122,10 +122,12 @@ impl CyclePhase {
     }
 
     /// Whether this phase mutates state and needs the cycle lock.
-    /// Mirrors TS `NEEDS_LOCK_PHASES`. `orphans` (read-only) and `drift`
-    /// (v0.28 scaffold surfaces candidates, writes nothing) are read-only.
+    /// Mirrors TS `NEEDS_LOCK_PHASES`. Read-only phases: `orphans`
+    /// (read-only scan), `drift` (default-disabled, surfacing only), and
+    /// `backlinks` (audit-only — writes nothing; the link graph is the
+    /// canonical backlink store).
     pub fn needs_lock(&self) -> bool {
-        !matches!(self, CyclePhase::Orphans | CyclePhase::Drift)
+        !matches!(self, CyclePhase::Orphans | CyclePhase::Drift | CyclePhase::Backlinks)
     }
 
     /// Phase scope: per-source, brain-global, or mixed.
@@ -1358,18 +1360,266 @@ async fn execute_phase(
             }
         }
 
+        // ── Sync: reuse sync::core::perform_sync ─────────────────────
+        CyclePhase::Sync => {
+            // Sync needs a real git repo (brain_dir) AND a resolvable source
+            // (perform_sync stamps the sync anchor on the source row; TS falls
+            // back to global config.sync.* keys, which Rust's perform_sync
+            // does not implement). Skeleton/maintenance brains without either
+            // simply skip — there is nothing to pull/import.
+            if _opts.brain_dir.is_empty() || _opts.source_id.is_none() {
+                return PhaseResult {
+                    phase: label.into(),
+                    status: PhaseStatus::Skipped,
+                    duration_ms: phase_start.elapsed().as_millis() as u64,
+                    summary: "sync skipped (no brain_dir or source)".into(),
+                    details: serde_json::json!({ "reason": "no_brain_dir_or_source" }),
+                    error: None,
+                };
+            }
+            use crate::git::GitClient;
+            use crate::sync::core::{perform_sync, IncrementalSyncOpts};
+            use std::path::Path;
+            let source_id = _opts.source_id.clone().unwrap_or_default();
+            let current_commit = GitClient::head_commit(Path::new(&_opts.brain_dir))
+                .await
+                .unwrap_or_default();
+            let previous_commit = match engine.get_source(&source_id).await {
+                Ok(Some(s)) => s.last_commit,
+                _ => None,
+            };
+            let opts = IncrementalSyncOpts {
+                source_id,
+                repo_path: Path::new(&_opts.brain_dir).to_path_buf(),
+                current_commit,
+                previous_commit,
+                chunker_version: None,
+                failures_dir: std::env::temp_dir(),
+                max_file_size: None,
+            };
+            match perform_sync(engine, &opts, None).await {
+                Ok(r) => {
+                    let status = if r.failures > 0 {
+                        PhaseStatus::Warn
+                    } else {
+                        PhaseStatus::Ok
+                    };
+                    PhaseResult {
+                        phase: label.into(),
+                        status,
+                        duration_ms: phase_start.elapsed().as_millis() as u64,
+                        summary: format!("+{} imported, -{} deleted", r.imported, r.deleted),
+                        details: serde_json::json!({
+                            "added": r.imported,
+                            "modified": 0u64,
+                            "deleted": r.deleted,
+                            "failures": r.failures,
+                            "full_sync": r.full_sync,
+                            "dryRun": dry_run,
+                        }),
+                        error: None,
+                    }
+                }
+                Err(e) => PhaseResult {
+                    phase: label.into(),
+                    status: PhaseStatus::Fail,
+                    duration_ms: phase_start.elapsed().as_millis() as u64,
+                    summary: "sync phase failed".into(),
+                    details: serde_json::json!({}),
+                    error: Some(PhaseError {
+                        class: "SyncError".into(),
+                        code: "SYNC_FAILED".into(),
+                        message: e.to_string(),
+                        hint: None,
+                        docs_url: None,
+                    }),
+                },
+            }
+        }
+
+        // ── Lint: not yet ported to Rust (TS commands/lint.ts runLintCore) ──
+        CyclePhase::Lint => {
+            // Rust has no port of the page-level markdown lint that TS
+            // `runPhaseLint` performs. The only Rust "lint" is
+            // schema_pack::lint_rules (manifest validation) — a different
+            // concern. Tracked as KNOWN-GAP G65. We report skipped rather
+            // than fake a run.
+            PhaseResult {
+                phase: label.into(),
+                status: PhaseStatus::Skipped,
+                duration_ms: phase_start.elapsed().as_millis() as u64,
+                summary: "lint skipped (not ported to Rust)".into(),
+                details: serde_json::json!({
+                    "reason": "lint_not_ported_to_rust",
+                    "ts_ref": "commands/lint.ts runLintCore",
+                }),
+                error: None,
+            }
+        }
+
+        // ── Backlinks: audit-only (derived from page_links, writes nothing) ──
+        CyclePhase::Backlinks => {
+            // Maintenance backlinks are audit-only: the link graph
+            // (page_links) is the canonical backlink store, and maintenance
+            // cycles must NOT rewrite tracked pages with generated
+            // "Referenced in" bullets. We audit the graph on read and report
+            // it intact (gaps=0 by construction). Writes nothing.
+            match engine.list_all_page_refs().await {
+                Ok(refs) => {
+                    let pages_affected = refs.len() as u64;
+                    PhaseResult {
+                        phase: label.into(),
+                        status: PhaseStatus::Ok,
+                        duration_ms: phase_start.elapsed().as_millis() as u64,
+                        summary: format!(
+                            "{} page(s) audited (backlinks derived from page_links)",
+                            pages_affected
+                        ),
+                        details: serde_json::json!({
+                            "gaps": 0u64,
+                            "added": 0u64,
+                            "pages_affected": pages_affected,
+                            "mode": "audit-only",
+                            "dryRun": dry_run,
+                        }),
+                        error: None,
+                    }
+                }
+                Err(e) => PhaseResult {
+                    phase: label.into(),
+                    status: PhaseStatus::Fail,
+                    duration_ms: phase_start.elapsed().as_millis() as u64,
+                    summary: "backlinks phase failed".into(),
+                    details: serde_json::json!({}),
+                    error: Some(PhaseError {
+                        class: "BacklinksError".into(),
+                        code: "BACKLINKS_FAILED".into(),
+                        message: e.to_string(),
+                        hint: None,
+                        docs_url: None,
+                    }),
+                },
+            }
+        }
+
+        // ── Extract: reuse auto_fix::extract_links ──────────────────
+        CyclePhase::Extract => {
+            use crate::auto_fix::{extract_links, ExtractLinksOpts};
+            // TS honors dry-run by skipping (no clean dry-run mode yet).
+            // Mirror that honestly.
+            if dry_run {
+                return PhaseResult {
+                    phase: label.into(),
+                    status: PhaseStatus::Skipped,
+                    duration_ms: phase_start.elapsed().as_millis() as u64,
+                    summary: "dry-run: extract skipped (no dry-run mode yet)".into(),
+                    details: serde_json::json!({ "dryRun": true, "reason": "no_dry_run_support" }),
+                    error: None,
+                };
+            }
+            match extract_links(engine, &ExtractLinksOpts::default()).await {
+                Ok(r) => PhaseResult {
+                    phase: label.into(),
+                    status: PhaseStatus::Ok,
+                    duration_ms: phase_start.elapsed().as_millis() as u64,
+                    summary: format!("{} link(s) created", r.links_created),
+                    details: serde_json::json!({
+                        "linksCreated": r.links_created,
+                        "pages_processed": r.pages_processed,
+                        "dangling": r.dangling,
+                        "incremental": false,
+                    }),
+                    error: None,
+                },
+                Err(e) => PhaseResult {
+                    phase: label.into(),
+                    status: PhaseStatus::Fail,
+                    duration_ms: phase_start.elapsed().as_millis() as u64,
+                    summary: "extract phase failed".into(),
+                    details: serde_json::json!({}),
+                    error: Some(PhaseError {
+                        class: "ExtractError".into(),
+                        code: "EXTRACT_FAILED".into(),
+                        message: e.to_string(),
+                        hint: None,
+                        docs_url: None,
+                    }),
+                },
+            }
+        }
+
+        // ── Embed: reuse auto_fix::embed_stale (needs embedding client) ──
+        CyclePhase::Embed => {
+            #[cfg(feature = "embedding")]
+            {
+                use crate::auto_fix::{embed_stale, EmbedStaleOpts};
+                use crate::embedding::EmbeddingClient;
+                let Some(client) = EmbeddingClient::from_env() else {
+                    return PhaseResult {
+                        phase: label.into(),
+                        status: PhaseStatus::Skipped,
+                        duration_ms: phase_start.elapsed().as_millis() as u64,
+                        summary: "embed skipped (no embedding client configured)".into(),
+                        details: serde_json::json!({ "reason": "no_embedding_client" }),
+                        error: None,
+                    };
+                };
+                let opts = EmbedStaleOpts {
+                    dry_run,
+                    source_id: _opts.source_id.clone(),
+                };
+                match embed_stale(engine, &client, &opts).await {
+                    Ok(r) => PhaseResult {
+                        phase: label.into(),
+                        status: PhaseStatus::Ok,
+                        duration_ms: phase_start.elapsed().as_millis() as u64,
+                        summary: if dry_run {
+                            format!("{} chunk(s) would be embedded (dry-run)", r.would_embed)
+                        } else {
+                            format!("{} chunk(s) newly embedded", r.embedded)
+                        },
+                        details: serde_json::json!({
+                            "embedded": r.embedded,
+                            "would_embed": r.would_embed,
+                            "skipped": r.skipped,
+                            "total": r.total,
+                            "dryRun": dry_run,
+                        }),
+                        error: None,
+                    },
+                    Err(e) => PhaseResult {
+                        phase: label.into(),
+                        status: PhaseStatus::Fail,
+                        duration_ms: phase_start.elapsed().as_millis() as u64,
+                        summary: "embed phase failed".into(),
+                        details: serde_json::json!({}),
+                        error: Some(PhaseError {
+                            class: "EmbeddingError".into(),
+                            code: "EMBED_FAILED".into(),
+                            message: e.to_string(),
+                            hint: None,
+                            docs_url: None,
+                        }),
+                    },
+                }
+            }
+            #[cfg(not(feature = "embedding"))]
+            {
+                PhaseResult {
+                    phase: label.into(),
+                    status: PhaseStatus::Skipped,
+                    duration_ms: phase_start.elapsed().as_millis() as u64,
+                    summary: "embed skipped (embedding feature disabled)".into(),
+                    details: serde_json::json!({ "reason": "embedding_feature_disabled" }),
+                    error: None,
+                }
+            }
+        }
+
         // ── Skipped stubs (not yet migrated) ────────────────────────
         _ => {
-            let reason = if matches!(
-                phase,
-                CyclePhase::Sync
-                    | CyclePhase::Lint
-                    | CyclePhase::Backlinks
-                    | CyclePhase::Extract
-                    | CyclePhase::Embed
-                    | CyclePhase::Consolidate
-            ) {
-                "not_migrated: needs orchestration function (syncRepo/recomputeBacklinks/embedBackfill etc.)"
+            let reason = if matches!(phase, CyclePhase::Consolidate) {
+                "not_migrated: needs orchestration function (consolidateFacts etc.)"
             } else {
                 "not_migrated: LLM-heavy phase (no Rust chat provider integration yet)"
             };
@@ -1649,7 +1899,10 @@ mod tests {
     #[test]
     fn read_only_phases_do_not_need_lock() {
         for &phase in CyclePhase::ALL {
-            if phase == CyclePhase::Orphans || phase == CyclePhase::Drift {
+            if phase == CyclePhase::Orphans
+                || phase == CyclePhase::Drift
+                || phase == CyclePhase::Backlinks
+            {
                 assert!(!phase.needs_lock(), "{} should not need lock", phase.label());
             } else {
                 assert!(phase.needs_lock(), "{} should need lock", phase.label());
@@ -1766,9 +2019,32 @@ mod tests {
             .unwrap();
         assert_eq!(schema_suggest.status, PhaseStatus::Ok);
         assert_eq!(schema_suggest.summary, "0 suggestions emitted");
+        // sync is now wired (reuses sync::core::perform_sync) but the empty-
+        // brain test has no source_id → Skipped (no anchor target).
+        let sync = report.phases.iter().find(|p| p.phase == "sync").unwrap();
+        assert_eq!(sync.status, PhaseStatus::Skipped);
+        assert_eq!(sync.details["reason"], "no_brain_dir_or_source");
+        // extract is now wired (reuses auto_fix::extract_links) and runs on the
+        // DB; empty brain → 0 links, Ok.
+        let extract = report.phases.iter().find(|p| p.phase == "extract").unwrap();
+        assert_eq!(extract.status, PhaseStatus::Ok);
+        assert_eq!(extract.details["linksCreated"], 0);
+        // backlinks is now wired as audit-only (derived from page_links); empty
+        // brain → 0 pages audited, Ok.
+        let backlinks = report.phases.iter().find(|p| p.phase == "backlinks").unwrap();
+        assert_eq!(backlinks.status, PhaseStatus::Ok);
+        assert_eq!(backlinks.details["pages_affected"], 0);
+        assert_eq!(backlinks.details["mode"], "audit-only");
+        // embed is now wired (reuses auto_fix::embed_stale) but no embedding
+        // client/feature in the test → Skipped.
+        let embed = report.phases.iter().find(|p| p.phase == "embed").unwrap();
+        assert_eq!(embed.status, PhaseStatus::Skipped);
+        // lint is not yet ported to Rust → Skipped with a clear reason.
+        let lint = report.phases.iter().find(|p| p.phase == "lint").unwrap();
+        assert_eq!(lint.status, PhaseStatus::Skipped);
+        assert_eq!(lint.details["reason"], "lint_not_ported_to_rust");
         // patterns is a real phase now: empty brain → 0 reflections <
-        // min_evidence(3) → Skipped (insufficient_evidence). It was already
-        // Skipped via the catch-all, so skipped_count is unchanged at 15.
+        // min_evidence(3) → Skipped (insufficient_evidence).
         let patterns = report
             .phases
             .iter()
@@ -1776,16 +2052,15 @@ mod tests {
             .unwrap();
         assert_eq!(patterns.status, PhaseStatus::Skipped);
         assert_eq!(patterns.summary, "0 reflections in last 30d (need ≥3)");
-        // All other phases should be Skipped. Count is 17: extract-atoms +
+        // All other phases should be Skipped. Count is 15: extract-atoms +
         // propose-takes + grade-takes + calibration-profile +
         // conversation-facts-backfill + synthesize-concepts (real LLM phases,
-        // no chat here) + 9 stubs + auto-think (default-disabled → Skipped) +
-        // drift (default-disabled scaffold → Skipped, 1-6-3-3).
-        // recompute-emotional-weight is no longer skipped (deterministic →
-        // Ok), and schema-suggest left the catch-all as a real no-LLM phase
-        // (→ Ok), dropping the count from 18 to 17.
+        // no chat here) + auto-think (default-disabled → Skipped) + drift
+        // (default-disabled scaffold → Skipped, 1-6-3-3) + embed (no client/
+        // feature) + lint (not ported). Sync/extract/backlinks are now wired
+        // and run to Ok(0) on an empty brain, dropping the count from 17 to 15.
         let skipped_count = report.phases.iter().filter(|p| p.status == PhaseStatus::Skipped).count();
-        assert_eq!(skipped_count, 17);
+        assert_eq!(skipped_count, 15);
     }
 
     #[tokio::test]

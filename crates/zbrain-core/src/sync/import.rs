@@ -63,7 +63,7 @@ pub struct ImportOnePathResult {
 /// 4. Call `engine.put_page()` with the resulting `PageInput`.
 /// 5. Call `engine.add_tag()` for each inferred tag.
 pub async fn import_one_path(
-    engine: &Arc<dyn BrainEngine>,
+    engine: &dyn BrainEngine,
     opts: &ImportOnePathOpts,
 ) -> Result<ImportOnePathResult, ImportError> {
     // 1. Read the file
@@ -223,7 +223,7 @@ mod tests {
             path_prefixes: None,
         };
 
-        let result = import_one_path(&engine, &opts).await.unwrap();
+        let result = import_one_path(&*engine, &opts).await.unwrap();
 
         assert!(!result.slug.is_empty());
         assert_eq!(result.title, "Hello World");
@@ -265,7 +265,7 @@ mod tests {
             path_prefixes: None,
         };
 
-        let result = import_one_path(&engine, &opts).await.unwrap();
+        let result = import_one_path(&*engine, &opts).await.unwrap();
 
         assert_eq!(result.chunks_upserted, 1);
 
@@ -313,7 +313,7 @@ mod tests {
             path_prefixes: None,
         };
 
-        let err = import_one_path(&engine, &opts).await.unwrap_err();
+        let err = import_one_path(&*engine, &opts).await.unwrap_err();
 
         assert!(matches!(err, ImportError::Engine(_)));
         assert!(err.to_string().contains("chunk write failed"));
@@ -337,7 +337,7 @@ mod tests {
             path_prefixes: None,
         };
 
-        let result = import_one_path(&engine, &opts).await.unwrap();
+        let result = import_one_path(&*engine, &opts).await.unwrap();
 
         // Frontmatter title should take precedence
         assert_eq!(result.title, "Custom Title");
@@ -371,11 +371,11 @@ mod tests {
             path_prefixes: None,
         };
 
-        let result1 = import_one_path(&engine, &opts).await.unwrap();
+        let result1 = import_one_path(&*engine, &opts).await.unwrap();
         assert!(result1.content_changed);
 
         // Second import with same content — should not error
-        let result2 = import_one_path(&engine, &opts).await.unwrap();
+        let result2 = import_one_path(&*engine, &opts).await.unwrap();
         assert_eq!(result2.slug, result1.slug);
     }
 
@@ -391,7 +391,7 @@ mod tests {
             path_prefixes: None,
         };
 
-        let result = import_one_path(&engine, &opts).await;
+        let result = import_one_path(&*engine, &opts).await;
         assert!(result.is_err());
     }
 }
