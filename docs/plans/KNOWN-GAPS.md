@@ -94,6 +94,7 @@
 
 
 | G64 | **drift phase 的 raw 查询用 sqlite `?1` 占位符，postgres `$N` 不兼容** | `crates/zbrain-core/src/autopilot/phases/drift.rs` `find_drift_candidates` SQL（就近注释 `registered in docs/plans/KNOWN-GAPS.md (G64)`）；`parse_drift_candidates` 纯函数不受影响 | TS `drift.ts` 用 `$1::date`（postgres 风格）；sibling `patterns.rs` 用 `?1`（sqlite 风格）—— 仓库 `execute_raw` 不做占位符翻译，raw 查询后端特定 | 当前 cycle 主引擎是 libsql（sqlite `?1`），drift 在 InMemoryEngine（测试）上 execute_raw 未实现→fail-soft 空候选。postgres 生产后端需把 `?1/?2/?3/?4` 改写为 `$1/$2/$3/$4` 并重写日期 cast（sqlite `te.date >= ?1` 文本比较 vs pg `te.date >= $1::date`）。解缠路径：给 `execute_raw` 加占位符规范化（或按 engine backend 选 SQL 变体），属 raw-query 后端可移植性切片，低于 1-6 收尾 | open |
+| G65 | **Lint phase 未移植到 Rust（cycle 臂诚实 Skipped）** | `crates/zbrain-core/src/autopilot/cycle.rs` Lint 臂（`details.reason="lint_not_ported_to_rust"`，`ts_ref="commands/lint.ts runLintCore"`，就近注释指向本 G65）；roadmap `1-6-4` decisions 含此项 | TS `src/commands/lint.ts` `runLintCore`（页面级 lint：frontmatter schema / dead-link / orphan 检测并写 `lint-report.json`）| Rust 侧 `LintHandler` 仅为 `not_implemented` 骨架；`schema_pack::lint_rules` 是**清单 lint**（schema pack 内部规则），与页面级 lint 语义不同，不能冒充。1-6-4 决策（用户 2026-07-31 确认"诚实版"）：臂返回 `Skipped` 并明确标注 "Rust 未移植"，不伪造实现。解缠路径：单独切片 port `runLintCore`（需 page_links / frontmatter 解析 / lint-report 写出基建），归 lint 子系统迁移；届时把臂改为真实调用并移除本 G65 | open |
 
 ## G1 详情 — Think/evidence 检索丢失 rerank
 

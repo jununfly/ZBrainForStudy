@@ -511,12 +511,38 @@
     "1-6-4": {
       "id": "1-6-4",
       "label": "简单 stub 臂接线 Sync/Lint/Backlinks/Extract/Embed (复用 sync/core.rs perform_sync、links backlinks、embedding.rs、ingestion; TS runPhaseSync/Extract/Embed/Lint/Backlinks 语义对齐)",
-      "status": "pending",
-      "mode": "explore",
+      "status": "completed",
+      "mode": "implement",
       "parent": "1-6",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "5 个 stub 臂如何接？",
+          "answer": "诚实版（用户显式选择）：Extract/Embed/Sync 真实调用现有 Rust 复用；Backlinks 审计型（基于 page_links 派生、不写盘、mode=audit-only）；Lint 诚实 Skipped 并标注 Rust 未移植。不伪造实现。",
+          "note": "roadmap label 原假设 5 个都有干净复用目标；实际 Lint/Backlinks 无移植，须诚实处理"
+        },
+        {
+          "q": "sync perform_sync 等函数签名如何改造？",
+          "answer": "engine 参数 &Arc<dyn BrainEngine> → &dyn BrainEngine 加宽（anchor/concurrency/import/core 共 8 处）；调用方 &engine(Arc) → &*engine。",
+          "note": "避免 Arc 向上贯穿 run_cycle→run_autopilot_tick（9 调用方）的爆炸式改动；&Arc→&dyn 因指针宽度变化不能自动 coerce，须显式 &*"
+        },
+        {
+          "q": "Embed 臂依赖 EmbeddingClient 如何处理？",
+          "answer": "feature-gated 双分支：cfg(feature=\"embedding\") 走 EmbeddingClient::from_env + embed_stale；否则 Skipped(reason=embedding_feature_disabled)。",
+          "note": "from_env 在 embedding feature 下"
+        },
+        {
+          "q": "Lint 臂为何 Skipped？",
+          "answer": "Rust 无页面级 lint 移植（LintHandler 为 not_implemented 骨架；仅 schema_pack::lint_rules 清单 lint，语义不同），标注 G65。",
+          "note": "registered in docs/plans/KNOWN-GAPS.md (G65)"
+        },
+        {
+          "q": "Backlinks 为何加入 read-only（needs_lock=false）？",
+          "answer": "审计型不写盘，仅 list_all_page_refs 派生 gaps/added/pages_affected，mode=audit-only。",
+          "note": "对齐 TS 维护周期 audit-only 语义"
+        }
+      ],
+      "notes": "cycle.rs execute_phase 5 个显式臂 + 精简 catch-all(Consolidate 走 not_migrated，其余 LLM-heavy 走原 reason)。run_cycle_empty_brain 测试扩展 5 断言，skipped_count 17→15（extract/backlinks 现跑成 Ok(0)，sync 仍 Skipped）。"
     },
     "1-6-5": {
       "id": "1-6-5",

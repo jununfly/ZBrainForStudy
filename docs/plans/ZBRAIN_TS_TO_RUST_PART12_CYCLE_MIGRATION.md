@@ -30,7 +30,7 @@
 │   ├── [ ][X+] 1-6-1. 编排骨架强化 (CycleOpts 补 signal/yield/synth 透传 + no_database 守卫 + pack 门控 extract_atoms/synthesize_concepts + resolveSourceForDir + extractTotals 回填 + makeErrorFromException 错误信封 hint/docs_url + deriveStatus 空列表→failed + last_full_cycle_at)
 │   ├── [ ][X+] 1-6-2. 周期锁 (per-source cycle lock; busy→skipped/cycle_already_running, 失败→failed/lock_acquisition_error; 复用 sync/lock.rs 基建)
 │   ├── [~][X+] 1-6-3. BudgetMeter 共享模块 (port budget-meter.ts 188行 → autopilot/budget_meter.rs; check/estimateMaxCostUsd/unpriced warn-once/审计 jsonl ~/.zbrain/audit/dream-budget-*.jsonl; auto_think/drift/calibration 三处消费)
-│   ├── [ ][X+] 1-6-4. 简单 stub 臂接线 Sync/Lint/Backlinks/Extract/Embed (复用 sync/core.rs perform_sync、links backlinks、embedding.rs、ingestion; TS runPhaseSync/Extract/Embed/Lint/Backlinks 语义对齐)
+│   ├── [x] 1-6-4. 简单 stub 臂接线 Sync/Lint/Backlinks/Extract/Embed (复用 sync/core.rs perform_sync、links backlinks、embedding.rs、ingestion; TS runPhaseSync/Extract/Embed/Lint/Backlinks 语义对齐)
 │   ├── [ ][X+] 1-6-5. consolidate phase 迁移 (port phases/consolidate.ts 297行 → autopilot/phases/consolidate.rs; (source_id,entity_slug) 桶 + 余弦0.85贪心聚类 + takes(kind=fact) + consolidated_at 标记不删除 + bitemporal valid_until + semantic upsert 去重)
 │   ├── [ ][X+] 1-6-6. phantom-redirect pre-pass (port phantom-redirect.ts 606行; extract_facts 顶部; syncLockId 单锁30s重试 + 上限50 + body-shape gate + resolvePhantomCanonical + 歧义检查 + fenceDbDrift + 8步提交链; 依赖 entities/resolve + facts-fence + phantom-audit)
 │   ├── [ ][X+] 1-6-7. drift phase 迁移 (port drift.ts 168行 → autopilot/phases/drift.rs; findDriftCandidates 软带0.3-0.85 + timeline 证据 takes 候选报告; 默认关闭 dream.drift.enabled; TS 无调用者但决策 q-0 定迁移)
