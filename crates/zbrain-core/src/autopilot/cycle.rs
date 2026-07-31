@@ -21,6 +21,18 @@ use crate::ai::chat::ChatProvider;
 use crate::engine::BrainEngine;
 use std::sync::Arc;
 
+/// Best-effort audit-dir resolution for `BaseCyclePhase` consumers (1-6-3-3).
+/// Mirrors `skillpack::audit::resolve_audit_dir` but without the feature-gated
+/// `skillpack` dependency: `ZBRAIN_AUDIT_DIR` env, else `~/.zbrain/audit`,
+/// else `./audit`. The ledger is best-effort, so a fallback is acceptable.
+fn audit_default_dir() -> std::path::PathBuf {
+    if let Some(home) = dirs::home_dir() {
+        home.join(".zbrain").join("audit")
+    } else {
+        std::path::PathBuf::from("./audit")
+    }
+}
+
 // ── Types ──────────────────────────────────────────────────────────────
 
 /// All cycle phases in execution order. Mirrors TS `CyclePhase`.
@@ -49,6 +61,7 @@ pub enum CyclePhase {
     Orphans,
     SchemaSuggest,
     Purge,
+    Drift,
 }
 
 impl CyclePhase {
@@ -76,6 +89,7 @@ impl CyclePhase {
         CyclePhase::Orphans,
         CyclePhase::SchemaSuggest,
         CyclePhase::Purge,
+        CyclePhase::Drift,
     ];
 
     /// String label for the phase (matches TS kebab-case names).
@@ -100,16 +114,18 @@ impl CyclePhase {
             CyclePhase::CalibrationProfile => "calibration-profile",
             CyclePhase::ConversationFactsBackfill => "conversation-facts-backfill",
             CyclePhase::Embed => "embed",
-            CyclePhase::Orphans => "orphans",
-            CyclePhase::SchemaSuggest => "schema-suggest",
-            CyclePhase::Purge => "purge",
-        }
+        CyclePhase::Orphans => "orphans",
+        CyclePhase::SchemaSuggest => "schema-suggest",
+        CyclePhase::Purge => "purge",
+        CyclePhase::Drift => "drift",
+    }
     }
 
     /// Whether this phase mutates state and needs the cycle lock.
-    /// Mirrors TS `NEEDS_LOCK_PHASES`. Only `orphans` is read-only.
+    /// Mirrors TS `NEEDS_LOCK_PHASES`. `orphans` (read-only) and `drift`
+    /// (v0.28 scaffold surfaces candidates, writes nothing) are read-only.
     pub fn needs_lock(&self) -> bool {
-        !matches!(self, CyclePhase::Orphans)
+        !matches!(self, CyclePhase::Orphans | CyclePhase::Drift)
     }
 
     /// Phase scope: per-source, brain-global, or mixed.
@@ -134,7 +150,8 @@ impl CyclePhase {
             | CyclePhase::Embed
             | CyclePhase::Orphans
             | CyclePhase::Purge
-            | CyclePhase::SynthesizeConcepts => PhaseScope::Global,
+            | CyclePhase::SynthesizeConcepts
+            | CyclePhase::Drift => PhaseScope::Global,
             CyclePhase::Synthesize | CyclePhase::Patterns | CyclePhase::AutoThink => PhaseScope::Mixed,
         }
     }
@@ -1193,6 +1210,32 @@ async fn execute_phase(
             }
         }
 
+        CyclePhase::Drift => {
+            use crate::autopilot::base_phase::{BaseCyclePhase, BasePhaseCtx, BasePhaseOpts};
+            use crate::autopilot::phases::drift::DriftPhase;
+
+            // First real `BaseCyclePhase` consumer (1-6-3-3). Default-disabled;
+            // `DriftPhase::run` returns Skipped unless `dream.drift.enabled`.
+            // Audit dir mirrors `budget_meter::resolve_audit_dir` (avoids the
+            // feature-gated `skillpack` path): ZBRAIN_AUDIT_DIR else ~/.zbrain/audit.
+            let audit_dir = if let Ok(dir) = std::env::var("ZBRAIN_AUDIT_DIR") {
+                if !dir.trim().is_empty() {
+                    std::path::PathBuf::from(dir.trim())
+                } else {
+                    audit_default_dir()
+                }
+            } else {
+                audit_default_dir()
+            };
+            let ctx = BasePhaseCtx::new(
+                _opts.source_id.clone(),
+                _opts.chat.clone(),
+                dry_run,
+                audit_dir,
+            );
+            DriftPhase.run(engine, &ctx, &BasePhaseOpts::default()).await
+        }
+
         CyclePhase::Patterns => {
             use crate::autopilot::phases::patterns::{run_phase_patterns, PatternsPhaseOpts};
 
@@ -1598,13 +1641,15 @@ mod tests {
         // TS has 20 phases (lint through purge). Rust adds `extract-takes` as
         // a 21st dedicated cycle phase (see extract_takes.rs taxonomy note) —
         // TS only consumes it via the v0_28_0 orchestrator, not runCycle.
-        assert_eq!(CyclePhase::ALL.len(), 22);
+        // 1-6-3-3 adds `drift` as a 22nd dedicated phase (default-disabled
+        // scaffold; the first real `BaseCyclePhase` consumer).
+        assert_eq!(CyclePhase::ALL.len(), 23);
     }
 
     #[test]
-    fn only_orphans_does_not_need_lock() {
+    fn read_only_phases_do_not_need_lock() {
         for &phase in CyclePhase::ALL {
-            if phase == CyclePhase::Orphans {
+            if phase == CyclePhase::Orphans || phase == CyclePhase::Drift {
                 assert!(!phase.needs_lock(), "{} should not need lock", phase.label());
             } else {
                 assert!(phase.needs_lock(), "{} should need lock", phase.label());
@@ -1638,9 +1683,9 @@ mod tests {
         .await;
 
         assert_eq!(report.schema_version, "1");
-        // 21 = 20 TS phases + extract-takes (elevated to a dedicated Rust
-        // cycle phase; see extract_takes.rs taxonomy note).
-        assert_eq!(report.phases.len(), 22);
+        // 22 = 20 TS phases + extract-takes (elevated to a dedicated Rust
+        // cycle phase; see extract_takes.rs taxonomy note) + drift (1-6-3-3).
+        assert_eq!(report.phases.len(), 23);
         // orphans should be Ok (0 found)
         let orphans = report.phases.iter().find(|p| p.phase == "orphans").unwrap();
         assert_eq!(orphans.status, PhaseStatus::Ok);
@@ -1731,15 +1776,16 @@ mod tests {
             .unwrap();
         assert_eq!(patterns.status, PhaseStatus::Skipped);
         assert_eq!(patterns.summary, "0 reflections in last 30d (need ≥3)");
-        // All other phases should be Skipped. Count is 16: extract-atoms +
+        // All other phases should be Skipped. Count is 17: extract-atoms +
         // propose-takes + grade-takes + calibration-profile +
         // conversation-facts-backfill + synthesize-concepts (real LLM phases,
-        // no chat here) + 9 stubs + auto-think (default-disabled → Skipped).
+        // no chat here) + 9 stubs + auto-think (default-disabled → Skipped) +
+        // drift (default-disabled scaffold → Skipped, 1-6-3-3).
         // recompute-emotional-weight is no longer skipped (deterministic →
         // Ok), and schema-suggest left the catch-all as a real no-LLM phase
-        // (→ Ok), dropping the count from 17 to 16.
+        // (→ Ok), dropping the count from 18 to 17.
         let skipped_count = report.phases.iter().filter(|p| p.status == PhaseStatus::Skipped).count();
-        assert_eq!(skipped_count, 16);
+        assert_eq!(skipped_count, 17);
     }
 
     #[tokio::test]
