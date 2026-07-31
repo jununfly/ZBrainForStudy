@@ -9,7 +9,7 @@
 
 ## Roadmap 铁律
 - 所有 `.json`/`.md` 放 `docs/plans/`（JSON `zbrain-ts-to-rust-partN-*.json`，md `ZBRAIN_TS_TO_RUST_PARTN_*.md`）。每个 part JSON `link` 各自独立 md，禁共用。
-- **marker**：`roadmap_cli.py render` 只读/写 `<!-- ROADMAP_SECTION_START/END -->`（无 ⚠️ 变体），即 JSON 驱动的活段。顶部手写段工具不维护、会 stale。
+- **marker**：`roadmap_cli.py render` 只读/写 `<!-- ⚠️ ROADMAP_SECTION_START/END -->`（**带 ⚠️ 前缀**，与早期记忆不符，以实际渲染为准），即 JSON 驱动的活段。顶部手写段工具不维护、会 stale。
 - **单一干净段**：在已有 md 上 render 若 marker 不符会**追加**成重复段 → 要单一段须**先删 md 再 render**。Part12 cycle md 顶部孤儿段已有意删除，只留 JSON 驱动段；勿手动重建/同步。CLI：`link/render/decide/add/tree` 第一参数是 JSON 完整路径；render 从项目根 cwd 跑；读根级 `md_file` key。
 - **decisions 键格式坑**：`nodes[*].decisions[*]` 须 `{"q","answer","note?"}`；用 `a` 键会让 `_build_focus_section` 的 `d['answer']` 报 `KeyError`。只焦点节点(in_progress)的 decisions 被读。
 - **lock 僵尸坑**：`roadmap_file_lock` acquire 超时时不清理 `.lock` 目录（`__enter__` 抛异常、`__exit__` 不执行）。修法：同命令内先 `python -c "import shutil,os; shutil.rmtree(r'<json>.lock', ignore_errors=True)"` 强删再 render。
