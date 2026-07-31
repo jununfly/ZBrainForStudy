@@ -597,12 +597,28 @@
     },
     "1-6-3-3": {
       "id": "1-6-3-3",
-      "label": "drift phase 提前实装（原 1-6-7 并入 1-6-3-3; port drift.ts 168行 → autopilot/phases/drift.rs; find_drift_candidates 软带 0.3-0.85 + timeline 证据 takes 候选报告 + BudgetMeter 接入；默认关闭 dream.drift.enabled）",
-      "status": "pending",
+      "label": "drift phase 提前实装（原 1-6-7 并入 1-6-3-3；port drift.ts 168行 → autopilot/phases/drift.rs；实现 BaseCyclePhase（首个真实消费者）；find_drift_candidates 软带 0.3-0.85 + timeline 证据 takes 候选 + BudgetMeter 接入；默认关闭 dream.drift.enabled；sqlite ?1 占位符，postgres $N 见 G64）",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6-3",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "drift 用 BaseCyclePhase 还是独立 runPhaseDrift？",
+          "answer": "BaseCyclePhase。1-6-3-3 是 1-6-3-2 trait 的第一个真实消费者，process() 返回 Skipped 表达未启用/无候选，BudgetMeter 由基类构建并传入。",
+          "note": "与 TS drift.ts 的 runPhaseDrift 独立函数形态不同，但语义对齐（默认禁用 scaffold + 候选上报）。"
+        },
+        {
+          "q": "find_drift_candidates 用 execute_raw 在 InMemoryEngine 上如何？",
+          "answer": "fail-soft：execute_raw 报错（InMemoryEngine 未实现）或查询失败时返回空候选，phase 转 Ok(\"no candidates\")，不翻转 cycle 状态（对齐 patterns.rs 的 fail-soft 风格）。",
+          "note": "纯 parse_drift_candidates(rows) 抽出单测，无需 DB。"
+        },
+        {
+          "q": "drift 是否需要 cycle 锁？",
+          "answer": "不需要。v0.28 scaffold 只读（上报候选、不写库/不写报告文件），标记 read-only，与 orphans 同为 needs_lock()=false。",
+          "note": "锁逻辑 invariant 测试同步改为 read_only_phases_do_not_need_lock。"
+        }
+      ],
       "notes": ""
     }
   },

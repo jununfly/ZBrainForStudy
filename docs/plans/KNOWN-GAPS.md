@@ -93,6 +93,8 @@
 | G63 | **`subagent_tool_executions` 写入侧未迁（minion worker `brain_put_page` 工具不落 execution 记录）** | `crates/zbrain-core/migrations/0028_subagent_tool_executions.sql` 头注释（`registered in docs/plans/KNOWN-GAPS.md (G63)`）+ `crates/zbrain-core/src/autopilot/phases/synthesize.rs` 模块 doc（同指针） | TS `src/core/minions/worker.ts` subagent tool loop：每次 tool call 前 INSERT `pending` 行（`job_id`,`tool_use_id`,`tool_name`,`input`）、完成后 UPDATE `status='complete'`+`output`；synthesize 的 `collectChildPutPageSlugs` 消费之 | 1-3-4-6 完整复刻了**读取侧**：表（0027/0028 双 dialect）+ `BrainEngine::collect_child_put_page_slugs`（三后端）+ synthesize 接线。**写入侧**触及 minion worker 的 brain 工具执行记录（`local_only` 安全模型下 subagent 工具是进程内直调，无统一 execution log seam），需给 Rust minion tool loop 加"执行前 pending insert / 执行后 complete update"的记录层。落地前 `collect_child_put_page_slugs` 常返回空 → `reverse_write_refs` 无 refs 可镜像（fail-open，synthesize 仍正常完成）。FK 到 minion_jobs 也在写入侧落地时一并评估 | open |
 
 
+| G64 | **drift phase 的 raw 查询用 sqlite `?1` 占位符，postgres `$N` 不兼容** | `crates/zbrain-core/src/autopilot/phases/drift.rs` `find_drift_candidates` SQL（就近注释 `registered in docs/plans/KNOWN-GAPS.md (G64)`）；`parse_drift_candidates` 纯函数不受影响 | TS `drift.ts` 用 `$1::date`（postgres 风格）；sibling `patterns.rs` 用 `?1`（sqlite 风格）—— 仓库 `execute_raw` 不做占位符翻译，raw 查询后端特定 | 当前 cycle 主引擎是 libsql（sqlite `?1`），drift 在 InMemoryEngine（测试）上 execute_raw 未实现→fail-soft 空候选。postgres 生产后端需把 `?1/?2/?3/?4` 改写为 `$1/$2/$3/$4` 并重写日期 cast（sqlite `te.date >= ?1` 文本比较 vs pg `te.date >= $1::date`）。解缠路径：给 `execute_raw` 加占位符规范化（或按 engine backend 选 SQL 变体），属 raw-query 后端可移植性切片，低于 1-6 收尾 | open |
+
 ## G1 详情 — Think/evidence 检索丢失 rerank
 
 **病根：接入点分层错位，不是"要不要 rerank"。**

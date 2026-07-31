@@ -44,5 +44,5 @@
 **子节点:**
 - [x] 1-6-3-1. budget_meter.rs 薄装器（port budget-meter.ts 188行 → autopilot/budget_meter.rs; BudgetMeter + SubmitEstimate + BudgetCheckResult + audit jsonl ~/.zbrain/audit/dream-budget-*.jsonl; estimate_max_cost_usd + ANTHROPIC_PRICING 复用 budget.rs)
 - [x] 1-6-3-2. BaseCyclePhase 抽象（autopilot/base_phase.rs; trait BaseCyclePhase.process/run + checkBudget/tick/mapErrorCode/mapErrorClass + ScopedReadOpts/BasePhaseCtx/BasePhaseOpts/BasePhaseOutput + ProgressReporter 薄 trait；drift(1-6-3-3) 等新 phase 默认继承。既有 synthesize/patterns 等 pre-v0.36 phase 暂不 retrofit，遵循 TS v0.36.1 约定）
-- [ ] 1-6-3-3. drift phase 提前实装（原 1-6-7 并入 1-6-3-3; port drift.ts 168行 → autopilot/phases/drift.rs; find_drift_candidates 软带 0.3-0.85 + timeline 证据 takes 候选报告 + BudgetMeter 接入；默认关闭 dream.drift.enabled）
+- [x] 1-6-3-3. drift phase 提前实装（原 1-6-7 并入 1-6-3-3；port drift.ts 168行 → autopilot/phases/drift.rs；实现 BaseCyclePhase（首个真实消费者）；find_drift_candidates 软带 0.3-0.85 + timeline 证据 takes 候选 + BudgetMeter 接入；默认关闭 dream.drift.enabled；sqlite ?1 占位符，postgres $N 见 G64）
 <!-- ⚠️ ROADMAP_SECTION_END -->
