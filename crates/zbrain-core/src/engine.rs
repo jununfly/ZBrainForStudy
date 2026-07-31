@@ -878,7 +878,7 @@ pub struct CreateSourceInput {
 /// Input for `BrainEngine::update_source`. All fields are optional — only
 /// `Some(_)` values are applied. Mirrors TS `updateSourceConfig` + sync
 /// field mutations.
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize)]
 pub struct UpdateSourceInput {
     pub name: Option<String>,
     pub config: Option<serde_json::Value>,

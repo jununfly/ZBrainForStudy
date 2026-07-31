@@ -233,7 +233,7 @@ pub struct CycleReport {
 }
 
 /// Options for `run_cycle`. Mirrors TS `CycleOpts`.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone)]
 pub struct CycleOpts {
     /// If true, no writes to filesystem or DB.
     pub dry_run: bool,
@@ -250,6 +250,41 @@ pub struct CycleOpts {
     /// (no chat provider wired). Production wiring lives in the runner
     /// (1-6 orchestration) — see KNOWN-GAPS.
     pub chat: Option<Arc<dyn ChatProvider>>,
+    // 1-6-1: orchestrator enhancements (mirror TS `CycleOpts` v0.23+ fields)
+    /// Called between phases (TS `yieldBetweenPhases`).
+    pub yield_between_phases: Option<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>,
+    /// Called during long-running phases (TS `yieldDuringPhase`).
+    pub yield_during_phase: Option<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>,
+    /// Synthesize ad-hoc transcript path (TS `synthInputFile`).
+    pub synth_input_file: Option<String>,
+    /// Synthesize single-date filter.
+    pub synth_date: Option<String>,
+    /// Synthesize inclusive-from date filter.
+    pub synth_from: Option<String>,
+    /// Synthesize inclusive-to date filter.
+    pub synth_to: Option<String>,
+    /// Disable the synthesize self-consumption guard.
+    pub synth_bypass_dream_guard: bool,
+}
+
+impl Default for CycleOpts {
+    fn default() -> Self {
+        Self {
+            dry_run: false,
+            phases: None,
+            brain_dir: String::new(),
+            pull: false,
+            source_id: None,
+            chat: None,
+            yield_between_phases: None,
+            yield_during_phase: None,
+            synth_input_file: None,
+            synth_date: None,
+            synth_from: None,
+            synth_to: None,
+            synth_bypass_dream_guard: false,
+        }
+    }
 }
 
 // ── runCycle orchestrator ──────────────────────────────────────────────
@@ -281,8 +316,22 @@ pub async fn run_cycle(
         phase_results.push(result);
     }
 
-    // Derive overall status from phase results
-    let status = derive_cycle_status(&phase_results);
+    // 1-6-1: pull totals from the per-phase details (TS `extractTotals`).
+    extract_totals(&phase_results, &mut totals);
+
+    // Derive overall status from phase results.
+    // 1-6-1: empty list → Failed (TS parity).
+    let status = derive_cycle_status(&phase_results, &totals);
+
+    // 1-6-1: best-effort write of last_full_cycle_at on success.
+    // Mirrors TS v0.38: only when sourceId set + engine present + not dryRun
+    // + status in {ok, clean, partial}.
+    if !dry_run
+        && !opts.brain_dir.is_empty()
+        && matches!(status, CycleStatus::Ok | CycleStatus::Clean | CycleStatus::Partial)
+    {
+        write_last_full_cycle_at(engine, opts, &status).await;
+    }
 
     CycleReport {
         schema_version: "1",
@@ -1143,9 +1192,16 @@ async fn execute_phase(
             // worth-processing transcript/chunk (synthesis runs in the worker).
             // corpus_dir is wired from the engine config store in 1-3-4-6, so until
             // then real runs skip "not_configured".
+            // 1-6-1: forward synth opts from CycleOpts (TS `synthInputFile`/`synthDate`/
+            // `synthFrom`/`synthTo`/`synthBypassDreamGuard`).
             let s_opts = SynthesizePhaseOpts {
                 brain_dir: Some(_opts.brain_dir.clone()),
                 dry_run,
+                corpus_dir: _opts.synth_input_file.clone(),
+                date: _opts.synth_date.clone(),
+                from: _opts.synth_from.clone(),
+                to: _opts.synth_to.clone(),
+                bypass_dream_guard: _opts.synth_bypass_dream_guard,
                 ..Default::default()
             };
             match run_phase_synthesize(engine, _opts.chat.as_deref(), &s_opts).await {
@@ -1229,15 +1285,19 @@ async fn execute_phase(
 }
 
 /// Derive overall cycle status from phase results.
-fn derive_cycle_status(results: &[PhaseResult]) -> CycleStatus {
+///
+/// 1-6-1: empty result list → `Failed` (TS parity: an empty run is not
+/// silently `Skipped`). Distinguishes "no phases requested" from "all phases
+/// skipped due to a real precondition" (e.g. no database).
+fn derive_cycle_status(results: &[PhaseResult], totals: &CycleTotals) -> CycleStatus {
     if results.is_empty() {
-        return CycleStatus::Skipped;
+        return CycleStatus::Failed;
     }
 
     let has_fail = results.iter().any(|r| r.status == PhaseStatus::Fail);
     let has_warn = results.iter().any(|r| r.status == PhaseStatus::Warn);
     let all_skipped = results.iter().all(|r| r.status == PhaseStatus::Skipped);
-    let all_ok_or_clean = results
+    let all_ok_or_skipped = results
         .iter()
         .all(|r| r.status == PhaseStatus::Ok || r.status == PhaseStatus::Skipped);
 
@@ -1245,7 +1305,7 @@ fn derive_cycle_status(results: &[PhaseResult]) -> CycleStatus {
         // If all attempted (non-skipped) phases failed
         let any_non_skipped = results.iter().any(|r| r.status != PhaseStatus::Skipped);
         if !any_non_skipped {
-            CycleStatus::Skipped
+            CycleStatus::Failed
         } else {
             let all_failed = results
                 .iter()
@@ -1261,11 +1321,11 @@ fn derive_cycle_status(results: &[PhaseResult]) -> CycleStatus {
         CycleStatus::Skipped
     } else if has_warn {
         CycleStatus::Partial
-    } else if all_ok_or_clean {
-        // Check if any work was done (non-skipped, non-clean)
-        let any_work = results
-            .iter()
-            .any(|r| r.status == PhaseStatus::Ok);
+    } else if all_ok_or_skipped {
+        // 1-6-1: TS `deriveStatus` parity — any non-zero field in totals
+        // means at least one phase did work, so the report is `Ok`; an
+        // entirely no-op run is `Clean`.
+        let any_work = totals.any_nonzero();
         if any_work {
             CycleStatus::Ok
         } else {
@@ -1276,6 +1336,31 @@ fn derive_cycle_status(results: &[PhaseResult]) -> CycleStatus {
     }
 }
 
+impl CycleTotals {
+    /// True if any counter is non-zero. Used to derive Ok vs Clean.
+    fn any_nonzero(&self) -> bool {
+        self.lint_fixes > 0
+            || self.backlinks_added > 0
+            || self.pages_synced > 0
+            || self.pages_extracted > 0
+            || self.pages_embedded > 0
+            || self.orphans_found > 0
+            || self.transcripts_processed > 0
+            || self.synth_pages_written > 0
+            || self.patterns_written > 0
+            || self.pages_emotional_weight_recomputed > 0
+            || self.edges_resolved > 0
+            || self.edges_ambiguous > 0
+            || self.purged_sources_count > 0
+            || self.purged_pages_count > 0
+            || self.facts_consolidated > 0
+            || self.consolidate_takes_written > 0
+            || self.phantoms_redirected > 0
+            || self.phantoms_ambiguous > 0
+            || self.phantoms_skipped_drift > 0
+    }
+}
+
 /// Set of phases that need the cycle lock (all except orphans).
 pub fn needs_lock_phases() -> HashSet<&'static str> {
     CyclePhase::ALL
@@ -1283,6 +1368,111 @@ pub fn needs_lock_phases() -> HashSet<&'static str> {
         .filter(|p| p.needs_lock())
         .map(|p| p.label())
         .collect()
+}
+
+// ── 1-6-1 helpers ─────────────────────────────────────────────────────
+
+/// Pull totals from per-phase details (TS `extractTotals`).
+///
+/// Each phase's `details` is a JSON object; the same key names the TS code
+/// reads (e.g. `pages_synced` for `sync`, `phantoms_redirected` for
+/// `extract_facts`) are looked up here. Phases not yet implemented or
+/// returning empty details simply contribute zeros.
+fn extract_totals(phases: &[PhaseResult], totals: &mut CycleTotals) {
+    for p in phases {
+        let Some(d) = p.details.as_object() else { continue };
+        let get = |k: &str| -> u64 {
+            d.get(k).and_then(|v| v.as_u64()).unwrap_or(0)
+        };
+        match p.phase.as_str() {
+            "lint" => totals.lint_fixes = get("fixed"),
+            "backlinks" => totals.backlinks_added = get("added"),
+            "sync" => {
+                totals.pages_synced = get("added") + get("modified");
+            }
+            "extract" => totals.pages_extracted = get("linksCreated"),
+            "embed" => {
+                let dry = matches!(d.get("dryRun").and_then(|v| v.as_bool()), Some(true));
+                totals.pages_embedded = if dry { get("would_embed") } else { get("embedded") };
+            }
+            "synthesize" => {
+                totals.transcripts_processed = get("transcripts_processed");
+                totals.synth_pages_written = get("pages_written");
+            }
+            "patterns" => totals.patterns_written = get("patterns_written"),
+            "recompute-emotional-weight" => {
+                totals.pages_emotional_weight_recomputed = get("pages_recomputed");
+            }
+            "resolve-symbol-edges" => {
+                totals.edges_resolved = get("edges_resolved");
+                totals.edges_ambiguous = get("edges_ambiguous");
+            }
+            "purge" => {
+                totals.purged_sources_count = get("purged_sources_count");
+                totals.purged_pages_count = get("purged_pages_count");
+            }
+            "consolidate" => {
+                totals.facts_consolidated = get("facts_consolidated");
+                totals.consolidate_takes_written = get("takes_written");
+            }
+            "extract-facts" => {
+                totals.phantoms_redirected = get("phantoms_redirected");
+                totals.phantoms_ambiguous = get("phantoms_ambiguous");
+                totals.phantoms_skipped_drift = get("phantoms_skipped_drift");
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Best-effort write of `last_full_cycle_at` into the source's `config`
+/// JSONB blob. Mirrors TS v0.38 cycle finalizer:
+///   - only when `source_id` is set + not dryRun + status in {ok, clean, partial}
+///   - failures are logged at warn, not fatal (the cycle already succeeded)
+///
+/// We read the current source row, merge the new key into `config`, and
+/// pass the merged object back through `update_source`. Any failure
+/// (source missing, DB down) is logged and swallowed.
+async fn write_last_full_cycle_at(
+    engine: &dyn BrainEngine,
+    opts: &CycleOpts,
+    _status: &CycleStatus,
+) {
+    let Some(source_id) = opts.source_id.as_deref() else { return };
+    let now = chrono::Utc::now().to_rfc3339();
+    let row = match engine.get_source(source_id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            eprintln!(
+                "[cycle] source {} not found; skipping last_full_cycle_at",
+                source_id
+            );
+            return;
+        }
+        Err(e) => {
+            eprintln!(
+                "[cycle] failed to read source {} for last_full_cycle_at: {}",
+                source_id, e
+            );
+            return;
+        }
+    };
+    let mut config = row.config.clone();
+    if let Some(obj) = config.as_object_mut() {
+        obj.insert("last_full_cycle_at".to_string(), serde_json::Value::String(now));
+    } else {
+        config = serde_json::json!({ "last_full_cycle_at": now });
+    }
+    let input = crate::engine::UpdateSourceInput {
+        config: Some(config),
+        ..Default::default()
+    };
+    if let Err(e) = engine.update_source(source_id, &input).await {
+        eprintln!(
+            "[cycle] failed to write last_full_cycle_at for source {}: {}",
+            source_id, e
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1572,8 +1762,10 @@ mod tests {
         )
         .await;
 
-        // orphans → Ok (0 found), purge → Ok → overall Ok
-        assert_eq!(report.status, CycleStatus::Ok);
+        // 1-6-1: TS `deriveStatus` parity — no work done in any phase
+        // (orphans=0, purge=0) → `Clean`, not `Ok`. `Ok` is reserved for
+        // a run where totals show at least one unit of work.
+        assert_eq!(report.status, CycleStatus::Clean);
     }
 
     #[tokio::test]
@@ -1595,9 +1787,10 @@ mod tests {
     }
 
     #[test]
-    fn derive_status_empty_is_skipped() {
-        let status = derive_cycle_status(&[]);
-        assert_eq!(status, CycleStatus::Skipped);
+    fn derive_status_empty_is_failed() {
+        // 1-6-1: TS parity — empty phase list is `Failed`, not `Skipped`.
+        let status = derive_cycle_status(&[], &CycleTotals::default());
+        assert_eq!(status, CycleStatus::Failed);
     }
 
     #[test]
@@ -1620,7 +1813,22 @@ mod tests {
                 error: None,
             },
         ];
-        assert_eq!(derive_cycle_status(&results), CycleStatus::Ok);
+        assert_eq!(derive_cycle_status(&results, &CycleTotals::default()), CycleStatus::Clean);
+    }
+
+    #[test]
+    fn derive_status_all_ok_with_work_is_ok() {
+        let results = vec![PhaseResult {
+            phase: "orphans".into(),
+            status: PhaseStatus::Ok,
+            duration_ms: 10,
+            summary: "ok".into(),
+            details: serde_json::json!({}),
+            error: None,
+        }];
+        let mut totals = CycleTotals::default();
+        totals.orphans_found = 3;
+        assert_eq!(derive_cycle_status(&results, &totals), CycleStatus::Ok);
     }
 
     #[test]
@@ -1643,7 +1851,7 @@ mod tests {
                 error: None,
             },
         ];
-        assert_eq!(derive_cycle_status(&results), CycleStatus::Partial);
+        assert_eq!(derive_cycle_status(&results, &CycleTotals::default()), CycleStatus::Partial);
 
         let all_fail = vec![
             PhaseResult {
@@ -1655,6 +1863,6 @@ mod tests {
                 error: None,
             },
         ];
-        assert_eq!(derive_cycle_status(&all_fail), CycleStatus::Failed);
+        assert_eq!(derive_cycle_status(&all_fail, &CycleTotals::default()), CycleStatus::Failed);
     }
 }
