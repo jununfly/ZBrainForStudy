@@ -30,6 +30,7 @@
 - **zbrain-core Linux 编译**：`pack_lock.rs` unix 分支原用 `libc::kill`（zbrain-core 无 libc + `unsafe_code=forbid`）→ Linux 报 E0433。改 `/proc/<pid>` 存在性检查（纯 std）。Linux 验证须先过此关。
 - **新增 DB migration 三件事**：① `migrations/`+`migrations-sqlite/` 各放双 dialect `00NN_*.sql`；② `libsql.rs`/`postgres.rs` 加 `include_str!` const + `registry.add(version:NN)`；③ 测试 `EXPECTED_VERSION` 同步 bump。仅加 .sql 文件不会自动应用。
 - **Windows 验证 zbrain-core 测试**：复用默认 `target/` 的 libsql-ffi/aws-lc-sys 编译缓存；**勿用全新 `CARGO_TARGET_DIR`（如 target_alt2）**——全新目录会触发 libsql-ffi（Permission denied）/aws-lc-sys（缺 NASM、`lib.exe` 1114）完整重编而 EXIT=101。孤儿 cargo 锁进程退出后默认 `target/` 锁即释放，不必另开 target dir。测试用 `InMemoryEngine` 时不碰 libsql 运行时（避开 Windows FFI 崩溃），纯函数测试 Windows 直跑即可。
+- **Rust 引擎参数加宽坑**：把 `&Arc<dyn BrainEngine>` 加宽为 `&dyn BrainEngine` 时，`&Arc<dyn T>`→`&dyn T` 因指针宽度 thin→fat **不会自动 coerce**，所有调用方须显式 `&*engine`（`Arc` 变量）→ `&dyn`；`&dyn`→`&Arc` 方向同样不可逆。sync 模块（anchor/concurrency/import/core）的 perform_sync/get_sync_anchor/set_sync_anchor/import_one_path/detect_concurrency 已是 `&dyn`；cycle.rs 各臂直接用 `engine: &dyn BrainEngine`。
 
 ## 迁移进度（摘要）
 - Part12 cycle 大迁移是当前最前沿。**1-3 synthesis 簇整体收口**（2026-07-30：1-3-4-6 完整复刻引擎 config）；**1-4 anomaly-transcript 簇完成**（2026-07-30：验证 Rust 实现等价 + 合并重复 dream-guard + 补 brain_find_anomalies minion tool）；**1-5 auto-think 簇完成**（2026-07-30：T1-T6 全绿——auto_think.rs + CyclePhase::AutoThink + zbrain auto-think CLI + 0029 migration + roadmap）。下一 pending：1-6 orchestration 主循环（含 TS 引擎 pglite/postgres 迁移，anomaly/transcript-discovery 的 TS 删除受此阻塞）。详细进度见 roadmap JSON + 每日 `YYYY-MM-DD.md`。
