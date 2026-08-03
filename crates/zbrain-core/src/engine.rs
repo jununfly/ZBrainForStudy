@@ -1004,6 +1004,15 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
     /// migrations and diagnostics without `downcast`.
     fn kind(&self) -> EngineKind;
 
+    /// Whether this backend has a persistent database store. Maintenance
+    /// phases that require DB access skip with `reason = "no_database"`
+    /// when this returns `false` (mirrors the TS `engine === null`
+    /// no-database guard). Defaults to `true`; a read-only / null backend
+    /// overrides it to `false` (1-6-1-4).
+    fn supports_database(&self) -> bool {
+        true
+    }
+
     // ── Lifecycle ─────────────────────────────────────────────────────────
 
     /// Open / authenticate the underlying connection pool.

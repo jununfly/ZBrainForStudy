@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use crate::ai::chat::ChatProvider;
 use crate::engine::BrainEngine;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Best-effort audit-dir resolution for `BaseCyclePhase` consumers (1-6-3-3).
 /// Mirrors `skillpack::audit::resolve_audit_dir` but without the feature-gated
@@ -130,6 +131,14 @@ impl CyclePhase {
         !matches!(self, CyclePhase::Orphans | CyclePhase::Drift | CyclePhase::Backlinks)
     }
 
+    /// Whether this phase requires a persistent database backend. The only
+    /// engine-free phase is `Lint` (purely skipped — not ported to Rust);
+    /// every other phase calls into the engine and is therefore DB-dependent
+    /// (1-6-1-4).
+    pub fn requires_database(&self) -> bool {
+        !matches!(self, CyclePhase::Lint)
+    }
+
     /// Phase scope: per-source, brain-global, or mixed.
     /// Mirrors TS `PHASE_SCOPE`.
     pub fn scope(&self) -> PhaseScope {
@@ -187,6 +196,51 @@ pub struct PhaseError {
     pub message: String,
     pub hint: Option<String>,
     pub docs_url: Option<String>,
+}
+
+/// Build a [`PhaseError`] from an exception, replacing the ~20 ad-hoc
+/// `PhaseError { .. }` literals scattered through [`execute_phase`]. Mirrors
+/// the TS `makeErrorFromException` error envelope
+/// (class / code / message / hint / docsUrl).
+///
+/// `code` defaults to `"UNKNOWN"` when empty; `hint` / `docs_url` are `None`
+/// unless supplied (1-6-1-3). Call sites pass the concrete `class` / `code`
+/// so each phase keeps its TS-parity error identity.
+fn make_error_from_exception<E: std::fmt::Display>(
+    e: E,
+    class: &str,
+    code: &str,
+    hint: Option<&str>,
+    docs_url: Option<&str>,
+) -> PhaseError {
+    PhaseError {
+        class: class.to_string(),
+        code: if code.is_empty() { "UNKNOWN" } else { code }.to_string(),
+        message: e.to_string(),
+        hint: hint.map(|s| s.to_string()),
+        docs_url: docs_url.map(|s| s.to_string()),
+    }
+}
+
+/// Resolve a `source_id` from a brain directory when `CycleOpts.source_id`
+/// is `None` (mirrors TS `resolveSourceForDir`). Lists registered sources and
+/// returns the id whose tracked `local_path` matches `brain_dir`; falls back
+/// to the first non-archived source (maintenance default when a brain has a
+/// single source). Returns `None` if no source can be resolved — source-scoped
+/// phases then skip as they do today (1-6-1-2).
+async fn resolve_source_for_dir(engine: &dyn BrainEngine, brain_dir: &str) -> Option<String> {
+    let dir = std::path::Path::new(brain_dir);
+    let sources = engine.list_sources(false).await.ok()?;
+    // Prefer an exact `local_path` match.
+    for s in &sources {
+        if let Some(lp) = s.local_path.as_deref() {
+            if std::path::Path::new(lp) == dir {
+                return Some(s.id.clone());
+            }
+        }
+    }
+    // Fallback: first non-archived source.
+    sources.first().map(|s| s.id.clone())
 }
 
 /// Result of a single phase execution.
@@ -284,6 +338,10 @@ pub struct CycleOpts {
     pub synth_to: Option<String>,
     /// Disable the synthesize self-consumption guard.
     pub synth_bypass_dream_guard: bool,
+    // 1-6-1-1: abort signal (TS `AbortSignal` parity). When the flag is set,
+    // remaining phases are skipped with `reason = "aborted"`. `None` = no
+    /// cancellation (the default).
+    pub signal: Option<Arc<AtomicBool>>,
 }
 
 impl Default for CycleOpts {
@@ -302,6 +360,7 @@ impl Default for CycleOpts {
             synth_from: None,
             synth_to: None,
             synth_bypass_dream_guard: false,
+            signal: None,
         }
     }
 }
@@ -372,13 +431,13 @@ pub async fn run_cycle(
                         duration_ms: 0,
                         summary: "could not acquire cycle lock".into(),
                         details: serde_json::json!({}),
-                        error: Some(PhaseError {
-                            class: "FilesystemError".into(),
-                            code: "CYCLE_LOCK_IO".into(),
-                            message: _e.to_string(),
-                            hint: None,
-                            docs_url: None,
-                        }),
+                        error: Some(make_error_from_exception(
+                            _e,
+                            "FilesystemError",
+                            "CYCLE_LOCK_IO",
+                            None,
+                            None,
+                        )),
                     }],
                     totals: CycleTotals::default(),
                 };
@@ -386,11 +445,55 @@ pub async fn run_cycle(
         }
     }
 
+    // 1-6-1-2: resolve the source id from the brain dir when the caller did
+    // not pin one. The resolved id is threaded through every phase (and the
+    // finalizer) via `effective_opts`, mirroring TS `resolveSourceForDir` at
+    // the cycle entry point.
+    let mut resolved_source_id = opts.source_id.clone();
+    if resolved_source_id.is_none() && !opts.brain_dir.is_empty() {
+        resolved_source_id = resolve_source_for_dir(engine, &opts.brain_dir).await;
+    }
+    let effective_opts = CycleOpts {
+        source_id: resolved_source_id,
+        ..opts.clone()
+    };
+
     let mut phase_results: Vec<PhaseResult> = Vec::new();
     let mut totals = CycleTotals::default();
 
     for &phase in phases {
-        let result = execute_phase(engine, phase, opts, dry_run, &mut totals).await;
+        // 1-6-1-1: abort signal (TS `checkAborted` parity). If the caller's
+        // `AbortSignal` equivalent has fired, skip each remaining phase with
+        // `reason = "aborted"` rather than executing it.
+        if let Some(sig) = &opts.signal {
+            if sig.load(Ordering::Relaxed) {
+                phase_results.push(PhaseResult {
+                    phase: phase.label().into(),
+                    status: PhaseStatus::Skipped,
+                    duration_ms: 0,
+                    summary: "skipped (aborted via signal)".into(),
+                    details: serde_json::json!({ "reason": "aborted" }),
+                    error: None,
+                });
+                continue;
+            }
+        }
+        // 1-6-1-4: no-database guard (TS `engine === null` parity). When the
+        // backend reports no persistent store, DB-dependent phases skip with
+        // `reason = "no_database"` instead of failing at runtime. `Lint` is
+        // engine-free and runs regardless.
+        if phase.requires_database() && !engine.supports_database() {
+            phase_results.push(PhaseResult {
+                phase: phase.label().into(),
+                status: PhaseStatus::Skipped,
+                duration_ms: 0,
+                summary: "skipped (no database backend)".into(),
+                details: serde_json::json!({ "reason": "no_database" }),
+                error: None,
+            });
+            continue;
+        }
+        let result = execute_phase(engine, phase, &effective_opts, dry_run, &mut totals).await;
         phase_results.push(result);
     }
 
@@ -408,7 +511,7 @@ pub async fn run_cycle(
         && !opts.brain_dir.is_empty()
         && matches!(status, CycleStatus::Ok | CycleStatus::Clean | CycleStatus::Partial)
     {
-        write_last_full_cycle_at(engine, opts, &status).await;
+        write_last_full_cycle_at(engine, &effective_opts, &status).await;
     }
 
     CycleReport {
@@ -460,13 +563,13 @@ async fn execute_phase(
                     duration_ms: phase_start.elapsed().as_millis() as u64,
                     summary: "orphans phase failed".into(),
                     details: serde_json::json!({}),
-                    error: Some(PhaseError {
-                        class: "DatabaseConnection".into(),
-                        code: "UNKNOWN".into(),
-                        message: e.to_string(),
-                        hint: None,
-                        docs_url: None,
-                    }),
+                    error: Some(make_error_from_exception(
+                        e,
+                        "DatabaseConnection",
+                        "UNKNOWN",
+                        None,
+                        None,
+                    )),
                 }
             }
         }
@@ -515,13 +618,13 @@ async fn execute_phase(
                     duration_ms: phase_start.elapsed().as_millis() as u64,
                     summary: "extract-facts phase failed".into(),
                     details: serde_json::json!({}),
-                    error: Some(PhaseError {
-                        class: "DatabaseConnection".into(),
-                        code: "UNKNOWN".into(),
-                        message: e.to_string(),
-                        hint: None,
-                        docs_url: None,
-                    }),
+                    error: Some(make_error_from_exception(
+                        e,
+                        "DatabaseConnection",
+                        "UNKNOWN",
+                        None,
+                        None,
+                    )),
                 },
             }
         }
@@ -595,13 +698,13 @@ async fn execute_phase(
                             duration_ms: phase_start.elapsed().as_millis() as u64,
                             summary: "extract-atoms phase failed".into(),
                             details: serde_json::json!({}),
-                            error: Some(PhaseError {
-                                class: "DatabaseConnection".into(),
-                                code: "UNKNOWN".into(),
-                                message: e.to_string(),
-                                hint: None,
-                                docs_url: None,
-                            }),
+                            error: Some(make_error_from_exception(
+                                e,
+                                "DatabaseConnection",
+                                "UNKNOWN",
+                                None,
+                                None,
+                            )),
                         },
                     }
                 }
@@ -653,13 +756,13 @@ async fn execute_phase(
                     duration_ms: phase_start.elapsed().as_millis() as u64,
                     summary: "extract-takes phase failed".into(),
                     details: serde_json::json!({}),
-                    error: Some(PhaseError {
-                        class: "DatabaseConnection".into(),
-                        code: "UNKNOWN".into(),
-                        message: e.to_string(),
-                        hint: None,
-                        docs_url: None,
-                    }),
+                    error: Some(make_error_from_exception(
+                        e,
+                        "DatabaseConnection",
+                        "UNKNOWN",
+                        None,
+                        None,
+                    )),
                 },
             }
         }
@@ -719,13 +822,13 @@ async fn execute_phase(
                             duration_ms: phase_start.elapsed().as_millis() as u64,
                             summary: "propose-takes phase failed".into(),
                             details: serde_json::json!({}),
-                            error: Some(PhaseError {
-                                class: "DatabaseConnection".into(),
-                                code: "UNKNOWN".into(),
-                                message: e.to_string(),
-                                hint: None,
-                                docs_url: None,
-                            }),
+                            error: Some(make_error_from_exception(
+                                e,
+                                "DatabaseConnection",
+                                "UNKNOWN",
+                                None,
+                                None,
+                            )),
                         },
                     }
                 }
@@ -788,13 +891,13 @@ async fn execute_phase(
                             duration_ms: phase_start.elapsed().as_millis() as u64,
                             summary: "grade-takes phase failed".into(),
                             details: serde_json::json!({}),
-                            error: Some(PhaseError {
-                                class: "DatabaseConnection".into(),
-                                code: "UNKNOWN".into(),
-                                message: e.to_string(),
-                                hint: None,
-                                docs_url: None,
-                            }),
+                            error: Some(make_error_from_exception(
+                                e,
+                                "DatabaseConnection",
+                                "UNKNOWN",
+                                None,
+                                None,
+                            )),
                         },
                     }
                 }
@@ -859,13 +962,13 @@ async fn execute_phase(
                             duration_ms: phase_start.elapsed().as_millis() as u64,
                             summary: "conversation-facts-backfill phase failed".into(),
                             details: serde_json::json!({}),
-                            error: Some(PhaseError {
-                                class: "DatabaseConnection".into(),
-                                code: "UNKNOWN".into(),
-                                message: e.to_string(),
-                                hint: None,
-                                docs_url: None,
-                            }),
+                            error: Some(make_error_from_exception(
+                                e,
+                                "DatabaseConnection",
+                                "UNKNOWN",
+                                None,
+                                None,
+                            )),
                         },
                     }
                 }
@@ -912,13 +1015,13 @@ async fn execute_phase(
                     duration_ms: phase_start.elapsed().as_millis() as u64,
                     summary: "recompute_emotional_weight phase failed".into(),
                     details: serde_json::json!({}),
-                    error: Some(PhaseError {
-                        class: "DatabaseConnection".into(),
-                        code: "UNKNOWN".into(),
-                        message: e.to_string(),
-                        hint: None,
-                        docs_url: None,
-                    }),
+                    error: Some(make_error_from_exception(
+                        e,
+                        "DatabaseConnection",
+                        "UNKNOWN",
+                        None,
+                        None,
+                    )),
                 },
             }
         }
@@ -988,13 +1091,13 @@ async fn execute_phase(
                             duration_ms: phase_start.elapsed().as_millis() as u64,
                             summary: "calibration-profile phase failed".into(),
                             details: serde_json::json!({}),
-                            error: Some(PhaseError {
-                                class: "Calibration".into(),
-                                code: "UNKNOWN".into(),
-                                message: e.to_string(),
-                                hint: None,
-                                docs_url: None,
-                            }),
+                                error: Some(make_error_from_exception(
+                                    e,
+                                    "Calibration",
+                                    "UNKNOWN",
+                                    None,
+                                    None,
+                                )),
                         },
                     }
                 }
@@ -1057,13 +1160,13 @@ async fn execute_phase(
                             duration_ms: phase_start.elapsed().as_millis() as u64,
                             summary: "synthesize-concepts phase failed".into(),
                             details: serde_json::json!({}),
-                            error: Some(PhaseError {
-                                class: "DatabaseConnection".into(),
-                                code: "UNKNOWN".into(),
-                                message: e.to_string(),
-                                hint: None,
-                                docs_url: None,
-                            }),
+                            error: Some(make_error_from_exception(
+                                e,
+                                "DatabaseConnection",
+                                "UNKNOWN",
+                                None,
+                                None,
+                            )),
                         },
                     }
                 }
@@ -1108,13 +1211,13 @@ async fn execute_phase(
                     duration_ms: phase_start.elapsed().as_millis() as u64,
                     summary: "auto-think phase failed".into(),
                     details: serde_json::json!({}),
-                    error: Some(PhaseError {
-                        class: "DatabaseConnection".into(),
-                        code: "AUTO_THINK_PHASE_FAIL".into(),
-                        message: e.to_string(),
-                        hint: None,
-                        docs_url: None,
-                    }),
+                    error: Some(make_error_from_exception(
+                        e,
+                        "DatabaseConnection",
+                        "AUTO_THINK_PHASE_FAIL",
+                        None,
+                        None,
+                    )),
                 },
             }
         }
@@ -1151,13 +1254,13 @@ async fn execute_phase(
                     duration_ms: phase_start.elapsed().as_millis() as u64,
                     summary: format!("error: {e}"),
                     details: serde_json::json!({ "error": e.to_string() }),
-                    error: Some(PhaseError {
-                        class: "DatabaseConnection".into(),
-                        code: "UNKNOWN".into(),
-                        message: e.to_string(),
-                        hint: None,
-                        docs_url: None,
-                    }),
+                    error: Some(make_error_from_exception(
+                        e,
+                        "DatabaseConnection",
+                        "UNKNOWN",
+                        None,
+                        None,
+                    )),
                 },
             }
         }
@@ -1200,13 +1303,13 @@ async fn execute_phase(
                         duration_ms: phase_start.elapsed().as_millis() as u64,
                         summary: "purge phase failed".into(),
                         details: serde_json::json!({}),
-                        error: Some(PhaseError {
-                            class: "DatabaseConnection".into(),
-                            code: "UNKNOWN".into(),
-                            message: e.to_string(),
-                            hint: None,
-                            docs_url: None,
-                        }),
+                        error: Some(make_error_from_exception(
+                            e,
+                            "DatabaseConnection",
+                            "UNKNOWN",
+                            None,
+                            None,
+                        )),
                     }
                 }
             }
@@ -1277,13 +1380,13 @@ async fn execute_phase(
                     duration_ms: phase_start.elapsed().as_millis() as u64,
                     summary: "patterns phase failed".into(),
                     details: serde_json::json!({}),
-                    error: Some(PhaseError {
-                        class: "InternalError".into(),
-                        code: "PATTERNS_PHASE_FAIL".into(),
-                        message: e.to_string(),
-                        hint: None,
-                        docs_url: None,
-                    }),
+                    error: Some(make_error_from_exception(
+                        e,
+                        "InternalError",
+                        "PATTERNS_PHASE_FAIL",
+                        None,
+                        None,
+                    )),
                 },
             }
         }
@@ -1349,13 +1452,13 @@ async fn execute_phase(
                     duration_ms: phase_start.elapsed().as_millis() as u64,
                     summary: "synthesize phase failed".into(),
                     details: serde_json::json!({}),
-                    error: Some(PhaseError {
-                        class: "InternalError".into(),
-                        code: "SYNTH_PHASE_FAIL".into(),
-                        message: e.to_string(),
-                        hint: None,
-                        docs_url: None,
-                    }),
+                    error: Some(make_error_from_exception(
+                        e,
+                        "InternalError",
+                        "SYNTH_PHASE_FAIL",
+                        None,
+                        None,
+                    )),
                 },
             }
         }
@@ -1426,13 +1529,13 @@ async fn execute_phase(
                     duration_ms: phase_start.elapsed().as_millis() as u64,
                     summary: "sync phase failed".into(),
                     details: serde_json::json!({}),
-                    error: Some(PhaseError {
-                        class: "SyncError".into(),
-                        code: "SYNC_FAILED".into(),
-                        message: e.to_string(),
-                        hint: None,
-                        docs_url: None,
-                    }),
+                error: Some(make_error_from_exception(
+                    e,
+                    "SyncError",
+                    "SYNC_FAILED",
+                    None,
+                    None,
+                )),
                 },
             }
         }
@@ -1491,13 +1594,13 @@ async fn execute_phase(
                     duration_ms: phase_start.elapsed().as_millis() as u64,
                     summary: "backlinks phase failed".into(),
                     details: serde_json::json!({}),
-                    error: Some(PhaseError {
-                        class: "BacklinksError".into(),
-                        code: "BACKLINKS_FAILED".into(),
-                        message: e.to_string(),
-                        hint: None,
-                        docs_url: None,
-                    }),
+                error: Some(make_error_from_exception(
+                    e,
+                    "BacklinksError",
+                    "BACKLINKS_FAILED",
+                    None,
+                    None,
+                )),
                 },
             }
         }
@@ -1537,13 +1640,13 @@ async fn execute_phase(
                     duration_ms: phase_start.elapsed().as_millis() as u64,
                     summary: "extract phase failed".into(),
                     details: serde_json::json!({}),
-                    error: Some(PhaseError {
-                        class: "ExtractError".into(),
-                        code: "EXTRACT_FAILED".into(),
-                        message: e.to_string(),
-                        hint: None,
-                        docs_url: None,
-                    }),
+                error: Some(make_error_from_exception(
+                    e,
+                    "ExtractError",
+                    "EXTRACT_FAILED",
+                    None,
+                    None,
+                )),
                 },
             }
         }
@@ -1593,13 +1696,13 @@ async fn execute_phase(
                         duration_ms: phase_start.elapsed().as_millis() as u64,
                         summary: "embed phase failed".into(),
                         details: serde_json::json!({}),
-                        error: Some(PhaseError {
-                            class: "EmbeddingError".into(),
-                            code: "EMBED_FAILED".into(),
-                            message: e.to_string(),
-                            hint: None,
-                            docs_url: None,
-                        }),
+                    error: Some(make_error_from_exception(
+                        e,
+                        "EmbeddingError",
+                        "EMBED_FAILED",
+                        None,
+                        None,
+                    )),
                     },
                 }
             }
