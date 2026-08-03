@@ -27,7 +27,7 @@
 ├── [x][X+] 1-4. anomaly-transcript 簇迁移 (anomaly/transcript-discovery; 消费者 transcripts->transcript-discovery, pglite/postgres-engine->anomaly)
 ├── [x][X+] 1-5. auto-think 簇迁移 (auto-think phase)
 ├── [~][X+] 1-6. orchestration 主循环迁移 (runCycle 2057行 + base-phase/budget-meter/drift/phantom-redirect/phases/; 消费者 dream->runCycle; Rust cycle.rs 仅745行 dispatch 骨架)
-│   ├── [ ][X+] 1-6-1. 编排骨架强化 (CycleOpts 补 signal/yield/synth 透传 + no_database 守卫 + pack 门控 extract_atoms/synthesize_concepts + resolveSourceForDir + extractTotals 回填 + makeErrorFromException 错误信封 hint/docs_url + deriveStatus 空列表→failed + last_full_cycle_at)
+│   ├── [x][X+] 1-6-1. 编排骨架剩余缺口收口 (signal 透传 + resolveSourceForDir + makeErrorFromException 错误信封 + no_database 守卫决策; yield/synth/extractTotals/last_full_cycle_at/deriveStatus/chat门控 已交付)
 │   ├── [ ][X+] 1-6-2. 周期锁 (per-source cycle lock; busy→skipped/cycle_already_running, 失败→failed/lock_acquisition_error; 复用 sync/lock.rs 基建)
 │   ├── [x][X+] 1-6-3. BudgetMeter 共享模块 (port budget-meter.ts → autopilot/budget_meter.rs; BaseCyclePhase 注入 meter; 两处消费 auto_think+drift; calibration 已剔除)
 │   ├── [x] 1-6-4. 简单 stub 臂接线 Sync/Lint/Backlinks/Extract/Embed (复用 sync/core.rs perform_sync、links backlinks、embedding.rs、ingestion; TS runPhaseSync/Extract/Embed/Lint/Backlinks 语义对齐)
@@ -53,7 +53,7 @@
   > 依赖最干净：骨架与锁先于真实 phase 与集成
 
 **子节点:**
-- [ ] 1-6-1. 编排骨架强化 (CycleOpts 补 signal/yield/synth 透传 + no_database 守卫 + pack 门控 extract_atoms/synthesize_concepts + resolveSourceForDir + extractTotals 回填 + makeErrorFromException 错误信封 hint/docs_url + deriveStatus 空列表→failed + last_full_cycle_at)
+- [x] 1-6-1. 编排骨架剩余缺口收口 (signal 透传 + resolveSourceForDir + makeErrorFromException 错误信封 + no_database 守卫决策; yield/synth/extractTotals/last_full_cycle_at/deriveStatus/chat门控 已交付)
 - [ ] 1-6-2. 周期锁 (per-source cycle lock; busy→skipped/cycle_already_running, 失败→failed/lock_acquisition_error; 复用 sync/lock.rs 基建)
 - [x] 1-6-3. BudgetMeter 共享模块 (port budget-meter.ts → autopilot/budget_meter.rs; BaseCyclePhase 注入 meter; 两处消费 auto_think+drift; calibration 已剔除)
 - [x] 1-6-4. 简单 stub 臂接线 Sync/Lint/Backlinks/Extract/Embed (复用 sync/core.rs perform_sync、links backlinks、embedding.rs、ingestion; TS runPhaseSync/Extract/Embed/Lint/Backlinks 语义对齐)
