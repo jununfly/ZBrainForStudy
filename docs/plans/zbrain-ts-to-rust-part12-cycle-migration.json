@@ -234,6 +234,11 @@
           "q": "phantom-redirect pre-pass (606行, 此前 extract_facts port 显式 DEFER) 是否纳入 1-6？",
           "answer": "纳入 1-6-6 子节点",
           "note": "Part12 收官需 extract_facts 达 TS 等价，TS cycle/ 目录才能全删"
+        },
+        {
+          "q": "1-6 剩余节点（1-6-1/1-6-2/1-6-5/1-6-6/1-6-8）在 1-6-3-4 之后的执行顺序？",
+          "answer": "1-6-3-4 → 1-6-1（编排骨架强化）→ 1-6-2（周期锁）→ 1-6-5（consolidate）→ 1-6-6（phantom-redirect）→ 1-6-8（消费者切换，最后集成删 TS）",
+          "note": "依赖最干净：骨架与锁先于真实 phase 与集成"
         }
       ],
       "notes": ""
@@ -496,17 +501,29 @@
     },
     "1-6-3": {
       "id": "1-6-3",
-      "label": "BudgetMeter 共享模块 (port budget-meter.ts 188行 → autopilot/budget_meter.rs; check/estimateMaxCostUsd/unpriced warn-once/审计 jsonl ~/.zbrain/audit/dream-budget-*.jsonl; auto_think/drift/calibration 三处消费)",
-      "status": "in_progress",
+      "label": "BudgetMeter 共享模块 (port budget-meter.ts → autopilot/budget_meter.rs; BaseCyclePhase 注入 meter; 两处消费 auto_think+drift; calibration 已剔除)",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6",
       "children": [
         "1-6-3-1",
         "1-6-3-2",
-        "1-6-3-3"
+        "1-6-3-3",
+        "1-6-3-4"
       ],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "1-6-3 收口范围（label 写 auto_think/drift/calibration 三处消费 BudgetMeter，代码探查仅 drift 接入；auto_think 走 BudgetTracker::reserve，calibration 无 Rust phase）？",
+          "answer": "保持 in_progress，全复刻 TS 三消费：auto_think 改接 BudgetMeter（替代 BudgetTracker::reserve）+ 新建 calibration phase 接 BudgetMeter；drift 已是首个真实消费者",
+          "note": "仅 drift 当前接入 BudgetMeter；auto_think 现走 BudgetTracker::reserve（并行机制，已可用，硬失败 NoPricing）；calibration 在 Rust 无对应 phase，需从 TS 新建移植"
+        },
+        {
+          "q": "修正：calibration 是否 1-6-3 范围？",
+          "answer": "否。TS 代码核实：calibration-profile.ts 仅配置层、不 import BudgetMeter，src/core/calibration/* 为 cross-brain/recall，均非 cycle phase、不消费 BudgetMeter。1-6-3 范围收敛为 auto_think+drift 两处消费，不建 calibration 节点",
+          "note": "Q1 原『全复刻三消费含 calibration』前提有误；BudgetMeter 真实 TS 消费者仅 auto-think/drift（经 base-phase 注入）"
+        }
+      ],
+      "notes": "1-6-3-1 module + 1-6-3-2 BaseCyclePhase + 1-6-3-3 drift 消费者已完成; 1-6-3-4 auto_think 接 BudgetMeter 进行中"
     },
     "1-6-4": {
       "id": "1-6-4",
@@ -567,12 +584,12 @@
     "1-6-7": {
       "id": "1-6-7",
       "label": "drift phase 迁移 (port drift.ts 168行 → autopilot/phases/drift.rs; findDriftCandidates 软带0.3-0.85 + timeline 证据 takes 候选报告; 默认关闭 dream.drift.enabled; TS 无调用者但决策 q-0 定迁移)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "drift phase 迁移已由 1-6-3-3 提前实装覆盖（label 明示『原 1-6-7 并入』），本节点冗余，标记 completed(superseded)"
     },
     "1-6-8": {
       "id": "1-6-8",
@@ -646,11 +663,27 @@
         }
       ],
       "notes": ""
+    },
+    "1-6-3-4": {
+      "id": "1-6-3-4",
+      "label": "auto_think 接 BudgetMeter（替代 BudgetTracker::reserve，对齐 TS auto-think.ts）",
+      "status": "completed",
+      "mode": "explore",
+      "parent": "1-6-3",
+      "children": [],
+      "decisions": [
+        {
+          "q": "1-6-3-4 实施要点？",
+          "answer": "auto_think 预算机制由 BudgetTracker::reserve 就地改为 BudgetMeter::check（对齐 TS auto-think.ts），不重构为 BaseCyclePhase。移除 reserve/record，改用 check 的 allowed 判定 + total_spent 报告累积成本。语义差异：BudgetMeter 对 unpriced 模型 warn-once 放行（不硬失败），projected>cap 才 deny",
+          "note": "测试全绿：auto_think 7/7 + cycle 22/22 + autopilot:: 334/334；'opus' 在定价表故行为一致"
+        }
+      ],
+      "notes": "BudgetTracker::reserve → BudgetMeter::check; total_spent 报告累积成本; 文档注释同步更新"
     }
   },
   "metadata": {
     "created": "2026-07-23 17:12:54",
-    "updated": "2026-07-31 15:25:53",
+    "updated": "2026-07-31 21:21:45",
     "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_PART12_CYCLE_MIGRATION.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART12_CYCLE_MIGRATION.md"

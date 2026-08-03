@@ -29,20 +29,36 @@
 ├── [~][X+] 1-6. orchestration 主循环迁移 (runCycle 2057行 + base-phase/budget-meter/drift/phantom-redirect/phases/; 消费者 dream->runCycle; Rust cycle.rs 仅745行 dispatch 骨架)
 │   ├── [ ][X+] 1-6-1. 编排骨架强化 (CycleOpts 补 signal/yield/synth 透传 + no_database 守卫 + pack 门控 extract_atoms/synthesize_concepts + resolveSourceForDir + extractTotals 回填 + makeErrorFromException 错误信封 hint/docs_url + deriveStatus 空列表→failed + last_full_cycle_at)
 │   ├── [ ][X+] 1-6-2. 周期锁 (per-source cycle lock; busy→skipped/cycle_already_running, 失败→failed/lock_acquisition_error; 复用 sync/lock.rs 基建)
-│   ├── [~][X+] 1-6-3. BudgetMeter 共享模块 (port budget-meter.ts 188行 → autopilot/budget_meter.rs; check/estimateMaxCostUsd/unpriced warn-once/审计 jsonl ~/.zbrain/audit/dream-budget-*.jsonl; auto_think/drift/calibration 三处消费)
+│   ├── [x][X+] 1-6-3. BudgetMeter 共享模块 (port budget-meter.ts → autopilot/budget_meter.rs; BaseCyclePhase 注入 meter; 两处消费 auto_think+drift; calibration 已剔除)
 │   ├── [x] 1-6-4. 简单 stub 臂接线 Sync/Lint/Backlinks/Extract/Embed (复用 sync/core.rs perform_sync、links backlinks、embedding.rs、ingestion; TS runPhaseSync/Extract/Embed/Lint/Backlinks 语义对齐)
 │   ├── [ ][X+] 1-6-5. consolidate phase 迁移 (port phases/consolidate.ts 297行 → autopilot/phases/consolidate.rs; (source_id,entity_slug) 桶 + 余弦0.85贪心聚类 + takes(kind=fact) + consolidated_at 标记不删除 + bitemporal valid_until + semantic upsert 去重)
 │   ├── [ ][X+] 1-6-6. phantom-redirect pre-pass (port phantom-redirect.ts 606行; extract_facts 顶部; syncLockId 单锁30s重试 + 上限50 + body-shape gate + resolvePhantomCanonical + 歧义检查 + fenceDbDrift + 8步提交链; 依赖 entities/resolve + facts-fence + phantom-audit)
-│   ├── [ ][X+] 1-6-7. drift phase 迁移 (port drift.ts 168行 → autopilot/phases/drift.rs; findDriftCandidates 软带0.3-0.85 + timeline 证据 takes 候选报告; 默认关闭 dream.drift.enabled; TS 无调用者但决策 q-0 定迁移)
+│   ├── [x][X+] 1-6-7. drift phase 迁移 (port drift.ts 168行 → autopilot/phases/drift.rs; findDriftCandidates 软带0.3-0.85 + timeline 证据 takes 候选报告; 默认关闭 dream.drift.enabled; TS 无调用者但决策 q-0 定迁移)
 │   └── [ ][X+] 1-6-8. 消费者切换 (CLI dream 子命令 → Rust run_cycle; --json/--dry-run/--pull/--phase/--dir/--input/--date/--from/--to/--unsafe-bypass-dream-guard; printHuman totals; failed→exit 1; TS cycle.ts+cycle/ 目录+dream.ts 删除)
 └── [x][Y+] 1-7. 验证线打通：rust-tests.yml修复 + pack_lock提交 + 5测试失败清算
 ```
 
-### 🔨 当前施工: 1-6-3. BudgetMeter 共享模块 (port budget-meter.ts 188行 → autopilot/budget_meter.rs; check/estimateMaxCostUsd/unpriced warn-once/审计 jsonl ~/.zbrain/audit/dream-budget-*.jsonl; auto_think/drift/calibration 三处消费)
+### 🔨 当前施工: 1-6. orchestration 主循环迁移 (runCycle 2057行 + base-phase/budget-meter/drift/phantom-redirect/phases/; 消费者 dream->runCycle; Rust cycle.rs 仅745行 dispatch 骨架)
 **Status:** `in_progress` | **Mode:** `explore`
 
+**决策记录:**
+- Q: drift.ts 无 TS 调用者且 CyclePhase 不含 drift，是否迁移？
+  A: 一并迁移
+  > 用户决策：作为 1-6-7 子节点移植 findDriftCandidates；默认关闭 dream.drift.enabled 保持休眠语义
+- Q: phantom-redirect pre-pass (606行, 此前 extract_facts port 显式 DEFER) 是否纳入 1-6？
+  A: 纳入 1-6-6 子节点
+  > Part12 收官需 extract_facts 达 TS 等价，TS cycle/ 目录才能全删
+- Q: 1-6 剩余节点（1-6-1/1-6-2/1-6-5/1-6-6/1-6-8）在 1-6-3-4 之后的执行顺序？
+  A: 1-6-3-4 → 1-6-1（编排骨架强化）→ 1-6-2（周期锁）→ 1-6-5（consolidate）→ 1-6-6（phantom-redirect）→ 1-6-8（消费者切换，最后集成删 TS）
+  > 依赖最干净：骨架与锁先于真实 phase 与集成
+
 **子节点:**
-- [x] 1-6-3-1. budget_meter.rs 薄装器（port budget-meter.ts 188行 → autopilot/budget_meter.rs; BudgetMeter + SubmitEstimate + BudgetCheckResult + audit jsonl ~/.zbrain/audit/dream-budget-*.jsonl; estimate_max_cost_usd + ANTHROPIC_PRICING 复用 budget.rs)
-- [x] 1-6-3-2. BaseCyclePhase 抽象（autopilot/base_phase.rs; trait BaseCyclePhase.process/run + checkBudget/tick/mapErrorCode/mapErrorClass + ScopedReadOpts/BasePhaseCtx/BasePhaseOpts/BasePhaseOutput + ProgressReporter 薄 trait；drift(1-6-3-3) 等新 phase 默认继承。既有 synthesize/patterns 等 pre-v0.36 phase 暂不 retrofit，遵循 TS v0.36.1 约定）
-- [x] 1-6-3-3. drift phase 提前实装（原 1-6-7 并入 1-6-3-3；port drift.ts 168行 → autopilot/phases/drift.rs；实现 BaseCyclePhase（首个真实消费者）；find_drift_candidates 软带 0.3-0.85 + timeline 证据 takes 候选 + BudgetMeter 接入；默认关闭 dream.drift.enabled；sqlite ?1 占位符，postgres $N 见 G64）
+- [ ] 1-6-1. 编排骨架强化 (CycleOpts 补 signal/yield/synth 透传 + no_database 守卫 + pack 门控 extract_atoms/synthesize_concepts + resolveSourceForDir + extractTotals 回填 + makeErrorFromException 错误信封 hint/docs_url + deriveStatus 空列表→failed + last_full_cycle_at)
+- [ ] 1-6-2. 周期锁 (per-source cycle lock; busy→skipped/cycle_already_running, 失败→failed/lock_acquisition_error; 复用 sync/lock.rs 基建)
+- [x] 1-6-3. BudgetMeter 共享模块 (port budget-meter.ts → autopilot/budget_meter.rs; BaseCyclePhase 注入 meter; 两处消费 auto_think+drift; calibration 已剔除)
+- [x] 1-6-4. 简单 stub 臂接线 Sync/Lint/Backlinks/Extract/Embed (复用 sync/core.rs perform_sync、links backlinks、embedding.rs、ingestion; TS runPhaseSync/Extract/Embed/Lint/Backlinks 语义对齐)
+- [ ] 1-6-5. consolidate phase 迁移 (port phases/consolidate.ts 297行 → autopilot/phases/consolidate.rs; (source_id,entity_slug) 桶 + 余弦0.85贪心聚类 + takes(kind=fact) + consolidated_at 标记不删除 + bitemporal valid_until + semantic upsert 去重)
+- [ ] 1-6-6. phantom-redirect pre-pass (port phantom-redirect.ts 606行; extract_facts 顶部; syncLockId 单锁30s重试 + 上限50 + body-shape gate + resolvePhantomCanonical + 歧义检查 + fenceDbDrift + 8步提交链; 依赖 entities/resolve + facts-fence + phantom-audit)
+- [x] 1-6-7. drift phase 迁移 (port drift.ts 168行 → autopilot/phases/drift.rs; findDriftCandidates 软带0.3-0.85 + timeline 证据 takes 候选报告; 默认关闭 dream.drift.enabled; TS 无调用者但决策 q-0 定迁移)
+- [ ] 1-6-8. 消费者切换 (CLI dream 子命令 → Rust run_cycle; --json/--dry-run/--pull/--phase/--dir/--input/--date/--from/--to/--unsafe-bypass-dream-guard; printHuman totals; failed→exit 1; TS cycle.ts+cycle/ 目录+dream.ts 删除)
 <!-- ⚠️ ROADMAP_SECTION_END -->
