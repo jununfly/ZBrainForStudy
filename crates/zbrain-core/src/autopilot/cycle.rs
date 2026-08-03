@@ -1560,6 +1560,34 @@ async fn execute_phase(
             }
         }
 
+        // ── Consolidate: port of phases/consolidate.ts (1-6-5) ──
+        CyclePhase::Consolidate => {
+            use crate::autopilot::phases::consolidate::{ConsolidatePhase, ConsolidatePhaseOpts};
+
+            let c_opts = ConsolidatePhaseOpts {
+                dry_run,
+                signal: _opts.signal.clone(),
+                ..Default::default()
+            };
+            match ConsolidatePhase::run(engine, &c_opts).await {
+                Ok(pr) => pr,
+                Err(e) => PhaseResult {
+                    phase: label.into(),
+                    status: PhaseStatus::Fail,
+                    duration_ms: phase_start.elapsed().as_millis() as u64,
+                    summary: "consolidate phase failed".into(),
+                    details: serde_json::json!({}),
+                    error: Some(make_error_from_exception(
+                        e,
+                        "ConsolidateError",
+                        "CONSOLIDATE_FAILED",
+                        None,
+                        None,
+                    )),
+                },
+            }
+        }
+
         // ── Backlinks: audit-only (derived from page_links, writes nothing) ──
         CyclePhase::Backlinks => {
             // Maintenance backlinks are audit-only: the link graph
@@ -1719,20 +1747,16 @@ async fn execute_phase(
             }
         }
 
-        // ── Skipped stubs (not yet migrated) ────────────────────────
+        // ── Skipped stubs: LLM-heavy phases not yet migrated to Rust ──
         _ => {
-            let reason = if matches!(phase, CyclePhase::Consolidate) {
-                "not_migrated: needs orchestration function (consolidateFacts etc.)"
-            } else {
-                "not_migrated: LLM-heavy phase (no Rust chat provider integration yet)"
-            };
-
             PhaseResult {
                 phase: label.into(),
                 status: PhaseStatus::Skipped,
                 duration_ms: 0,
                 summary: format!("{} skipped", label),
-                details: serde_json::json!({ "reason": reason }),
+                details: serde_json::json!({
+                    "reason": "not_migrated: LLM-heavy phase (no Rust chat provider integration yet)"
+                }),
                 error: None,
             }
         }

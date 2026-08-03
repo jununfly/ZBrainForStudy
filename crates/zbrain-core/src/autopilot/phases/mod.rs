@@ -14,3 +14,4 @@ pub mod context_budget;
 pub mod synthesize;
 pub mod auto_think;
 pub mod drift;
+pub mod consolidate;
