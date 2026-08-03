@@ -4,7 +4,7 @@
 //! `dream.auto_think.questions[]` from the engine config store, runs the
 //! think pipeline on each question, and persists the result as a synthesis
 //! page when `auto_commit=true`. Capped by `max_per_cycle` and the
-//! [`BudgetTracker`]'s USD cap.
+//! [`BudgetMeter`]'s USD cap.
 //!
 //! Cooldown: `dream.auto_think.last_completion_ts` is written ONLY when at
 //! least one synthesis completed (and not in dry-run), so retries after
@@ -34,9 +34,9 @@
 //!   (`prefetch_model_lookup`). The deprecated key `dream.auto_think.model`
 //!   is deliberately dropped (matches the Rust-wide `deprecated_config_key`
 //!   removal in `model_config.rs`).
-//! - **Budget**: TS `BudgetMeter.check` → Rust [`BudgetTracker::reserve`]
-//!   (pre-check only; the TS meter also records post-hoc via gateway hooks,
-//!   here we `record` actual usage from `ChatResult.usage` explicitly).
+//! - **Budget**: TS `BudgetMeter.check` → Rust `BudgetMeter::check`
+//!   (estimate-based gate; unpriced models are warn-once allowed, projected
+//!   spend over cap is denied; cumulative cost is reported via `total_spent`).
 
 use std::collections::HashMap;
 
@@ -44,7 +44,7 @@ use chrono::Utc;
 
 use crate::ai::chat::{ChatMessage, ChatOpts, ChatProvider, ChatRole};
 use crate::ai::model_config::{resolve_model, ModelTier, ResolveModelOpts};
-use crate::budget::{BudgetEstimate, BudgetKind, BudgetTracker, BudgetTrackerOpts};
+use crate::autopilot::budget_meter::{BudgetMeter, BudgetMeterOpts, SubmitEstimate};
 use crate::engine::{BrainEngine, GetPageOpts, PageInput, SearchOpts, SynthesisEvidenceInput};
 use crate::llm::{Citation, ThinkPromptBuilder};
 use crate::Result;
@@ -471,14 +471,12 @@ pub async fn run_phase_auto_think(
         ));
     }
 
-    let tracker = BudgetTracker::new(
-        BudgetTrackerOpts {
-            max_cost_usd: Some(config.budget_usd),
-            max_runtime_ms: None,
-            label: "auto_think".to_string(),
-        },
-        opts.audit_dir.clone().unwrap_or_else(std::env::temp_dir),
-    );
+    let meter = BudgetMeter::new(BudgetMeterOpts {
+        budget_usd: config.budget_usd,
+        phase: "auto_think".to_string(),
+        audit_dir: opts.audit_dir.clone().unwrap_or_else(std::env::temp_dir),
+        audit_path: None,
+    });
 
     // Model resolution over a pre-fetched config snapshot (see module docs).
     let lookup = prefetch_model_lookup(engine).await?;
@@ -500,14 +498,15 @@ pub async fn run_phase_auto_think(
         // Pre-check budget for the planned synthesize call. Estimate ~5K
         // input tokens (system + ~30 takes + 20 page chunks), 4K output cap.
         let label: String = q.chars().take(40).collect();
-        let reserve = tracker.reserve(&BudgetEstimate {
+        // Budget gate via BudgetMeter (mirrors TS `BudgetMeter.check`):
+        // unpriced model → warped-once allow; projected > cap → deny.
+        let check = meter.check(&SubmitEstimate {
             model_id: model_id.clone(),
             estimated_input_tokens: 5_000,
             max_output_tokens: 4_000,
-            kind: BudgetKind::Chat,
             label: Some(format!("auto_think:{label}")),
         });
-        if reserve.is_err() {
+        if !check.allowed {
             outcomes.push(QuestionOutcome {
                 question: q.clone(),
                 status: "budget_exhausted".into(),
@@ -539,15 +538,9 @@ pub async fn run_phase_auto_think(
 
         match run_think_round(engine, chat, q, &model_id).await {
             Ok(round) => {
-                // Record actual spend (TS meter records via gateway hooks).
-                let _ = tracker.record(&crate::budget::BudgetActualUsage {
-                    model_id: model_id.clone(),
-                    input_tokens: round.usage_input,
-                    output_tokens: round.usage_output,
-                    embedding_dims: None,
-                    kind: BudgetKind::Chat,
-                    label: Some(format!("auto_think:{label}")),
-                });
+                // BudgetMeter tracks cumulative spend via `check` (estimate-based,
+                // mirroring TS where actual usage is recorded by gateway hooks);
+                // no separate `record` call is needed here.
                 let mut warnings = round.warnings.clone();
                 let mut slug = None;
                 let mut failed = false;
@@ -601,7 +594,7 @@ pub async fn run_phase_auto_think(
     let detail = format!(
         "{synthesized} synthesized, {budget_skipped} skipped (budget), {failed} failed. \
          Cumulative cost: ${:.4} / ${:.2}",
-        tracker.total_spent(),
+        meter.total_spent(),
         config.budget_usd
     );
 
