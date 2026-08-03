@@ -574,12 +574,28 @@
     },
     "1-6-5": {
       "id": "1-6-5",
-      "label": "consolidate phase 迁移 (port phases/consolidate.ts 297行 → autopilot/phases/consolidate.rs; (source_id,entity_slug) 桶 + 余弦0.85贪心聚类 + takes(kind=fact) + consolidated_at 标记不删除 + bitemporal valid_until + semantic upsert 去重)",
-      "status": "pending",
+      "label": "consolidate phase 迁移 (port src/core/cycle/phases/consolidate.ts 297行 → autopilot/phases/consolidate.rs; 确定性 v0.35.4 确定性无 LLM（含 semantic upsert + bitemporal valid_until writeback）: (source_id,entity_slug) 桶扫描 + age gate 24h + 余弦0.85贪心聚类(通过 execute_raw 读 facts.embedding) + 取最高confidence文本写 takes(kind=fact) + UPDATE facts.consolidated_at/consolidated_into 不删; InMemory 无 embedding 列→聚类退化单例、phase 返回 Ok/Skipped 不 fail; 用 add_takes_batch + execute_raw)",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "consolidate 依赖 fact.embedding 但 Rust FactRow 未映射该列，如何移植？",
+          "answer": "真实移植 consolidate.rs，用 execute_raw 直接读 facts.embedding 做余弦聚类；InMemory 无 embedding 列→聚类退化单例、phase 返回 Ok/Skipped 不 fail；改动面限 consolidate.rs 内，不碰 engine trait。",
+          "note": "不补 FactRow.embedding trait 映射（跨引擎大改动）；DB 列存在，TS pglite-engine.ts:4745 证实，且 extract-facts.ts:227 注明 cycle-inserted facts embedding 常 NULL。"
+        },
+        {
+          "q": "takes 写入与 fact 标记语义按哪个版本？",
+          "answer": "实际复刻 TS v0.35.4 代码（非过时 v0.31 注释）：add_takes_batch 写 takes(kind=fact) + semantic upsert 去重 (page_id,claim,since_date) + execute_raw UPDATE facts.consolidated_at/consolidated_into + bitemporal valid_until writeback；不删。",
+          "note": "grill 时基于 consolidate.ts 前 23 行过时 v0.31 注释选了\"简化\"，但实现核实 TS 代码已演进到 v0.35.4（含 semantic upsert + bitemporal），按\"TS调Rust一致\"铁律复刻 TS 实际行为。"
+        },
+        {
+          "q": "是否拆 sub-node？",
+          "answer": "不拆，单一 consolidate.rs，余弦聚类 helper 内联其中。",
+          "note": ""
+        }
+      ],
       "notes": ""
     },
     "1-6-6": {
