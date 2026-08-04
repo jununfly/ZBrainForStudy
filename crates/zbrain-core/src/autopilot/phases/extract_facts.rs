@@ -14,15 +14,20 @@
 //! consolidation falls back to recency). Embeddings are
 //! registered in docs/plans/KNOWN-GAPS.md (G60).
 //!
-//! The phantom-redirect pre-pass (TS v0.35.5) needs disk access to canonical
-//! pages + a lock; it is deferred (gated on `brain_dir`) and
-//! registered in docs/plans/KNOWN-GAPS.md (G61).
+//! The phantom-redirect pre-pass (TS v0.35.5) is now ported — see
+//! `super::phantom_redirect::run_phantom_redirect_pass`, wired into
+//! `run_extract_facts` after the legacy-row guard and before the main
+//! reconcile. It reuses the cycle-level advisory file lock held by the
+//! orchestrator (no separate lock; `phantom_lock_busy` is effectively false)
+//! and is bounded at 50 redirects/cycle (`ZBRAIN_PHANTOM_REDIRECT_LIMIT`).
+//! G61 is closed (2026-08-03).
 
 use crate::engine::BrainEngine;
 use crate::error::Result as ZbResult;
 use crate::facts_fence::{parse_facts_fence, FenceFact};
 use crate::types::{FactInsertStatus, NewFact};
 use crate::GetPageOpts;
+use super::phantom_redirect::run_phantom_redirect_pass;
 
 /// Default `source` value when a fence row doesn't carry one. Mirrors TS
 /// `FENCE_SOURCE_DEFAULT`.
@@ -154,10 +159,7 @@ pub fn extract_facts_from_fence_text(
         .map(|f| {
             // valid_from precedence: fence > pageEffectiveDate > None (engine
             // insert_fact defaults to now()).
-            let valid_from = f
-                .valid_from
-                .clone()
-                .or_else(|| page_date_fallback.clone());
+            let valid_from = f.valid_from.clone().or_else(|| page_date_fallback.clone());
 
             // valid_until derivation:
             //   1. Explicit validUntil in the fence → honor as-is.
@@ -205,7 +207,10 @@ pub async fn run_extract_facts(
     engine: &dyn BrainEngine,
     opts: &ExtractFactsOpts,
 ) -> ZbResult<ExtractFactsResult> {
-    let source_id = opts.source_id.clone().unwrap_or_else(|| "default".to_string());
+    let source_id = opts
+        .source_id
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
     let mut result = ExtractFactsResult::default();
 
     // ── Empty-fence guard (Codex R2-#7) ────────────────────────────────
@@ -223,24 +228,55 @@ pub async fn run_extract_facts(
         return Ok(result);
     }
 
-    // ── v0.35.5: phantom-redirect pre-pass (DEFERRED) ──────────────────
-    // Needs disk access to canonical pages + a lock. Silently skipped in
-    // this port (TS skips it too when the handler can't run);
-    // registered in docs/plans/KNOWN-GAPS.md (G61).
-    let _ = &opts.brain_dir;
+    // ── v0.35.5: phantom-redirect pre-pass ───────────────────────────
+    // Runs BEFORE the main reconcile loop. Needs disk access to canonical
+    // pages; skipped when `brain_dir` is absent (e.g. pure-DB callers). The
+    // pass reuses the caller-held cycle advisory lock (1-6-2), so it does not
+    // acquire its own. Scenario B (phantom had only-on-disk fence, no DB
+    // facts yet) is covered by unioning the touched canonicals into the
+    // reconcile slug set below.
+    let mut phantom_touched: Vec<String> = Vec::new();
+    if let Some(brain_dir) = &opts.brain_dir {
+        match run_phantom_redirect_pass(engine, brain_dir, &source_id, opts.dry_run).await {
+            Ok(pass) => {
+                result.phantoms_scanned = pass.scanned;
+                result.phantoms_redirected = pass.redirected;
+                result.phantoms_ambiguous = pass.ambiguous;
+                result.phantoms_skipped_drift = pass.skipped_drift;
+                result.phantoms_lock_busy = pass.lock_busy;
+                result.phantoms_more_pending = pass.more_pending;
+                // `no_canonical` / `not_phantom` are informational; the result
+                // envelope doesn't track them per-row but the audit log does.
+                phantom_touched = pass.touched_canonicals;
+            }
+            Err(e) => {
+                result.warnings.push(format!(
+                    "extract_facts: phantom-redirect pre-pass failed ({e}); continuing with reconcile"
+                ));
+            }
+        }
+    }
 
     // ── Resolve target slug set ───────────────────────────────────────
     // Presence — not length — distinguishes modes: `slugs: Some(vec![])` is a
     // real incremental no-op; `None` is a full-brain walk.
     let slugs: Vec<String> = match &opts.slugs {
-        Some(s) => s.clone(),
+        Some(s) => {
+            let mut base = s.clone();
+            base.extend(phantom_touched.iter().cloned());
+            base.sort();
+            base.dedup();
+            base
+        }
         None => {
             let mut all: Vec<String> = engine
                 .get_all_slugs(Some(&source_id))
                 .await?
                 .into_iter()
                 .collect();
+            all.extend(phantom_touched.iter().cloned());
             all.sort();
+            all.dedup();
             all
         }
     };
