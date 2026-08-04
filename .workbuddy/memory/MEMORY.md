@@ -9,10 +9,10 @@
 
 ## Roadmap 铁律
 - 所有 `.json`/`.md` 放 `docs/plans/`（JSON `zbrain-ts-to-rust-partN-*.json`，md `ZBRAIN_TS_TO_RUST_PARTN_*.md`）。每个 part JSON `link` 各自独立 md，禁共用。
-- **marker**：`roadmap_cli.py render` 只读/写 `<!-- ⚠️ ROADMAP_SECTION_START/END -->`（**带 ⚠️ 前缀**，与早期记忆不符，以实际渲染为准），即 JSON 驱动的活段。顶部手写段工具不维护、会 stale。
+- **marker**：`roadmap_cli.py render` 只读/写 `<!-- ROADMAP_SECTION_START/END -->`（无 ⚠️ 前缀，与 ZAgentic canonical 一致），即 JSON 驱动的活段。顶部手写段工具不维护、会 stale。
 - **单一干净段**：在已有 md 上 render 若 marker 不符会**追加**成重复段 → 要单一段须**先删 md 再 render**。Part12 cycle md 顶部孤儿段已有意删除，只留 JSON 驱动段；勿手动重建/同步。CLI：`link/render/decide/add/tree` 第一参数是 JSON 完整路径；render 从项目根 cwd 跑；读根级 `md_file` key。
 - **decisions 键格式坑**：`nodes[*].decisions[*]` 须 `{"q","answer","note?"}`；用 `a` 键会让 `_build_focus_section` 的 `d['answer']` 报 `KeyError`。只焦点节点(in_progress)的 decisions 被读。
-- **lock 僵尸坑**：`roadmap_file_lock` acquire 超时时不清理 `.lock` 目录（`__enter__` 抛异常、`__exit__` 不执行）。修法：同命令内先 `python -c "import shutil,os; shutil.rmtree(r'<json>.lock', ignore_errors=True)"` 强删再 render。
+- **lock 残留（本沙箱）**：`roadmap_file_lock.__exit__` 调 `os.unlink(owner.json)` 释放锁；本沙箱 safe-delete 拦截 `os.unlink` 且 fail-closed（回收站不可用）→ `os.rmdir` 不执行 → **每次 render 都残留 `<json>.lock` 目录**（用户正常环境回收站可用时释放正常）。治标：render 前先 `python -c "import shutil,glob; [shutil.rmtree(d, ignore_errors=True) for d in glob.glob('docs/plans/*.json.lock')]"` 强清；根治：给 ZAgentic 锁释放加 `try/except OSError`。
 - **python 路径**：bash 里传原生 exe 用 `C:/Users/...` 冒号形式；`/c/Users/...` 会被 MSYS 把参数转坏成 `C:\c\...`（命令名本身可用 `/c/`）。
 - 代码注释禁引 roadmap 编号（JSON 是临时文件，清理后成死链）；必要信息自解释写注释。docs/plans/ 下 canonical 文档可引。
 - 拆分约定：与当前节点语义偏差且有跟进价值 → 拆 sub-node，不吸收进当前 plan。
