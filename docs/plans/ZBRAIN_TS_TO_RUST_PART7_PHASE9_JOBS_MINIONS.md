@@ -1,9 +1,9 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust-part7-phase9-jobs-minions.json` | 最后更新: 2026-07-14 14:26:19
+> 数据文件: `zbrain-ts-to-rust-part7-phase9-jobs-minions.json` | 最后更新: 2026-07-14 17:33:55
 
-[!][X+] 1. ZBrain TS→Rust Part7: Phase 9 — Jobs / Agents / Minions / Autopilot / Remote
+[x][X+] 1. ZBrain TS→Rust Part7: Phase 9 — Jobs / Agents / Minions / Autopilot / Remote
 ├── [x][X+] 1-1. MinionQueue + job 持久化 (queue.ts, job 生命周期/优先级/状态; jobs CLI 是其 thin wrapper)
 │   ├── [x] 1-1-1. A+B: schema migration + Job 类型/status 枚举 + add/getJob/getJobs + claim/completeJob/failJob/renewLock/retryJob (最小可用队列, SKIP LOCKED 双后端岔口在此)
 │   ├── [x][Y+] 1-1-2. C: 后台 sweep (promoteDelayed/handleStalled/handleTimeouts/handleWallClockTimeouts, 延迟提升/停滞恢复/超时→dead)
@@ -24,15 +24,15 @@
 │   ├── [x][X+] 1-4-3. Autopilot + phase handlers: synthesize/patterns/consolidate/extract_facts/...
 │   ├── [x][X+] 1-4-4. Handler trait + MinionHandlerRegistry + Subagent handler v1
 │   └── [x][X+] 1-4-5. 中复杂度 handlers: embed-backfill + contextual-reindex + shell + 辅助
-├── [ ][X+] 1-5. Autopilot + fanout (autopilot.ts/autopilot-fanout.ts 命令 + core)
-│   ├── [ ][Y+] 1-5-1. Autopilot fanout 纯函数 + dispatchPerSource (resolveFanoutMax/readLastFullCycleAt/isSourceStale/selectSourcesForDispatch + dispatchPerSource 含 legacy fallback)
-│   ├── [ ][Y+] 1-5-2. brain-score-recommendations 模块 (computeRecommendations/classifyChecks/maxReachableScore/estimateAnthropicCost + Check/RecommendationContext 类型)
-│   ├── [ ][Y+] 1-5-3. Cycle 模块: types + phases + runCycle 编排器 (CyclePhase/ALL_PHASES/PhaseScope/PhaseResult/CycleReport/CycleOpts + runPhaseLint/Backlinks/Sync/Extract/Embed/Orphans 等 + runCycle 主函数)
-│   ├── [ ][Y+] 1-5-4. Autopilot 主循环 + 模式判定 + reconnect 分类 (classifyReconnectError/shouldSpawnAutopilotWorker/runAutopilot 主循环 DB健康→reconnect→dispatch→sleep + report/showStatus)
-│   ├── [ ][Y+] 1-5-5. Daemon install/uninstall (detectInstallTarget/generateLaunchdPlist/installLaunchd/installSystemd/installCrontab/installEphemeralContainer/uninstallDaemon/writeWrapperScript)
-│   ├── [ ][Y+] 1-5-6. CLI 接线: autopilot 命令 args (--install/--uninstall/--status/--inline/--interval/--json) + dispatch 到 1-5-1~5
-│   └── [ ][X+] 1-5-7. Nightly quality probe 子系统 (runNightlyQualityProbe + runLongMemEvalForProbe + runCrossModalBatchForProbe + AI gateway 集成) — LLM eval 子系统，deferred port
-├── [ ][X+] 1-6. Remote execution (remote.ts 命令 + 远程 fanout, 保 PII/trust 边界)
-├── [ ][X+] 1-7. jobs/agent CLI 命令层 (jobs/jobs-watch/agent/agent-logs, thin wrapper over queue/worker)
-└── [ ][X+] 1-8. G7 收口: webhook 接入 MinionQueue (替换 zbrain-web 直写 put_page + placeholder job_id)
+├── [x][X+] 1-5. Autopilot + fanout (autopilot.ts/autopilot-fanout.ts 命令 + core)
+│   ├── [x][Y+] 1-5-1. Autopilot fanout 纯函数 + dispatchPerSource (resolveFanoutMax/readLastFullCycleAt/isSourceStale/selectSourcesForDispatch + dispatchPerSource 含 legacy fallback)
+│   ├── [x][Y+] 1-5-2. brain-score-recommendations 模块 (computeRecommendations/classifyChecks/maxReachableScore/estimateAnthropicCost + Check/RecommendationContext 类型)
+│   ├── [x][Y+] 1-5-3. Cycle 模块: types + phases + runCycle 编排器 (CyclePhase/ALL_PHASES/PhaseScope/PhaseResult/CycleReport/CycleOpts + runPhaseLint/Backlinks/Sync/Extract/Embed/Orphans 等 + runCycle 主函数)
+│   ├── [x][Y+] 1-5-4. Autopilot 主循环 + 模式判定 + reconnect 分类 (classifyReconnectError/shouldSpawnAutopilotWorker/runAutopilot 主循环 DB健康→reconnect→dispatch→sleep + report/showStatus)
+│   ├── [x][Y+] 1-5-5. Daemon install/uninstall (detectInstallTarget/generateLaunchdPlist/installLaunchd/installSystemd/installCrontab/installEphemeralContainer/uninstallDaemon/writeWrapperScript)
+│   ├── [x][Y+] 1-5-6. CLI 接线: autopilot 命令 args (--install/--uninstall/--status/--inline/--interval/--json) + dispatch 到 1-5-1~5
+│   └── [x][X+] 1-5-7. Nightly quality probe 子系统 (runNightlyQualityProbe + runLongMemEvalForProbe + runCrossModalBatchForProbe + AI gateway 集成) — LLM eval 子系统，deferred port
+├── [x][X+] 1-6. Remote execution (remote.ts 命令 + 远程 fanout, 保 PII/trust 边界)
+├── [x][X+] 1-7. jobs/agent CLI 命令层 (jobs/jobs-watch/agent/agent-logs, thin wrapper over queue/worker)
+└── [x][X+] 1-8. G7 收口: webhook 接入 MinionQueue (替换 zbrain-web 直写 put_page + placeholder job_id)
 <!-- ROADMAP_SECTION_END -->
