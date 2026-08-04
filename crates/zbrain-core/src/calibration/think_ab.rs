@@ -22,6 +22,7 @@ use std::fmt;
 
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
+use serde::{Deserialize, Serialize};
 
 use crate::calibration_queries::{CalibrationQueries, ThinkAbInsert};
 use crate::error::{Error, Result as ZbResult};
@@ -160,7 +161,7 @@ pub async fn run_ab_trial(input: &AbRunInput<'_>) -> ZbResult<AbRunResult> {
 }
 
 /// Win/loss breakdown over a recent window.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AbReportResult {
     pub total_trials: u32,
     pub baseline_wins: u32,

@@ -24,10 +24,13 @@ pub mod voice_gate;
 pub use calibration_profile::*;
 pub use think_ab::*;
 pub use voice_gate::*;
+// Re-export the wave/result types so CLI/ops can import them from the
+// canonical `zbrain_core::calibration` path (they live in
+// `calibration_queries` for storage, but they're behavior, not queries).
+pub use crate::calibration_queries::{UndoWaveOpts, UndoWaveResult};
 
 use crate::calibration_queries::{
-    CalibrationProfileRow, CalibrationQueries, CalibrationWaveQueries, TakesScorecard, UndoWaveOpts,
-    UndoWaveResult,
+    CalibrationProfileRow, CalibrationQueries, CalibrationWaveQueries, TakesScorecard,
 };
 use async_trait::async_trait;
 use crate::engine::BrainEngine;

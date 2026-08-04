@@ -407,6 +407,8 @@ pub enum Commands {
     Think(ThinkArgs),
     /// Run the auto-think cycle phase (open questions → synthesis pages)
     AutoThink(AutoThinkArgs),
+    /// Inspect, regenerate, or undo a calibration profile (TS `commands/calibration.ts`)
+    Calibration(CalibrationArgs),
     /// Run one brain maintenance cycle (lint → … → orphans) via run_cycle.
     Dream(DreamArgs),
     /// Search pages by keyword query
@@ -1411,6 +1413,50 @@ pub struct DreamArgs {
     pub unsafe_bypass_dream_guard: bool,
 }
 
+/// Arguments for `zbrain calibration` command.
+///
+/// Mirrors the legacy TS `src/commands/calibration.ts` entry point. The
+/// default mode reads the latest `calibration_profiles` row for a holder
+/// (or `garry` when omitted). `--regenerate` runs the calibration-profile
+/// phase; `--undo-wave <v>` reverses a wave's mutations; `ab-report` shows
+/// the think A/B harness report over a recent window.
+#[derive(Parser, Debug, Clone)]
+pub struct CalibrationArgs {
+    /// Holder slug (default `garry`).
+    #[arg(long)]
+    pub holder: Option<String>,
+
+    /// Emit machine-readable JSON instead of a human summary.
+    #[arg(long)]
+    pub json: bool,
+
+    /// Run the calibration_profile phase now and (re)write the profile row.
+    #[arg(long)]
+    pub regenerate: bool,
+
+    /// Reverse a wave's mutations (D18). Required for `undo-wave` mode.
+    #[arg(long = "undo-wave", value_name = "WAVE_VERSION")]
+    pub undo_wave: Option<String>,
+
+    /// Dry-run for `undo-wave` (don't write).
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Scrub the gstack-learnings entries that match this wave (best-effort;
+    /// the external `gstack-learnings-prune` binary is not available in this
+    /// Rust port, see KNOWN-GAPS).
+    #[arg(long = "scrub-gstack")]
+    pub scrub_gstack: bool,
+
+    /// Print the think A/B harness report over the last `--days` days.
+    #[arg(long = "ab-report")]
+    pub ab_report: bool,
+
+    /// Window length in days for `ab-report` (default 30).
+    #[arg(long, default_value_t = 30)]
+    pub days: u32,
+}
+
 /// Arguments for `zbrain query` command.
 ///
 /// `--explain` mirrors the TS global flag: it swaps the default JSON output for
@@ -1831,6 +1877,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             run_auto_think_command(args, cli.config.as_deref()).await?
         }
         Commands::Dream(args) => run_dream_command(args, cli.config.as_deref()).await?,
+        Commands::Calibration(args) => {
+            run_calibration_command(args, cli.config.as_deref()).await?
+        }
         Commands::Query(args) => run_query_command(args, cli.config.as_deref(), timeout_ms).await?,
         Commands::PutPage(args) => run_put_page_command(args, cli.config.as_deref(), timeout_ms).await?,
         Commands::DeletePage(args) => run_delete_page_command(args, cli.config.as_deref(), timeout_ms).await?,
@@ -2835,6 +2884,225 @@ async fn run_get_page_command(args: GetPageArgs, config_path: Option<&Path>, tim
     let output = run_operation("get_page", params, config_path, timeout_ms).await?;
 
     println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+/// Execute `zbrain calibration` command.
+///
+/// Mirrors the legacy TS `src/commands/calibration.ts`. Four modes dispatch
+/// in priority order:
+///   1. `--undo-wave <v>` — reverse a wave's mutations (D18).
+///   2. `--ab-report`    — print the think A/B harness report (D19).
+///   3. `--regenerate`   — run `run_calibration_profile` now and (re)write.
+///   4. default          — read the latest `calibration_profiles` row.
+///
+/// Engine bootstrap is the same as `run_dream_command`: libsql + init_schema.
+/// All work runs on `&dyn BrainEngine`; calibration queries coerce through
+/// the `CalibrationQueries` blanket impl on every backend.
+async fn run_calibration_command(
+    args: CalibrationArgs,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    use zbrain_core::ai::chat::instantiate_chat;
+    use zbrain_core::ai::model_config::{resolve_model, ModelTier, ResolveModelOpts};
+    use zbrain_core::ai::resolver::resolve_recipe_strict;
+    use zbrain_core::autopilot::phases::auto_think::prefetch_model_lookup;
+    use zbrain_core::calibration::calibration_profile::{
+        run_calibration_profile, CalibrationProfileOpts,
+    };
+    use zbrain_core::calibration::think_ab::{build_ab_report, AbReportOpts};
+    use zbrain_core::calibration::{undo_wave, UndoWaveOpts};
+    use zbrain_core::calibration_queries::CalibrationQueries;
+    use std::sync::Arc;
+
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = zbrain_core::engine::EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    let holder = args.holder.clone().unwrap_or_else(|| "garry".to_string());
+
+    // Mode 1: --undo-wave <v>
+    if let Some(wave_version) = args.undo_wave.as_deref() {
+        eprintln!(
+            "[calibration] {}reversing wave {wave_version}...",
+            if args.dry_run { "[dry-run] " } else { "" }
+        );
+        let opts = UndoWaveOpts {
+            wave_version: wave_version.to_string(),
+            dry_run: args.dry_run,
+            scrub_gstack: args.scrub_gstack,
+            ..Default::default()
+        };
+        let result = undo_wave(&engine, &opts).await?;
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        } else {
+            let verb = if args.dry_run { "would revert" } else { "reverted" };
+            println!(
+                "{verb}:\n\
+                 \x20 {res} take resolutions\n\
+                 \x20 {pro} calibration profile(s)\n\
+                 \x20 {nud} nudge log row(s)\n\
+                 \x20 {gc} grade-cache rows marked unapplied",
+                verb = verb,
+                res = result.resolutions_reverted,
+                pro = result.profiles_deleted,
+                nud = result.nudges_purged,
+                gc = result.grade_cache_unapplied,
+            );
+            if result.gstack_scrub_attempted {
+                if !result.warnings.is_empty() {
+                    println!("  gstack scrub: failed ({})", result.warnings.join("; "));
+                } else {
+                    println!("  gstack scrub: ok");
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    // Mode 2: --ab-report
+    if args.ab_report {
+        let report = build_ab_report(
+            &engine as &dyn CalibrationQueries,
+            &AbReportOpts { days: args.days },
+        )
+        .await?;
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            println!("{}", zbrain_core::calibration::think_ab::format_ab_report(&report, args.days));
+        }
+        return Ok(());
+    }
+
+    // Mode 3: --regenerate
+    if args.regenerate {
+        eprintln!("[calibration] regenerating profile for holder={holder}...");
+
+        // Resolve chat provider for the calibration-profile model. Mirrors the
+        // auto-think wiring so users can override via --holder (in this CLI
+        // there is no --model flag yet; defaults come from the config key).
+        let lookup = prefetch_model_lookup(&engine).await?;
+        let model_id = resolve_model(
+            &lookup,
+            &ResolveModelOpts {
+                config_key: Some("models.calibration_profile".to_string()),
+                tier: Some(ModelTier::Deep),
+                fallback: "opus".to_string(),
+                ..Default::default()
+            },
+        );
+        let recipe = match resolve_recipe_strict(&model_id) {
+            Ok((_parsed, recipe)) => recipe,
+            Err(e) => {
+                anyhow::bail!(
+                    "Cannot resolve a chat provider for calibration model '{model_id}': {e}. \
+                     Set models.calibration_profile to a 'provider:model' form, \
+                     e.g. 'anthropic:claude-opus-4'."
+                );
+            }
+        };
+        let chat =
+            instantiate_chat(recipe, &model_id, |k| std::env::var(k).ok()).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to build chat provider for '{model_id}': {}. \
+                     Check the provider's API key env var is set (see recipe setup hint).",
+                    e.message
+                )
+            })?;
+
+        let opts = CalibrationProfileOpts {
+            holder: Some(holder.clone()),
+            source_id: Some("default".to_string()),
+            chat: Some(Arc::from(chat)),
+            ..Default::default()
+        };
+        let result = run_calibration_profile(&engine, &opts).await?;
+        // CalibrationProfileStatus has no `Fail` variant — failure surfaces as
+        // !profile_written + non-empty warnings. Mirror the TS `result.status
+        // === 'fail'` branch by treating any non-Ok status as a failure exit.
+        let failed = !result.profile_written && !result.warnings.is_empty();
+        if failed {
+            eprintln!(
+                "[calibration] regenerate failed: {}",
+                result.warnings.first().cloned().unwrap_or_else(|| "unknown".into())
+            );
+            std::process::exit(1);
+        }
+        eprintln!(
+            "[calibration] profile_written={} voice_gate_passed={} resolved={} brier={:?}",
+            result.profile_written, result.voice_gate_passed, result.total_resolved, result.brier
+        );
+    }
+
+    // Mode 4 (default): read latest profile row.
+    let profile = engine
+        .get_calibration_profile(&holder, Some("default"), None)
+        .await?;
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&profile)?);
+        return Ok(());
+    }
+
+    match profile {
+        None => {
+            println!(
+                "No calibration profile yet for holder \"{holder}\".\n\
+                 Build one by resolving 5+ takes then running:\n  \
+                 zbrain dream --phase calibration_profile\n\
+                 Or wait for the next autopilot cycle."
+            );
+        }
+        Some(p) => {
+            let generated_local = p.generated_at.clone();
+            println!(
+                "Calibration profile — holder: {holder}, source: {src}\n\
+                 Generated: {gen}  {pub_}\n\
+                 Resolved: {tr} takes",
+                holder = p.holder,
+                src = p.source_id,
+                gen = generated_local,
+                pub_ = if p.published { "(published to mounts)" } else { "" },
+                tr = p.total_resolved
+            );
+            if p.grade_completion < 0.9 {
+                println!(
+                    "Note: built on {:.0}% graded — partial completion this cycle.",
+                    p.grade_completion * 100.0
+                );
+            }
+            if !p.voice_gate_passed {
+                println!(
+                    "Note: voice gate fell back to template ({} attempts).",
+                    p.voice_gate_attempts
+                );
+            }
+            if let Some(b) = p.brier {
+                println!("Brier:    {b:.3} (lower is better)");
+            }
+            if let Some(a) = p.accuracy {
+                println!("Accuracy: {:.1}%", a * 100.0);
+            }
+            if let Some(pr) = p.partial_rate {
+                println!("Partial:  {:.1}%", pr * 100.0);
+            }
+            println!("\nPattern statements:");
+            for s in &p.pattern_statements {
+                println!("  • {s}");
+            }
+            if !p.active_bias_tags.is_empty() {
+                println!("\nActive bias tags: {}", p.active_bias_tags.join(", "));
+            }
+        }
+    }
     Ok(())
 }
 

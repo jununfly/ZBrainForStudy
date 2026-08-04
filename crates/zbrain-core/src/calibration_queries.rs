@@ -434,7 +434,7 @@ pub trait CalibrationQueries: Debug + Send + Sync {
 // ── undo-wave reversal (1-3-3-2) ─────────────────────────────────────────
 
 /// Options for [`undo_wave`]. Mirrors the canonical TS `UndoWaveOpts`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct UndoWaveOpts {
     /// Wave version to reverse (e.g. `v0.36.1.0`).
     pub wave_version: String,
@@ -449,7 +449,7 @@ pub struct UndoWaveOpts {
 }
 
 /// Result of [`undo_wave`]. Mirrors the canonical TS `UndoWaveResult`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UndoWaveResult {
     pub wave_version: String,
     pub dry_run: bool,
