@@ -106,6 +106,14 @@ Agent 需要全貌 → 调 `tree` / `decisions` / `section`（全量）按需获
 
 级联冒泡：同步到父节点后，继续向上检查祖父节点，直到根节点。
 
+### JSON Demo
+
+参见 `demos/roadmap_demo.json`——基于「AI-Native 个人可复利工具系统」的实际路线图。
+
+### Markdown Section Demo
+
+参见 `demos/ZJ_ROADMAP_section_demo.md`——由 `roadmap.py` 从 JSON 自动渲染的标准输出。
+
 ## 确定性操作
 
 所有操作通过 `roadmap_cli.py` 执行。每个命令输入确定 → 输出确定。
@@ -195,6 +203,36 @@ python roadmap_cli.py validate <json_path>
 python roadmap_cli.py stats <json_path>
 ```
 
+## Agent 使用示例
+
+```
+# 场景：Human 说「把文章处理后端走通」
+
+# 1. 先在路线图上定位
+python roadmap_cli.py tree roadmap.json 1-1-1
+# 输出:
+# [~][Y+] 1-1-1. 技术文章处理
+# ├── [x][Y+] 1-1-1-1. URL → 存原文
+# ├── [~][Y+] 1-1-1-2. 叠加摘要处理
+# ├── [ ][Y+] 1-1-1-3. 自动打标签
+# └── [ ][Y+] 1-1-1-4. 定时批处理
+
+# 2. 添加新节点
+python roadmap_cli.py add roadmap.json 1-1-1 "文章处理后端流水线" --status in_progress
+
+# 3. 记录决策（JSON 内）
+python roadmap_cli.py decide roadmap.json 1-1-1-5 "后端用什么？" "Python + FastAPI" "轻量够用"
+
+# 4. 施工完成后更新状态 → 父节点自动同步
+python roadmap_cli.py update roadmap.json 1-1-1-5 --status completed --notes "API: POST /articles/convert"
+
+# 5. 更新 Human 的 md 视图（轻量：树+焦点）
+python roadmap_cli.py render roadmap.json
+
+# 6. 调试时查看全量（stdout）
+python roadmap_cli.py section roadmap.json
+```
+
 ## Script 路径
 
 Skill 脚本位于 skill 目录本身，Agent 运行时按 skill 目录计算路径：
@@ -206,13 +244,20 @@ Skill 脚本位于 skill 目录本身，Agent 运行时按 skill 目录计算路
 
 Agent 在 Skill 加载后，用 `$SKILL_DIR` 或绝对路径定位脚本。
 
+## 与 zj-grill-me 配合
+
+`zj-roadmap-driven` 是 `zj-grill-me` 的搭档：
+- `zj-grill-me` 负责逐层拷问，到达决策树叶子节点
+- `zj-roadmap-driven` 负责把每层决策沉淀到路线图 JSON + md section
+- 两者交替：grill 一个 Q → roadmap 记录决策 → grill 下一个 Q
+
 ## Notes
 
 - JSON 是唯一真相源。所有数据操作必须通过 CLI，**禁止 Agent 直接 Read/Edit JSON 或 md 的路线图 section。**
 - md section 由 `render` 命令完全重写，手动修改会被覆盖。
 - `render` 输出轻量视图（树 depth=2 + 焦点），`section` 输出全量视图（stdout，调试用）。
 - 轻量视图的当前焦点子树固定只展开一层；更深节点会显示省略提示，可用 `tree <json_path> <node_id> --depth N` 查看。
-- CLI 写类命令使用 `<json_path>.lock/ 目录锁和原子写保护 JSON/Markdown。遇到 stale lock 时默认不自动清理；超时信息会显示 owner 和 lock 路径，确认安全后再运行 `unlock`。
+- CLI 写类命令使用 `<json_path>.lock/` 目录锁和原子写保护 JSON/Markdown。遇到 stale lock 时默认不自动清理；超时信息会显示 owner 和 lock 路径，确认安全后再运行 `unlock`。
 - 删除节点会递归删除所有子节点，操作前确认。
 - 如果路线图 JSON 不存在，Agent 应先用 `init` 创建。
 - 无 `import` 命令。md 不能反导回 JSON。

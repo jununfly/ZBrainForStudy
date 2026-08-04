@@ -48,6 +48,7 @@ def gen_child_id(parent_id: str, index: int) -> str:
         return str(index)
     return f"{parent_id}-{index}"
 
+
 def next_child_index(roadmap: dict, parent_id: str) -> int:
     """计算父节点下下一个子节点的序号。"""
     parent = roadmap["nodes"].get(parent_id)
@@ -58,9 +59,11 @@ def next_child_index(roadmap: dict, parent_id: str) -> int:
     parts = last.split("-")
     return int(parts[-1]) + 1
 
+
 def node_depth(node_id: str) -> int:
     """节点深度。1 → 1, 1-1 → 2, 1-1-1 → 3"""
     return node_id.count("-") + 1
+
 
 def parent_id_of(node_id: str) -> Optional[str]:
     """获取父节点 id。1-1 → 1, 1 → None"""
@@ -68,6 +71,7 @@ def parent_id_of(node_id: str) -> Optional[str]:
     if len(parts) == 1:
         return None
     return parts[0]
+
 
 def _fsync_dir_best_effort(path: str):
     """Best-effort directory fsync for atomic rename durability."""
@@ -83,6 +87,7 @@ def _fsync_dir_best_effort(path: str):
         pass
     finally:
         os.close(fd)
+
 
 def atomic_write_text(path: str, content: str):
     """Atomically write text: temp file, fsync, replace, best-effort dir fsync."""
@@ -109,6 +114,7 @@ def atomic_write_text(path: str, content: str):
             pass
         raise
 
+
 class RoadmapLockTimeout(TimeoutError):
     """Raised when a roadmap lock cannot be acquired before timeout."""
 
@@ -125,8 +131,10 @@ class RoadmapLockTimeout(TimeoutError):
             f"If no roadmap_cli process is writing, run: python roadmap_cli.py unlock <json_path>"
         )
 
+
 def roadmap_lock_dir(json_path: str) -> str:
     return os.path.abspath(json_path) + ".lock"
+
 
 def read_lock_owner(json_path: str) -> dict:
     owner_path = os.path.join(roadmap_lock_dir(json_path), "owner.json")
@@ -136,12 +144,14 @@ def read_lock_owner(json_path: str) -> dict:
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return {}
 
+
 def unlock_roadmap(json_path: str) -> str:
     lock_dir = roadmap_lock_dir(json_path)
     if not os.path.isdir(lock_dir):
         return lock_dir
     shutil.rmtree(lock_dir)
     return lock_dir
+
 
 @contextmanager
 def roadmap_file_lock(json_path: str, timeout_seconds: float = DEFAULT_LOCK_TIMEOUT_SECONDS):
@@ -170,14 +180,20 @@ def roadmap_file_lock(json_path: str, timeout_seconds: float = DEFAULT_LOCK_TIME
         )
         yield
     finally:
+        # Best-effort cleanup. Some interposers (e.g. safe-delete wrappers)
+        # turn os.unlink into a failing OSError instead of FileNotFoundError,
+        # so swallow OSError broadly to avoid crashing __exit__. If owner.json
+        # could not be removed, rmtree the whole lock dir as a fallback so
+        # stale lock directories never accumulate.
         try:
             os.unlink(os.path.join(lock_dir, "owner.json"))
-        except FileNotFoundError:
+        except OSError:
             pass
         try:
             os.rmdir(lock_dir)
-        except FileNotFoundError:
-            pass
+        except OSError:
+            shutil.rmtree(lock_dir, ignore_errors=True)
+
 
 # ── Roadmap 类 ────────────────────────────────────────────
 
@@ -442,202 +458,267 @@ class Roadmap:
                 for cid in children if cid in self.data["nodes"]
             )
             if all_done:
-                if parent["status"] != STATUS_COMPLETED:
-                    parent["status"] = STATUS_COMPLETED
-            else:
-                if parent["status"] == STATUS_COMPLETED:
-                    parent["status"] = STATUS_IN_PROGRESS
+                parent["status"] = STATUS_COMPLETED
+            elif parent["status"] == STATUS_COMPLETED:
+                parent["status"] = STATUS_IN_PROGRESS
             parent_id = parent.get("parent")
 
-    # ── Markdown rendering ──────────────────────────────────
+    # ── Markdown 渲染 ──────────────────────────────────
 
-    def link_md_file(self, md_path: str):
-        """关联 Markdown 文件路径。"""
-        self.data["md_file"] = md_path
+    def render_full_section(self) -> str:
+        """全量渲染（调试用）：全展开树 + 全部决策表 + 焦点详情。"""
+        now = self.data["metadata"].get("updated", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
-    def _build_status_summary(self) -> dict:
-        """统计各状态节点数量。"""
-        counts = {
+        focus_id = self.get_current_focus()
+        focus_line = ""
+        if focus_id:
+            focus_node = self.data["nodes"][focus_id]
+            focus_line = f"> 当前施工: {focus_id}. {focus_node['label']}"
+
+        tree_text = self.get_tree(max_depth=50)
+
+        all_decisions = self.get_decisions()
+        decision_lines = ""
+        if all_decisions:
+            decision_lines = "| 节点 | 问题 | 答案 | 备注 |\n"
+            decision_lines += "|------|------|------|------|\n"
+            for d in all_decisions:
+                note = d.get("note", "")
+                decision_lines += f"| {d['node_id']} | {d['q']} | {d['answer']} | {note} |\n"
+
+        current_detail = ""
+        if focus_id:
+            current_detail = f"\n### 当前施工点\n\n**{focus_id}. {self.data['nodes'][focus_id]['label']}**\n"
+            if self.data["nodes"][focus_id].get("notes"):
+                current_detail += f"\n{self.data['nodes'][focus_id]['notes']}\n"
+
+        section = f"""## ZJ Roadmap
+
+> 数据文件: `{os.path.basename(self.json_path)}` | 最后更新: {now}
+{focus_line}
+
+<!-- ROADMAP_TREE_START -->
+<!-- 由 zj-roadmap-driven 自动生成，请勿手动编辑 -->
+{tree_text}
+<!-- ROADMAP_TREE_END -->
+"""
+        if decision_lines:
+            section += f"\n### 决策历史\n\n{decision_lines}\n"
+
+        if current_detail:
+            section += current_detail
+
+        return section
+
+    def render_light_section(self) -> str:
+        """轻量渲染（Human 视图）：树 depth=2 + 焦点节点展开。"""
+        now = self.data["metadata"].get("updated", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+        tree_text = self.get_tree(max_depth=2)
+
+        focus_id = self.get_current_focus()
+        focus_detail = ""
+        if focus_id:
+            focus_node = self.data["nodes"][focus_id]
+            focus_detail = f"\n### 当前施工：{focus_id}. {focus_node['label']}\n"
+            if focus_node.get("notes"):
+                focus_detail += f"\n{focus_node['notes']}\n"
+            decisions = focus_node.get("decisions", [])
+            if decisions:
+                focus_detail += "\n**决策：**\n"
+                for d in decisions:
+                    note = f" ({d.get('note', '')})" if d.get("note") else ""
+                    focus_detail += f"- Q: {d['q']} → {d['answer']}{note}\n"
+            focus_subtree = self.get_focus_subtree(focus_id, max_depth=1)
+            if focus_subtree:
+                focus_detail += f"\n**当前子树：**\n{focus_subtree}\n"
+
+        section = f"""<!-- ROADMAP_SECTION_START -->
+## ZJ Roadmap
+
+> 数据文件: `{os.path.basename(self.json_path)}` | 最后更新: {now}
+
+{tree_text}
+"""
+        if focus_detail:
+            section += focus_detail
+
+        section += "<!-- ROADMAP_SECTION_END -->\n"
+
+        return section
+
+    def get_focus_subtree(self, root_id: str, max_depth: int = 1) -> str:
+        """Render a bounded subtree under the focus node."""
+        if root_id not in self.data["nodes"]:
+            return ""
+
+        lines = []
+        root = self.data["nodes"][root_id]
+        children = root.get("children", [])
+
+        def _render(nid: str, prefix: str, is_last: bool, depth: int):
+            node = self.data["nodes"].get(nid)
+            if not node:
+                return
+            icon = STATUS_ICONS.get(node["status"], "[?]")
+            mode_tag = MODE_TAG.get(node.get("mode"), "")
+            connector = "└── " if is_last else "├── "
+            lines.append(f"{prefix}{connector}{icon}{mode_tag} {nid}. {node['label']}")
+
+            child_ids = node.get("children", [])
+            child_prefix = prefix + ("    " if is_last else "│   ")
+            if depth >= max_depth:
+                if child_ids:
+                    lines.append(
+                        f"{child_prefix}... {len(child_ids)} more child nodes; "
+                        f"run tree {nid} --depth 2 for full view"
+                    )
+                return
+
+            for i, cid in enumerate(child_ids):
+                _render(cid, child_prefix, i == len(child_ids) - 1, depth + 1)
+
+        for i, cid in enumerate(children):
+            _render(cid, "", i == len(children) - 1, 1)
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def _consume_legacy_focus_tail(content: str, end: int) -> int:
+        """Consume focus detail left outside old ROADMAP_SECTION markers.
+
+        Earlier light renders wrote `### 当前施工` after ROADMAP_SECTION_END.
+        Marker-based replacement therefore refreshed only the tree block and left
+        stale focus decisions behind. When that legacy tail appears immediately
+        after the marker, consume it up to the next top-level section.
+        """
+        tail = content[end:]
+        stripped = tail.lstrip()
+        whitespace_len = len(tail) - len(stripped)
+        if not stripped.startswith("### 当前施工"):
+            return end
+
+        focus_start = end + whitespace_len
+        next_section = content.find("\n## ", focus_start)
+        if next_section < 0:
+            return len(content)
+        return next_section
+
+    def write_markdown_section(self) -> Optional[str]:
+        """将 ZJ Roadmap section 写入关联的 md 文件。
+
+        在 md 文件中查找 `## ZJ Roadmap` section 并替换，
+        不存在则追加到文件末尾。
+        返回写入的文件路径，无关联 md 文件则返回 None。
+        """
+        md_file = self.data.get("metadata", {}).get("md_file", "")
+        if not md_file:
+            return None
+
+        section = self.render_light_section()
+
+        if os.path.exists(md_file):
+            with open(md_file, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            # 查找并替换已有的 auto-generated section. Prefer explicit
+            # ROADMAP_SECTION markers so repeated renders do not duplicate the
+            # opening marker; fall back to the historical heading-based replacement.
+            start_marker = "<!-- ROADMAP_SECTION_START -->"
+            end_marker = "<!-- ROADMAP_SECTION_END -->"
+            start = content.find(start_marker)
+            end = content.find(end_marker, start + len(start_marker)) if start >= 0 else -1
+            if start >= 0 and end >= 0:
+                end += len(end_marker)
+                end = self._consume_legacy_focus_tail(content, end)
+                content = content[:start] + section.rstrip() + content[end:]
+            elif start >= 0 and end < 0:
+                # START 存在但 END 缺失(截断/半写入/格式 flip 残留):
+                # 绝不 append 第二段,否则会制造重复 marker,下次 render 时
+                # find 取首个 START/END 不配对 → 错拼(缺陷 B)。直接把从 START
+                # 到文件末尾整段替换掉,保证 render 后只存在「指定的一段」。
+                content = content[:start] + section.rstrip()
+            else:
+                marker = "## ZJ Roadmap"
+                next_marker = "\n## "
+                idx = content.find(marker)
+                if idx >= 0:
+                    # 找到下一个 ## section 或文件末尾
+                    end = content.find(next_marker, idx + len(marker))
+                    if end < 0:
+                        end = len(content)
+                    content = content[:idx] + section + content[end:]
+                else:
+                    content = content.rstrip() + "\n\n" + section
+        else:
+            content = section
+
+        atomic_write_text(md_file, content)
+
+        return md_file
+
+    def link_md_file(self, md_file: str):
+        """关联一个 md 文件。"""
+        self.data.setdefault("metadata", {})
+        self.data["metadata"]["md_file"] = os.path.abspath(md_file)
+
+    # ── 验证 ───────────────────────────────────────────
+
+    def validate(self) -> list[str]:
+        """验证路线图数据完整性，返回错误列表。"""
+        errors = []
+
+        # 必须有根节点
+        if "1" not in self.data.get("nodes", {}):
+            errors.append("缺少根节点 '1'")
+
+        for nid, node in self.data.get("nodes", {}).items():
+            # id 一致性
+            if node.get("id") != nid:
+                errors.append(f"节点 {nid}: id 字段不一致 ({node.get('id')})")
+
+            # parent 引用有效性
+            parent = node.get("parent")
+            if parent is not None:
+                if parent not in self.data["nodes"]:
+                    errors.append(f"节点 {nid}: 父节点 {parent} 不存在")
+                elif nid not in self.data["nodes"][parent].get("children", []):
+                    errors.append(f"节点 {nid}: 父节点 {parent} 的 children 列表中缺少此节点")
+
+            # children 引用有效性
+            for cid in node.get("children", []):
+                if cid not in self.data["nodes"]:
+                    errors.append(f"节点 {nid}: 子节点 {cid} 不存在")
+                elif self.data["nodes"][cid].get("parent") != nid:
+                    errors.append(f"节点 {nid}: 子节点 {cid} 的 parent 指向不一致")
+
+            # 状态合法性
+            if node.get("status") not in (STATUS_PENDING, STATUS_IN_PROGRESS, STATUS_COMPLETED, STATUS_BLOCKED):
+                errors.append(f"节点 {nid}: 无效状态 '{node.get('status')}'")
+
+        return errors
+
+    # ── 统计 ───────────────────────────────────────────
+
+    def stats(self) -> dict:
+        """路线图统计信息。"""
+        nodes = self.data.get("nodes", {})
+        status_counts = {
             STATUS_PENDING: 0,
             STATUS_IN_PROGRESS: 0,
             STATUS_COMPLETED: 0,
             STATUS_BLOCKED: 0,
         }
-        for node in self.data["nodes"].values():
-            s = node.get("status", STATUS_PENDING)
-            if s in counts:
-                counts[s] += 1
-        return counts
+        for n in nodes.values():
+            s = n.get("status", STATUS_PENDING)
+            if s in status_counts:
+                status_counts[s] += 1
 
-    def _build_rendered_tree(self, root_id: str = "1", max_depth: int = 2) -> str:
-        """渲染树形文本视图到字符串。"""
-        return self.get_tree(root_id, max_depth)
+        total_decisions = sum(len(n.get("decisions", [])) for n in nodes.values())
 
-    def _build_focus_section(self) -> str:
-        """构建当前焦点节点详情的 Markdown 文本。"""
-        focus_id = self.get_current_focus()
-        if not focus_id:
-            return "_No in-progress node._"
-
-        node = self.get_node(focus_id)
-        lines = [f"### 🔨 当前施工: {focus_id}. {node['label']}"]
-        lines.append(f"**Status:** `{node['status']}` | **Mode:** `{node.get('mode', 'explore')}`")
-        if node.get("notes"):
-            lines.append(f"\n{node['notes']}")
-
-        decisions = node.get("decisions", [])
-        if decisions:
-            lines.append("\n**决策记录:**")
-            for d in decisions:
-                lines.append(f"- Q: {d['q']}")
-                lines.append(f"  A: {d['answer']}")
-                if d.get("note"):
-                    lines.append(f"  > {d['note']}")
-
-        # 焦点子节点浅展开一层
-        children = node.get("children", [])
-        if children:
-            lines.append("\n**子节点:**")
-            for cid in children[:10]:
-                cnode = self.get_node(cid)
-                icon = STATUS_ICONS.get(cnode.get("status", STATUS_PENDING), "[?]")
-                lines.append(f"- {icon} {cid}. {cnode['label']}")
-
-        return "\n".join(lines)
-
-    def render_full_section(self) -> str:
-        """生成完整 Markdown section（stdout 调试用）。"""
-        title = self.data.get("title", "Roadmap")
-        desc = self.data.get("description", "")
-
-        parts = [f"## {title}"]
-        if desc:
-            parts.append(f"\n{desc}\n")
-
-        # 全量树形
-        parts.append("### 完整树形\n")
-        parts.append("```")
-        parts.append(self._build_rendered_tree(max_depth=10))
-        parts.append("```")
-
-        # 统计
-        counts = self._build_status_summary()
-        parts.append(f"\n### 统计: pending={counts[STATUS_PENDING]} in_progress={counts[STATUS_IN_PROGRESS]} completed={counts[STATUS_COMPLETED]} blocked={counts[STATUS_BLOCKED]}")
-
-        # 焦点详情
-        parts.append(f"\n{self._build_focus_section()}")
-
-        # 全局决策
-        decisions = self.get_decisions()
-        if decisions:
-            parts.append("\n### 全局决策\n")
-            for d in decisions:
-                parts.append(f"- **{d['node_id']}**: Q: {d['q']} → A: {d['answer']}")
-
-        return "\n\n".join(parts)
-
-    def write_markdown_section(self) -> Optional[str]:
-        """渲染轻量 Markdown section 并写入关联 md 文件。
-
-        Returns 写入的文件路径，或 None（若未 link）。
-        """
-        md_file = self.data.get("md_file")
-        if not md_file:
-            return None
-
-        # 确保路径解析正确
-        if not os.path.isabs(md_file):
-            md_file = os.path.join(os.path.dirname(self.json_path), md_file)
-
-        title = self.data.get("title", "Roadmap")
-
-        parts = [
-            "<!-- ⚠️ 此 section 由 roadmap_cli.py render 自动生成，请勿手动编辑 -->",
-            f"## {title}",
-            "",
-            "### 树形视图 (depth=2)",
-            "",
-            "```",
-            self._build_rendered_tree(max_depth=2),
-            "```",
-            "",
-            self._build_focus_section(),
-        ]
-
-        section_text = "\n".join(parts)
-
-        # 读取现有文件，替换或追加
-        marker = "<!-- ⚠️ 此 section 由 roadmap_cli.py render 自动生成"
-        file_start = "<!-- ⚠️ ROADMAP_SECTION_START -->"
-        file_end = "<!-- ⚠️ ROADMAP_SECTION_END -->"
-
-        try:
-            with open(md_file, "r", encoding="utf-8") as f:
-                existing = f.read()
-        except FileNotFoundError:
-            existing = ""
-
-        wrapped = f"{file_start}\n{section_text}\n{file_end}"
-
-        if file_start in existing and file_end in existing:
-            # 替换现有 section
-            start_idx = existing.index(file_start)
-            end_idx = existing.index(file_end) + len(file_end)
-            new_content = existing[:start_idx] + wrapped + existing[end_idx:]
-        else:
-            # 追加到末尾
-            if existing and not existing.endswith("\n"):
-                existing += "\n"
-            new_content = existing + "\n" + wrapped + "\n"
-
-        with open(md_file, "w", encoding="utf-8") as f:
-            f.write(new_content)
-
-        return os.path.abspath(md_file)
-
-    # ── Validation & stats ──────────────────────────────────
-
-    def stats(self) -> dict:
-        """返回路线图统计信息。"""
-        counts = self._build_status_summary()
-        total = sum(counts.values())
         return {
-            "total_nodes": total,
-            "pending": counts[STATUS_PENDING],
-            "in_progress": counts[STATUS_IN_PROGRESS],
-            "completed": counts[STATUS_COMPLETED],
-            "blocked": counts[STATUS_BLOCKED],
-            "title": self.data.get("title", ""),
+            "total_nodes": len(nodes),
+            "status_counts": status_counts,
+            "total_decisions": total_decisions,
+            "max_depth": max((node_depth(nid) for nid in nodes), default=0),
         }
-
-    def validate(self) -> list[str]:
-        """验证数据完整性，返回错误列表。"""
-        errors = []
-        nodes = self.data.get("nodes", {})
-
-        for nid, node in nodes.items():
-            # 检查必填字段
-            for field in ("id", "label", "status", "mode"):
-                if field not in node:
-                    errors.append(f"Node '{nid}' missing field '{field}'")
-
-            # 检查状态合法性
-            status = node.get("status", "")
-            if status not in (STATUS_PENDING, STATUS_IN_PROGRESS, STATUS_COMPLETED, STATUS_BLOCKED):
-                errors.append(f"Node '{nid}' invalid status: '{status}'")
-
-            # 检查父节点存在性
-            parent = node.get("parent")
-            if parent and parent not in nodes:
-                errors.append(f"Node '{nid}' parent '{parent}' not found")
-
-            # 检查子节点存在性
-            for cid in node.get("children", []):
-                if cid not in nodes:
-                    errors.append(f"Node '{nid}' child '{cid}' not found")
-
-            # 检查 id 一致性
-            if node.get("id") != nid:
-                errors.append(f"Node key '{nid}' != id field '{node.get('id')}'")
-
-        return errors

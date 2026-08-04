@@ -38,6 +38,8 @@ zj-roadmap-driven CLI — 路线图确定性操作入口
 
   validate <json_path>                       # 验证数据完整性
 
+  import  <json_path> <md_file>              # 从 md 文件导入路线图
+
   path    <json_path> <node_id>              # 获取从根到节点的路径
 
   siblings <json_path> <node_id>             # 获取兄弟节点
@@ -53,17 +55,30 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from roadmap import Roadmap, RoadmapLockTimeout, roadmap_file_lock, unlock_roadmap
 
+
 def _parse_args(argv: list[str]) -> dict:
-    """解析命令行参数，返回命名参数 dict。"""
+    """解析命令行参数，返回命名参数 dict。
+
+    Supports both `--key value` and `--key=value` forms. Bare flags
+    (`--key` with no value) become the string `"true"`.
+    """
     args: dict = {"positional": []}
     i = 0
     while i < len(argv):
         a = argv[i]
         if a.startswith("--"):
-            key = a[2:]
+            stripped = a[2:]
+            # Support --key=value as a single token.
+            if "=" in stripped:
+                key, _, value = stripped.partition("=")
+                args[key] = value
+                i += 1
+                continue
+            key = stripped
             i += 1
             if i < len(argv) and not argv[i].startswith("--"):
                 args[key] = argv[i]
+                i += 1
             else:
                 args[key] = "true"  # flag 类参数
         else:
@@ -71,8 +86,10 @@ def _parse_args(argv: list[str]) -> dict:
             i += 1
     return args
 
+
 def _print_json(data):
     print(json.dumps(data, ensure_ascii=False, indent=2))
+
 
 def cmd_init(args: dict):
     r = Roadmap(args["positional"][0])
@@ -83,6 +100,7 @@ def cmd_init(args: dict):
     )
     r.save()
     print(f"Created: {r.json_path}")
+
 
 def cmd_add(args: dict):
     r = Roadmap(args["positional"][0])
@@ -95,6 +113,7 @@ def cmd_add(args: dict):
     )
     r.save()
     _print_json(node)
+
 
 def cmd_update(args: dict):
     r = Roadmap(args["positional"][0])
@@ -109,6 +128,7 @@ def cmd_update(args: dict):
     r.save()
     _print_json(node)
 
+
 def cmd_delete(args: dict):
     r = Roadmap(args["positional"][0])
     r.load()
@@ -116,10 +136,12 @@ def cmd_delete(args: dict):
     r.save()
     print(f"Deleted: {deleted}")
 
+
 def cmd_get(args: dict):
     r = Roadmap(args["positional"][0])
     r.load()
     _print_json(r.get_node(args["positional"][1]))
+
 
 def cmd_tree(args: dict):
     r = Roadmap(args["positional"][0])
@@ -127,6 +149,7 @@ def cmd_tree(args: dict):
     root = args["positional"][1] if len(args["positional"]) > 1 else "1"
     depth = int(args.get("depth", 10))
     print(r.get_tree(root, depth))
+
 
 def cmd_decide(args: dict):
     r = Roadmap(args["positional"][0])
@@ -140,11 +163,13 @@ def cmd_decide(args: dict):
     r.save()
     _print_json(d)
 
+
 def cmd_decisions(args: dict):
     r = Roadmap(args["positional"][0])
     r.load()
     node_id = args["positional"][1] if len(args["positional"]) > 1 else None
     _print_json(r.get_decisions(node_id))
+
 
 def cmd_render(args: dict):
     r = Roadmap(args["positional"][0])
@@ -155,26 +180,26 @@ def cmd_render(args: dict):
     else:
         print("No md_file linked. Use 'link' command first.")
 
+
 def cmd_section(args: dict):
     r = Roadmap(args["positional"][0])
     r.load()
     print(r.render_full_section())
 
+
 def cmd_link(args: dict):
     r = Roadmap(args["positional"][0])
     r.load()
-    # Store the absolute path so `render` resolves it directly. Storing a
-    # relative path here caused render to re-resolve it against the JSON's
-    # own directory (dirname(json_path) + relpath), producing a doubled path
-    # like .workbuddy/roadmaps/.workbuddy/roadmaps/ZJ_ROADMAP.md → FileNotFound.
-    r.link_md_file(os.path.abspath(args["positional"][1]))
+    r.link_md_file(args["positional"][1])
     r.save()
     print(f"Linked to: {os.path.abspath(args['positional'][1])}")
+
 
 def cmd_stats(args: dict):
     r = Roadmap(args["positional"][0])
     r.load()
     _print_json(r.stats())
+
 
 def cmd_validate(args: dict):
     r = Roadmap(args["positional"][0])
@@ -188,6 +213,7 @@ def cmd_validate(args: dict):
     else:
         print("Valid.")
 
+
 def cmd_path(args: dict):
     r = Roadmap(args["positional"][0])
     r.load()
@@ -195,6 +221,7 @@ def cmd_path(args: dict):
     for pid in path_ids:
         node = r.get_node(pid)
         print(f"  {pid}. {node['label']}")
+
 
 def cmd_siblings(args: dict):
     r = Roadmap(args["positional"][0])
@@ -207,6 +234,7 @@ def cmd_siblings(args: dict):
     else:
         print("(no siblings)")
 
+
 def cmd_focus(args: dict):
     r = Roadmap(args["positional"][0])
     r.load()
@@ -217,9 +245,11 @@ def cmd_focus(args: dict):
     else:
         print("(no in-progress leaf node)")
 
+
 def cmd_unlock(args: dict):
     lock_dir = unlock_roadmap(args["positional"][0])
     print(f"Unlocked: {lock_dir}")
+
 
 # ── 命令路由 ──────────────────────────────────────────────
 
@@ -242,6 +272,7 @@ COMMANDS = {
     "siblings": cmd_siblings,
     "focus": cmd_focus,
 }
+
 
 def main():
     if len(sys.argv) < 2:
@@ -266,6 +297,7 @@ def main():
     except RoadmapLockTimeout as e:
         print(str(e), file=sys.stderr)
         sys.exit(2)
+
 
 if __name__ == "__main__":
     main()
