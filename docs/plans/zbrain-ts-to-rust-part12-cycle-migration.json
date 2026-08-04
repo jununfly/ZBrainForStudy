@@ -600,12 +600,43 @@
     },
     "1-6-6": {
       "id": "1-6-6",
-      "label": "phantom-redirect pre-pass (port phantom-redirect.ts 606行; extract_facts 顶部; syncLockId 单锁30s重试 + 上限50 + body-shape gate + resolvePhantomCanonical + 歧义检查 + fenceDbDrift + 8步提交链; 依赖 entities/resolve + facts-fence + phantom-audit)",
-      "status": "pending",
-      "mode": "explore",
+      "label": "phantom-redirect pre-pass (TS v0.35.5, 606行, extract_facts 内预通行). 全量保真移植，拆 4 sub-node：1-6-6-1 entities/resolve 全量移植、1-6-6-2 migrateFactsToCanonical 引擎 primitive、1-6-6-3 phantom_audit 模块、1-6-6-4 extract_facts 内主逻辑接线+测试+收口 G61。复用 cycle 锁；rewrite_links 在 libsql/postgres 实为 no-op（已知降级，记 G-gap）。",
+      "status": "completed",
+      "mode": "build",
       "parent": "1-6",
-      "children": [],
-      "decisions": [],
+      "children": [
+        "1-6-6-1",
+        "1-6-6-2",
+        "1-6-6-3",
+        "1-6-6-4"
+      ],
+      "decisions": [
+        {
+          "q": "1-6-6 需新建多个 Rust 原语（migrateFactsToCanonical + 实体解析 + 审计）。本节点移植到什么程度？",
+          "answer": "全量保真移植：新建 migrateFactsToCanonical 引擎 primitive（DB 侧迁移 fact 行保留全部列）+ 整个 entities/resolve.ts（含 resolveEntitySlug 全链 + pg_trgm 评分）+ 完整 phantom_audit 模块（ISO-week JSONL，6 变体）+ extract_facts.rs 内 pre-pass 主逻辑。rewrite_links 保持 no-op（记为已知降级）。",
+          "note": "用户逆推荐选全量（推荐项是核心保真：聚焦 resolve_phantom_canonical+find_prefix_candidates+轻量审计）。代价：fuzzy 相似度在 libsql(postgres pg_trgm) 不可用，需 Rust 侧 trigram 替代；InMemory 无 execute_raw 时解析/pre-pass 降级 Skipped。"
+        },
+        {
+          "q": "TS phantom pass 顶部用 tryAcquireDbLock(syncLockId, 30s) 单写锁跨全部 phantom，竞争则整轮跳过。Rust 已有 cycle 级锁。如何对齐？",
+          "answer": "复用 cycle 锁：pre-pass 内联在 extract_facts 中跑（extract_facts 已是 needs_lock phase，cycle 级锁已串行化整个 pass）。不单独加 tryAcquireDbLock；因 cycle 锁已持有、无进程内竞争，phantoms_lock_busy 恒 false。",
+          "note": "效果等价于 TS 串行化，改动面最小。不建独立 sync-lock 原语。"
+        },
+        {
+          "q": "phantom_audit 如何落地（Rust 已具备可复用的 ISO-week 审计范式）？",
+          "answer": "完整审计模块：新建 phantom_audit.rs，复用 schema_pack::candidate_audit::{resolve_audit_dir, compute_iso_week_name}，仿 rerank_audit.rs/nightly_probe.rs：PhantomOutcome 6 变体枚举 + PhantomAuditEvent + log_phantom_event(audit_dir, event) best-effort append + read_recent_phantom_events。与 TS v0.35.5 审计 schema 对齐。",
+          "note": "TS 审计是 JSONL best-effort 文件写（~/.zbrain/audit/phantoms-YYYY-Www.jsonl），失败仅 stderr 不抛错。Rust audit_dir 取 cycle 已解析者（ZBRAIN_AUDIT_DIR 或 ~/.zbrain/audit）。"
+        },
+        {
+          "q": "Q1 选了全量保真，但“完整 entities/resolve.ts”实际只需其中 2 个函数 + 直接依赖。解析模块移植到哪一层？",
+          "answer": "整个 resolve.ts 全量移植：含 resolveEntitySlug 的 exact/fuzzy/prefix/fallback 全链 + resolveEntitySlugWithSource + resolvePhantomCanonical + findPrefixCandidates + 助手(looksLikeSlug/tryExactSlug/tryFuzzyMatch/tryPrefixExpansion/isBareName/slugify/PREFIX_EXPANSION_DIRS)。fuzzy 用 Rust 侧 trigram 相似度(阈值 0.4) 替代 pg_trgm。",
+          "note": "用户逆推荐选整个 resolve.ts（推荐项是聚焦两函数+直接依赖）。代价：tryFuzzyMatch 不再依赖 pg_trgm，改用 Rust 侧 trigram；engine 无 execute_raw(InMemory) 时解析返回 None/fallback，pre-pass Skipped(engine_unsupported)。"
+        },
+        {
+          "q": "1-6-6 范围已很大（4 块新代码），如何组织？",
+          "answer": "拆 4 sub-node：1-6-6-1 entities/resolve 全量移植、1-6-6-2 migrateFactsToCanonical 引擎 primitive、1-6-6-3 phantom_audit 模块、1-6-6-4 extract_facts 内 pre-pass 主逻辑接线 + 测试 + 收口 G61。",
+          "note": "每 sub-node 独立完成+标记 completed，降低回归面。"
+        }
+      ],
       "notes": ""
     },
     "1-6-7": {
@@ -770,6 +801,46 @@
         }
       ],
       "notes": "真实实现（非研判剔除）：给 BrainEngine trait 加能力探测 API，run_cycle 的 DB 依赖 phase 在 engine 不支持时 Skipped(reason=no_database)"
+    },
+    "1-6-6-1": {
+      "id": "1-6-6-1",
+      "parent": "1-6-6",
+      "status": "completed",
+      "mode": "build",
+      "label": "port src/core/entities/resolve.ts 全量: resolveEntitySlug 全链(exact/fuzzy/prefix/fallback) + resolveEntitySlugWithSource + resolvePhantomCanonical + findPrefixCandidates + 助手(looksLikeSlug/tryExactSlug/tryFuzzyMatch/tryPrefixExpansion/isBareName/slugify/PREFIX_EXPANSION_DIRS). fuzzy 用 Rust 侧 trigram 相似度(阈值0.4) 替代 pg_trgm；engine 无 execute_raw(InMemory) 时解析返回 None/fallback. 新建 autopilot/phases/resolve.rs (或 entities/resolve.rs).",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-6-2": {
+      "id": "1-6-6-2",
+      "parent": "1-6-6",
+      "status": "completed",
+      "mode": "build",
+      "label": "BrainEngine 加 migrateFactsToCanonical(phantom_slug, canonical_slug, source_id) -> Result<u64>: DB 侧 UPDATE facts SET slug=canonical_slug WHERE slug=phantom_slug AND source_id=?，保留全部列(embedding/validUntil/kind/status/source_session...). libsql/postgres 真实实现；InMemory 返回 Unsupported 或内存映射. 供 phantom pre-pass 调用.",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-6-3": {
+      "id": "1-6-6-3",
+      "parent": "1-6-6",
+      "status": "completed",
+      "mode": "build",
+      "label": "新建 phantom_audit.rs: PhantomOutcome 6 变体枚举(redirected/ambiguous/drift/no_canonical/not_phantom_has_residue/pass_skipped_lock_busy) + PhantomAuditEvent + compute_phantom_audit_filename(ISO-week, 复用 schema_pack::candidate_audit::compute_iso_week_name) + log_phantom_event(audit_dir, event) best-effort append + read_recent_phantom_events. 仿 rerank_audit.rs/nightly_probe.rs 范式.",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-6-6-4": {
+      "id": "1-6-6-4",
+      "parent": "1-6-6",
+      "status": "completed",
+      "mode": "build",
+      "label": "extract_facts.rs 把 DEFERRED 桩替换为真实 pre-pass: legacy-row guard 后、主 reconcile 前，扫描 brain_dir 未前缀 slug 页 -> resolvePhantomCanonical -> 歧义检查(findPrefixCandidates <=1) -> fence-DB-drift gate -> migrateFactsToCanonical -> 磁盘重写 canonical fence(parse/render) -> soft_delete_page(phantom) -> unlink .md -> rewrite_links(no-op 已知降级) -> 计数(phantoms_scanned/redirected/ambiguous/skipped_drift/more_pending); 单锁复用 cycle 锁; 上限 50(ZBRAIN_PHANTOM_REDIRECT_LIMIT); log_phantom_event 审计. 补测试, 标 G61 closed.",
+      "children": [],
+      "decisions": [],
+      "notes": ""
     }
   },
   "metadata": {
