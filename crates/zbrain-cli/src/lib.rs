@@ -24,6 +24,9 @@ use clap::{Parser, Subcommand};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use zbrain_core::autopilot::cycle::{
+    run_cycle, CycleOpts, CyclePhase, CycleReport, CycleStatus, PhaseResult, PhaseStatus,
+};
 use zbrain_core::engine::BrainEngine;
 use zbrain_core::operation::{register_all, CliOpts, OperationContext, OperationRegistry};
 use zbrain_core::progress::{ProgressMode, ProgressReporter};
@@ -404,6 +407,8 @@ pub enum Commands {
     Think(ThinkArgs),
     /// Run the auto-think cycle phase (open questions → synthesis pages)
     AutoThink(AutoThinkArgs),
+    /// Run one brain maintenance cycle (lint → … → orphans) via run_cycle.
+    Dream(DreamArgs),
     /// Search pages by keyword query
     Query(QueryArgs),
 
@@ -1356,6 +1361,56 @@ pub struct AutoThinkArgs {
     pub json: bool,
 }
 
+/// Arguments for `zbrain dream` command.
+///
+/// Runs one brain maintenance cycle via the Rust `run_cycle` orchestrator —
+/// the canonical replacement for the legacy TS `src/commands/dream.ts`.
+/// Cron-friendly, JSON report, phase-selectable.
+#[derive(Parser, Debug, Clone)]
+pub struct DreamArgs {
+    /// Emit machine-readable JSON instead of a human summary.
+    #[arg(long)]
+    pub json: bool,
+
+    /// Preview all fixes without writing (synthesize still runs the cheap
+    /// significance filter but skips the full synthesis pass).
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// git pull the brain repo before syncing.
+    #[arg(long)]
+    pub pull: bool,
+
+    /// Run a single phase (e.g. `lint`, `sync`, `embed`, `orphans`).
+    #[arg(long)]
+    pub phase: Option<String>,
+
+    /// Brain directory (git repo). Defaults to `sync.default_repo` from config.
+    #[arg(long)]
+    pub dir: Option<String>,
+
+    /// Synthesize a specific transcript file (implies --phase synthesize).
+    #[arg(long)]
+    pub input: Option<String>,
+
+    /// Synthesize transcripts dated for one specific day (YYYY-MM-DD).
+    #[arg(long)]
+    pub date: Option<String>,
+
+    /// Backfill range start (YYYY-MM-DD). Use with --to.
+    #[arg(long)]
+    pub from: Option<String>,
+
+    /// Backfill range end (YYYY-MM-DD). Use with --from.
+    #[arg(long)]
+    pub to: Option<String>,
+
+    /// Disable the synthesize self-consumption guard. A loud stderr warning
+    /// fires when set. Never auto-applied for --input.
+    #[arg(long = "unsafe-bypass-dream-guard")]
+    pub unsafe_bypass_dream_guard: bool,
+}
+
 /// Arguments for `zbrain query` command.
 ///
 /// `--explain` mirrors the TS global flag: it swaps the default JSON output for
@@ -1775,6 +1830,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::AutoThink(args) => {
             run_auto_think_command(args, cli.config.as_deref()).await?
         }
+        Commands::Dream(args) => run_dream_command(args, cli.config.as_deref()).await?,
         Commands::Query(args) => run_query_command(args, cli.config.as_deref(), timeout_ms).await?,
         Commands::PutPage(args) => run_put_page_command(args, cli.config.as_deref(), timeout_ms).await?,
         Commands::DeletePage(args) => run_delete_page_command(args, cli.config.as_deref(), timeout_ms).await?,
@@ -2518,6 +2574,254 @@ async fn run_auto_think_command(
 
     engine.disconnect().await?;
     Ok(())
+}
+
+/// Execute `zbrain dream` command.
+///
+/// Runs one brain maintenance cycle via the Rust `run_cycle` orchestrator —
+/// the canonical replacement for the legacy TS `src/commands/dream.ts` +
+/// `src/core/cycle.ts`. Mirrors the TS CLI surface: `--json`, `--dry-run`,
+/// `--pull`, `--phase`, `--dir`, `--input`, `--date`, `--from`, `--to`,
+/// `--unsafe-bypass-dream-guard`; human report with totals; `failed` → exit 1.
+async fn run_dream_command(
+    args: DreamArgs,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+
+    // --input implies --phase synthesize (TS parity).
+    let phase_override = if args.input.is_some() && args.phase.is_none() {
+        Some("synthesize".to_string())
+    } else {
+        args.phase.clone()
+    };
+
+    // --input is incoherent with the date filters (single file vs dir scan).
+    if args.input.is_some() && (args.date.is_some() || args.from.is_some() || args.to.is_some()) {
+        anyhow::bail!("--input cannot be combined with --date / --from / --to");
+    }
+
+    // Validate date-style flags (TS exited 2 on a bad format; we bail → exit 1).
+    for (flag, val) in [
+        ("--date", args.date.as_deref()),
+        ("--from", args.from.as_deref()),
+        ("--to", args.to.as_deref()),
+    ] {
+        if let Some(v) = val {
+            if !is_iso_date(v) {
+                anyhow::bail!("{flag} must be YYYY-MM-DD; got \"{v}\"");
+            }
+        }
+    }
+    if let (Some(from), Some(to)) = (args.from.as_deref(), args.to.as_deref()) {
+        if from > to {
+            anyhow::bail!("--from ({from}) is after --to ({to}); empty range");
+        }
+    }
+
+    let config = config::load_config(config_path)?;
+
+    // Resolve brain directory: --dir flag, else config.sync.default_repo.
+    let brain_dir: PathBuf = match &args.dir {
+        Some(d) => PathBuf::from(d),
+        None => config
+            .sync
+            .as_ref()
+            .and_then(|s| s.default_repo.clone())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No brain directory found. Pass --dir <path> or configure one via `zbrain init`."
+                )
+            })?,
+    };
+
+    // Validate --phase against the known phase labels.
+    let phases: Option<Vec<CyclePhase>> = if let Some(p) = &phase_override {
+        match CyclePhase::from_label(p) {
+            Some(phase) => Some(vec![phase]),
+            None => {
+                let valid = CyclePhase::ALL
+                    .iter()
+                    .map(|x| x.label())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                anyhow::bail!("Unknown phase \"{p}\". Valid: {valid}");
+            }
+        }
+    } else {
+        None
+    };
+
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = zbrain_core::engine::EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    let opts = CycleOpts {
+        dry_run: args.dry_run,
+        phases,
+        brain_dir: brain_dir.to_string_lossy().into_owned(),
+        pull: args.pull,
+        source_id: None,
+        chat: None,
+        yield_between_phases: None,
+        yield_during_phase: None,
+        synth_input_file: args.input.clone(),
+        synth_date: args.date.clone(),
+        synth_from: args.from.clone(),
+        synth_to: args.to.clone(),
+        synth_bypass_dream_guard: args.unsafe_bypass_dream_guard,
+        signal: None,
+    };
+
+    let report: CycleReport = run_cycle(&engine, &opts).await;
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print_dream_human(&report);
+    }
+
+    engine.disconnect().await?;
+
+    // `failed` overall → non-zero exit (TS `process.exit(1)` on failed).
+    if report.status == CycleStatus::Failed {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// `YYYY-MM-DD` shape check (mirrors TS `^\d{4}-\d{2}-\d{2}$`).
+fn is_iso_date(s: &str) -> bool {
+    let parts: Vec<&str> = s.split('-').collect();
+    if parts.len() != 3 {
+        return false;
+    }
+    let [y, m, d] = [parts[0], parts[1], parts[2]];
+    y.len() == 4
+        && m.len() == 2
+        && d.len() == 2
+        && y.chars().all(|c| c.is_ascii_digit())
+        && m.chars().all(|c| c.is_ascii_digit())
+        && d.chars().all(|c| c.is_ascii_digit())
+}
+
+fn dream_status_str(s: CycleStatus) -> &'static str {
+    match s {
+        CycleStatus::Ok => "ok",
+        CycleStatus::Clean => "clean",
+        CycleStatus::Partial => "partial",
+        CycleStatus::Skipped => "skipped",
+        CycleStatus::Failed => "failed",
+    }
+}
+
+/// Human-friendly rendering of a `CycleReport`, mirroring the legacy TS
+/// `printHuman` in `src/commands/dream.ts`.
+fn print_dream_human(report: &CycleReport) {
+    match report.status {
+        CycleStatus::Skipped => match report.reason.as_deref() {
+            Some("cycle_already_running") => println!("Skipped: another cycle is already running. (locked)"),
+            Some("no_database") => println!("Skipped: no database available."),
+            Some(r) => println!("Skipped: {r}."),
+            None => println!("Skipped: unknown reason."),
+        },
+        CycleStatus::Clean => {
+            println!(
+                "Brain is healthy. {} phase(s) checked in {:.1}s.",
+                report.phases.len(),
+                report.duration_ms as f64 / 1000.0
+            );
+        }
+        _ => {
+            println!(
+                "Dream cycle ({}) in {:.1}s:",
+                dream_status_str(report.status),
+                report.duration_ms as f64 / 1000.0
+            );
+            for p in &report.phases {
+                if let Some(line) = dream_phase_line(p) {
+                    println!("{line}");
+                }
+            }
+            print_dream_totals(&report.totals);
+        }
+    }
+}
+
+/// Render one phase line, or `None` when the phase produced no output
+/// (mirrors TS skipping empty `summary`).
+fn dream_phase_line(p: &PhaseResult) -> Option<String> {
+    if p.summary.is_empty() && p.error.is_none() {
+        return None;
+    }
+    let icon = match p.status {
+        PhaseStatus::Ok => '✓',
+        PhaseStatus::Warn => '!',
+        PhaseStatus::Skipped => '-',
+        PhaseStatus::Fail => '✗',
+    };
+    let mut line = format!("  {} {:<10}  {}", icon, p.phase, p.summary);
+    if let Some(e) = &p.error {
+        let hint = e.hint.as_deref().map(|h| format!(" ({h})")).unwrap_or_default();
+        line.push_str(&format!(
+            "\n      [{}] {} {}{}",
+            e.class, e.code, e.message, hint
+        ));
+    }
+    Some(line)
+}
+
+fn print_dream_totals(t: &zbrain_core::autopilot::cycle::CycleTotals) {
+    let has = t.lint_fixes > 0
+        || t.backlinks_added > 0
+        || t.pages_synced > 0
+        || t.pages_extracted > 0
+        || t.pages_embedded > 0
+        || t.orphans_found > 0
+        || t.transcripts_processed > 0
+        || t.synth_pages_written > 0
+        || t.patterns_written > 0
+        || t.pages_emotional_weight_recomputed > 0
+        || t.edges_resolved > 0
+        || t.edges_ambiguous > 0
+        || t.purged_sources_count > 0
+        || t.purged_pages_count > 0
+        || t.facts_consolidated > 0
+        || t.consolidate_takes_written > 0
+        || t.phantoms_redirected > 0
+        || t.phantoms_ambiguous > 0
+        || t.phantoms_skipped_drift > 0;
+    if has {
+        println!(
+            "  totals: lint={} backlinks={} synced={} extracted={} embedded={} orphans={} \
+             synth_transcripts={} synth_pages={} patterns={} emotional_weight={} edges_resolved={} \
+             edges_ambiguous={} purged_sources={} purged_pages={} facts_consolidated={} \
+             consolidate_takes={} phantoms_redirected={} phantoms_ambiguous={} phantoms_skipped_drift={}",
+            t.lint_fixes,
+            t.backlinks_added,
+            t.pages_synced,
+            t.pages_extracted,
+            t.pages_embedded,
+            t.orphans_found,
+            t.transcripts_processed,
+            t.synth_pages_written,
+            t.patterns_written,
+            t.pages_emotional_weight_recomputed,
+            t.edges_resolved,
+            t.edges_ambiguous,
+            t.purged_sources_count,
+            t.purged_pages_count,
+            t.facts_consolidated,
+            t.consolidate_takes_written,
+            t.phantoms_redirected,
+            t.phantoms_ambiguous,
+            t.phantoms_skipped_drift
+        );
+    }
 }
 
 /// Execute `zbrain get-page` command.

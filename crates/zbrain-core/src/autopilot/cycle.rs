@@ -115,11 +115,42 @@ impl CyclePhase {
             CyclePhase::CalibrationProfile => "calibration-profile",
             CyclePhase::ConversationFactsBackfill => "conversation-facts-backfill",
             CyclePhase::Embed => "embed",
-        CyclePhase::Orphans => "orphans",
-        CyclePhase::SchemaSuggest => "schema-suggest",
-        CyclePhase::Purge => "purge",
-        CyclePhase::Drift => "drift",
+            CyclePhase::Orphans => "orphans",
+            CyclePhase::SchemaSuggest => "schema-suggest",
+            CyclePhase::Purge => "purge",
+            CyclePhase::Drift => "drift",
+        }
     }
+
+    /// Parse a kebab-case phase label into a `CyclePhase`. Returns `None` for
+    /// unknown labels (mirrors TS `ALL_PHASES.includes`).
+    pub fn from_label(s: &str) -> Option<CyclePhase> {
+        match s {
+            "lint" => Some(CyclePhase::Lint),
+            "backlinks" => Some(CyclePhase::Backlinks),
+            "sync" => Some(CyclePhase::Sync),
+            "synthesize" => Some(CyclePhase::Synthesize),
+            "extract" => Some(CyclePhase::Extract),
+            "extract-facts" => Some(CyclePhase::ExtractFacts),
+            "extract-atoms" => Some(CyclePhase::ExtractAtoms),
+            "extract-takes" => Some(CyclePhase::ExtractTakes),
+            "resolve-symbol-edges" => Some(CyclePhase::ResolveSymbolEdges),
+            "patterns" => Some(CyclePhase::Patterns),
+            "auto-think" => Some(CyclePhase::AutoThink),
+            "synthesize-concepts" => Some(CyclePhase::SynthesizeConcepts),
+            "recompute-emotional-weight" => Some(CyclePhase::RecomputeEmotionalWeight),
+            "consolidate" => Some(CyclePhase::Consolidate),
+            "propose-takes" => Some(CyclePhase::ProposeTakes),
+            "grade-takes" => Some(CyclePhase::GradeTakes),
+            "calibration-profile" => Some(CyclePhase::CalibrationProfile),
+            "conversation-facts-backfill" => Some(CyclePhase::ConversationFactsBackfill),
+            "embed" => Some(CyclePhase::Embed),
+            "orphans" => Some(CyclePhase::Orphans),
+            "schema-suggest" => Some(CyclePhase::SchemaSuggest),
+            "purge" => Some(CyclePhase::Purge),
+            "drift" => Some(CyclePhase::Drift),
+            _ => None,
+        }
     }
 
     /// Whether this phase mutates state and needs the cycle lock.
