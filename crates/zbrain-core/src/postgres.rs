@@ -2277,6 +2277,27 @@ impl BrainEngine for PostgresEngine {
         Ok(())
     }
 
+    async fn migrate_facts_to_canonical(
+        &self,
+        phantom_slug: &str,
+        canonical_slug: &str,
+        source_id: &str,
+    ) -> Result<i64> {
+        // Postgres uses `$N` numbered positional markers. Port of TS
+        // `migrateFactsToCanonical`: active rows only (`expired_at IS NULL`)
+        // so the supersession audit trail is left intact.
+        let sql = "UPDATE facts \
+                   SET entity_slug = $1, source_markdown_slug = $1 \
+                   WHERE source_id = $2 \
+                     AND source_markdown_slug = $3 \
+                     AND expired_at IS NULL \
+                   RETURNING id";
+        let params: &[&(dyn erased_serde::Serialize + Sync)] =
+            &[&canonical_slug, &source_id, &phantom_slug];
+        let rows = self.execute_raw(sql, params).await?;
+        Ok(rows.len() as i64)
+    }
+
     // ─── Advanced reads overrides (PG parity) ────────────────────────────────
     // Five read-only methods promoted from trait-default `Unsupported` to
     // real SQL on PostgresEngine. libsql implements the same trait surface in

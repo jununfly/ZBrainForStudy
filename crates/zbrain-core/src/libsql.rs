@@ -3116,6 +3116,27 @@ impl BrainEngine for LibsqlEngine {
         Ok(())
     }
 
+    async fn migrate_facts_to_canonical(
+        &self,
+        phantom_slug: &str,
+        canonical_slug: &str,
+        source_id: &str,
+    ) -> Result<i64> {
+        // libsql/SQLite uses `?N` numbered positional markers. Port of TS
+        // `migrateFactsToCanonical`: active rows only (`expired_at IS NULL`)
+        // so the supersession audit trail is left intact.
+        let sql = "UPDATE facts \
+                   SET entity_slug = ?1, source_markdown_slug = ?1 \
+                   WHERE source_id = ?2 \
+                     AND source_markdown_slug = ?3 \
+                     AND expired_at IS NULL \
+                   RETURNING id";
+        let params: &[&(dyn erased_serde::Serialize + Sync)] =
+            &[&canonical_slug, &source_id, &phantom_slug];
+        let rows = self.execute_raw(sql, params).await?;
+        Ok(rows.len() as i64)
+    }
+
     async fn find_orphan_pages(&self) -> Result<Vec<OrphanPage>> {
         let conn = self.conn().await?;
         let mut rows = conn

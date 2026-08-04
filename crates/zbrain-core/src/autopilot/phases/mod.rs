@@ -15,3 +15,8 @@ pub mod synthesize;
 pub mod auto_think;
 pub mod drift;
 pub mod consolidate;
+// 1-6-6 phantom-redirect pre-pass modules (declared late: files existed but
+// were never wired into the module tree, causing E0432 in downstream phases).
+pub mod phantom_redirect;
+pub mod phantom_audit;
+pub mod resolve;

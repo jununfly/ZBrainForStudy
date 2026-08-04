@@ -889,37 +889,7 @@ fn render_page_to_markdown(page: &Page, tags: &[String], overrides: &Value) -> S
             Value::Array(tags.iter().map(|t| Value::String(t.clone())).collect()),
         );
     }
-    serialize_markdown(&Value::Object(fm), &page.compiled_truth, &page.timeline, tags)
-}
-
-/// Build canonical on-disk markdown with a YAML frontmatter block. Port of TS
-/// `serializeMarkdown`: full frontmatter = `{type, title, ...frontmatter}`,
-/// body = `compiled_truth` (+ optional `<!-- timeline -->` block), wrapped in
-/// `---\n<yaml>\n---\n`.
-fn serialize_markdown(
-    frontmatter: &Value,
-    compiled_truth: &str,
-    timeline: &str,
-    tags: &[String],
-) -> String {
-    let mut fm: Map<String, Value> = match frontmatter {
-        Value::Object(m) => m.clone(),
-        _ => Map::new(),
-    };
-    if !tags.is_empty() {
-        fm.insert(
-            "tags".into(),
-            Value::Array(tags.iter().map(|t| Value::String(t.clone())).collect()),
-        );
-    }
-    let yaml = serde_yaml::to_string(&Value::Object(fm))
-        .unwrap_or_else(|e| format!("# yaml serialization error: {e}\n"));
-    let mut body = compiled_truth.to_string();
-    if !timeline.is_empty() {
-        body.push_str("\n\n<!-- timeline -->\n\n");
-        body.push_str(timeline);
-    }
-    format!("---\n{}\n---\n\n{}\n", yaml.trim_end(), body)
+    crate::markdown::serialize_markdown(&Value::Object(fm), &page.compiled_truth, &page.timeline, tags)
 }
 
 /// Mirror each synthesized `(slug, source_id)` page back to disk. Port of TS
@@ -1026,7 +996,7 @@ async fn write_summary_page(
 
     // Disk mirror (orchestrator dual-write).
     if let Some(bd) = brain_dir {
-        let md = serialize_markdown(
+        let md = crate::markdown::serialize_markdown(
             &json!({
                 "dream_generated": true,
                 "dream_cycle_date": summary_date,

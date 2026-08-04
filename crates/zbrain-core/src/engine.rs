@@ -1702,6 +1702,23 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
     /// Explicit no-op; links use integer page_id foreign keys.
     async fn rewrite_links(&self, _old_slug: &str, _new_slug: &str) -> crate::Result<()>;
 
+    /// Migrate DB fact rows from a phantom (unprefixed) slug to its canonical
+    /// (prefixed) slug. Active rows only (`expired_at IS NULL`) so the
+    /// supersession audit trail is undisturbed. Returns the number of fact
+    /// rows moved. Mirrors TS `migrateFactsToCanonical`.
+    ///
+    /// Default: no-op returning `Ok(0)` — engines without persistent facts
+    /// (e.g. `InMemoryEngine`) have nothing to migrate; the in-cycle caller
+    /// (phantom_redirect) treats `0` as "no facts needed moving" and proceeds.
+    async fn migrate_facts_to_canonical(
+        &self,
+        _phantom_slug: &str,
+        _canonical_slug: &str,
+        _source_id: &str,
+    ) -> crate::Result<i64> {
+        Ok(0)
+    }
+
     // — Bulk slug / ref enumeration (3) —
     /// Return the set of all live (non-soft-deleted) slugs, optionally
     /// scoped to `source_id`. Mirrors TS `getAllSlugs`.

@@ -5,7 +5,7 @@
 //!
 //! Part of roadmap node 1-7-1-4: Content extraction.
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::collections::HashMap;
 
 // ─── Path prefix → type mapping (ZBRAIN_BASE_PATH_PREFIXES) ───────────
@@ -394,6 +394,43 @@ pub fn parse_markdown(
         slug,
         tags,
     }
+}
+
+/// Build canonical on-disk markdown with a YAML frontmatter block.
+///
+/// Mirrors TS `serializeMarkdown`: the body is `compiled_truth` with an
+/// optional `<!-- timeline -->` section appended; the frontmatter is the
+/// supplied `Value` with `tags` merged in. Wrapped as
+/// `---\n<yaml>\n---\n\n<body>\n` so the result round-trips through
+/// [`parse_markdown`].
+///
+/// Shared by `synthesize` (reverse-write) and `phantom_redirect`
+/// (materialize canonical to disk) so there is a single canonical
+/// serialization path.
+pub fn serialize_markdown(
+    frontmatter: &Value,
+    compiled_truth: &str,
+    timeline: &str,
+    tags: &[String],
+) -> String {
+    let mut fm: Map<String, Value> = match frontmatter {
+        Value::Object(m) => m.clone(),
+        _ => Map::new(),
+    };
+    if !tags.is_empty() {
+        fm.insert(
+            "tags".into(),
+            Value::Array(tags.iter().map(|t| Value::String(t.clone())).collect()),
+        );
+    }
+    let yaml = serde_yaml::to_string(&Value::Object(fm))
+        .unwrap_or_else(|e| format!("# yaml serialization error: {e}\n"));
+    let mut body = compiled_truth.to_string();
+    if !timeline.is_empty() {
+        body.push_str("\n\n<!-- timeline -->\n\n");
+        body.push_str(timeline);
+    }
+    format!("---\n{}\n---\n\n{}\n", yaml.trim_end(), body)
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────
