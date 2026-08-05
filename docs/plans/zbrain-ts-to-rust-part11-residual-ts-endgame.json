@@ -22,7 +22,8 @@
         "1-10",
         "1-11",
         "1-12",
-        "1-13"
+        "1-13",
+        "1-14"
       ],
       "decisions": [
         {
@@ -2703,11 +2704,27 @@
       "children": [],
       "decisions": [],
       "notes": "COMPLETED 2026-07-24:\n- 删除 all 31 TS files under src/core/minions (all already implemented in Rust crates/zbrain-core/src/minions/)\n- 删除 47 TS test files that depended on the TS minions (all testing TS implementation, no longer needed)\n- typecheck baseline updated from 56 → 95 errors (all new errors are from un-migrated B-class TS that still remain, they depend on the deleted TS minions, expected)\n- Conclusion: TS minions/subagent runtime completely retired, all usage now goes through Rust Part7 Phase9 implementation."
+    },
+    "1-14": {
+      "id": "1-14",
+      "label": "残留 TS 活性审计（415 文件 live/orphan 分类 + 依赖测试面）",
+      "status": "in_progress",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [
+        {
+          "q": "src 死代码终局第一步怎么走？",
+          "answer": "先跑活性审计拿真实地面真相，再定 bulk-delete 还是节点式",
+          "note": "地图滞后：cli.ts/operations.ts/minions 已删，bin/zbrain-rs.js 是纯 Rust 垫片，src/ 无活派发入口，415 文件实质死代码仅被测试维持；节点式计划(1-1/1-4/1-11)前提已过时"
+        }
+      ],
+      "notes": "L1审计: 415 src(0 product-live/398 test-covered/17 orphan); 555测试541引src. L2+读bin/zbrain-rs.js修正: shim是纯Rust spawn透传→产品=纯Rust命令(41 top-level subcommand: Think/Facts/Query/Sync/Sources/Links/Takes/Doctor/Config...命令层大部已移植). 但zbrain-core缺search/facts/think的**专属engine模块**(命令shell可能委派到部分/缺失引擎)——精确每模块port状态未验证. 删src当前不安全: 362/541测试覆盖功能 + 可能缺失引擎. 路线图系统性假(1-7/1-8/1-9 search/facts/think core标[x]不可信;同Part12滞后病). 真实决策=迁移终局scope + 先决路线图逐模块对账(地图不可靠, 我的快速grep对engine-vs-command也不定论)."
     }
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-08-05 18:05:53",
+    "updated": "2026-08-05 18:38:46",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
