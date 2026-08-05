@@ -55,6 +55,7 @@ pub mod sources_ops;
 pub mod sync;
 pub mod sync_freshness;
 pub mod takes_fence;
+pub mod think;
 pub mod time;
 pub mod trajectory_stats;
 pub mod token_budget;
