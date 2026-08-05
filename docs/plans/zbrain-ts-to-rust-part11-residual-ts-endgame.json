@@ -234,12 +234,28 @@
     "1-9": {
       "id": "1-9",
       "label": "think core 模块补齐 (C 类，src/core/think 7 文件)",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "explore",
       "parent": "1",
-      "children": [],
-      "decisions": [],
-      "notes": "实际 MISSING: src/core/think 7 模块 0 Rust 覆盖。Rust 有 Think 命令 shell 但 think engine 未移植。路线图原标[x]为假。"
+      "children": [
+        "1-9-1",
+        "1-9-3",
+        "1-9-4",
+        "1-9-5"
+      ],
+      "decisions": [
+        {
+          "q": "1-9 怎么分解与排序",
+          "answer": "拆 4 子节点 leaf-first：1-9-1 纯逻辑(intent/sanitize/entity/cite/prompt/fuseRRF，无接缝) → 1-9-3 检索融合(gather 4 流+rerank+render，消费刚完成的 hybrid_search) → 1-9-5 LLM 接缝对齐(ChatProvider/Anthropic+schema) → 1-9-4 合成编排(index runThink)。检索/合成已确认非硬阻塞(接缝存在)。",
+          "note": "纯逻辑先迁可立即给出可测 Rust；检索融合让 think 真正用 hybrid+rerank(解 G1)；LLM 接缝是 1-9-4 chat 的前置；calibration/trajectory 是否纳入本节点待 grill。"
+        },
+        {
+          "q": "1-9 怎么分解与排序",
+          "answer": "拆 4 子节点 leaf-first：1-9-1 纯逻辑(intent/sanitize/entity/cite/prompt/fuseRRF，无接缝) → 1-9-3 检索融合(gather 4 流+rerank+render，消费刚完成的 hybrid_search) → 1-9-5 LLM 接缝对齐(ChatProvider/Anthropic+schema) → 1-9-4 合成编排(index runThink)。检索/合成已确认非硬阻塞(接缝存在)。",
+          "note": "纯逻辑先迁可立即给出可测 Rust；检索融合让 think 真正用 hybrid+rerank(解 G1)；LLM 接缝是 1-9-4 chat 的前置；calibration/trajectory 是否纳入本节点待 grill。"
+        }
+      ],
+      "notes": "符号级对账（2026-08-05，code-explorer）：src/core/think 7 文件。纯逻辑可无接缝移植：intent.ts(classifyIntent)/sanitize.ts(INJECTION_PATTERNS+sanitizeTakeForPrompt+renderTakesBlock)/entity-extract.ts(extractCandidateEntities)/cite-render.ts(parseInlineCitations+normalizeStructuredCitations+resolveCitations)/prompt.ts(buildThinkSystemPrompt+UserMessage)/gather.ts fuseRanked(RRF k=60)。检索融合 PARTIAL：ThinkOperation::execute(operation.rs:1657)仅 keyword search_pages(limit 5)，缺 4 流(hybrid+searchTakes+searchTakesVector+traverse_paths)+融合+render；引擎原语已齐(search_pages/search_takes:1917/traverse_paths:2290/find_trajectory:2470)，缺 searchTakesVector。合成编排 NOT STARTED：index.ts runThink(725L) 顶层编排(resolveModel→embed→gather→render→可选 calibration/trajectory→build prompt→gateway.chat→tryParseJSON→resolveCitations→可选 persistSynthesis) 未移植。prompt PARTIAL：llm.rs:125 ThinkPromptBuilder 有 system/user/parse，但 schema 不同(Rust answer/warnings/evidence_used/sources vs TS answer/citations/gaps)，无 calibration/trajectory 块。cite/entity/intent/sanitize NOT STARTED。LLM 接缝非硬阻塞：crate::ai::chat::ChatProvider(chat.rs:331)+instantiate_chat(:1425) 支持 OpenAI/Anthropic/Gemini，等价于 TS gateway.chat；但 ThinkOperation 当前走 crate::llm::LlmClient(OpenAI 风味, llm.rs:92)，ctx.llm_client 默认 None(operation.rs:526)未接线，schema 缺 citations/gaps → 需路由 ChatProvider+Anthropic key+schema 对齐。CLI 已可达：zbrain think→run_think_command(lib.rs:1875)→run_operation(think)(:2502)；think 引擎逻辑内嵌 operation.rs ThinkOperation，建议新建 crates/zbrain-core/src/think/(gather/prompt/cite/sanitize/intent/entity)。gather 检索契约：TS SearchResult 是 chunk 粒度(slug/chunk_text/chunk_source/chunk_id)，Rust 是 page 粒度(page.compiled_truth+snippet)；think 摘录改用 snippet/compiled_truth 即可，仅字段适配。"
     },
     "1-10": {
       "id": "1-10",
@@ -2830,11 +2846,51 @@
       "children": [],
       "decisions": [],
       "notes": ""
+    },
+    "1-9-1": {
+      "id": "1-9-1",
+      "label": "think 纯逻辑模块 port (intent/sanitize/entity/cite-render/prompt/fuseRRF)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-9",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-9-3": {
+      "id": "1-9-3",
+      "label": "think 检索融合 port (gather 4 流 + rerank + renderPages/Takes)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-9",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-9-4": {
+      "id": "1-9-4",
+      "label": "think 合成编排 port (index runThink: prompt→chat→parse→citations→persist)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-9",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-9-5": {
+      "id": "1-9-5",
+      "label": "think LLM 接缝对齐 (ChatProvider/Anthropic + schema citations/gaps)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-9",
+      "children": [],
+      "decisions": [],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-08-05 21:28:24",
+    "updated": "2026-08-05 21:43:32",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
