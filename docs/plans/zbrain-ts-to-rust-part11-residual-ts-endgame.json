@@ -2773,12 +2773,12 @@
     "1-7-1": {
       "id": "1-7-1",
       "label": "search 融合核心 port (hybrid+expansion+mode+sql-ranking+graph-signals+intent-weights+rerank+source-boost+token-budget+recency-decay+two-pass)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-7",
       "children": [],
       "decisions": [],
-      "notes": "融合核心port。本回合完成纯融合数学(search/fusion.rs, 1:1镜像hybrid.ts): cosine_similarity/rrf_fusion/rrf_fusion_weighted/compute_floor_threshold/apply_backlink_boost/apply_salience_boost + 20+#[test](PARITY_GATE)。applyRecencyBoost复用recency_decay::apply_recency_boost(已测)。剩余=hybridSearch主编排(接storage+embedding+各boost+cosineReScore+dedup+缓存) + mode/sql-ranking/intent-weights/source-boost/two-pass/graph-signals。cargo check -p zbrain-core + --tests 均EXIT=0。"
+      "notes": "融合核心port完成。本回合交付(search/intent.rs + search/dedup.rs + search/engine.rs薄hybrid_search + fuse_and_boost补backlink阶段): intent.rs=classify_query/intent_to_detail/auto_detect_detail/is_ambiguous_modality_query(纯正则+LazyLock, 镜像query-intent.ts); dedup.rs=page级去重(每页cap2+类型多样性60%, 适配Rust page级SearchResult); engine.rs=hybrid_search(embed→search_pages[query_embedding]→dedup→token budget, embed fail-open转keyword-only); fuse_and_boost补backlink阶段(仅乘score, fail-open, 与salience/recency内联阶段一致)。salience+recency早已在fuse_and_boost; 上一轮纯融合数学(fusion.rs)已就位。cargo check --tests -p zbrain-core EXIT=0。推迟(登KNOWN-GAPS): cosineReScore(需新引擎方法getEmbeddingsByChunkIds,无后端)、语义缓存包装、两遍walk、cross-modal-LLM、graph-signals、per-list intent RRF权重(Rust单RRF_K架构下weights为死代码)。"
     },
     "1-7-2": {
       "id": "1-7-2",
@@ -2823,7 +2823,7 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-08-05 20:28:02",
+    "updated": "2026-08-05 21:10:41",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
