@@ -1,7 +1,7 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-08-05 21:43:32
+> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-08-05 22:13:54
 
 [~][X+] 1. Part11 — 残留 TS 收尾 (综合容器)
 ├── [~][X+] 1-1. skillpack / skillify 迁移 (27+ 文件 Schema/Subagent 包)
@@ -35,7 +35,7 @@
 │   └── [ ][X+] 1-7-4. search 工具/观测 port (eval+telemetry+dedup+explain-formatter)
 ├── [ ][X+] 1-8. facts core 模块补齐 (C 类，src/core/facts 13 文件)
 ├── [~][X+] 1-9. think core 模块补齐 (C 类，src/core/think 7 文件)
-│   ├── [ ][X+] 1-9-1. think 纯逻辑模块 port (intent/sanitize/entity/cite-render/prompt/fuseRRF)
+│   ├── [x][X+] 1-9-1. think 纯逻辑模块 port (intent/sanitize/entity/cite-render/prompt/fuseRRF)
 │   ├── [ ][X+] 1-9-3. think 检索融合 port (gather 4 流 + rerank + renderPages/Takes)
 │   ├── [ ][X+] 1-9-4. think 合成编排 port (index runThink: prompt→chat→parse→citations→persist)
 │   └── [ ][X+] 1-9-5. think LLM 接缝对齐 (ChatProvider/Anthropic + schema citations/gaps)
