@@ -111,7 +111,7 @@ pub struct EngineConfig {
 /// `--explain` path can round-trip a `QueryOutput` back out of the
 /// `run_operation` `serde_json::Value` — see `operation::QueryResultItem`.
 /// All fields are deserializable (the three nested enums already derive it).
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Page {
     // ── identity (always present) ────────────────────────────────────────
@@ -754,6 +754,38 @@ pub(crate) async fn fuse_and_boost(
                 now_ms,
                 if floor.is_finite() { Some(floor) } else { None },
             );
+        }
+
+        // Backlink stage (v0.29.1). Mirrors TS `runPostFusionStages` order
+        // (backlink → salience → recency). Fail-open: any error from
+        // `get_backlink_counts` leaves scores untouched, preserving the
+        // pre-v0.29.1 contract. TS `applyBacklinkBoost` multiplies `score`
+        // in place (no separate stamped field — unlike salience/recency which
+        // record a multiplier), so we do the same. Keyed by `slug` to match
+        // TS `getBacklinkCounts(slugs)` + `applyBacklinkBoost` (which indexes
+        // counts by `r.slug`, NOT `source_id::slug`).
+        if let Ok(counts) = engine
+            .get_backlink_counts(
+                &results.iter().map(|r| r.page.slug.clone()).collect::<Vec<_>>(),
+            )
+            .await
+        {
+            let floor_gate = if floor.is_finite() { Some(floor) } else { None };
+            for r in &mut results {
+                if !r.score.is_finite() {
+                    continue;
+                }
+                if let Some(f) = floor_gate {
+                    if r.score < f {
+                        continue;
+                    }
+                }
+                let count = counts.get(&r.page.slug).copied().unwrap_or(0);
+                if count > 0 {
+                    r.score *=
+                        1.0 + crate::search::fusion::BACKLINK_BOOST_COEF * (1.0_f64 + count as f64).ln();
+                }
+            }
         }
     }
 

@@ -65,9 +65,10 @@ pub fn is_base_page_type(value: &str) -> bool {
 ///
 /// Wire values: `"markdown"`, `"code"`, `"image"`. Closed enum on purpose —
 /// the embedding pipeline branches on these three only.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum PageKind {
+    #[default]
     Markdown,
     Code,
     Image,
@@ -92,13 +93,14 @@ pub enum CRMode {
 ///
 /// Wire values: `"event_date"`, `"date"`, `"published"`, `"filename"`,
 /// `"fallback"` — same as TS `EffectiveDateSource`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum EffectiveDateSource {
     EventDate,
     Date,
     Published,
     Filename,
+    #[default]
     Fallback,
 }
 
