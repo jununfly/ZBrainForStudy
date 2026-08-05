@@ -4,9 +4,10 @@
 # as a runtime constructor, NOT a type-only import).
 #
 # Why this exists: v0.35.5.0 migrated src/core/think/index.ts from `new Anthropic()`
-# to a gateway.chat() adapter (closed #952). v0.41+ wave did the same for
-# src/core/cycle/synthesize.ts (T5 in the community PR wave). Both files
-# now route through src/core/ai/gateway.ts so any provider with a registered
+# to a gateway.chat() adapter (closed #952). The synthesize phase that the
+# v0.41+ wave also moved off direct SDK construction lives in Rust now
+# (crates/zbrain-core/src/autopilot/phases/synthesize.rs). src/core/think/index.ts
+# still routes through src/core/ai/gateway.ts so any provider with a registered
 # recipe (Anthropic, DeepSeek, OpenRouter, Voyage, Ollama, llama-server, ...)
 # is reachable via `models.dream.synthesize_verdict` / chat model config.
 #
@@ -28,7 +29,6 @@ cd "$ROOT"
 # Files whose contract is "ALL chat calls route through gateway.chat()".
 # Extend this list when migrating another file off direct SDK construction.
 GUARDED_FILES=(
-  "src/core/cycle/synthesize.ts"
   "src/core/think/index.ts"
 )
 
@@ -51,7 +51,7 @@ for f in "${GUARDED_FILES[@]}"; do
     echo "ERROR: $f reintroduced direct Anthropic SDK construction (\`new Anthropic()\`)."
     echo "       This file's contract is to route all chat calls through gateway.chat()."
     echo "       Use the adapter pattern from src/core/think/index.ts:tryBuildGatewayClient"
-    echo "       or src/core/cycle/synthesize.ts:makeJudgeClient."
+    echo "       or the Rust synthesize phase (crates/zbrain-core/src/autopilot/phases/synthesize.rs)."
     FAILED=1
   fi
 

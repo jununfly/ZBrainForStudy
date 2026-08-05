@@ -338,7 +338,7 @@ export const PAGE_SORT_SQL: Record<NonNullable<PageFilters['sort']>, string> = {
 
 /**
  * v0.29 — Salience: pages ranked by emotional + activity salience over a recency window.
- * See `src/core/cycle/emotional-weight.ts` for the score formula and
+ * See `src/core/emotional-weight.ts` for the score formula and
  * `engine.getRecentSalience` for the SQL.
  */
 /**

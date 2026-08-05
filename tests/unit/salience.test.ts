@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { computeAnomaliesFromBuckets } from '../../src/core/cycle/anomaly.ts';
+import { computeAnomaliesFromBuckets } from '../../src/core/anomaly.ts';
 
 /**
  * Unit-level salience checks. The full Garry-test fixture lives in

@@ -12,7 +12,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { createHash } from 'node:crypto';
-import { pruneDir } from '../sync.ts';
+import { pruneDir } from './sync.ts';
 
 export interface DiscoveredTranscript {
   /** Absolute path to the transcript file. */

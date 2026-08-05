@@ -16,7 +16,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import type { BrainEngine } from './engine.ts';
-import { isDreamOutput } from './cycle/transcript-discovery.ts';
+import { isDreamOutput } from './transcript-discovery.ts';
 
 export interface RecentTranscriptOpts {
   /** Window in days. Default 7. */

@@ -2,7 +2,7 @@
  * v0.28: per-page file lock for atomic markdown read-modify-write.
  *
  * Eng-review fold: reuses the v0.17 `~/.zbrain/cycle.lock` PID-liveness
- * pattern (src/core/cycle.ts:acquireFileLock) but scoped per page so two
+ * pattern but scoped per page so two
  * parallel `zbrain takes add` calls + a `takes seed --refresh` running in
  * autopilot can't race on the same `<slug>.md` file.
  *

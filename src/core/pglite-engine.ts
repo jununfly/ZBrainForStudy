@@ -40,7 +40,7 @@ import { validateSlug, contentHash, rowToPage, rowToChunk, rowToSearchResult, ta
 import { deriveResolutionTuple, finalizeScorecard } from './takes-resolution.ts';
 import { normalizeWeightForStorage } from './takes-fence.ts';
 import { ZBrainError, PAGE_SORT_SQL } from './types.ts';
-import { computeAnomaliesFromBuckets } from './cycle/anomaly.ts';
+import { computeAnomaliesFromBuckets } from './anomaly.ts';
 import { resolveBoostMap, resolveHardExcludes } from './search/source-boost.ts';
 import { buildSourceFactorCase, buildHardExcludeClause, buildVisibilityClause, buildRecencyComponentSql } from './search/sql-ranking.ts';
 import {

@@ -5,8 +5,9 @@
  *   - `src/core/eval-contradictions/judge.ts` — `truncateUtf8` truncates
  *     contradiction-judge prompt inputs to a per-pair char budget without
  *     splitting emoji / non-BMP CJK / mathematical alphanumerics.
- *   - `src/core/cycle/synthesize.ts` — `safeSplitIndex` is the tier-3
- *     hard-split fallback in the dream-cycle chunker. Preserves the D9
+ *   - the Rust synthesize phase (`crates/zbrain-core/src/autopilot/phases/synthesize.rs`)
+ *     — `safeSplitIndex` is the tier-3 hard-split fallback in the dream-cycle
+ *     chunker. Preserves the D9
  *     stable-chunk-identity invariant by refusing to orphan a high surrogate.
  *
  * Two consumers, two natural shapes:

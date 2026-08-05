@@ -9,7 +9,7 @@ import {
   isDreamOutput,
   isLsdOutput,
   isBrainstormOutput,
-} from '../../../src/core/cycle/transcript-discovery.ts';
+} from '../../../src/core/transcript-discovery.ts';
 
 const LSD_FRONTMATTER = `---
 title: "LSD: why are AI coding tools converging on the same UX?"

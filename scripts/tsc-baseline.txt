@@ -29,18 +29,6 @@ src/core/contextual-retrieval-service.ts: error TS2307: Cannot find module './au
 src/core/contextual-retrieval-service.ts: error TS2339: Property 'detail' does not exist on type 'GeneratePerChunkSynopsisResult'.
 src/core/contextual-retrieval-service.ts: error TS2339: Property 'detail' does not exist on type 'GeneratePerChunkSynopsisResult'.
 src/core/contextual-retrieval-service.ts: error TS2339: Property 'synopsis' does not exist on type 'GeneratePerChunkSynopsisResult'.
-src/core/cycle.ts: error TS18046: 'result' is of type 'unknown'.
-src/core/cycle.ts: error TS18046: 'result' is of type 'unknown'.
-src/core/cycle.ts: error TS18046: 'result' is of type 'unknown'.
-src/core/cycle.ts: error TS18046: 'result' is of type 'unknown'.
-src/core/cycle.ts: error TS18046: 'result' is of type 'unknown'.
-src/core/cycle.ts: error TS2307: Cannot find module '../commands/sync.ts' or its corresponding type declarations.
-src/core/cycle.ts: error TS2307: Cannot find module './cli-options.ts' or its corresponding type declarations.
-src/core/cycle.ts: error TS2307: Cannot find module './cycle/patterns.ts' or its corresponding type declarations.
-src/core/cycle.ts: error TS2307: Cannot find module './cycle/synthesize.ts' or its corresponding type declarations.
-src/core/cycle.ts: error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'PhaseResult'.
-src/core/cycle.ts: error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'PhaseResult'.
-src/core/cycle/schema-suggest.ts: error TS2307: Cannot find module '../schema-events.ts' or its corresponding type declarations.
 src/core/facts/fence-write.ts: error TS2307: Cannot find module './stub-guard-audit.ts' or its corresponding type declarations.
 src/core/page-summary.ts: error TS2307: Cannot find module './audit-synopsis.ts' or its corresponding type declarations.
 src/core/schema-pack/index.ts: error TS2307: Cannot find module './candidate-audit.ts' or its corresponding type declarations.
@@ -59,7 +47,6 @@ tests/unit/doctor-behavioral.test.ts: error TS7006: Parameter 'c' implicitly has
 tests/unit/doctor-calibration-checks.test.ts: error TS2307: Cannot find module '../../src/commands/doctor.ts' or its corresponding type declarations.
 tests/unit/doctor-child-orphans.test.ts: error TS2307: Cannot find module '../../src/commands/doctor.ts' or its corresponding type declarations.
 tests/unit/doctor-cycle-freshness.test.ts: error TS2307: Cannot find module '../../src/commands/doctor.ts' or its corresponding type declarations.
-tests/unit/doctor-cycle-phase-scope.test.ts: error TS2307: Cannot find module '../../src/commands/doctor.ts' or its corresponding type declarations.
 tests/unit/doctor-embedding-env-override.test.ts: error TS2307: Cannot find module '../../src/commands/doctor.ts' or its corresponding type declarations.
 tests/unit/doctor-federation-health.test.ts: error TS2307: Cannot find module '../../src/commands/doctor.ts' or its corresponding type declarations.
 tests/unit/doctor-report-remote.serial.test.ts: error TS2307: Cannot find module '../../src/commands/doctor.ts' or its corresponding type declarations.

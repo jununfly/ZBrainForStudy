@@ -505,7 +505,8 @@ function extractTags(frontmatter: Record<string, unknown>): string[] {
 // ---------------------------------------------------------------------------
 // Page -> markdown serialization helpers (v0.38 DRY extract per eng review)
 //
-// Pre-v0.38 the dream cycle's reverse-render at src/core/cycle/synthesize.ts
+// Pre-v0.38 the dream cycle's reverse-render (now the Rust synthesize phase,
+// crates/zbrain-core/src/autopilot/phases/synthesize.rs)
 // and the planned v0.38 put_page write-through path were going to have
 // near-identical 15-line bodies that differed only in their frontmatter
 // stamps. This extract is the single source of truth.

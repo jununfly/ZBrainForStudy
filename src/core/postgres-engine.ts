@@ -45,7 +45,7 @@ import type {
   EmotionalWeightInputRow, EmotionalWeightWriteRow,
 } from './types.ts';
 import { ZBrainError, PAGE_SORT_SQL } from './types.ts';
-import { computeAnomaliesFromBuckets } from './cycle/anomaly.ts';
+import { computeAnomaliesFromBuckets } from './anomaly.ts';
 import * as db from './db.ts';
 import { ConnectionManager } from './connection-manager.ts';
 import { logConnectionEvent } from './connection-audit.ts';

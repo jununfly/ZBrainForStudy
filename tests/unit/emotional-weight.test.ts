@@ -3,7 +3,7 @@ import {
   computeEmotionalWeight,
   HIGH_EMOTION_TAGS,
   DEFAULT_USER_HOLDER,
-} from '../../src/core/cycle/emotional-weight.ts';
+} from '../../src/core/emotional-weight.ts';
 
 describe('computeEmotionalWeight', () => {
   test('empty inputs return 0', () => {

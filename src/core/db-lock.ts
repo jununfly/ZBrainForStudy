@@ -340,7 +340,7 @@ export async function deleteLockRow(
  * Audit: `SYNC_LOCK_ID` (back-compat alias) resolves to `syncLockId('default')`.
  * Every consumer in src/ MUST namespace by source. Tracked consumers:
  *   - src/commands/sync.ts:performSync (per-source)
- *   - src/core/cycle/phantom-redirect.ts (per-source, D16)
+ *   - phantom-redirect pre-pass (Rust autopilot/phases/phantom_redirect.rs, per-source, D16)
  */
 export function syncLockId(sourceId: string): string {
   return `zbrain-sync:${sourceId}`;

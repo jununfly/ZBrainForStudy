@@ -4,7 +4,7 @@ import {
   computeAnomaliesFromBuckets,
   type CohortDayRow,
   type CohortTodayRow,
-} from '../../src/core/cycle/anomaly.ts';
+} from '../../src/core/anomaly.ts';
 
 describe('meanStddev', () => {
   test('empty returns (0, 0)', () => {

@@ -15,7 +15,7 @@
 import type { BrainEngine } from './engine.ts';
 import type { BackfillSpec } from './backfill-base.ts';
 import { computeEffectiveDate } from './effective-date.ts';
-import { computeEmotionalWeight } from './cycle/emotional-weight.ts';
+import { computeEmotionalWeight } from './emotional-weight.ts';
 
 export interface RegisteredBackfill {
   spec: BackfillSpec<Record<string, unknown>>;

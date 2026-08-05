@@ -57,7 +57,7 @@ beforeAll(async () => {
   // Recompute emotional_weight for the wedding pages so they get the
   // tag-emotion boost in the salience formula.
   const inputs = await engine.batchLoadEmotionalInputs();
-  const { computeEmotionalWeight } = await import('../../../src/core/cycle/emotional-weight.ts');
+  const { computeEmotionalWeight } = await import('../../../src/core/emotional-weight.ts');
   const writes = inputs.map(r => ({
     slug: r.slug,
     source_id: r.source_id,

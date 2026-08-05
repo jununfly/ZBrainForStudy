@@ -23,7 +23,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { discoverTranscripts } from '../../src/core/cycle/transcript-discovery.ts';
+import { discoverTranscripts } from '../../src/core/transcript-discovery.ts';
 
 let tmpDir: string;
 

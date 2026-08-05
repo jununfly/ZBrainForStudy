@@ -189,9 +189,9 @@ export const SchemaPackManifestSchema = z.object({
    * `phases:` is additive, not subtractive. `borrow_from` does NOT borrow
    * phases; each pack declares its own participation explicitly.
    *
-   * Phase names are validated as strings at parse time and against the
-   * runtime CyclePhase union at pack-load by the registry (kept as string[]
-   * here to avoid a circular import from src/core/cycle.ts).
+   * Phase names are validated as strings at parse time and resolved against
+   * the runtime phase registry at pack-load (kept as string[] here so this
+   * manifest schema has no hard dependency on the cycle engine).
    *
    * Optional rather than .default([]) so existing v0.38 manifest casts in
    * test fixtures don't need to be re-typed; consumers apply `?? []` at

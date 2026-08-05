@@ -10,7 +10,7 @@
  * frontmatter date-field detection.
  */
 
-import type { AnomalyResult } from '../types.ts';
+import type { AnomalyResult } from './types.ts';
 
 /** One row of the densified daily-count series for a single cohort key. */
 export interface CohortDayRow {
