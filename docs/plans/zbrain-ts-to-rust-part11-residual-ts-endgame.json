@@ -206,6 +206,11 @@
           "q": "port结构与并行策略（1-7体量22文件怎么执行）",
           "answer": "拆4簇+融合核心优先+独立leaf并行：1-7-1融合核心(≈11文件含think要的hybridSearch)先port解锁1-9；1-7-2语义检索；1-7-3图像检索(NET_NEW)；1-7-4工具观测。facts(1-8)只依赖think的INJECTION_PATTERNS小常量、output(1-4)独立leaf，均不依赖search→与1-7并行。think(1-9)在1-7-1就绪后启。commands最后。",
           "note": "实测耦合：think只import hybridSearch+sanitizeQueryForPrompt；facts只import INJECTION_PATTERNS；output无未移植域依赖。严格leaf-first过度阻塞facts/output。"
+        },
+        {
+          "q": "1-7 search 真实缺口（文件名MISSING误判修正）",
+          "answer": "rerank/recency-decay/token-budget 已在Rust(rerank_client+rerank_audit / recency_decay / token_budget.rs)，不重做；真实缺口≈8文件：hybrid.ts(1353L融合核心,CRUX,0 Rust匹配) + mode.sql-ranking.graph-signals.intent-weights.source-boost.two-pass + expansion(sanitizeQueryForPrompt已在ai/expand.rs)。本回合已port纯融合数学(search/fusion.rs: cosine_similarity/rrf_fusion/rrf_fusion_weighted/compute_floor_threshold/apply_backlink_boost/apply_salience_boost, 20+#[test]; applyRecencyBoost复用recency_decay)。",
+          "note": "符号级复盘：grep HybridSearch/hybrid_search=0; search_mode/sql_rank/intent_weight/two_pass=0; rerank→rerank_client(138L TS被762+491L覆盖); recency-decay→recency_decay(201L→579L); token-budget→token_budget.rs已存在。"
         }
       ],
       "notes": "实际 MISSING: src/core/search 22 模块 0 Rust 覆盖(domain reconciliation 2026-08-05)。Rust 无 search engine 模块。路线图原标[x]为假。"
@@ -2773,7 +2778,7 @@
       "parent": "1-7",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "融合核心port。本回合完成纯融合数学(search/fusion.rs, 1:1镜像hybrid.ts): cosine_similarity/rrf_fusion/rrf_fusion_weighted/compute_floor_threshold/apply_backlink_boost/apply_salience_boost + 20+#[test](PARITY_GATE)。applyRecencyBoost复用recency_decay::apply_recency_boost(已测)。剩余=hybridSearch主编排(接storage+embedding+各boost+cosineReScore+dedup+缓存) + mode/sql-ranking/intent-weights/source-boost/two-pass/graph-signals。cargo check -p zbrain-core + --tests 均EXIT=0。"
     },
     "1-7-2": {
       "id": "1-7-2",
@@ -2818,7 +2823,7 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-08-05 20:04:34",
+    "updated": "2026-08-05 20:28:02",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"

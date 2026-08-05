@@ -50,6 +50,7 @@ pub mod progress;
 pub mod recency_decay;
 pub mod rerank_audit;
 pub mod rerank_client;
+pub mod search;
 pub mod sources_ops;
 pub mod sync;
 pub mod sync_freshness;
