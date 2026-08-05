@@ -1,7 +1,7 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-08-05 18:38:46
+> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-08-05 19:42:36
 
 [~][X+] 1. Part11 — 残留 TS 收尾 (综合容器)
 ├── [~][X+] 1-1. skillpack / skillify 迁移 (27+ 文件 Schema/Subagent 包)
@@ -10,7 +10,7 @@
 │   ├── [x][Y+] 1-3-1. calibration 纯函数 port (Phase 1: 零依赖纯函数)
 │   ├── [x][Y+] 1-3-2. calibration engine-read 子集 (forecastForTake + batchForecast + get_scorecard domain_prefix)
 │   └── [x][Y+] 1-3-3. calibration Phase 2 引擎/LLM 基建 (5 函数 + schema + cycle + op，见 1-3-3-1..7)
-├── [~][X+] 1-4. output 模块迁移 (src/core/output 9 文件)
+├── [ ][X+] 1-4. output 模块迁移 (src/core/output 9 文件)
 │   ├── [x][Y+] 1-4-1. output page validators port (citation + triple-hr 纯字符串 + link + back-link engine-read)
 │   └── [!][X+] 1-4-2. output infra port + TS 删除 [BLOCKED: BrainWriter 撞逃生舱禁令 + 消费者 integrity.ts/operations.ts 未迁]
 ├── [x][X+] 1-5. doctor 11 项健康检查迁移 (G5)
@@ -28,9 +28,9 @@
 │   ├── [x][Y+] 1-6-5. PARITY_GATE (删除任何TS命令前: 确认零src引用+零test引用+真Rust覆盖非stub; 1-6-2/1-6-3共用)
 │   ├── [x] 1-6-6. skill/resolver 校验子系统全量迁 Rust (check-resolvable 全轨道): 覆盖 resolver-filenames / skill-frontmatter / skill-manifest / trigger-index(+parseResolverEntries) / check-resolvable core(checks 1-4) / repo-root / CLI / routing-eval(Check5) / filing-audit(Check6) / dry-fix(--fix) / 重接 doctor+skillify-check。非孤儿命令——是整条 skill 树校验栈，耦合 doctor/skillify-check 共享核心。
 │   └── [x][Y+] 1-6-7. operations.ts 替换式迁移 (Rust OperationRegistry 为继任者): 107 op 逐一对齐, 随迁随删 TS; 覆盖审计见 docs/plans/OPERATIONS_TS_TO_RUST_AUDIT.md
-├── [x][X+] 1-7. search core 模块补齐 (C 类，src/core/search 23 文件)
-├── [x][X+] 1-8. facts core 模块补齐 (C 类，src/core/facts 13 文件)
-├── [x][X+] 1-9. think core 模块补齐 (C 类，src/core/think 7 文件)
+├── [ ][X+] 1-7. search core 模块补齐 (C 类，src/core/search 23 文件)
+├── [ ][X+] 1-8. facts core 模块补齐 (C 类，src/core/facts 13 文件)
+├── [ ][X+] 1-9. think core 模块补齐 (C 类，src/core/think 7 文件)
 ├── [x][X+] 1-10. G38 schema-pack TS 删除尾 (gate=operations.ts 移植)
 ├── [~][X+] 1-11. A 类已迁 TS 删除 (minions/ai/ingestion/cycle + 命令)
 │   ├── [x][X+] 1-11-1. ingestion A类闭合簇删除 (src/core/ingestion 10文件 + ingest-capture.ts + 测试；Rust ingestion.rs/sync/import.rs/ingest_capture.rs 已覆盖)
