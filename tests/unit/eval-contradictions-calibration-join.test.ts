@@ -20,7 +20,7 @@ import {
   buildBiasContextString,
 } from '../../src/core/eval-contradictions/calibration-join.ts';
 import type { ContradictionFinding, PairMember } from '../../src/core/eval-contradictions/types.ts';
-import type { CalibrationProfileRow } from '../../src/commands/calibration.ts';
+import type { CalibrationProfileRow } from '../../src/core/calibration/profile-store.ts';
 
 function buildMember(slug: string, holder: string | null = 'garry'): PairMember {
   return {

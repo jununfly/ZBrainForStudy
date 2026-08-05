@@ -38,9 +38,9 @@
  *     drive the cross-brain shape without needing a real multi-brain setup.
  */
 
-import type { CalibrationProfileRow } from '../../commands/calibration.ts';
+import type { CalibrationProfileRow } from './profile-store.ts';
 import type { BrainEngine } from '../engine.ts';
-import { getLatestProfile } from '../../commands/calibration.ts';
+import { getLatestProfile } from './profile-store.ts';
 
 /**
  * Cross-brain query options. Tests drive these directly; production paths

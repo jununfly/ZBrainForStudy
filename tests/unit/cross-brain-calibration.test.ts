@@ -24,7 +24,7 @@ import {
   type CrossBrainQueryOpts,
 } from '../../src/core/calibration/cross-brain.ts';
 import type { BrainEngine } from '../../src/core/engine.ts';
-import type { CalibrationProfileRow } from '../../src/commands/calibration.ts';
+import type { CalibrationProfileRow } from '../../src/core/calibration/profile-store.ts';
 
 function buildProfile(opts: { published: boolean; source_id?: string; holder?: string } = { published: false }): CalibrationProfileRow {
   return {

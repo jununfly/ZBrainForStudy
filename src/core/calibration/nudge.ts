@@ -26,7 +26,7 @@
  */
 
 import type { BrainEngine, Take } from '../engine.ts';
-import type { CalibrationProfileRow } from '../../commands/calibration.ts';
+import type { CalibrationProfileRow } from './profile-store.ts';
 import { nudgeTemplate } from './templates.ts';
 
 export const NUDGE_COOLDOWN_DAYS = 14;

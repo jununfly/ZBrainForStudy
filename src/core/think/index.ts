@@ -260,7 +260,7 @@ export async function runThink(
     | undefined;
   if (opts.withCalibration) {
     try {
-      const { getLatestProfile } = await import('../../commands/calibration.ts');
+      const { getLatestProfile } = await import('../../core/calibration/profile-store.ts');
       const profile = await getLatestProfile(engine, {
         holder: opts.calibrationHolder ?? 'garry',
       });

@@ -26,7 +26,7 @@
  * arrives when we accumulate generated_at history.
  */
 
-import type { CalibrationProfileRow } from '../../commands/calibration.ts';
+import type { CalibrationProfileRow } from './profile-store.ts';
 
 export interface AbandonedThreadSummary {
   claim: string;

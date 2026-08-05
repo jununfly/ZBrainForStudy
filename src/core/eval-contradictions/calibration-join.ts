@@ -14,7 +14,7 @@
  */
 
 import type { ContradictionFinding } from './types.ts';
-import type { CalibrationProfileRow } from '../../commands/calibration.ts';
+import type { CalibrationProfileRow } from '../calibration/profile-store.ts';
 
 /**
  * The bias-tag context the runner can splice into the output. Keep this

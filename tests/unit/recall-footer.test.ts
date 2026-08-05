@@ -15,7 +15,7 @@
 
 import { describe, test, expect } from 'bun:test';
 import { buildRecallCalibrationFooter } from '../../src/core/calibration/recall-footer.ts';
-import type { CalibrationProfileRow } from '../../src/commands/calibration.ts';
+import type { CalibrationProfileRow } from '../../src/core/calibration/profile-store.ts';
 
 function buildProfile(opts: Partial<CalibrationProfileRow> = {}): CalibrationProfileRow {
   return {

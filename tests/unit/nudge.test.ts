@@ -24,7 +24,7 @@ import {
   NUDGE_COOLDOWN_DAYS,
   NUDGE_CONVICTION_THRESHOLD,
 } from '../../src/core/calibration/nudge.ts';
-import type { CalibrationProfileRow } from '../../src/commands/calibration.ts';
+import type { CalibrationProfileRow } from '../../src/core/calibration/profile-store.ts';
 import type { BrainEngine, Take } from '../../src/core/engine.ts';
 
 function buildTake(overrides: Partial<Take> = {}): Take {
