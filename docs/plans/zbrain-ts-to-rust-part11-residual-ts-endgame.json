@@ -440,7 +440,7 @@
     "1-12": {
       "id": "1-12",
       "label": "cycle 大迁移 (runCycle 2057行主循环 + 20 phase 全未迁, Rust autopilot/cycle.rs 仅骨架 stub) — B类真迁移主战场",
-      "status": "blocked",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [
@@ -2472,7 +2472,7 @@
     "1-12-1": {
       "id": "1-12-1",
       "label": "cycle Phase 路线图起草(独立 Part12 草案: 拆 runCycle 主循环 + 20 phase 为可执行切片)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-12",
       "children": [],
@@ -2707,7 +2707,7 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-07-27 22:19:04",
+    "updated": "2026-08-05 18:05:53",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"

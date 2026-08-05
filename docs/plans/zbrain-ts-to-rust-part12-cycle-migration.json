@@ -6,7 +6,7 @@
     "1": {
       "id": "1",
       "label": "Part12 - cycle 大迁移 (按能力簇切)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": null,
       "children": [
@@ -211,7 +211,7 @@
     "1-6": {
       "id": "1-6",
       "label": "orchestration 主循环迁移 (runCycle 2057行 + base-phase/budget-meter/drift/phantom-redirect/phases/; 消费者 dream->runCycle; Rust cycle.rs 仅745行 dispatch 骨架)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [
@@ -503,7 +503,7 @@
     "1-6-2": {
       "id": "1-6-2",
       "label": "周期锁 (per-source cycle lock; busy→skipped/cycle_already_running, 失败→failed/lock_acquisition_error; 复用 sync/lock.rs 基建)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6",
       "children": [],
@@ -652,7 +652,7 @@
     "1-6-8": {
       "id": "1-6-8",
       "label": "消费者切换 (CLI dream 子命令 → Rust run_cycle; --json/--dry-run/--pull/--phase/--dir/--input/--date/--from/--to/--unsafe-bypass-dream-guard; printHuman totals; failed→exit 1; TS cycle.ts+cycle/ 目录+dream.ts 删除)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-6",
       "children": [],
@@ -845,7 +845,7 @@
   },
   "metadata": {
     "created": "2026-07-23 17:12:54",
-    "updated": "2026-08-03 12:06:01",
+    "updated": "2026-08-05 18:05:37",
     "md_file": "C:/workspace/github/jununfly/zbrain/docs/plans/ZBRAIN_TS_TO_RUST_PART12_CYCLE_MIGRATION.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART12_CYCLE_MIGRATION.md"
