@@ -114,6 +114,11 @@
           "q": "output 首刀粒度?",
           "answer": "B: 4 validators 全切 (citation+triple-hr 纯字符串 + link+back-link engine-read)",
           "note": "validators 是自洽完整子概念(同一 PageValidator 契约)。citation(180)+triple-hr(97)=纯字符串零 engine; link(150,getPage)+back-link(51,getLinks)=只读 engine, 复用 1-3-2 打法, trait 只读方法已存在无需扩。scaffold/slug-registry/writer(infra) 留后续。"
+        },
+        {
+          "q": "执行策略",
+          "answer": "独立leaf与search并行（无未移植域依赖）；可现在启动",
+          "note": "coupling recon: output imports_from=[]。"
         }
       ],
       "notes": "实际 MISSING: src/core/output 9 模块 0 Rust 覆盖。output infra 未移植(含 BrainWriter 逃生舱禁令仍 relevant)。路线图原标[~]为假。"
@@ -182,11 +187,27 @@
     "1-7": {
       "id": "1-7",
       "label": "search core 模块补齐 (C 类，src/core/search 23 文件)",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "explore",
       "parent": "1",
-      "children": [],
-      "decisions": [],
+      "children": [
+        "1-7-1",
+        "1-7-2",
+        "1-7-3",
+        "1-7-4"
+      ],
+      "decisions": [
+        {
+          "q": "leaf-first 下的执行顺序角色",
+          "answer": "第一刀：search core 先于 think/facts/output/commands",
+          "note": "predecessors=none(纯leaf)；successors=1-9 think(thinks依赖search)。Rust已有lexical search op(1-6-7-7)，文件名'MISSING'高估缺口，真正缺口待recon(semantic/rerank/federation/search_by_image)。src/core/search 22 .ts(roadmap标23含1非.ts)。"
+        },
+        {
+          "q": "port结构与并行策略（1-7体量22文件怎么执行）",
+          "answer": "拆4簇+融合核心优先+独立leaf并行：1-7-1融合核心(≈11文件含think要的hybridSearch)先port解锁1-9；1-7-2语义检索；1-7-3图像检索(NET_NEW)；1-7-4工具观测。facts(1-8)只依赖think的INJECTION_PATTERNS小常量、output(1-4)独立leaf，均不依赖search→与1-7并行。think(1-9)在1-7-1就绪后启。commands最后。",
+          "note": "实测耦合：think只import hybridSearch+sanitizeQueryForPrompt；facts只import INJECTION_PATTERNS；output无未移植域依赖。严格leaf-first过度阻塞facts/output。"
+        }
+      ],
       "notes": "实际 MISSING: src/core/search 22 模块 0 Rust 覆盖(domain reconciliation 2026-08-05)。Rust 无 search engine 模块。路线图原标[x]为假。"
     },
     "1-8": {
@@ -196,7 +217,13 @@
       "mode": "explore",
       "parent": "1",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "执行策略",
+          "answer": "独立leaf与search并行，不依赖search（只依赖think的INJECTION_PATTERNS小常量，随手复制即可）；可现在启动",
+          "note": "coupling recon: facts/extract.ts 仅 import INJECTION_PATTERNS from think/sanitize.ts。"
+        }
+      ],
       "notes": "实际 MISSING: src/core/facts 11 模块仅 1 Rust 覆盖。Rust 有 Facts 命令 shell 但 facts engine 基本未移植。路线图原标[x]为假。"
     },
     "1-9": {
@@ -2711,7 +2738,9 @@
       "status": "in_progress",
       "mode": "explore",
       "parent": "1",
-      "children": [],
+      "children": [
+        "1-14-1"
+      ],
       "decisions": [
         {
           "q": "src 死代码终局第一步怎么走？",
@@ -2722,14 +2751,74 @@
           "q": "迁移终局 scope 怎么定？",
           "answer": "全量 port 终局：补 search/facts/think engine + 缺失命令到 Rust + 补 Rust 测试，再删 src",
           "note": "符合'整仓统一迁 ZBrain'。先决：逐模块对账真正 port 状态(路线图1-7/1-8/1-9等假[x])，拿到可靠 backlog 再开工"
+        },
+        {
+          "q": "port 序列怎么定（leaf-first vs 命令优先 vs 体量小→大 vs RED覆盖优先）？",
+          "answer": "Leaf-first 引擎链优先：search(22,纯leaf)→think(7,依赖search)→facts(11,依赖think)→output(9,独立leaf)→commands(剩58,依赖全部引擎)",
+          "note": "依赖图实测：search 无未移植依赖；think 依赖 search；facts 依赖 think；output 独立 leaf；commands 依赖全部4引擎。先建地基引擎再接线命令层，避免悬空引用。与已有节点 1-7/1-9/1-8/1-4 对应。"
+        },
+        {
+          "q": "port验证/验收策略（done定义）",
+          "answer": "Rust单测镜像TS + e2e命令对标",
+          "note": "纯函数把TS单测逻辑改写成Rust #[test](1:1行为断言)；命令/operation层e2e驱真实二进制对标TS golden输出。对齐PARITY_GATE(删TS前确认Rust覆盖非stub)。"
         }
       ],
       "notes": "L1审计: 415 src(0 product-live/398 test-covered/17 orphan); 555测试541引src. L2+读bin/zbrain-rs.js修正: shim是纯Rust spawn透传→产品=纯Rust命令(41 top-level subcommand: Think/Facts/Query/Sync/Sources/Links/Takes/Doctor/Config...命令层大部已移植). 但zbrain-core缺search/facts/think的**专属engine模块**(命令shell可能委派到部分/缺失引擎)——精确每模块port状态未验证. 删src当前不安全: 362/541测试覆盖功能 + 可能缺失引擎. 路线图系统性假(1-7/1-8/1-9 search/facts/think core标[x]不可信;同Part12滞后病). 真实决策=迁移终局scope + 先决路线图逐模块对账(地图不可靠, 我的快速grep对engine-vs-command也不定论)."
+    },
+    "1-7-1": {
+      "id": "1-7-1",
+      "label": "search 融合核心 port (hybrid+expansion+mode+sql-ranking+graph-signals+intent-weights+rerank+source-boost+token-budget+recency-decay+two-pass)",
+      "status": "in_progress",
+      "mode": "explore",
+      "parent": "1-7",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-7-2": {
+      "id": "1-7-2",
+      "label": "search 语义检索 port (query-intent+llm-intent+query-cache+query-cache-gate+embedding-column)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-7",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-7-3": {
+      "id": "1-7-3",
+      "label": "search 图像检索 port (by-image+image-loader, NET_NEW 1-6-7-11)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-7",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-7-4": {
+      "id": "1-7-4",
+      "label": "search 工具/观测 port (eval+telemetry+dedup+explain-formatter)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-7",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-14-1": {
+      "id": "1-14-1",
+      "label": "删除17个孤儿src + 收口1-13-1-3-2 (零风险，与引擎port并行)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-14",
+      "children": [],
+      "decisions": [],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-08-05 19:42:36",
+    "updated": "2026-08-05 20:04:34",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
