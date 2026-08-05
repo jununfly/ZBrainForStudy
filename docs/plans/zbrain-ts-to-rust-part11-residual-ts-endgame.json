@@ -2783,12 +2783,23 @@
     "1-7-2": {
       "id": "1-7-2",
       "label": "search 语义检索 port (query-intent+llm-intent+query-cache+query-cache-gate+embedding-column)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-7",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "1-7-2 范围怎么收（符号级对账后）",
+          "answer": "诚实收口：query-intent 已在 1-7-1 迁完；llm-intent / query-cache(+gate) / embedding-column 全部 DEFER 并登记 G68/G69/G70(blocked)，因依赖 Rust 尚缺的基建（LLM chat seam / pgvector 持久缓存 / 多列 embedding）且都不在 think 热路径",
+          "note": "think/gather.ts:110 只调 bare hybridSearch({limit})，不触发缓存/列/LLM 分支；search CLI 未迁故无消费者；尊重 1-7-1 已定『推迟语义缓存』决策；think(1-9) 本就不依赖 1-7-2，直接解锁"
+        },
+        {
+          "q": "1-7-2 范围怎么收（符号级对账后）",
+          "answer": "诚实收口：query-intent 已在 1-7-1 迁完；llm-intent / query-cache(+gate) / embedding-column 全部 DEFER 并登记 G68/G69/G70(blocked)，因依赖 Rust 尚缺的基建（LLM chat seam / pgvector 持久缓存 / 多列 embedding）且都不在 think 热路径",
+          "note": "think/gather.ts:110 只调 bare hybridSearch({limit})，不触发缓存/列/LLM 分支；search CLI 未迁故无消费者；尊重 1-7-1 已定『推迟语义缓存』决策；think(1-9) 本就不依赖 1-7-2，直接解锁"
+        }
+      ],
+      "notes": "符号级对账（2026-08-05）：query-intent 已在 1-7-1 迁完（search/intent.rs: classify_query / intent_to_detail / auto_detect_detail / is_ambiguous_modality_query）。剩余 4 组件经对账全部 DEFER：llm-intent(src/core/search/llm-intent.ts classifyModalityWithLLM，需 LLM chat seam → G68)、query-cache + query-cache-gate(src/core/search/query-cache.ts SemanticQueryCache + query-cache-gate.ts，需 pgvector 持久缓存 + search CLI 消费者 → G69)、embedding-column(src/core/search/embedding-column.ts resolveEmbeddingColumn，需多列 embedding 基建 → G70)。三者均 blocked（登记 KNOWN-GAPS）。关键发现：think/gather.ts:110 只调 bare hybridSearch(engine, question, {limit})，不传 useCache / crossModal / embeddingColumn / intent，故这 4 组件均不在 think 热路径；search CLI 尚未迁（commands 最后），缓存/列/LLM 也无消费者。因此 1-7-2 实质交付 = query-intent，其余显式推迟。尊重 1-7-1『推迟语义缓存』决策。think(1-9) 解锁（本就不依赖 1-7-2）。"
     },
     "1-7-3": {
       "id": "1-7-3",
@@ -2823,7 +2834,7 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-08-05 21:10:41",
+    "updated": "2026-08-05 21:28:24",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
