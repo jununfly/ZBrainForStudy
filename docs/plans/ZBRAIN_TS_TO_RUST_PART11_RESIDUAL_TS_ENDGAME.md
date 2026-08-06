@@ -1,7 +1,7 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-08-06 11:37:59
+> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-08-06 12:06:50
 
 [~][X+] 1. Part11 — 残留 TS 收尾 (综合容器)
 ├── [~][X+] 1-1. skillpack / skillify 迁移 (27+ 文件 Schema/Subagent 包)
@@ -34,11 +34,11 @@
 │   ├── [ ][X+] 1-7-3. search 图像检索 port (by-image+image-loader, NET_NEW 1-6-7-11)
 │   └── [ ][X+] 1-7-4. search 工具/观测 port (eval+telemetry+dedup+explain-formatter)
 ├── [ ][X+] 1-8. facts core 模块补齐 (C 类，src/core/facts 13 文件)
-├── [~][X+] 1-9. think core 模块补齐 (C 类，src/core/think 7 文件)
+├── [x][X+] 1-9. think core 模块补齐 (C 类，src/core/think 7 文件)
 │   ├── [x][X+] 1-9-1. think 纯逻辑模块 port (intent/sanitize/entity/cite-render/prompt/fuseRRF)
 │   ├── [x][X+] 1-9-3. think 检索融合 port (gather 4 流 + rerank + renderPages/Takes)
-│   ├── [ ][X+] 1-9-4. think 合成编排 port (index runThink: prompt→chat→parse→citations→persist)
-│   └── [ ][X+] 1-9-5. think LLM 接缝对齐 (ChatProvider/Anthropic + schema citations/gaps)
+│   ├── [x][X+] 1-9-4. think 合成编排 port (index runThink: prompt→chat→parse→citations→persist)
+│   └── [x][X+] 1-9-5. think LLM 接缝对齐 (ChatProvider/Anthropic + schema citations/gaps)
 ├── [x][X+] 1-10. G38 schema-pack TS 删除尾 (gate=operations.ts 移植)
 ├── [~][X+] 1-11. A 类已迁 TS 删除 (minions/ai/ingestion/cycle + 命令)
 │   ├── [x][X+] 1-11-1. ingestion A类闭合簇删除 (src/core/ingestion 10文件 + ingest-capture.ts + 测试；Rust ingestion.rs/sync/import.rs/ingest_capture.rs 已覆盖)

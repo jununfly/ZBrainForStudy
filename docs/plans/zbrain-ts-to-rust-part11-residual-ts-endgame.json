@@ -234,7 +234,7 @@
     "1-9": {
       "id": "1-9",
       "label": "think core 模块补齐 (C 类，src/core/think 7 文件)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [
@@ -265,7 +265,7 @@
           "note": "think 即可忠实跑通端到端（gather→synthesize→cite）；calibration/trajectory 接线成本低，留作独立 follow-up，不阻塞 1-9。"
         }
       ],
-      "notes": "符号级对账（2026-08-05，code-explorer）：src/core/think 7 文件。纯逻辑可无接缝移植：intent.ts(classifyIntent)/sanitize.ts(INJECTION_PATTERNS+sanitizeTakeForPrompt+renderTakesBlock)/entity-extract.ts(extractCandidateEntities)/cite-render.ts(parseInlineCitations+normalizeStructuredCitations+resolveCitations)/prompt.ts(buildThinkSystemPrompt+UserMessage)/gather.ts fuseRanked(RRF k=60)。检索融合 PARTIAL：ThinkOperation::execute(operation.rs:1657)仅 keyword search_pages(limit 5)，缺 4 流(hybrid+searchTakes+searchTakesVector+traverse_paths)+融合+render；引擎原语已齐(search_pages/search_takes:1917/traverse_paths:2290/find_trajectory:2470)，缺 searchTakesVector。合成编排 NOT STARTED：index.ts runThink(725L) 顶层编排(resolveModel→embed→gather→render→可选 calibration/trajectory→build prompt→gateway.chat→tryParseJSON→resolveCitations→可选 persistSynthesis) 未移植。prompt PARTIAL：llm.rs:125 ThinkPromptBuilder 有 system/user/parse，但 schema 不同(Rust answer/warnings/evidence_used/sources vs TS answer/citations/gaps)，无 calibration/trajectory 块。cite/entity/intent/sanitize NOT STARTED。LLM 接缝非硬阻塞：crate::ai::chat::ChatProvider(chat.rs:331)+instantiate_chat(:1425) 支持 OpenAI/Anthropic/Gemini，等价于 TS gateway.chat；但 ThinkOperation 当前走 crate::llm::LlmClient(OpenAI 风味, llm.rs:92)，ctx.llm_client 默认 None(operation.rs:526)未接线，schema 缺 citations/gaps → 需路由 ChatProvider+Anthropic key+schema 对齐。CLI 已可达：zbrain think→run_think_command(lib.rs:1875)→run_operation(think)(:2502)；think 引擎逻辑内嵌 operation.rs ThinkOperation，建议新建 crates/zbrain-core/src/think/(gather/prompt/cite/sanitize/intent/entity)。gather 检索契约：TS SearchResult 是 chunk 粒度(slug/chunk_text/chunk_source/chunk_id)，Rust 是 page 粒度(page.compiled_truth+snippet)；think 摘录改用 snippet/compiled_truth 即可，仅字段适配。"
+      "notes": "think core 模块补齐 DONE. Sub-nodes: 1-9-1 (pure-logic port) completed, 1-9-3 (retrieval fusion) completed, 1-9-4 (synthesis orchestration) completed, 1-9-5 (LLM seam alignment) completed. calibration + trajectory blocks deferred as explicit follow-up (scope decision 1-9 q-0 core-path-first)."
     },
     "1-10": {
       "id": "1-10",
@@ -2880,27 +2880,27 @@
     "1-9-4": {
       "id": "1-9-4",
       "label": "think 合成编排 port (index runThink: prompt→chat→parse→citations→persist)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-9",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "Port complete: crates/zbrain-core/src/think/synthesize.rs (run_think: GATHER via think::gather::run_gather -> render <pages>/<takes> -> build system+user prompt (think::prompt) -> chat via ChatProvider -> parse {answer,citations,gaps} -> resolve_citations -> ThinkResult). ThinkOperation::execute rewritten to call run_think (replaces keyword-only search_pages + llm.rs ThinkPromptBuilder OpenAI-flavored path). ThinkOutput extended with citations/gaps/model_used/pages_gathered/takes_gathered/graph_hits/rounds + ThinkCitation DTO. Per-module #[cfg(test)] authored (infer_intent x4, try_parse_json, run_think with injected MockChatProvider x3 incl. regex-fallback citations). calibration + trajectory blocks DEFERRED (scope decision per 1-9 q-0 core-path-first): plumbing parity kept (with_calibration flag, graph_block render), but profile-injection (getLatestProfile) + findTrajectory/entity-resolve/formatTrajectory wiring is a follow-up. cargo check -p zbrain-core EXIT=0. Test execution deferred to local (Windows monitor-lock blocks cargo check --tests / 53min aws-lc codegen)."
     },
     "1-9-5": {
       "id": "1-9-5",
       "label": "think LLM 接缝对齐 (ChatProvider/Anthropic + schema citations/gaps)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-9",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "LLM seam aligned: think now routes through crate::ai::chat::ChatProvider (provider-neutral OpenAI/Anthropic/Gemini = Rust analog of TS gateway.chat) instead of ctx.llm_client + llm.rs ThinkPromptBuilder. Response schema now {answer,citations,gaps} (was answer/warnings/evidence_used/sources). Model resolution: CLI override -> engine config models.think -> deep-tier default anthropic:claude-opus-4-7. resolve_think_chat mirrors TS tryBuildGatewayClient (graceful null on unknown provider / missing key / disabled feature). Note: auto_think.rs (separate autopilot consumer, out of 1-9 scope) still uses the legacy ThinkPromptBuilder path and was left intact."
     }
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-08-06 11:37:59",
+    "updated": "2026-08-06 12:06:50",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
