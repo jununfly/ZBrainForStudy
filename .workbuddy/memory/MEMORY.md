@@ -28,7 +28,10 @@
 - **WSL 装 Rust**：rustup 缺 CA → 直拉 `static.rust-lang.org/dist/<date>/` tarball → `--prefix=/root/.rust`；cargo 配 rsproxy sparse 镜像 `sparse+https://rsproxy.cn/index/`。
 - **zbrain-core Linux 编译**：`pack_lock.rs` unix 分支原用 `libc::kill` → Linux E0433；改 `/proc/<pid>` 存在性检查（纯 std）。
 - **新增 DB migration 三件事**：① `migrations/`+`migrations-sqlite/` 双 dialect `00NN_*.sql`；② `libsql.rs`/`postgres.rs` 加 `include_str!` const + `registry.add(version:NN)`；③ 测试 `EXPECTED_VERSION` 同步 bump。仅加 .sql 不自动应用。
-- **Windows cargo 构建被监视器锁死（重要）**：外部监视器独占 `C:/zb_tmp_*` 与 workspace `target/` 下 `.cargo-*-lock`/`debug/build/*/build-script-build.exe` → os error 5。唯一有效绕法：构建于未监控路径 `C:/Users/victo/AppData/Local/Temp/zb_target*`，复用缓存＝`robocopy <已缓存target>/debug <临时target>/debug /E /XF .cargo-lock .cargo-build-lock .cargo-artifact-lock` 后 `cargo check -p zbrain-core`（rmeta，分钟级）。`cargo check --tests`/`cargo test` 触发 aws-lc-sys/libsql-ffi/tree-sitter 全量 codegen ~53min → 测试延后本地。
+- **Windows cargo 构建被监视器锁死（重要）**：外部监视器独占 `C:/zb_tmp_*` 与 workspace `target/` 下 `.cargo-*-lock`/`debug/build/*/build-script-build.exe` → os error 5。唯一有效绕法：构建于未监控路径 `C:/Users/victo/AppData/Local/Temp/zb_target*`（命令名本身可用 `/c/`，但 `CARGO_TARGET_DIR` 变量值须用 `C:/Users/...` 绝对路径，否则 MSYS 拼成 `C:/c/...`）。
+  - **`cargo check`（lib，rmeta，分钟级）**：`robocopy <已缓存target>/debug <临时target>/debug /E /XF *.lock` 后跑。rmeta 足够，不链接重依赖。
+  - **`cargo test`（需全依赖 rlib，非 rmeta）**：workspace `target/debug` 已有完整 rlib 缓存（历史 `cargo build` 产物，aws-lc-sys/libsql-ffi/tree-sitter 等全在）。只拷 `deps`+`.fingerprint`+`build`+`incremental` 到未监控 `zb_targetN`（`/XF *.lock`，不要拷大二进制）即可。cache 是 **路径无关** 的——重指向新 target 仍复用重依赖 rlib，仅重编 zbrain-core（分钟级，**不触发 53min codegen**）。实测 `cargo test -p zbrain-core think::trajectory` 复编仅 zbrain-chunking+zbrain-core，5 test 全过。
+  - **坑**：`cargo check`(lib) 不编译 `#[cfg(test)]`，test-only 编译错误（如给 ThinkParams 加字段后既有测试 literal 缺字段 E0063、entity.rs 里 `*r==""` 应为 `**r` E0277）只有 `cargo test` 才暴露。改了影响 test 的代码后务必真跑 `cargo test`，别只信 `cargo check`。
 - **CARGO_TARGET_DIR 路径坑**：bash 里 export `CARGO_TARGET_DIR=/c/Users/...` → cargo 写到 `C:/c/Users/...`。用 `C:/Users/...` Windows 绝对路径（命令名本身可用 `/c/`）。
 - **Rust 引擎参数加宽坑**：`&Arc<dyn T>`→`&dyn T` thin→fat 不自动 coerce，调用方须显式 `&*engine`；`&dyn`→`&Arc` 不可逆。sync 模块 + cycle.rs 各臂已是 `&dyn`。
 - **opts 覆盖铁律**：phase 接真实引擎 config 时，ad-hoc opts 覆盖须逐字段 `opts.X.or_else(|| stored)` 保留优先级，丢一个就回归既有测试。
@@ -36,7 +39,7 @@
 
 ## 迁移范式 / 进度
 - cycle phase = `execute_phase` 真实 match 臂 + `autopilot/phases/<name>.rs`。接真实臂后 `run_cycle_empty_brain` skipped 断言 -1。libsql 加 trait 方法：inherent `_impl` + 既有 impl 块内委托（开第二个 `impl` 块必 E0119）。
-- 当前最前沿 node：1-9 think 子系统（run_think 已 port；calibration/trajectory 接线进行中，见每日日志）。Part12 cycle / 1-7 / 1-8 等 leaf 见 roadmap JSON。
+- 当前最前沿 node：1-9 think 子系统（run_think 已 port；calibration/trajectory 接线已完成并通过 `cargo test -p zbrain-core think::trajectory` 5 test，见 2026-08-06）。Part12 cycle / 1-7 / 1-8 等 leaf 见 roadmap JSON。
 
 ## 其他
 - Admin 路由：Rust 在 `/*`，TS 在 `/admin/api/*`；路线图 Q6 决策"保持 /admin/api/*"。
