@@ -6,6 +6,7 @@
 //!   - `classify`     — contradiction classifier (cosine fast-path + LLM).
 //!   - `absorb_log`   — best-effort `facts:absorb` failure writer.
 //!   - `extract`      — extraction kill-switch + model resolution + JSON parse.
+//!   - `forget`       — markdown-first fence-rewrite forget (v0.32.2 contract).
 //!
 //! Fence parsing/rendering/upsert was ported earlier under
 //! [`crate::facts_fence`] (no `facts/` directory then existed); it is
@@ -16,6 +17,7 @@ pub mod classify;
 pub mod decay;
 pub mod eligibility;
 pub mod extract;
+pub mod forget;
 
 // Re-export the fence surface under the unified `facts` namespace.
 pub use crate::facts_fence::{

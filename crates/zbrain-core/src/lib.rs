@@ -20,6 +20,7 @@ pub mod embedding_context;
 pub mod eval_drift;
 pub mod facts;
 pub mod facts_fence;
+pub mod page_lock;
 pub mod features;
 pub mod import;
 pub mod scope;

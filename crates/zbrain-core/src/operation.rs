@@ -4860,8 +4860,12 @@ impl TypedOperation for SourcesRemoveOperation {
 // dedup) and `find_contradictions` reads the `eval_contradictions_runs` report
 // table. Rust has neither yet, so these two are simplified stand-ins that wrap
 // the available engine facts methods (`insert_fact` / `get_facts_health`).
-// `forget_fact` maps cleanly to `expire_fact`. The LLM pipeline + contradiction
-// probe are tracked for a later dedicated slice.
+// `forget_fact` uses the markdown-first fence-rewrite contract (v0.32.2):
+// it rewrites the fact's row in the canonical `## Facts` fence (strike the
+// claim, set `valid_until`, append `forgotten: <reason>`) so the forget
+// survives `zbrain rebuild`, falling back to the legacy `expire_fact` DB-only
+// path only for pre-v51 rows / thin-client installs / missing file. The LLM
+// extraction pipeline + contradiction probe are tracked for a later slice.
 
 /// Forget (expire) a fact.
 #[derive(Debug, Clone)]
@@ -4915,8 +4919,14 @@ impl TypedOperation for ForgetFactOperation {
         params: Self::Params,
     ) -> OperationResult<Self::Output> {
         let engine = ctx.engine()?;
-        let removed = engine.expire_fact(&ctx.source_id, params.fact_id).await?;
-        Ok(ForgetFactOutput { removed })
+        let result = crate::facts::forget::forget_fact_in_fence(
+            engine,
+            &ctx.source_id,
+            params.fact_id,
+            crate::facts::forget::ForgetFactOpts { reason: None },
+        )
+        .await?;
+        Ok(ForgetFactOutput { removed: result.ok })
     }
 }
 

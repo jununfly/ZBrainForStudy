@@ -131,7 +131,28 @@ fn parse_row_cells(line: &str) -> Option<Vec<String>> {
         .strip_prefix('|')
         .and_then(|s| s.strip_suffix('|'))
         .unwrap_or(trimmed);
-    let cells: Vec<String> = inner.split('|').map(|c| c.trim().to_string()).collect();
+    // Split on unescaped '|' only; `\|` (emitted by `escape_fence_cell`) is a
+    // literal pipe within a cell. A lone '\' is preserved verbatim.
+    let mut cells: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut chars = inner.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            match chars.peek() {
+                Some('|') => {
+                    cur.push('|');
+                    chars.next();
+                }
+                _ => cur.push(ch),
+            }
+        } else if ch == '|' {
+            cells.push(cur.trim().to_string());
+            cur.clear();
+        } else {
+            cur.push(ch);
+        }
+    }
+    cells.push(cur.trim().to_string());
     if cells.is_empty() {
         return None;
     }
@@ -732,6 +753,33 @@ mod tests {
     #[test]
     fn parse_forgotten_not_detected() {
         assert!(!parse_forgotten_from_context(&Some("superseded by #3".to_string())));
+    }
+
+    #[test]
+    fn parse_roundtrip_preserves_pipe_in_context() {
+        // Context containing '|' (as produced by forget.ts when appending
+        // "forgotten: <reason>") must survive a render + reparse round-trip.
+        // Stored markdown escapes the pipe as `\|` (see `escape_fence_cell`);
+        // the parser unescapes it back to `|`.
+        let body = r#"<!--- zbrain:facts:begin -->
+| # | claim | kind | confidence | visibility | notability | valid_from | valid_until | source | context |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | likes tea | preference | 0.9 | private | high |  |  |  | prior note \| forgotten: typo |
+<!--- zbrain:facts:end -->"#;
+        let parsed = parse_facts_fence(body);
+        assert_eq!(parsed.facts.len(), 1);
+        assert_eq!(
+            parsed.facts[0].context.as_deref().unwrap(),
+            "prior note | forgotten: typo"
+        );
+
+        let rendered = render_facts_fence(&parsed.facts);
+        let reparsed = parse_facts_fence(&rendered);
+        assert_eq!(reparsed.facts.len(), 1);
+        assert_eq!(
+            reparsed.facts[0].context.as_deref().unwrap(),
+            "prior note | forgotten: typo"
+        );
     }
 
     // ── Parse / Render round-trip ───────────────────────────────────────────

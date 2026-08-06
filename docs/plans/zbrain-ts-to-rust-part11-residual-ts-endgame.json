@@ -229,7 +229,7 @@
           "note": "coupling recon: facts/extract.ts 仅 import INJECTION_PATTERNS from think/sanitize.ts。"
         }
       ],
-      "notes": "Ported to crates/zbrain-core/src/facts/: decay.rs (effective_confidence+HALFLIFE_DAYS,6 tests), eligibility.rs (is_facts_backstop_eligible,7 tests), classify.rs (classify_against_candidates cosine+LLM,5 tests), extract.rs (kill-switch+model resolve+strict-JSON parse,7 tests), absorb_log.rs (write_facts_absorb_log+best-effort error classifier,7 tests). facts_fence.rs re-exported under facts:: for one namespace. 37 facts:: tests pass via cargo test -p zbrain-core facts::. Deferred (unwired in TS snapshot / need page-lock+queue infra): forget.ts (recall.ts dep; needs page-lock+fs atomic write+engine.expire_fact), queue.ts (FactsQueue orchestration), backstop.ts (orchestrator)."
+      "notes": "facts 核心已全量 port 到 crates/zbrain-core/src/facts/（leaf 模块 + forget）：decay.rs(6t), eligibility.rs(7t), classify.rs(5t), extract.rs(7t), absorb_log.rs(7t), forget.rs(fence-first 遗忘 v0.32.2 contract: plan_forget 纯路由决策 + apply_fence_rewrite 原子文件改写 + page_lock 进程内锁 + rewrite_fence_for_forget, 10t)。facts_fence.rs 在 facts:: 下 re-export 统一命名空间。cargo test -p zbrain-core facts:: = 46 passed。附带的共享 bug 修复：facts_fence::parse_row_cells 原先裸 split('|') 不尊重 escape_fence_cell 的 '\\|' 转义，导致含管道符的单元格(context 里 'forgotten: <reason>')在 render+reparse 往返错位；改为仅在未转义的 '|' 分列并反向 unescape '\\|'->'|'。Deferred（无 TS 调用方 / 需要 FactsQueue 基础设施，单列跟踪）：queue.ts(FactsQueue 编排)、backstop.ts(页面级编排器)。forget 之前 Rust 的 forget_fact op 仅有 expire_fact 退化路径，现已接 forget.rs 的 markdown-first 路径。"
     },
     "1-9": {
       "id": "1-9",
@@ -2920,7 +2920,7 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-08-06 20:39:02",
+    "updated": "2026-08-06 21:46:21",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
