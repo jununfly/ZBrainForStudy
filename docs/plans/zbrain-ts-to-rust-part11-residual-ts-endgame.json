@@ -218,7 +218,7 @@
     "1-8": {
       "id": "1-8",
       "label": "facts core 模块补齐 (C 类，src/core/facts 13 文件)",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "explore",
       "parent": "1",
       "children": [],
@@ -229,7 +229,7 @@
           "note": "coupling recon: facts/extract.ts 仅 import INJECTION_PATTERNS from think/sanitize.ts。"
         }
       ],
-      "notes": "实际 MISSING: src/core/facts 11 模块仅 1 Rust 覆盖。Rust 有 Facts 命令 shell 但 facts engine 基本未移植。路线图原标[x]为假。"
+      "notes": "Ported to crates/zbrain-core/src/facts/: decay.rs (effective_confidence+HALFLIFE_DAYS,6 tests), eligibility.rs (is_facts_backstop_eligible,7 tests), classify.rs (classify_against_candidates cosine+LLM,5 tests), extract.rs (kill-switch+model resolve+strict-JSON parse,7 tests), absorb_log.rs (write_facts_absorb_log+best-effort error classifier,7 tests). facts_fence.rs re-exported under facts:: for one namespace. 37 facts:: tests pass via cargo test -p zbrain-core facts::. Deferred (unwired in TS snapshot / need page-lock+queue infra): forget.ts (recall.ts dep; needs page-lock+fs atomic write+engine.expire_fact), queue.ts (FactsQueue orchestration), backstop.ts (orchestrator)."
     },
     "1-9": {
       "id": "1-9",
@@ -2920,7 +2920,7 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-08-06 17:04:34",
+    "updated": "2026-08-06 20:39:02",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
