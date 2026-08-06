@@ -85,23 +85,6 @@ pub struct ThinkGatherResult {
     pub diagnostics: ThinkGatherDiagnostics,
 }
 
-/// Minimal shape the synth prompt builder consumes from a take hit.
-///
-/// Faithful port of the `takesHitToTakeForPrompt` return type. `source` /
-/// `since_date` are `None` for a `TakeHit` (they exist only on a full `Take`);
-/// the TS union returns them conditionally, which this struct models via `Option`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct TakeForPrompt {
-    pub page_slug: String,
-    pub row_num: i32,
-    pub claim: String,
-    pub kind: String,
-    pub holder: String,
-    pub weight: f64,
-    pub source: Option<String>,
-    pub since_date: Option<String>,
-}
-
 /// Run the four-stream think gather.
 ///
 /// Port of `src/core/think/gather.ts:runGather`. Each stream is fail-open: a
@@ -230,15 +213,17 @@ pub fn render_pages_block(pages: &[SearchResult], excerpt_len: usize) -> String 
         .join("\n\n")
 }
 
-/// Map a `TakeHit` into the minimal prompt shape the synth step renders.
+/// Map a `TakeHit` into the prompt shape the synth step renders.
 ///
-/// Port of `src/core/think/gather.ts:takesHitToTakeForPrompt`. `TakeHit` and
-/// `Take` share the slug/claim/kind/holder/weight surface; `source` / `since_date`
-/// exist only on a full `Take`, so they are `None` here.
-pub fn takes_hit_to_take_for_prompt(h: &TakeHit) -> TakeForPrompt {
-    TakeForPrompt {
+/// Port of `src/core/think/gather.ts:takesHitToTakeForPrompt`. Returns the
+/// canonical [`crate::think::sanitize::TakeForPrompt`] (the same struct
+/// `render_takes_block` consumes) so the gather + sanitize steps share one
+/// `TakeForPrompt` type, mirroring the single TS interface. `source` /
+/// `since_date` are `None` for a `TakeHit` (they exist only on a full `Take`).
+pub fn takes_hit_to_take_for_prompt(h: &TakeHit) -> crate::think::sanitize::TakeForPrompt {
+    crate::think::sanitize::TakeForPrompt {
         page_slug: h.page_slug.clone(),
-        row_num: h.row_num,
+        row_num: h.row_num as i64,
         claim: h.claim.clone(),
         kind: h.kind.clone(),
         holder: h.holder.clone(),
@@ -304,7 +289,7 @@ mod tests {
         };
         let out = takes_hit_to_take_for_prompt(&hit);
         assert_eq!(out.page_slug, "companies/acme");
-        assert_eq!(out.row_num, 2);
+        assert_eq!(out.row_num, 2i64);
         assert_eq!(out.claim, "ACME is profitable");
         assert_eq!(out.kind, "fact");
         assert_eq!(out.holder, "local");

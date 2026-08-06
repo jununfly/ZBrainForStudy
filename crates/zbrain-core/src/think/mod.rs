@@ -14,6 +14,12 @@
 //!   * [`fusion`]      ← `gather.ts` fuseRanked (generic RRF over two ranked lists)
 //!   * [`gather`]      ← `gather.ts` runGather + renderPagesBlock + takesHitToTakeForPrompt
 //!                      (4-stream retrieval fusion; stream 3 vector-takes blocked → G71)
+//!   * [`synthesize`]  ← `index.ts` runThink (prompt → chat → parse → resolve
+//!                      citations → ThinkResult). Replaces the old
+//!                      `llm.rs::ThinkPromptBuilder` OpenAI-flavored path with
+//!                      the provider-neutral `ChatProvider` seam (node 1-9-4 /
+//!                      1-9-5). calibration + trajectory blocks are deferred
+//!                      follow-ups (scope decision); plumbing is parity-kept.
 //!
 //! NOTE: [`fusion::fuse_ranked`] is intentionally generic (operates on any `T`
 //! via a key closure) and distinct from `crate::search::fusion::rrf_fusion`,
@@ -27,6 +33,7 @@ pub mod gather;
 pub mod intent;
 pub mod prompt;
 pub mod sanitize;
+pub mod synthesize;
 
 pub use cite_render::*;
 pub use entity::*;
@@ -35,3 +42,4 @@ pub use gather::*;
 pub use intent::*;
 pub use prompt::*;
 pub use sanitize::*;
+pub use synthesize::*;

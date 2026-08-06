@@ -15,7 +15,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::engine::BrainEngine;
 use crate::error::StructuredError;
-use crate::think::gather::{run_gather, ThinkGatherOpts};
 
 // ──────────────────────────────────────────────────────────────────────────
 // ErrorCode enum (1:1 TS parity)
@@ -1601,8 +1600,18 @@ impl ValidateParams for ThinkParams {
     }
 }
 
+/// A single resolved citation in the think output.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ThinkCitation {
+    pub page_slug: String,
+    /// `None` = page-level citation; `Some` = take citation.
+    pub row_num: Option<u32>,
+    pub citation_index: u32,
+}
+
 /// Output for think operation.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThinkOutput {
     /// Generated answer
@@ -1613,6 +1622,57 @@ pub struct ThinkOutput {
     pub evidence_used: u32,
     /// Source page slugs that contributed to the answer
     pub sources: Vec<String>,
+    /// Resolved citations (structured first, inline-marker regex fallback).
+    /// Empty before the 1-9-4 synthesis port; populated now.
+    #[serde(default)]
+    pub citations: Vec<ThinkCitation>,
+    /// Gaps the model reported it could not fill from the brain.
+    #[serde(default)]
+    pub gaps: Vec<String>,
+    /// Model id that actually answered (provider:modelId).
+    #[serde(default)]
+    pub model_used: String,
+    /// Page hits the gather phase retrieved.
+    #[serde(default)]
+    pub pages_gathered: usize,
+    /// Take hits the gather phase retrieved.
+    #[serde(default)]
+    pub takes_gathered: usize,
+    /// Anchor-graph nodes reached.
+    #[serde(default)]
+    pub graph_hits: usize,
+    /// Synthesis rounds executed (0 when LLM was unavailable).
+    #[serde(default)]
+    pub rounds: u32,
+}
+
+/// Map a [`crate::think::synthesize::ThinkResult`] into the public
+/// [`ThinkOutput`] contract. Keeps the legacy `answer` / `warnings` /
+/// `evidence_used` / `sources` fields and adds the richer citation/gap/
+/// diagnostics surface introduced by the 1-9-4 synthesis port.
+fn think_result_to_output(r: crate::think::synthesize::ThinkResult) -> ThinkOutput {
+    let evidence_used = (r.pages_gathered + r.takes_gathered) as u32;
+    ThinkOutput {
+        answer: r.answer,
+        warnings: r.warnings,
+        evidence_used,
+        sources: r.sources,
+        citations: r
+            .citations
+            .into_iter()
+            .map(|c| ThinkCitation {
+                page_slug: c.page_slug,
+                row_num: c.row_num,
+                citation_index: c.citation_index,
+            })
+            .collect(),
+        gaps: r.gaps,
+        model_used: r.model_used,
+        pages_gathered: r.pages_gathered,
+        takes_gathered: r.takes_gathered,
+        graph_hits: r.graph_hits,
+        rounds: r.rounds,
+    }
 }
 
 #[async_trait]
@@ -1656,110 +1716,44 @@ impl TypedOperation for ThinkOperation {
     }
 
     async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
-        let keywords = extract_keywords(&params.question);
-        let mut warnings = Vec::new();
-        let mut sources = Vec::new();
-        let mut evidence_used = 0;
-        let mut context_chunks = Vec::new();
-        let mut page_sources = Vec::new();
-
-        // Phase 2: Four-stream gather retrieval (ports src/core/think/gather.ts).
+        // Full think pipeline (ports src/core/think/index.ts runThink):
+        //   GATHER (4-stream) → render → prompt → chat (provider-neutral
+        //   ChatProvider) → parse → resolve citations → ThinkResult.
         //
-        // Streams: (1) hybrid page search, (2) takes keyword, (3) takes vector
-        // [G71 blocked — no takes embedding column yet], (4) anchor graph walk.
-        // Fused via RRF and capped. Each stream is fail-open inside run_gather,
-        // so partial retrieval still yields synthesis input.
-        //
-        // FUTURE(think-rerank / G1): TS Think inherits reranking as a built-in
-        // of the `hybridSearch` primitive. The Rust hybrid_search primitive is
-        // the faithful analog, so think retrieval reranks via the same path the
-        // query operation uses. The shared operation-layer retrieve+rerank
-        // helper refactor is tracked in docs/plans/KNOWN-GAPS.md (G1).
-        if let Some(engine) = &ctx.engine {
-            let gather = run_gather(
-                engine.as_ref(),
-                &ThinkGatherOpts {
-                    question: params.question.clone(),
-                    anchor: None,
-                    gather_limit: Some(40),
-                    takes_limit: Some(30),
-                    graph_depth: Some(2),
-                    question_embedding: None,
-                    embedding_client: ctx.embedding.clone(),
-                    takes_holders_allow_list: ctx.takes_holders_allow_list.clone(),
-                },
-            )
-            .await;
-
-            evidence_used = gather.pages.len() as u32;
-            for result in &gather.pages {
-                let slug = result.page.slug.clone();
-                sources.push(slug.clone());
-                page_sources.push(slug);
-                if let Some(snippet) = &result.snippet {
-                    context_chunks.push(snippet.clone());
-                } else {
-                    context_chunks.push(result.page.title.clone());
-                }
-            }
-            // Take hits (gather.takes) are consumed by the synth step in node
-            // 1-9-4; for now they remain available on the gather result.
-        }
-
-        // Phase 3: LLM synthesis if LLM client is available
-        let answer = if let Some(llm_client) = &ctx.llm_client {
-            let mut prompt_builder = crate::llm::ThinkPromptBuilder::new(&params.question);
-            for (snippet, source) in context_chunks.iter().zip(page_sources.iter()) {
-                prompt_builder.add_context(snippet, source);
-            }
-
-            let llm_request = prompt_builder.build_request();
-            match llm_client.generate(llm_request).await {
-                Ok(llm_response) => {
-                    match crate::llm::ThinkPromptBuilder::parse_response(&llm_response.content) {
-                        Ok(parsed) => {
-                            // Override with LLM-generated answer, keep context metadata
-                            warnings.extend(parsed.warnings);
-                            parsed.answer
-                        }
-                        Err(e) => {
-                            warnings.push(format!("Failed to parse LLM response: {}", e));
-                            format!("LLM response could not be parsed. Raw content: {}", llm_response.content)
-                        }
-                    }
-                }
-                Err(e) => {
-                    warnings.push(format!("LLM request failed: {}", e));
-                    format!("Query: {} (LLM unavailable: {})", params.question, e)
-                }
-            }
-        } else {
-            // Fallback: simple summary when no LLM client is available
-            if keywords.is_empty() {
-                format!("Query: {} (no meaningful keywords extracted)", params.question)
-            } else if evidence_used > 0 {
-                format!(
-                    "Query: {} | Keywords: {} | Found {} relevant pages: {}",
-                    params.question,
-                    keywords.join(", "),
-                    evidence_used,
-                    sources.join(", ")
+        // The old path called ctx.llm_client + llm.rs::ThinkPromptBuilder
+        // (OpenAI-flavored schema missing citations/gaps). The 1-9-4 + 1-9-5
+        // port routes through crate::ai::chat::ChatProvider — the Rust analog
+        // of TS gateway.chat — and emits the {answer, citations, gaps} schema.
+        let output = match &ctx.engine {
+            Some(engine) => {
+                let result = crate::think::synthesize::run_think(
+                    engine.as_ref(),
+                    &crate::think::synthesize::ThinkSynthesizeOpts {
+                        question: params.question.clone(),
+                        anchor: params.anchor.clone(),
+                        rounds: params.rounds.unwrap_or(1),
+                        model: params.model.clone(),
+                        since: params.since.clone(),
+                        until: params.until.clone(),
+                        will_save: false,
+                        with_calibration: false,
+                        chat: None,
+                        embedding_client: ctx.embedding.clone(),
+                        takes_holders_allow_list: ctx.takes_holders_allow_list.clone(),
+                        question_embedding: None,
+                    },
                 )
-            } else {
-                format!(
-                    "Query: {} | Keywords: {} | No relevant pages found",
-                    params.question,
-                    keywords.join(", ")
-                )
+                .await;
+                think_result_to_output(result)
             }
+            None => ThinkOutput {
+                answer: "No brain engine available for think.".to_string(),
+                warnings: vec!["NO_ENGINE".to_string()],
+                ..Default::default()
+            },
         };
 
-        Ok(ThinkOutput {
-            answer,
-            warnings,
-            evidence_used,
-            sources,
-        })
+        Ok(output)
     }
 }
 
