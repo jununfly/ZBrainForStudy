@@ -237,7 +237,7 @@ mod tests {
         let out = extract_candidate_entities("tell me about marco", &slugs);
         let raws: Vec<&str> = out.iter().map(|c| c.raw.as_str()).collect();
         // "marco" from question should not be re-added (already in seen).
-        assert_eq!(raws.iter().filter(|r| *r == "marco").count(), 1);
+        assert_eq!(raws.iter().filter(|r| **r == "marco").count(), 1);
     }
 
     #[test]

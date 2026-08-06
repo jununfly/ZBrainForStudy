@@ -12044,6 +12044,12 @@ Outro."#;
             model: None,
             since: None,
             until: None,
+            calibration: None,
+            calibration_holder: None,
+            trajectory: None,
+            source_id: None,
+            allowed_sources: None,
+            remote: None,
         };
         let result = params.validate();
         assert!(result.is_err());
@@ -12062,6 +12068,12 @@ Outro."#;
             model: None,
             since: None,
             until: None,
+            calibration: None,
+            calibration_holder: None,
+            trajectory: None,
+            source_id: None,
+            allowed_sources: None,
+            remote: None,
         };
         assert!(params.validate().is_err());
 
@@ -12073,6 +12085,12 @@ Outro."#;
             model: None,
             since: None,
             until: None,
+            calibration: None,
+            calibration_holder: None,
+            trajectory: None,
+            source_id: None,
+            allowed_sources: None,
+            remote: None,
         };
         assert!(params.validate().is_err());
 
@@ -12084,6 +12102,12 @@ Outro."#;
             model: None,
             since: None,
             until: None,
+            calibration: None,
+            calibration_holder: None,
+            trajectory: None,
+            source_id: None,
+            allowed_sources: None,
+            remote: None,
         };
         assert!(params.validate().is_ok());
     }

@@ -380,8 +380,8 @@ mod tests {
         ];
         let b = format_trajectory_block(&points, "companies/acme", ThinkIntent::Temporal);
         assert!(b.rendered.contains(r#"<trajectory entity="companies/acme" metric="revenue">"#));
-        assert!(b.rendered.contains("as of 2024-01-01: 10 - seed round"));
-        assert!(b.rendered.contains("as of 2024-06-01: 25 - series a"));
+        assert!(b.rendered.contains("as of 2024-01-01: 10 — seed round"));
+        assert!(b.rendered.contains("as of 2024-06-01: 25 — series a"));
         assert_eq!(b.emitted_points, 2);
         // No supersession annotation for temporal intent.
         assert!(!b.rendered.contains("superseded prior"));
