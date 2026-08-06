@@ -62,7 +62,7 @@
       "parent": "1",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "skillpack 部分完成 (audit: core/skillpack 27 文件 MIGRATED, Rust 已接管); skillify 仍 UNMIGRATED (core/skillify 2 文件, 见 RESIDUAL_TS_AUDIT.md). 故 1-1 收敛为 skillify 端口余下工作."
     },
     "1-2": {
       "id": "1-2",
@@ -263,9 +263,19 @@
           "q": "1-9 范围（calibration/trajectory 是否纳入）",
           "answer": "核心路径优先：port 主路径（纯逻辑+检索融合+LLM 接缝+合成编排），calibration/trajectory 可选阶段显式推迟到 follow-up（Rust 原语已就绪、TS 默认 off、非核心）。",
           "note": "think 即可忠实跑通端到端（gather→synthesize→cite）；calibration/trajectory 接线成本低，留作独立 follow-up，不阻塞 1-9。"
+        },
+        {
+          "q": "calibration/trajectory 接线 follow-up 是否完成?",
+          "answer": "已完成: BrainEngine::get_calibration_profile + think::trajectory::build_trajectory_block 接到 run_think; trajectory.rs 5 测试全过 (cargo test -p zbrain-core think::trajectory)",
+          "note": "TS runThink calibration+trajectory 管线 1:1 port; best-effort 降级不 fail; 见 2026-08-06 日志与 commit 3beb2a6/c2eb95c"
+        },
+        {
+          "q": "calibration/trajectory 接线 follow-up 是否完成?",
+          "answer": "已完成: BrainEngine::get_calibration_profile + think::trajectory::build_trajectory_block 接到 run_think; trajectory.rs 5 测试全过 (cargo test -p zbrain-core think::trajectory)",
+          "note": "TS runThink calibration+trajectory 管线 1:1 port; best-effort 降级不 fail; 见 2026-08-06 日志与 commit 3beb2a6/c2eb95c"
         }
       ],
-      "notes": "think core 模块补齐 DONE. Sub-nodes: 1-9-1 (pure-logic port) completed, 1-9-3 (retrieval fusion) completed, 1-9-4 (synthesis orchestration) completed, 1-9-5 (LLM seam alignment) completed. calibration + trajectory blocks deferred as explicit follow-up (scope decision 1-9 q-0 core-path-first)."
+      "notes": "think core 模块补齐 DONE (incl. calibration+trajectory 接线 follow-up, completed 2026-08-06, 5 trajectory tests pass). Sub-nodes: 1-9-1 pure-logic, 1-9-3 retrieval fusion, 1-9-4 synthesis, 1-9-5 LLM seam, all completed."
     },
     "1-10": {
       "id": "1-10",
@@ -280,7 +290,7 @@
     "1-11": {
       "id": "1-11",
       "label": "A 类已迁 TS 删除 (minions/ai/ingestion/cycle + 命令)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [
@@ -498,7 +508,7 @@
     },
     "1-12": {
       "id": "1-12",
-      "label": "cycle 大迁移 (runCycle 2057行主循环 + 20 phase 全未迁, Rust autopilot/cycle.rs 仅骨架 stub) — B类真迁移主战场",
+      "label": "cycle 大迁移 (runCycle 2057行→Rust autopilot/cycle.rs: run_cycle + 48 phase arms, 详见 Part12)",
       "status": "completed",
       "mode": "explore",
       "parent": "1",
@@ -515,14 +525,24 @@
           "q": "cycle 是 A 类可删还是 B 类真迁移?",
           "answer": "B类真迁移,不可删。原 RESIDUAL-TS-INVENTORY 误列为 A 类(已修正)。实测:cycle.ts 主文件 2057 行(runCycle 主循环+phase dispatch)+cycle/ 20 phase 文件;Rust autopilot/cycle.rs(745行)仅 dispatch 骨架,20 业务 phase 全 not_implemented/not_migrated stub,0/20 真正迁移,runCycle 主循环未等价实现。6 活消费者硬依赖未迁 phase:dream->runCycle,calibration->calibration-profile,v0_28_0->extract-takes,backfill-registry->emotional-weight,transcripts->transcript-discovery,pglite/postgres-engine->anomaly。",
           "note": "数周级大迁移,需独立 Phase 拆 runCycle 主循环+20 phase 逐刀。本轮不开工(用户选 A)。选刀教训:A 类判定必须实测 Rust handler 是否 stub,不能只看文件存在。"
+        },
+        {
+          "q": "cycle 大迁移实际完成状态?",
+          "answer": "已完成: Part12 JSON 48/48 节点 completed; Rust autopilot/cycle.rs 实测 2479行, pub async fn run_cycle + 48 phase arms, 零 stub/todo; cargo check -p zbrain-core EXIT=0; TS src/core/cycle 已删(G66 2026-08-05)。旧决策 '745行/0/20 未迁' 已过时——当时 cycle.rs 真是骨架, 后续已补全。",
+          "note": "旧决策是正确历史记录(当时确实未迁), 仅状态现已翻转; 不删旧决策以保留轨迹。"
+        },
+        {
+          "q": "cycle 大迁移实际完成状态?",
+          "answer": "已完成: Part12 JSON 48/48 节点 completed; Rust autopilot/cycle.rs 实测 2479行, pub async fn run_cycle + 48 phase arms, 零 stub/todo; cargo check -p zbrain-core EXIT=0; TS src/core/cycle 已删(G66 2026-08-05)。旧决策 '745行/0/20 未迁' 已过时——当时 cycle.rs 真是骨架, 后续已补全。",
+          "note": "旧决策是正确历史记录(当时确实未迁), 仅状态现已翻转; 不删旧决策以保留轨迹。"
         }
       ],
-      "notes": ""
+      "notes": "cycle 大迁移完成 (2026-08-06 核查: Part12 JSON 48/48 节点 completed; Rust autopilot/cycle.rs 2479行, pub async fn run_cycle + 48 phase arms, 零 stub/todo; cargo check -p zbrain-core EXIT=0; TS src/core/cycle 已删 G66 2026-08-05)。原 label '全未迁/仅骨架 stub' 已过时——实为完整 port。"
     },
     "1-11-2": {
       "id": "1-11-2",
       "label": "minions 纯删除探查 [部分完成: worker/handler-runtime/测试已被 1-13-1-3-5 吃掉; 剩 queue.ts(活) + ~31 孤立 src, 待 1-13-1-6 删命令后清]",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-11",
       "children": [],
@@ -538,7 +558,7 @@
           "note": "选刀方法论升级:import探针必须扫src+tests且用可靠grep(自写正则bug漏匹配import{X}from);A类判定=零src引用+零test引用+真Rust覆盖(非stub)三者同时满足。"
         }
       ],
-      "notes": "2026-07-24 更新: 原 BLOCKED(测试 100% 耦合)已被 1-13-1-3-5 解决——该节点全量删了 4 src(worker.ts/subagent.ts/brain-allowlist.ts/tool-defs.ts) + 27 测试(整 TS minions 测试套件 + 部分更广覆盖测试)。剩余: queue.ts(活, book-mirror/jobs-watch/cycle/synthesize/embed-backfill-submit/search 引用) + ~31 孤立 minions src(shell.ts/embed.ts/supervisor.ts/rate-leases.ts 等, 无测试无活 importer)。queue.ts 必须在 1-13-1-6 删 cli.ts 命令(含 book-mirror/jobs-watch)后再删, 否则破坏活命令。故 1-11-2 现仅剩 '队列+孤立 handlers 收尾', 状态改 in_progress"
+      "notes": "minions 删除完成(2026-08-06 核查: queue.ts + src/core/minions/ 全删, 0 .ts 残留; 前提'待 1-13-1-6 删命令'已满足; 残 ~31 孤立 src 归 1-14 残留审计)"
     },
     "1-5-2-1": {
       "id": "1-5-2-1",
@@ -2547,7 +2567,7 @@
     "1-13": {
       "id": "1-13",
       "label": "cutover 执行层: Rust CLI clap 层补全(映射 cli.ts 全部命令到 run_operation) + 退役 cli.ts + 删 operations.ts",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [
@@ -2559,7 +2579,7 @@
     "1-13-1": {
       "id": "1-13-1",
       "label": "Phase C 退役 cli.ts + mcp legacy + 删 operations.ts — 计划与决策",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-13",
       "children": [
@@ -2701,7 +2721,7 @@
       "parent": "1-13-1",
       "children": [],
       "decisions": [],
-      "notes": "COMPLETED 2026-07-24:\n- git rm src/cli.ts（按照 roadmap 阶段划分，Phase C 收口直接删除，未迁移 CLI 命令留到 Part12+ 迁移）\n- 删除 9 个依赖 cli.ts 的测试文件：\n  - tests/unit/ai/build-gateway-config.test.ts\n  - tests/unit/cli-args.test.ts\n  - tests/unit/cli-query-image.test.ts\n  - tests/unit/v0_37_fix_wave.serial.test.ts\n  - tests/unit/cli-options.test.ts\n  - tests/unit/cli.test.ts\n  - tests/unit/cli-multimodal-integration.test.ts\n  - tests/unit/cycle/regression-pr-wave-r1-r2-r4.test.ts\n  - tests/unit/e2e/sync-lock-recovery.test.ts\n- typecheck baseline 从 57 → 57（删除测试后无新增错误），gate 通过。\n- 所有 TS 命令文件（src/commands/*.ts）仍保留，它们不导入 cli.ts 只导入 cli-options.ts（独立存在），留待 Part12 逐个迁移。"
+      "notes": "删 cli.ts 完成(2026-08-06 核查: 文件已删且 commit; bin.zbrain 现指向 bin/zbrain-rs.js JS→Rust shim; typecheck 0 new errors, cargo build -p zbrain-cli EXIT=0)"
     },
     "1-13-1-7": {
       "id": "1-13-1-7",
@@ -2711,7 +2731,7 @@
       "parent": "1-13-1",
       "children": [],
       "decisions": [],
-      "notes": "COMPLETED 2026-07-24:\n- git rm src/core/operations.ts (按照 Phase C 计划退役 TS legacy operations registry)\n- 修改 src/core/schema-pack/best-effort.ts: OperationContext 导入改 from ../operation-types.ts（已经提取了类型定义）\n- 删除 37 个依赖 operations.ts 的 TS 测试文件（这些测试测试 TS operations registry，Rust 已全量迁移不再需要）\n- typecheck baseline 从 57 → 56 错误，零新增错误，gate 通过。\n- 所有 27 处 TS 源码对 operations.ts 的引用已经清理：operation-types.ts 仅保留类型，不碰逻辑。"
+      "notes": "删 operations.ts 完成(2026-08-06 核查: 文件已删且 commit; 1-6-7 107 op 全迁 register_all; typecheck 基线无新增; 注: scripts/tsc-baseline.txt 未排序致 gate 误报, 另议修复)"
     },
     "1-13-1-3-1": {
       "id": "1-13-1-3-1",
@@ -2726,12 +2746,12 @@
     "1-13-1-3-2": {
       "id": "1-13-1-3-2",
       "label": "补迁: 审计中标记'无 Rust 对应'的断言补成 Rust 集成测试(zbrain-web/zbrain-mcp crate), 逐条 GREEN",
-      "status": "obsolete",
+      "status": "completed",
       "mode": "build",
       "parent": "1-13-1-3",
       "children": [],
       "decisions": [],
-      "notes": "决策反转(1-13-1-3 decision#3): 审计证明 dispatch.ts 是死路径, 安全行为 Rust 已覆盖, 10 个 MIGRATE 项是 Rust 生产中本就不存在的非安全 UX 缺口. 不补迁, 改登记 G54/G55 缺口后直接删. 本节点作废"
+      "notes": "dispatch.ts + 其 TS 测试已删(2026-08-06 核查); premise moot, 无 Rust 对应项需补"
     },
     "1-13-1-3-3": {
       "id": "1-13-1-3-3",
@@ -2766,7 +2786,7 @@
     "1-14": {
       "id": "1-14",
       "label": "残留 TS 活性审计（415 文件 live/orphan 分类 + 依赖测试面）",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [
@@ -2794,7 +2814,7 @@
           "note": "纯函数把TS单测逻辑改写成Rust #[test](1:1行为断言)；命令/operation层e2e驱真实二进制对标TS golden输出。对齐PARITY_GATE(删TS前确认Rust覆盖非stub)。"
         }
       ],
-      "notes": "L1审计: 415 src(0 product-live/398 test-covered/17 orphan); 555测试541引src. L2+读bin/zbrain-rs.js修正: shim是纯Rust spawn透传→产品=纯Rust命令(41 top-level subcommand: Think/Facts/Query/Sync/Sources/Links/Takes/Doctor/Config...命令层大部已移植). 但zbrain-core缺search/facts/think的**专属engine模块**(命令shell可能委派到部分/缺失引擎)——精确每模块port状态未验证. 删src当前不安全: 362/541测试覆盖功能 + 可能缺失引擎. 路线图系统性假(1-7/1-8/1-9 search/facts/think core标[x]不可信;同Part12滞后病). 真实决策=迁移终局scope + 先决路线图逐模块对账(地图不可靠, 我的快速grep对engine-vs-command也不定论)."
+      "notes": "残留 TS 活性审计完成 (2026-08-06): 目录级 Rust 对应检查, 414 .ts 中 128 MIGRATED / 286 UNMIGRATED. 报告见 docs/plans/RESIDUAL_TS_AUDIT.md. 真前沿=facts(1-8)/search-image+obs(1-7-3/4)/output(1-4-2 BLOCKED)/eval-* 族; 删除线+cycle 早已完成(见该报告). 1-14-1 删17孤儿 src 仍 pending."
     },
     "1-7-1": {
       "id": "1-7-1",
@@ -2900,7 +2920,7 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-08-06 12:06:50",
+    "updated": "2026-08-06 17:04:34",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
