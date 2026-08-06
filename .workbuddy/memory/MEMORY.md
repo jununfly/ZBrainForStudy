@@ -36,6 +36,8 @@
 - **Rust 引擎参数加宽坑**：`&Arc<dyn T>`→`&dyn T` thin→fat 不自动 coerce，调用方须显式 `&*engine`；`&dyn`→`&Arc` 不可逆。sync 模块 + cycle.rs 各臂已是 `&dyn`。
 - **opts 覆盖铁律**：phase 接真实引擎 config 时，ad-hoc opts 覆盖须逐字段 `opts.X.or_else(|| stored)` 保留优先级，丢一个就回归既有测试。
 - **Git 对象库损坏修复**：`git fsck --no-reflogs` 列 missing；`git hash-object -w <worktree-path>` 重建 blob（hash 与 HEAD tree 期望一致，零丢失）。
+- **TypeScript 基线 gate 假阳性**：`scripts/tsc-baseline.txt` **未排序**，而 `scripts/typecheck-baseline.sh` 用 `comm` 比对 → 误报新增错误（exit 1）且谎称「N baseline errors no longer reproduce」。真值须 `sort` 两侧后再 `comm -13`。别信这个 gate 的 exit code，真零新增时它也会红。
+- **路线图系统性滞后**：Part11 residual-endgame 路线图常比仓库真实状态滞后数月（删 TS 执行层 / cycle 大迁移 等里程碑早已 commit 完成却仍标 in_progress/pending）。**以仓库 HEAD + grep/ls 真相为准**，roadmap 节点仅作索引；re-baseline 前先 `git ls-files` + `cargo build` + `bun` typecheck 验证。残差审计方法：目录级查 `crates/zbrain-core/src/<mod>`（剥前缀 `core/` + kebab↔snake），勿按文件名。
 
 ## 迁移范式 / 进度
 - cycle phase = `execute_phase` 真实 match 臂 + `autopilot/phases/<name>.rs`。接真实臂后 `run_cycle_empty_brain` skipped 断言 -1。libsql 加 trait 方法：inherent `_impl` + 既有 impl 块内委托（开第二个 `impl` 块必 E0119）。
