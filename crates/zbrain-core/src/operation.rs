@@ -1580,6 +1580,19 @@ pub struct ThinkParams {
     pub since: Option<String>,
     /// Optional time range end (ISO 8601)
     pub until: Option<String>,
+    /// v0.36.1.0 — inject the active calibration profile (D22). Off by default.
+    pub calibration: Option<bool>,
+    /// Holder to read the calibration profile for (default 'garry').
+    pub calibration_holder: Option<String>,
+    /// v0.40.2.0 — trajectory injection for temporal / knowledge_update intents
+    /// (default true).
+    pub trajectory: Option<bool>,
+    /// Source scope for calibration profile + trajectory queries.
+    pub source_id: Option<String>,
+    /// Federated source scope for trajectory queries.
+    pub allowed_sources: Option<Vec<String>>,
+    /// When true, trajectory queries filter to world-visibility only.
+    pub remote: Option<bool>,
 }
 
 impl ValidateParams for ThinkParams {
@@ -1709,7 +1722,13 @@ impl TypedOperation for ThinkOperation {
                 "rounds": { "type": "integer", "description": "Number of reasoning rounds (1-10, default: 1)" },
                 "model": { "type": "string", "description": "Optional model override" },
                 "since": { "type": "string", "description": "Optional time range start (ISO 8601)" },
-                "until": { "type": "string", "description": "Optional time range end (ISO 8601)" }
+                "until": { "type": "string", "description": "Optional time range end (ISO 8601)" },
+                "calibration": { "type": "boolean", "description": "v0.36.1.0 — inject the active calibration profile (D22). Off by default." },
+                "calibration_holder": { "type": "string", "description": "Holder to read the calibration profile for (default 'garry')." },
+                "trajectory": { "type": "boolean", "description": "v0.40.2.0 — trajectory injection for temporal / knowledge_update intents (default true)." },
+                "source_id": { "type": "string", "description": "Source scope for calibration profile + trajectory queries." },
+                "allowed_sources": { "type": "array", "items": { "type": "string" }, "description": "Federated source scope for trajectory queries." },
+                "remote": { "type": "boolean", "description": "When true, trajectory queries filter to world-visibility only." }
             },
             "required": ["question"]
         })
@@ -1736,7 +1755,12 @@ impl TypedOperation for ThinkOperation {
                         since: params.since.clone(),
                         until: params.until.clone(),
                         will_save: false,
-                        with_calibration: false,
+                        with_calibration: params.calibration.unwrap_or(false),
+                        calibration_holder: params.calibration_holder.clone(),
+                        with_trajectory: params.trajectory.unwrap_or(true),
+                        source_id: params.source_id.clone(),
+                        allowed_sources: params.allowed_sources.clone(),
+                        remote: params.remote.unwrap_or(false),
                         chat: None,
                         embedding_client: ctx.embedding.clone(),
                         takes_holders_allow_list: ctx.takes_holders_allow_list.clone(),

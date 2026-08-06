@@ -1337,6 +1337,30 @@ pub struct ThinkArgs {
     /// Time range end (ISO 8601)
     #[arg(long)]
     pub until: Option<String>,
+
+    /// Inject the active calibration profile (off by default)
+    #[arg(long)]
+    pub with_calibration: bool,
+
+    /// Holder to read the calibration profile for (default: garry)
+    #[arg(long)]
+    pub calibration_holder: Option<String>,
+
+    /// Disable trajectory injection (on by default for temporal / knowledge_update intents)
+    #[arg(long)]
+    pub no_trajectory: bool,
+
+    /// Source scope for calibration profile + trajectory queries
+    #[arg(long)]
+    pub source_id: Option<String>,
+
+    /// Comma-separated federated source scope for trajectory queries
+    #[arg(long)]
+    pub allowed_sources: Option<String>,
+
+    /// Trajectory queries filter to world-visibility only
+    #[arg(long)]
+    pub remote: bool,
 }
 
 /// Arguments for `zbrain auto-think` command.
@@ -2500,6 +2524,12 @@ async fn run_search_by_image_command(
 
 /// Execute `zbrain think` command.
 async fn run_think_command(args: ThinkArgs, config_path: Option<&Path>, timeout_ms: Option<u64>) -> anyhow::Result<()> {
+    let allowed_sources = args.allowed_sources.as_ref().map(|s| {
+        s.split(',')
+            .map(|x| x.trim().to_string())
+            .filter(|x| !x.is_empty())
+            .collect::<Vec<_>>()
+    });
     let params = serde_json::json!({
         "question": args.question,
         "anchor": args.anchor,
@@ -2507,6 +2537,12 @@ async fn run_think_command(args: ThinkArgs, config_path: Option<&Path>, timeout_
         "model": args.model,
         "since": args.since,
         "until": args.until,
+        "calibration": args.with_calibration,
+        "calibration_holder": args.calibration_holder,
+        "trajectory": if args.no_trajectory { Some(false) } else { None },
+        "source_id": args.source_id,
+        "allowed_sources": allowed_sources,
+        "remote": if args.remote { Some(true) } else { None },
     });
 
     let output = run_operation("think", params, config_path, timeout_ms).await?;

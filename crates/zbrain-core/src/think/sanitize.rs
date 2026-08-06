@@ -88,6 +88,25 @@ pub fn sanitize_take_for_prompt(claim: &str) -> SanitizeResult {
     SanitizeResult { text, matched }
 }
 
+/// Sanitize a single text span against the injection-pattern set ONLY
+/// (no 500-char length cap). Mirrors `src/core/trajectory-format.ts:
+/// sanitizeRowText`, which is reused by trajectory block formatting. The
+/// trajectory formatter applies its own per-row cap, so the length cap from
+/// [`sanitize_take_for_prompt`] would be redundant (and would diverge the
+/// sanitized-count telemetry from the TS source). The `matched` vec lists the
+/// pattern names that fired.
+pub fn sanitize_injection_only(text: &str) -> SanitizeResult {
+    let mut out = text.to_string();
+    let mut matched: Vec<String> = Vec::new();
+    for p in INJECTION_PATTERNS.iter() {
+        if p.rx.is_match(&out) {
+            matched.push(p.name.to_string());
+            out = p.rx.replace_all(&out, p.replacement).into_owned();
+        }
+    }
+    SanitizeResult { text: out, matched }
+}
+
 /// A take rendered into the structured `<take>` block.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TakeForPrompt {

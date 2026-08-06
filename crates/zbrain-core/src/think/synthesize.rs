@@ -27,9 +27,11 @@ use crate::think::gather::{
     PAGE_EXCERPT_LEN,
 };
 use crate::think::prompt::{
-    build_think_system_prompt, build_think_user_message, ThinkSystemPromptOpts, ThinkUserMessageOpts,
+    build_think_system_prompt, build_think_user_message, ThinkCalibrationBlockOpts,
+    ThinkSystemPromptOpts, ThinkUserMessageOpts,
 };
 use crate::think::sanitize::render_takes_block;
+use crate::think::trajectory::{build_trajectory_block, TrajectoryBuildOpts, TrajectoryBuildResult};
 use regex::Regex;
 use serde_json::Value;
 use std::sync::{Arc, LazyLock};
@@ -109,10 +111,25 @@ pub struct ThinkSynthesizeOpts {
     pub since: Option<String>,
     pub until: Option<String>,
     pub will_save: bool,
-    /// Calibration mode (v0.36.1.0). Deferred feature in the 1-9 core path;
-    /// plumbing kept for API parity. When wired, it injects the active
-    /// calibration profile block per D22 placement.
+    /// Calibration mode (v0.36.1.0, D22). When true, the active calibration
+    /// profile for `calibration_holder` is retrieved and injected per D22
+    /// placement (after retrieval, before question). Off by default
+    /// (regression posture); when on but no profile exists, think falls back
+    /// to baseline + a `NO_CALIBRATION_PROFILE` warning.
     pub with_calibration: bool,
+    /// Holder to read the calibration profile for (default `'garry'`). Only
+    /// consulted when `with_calibration` is true.
+    pub calibration_holder: Option<String>,
+    /// Trajectory injection for temporal / knowledge_update intents
+    /// (v0.40.2.0, Eng D1). Default true; a caller may set false to bypass.
+    /// The `think.trajectory_enabled` config kill-switch still wins over this.
+    pub with_trajectory: bool,
+    /// Source scope for the calibration profile read + trajectory queries.
+    pub source_id: Option<String>,
+    /// Federated source scope for trajectory queries (wins over `source_id`).
+    pub allowed_sources: Option<Vec<String>>,
+    /// When true, trajectory queries apply `visibility = 'world'` filtering.
+    pub remote: bool,
     /// Injected chat provider (test seam). When `None`, resolved from the
     /// model string via [`resolve_think_chat`] (gateway analog).
     pub chat: Option<Arc<dyn ChatProvider>>,
@@ -225,6 +242,60 @@ pub async fn run_think(engine: &dyn BrainEngine, opts: &ThinkSynthesizeOpts) -> 
         None
     };
 
+    // v0.36.1.0 (E1) — optional calibration profile retrieval. When enabled
+    // and a profile exists, inject it per D22 (after retrieval, before
+    // question). When enabled and no profile, fall back to baseline + warn.
+    let mut calibration_block_opts: Option<ThinkCalibrationBlockOpts> = None;
+    if opts.with_calibration {
+        let holder = opts
+            .calibration_holder
+            .clone()
+            .unwrap_or_else(|| "garry".to_string());
+        match engine
+            .get_calibration_profile(
+                &holder,
+                opts.source_id.as_deref(),
+                opts.allowed_sources.as_deref(),
+            )
+            .await
+        {
+            Ok(Some(profile)) => {
+                calibration_block_opts = Some(ThinkCalibrationBlockOpts {
+                    holder: profile.holder,
+                    pattern_statements: profile.pattern_statements,
+                    active_bias_tags: profile.active_bias_tags,
+                    brier: profile.brier,
+                });
+            }
+            Ok(None) => warnings.push("NO_CALIBRATION_PROFILE".to_string()),
+            Err(e) => warnings.push(format!("CALIBRATION_FETCH_FAILED: {e}")),
+        }
+    }
+
+    // v0.40.2.0 — trajectory injection for temporal / knowledge_update intents.
+    // Default ON; the `think.trajectory_enabled` config kill-switch is honored
+    // inside `build_trajectory_block`. Best-effort: any error degrades to an
+    // empty block + a warning, never failing the think call.
+    let retrieved_slugs: Vec<String> = gather.pages.iter().map(|p| p.page.slug.clone()).collect();
+    let trajectory: TrajectoryBuildResult = if opts.with_trajectory {
+        build_trajectory_block(
+            engine,
+            &opts.question,
+            &retrieved_slugs,
+            &TrajectoryBuildOpts {
+                source_id: opts.source_id.clone(),
+                allowed_sources: opts.allowed_sources.clone(),
+                remote: opts.remote,
+            },
+        )
+        .await
+    } else {
+        TrajectoryBuildResult::default()
+    };
+    for w in &trajectory.warnings {
+        warnings.push(w.clone());
+    }
+
     // SYNTHESIZE
     let intent = infer_intent(&opts.question, opts.anchor.as_deref());
     let system_prompt = build_think_system_prompt(&ThinkSystemPromptOpts {
@@ -233,15 +304,19 @@ pub async fn run_think(engine: &dyn BrainEngine, opts: &ThinkSynthesizeOpts) -> 
         since: opts.since.clone(),
         until: opts.until.clone(),
         will_save: opts.will_save,
-        with_calibration: opts.with_calibration,
+        with_calibration: calibration_block_opts.is_some(),
     });
     let user_message = build_think_user_message(&ThinkUserMessageOpts {
         question: &opts.question,
         pages_block: &pages_block,
         takes_block: &rendered.rendered,
         graph_block: graph_block.as_deref(),
-        calibration: None,
-        trajectory_block: None,
+        calibration: calibration_block_opts,
+        trajectory_block: if trajectory.rendered.is_empty() {
+            None
+        } else {
+            Some(trajectory.rendered.as_str())
+        },
     });
 
     // Resolve the chat provider (injected for tests, or via the gateway analog).

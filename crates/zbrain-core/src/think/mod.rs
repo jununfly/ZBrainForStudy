@@ -18,8 +18,15 @@
 //!                      citations → ThinkResult). Replaces the old
 //!                      `llm.rs::ThinkPromptBuilder` OpenAI-flavored path with
 //!                      the provider-neutral `ChatProvider` seam (node 1-9-4 /
-//!                      1-9-5). calibration + trajectory blocks are deferred
-//!                      follow-ups (scope decision); plumbing is parity-kept.
+//!                      1-9-5). calibration + trajectory blocks are wired in
+//!                      (node 1-9 follow-up): [`synthesize::run_think`] pulls
+//!                      the calibration profile via `BrainEngine::
+//!                      get_calibration_profile` and injects a `<trajectory>`
+//!                      block via [`trajectory::build_trajectory_block`].
+//!   * [`trajectory`]  ← `trajectory-format.ts` formatTrajectoryBlock (pure
+//!                      prompt-XML formatter) + the runThink trajectory-
+//!                      injection pipeline (classify → extract → resolve →
+//!                      find_trajectory → format). v0.40.2.0.
 //!
 //! NOTE: [`fusion::fuse_ranked`] is intentionally generic (operates on any `T`
 //! via a key closure) and distinct from `crate::search::fusion::rrf_fusion`,
@@ -34,6 +41,7 @@ pub mod intent;
 pub mod prompt;
 pub mod sanitize;
 pub mod synthesize;
+pub mod trajectory;
 
 pub use cite_render::*;
 pub use entity::*;
@@ -43,3 +51,4 @@ pub use intent::*;
 pub use prompt::*;
 pub use sanitize::*;
 pub use synthesize::*;
+pub use trajectory::*;
