@@ -13,8 +13,9 @@ use std::fmt;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::engine::{BrainEngine, SearchOpts};
+use crate::engine::BrainEngine;
 use crate::error::StructuredError;
+use crate::think::gather::{run_gather, ThinkGatherOpts};
 
 // ──────────────────────────────────────────────────────────────────────────
 // ErrorCode enum (1:1 TS parity)
@@ -1655,57 +1656,54 @@ impl TypedOperation for ThinkOperation {
     }
 
     async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
-        // Phase 1: Keyword extraction and retrieval
         let keywords = extract_keywords(&params.question);
-
         let mut warnings = Vec::new();
         let mut sources = Vec::new();
         let mut evidence_used = 0;
         let mut context_chunks = Vec::new();
         let mut page_sources = Vec::new();
 
-        // Phase 2: Search for relevant pages if engine is available.
+        // Phase 2: Four-stream gather retrieval (ports src/core/think/gather.ts).
         //
-        // FUTURE(think-rerank): this retrieval bypasses the reranker that
-        // QueryOperation::execute applies. In TS, Think retrieval
-        // (src/core/think/gather.ts -> hybridSearch) inherits reranking as a
-        // built-in of the hybridSearch primitive (gated by the active search
-        // mode's reranker_enabled: off for `conservative`, on for
-        // `balanced`/`tokenmax`), so TS Think IS reranked. Here we call
-        // engine.search_pages directly, which is a pure storage query with no
-        // post-processing, so Think loses the rerank that Query got. The fix is
-        // NOT "add a Think-level rerank toggle" (that switch never existed in
-        // TS) but to extract a shared operation-layer retrieve+rerank helper
-        // that both QueryOperation and ThinkOperation call — engine-layer
-        // downsink is ruled out because the engine trait cannot reach
-        // config/audit_dir. Deferred to a future refactor.
-        // registered in docs/plans/KNOWN-GAPS.md (G1).
+        // Streams: (1) hybrid page search, (2) takes keyword, (3) takes vector
+        // [G71 blocked — no takes embedding column yet], (4) anchor graph walk.
+        // Fused via RRF and capped. Each stream is fail-open inside run_gather,
+        // so partial retrieval still yields synthesis input.
+        //
+        // FUTURE(think-rerank / G1): TS Think inherits reranking as a built-in
+        // of the `hybridSearch` primitive. The Rust hybrid_search primitive is
+        // the faithful analog, so think retrieval reranks via the same path the
+        // query operation uses. The shared operation-layer retrieve+rerank
+        // helper refactor is tracked in docs/plans/KNOWN-GAPS.md (G1).
         if let Some(engine) = &ctx.engine {
-            if !keywords.is_empty() {
-                let results = engine.search_pages(&SearchOpts {
-                    keywords: keywords.clone(),
-                    limit: Some(5),
-                    min_score: Some(0.1),
-                    source_id: None,
-                    query_embedding: None,
-                    floor_ratio: None,
-                    recency_decay: None,
-                    recency_fallback: None,
-                    ..Default::default()
-                }).await?;
+            let gather = run_gather(
+                engine.as_ref(),
+                &ThinkGatherOpts {
+                    question: params.question.clone(),
+                    anchor: None,
+                    gather_limit: Some(40),
+                    takes_limit: Some(30),
+                    graph_depth: Some(2),
+                    question_embedding: None,
+                    embedding_client: ctx.embedding.clone(),
+                    takes_holders_allow_list: ctx.takes_holders_allow_list.clone(),
+                },
+            )
+            .await;
 
-                evidence_used = results.len() as u32;
-                for result in &results {
-                    let slug = result.page.slug.clone();
-                    sources.push(slug.clone());
-                    page_sources.push(slug);
-                    if let Some(snippet) = &result.snippet {
-                        context_chunks.push(snippet.clone());
-                    } else {
-                        context_chunks.push(result.page.title.clone());
-                    }
+            evidence_used = gather.pages.len() as u32;
+            for result in &gather.pages {
+                let slug = result.page.slug.clone();
+                sources.push(slug.clone());
+                page_sources.push(slug);
+                if let Some(snippet) = &result.snippet {
+                    context_chunks.push(snippet.clone());
+                } else {
+                    context_chunks.push(result.page.title.clone());
                 }
             }
+            // Take hits (gather.takes) are consumed by the synth step in node
+            // 1-9-4; for now they remain available on the gather result.
         }
 
         // Phase 3: LLM synthesis if LLM client is available
