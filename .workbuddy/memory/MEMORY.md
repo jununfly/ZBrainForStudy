@@ -1,46 +1,44 @@
 # zbrain 项目记忆
 
 ## 项目方向
-- TS → Rust 迁移（"Rust 重写线 ZBrain"），整仓统一迁到 ZBrain，GBrain 品牌改名 ZBrain（无线上用户，可破坏性改名、不留兼容别名）。`brain`/`source` 作领域词不改。
-- 下个 PRD：`docs/prd/complete-ts-to-rust.md`。原则：TS 先不动，Rust 迁成一块删一块；不适合删的到时讨论记录决策。
+- TS → Rust 迁移（"Rust 重写线 ZBrain"）。整仓统一迁 ZBrain；GBrain 品牌改名 ZBrain（无线上用户，破坏性改名、不留兼容别名）。`brain`/`source` 作领域词不改。
+- 原则：TS 先不动，Rust 迁成一块删一块；不适合删的到时讨论记录决策。
 
 ## 命名 / 品牌迁移
 - 连文件名一起改：`gbrain.yml→zbrain.yml`、`docs/GBRAIN_*.md→docs/ZBRAIN_*.md`、package/bin/env/dotfile/path/docs/test 引用。分层：配置/包名/bin → env/dotfile/path → docs → 测试脚本 → 验证断链。
 
 ## Roadmap 铁律
-- 所有 `.json`/`.md` 放 `docs/plans/`（JSON `zbrain-ts-to-rust-partN-*.json`，md `ZBRAIN_TS_TO_RUST_PARTN_*.md`）。每个 part JSON `link` 各自独立 md，禁共用。
-- **marker**：`roadmap_cli.py render` 只读/写 `<!-- ROADMAP_SECTION_START/END -->`（无 ⚠️ 前缀，与 ZAgentic canonical 一致），即 JSON 驱动的活段。顶部手写段工具不维护、会 stale。
-- **单一干净段**：在已有 md 上 render 若 marker 不符会**追加**成重复段 → 要单一段须**先删 md 再 render**。Part12 cycle md 顶部孤儿段已有意删除，只留 JSON 驱动段；勿手动重建/同步。CLI：`link/render/decide/add/tree` 第一参数是 JSON 完整路径；render 从项目根 cwd 跑；读根级 `md_file` key。
-- **decisions 键格式坑**：`nodes[*].decisions[*]` 须 `{"q","answer","note?"}`；用 `a` 键会让 `_build_focus_section` 的 `d['answer']` 报 `KeyError`。只焦点节点(in_progress)的 decisions 被读。
-- **lock 残留（本沙箱）**：`roadmap_file_lock.__exit__` 调 `os.unlink(owner.json)` 释放锁；本沙箱 safe-delete 拦截 `os.unlink` 且 fail-closed（回收站不可用）→ `os.rmdir` 不执行 → **每次 render 都残留 `<json>.lock` 目录**（用户正常环境回收站可用时释放正常）。治标：render 前先 `python -c "import shutil,glob; [shutil.rmtree(d, ignore_errors=True) for d in glob.glob('docs/plans/*.json.lock')]"` 强清；根治：给 ZAgentic 锁释放加 `try/except OSError`。
-- **python 路径**：bash 里传原生 exe 用 `C:/Users/...` 冒号形式；`/c/Users/...` 会被 MSYS 把参数转坏成 `C:\c\...`（命令名本身可用 `/c/`）。
-- 代码注释禁引 roadmap 编号（JSON 是临时文件，清理后成死链）；必要信息自解释写注释。docs/plans/ 下 canonical 文档可引。
-- 拆分约定：与当前节点语义偏差且有跟进价值 → 拆 sub-node，不吸收进当前 plan。
+- 所有 `.json`/`.md` 放 `docs/plans/`（JSON `zbrain-ts-to-rust-partN-*.json`，md `ZBRAIN_TS_TO_RUST_PARTN_*.md`）。每 part JSON `link` 各自独立 md，禁共用。
+- **marker**：`roadmap_cli.py render` 只读/写 `<!-- ROADMAP_SECTION_START/END -->`。顶部手写段工具不维护会 stale。
+- **单一段**：render 若 marker 不符会**追加**成重复段 → 要单一段须**先删 md 再 render**。CLI：`link/render/decide/add/tree` 第一参数是 JSON 完整路径；render 从项目根 cwd 跑；读根级 `md_file` key。
+- **decisions 键**：`nodes[*].decisions[*]` 须 `{"q","answer","note?"}`（用 `a` 键会 KeyError）。只焦点节点(in_progress)的 decisions 被读。
+- **lock 残留（本沙箱）**：`roadmap_file_lock` 释放失败 → 每次 render 残留 `<json>.lock` 目录。render 前先 `python -c "import shutil,glob; [shutil.rmtree(d, ignore_errors=True) for d in glob.glob('docs/plans/*.json.lock')]"` 强清。
+- **python 路径**：bash 传原生 exe 用 `C:/Users/...`（冒号）；`/c/Users/...` MSYS 会转坏成 `C:\c\...`。
+- 代码注释禁引 roadmap 编号（JSON 是临时文件）。docs/plans/ 下 canonical 文档可引。
+- 拆分约定：与当前节点语义偏差且有跟进价值 → 拆 sub-node。
 - 进度 SSOT = roadmap JSON；历史明细在每日 `YYYY-MM-DD.md`，本文件不重复。
 
 ## 已知缺口 SSOT
 - 范围外缺口集中登记 `docs/plans/KNOWN-GAPS.md`（活文档；双向指针 `// registered in docs/plans/KNOWN-GAPS.md (Gn)` ↔ 文档"现载体"）。`FUTURE(tag)` 注释瘦身一行；`UNMIGRATED_TS_*` 常量+锚点测试原样保留（CI 防漂移）。
 
 ## 工程铁律
-- **TS 调 Rust**：`src/cli.ts` 不代理 Rust 子命令；用 `resolveZbrainBin()`（`$ZBRAIN_BIN`→`target/debug/zbrain[.exe]`→`target/release`→PATH）。改 Rust 子命令后必 `cargo build -p zbrain-cli` 重建，否则测试 exit 2。
-- **提交完整性**：新增 `pub mod X;`/依赖/删 TS 文件时，确认被引用文件已 `git add`；commit 前 `git status` + `git cat-file -e HEAD:<path>` 验证真在 HEAD。
-- **libsql FFI flake**：Windows 原生 libsql/SQLite FFI 间歇崩溃（exit 0xc0000005），代码层无法根除。libsql 集成测试加进程级 `OnceLock<Mutex<()>>` 降频。CI 跑 `ubuntu-latest` 避此崩溃（见 `.github/workflows/rust-tests.yml`）。
-- **WSL 装 Rust**：rustup 内置信任链缺中间 CA 报 `UnknownIssuer` → 放弃 rustup，用 `curl -fSL` 直拉 `static.rust-lang.org/dist/<date>/` 的 `rust-std`/`rustc`/`cargo` tarball → `--prefix=/root/.rust`；PATH 固定 `/root/.rust/bin`。别依赖 rsproxy 的 dist 镜像。
-- **WSL cargo**：`crates.io` 直连超时 → 配 `/root/.cargo/config.toml` 用 rsproxy sparse 镜像 `sparse+https://rsproxy.cn/index/`（dist 镜像走不通但 registry 镜像可用）。验证脚本勿 `| tail` 截断错误，grep `^error`/`test result`。
-- **zbrain-core Linux 编译**：`pack_lock.rs` unix 分支原用 `libc::kill`（zbrain-core 无 libc + `unsafe_code=forbid`）→ Linux 报 E0433。改 `/proc/<pid>` 存在性检查（纯 std）。Linux 验证须先过此关。
-- **新增 DB migration 三件事**：① `migrations/`+`migrations-sqlite/` 各放双 dialect `00NN_*.sql`；② `libsql.rs`/`postgres.rs` 加 `include_str!` const + `registry.add(version:NN)`；③ 测试 `EXPECTED_VERSION` 同步 bump。仅加 .sql 文件不会自动应用。
-- **Windows cargo 构建被外部监视器锁死（重要，2026-08-03 实测）**：某外部文件监视器（WorkBuddy/IDE/杀软/OneDrive 之一）以**非共享方式独占持有** `C:/zb_tmp_*` 与 workspace `target/` 下的 `.cargo-build-lock`/`.cargo-lock`/`.cargo-artifact-lock` 及 `debug/build/*/build-script-build.exe` → cargo 开锁/删陈旧 exe 均 os error 5。跨会话 `run_in_background` 任务必被杀，`setsid & disown` 工具返回即拆，`schtasks` 被安全策略禁用。**唯一有效绕法**：构建于**未被监控路径** `C:/Users/victo/AppData/Local/Temp/zb_target*`（watcher 不持有其文件）；复用缓存＝`robocopy <已缓存target>/debug <临时target>/debug /E /XF .cargo-lock .cargo-build-lock .cargo-artifact-lock` 后 `cargo check -p zbrain-core`（lib 仅 rmeta，分钟级全绿）。注意 `cargo check --tests`/`cargo test` 需为全依赖产 `rlib`（test harness 不能 rmeta）→ 触发 aws-lc-sys/libsql-ffi/tree-sitter 全量 codegen 约 **53 分钟**，单会话跑不完；测试复核只能用户本地跑。旧"复用默认 target/、勿开新 target dir"建议已失效（默认 target 现同样被锁），以本绕法为准。`C:/zb_tmp_target`（target1）是首个全量成功构建，其 `debug/` 缓存可反复复制复用。
-- **CARGO_TARGET_DIR Git Bash 路径坑（2026-08-04 实测）**：bash 里 export `CARGO_TARGET_DIR=/c/Users/victo/AppData/Local/Temp/zb_targetN` → cargo 实际写到 **`C:/c/Users/victo/.../Temp/zb_targetN`**（msys 拼出 `C:/c/...` 前缀）。`find` 仍能 find 到但 `ls` Git Bash 转 unix 路径时找不到；用 `ls "C:/c/Users/victo/.../debug/zbrain.exe"` 可直接命中。**别在 CARGO_TARGET_DIR 里用 `/c/` 前缀**（拼命令名时 `/c/` 正常，但变量值会被 cargo 解释成相对 `C:/` 起点），改用 `C:/Users/...` Windows 绝对路径。
-- **Rust 引擎参数加宽坑**：把 `&Arc<dyn BrainEngine>` 加宽为 `&dyn BrainEngine` 时，`&Arc<dyn T>`→`&dyn T` 因指针宽度 thin→fat **不会自动 coerce**，所有调用方须显式 `&*engine`（`Arc` 变量）→ `&dyn`；`&dyn`→`&Arc` 方向同样不可逆。sync 模块（anchor/concurrency/import/core）的 perform_sync/get_sync_anchor/set_sync_anchor/import_one_path/detect_concurrency 已是 `&dyn`；cycle.rs 各臂直接用 `engine: &dyn BrainEngine`。
+- **TS 调 Rust**：`src/cli.ts` 用 `resolveZbrainBin()`（`$ZBRAIN_BIN`→`target/debug/zbrain[.exe]`→`target/release`→PATH）。改 Rust 子命令后必 `cargo build -p zbrain-cli` 重建，否则测试 exit 2。
+- **提交完整性**：新增 `pub mod X;`/依赖/删 TS 文件时，确认被引用文件已 `git add`；commit 前 `git status` + `git cat-file -e HEAD:<path>`。
+- **libsql FFI flake**：Windows 原生 libsql/SQLite FFI 间歇崩溃（exit 0xc0000005），代码层无法根除。libsql 集成测试加进程级 `OnceLock<Mutex<()>>` 降频；CI 跑 `ubuntu-latest`。
+- **WSL 装 Rust**：rustup 缺 CA → 直拉 `static.rust-lang.org/dist/<date>/` tarball → `--prefix=/root/.rust`；cargo 配 rsproxy sparse 镜像 `sparse+https://rsproxy.cn/index/`。
+- **zbrain-core Linux 编译**：`pack_lock.rs` unix 分支原用 `libc::kill` → Linux E0433；改 `/proc/<pid>` 存在性检查（纯 std）。
+- **新增 DB migration 三件事**：① `migrations/`+`migrations-sqlite/` 双 dialect `00NN_*.sql`；② `libsql.rs`/`postgres.rs` 加 `include_str!` const + `registry.add(version:NN)`；③ 测试 `EXPECTED_VERSION` 同步 bump。仅加 .sql 不自动应用。
+- **Windows cargo 构建被监视器锁死（重要）**：外部监视器独占 `C:/zb_tmp_*` 与 workspace `target/` 下 `.cargo-*-lock`/`debug/build/*/build-script-build.exe` → os error 5。唯一有效绕法：构建于未监控路径 `C:/Users/victo/AppData/Local/Temp/zb_target*`，复用缓存＝`robocopy <已缓存target>/debug <临时target>/debug /E /XF .cargo-lock .cargo-build-lock .cargo-artifact-lock` 后 `cargo check -p zbrain-core`（rmeta，分钟级）。`cargo check --tests`/`cargo test` 触发 aws-lc-sys/libsql-ffi/tree-sitter 全量 codegen ~53min → 测试延后本地。
+- **CARGO_TARGET_DIR 路径坑**：bash 里 export `CARGO_TARGET_DIR=/c/Users/...` → cargo 写到 `C:/c/Users/...`。用 `C:/Users/...` Windows 绝对路径（命令名本身可用 `/c/`）。
+- **Rust 引擎参数加宽坑**：`&Arc<dyn T>`→`&dyn T` thin→fat 不自动 coerce，调用方须显式 `&*engine`；`&dyn`→`&Arc` 不可逆。sync 模块 + cycle.rs 各臂已是 `&dyn`。
+- **opts 覆盖铁律**：phase 接真实引擎 config 时，ad-hoc opts 覆盖须逐字段 `opts.X.or_else(|| stored)` 保留优先级，丢一个就回归既有测试。
+- **Git 对象库损坏修复**：`git fsck --no-reflogs` 列 missing；`git hash-object -w <worktree-path>` 重建 blob（hash 与 HEAD tree 期望一致，零丢失）。
 
-## 迁移进度（摘要）
-- Part12 cycle 大迁移是当前最前沿。**1-3 synthesis 簇整体收口**（2026-07-30：1-3-4-6 完整复刻引擎 config）；**1-4 anomaly-transcript 簇完成**（2026-07-30：验证 Rust 实现等价 + 合并重复 dream-guard + 补 brain_find_anomalies minion tool）；**1-5 auto-think 簇完成**（2026-07-30：T1-T6 全绿——auto_think.rs + CyclePhase::AutoThink + zbrain auto-think CLI + 0029 migration + roadmap）。**1-6 orchestration 主循环进行中**：1-6-2(周期锁)/1-6-3(BudgetMeter)/1-6-4(5臂接线)/1-6-7(drift) 已完成；**1-6-1 编排骨架强化已完成**（2026-08-03：make_error_from_exception + signal + resolve_source_for_dir + no_database 能力探测，22 cycle 测试全绿）。**1-6-5 consolidate phase 已完成**（2026-08-03：新建 consolidate.rs 复刻 TS v0.35.4 实际——桶扫描+age gate+余弦0.85聚类+semantic upsert+bitemporal valid_until writeback；InMemory 无 embedding 列→Skipped 不 fail；cargo check 0 error + 22 cycle 测试全绿）。**1-6-6 phantom-redirect pre-pass 已完成**（2026-08-03：phantom_audit.rs/phantom_redirect.rs/resolve.rs/extract_facts.rs 接线 + G61→resolved；`cargo check -p zbrain-core` EXIT=0 全绿；测试因监视器锁+53min全量codegen未能在会话内执行，用户本地 `cargo test -p zbrain-core phantom` 复核）。**1-6-8 消费者切换 — Rust dream 子命令已完成**（2026-08-04：lib.rs 新增 `Commands::Dream(DreamArgs)` + `run_dream_command` 复刻 TS `dream.ts` 全部 8 flag；cycle.rs 加 `CyclePhase::from_label` 校验；`cargo build --bin zbrain` 2m → `zbrain.exe dream --help` 完整渲染；顺手修 1-6-6 三缺口——`phases/mod.rs` 漏注册 3 个 phase 模块 + `serialize_markdown` 从 synthesize 提升到 markdown.rs + `migrate_facts_to_canonical` 加 BrainEngine trait 方法含 libsql/postgres 实现；commit `55cbda0`+`6d9275b3` 已 push origin）。**scope 扩展决策**（用户 2026-08-04 via AskUserQuestion）：q-0 = 一并迁 calibration CLI 到 Rust 让 `core/cycle/` 可彻底删；q-1 = 删单测 + e2e 改测 Rust 二进制。**状态（2026-08-05）**：dream+calibration 两命令均已迁 Rust 二进制（#142/#144 done，push origin）。**`src/commands/dream.ts` 已干净删除**（零 importer；commit `a96f721`）。**`src/commands/calibration.ts` + `src/core/cycle.ts` + `src/core/cycle/*` 已全部删除 (G66 resolved 2026-08-05)**——被活 eval-longmemeval TS 代码依赖（`calibration.ts` 的 `getLatestProfile`/`CalibrationProfileRow` → `src/core/calibration/{cross-brain,nudge,recall-footer}.ts` + `eval-contradictions/calibration-join.ts` + `src/core/think/index.ts` → `eval-longmemeval.ts`/`src/eval/longmemeval/extract.ts`；calibration.ts 又引 `core/cycle/calibration-profile.ts`）。**已登记 G66**（docs/plans/KNOWN-GAPS.md）。按"TS 先不动；不适合删的到时讨论记录决策"保留；解缠=relocate 两 helper 到 `src/core/calibration/` 改 5 处 import，或随 eval-longmemeval Rust 化一并删。故 #145/#143 的 calibration/cycle 部分被 blocker 卡住，仅 dream 部分完成。详细进度见 roadmap JSON + 每日 `YYYY-MM-DD.md`。
-- **1-6-8 收尾 — G66 已解决 (2026-08-05)**：`src/core/cycle` 整棵 + `src/commands/calibration.ts` 现已删除。关键教训：首轮 survey 用 `grep -v "src/core/cycle/"` 漏掉经相对路径 `./cycle/*.ts` 引用的活 src 引擎（`backfill-registry`→`emotional-weight`、`pglite/postgres-engine`→`anomaly`、`transcripts`→`transcript-discovery`），险些删崩构建。解法：先把这 3 个纯函数移到 `src/core/` 顶层（修 `../types.ts`/`../sync.ts` 相对 import）+ 把 `getLatestProfile`/`CalibrationProfileRow` relocated 到 `src/core/calibration/profile-store.ts`，再删 `core/cycle`。测试处理：删 31 个测 cycle phase 的 TS 单测（q-1 删单测），保留 6 个测已迁纯函数的测试并改 import，1 个仅注释者保留。tsc baseline 95→82，gate 绿。commits `2822456`+`ed964cb` 已 push origin。#143 的 e2e 改测 Rust 二进制 — 已完成第一刀（基础设施 + smoke）：`tests/unit/e2e/spawn-zbrain.ts` helper（`resolveZbrainBin`/`spawnZbrain`/`runZbrainOk`，honor `ZBRAIN_BIN`→target/ 候选，无 auto-build 回落以免监视器锁 wedging）+ `binary-smoke.test.ts`（`describe.skipIf(!binaryAvailable())` 门控；CLI 表面 + 真实 `init --pglite`→`list-pages` pglite 往返，无网络/LLM）。commit `79e4fb2` 已 push，`bun test` 6 pass、tsc gate 绿、无 `~/.zbrain` 污染。余下：把已删 cycle/dream TS e2e 套件转驱二进制（需 DB+API，另排期）。
-- **opts 覆盖铁律**：phase 接真实引擎 config 时，ad-hoc opts 覆盖必须逐字段保留优先级（`opts.X.or_else(|| stored)`），丢一个就回归既有测试（1-3-4-6 chunked 测试教训）。
-- 迁移范式：cycle phase = `execute_phase` 真实 match 臂 + `autopilot/phases/<name>.rs` 模块。接真实臂后 `run_cycle_empty_brain` skipped 断言 -1（若该 phase 原已 catch-all Skipped 且接臂后仍 Skipped，则计数不变）。libsql 加 trait 方法：inherent `_impl` + 既有 impl 块内委托（开第二个 `impl` 块必 E0119）。
-- **Git 对象库损坏修复（2026-08-04 实测）**：commit 报 `invalid object X` 时 `git fsck --no-reflogs` 列出 missing blobs/trees/commits。`git hash-object -w <worktree-path>` 重建 worktree 中的 blob（worktree 文件 hash 与 HEAD tree 期望 hash 完全一致，零数据丢失）。**HEAD tree 自身链上的 missing 必须重建**；更早 ref 链上的 missing（origin 也无，thin-pack 残留）只 fsck 报但不阻塞 `git write-tree`/commit。`git push` 验证远端能正常 fetch 即为修复成功。
+## 迁移范式 / 进度
+- cycle phase = `execute_phase` 真实 match 臂 + `autopilot/phases/<name>.rs`。接真实臂后 `run_cycle_empty_brain` skipped 断言 -1。libsql 加 trait 方法：inherent `_impl` + 既有 impl 块内委托（开第二个 `impl` 块必 E0119）。
+- 当前最前沿 node：1-9 think 子系统（run_think 已 port；calibration/trajectory 接线进行中，见每日日志）。Part12 cycle / 1-7 / 1-8 等 leaf 见 roadmap JSON。
 
 ## 其他
-- Admin 路由：Rust 在 `/*`（如 `/register-client`），TS 在 `/admin/api/*`；路线图 Q6 决策"保持 /admin/api/*"，待对齐。
-- bun 可用（`~/.bun/bin/bun` v1.3.14）：`bun test` 与 `bash scripts/typecheck-baseline.sh` 本机可跑。
-- skillpack 测试仅 `--all-features` 下编译；`std::tempfile` 等预存 bug 已修（2026-07-27）。
+- Admin 路由：Rust 在 `/*`，TS 在 `/admin/api/*`；路线图 Q6 决策"保持 /admin/api/*"。
+- bun 可用：`~/.bun/bin/bun` v1.3.14（`bun test` + `bash scripts/typecheck-baseline.sh` 本机可跑）。
+- skillpack 测试仅 `--all-features` 下编译；`std::tempfile` 等预存 bug 已修。
