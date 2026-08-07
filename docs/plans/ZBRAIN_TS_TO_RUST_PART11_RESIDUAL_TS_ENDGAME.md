@@ -1,7 +1,7 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-08-08 00:13:54
+> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-08-08 00:22:00
 
 [x][X+] 1. Part11 — 残留 TS 收尾 (综合容器)
 ├── [x][X+] 1-1. skillpack / skillify 迁移 (27+ 文件 Schema/Subagent 包)
@@ -49,5 +49,5 @@
 ├── [x][X+] 1-13. cutover 执行层: Rust CLI clap 层补全(映射 cli.ts 全部命令到 run_operation) + 退役 cli.ts + 删 operations.ts
 │   └── [x][X+] 1-13-1. Phase C 退役 cli.ts + mcp legacy + 删 operations.ts — 计划与决策
 └── [x][X+] 1-14. 残留 TS 活性审计（415 文件 live/orphan 分类 + 依赖测试面）
-    └── [ ][X+] 1-14-1. 删除17个孤儿src + 收口1-13-1-3-2 (零风险，与引擎port并行)
+    └── [x][X+] 1-14-1. 删除17个孤儿src + 收口1-13-1-3-2 (零风险，与引擎port并行)
 <!-- ROADMAP_SECTION_END -->

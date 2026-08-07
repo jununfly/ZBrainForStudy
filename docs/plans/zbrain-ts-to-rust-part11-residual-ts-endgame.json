@@ -2908,11 +2908,17 @@
     "1-14-1": {
       "id": "1-14-1",
       "label": "删除17个孤儿src + 收口1-13-1-3-2 (零风险，与引擎port并行)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-14",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "是否将 1-14-1 翻 completed？",
+          "answer": "是，逐文件审计确认 0 可删孤儿",
+          "note": "逐文件审计（repo-wide）：9 个残留非测试 src TS 均非可删孤儿——version.ts 被 tests/unit/doctor-remote.serial.test.ts:22 引用（canonical VERSION 源，保留）；image-decoders.d.ts 为 ambient 类型声明（heic-decode/@jsquash 全局类型，无 import 边，删之曾致 4 类型错误，按 2026-07-14 铁律必须 KEEP）；7 个 src/eval/* harness 被测试集群引用（code-retrieval-harness/longmemeval-* 等），属 eval 子系统、KNOWN-GAP G74（LLM 缝阻塞），保留。原『17 孤儿』前提过期（过度分类，同 1-6-3 的 27→3）。删除孤儿目标 vacuously 满足：无可删项。翻 completed 后父 1-14 自动 completed，Part11 全收口。"
+        }
+      ],
       "notes": ""
     },
     "1-9-1": {
@@ -2974,7 +2980,7 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-08-08 00:13:54",
+    "updated": "2026-08-08 00:22:00",
     "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
