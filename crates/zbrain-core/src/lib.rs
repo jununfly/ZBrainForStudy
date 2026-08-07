@@ -33,6 +33,7 @@ pub mod markdown;
 pub mod oauth_queries;
 pub mod skill_conformance;
 pub mod skill_resolver;
+pub mod skillify;
 pub mod engine;
 pub mod error;
 pub mod explain_formatter;

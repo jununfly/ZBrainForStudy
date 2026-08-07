@@ -1,10 +1,11 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-08-06 17:04:34
+> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-08-07 18:26:33
 
 [~][X+] 1. Part11 — 残留 TS 收尾 (综合容器)
 ├── [~][X+] 1-1. skillpack / skillify 迁移 (27+ 文件 Schema/Subagent 包)
+│   └── [ ][X+] 1-1-1. skillify check 子命令迁移 (skillify-check.ts 11 项审计 → Rust zbrain skillify check)
 ├── [x][X+] 1-2. eval 一族迁移 (~20 eval-* 命令 + src/eval + core/eval)
 ├── [x][X+] 1-3. calibration 算法迁移 (10 文件，当前仅 DB 层)
 │   ├── [x][Y+] 1-3-1. calibration 纯函数 port (Phase 1: 零依赖纯函数)
@@ -33,7 +34,7 @@
 │   ├── [x][X+] 1-7-2. search 语义检索 port (query-intent+llm-intent+query-cache+query-cache-gate+embedding-column)
 │   ├── [ ][X+] 1-7-3. search 图像检索 port (by-image+image-loader, NET_NEW 1-6-7-11)
 │   └── [ ][X+] 1-7-4. search 工具/观测 port (eval+telemetry+dedup+explain-formatter)
-├── [ ][X+] 1-8. facts core 模块补齐 (C 类，src/core/facts 13 文件)
+├── [x][X+] 1-8. facts core 模块补齐 (C 类，src/core/facts 13 文件)
 ├── [x][X+] 1-9. think core 模块补齐 (C 类，src/core/think 7 文件)
 │   ├── [x][X+] 1-9-1. think 纯逻辑模块 port (intent/sanitize/entity/cite-render/prompt/fuseRRF)
 │   ├── [x][X+] 1-9-3. think 检索融合 port (gather 4 流 + rerank + renderPages/Takes)
@@ -52,5 +53,13 @@
 
 ### 当前施工：1-1. skillpack / skillify 迁移 (27+ 文件 Schema/Subagent 包)
 
-skillpack 部分完成 (audit: core/skillpack 27 文件 MIGRATED, Rust 已接管); skillify 仍 UNMIGRATED (core/skillify 2 文件, 见 RESIDUAL_TS_AUDIT.md). 故 1-1 收敛为 skillify 端口余下工作.
+skillify scaffold 已迁 Rust（zbrain-core skillify 模块 + zbrain-cli skillify scaffold 子命令），TS 源文件 src/core/skillify/*.ts、src/commands/skillify.ts、tests/unit/skillify-scaffold.test.ts 已删除。剩 check 子命令（11 项审计）由子节点 1-1-1 跟踪（仍留 TS src/commands/skillify-check.ts）。
+
+**决策：**
+- Q: 最终冲刺（1-8 facts 完成后）的下一步优先级？ → 先收口 skillify（关 1-1）：仅 2 文件，最小代价关闭节点；output(1-4-2) 阻塞与 eval-* 系列押后，待后续 grill 逐项决策。 (roadmap JSON 已反映 1-8 completed；RESIDUAL_TS_AUDIT.md(08-06) 滞后，仍列 facts 未启动，需刷新。)
+- Q: 「关闭 1-1」的 skillify 范围？ → scaffold-only：port core/skillify(generator+templates)→Rust + 新建 zbrain skillify scaffold CLI + 迁 skillify-scaffold.test.ts→Rust；删 core/skillify/*.ts。check 子命令(skillify-check.ts, 11项审计，部分已由 check-resolvable/check-brain-first 覆盖) 不在 2 文件口径，拆为 1-1-1 子节点押后。 (Rust 侧尚无任何 Skillify 命令枚举；resolver-filenames 已迁可复用；autoDetectSkillsDir 对应 skill_resolver/repo_root.rs。)
+- Q: skillify scaffold 实现状态？ → 已迁 Rust：zbrain-core skillify 模块 (templates/generator + ScaffoldPlan/apply_scaffold/detect_existing_resolver_row) + zbrain-cli skillify scaffold 子命令；复用 skill_resolver::resolver_filenames/find_resolver_file 与 auto_detect_skills_dir。TS src/core/skillify/*.ts、src/commands/skillify.ts、tests/unit/skillify-scaffold.test.ts 已删除。check 审计 (11 项) 仍留 TS src/commands/skillify-check.ts，由子节点 1-1-1 跟踪。
+
+**当前子树：**
+└── [ ][X+] 1-1-1. skillify check 子命令迁移 (skillify-check.ts 11 项审计 → Rust zbrain skillify check)
 <!-- ROADMAP_SECTION_END -->

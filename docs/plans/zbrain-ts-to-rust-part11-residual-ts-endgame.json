@@ -60,9 +60,27 @@
       "status": "in_progress",
       "mode": "explore",
       "parent": "1",
-      "children": [],
-      "decisions": [],
-      "notes": "skillpack 部分完成 (audit: core/skillpack 27 文件 MIGRATED, Rust 已接管); skillify 仍 UNMIGRATED (core/skillify 2 文件, 见 RESIDUAL_TS_AUDIT.md). 故 1-1 收敛为 skillify 端口余下工作."
+      "children": [
+        "1-1-1"
+      ],
+      "decisions": [
+        {
+          "q": "最终冲刺（1-8 facts 完成后）的下一步优先级？",
+          "answer": "先收口 skillify（关 1-1）：仅 2 文件，最小代价关闭节点；output(1-4-2) 阻塞与 eval-* 系列押后，待后续 grill 逐项决策。",
+          "note": "roadmap JSON 已反映 1-8 completed；RESIDUAL_TS_AUDIT.md(08-06) 滞后，仍列 facts 未启动，需刷新。"
+        },
+        {
+          "q": "「关闭 1-1」的 skillify 范围？",
+          "answer": "scaffold-only：port core/skillify(generator+templates)→Rust + 新建 zbrain skillify scaffold CLI + 迁 skillify-scaffold.test.ts→Rust；删 core/skillify/*.ts。check 子命令(skillify-check.ts, 11项审计，部分已由 check-resolvable/check-brain-first 覆盖) 不在 2 文件口径，拆为 1-1-1 子节点押后。",
+          "note": "Rust 侧尚无任何 Skillify 命令枚举；resolver-filenames 已迁可复用；autoDetectSkillsDir 对应 skill_resolver/repo_root.rs。"
+        },
+        {
+          "q": "skillify scaffold 实现状态？",
+          "answer": "已迁 Rust：zbrain-core skillify 模块 (templates/generator + ScaffoldPlan/apply_scaffold/detect_existing_resolver_row) + zbrain-cli skillify scaffold 子命令；复用 skill_resolver::resolver_filenames/find_resolver_file 与 auto_detect_skills_dir。TS src/core/skillify/*.ts、src/commands/skillify.ts、tests/unit/skillify-scaffold.test.ts 已删除。check 审计 (11 项) 仍留 TS src/commands/skillify-check.ts，由子节点 1-1-1 跟踪。",
+          "note": ""
+        }
+      ],
+      "notes": "skillify scaffold 已迁 Rust（zbrain-core skillify 模块 + zbrain-cli skillify scaffold 子命令），TS 源文件 src/core/skillify/*.ts、src/commands/skillify.ts、tests/unit/skillify-scaffold.test.ts 已删除。剩 check 子命令（11 项审计）由子节点 1-1-1 跟踪（仍留 TS src/commands/skillify-check.ts）。"
     },
     "1-2": {
       "id": "1-2",
@@ -2921,11 +2939,21 @@
       "children": [],
       "decisions": [],
       "notes": "LLM seam aligned: think now routes through crate::ai::chat::ChatProvider (provider-neutral OpenAI/Anthropic/Gemini = Rust analog of TS gateway.chat) instead of ctx.llm_client + llm.rs ThinkPromptBuilder. Response schema now {answer,citations,gaps} (was answer/warnings/evidence_used/sources). Model resolution: CLI override -> engine config models.think -> deep-tier default anthropic:claude-opus-4-7. resolve_think_chat mirrors TS tryBuildGatewayClient (graceful null on unknown provider / missing key / disabled feature). Note: auto_think.rs (separate autopilot consumer, out of 1-9 scope) still uses the legacy ThinkPromptBuilder path and was left intact."
+    },
+    "1-1-1": {
+      "id": "1-1-1",
+      "label": "skillify check 子命令迁移 (skillify-check.ts 11 项审计 → Rust zbrain skillify check)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-08-06 21:46:21",
+    "updated": "2026-08-07 18:26:33",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"

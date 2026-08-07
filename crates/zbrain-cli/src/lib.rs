@@ -7,6 +7,7 @@
 pub mod config;
 pub mod mcp_client;
 pub mod schema_cmd;
+pub mod skillify;
 pub mod skillpack;
 pub mod timeout;
 pub mod update_check;
@@ -512,6 +513,10 @@ pub enum Commands {
     /// Skillpack management — install, scaffold, search, harvest from third-party repos.
     #[command(subcommand)]
     Skillpack(skillpack::SkillpackSubcommand),
+
+    /// Skillify — scaffold a new skill (the `check` audit half is tracked by roadmap node 1-1-1).
+    #[command(subcommand)]
+    Skillify(skillify::SkillifySubcommand),
 
     // ── Phase B: commands previously served by TS cli.ts / operations.ts ──
     // Each is a thin clap wrapper that builds a params JSON and routes through
@@ -1992,6 +1997,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Commands::Skillpack(cmd) => {
             skillpack::run_skillpack(cmd).await?
+        }
+        Commands::Skillify(cmd) => {
+            skillify::run_skillify(cmd).await?
         }
         Commands::BookMirror(args) => {
             run_book_mirror_command(args, cli.config.as_deref()).await?
