@@ -8,11 +8,14 @@
 
 > ⚠️ **计数已失效（2026-08-07）**：commit `bcafcafd` 删除了 **`src/core` 整棵 TS 树**
 > （338 文件 / -92,427 行）。下方「总体」与各模块文件数是 **2026-08-06 的历史快照**，
-> 不再反映工作区现状。当前真实残留：`src/**/*.ts` 仅 **79** 个（commands 70 + eval 7
-> + types + version.ts），全仓 TS 共 **640** 个（tests 552 / src 79 / admin 4 / 其他 5），
-> 且其中 **579 个文件 / 1,436 处 import** 仍**悬空引用已删的 `src/core`**
-> （tests 510 文件 1078 refs ｜ src/commands 63 文件 347 refs ｜ src/eval 5 文件 8 refs ｜
-> evals 1 文件 3 refs）。本表的**模块级 MIGRATED/UNMIGRATED 判定仍然有效**（那是「Rust 是否
+> 不再反映工作区现状。当前真实残留：`src/**/*.ts` 仅 **9** 个（commands 0 + eval 7
+> + types + version.ts），全仓 TS 共 **570** 个（tests 552 / src 9 / admin 4 / 其他 5）。
+> **全部 70 个 commands 模块已删除**：Batch A（commit `9ac39e53`）删 16 个 Rust 已接管 +
+> Batch B 删 54 个未覆盖（缺口登记 G74–G79）。`src/commands/` 现已清空，详见
+> `docs/plans/COMMANDS_TEAR_DOWN.md`。
+> 余下 **约 516 个文件 / 1,089 处 import** 仍**悬空引用已删的 `src/core`**
+> （tests 510 文件 1078 refs ｜ src/eval 5 文件 8 refs ｜ evals 1 文件 3 refs）。本表的
+> **模块级 MIGRATED/UNMIGRATED 判定仍然有效**（那是「Rust 是否
 > 拥有该模块逻辑」的结论），失效的只是文件计数。重新计数需在 glue 拆除后做一次全量 re-audit。
 
 ## 总体

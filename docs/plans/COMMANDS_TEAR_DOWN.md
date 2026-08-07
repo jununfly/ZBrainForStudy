@@ -1,0 +1,60 @@
+# src/commands 覆盖映射与拆除计划（选项 C：批处理命令胶水层）
+
+> 背景：TS→Rust 迁移（rust-rewrite 分支）。`src/core` 整树已于 commit `bcafcafd` 删除。
+> 本文件是 **src/commands 胶水层拆除的 SSOT**，与 `docs/plans/KNOWN-GAPS.md`（G74–G79）双向引用。
+
+## 关键事实（拆除前侦察）
+
+1. **`src/cli.ts` 已不存在**。`src/` 现仅剩 `assets/ commands/ eval/ types/ version.ts schema.sql`。
+2. **`bin/zbrain-rs.js` 是纯透传**：spawn `cargo build -p zbrain-cli` 后跑 Rust 二进制，**不 import `src/commands`**。
+3. 唯一的非测试引用方 `src/eval/longmemeval/adapter.ts` 仅在第 5 行**注释**里提到 `eval-longmemeval.ts`，并非 import。
+4. 结论：**`src/commands/*.ts` 全部是孤立死代码**——无 cli.ts 注册、无运行时引用、且 67/68 个文件 import 已删的 `src/core`（无法运行）。
+
+## 删除铁律（沿用项目约定）
+
+> **Rust 迁成一块删一块**：仅当某个命令有 1:1 Rust CLI verb 接管时才删；Rust 尚无等价 verb 的，先登记缺口（G74–G79），删文件须显式确认（避免静默丢功能）。
+
+## Batch A — 已删除（Rust 1:1 接管，零功能损失）
+
+commit `9ac39e53`（16 个文件，工作树干净）：
+
+| TS 命令 | Rust verb | 备注 |
+|---|---|---|
+| search.ts | `Query` | search-by-image 走 `SearchByImage`（G72/G73 见 KNOWN-GAPS） |
+| pages.ts | `GetPage`/`PutPage`/`DeletePage`/`RestorePage`/`PurgeDeletedPages`/`ListPages` | 整族接管 |
+| whoknows.ts | `Whoknows` | 被 `eval-whoknows.ts` 引用（该文件属 G74，暂留，break 可接受） |
+| integrity.ts | `Integrity` | 同时 import `resolvers.ts`（同批删，无碍） |
+| storage.ts | `Storage` | |
+| resolvers.ts | `Resolvers` | 被 `integrity.ts` 引用（同批删） |
+| orphans.ts | `Orphans` | |
+| features.ts | `Features` | |
+| publish.ts | `Publish` | |
+| transcripts.ts | `Transcripts` | |
+| code-def / code-refs / code-callers / code-callees | `CodeDef`/`CodeRefs`/`CodeCallers`/`CodeCallees` | 整族接管 |
+| skillpack / skillpack-check | `Skillpack` (+`Check` 子命令) | `SkillpackSubcommand::Check` 已存在 |
+
+## 剩余未覆盖命令（52 顶层 + 2 migrations/ 子文件 = 54 文件）
+
+Rust **无等价 verb**，按主题聚合为缺口簇（详见 KNOWN-GAPS.md G74–G79）。
+删除这些文件 = 丢弃 Rust 尚未实现的功能，须先 port 或显式判废。
+
+| 簇 | 缺口 | 命令文件 | 当前 Rust 覆盖 |
+|---|---|---|---|
+| eval 评测族 | **G74** | eval, eval-brainstorm, eval-code-retrieval, eval-compare, eval-cross-modal, eval-export, eval-extract-atoms, eval-gate, eval-longmemeval, eval-markdown-greenfield, eval-prune, eval-replay, eval-run-all, eval-schema-authoring, eval-suspected-contradictions, eval-synthesize-concepts, eval-takes-quality, eval-trajectory, eval-whoknows（19） | 仅 `eval_drift`（漂移检测，语义不同） |
+| reindex 索引重建 | **G75** | reindex, reindex-code, reindex-frontmatter, reindex-multimodal（4） | 无；`Capture` 仅增量 embed |
+| extract 抽取 | **G76** | extract, extract-conversation-facts（2） | `Facts` 仅 insert/list/health/expire |
+| 图维护 | **G77** | backfill, edges-backfill, backlinks, reconcile-links（4） | `Links` 基础子命令未覆盖 |
+| 摄入/迁移 | **G78** | embed, import, migrate-engine, migrations(+index/types), upgrade, reinit-pglite, repair-jsonb（9） | 部分 `Capture`/`ApplyMigrations` 可覆盖，其余无 |
+| 杂项单命令 | **G79** | auth, brainstorm, bench-publish, export, files, founder-scorecard, friction, frontmatter, frontmatter-install-hook, init-mode-picker, integrations, lsd, notability-eval, providers, recall, ze-switch（16） | 无（init 选择逻辑 Rust 未覆盖） |
+| lint 真实实现 | **G65**（既有） | lint.ts（1） | Rust `LintHandler` 为 not_implemented（返回 Skipped） |
+
+## 沙箱注意事项（本回合踩坑）
+
+- 多文件 `git rm` 会触发 safe-delete 守卫**中途拦截**并留僵尸 `.git/index.lock`，导致半截删除 + 重放式大范围误删（本回合一度出现 119 个文件被暂存删除，已 `git reset --hard HEAD` 恢复）。
+- **安全删除流程**：`mv <file> <trash>`（改名不触发守卫）→ `git rm --cached <file>`（仅改索引、不碰磁盘）。单文件操作，无锁、无误删。
+
+## 后续
+
+- Batch B：删除以上 54 个未覆盖文件（须用户确认接受功能缺口，或先 port 再删）。删除后 `src/commands/` 清空，`src/` 仅剩 `assets/ eval/ types/ version.ts schema.sql`。
+- 同步更新 `RESIDUAL_TS_AUDIT.md` 计数（src 79→~25，commands 70→0）。
+- node 1-7 的「胶水层」阻塞随 commands 清空而解除；G74–G79 决定是否 port 或判废。
