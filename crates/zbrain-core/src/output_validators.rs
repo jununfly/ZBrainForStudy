@@ -15,8 +15,10 @@
 //! `get_links`), mirroring the TS `PageValidationContext.engine` usage without
 //! introducing any new trait surface.
 //!
-//! The BrainWriter orchestrator, scaffold, and slug-registry remain in TS for
-//! now (tracked as later output-module slices).
+//! The original TS `BrainWriter` orchestrator, scaffold, and slug-registry
+//! (`src/core/output`) were deleted during the TS→Rust migration; page writes
+//! are now served by the Rust engine's native write methods (e.g. `put_page`)
+//! with CAS-idempotent SQL, so no 1:1 `BrainWriter` port exists by design.
 
 use crate::engine::{BrainEngine, GetPageOpts};
 use std::collections::{BTreeSet, HashMap};

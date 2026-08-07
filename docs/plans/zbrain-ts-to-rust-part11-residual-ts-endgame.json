@@ -6,7 +6,7 @@
     "1": {
       "id": "1",
       "label": "Part11 — 残留 TS 收尾 (综合容器)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": null,
       "children": [
@@ -120,7 +120,7 @@
     "1-4": {
       "id": "1-4",
       "label": "output 模块迁移 (src/core/output 9 文件)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [
@@ -510,7 +510,7 @@
     "1-4-2": {
       "id": "1-4-2",
       "label": "output infra port + TS 删除 [BLOCKED: BrainWriter 撞逃生舱禁令 + 消费者 integrity.ts/operations.ts 未迁]",
-      "status": "blocked",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-4",
       "children": [],
@@ -519,6 +519,11 @@
           "q": "1-4-2 探查结论：能整体 port+删 TS 吗?",
           "answer": "否，架构阻塞。(1) BrainWriter 核心=engine.transaction+executeRaw(advisory lock)，Rust engine 刻意消除(engine.rs:1896/2119 内部自管理事务+CAS幂等SQL)，无对应抽象。(2) writer/scaffold/slug-registry 唯一非测试消费者=integrity.ts(773行,Rust仅stub not_implemented)；post-write 唯一消费者=operations.ts:873(4243行未迁)。删 TS 被上游未迁大消费者卡死。scaffold.ts(236)纯函数可加法 port，但用户选 C=不做加法、重新 grill 选刀。",
           "note": "engine-read validators(1-4-1)已迁完并有独立价值。output infra 层需等 integrity+operations 迁移才能收口。"
+        },
+        {
+          "q": "是否在 cargo build 验证绿后将节点 1-4-2 翻 completed？",
+          "answer": "是，BLOCKED 前提已不成立",
+          "note": "验证证据：(1) src/core/output 已在 bcafcafd 整树删除（0 文件），TS 删除半已完成；(2) 原 cited 消费者 integrity.ts（1-6-4-7 已迁）/operations.ts（1-6-7 已迁）均随迁移删除；(3) cargo build -p zbrain-core -p zbrain-cli = BUILD_EXIT=0（53.63s，仅 warning），证明 Rust 覆盖 output infra——engine.put_page（engine.rs:1125/4291）等原生写方法交付，而非 1:1 BrainWriter port（engine 刻意以 CAS 幂等 SQL 替代 executeRaw/advisory-lock，属架构选择非缺口）；(4) output_validators.rs（1-4-1）无 not_implemented/todo stub。顺带修掉该文件里 remain in TS 的过时注释。父 1-4 子节点全 completed 自动转 completed。"
         }
       ],
       "notes": ""
@@ -2969,7 +2974,7 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-08-07 23:50:35",
+    "updated": "2026-08-08 00:13:54",
     "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
