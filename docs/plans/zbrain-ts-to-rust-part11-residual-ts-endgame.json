@@ -205,7 +205,7 @@
     "1-7": {
       "id": "1-7",
       "label": "search core 模块补齐 (C 类，src/core/search 23 文件)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [
@@ -234,6 +234,11 @@
           "q": "1-7 re-baseline：路线图与仓库真相严重不符（2026-08-05 判定『22 模块 0 Rust 覆盖』为假阴性），如何收口？",
           "answer": "按仓库 HEAD 重写状态：1-7-3 图像 completed（Rust 全覆盖且接线）；1-7-4 由 pending 降为 in_progress（dedup+explain-formatter 已迁并接线，telemetry/eval 无任何 Rust 载体 → 新登 G72/G73）；1-7 维持 in_progress，注记改为『真实阻塞是胶水层，不是缺 Rust』",
           "note": "根因：Rust 采用 search_pages 下沉架构（检索内化进 BrainEngine trait，libsql/postgres/InMemory 三实现）而非 1:1 文件搬运，旧 recon 按文件名比对故得出假阴性；且 TS 源已随 commit bcafcafd（src/core 整树删除）移除，telemetry/eval 成为『先删后补』缺口，须显式登记 KNOWN-GAPS 而非静默丢失"
+        },
+        {
+          "q": "是否将节点 1-7 翻转为 completed？",
+          "answer": "是，胶水层阻塞已解除",
+          "note": "1-7-1/2/3 已完成；1-7-4 残差 telemetry→G72、eval→G73 已登记为独立 KNOWN-GAPS，按 1-7-2 外移 G68/G69/G70 同例处理。首轮 re-baseline（2026-08-07）因胶水层（src/commands + tests 引用死 TS）存在而维持 in_progress；现选项 C 已删除 src/commands，且 Recall/Reindex 已接 Rust verb，该阻塞已解除，search 子系统在 Rust 中交付完成。见 commit 8c2cc5f7 / 6913d5b2。"
         }
       ],
       "notes": "re-baseline 2026-08-07（以仓库 HEAD 为准，推翻 2026-08-05 的『src/core/search 22 模块 0 Rust 覆盖』判断——那是按文件名比对得出的假阴性）。\n\n架构结论：Rust 不是 1:1 搬 TS 文件，而是把检索下沉为 BrainEngine::search_pages trait 方法（libsql.rs:1768 / postgres.rs:1661 / engine.rs InMemory 三实现）。TS hybrid.ts 那套独立 SQL builder 及 sql-ranking / source-boost / recency-decay / embedding-column 已内化进 search_pages；crates/zbrain-core/src/search/ 只保留纯数学（fusion / dedup / intent）+ 薄编排（engine.rs hybrid_search）。故『按文件名对不上』≠ 未迁，必须按语义核对。\n\n接线状态：think/gather.rs:98 已调 Rust hybrid_search；CLI 三个 verb 走 Rust —— Query（keyword 检索）/ Query --explain（explain_formatter）/ SearchByImage（图像）。\n\n子节点：1-7-1 融合核心 [x]；1-7-2 语义检索 [x]（实质交付 query-intent，llm-intent/query-cache/embedding-column 显式 DEFER 至 G68/G69/G70）；1-7-3 图像 [x]（本次收口，Rust 全覆盖含 SSRF 14 test）；1-7-4 工具观测 2/4（dedup + explain-formatter 已迁并接线；telemetry → G72、eval → G73 无 Rust 载体）。\n\n真实阻塞：不是缺 Rust，而是胶水层。src/core 整树已于 commit bcafcafd 删除（338 文件 / -92427），剩余 640 个 TS（tests 552 / src 79 = commands 70 + eval 7 + types + version.ts / admin 4 / 其他 5）仍悬空引用已删模块（tests/unit 515 处 / src/commands 64 处 / src/eval 6 处）。bun 系 CI（test.yml / e2e.yml / heavy-tests.yml）在本分支必红，rust-tests.yml 不受影响。1-7 最终收尾取决于 glue 拆除进度 + G72/G73 补迁或判废决策。"
@@ -2888,7 +2893,7 @@
     "1-7-4": {
       "id": "1-7-4",
       "label": "search 工具/观测 port (eval+telemetry+dedup+explain-formatter)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-7",
       "children": [],
@@ -2964,8 +2969,8 @@
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-08-07 20:57:28",
-    "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
+    "updated": "2026-08-07 23:50:35",
+    "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
 }

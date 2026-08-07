@@ -1,7 +1,7 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-08-07 20:57:28
+> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-08-07 23:50:35
 
 [~][X+] 1. Part11 — 残留 TS 收尾 (综合容器)
 ├── [x][X+] 1-1. skillpack / skillify 迁移 (27+ 文件 Schema/Subagent 包)
@@ -29,11 +29,11 @@
 │   ├── [x][Y+] 1-6-5. PARITY_GATE (删除任何TS命令前: 确认零src引用+零test引用+真Rust覆盖非stub; 1-6-2/1-6-3共用)
 │   ├── [x] 1-6-6. skill/resolver 校验子系统全量迁 Rust (check-resolvable 全轨道): 覆盖 resolver-filenames / skill-frontmatter / skill-manifest / trigger-index(+parseResolverEntries) / check-resolvable core(checks 1-4) / repo-root / CLI / routing-eval(Check5) / filing-audit(Check6) / dry-fix(--fix) / 重接 doctor+skillify-check。非孤儿命令——是整条 skill 树校验栈，耦合 doctor/skillify-check 共享核心。
 │   └── [x][Y+] 1-6-7. operations.ts 替换式迁移 (Rust OperationRegistry 为继任者): 107 op 逐一对齐, 随迁随删 TS; 覆盖审计见 docs/plans/OPERATIONS_TS_TO_RUST_AUDIT.md
-├── [~][X+] 1-7. search core 模块补齐 (C 类，src/core/search 23 文件)
+├── [x][X+] 1-7. search core 模块补齐 (C 类，src/core/search 23 文件)
 │   ├── [x][X+] 1-7-1. search 融合核心 port (hybrid+expansion+mode+sql-ranking+graph-signals+intent-weights+rerank+source-boost+token-budget+recency-decay+two-pass)
 │   ├── [x][X+] 1-7-2. search 语义检索 port (query-intent+llm-intent+query-cache+query-cache-gate+embedding-column)
 │   ├── [x][X+] 1-7-3. search 图像检索 port (by-image+image-loader, NET_NEW 1-6-7-11)
-│   └── [~][X+] 1-7-4. search 工具/观测 port (eval+telemetry+dedup+explain-formatter)
+│   └── [x][X+] 1-7-4. search 工具/观测 port (eval+telemetry+dedup+explain-formatter)
 ├── [x][X+] 1-8. facts core 模块补齐 (C 类，src/core/facts 13 文件)
 ├── [x][X+] 1-9. think core 模块补齐 (C 类，src/core/think 7 文件)
 │   ├── [x][X+] 1-9-1. think 纯逻辑模块 port (intent/sanitize/entity/cite-render/prompt/fuseRRF)
@@ -51,10 +51,39 @@
 └── [x][X+] 1-14. 残留 TS 活性审计（415 文件 live/orphan 分类 + 依赖测试面）
     └── [ ][X+] 1-14-1. 删除17个孤儿src + 收口1-13-1-3-2 (零风险，与引擎port并行)
 
-### 当前施工：1-7-4. search 工具/观测 port (eval+telemetry+dedup+explain-formatter)
+### 当前施工：1. Part11 — 残留 TS 收尾 (综合容器)
 
-re-baseline 2026-08-07（符号级对账）：4 组件 2 done / 2 gap，节点由 pending 修正为 in_progress。
-DONE：① dedup → search/dedup.rs（1-7-1 已交付，page 级去重：每页 cap 2 + 类型多样性 60%；mod.rs 导出 dedup_results/DedupOpts/MAX_PER_PAGE/MAX_TYPE_RATIO）；② explain-formatter → explain_formatter.rs（format_result_explain / format_results_explain，8 test），已真实接线 zbrain query --explain（zbrain-cli/src/lib.rs:3173 调 format_results_explain）。
-GAP（无任何 Rust 载体，新登记 KNOWN-GAPS）：③ telemetry → G72（TS 364L：getTelemetryWriter / recordSearchTelemetry / readSearchStats / StatsWindow / _resetTelemetryWriterForTest；原唯一消费者 src/commands/search.ts:41 readSearchStats 即 search --stats，Rust QueryArgs 只有 limit/offset/source_id/explain，无 --stats）；④ eval → G73（TS 292L：precisionAtK / recallAtK / mrr / ndcgAtK / runEval / parseQrels + EvalQrel/EvalConfig/EvalReport 格式；原消费者 src/commands/eval.ts + tests/unit/benchmark-search-quality.ts，Rust CLI 无对应 verb，eval_drift.rs 是漂移检测语义不同不能冒充）。
-两者 TS 源已随 bcafcafd 删除，属『先删后补』缺口，须按 G72/G73 补 Rust 或显式判废。
+**决策：**
+- Q: Part11 边界与内部结构? → 综合容器，按子系统切片。收容 B+C+G38尾+A类删除，排除 D类(G36 有意保留)。每个待迁子系统一个 top-level node，G38尾与 A类删除各单列。 (用户 2026-07-15 决策)
+- Q: Part11 纠缠破局策略? → 每切片自带解缠：沿用 schema_pack 模式（先迁 Rust 替代 → 消除对本子系统 TS 的 import → 再删 TS）。G38 尾(1-10)不独立硬关，随消费方切片(import/sync/whoknows/artifact/calibration/eval-schema-authoring 等)各自端口而自然消解。 (用户 2026-07-15 决策)
+- Q: 下一刀选哪个子系统 (grill 2026-07-16)? → 1-4 output 模块 (纠缠最低(全仓仅1个外部 importer integrity.ts)；可复用 calibration 分层打法(纯子集+engine-read+infra Phase2)；不碰 LLM/execute_raw。更正: 1-6 孤儿命令节点非过时——6 命令 cli.ts 全有 live dispatch, Rust 全无, 是真实重迁移工作。)
+- Q: 下一阶段主攻方向? → 推 grind 到终局(1-6-7 各切片→1-6-7-9 删 operations.ts + 1-3-3 calibration 收尾),并并行起草 1-12 cycle 独立 Part12 路线图备用;grind 不暂停 (用户选推荐项(Q1)。grind 关键路径最高杠杆=删3855行 operations.ts 巨石+解锁1-4-2 output;cycle 维持执行延后但 now 起并行起草独立 Part12 路线图零摩擦备用。1-4-2/1-10/1-11 删除尾均挂在 grind 这把刀上。)
+- Q: operations.ts 删库(cutover)路径? → 先补 Rust CLI clap 层(把 cli.ts 全部命令映射到 Rust run_operation),clap 覆盖完整后再退役 cli.ts + 删 operations.ts。不采用'只补 registry 保留 TS 双轨'或'加通用 op 转发命令'的捷径。 (用户选推荐项(Q-cutover)。事实底座:生产入口=Rust zbrain binary(bin wrapper transparent,零TS fallback);Rust CLI 用 OperationRegistry+register_all+run_operation 但只暴露少数 clap 子命令;TS cli.ts 通过 operations.ts 暴露几十命令且主流命令仍走TS dispatch;删operations.ts 会断产品。故 cutover 前置=Rust CLI clap 层全量覆盖 cli.ts 命令。)
+
+**当前子树：**
+├── [x][X+] 1-1. skillpack / skillify 迁移 (27+ 文件 Schema/Subagent 包)
+│   ... 1 more child nodes; run tree 1-1 --depth 2 for full view
+├── [x][X+] 1-2. eval 一族迁移 (~20 eval-* 命令 + src/eval + core/eval)
+├── [x][X+] 1-3. calibration 算法迁移 (10 文件，当前仅 DB 层)
+│   ... 3 more child nodes; run tree 1-3 --depth 2 for full view
+├── [ ][X+] 1-4. output 模块迁移 (src/core/output 9 文件)
+│   ... 2 more child nodes; run tree 1-4 --depth 2 for full view
+├── [x][X+] 1-5. doctor 11 项健康检查迁移 (G5)
+│   ... 6 more child nodes; run tree 1-5 --depth 2 for full view
+├── [x][X+] 1-6. 孤儿命令迁移 (审计: 83 唯一活命令 = RUST_OWNED 17 / TRIVIAL_DELETE 27 / REAL_MIGRATE 33 / PARITY_REVIEW 6)
+│   ... 7 more child nodes; run tree 1-6 --depth 2 for full view
+├── [x][X+] 1-7. search core 模块补齐 (C 类，src/core/search 23 文件)
+│   ... 4 more child nodes; run tree 1-7 --depth 2 for full view
+├── [x][X+] 1-8. facts core 模块补齐 (C 类，src/core/facts 13 文件)
+├── [x][X+] 1-9. think core 模块补齐 (C 类，src/core/think 7 文件)
+│   ... 4 more child nodes; run tree 1-9 --depth 2 for full view
+├── [x][X+] 1-10. G38 schema-pack TS 删除尾 (gate=operations.ts 移植)
+├── [x][X+] 1-11. A 类已迁 TS 删除 (minions/ai/ingestion/cycle + 命令)
+│   ... 2 more child nodes; run tree 1-11 --depth 2 for full view
+├── [x][X+] 1-12. cycle 大迁移 (runCycle 2057行→Rust autopilot/cycle.rs: run_cycle + 48 phase arms, 详见 Part12)
+│   ... 1 more child nodes; run tree 1-12 --depth 2 for full view
+├── [x][X+] 1-13. cutover 执行层: Rust CLI clap 层补全(映射 cli.ts 全部命令到 run_operation) + 退役 cli.ts + 删 operations.ts
+│   ... 1 more child nodes; run tree 1-13 --depth 2 for full view
+└── [x][X+] 1-14. 残留 TS 活性审计（415 文件 live/orphan 分类 + 依赖测试面）
+    ... 1 more child nodes; run tree 1-14 --depth 2 for full view
 <!-- ROADMAP_SECTION_END -->
