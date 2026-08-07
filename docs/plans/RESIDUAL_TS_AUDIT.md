@@ -6,9 +6,18 @@
 说明：本审计按**目录**判定「该模块是否已有 Rust 对应实现」。MIGRATED = Rust 拥有
 逻辑、TS 仅胶水/类型/入口；UNMIGRATED = 无 1:1 Rust 模块，属真前沿（需 port 或验证后可删）。
 
+> ⚠️ **计数已失效（2026-08-07）**：commit `bcafcafd` 删除了 **`src/core` 整棵 TS 树**
+> （338 文件 / -92,427 行）。下方「总体」与各模块文件数是 **2026-08-06 的历史快照**，
+> 不再反映工作区现状。当前真实残留：`src/**/*.ts` 仅 **79** 个（commands 70 + eval 7
+> + types + version.ts），全仓 TS 共 **640** 个（tests 552 / src 79 / admin 4 / 其他 5），
+> 且其中 **579 个文件 / 1,436 处 import** 仍**悬空引用已删的 `src/core`**
+> （tests 510 文件 1078 refs ｜ src/commands 63 文件 347 refs ｜ src/eval 5 文件 8 refs ｜
+> evals 1 文件 3 refs）。本表的**模块级 MIGRATED/UNMIGRATED 判定仍然有效**（那是「Rust 是否
+> 拥有该模块逻辑」的结论），失效的只是文件计数。重新计数需在 glue 拆除后做一次全量 re-audit。
+
 ## 总体
 
-- 扫描 `src/**/*.ts` 共 **414** 个文件。
+- 扫描 `src/**/*.ts` 共 **414** 个文件。（历史快照，见上方失效说明）
 - 已 MIGRATED（Rust 接管逻辑）：**142** 个（分布在已迁模块）。
 - 仍 UNMIGRATED（真前沿）：**272** 个。
 
@@ -67,7 +76,7 @@
 ## 真·未启动的核心端口（下一步候选）
 
 1. ~~**facts (1-8)** — 已迁 Rust（完成）。~~ ~~**skillify check (1-1-1)** — 11 项审计已迁 Rust（完成），TS 孤儿 `skillify-check.ts` 已删。~~
-2. **search 图像 (1-7-3) / 观测 (1-7-4)** — NET_NEW，中工作量。
+2. ~~**search 图像 (1-7-3)**~~ — 已迁 Rust（完成 2026-08-07）：`SearchByImageOperation`（operation.rs:2240）+ CLI verb `SearchByImage` + `image_loader.rs`（SSRF，14 test）+ `search_pages_by_embedding`（libsql/postgres/InMemory）。**search 观测 (1-7-4)** — 2/4：`dedup`（search/dedup.rs）与 `explain-formatter`（explain_formatter.rs，已接 `query --explain`）已迁；`telemetry` → **G72**、`eval`（IR 指标 P@K/R@K/MRR/nDCG）→ **G73**，两者 TS 源已随 `bcafcafd` 删除，属「先删后补」缺口（纯本地 IO / 纯数学，无基建阻塞，可直接补迁）。
 3. **output infra (1-4-2)** — BLOCKED（BrainWriter 撞逃生舱禁令），需先决策。
 4. **eval-* 族**（eval-contradictions/takes-quality-eval/cross-modal-eval/longmemeval/code-retrieval）— 评估逻辑，可并行。
 

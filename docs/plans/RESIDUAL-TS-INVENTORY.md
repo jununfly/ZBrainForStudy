@@ -57,7 +57,7 @@ Rust CLI 27 顶层命令（`crates/zbrain-cli/src/lib.rs` `enum Commands` L344�
 
 | TS 子系统 | Rust 现状 |
 |---|---|
-| `src/core/search`(23) | 无 `search/` 模块，检索散在 `engine.rs`/`libsql.rs`/`rerank_*` |
+| ~~`src/core/search`(23)~~ | **已迁（2026-08-07 re-baseline，TS 源随 `bcafcafd` 删除）**：Rust 采用 **`search_pages` 下沉架构**而非 1:1 搬文件——检索内化进 `BrainEngine::search_pages`（`libsql.rs:1768` / `postgres.rs:1661` / InMemory 三实现，含 sql-ranking / source-boost / recency-decay），`crates/zbrain-core/src/search/` 只留纯数学（`fusion`/`dedup`/`intent`）+ 薄编排（`engine.rs` `hybrid_search`）。接线：`think/gather.rs:98` + CLI `query` / `query --explain`（`explain_formatter.rs`）/ `search-by-image`（`operation.rs:2240` + `image_loader.rs` SSRF 14 test）。**残余缺口 2 项**：`telemetry` → G72、`eval`(IR 指标) → G73。**按文件名比对会得出假阴性，须按语义核对。** |
 | `src/core/facts`(13) | 仅 `facts_fence.rs` + facts CLI/minion |
 | `src/core/think`(7) | 仅 CLI `think` 入口，无独立 core 模块 |
 | `src/core/calibration`(10) | 仅 DB 层（同 B） |

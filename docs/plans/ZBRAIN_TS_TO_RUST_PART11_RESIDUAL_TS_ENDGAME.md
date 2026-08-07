@@ -1,7 +1,7 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-08-07 19:36:58
+> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-08-07 20:57:28
 
 [~][X+] 1. Part11 — 残留 TS 收尾 (综合容器)
 ├── [x][X+] 1-1. skillpack / skillify 迁移 (27+ 文件 Schema/Subagent 包)
@@ -32,8 +32,8 @@
 ├── [~][X+] 1-7. search core 模块补齐 (C 类，src/core/search 23 文件)
 │   ├── [x][X+] 1-7-1. search 融合核心 port (hybrid+expansion+mode+sql-ranking+graph-signals+intent-weights+rerank+source-boost+token-budget+recency-decay+two-pass)
 │   ├── [x][X+] 1-7-2. search 语义检索 port (query-intent+llm-intent+query-cache+query-cache-gate+embedding-column)
-│   ├── [ ][X+] 1-7-3. search 图像检索 port (by-image+image-loader, NET_NEW 1-6-7-11)
-│   └── [ ][X+] 1-7-4. search 工具/观测 port (eval+telemetry+dedup+explain-formatter)
+│   ├── [x][X+] 1-7-3. search 图像检索 port (by-image+image-loader, NET_NEW 1-6-7-11)
+│   └── [~][X+] 1-7-4. search 工具/观测 port (eval+telemetry+dedup+explain-formatter)
 ├── [x][X+] 1-8. facts core 模块补齐 (C 类，src/core/facts 13 文件)
 ├── [x][X+] 1-9. think core 模块补齐 (C 类，src/core/think 7 文件)
 │   ├── [x][X+] 1-9-1. think 纯逻辑模块 port (intent/sanitize/entity/cite-render/prompt/fuseRRF)
@@ -51,18 +51,10 @@
 └── [x][X+] 1-14. 残留 TS 活性审计（415 文件 live/orphan 分类 + 依赖测试面）
     └── [ ][X+] 1-14-1. 删除17个孤儿src + 收口1-13-1-3-2 (零风险，与引擎port并行)
 
-### 当前施工：1-7. search core 模块补齐 (C 类，src/core/search 23 文件)
+### 当前施工：1-7-4. search 工具/观测 port (eval+telemetry+dedup+explain-formatter)
 
-实际 MISSING: src/core/search 22 模块 0 Rust 覆盖(domain reconciliation 2026-08-05)。Rust 无 search engine 模块。路线图原标[x]为假。
-
-**决策：**
-- Q: leaf-first 下的执行顺序角色 → 第一刀：search core 先于 think/facts/output/commands (predecessors=none(纯leaf)；successors=1-9 think(thinks依赖search)。Rust已有lexical search op(1-6-7-7)，文件名'MISSING'高估缺口，真正缺口待recon(semantic/rerank/federation/search_by_image)。src/core/search 22 .ts(roadmap标23含1非.ts)。)
-- Q: port结构与并行策略（1-7体量22文件怎么执行） → 拆4簇+融合核心优先+独立leaf并行：1-7-1融合核心(≈11文件含think要的hybridSearch)先port解锁1-9；1-7-2语义检索；1-7-3图像检索(NET_NEW)；1-7-4工具观测。facts(1-8)只依赖think的INJECTION_PATTERNS小常量、output(1-4)独立leaf，均不依赖search→与1-7并行。think(1-9)在1-7-1就绪后启。commands最后。 (实测耦合：think只import hybridSearch+sanitizeQueryForPrompt；facts只import INJECTION_PATTERNS；output无未移植域依赖。严格leaf-first过度阻塞facts/output。)
-- Q: 1-7 search 真实缺口（文件名MISSING误判修正） → rerank/recency-decay/token-budget 已在Rust(rerank_client+rerank_audit / recency_decay / token_budget.rs)，不重做；真实缺口≈8文件：hybrid.ts(1353L融合核心,CRUX,0 Rust匹配) + mode.sql-ranking.graph-signals.intent-weights.source-boost.two-pass + expansion(sanitizeQueryForPrompt已在ai/expand.rs)。本回合已port纯融合数学(search/fusion.rs: cosine_similarity/rrf_fusion/rrf_fusion_weighted/compute_floor_threshold/apply_backlink_boost/apply_salience_boost, 20+#[test]; applyRecencyBoost复用recency_decay)。 (符号级复盘：grep HybridSearch/hybrid_search=0; search_mode/sql_rank/intent_weight/two_pass=0; rerank→rerank_client(138L TS被762+491L覆盖); recency-decay→recency_decay(201L→579L); token-budget→token_budget.rs已存在。)
-
-**当前子树：**
-├── [x][X+] 1-7-1. search 融合核心 port (hybrid+expansion+mode+sql-ranking+graph-signals+intent-weights+rerank+source-boost+token-budget+recency-decay+two-pass)
-├── [x][X+] 1-7-2. search 语义检索 port (query-intent+llm-intent+query-cache+query-cache-gate+embedding-column)
-├── [ ][X+] 1-7-3. search 图像检索 port (by-image+image-loader, NET_NEW 1-6-7-11)
-└── [ ][X+] 1-7-4. search 工具/观测 port (eval+telemetry+dedup+explain-formatter)
+re-baseline 2026-08-07（符号级对账）：4 组件 2 done / 2 gap，节点由 pending 修正为 in_progress。
+DONE：① dedup → search/dedup.rs（1-7-1 已交付，page 级去重：每页 cap 2 + 类型多样性 60%；mod.rs 导出 dedup_results/DedupOpts/MAX_PER_PAGE/MAX_TYPE_RATIO）；② explain-formatter → explain_formatter.rs（format_result_explain / format_results_explain，8 test），已真实接线 zbrain query --explain（zbrain-cli/src/lib.rs:3173 调 format_results_explain）。
+GAP（无任何 Rust 载体，新登记 KNOWN-GAPS）：③ telemetry → G72（TS 364L：getTelemetryWriter / recordSearchTelemetry / readSearchStats / StatsWindow / _resetTelemetryWriterForTest；原唯一消费者 src/commands/search.ts:41 readSearchStats 即 search --stats，Rust QueryArgs 只有 limit/offset/source_id/explain，无 --stats）；④ eval → G73（TS 292L：precisionAtK / recallAtK / mrr / ndcgAtK / runEval / parseQrels + EvalQrel/EvalConfig/EvalReport 格式；原消费者 src/commands/eval.ts + tests/unit/benchmark-search-quality.ts，Rust CLI 无对应 verb，eval_drift.rs 是漂移检测语义不同不能冒充）。
+两者 TS 源已随 bcafcafd 删除，属『先删后补』缺口，须按 G72/G73 补 Rust 或显式判废。
 <!-- ROADMAP_SECTION_END -->
