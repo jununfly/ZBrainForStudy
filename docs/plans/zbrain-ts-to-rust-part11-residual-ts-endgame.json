@@ -218,7 +218,7 @@
     "1-8": {
       "id": "1-8",
       "label": "facts core 模块补齐 (C 类，src/core/facts 13 文件)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [],
@@ -227,9 +227,14 @@
           "q": "执行策略",
           "answer": "独立leaf与search并行，不依赖search（只依赖think的INJECTION_PATTERNS小常量，随手复制即可）；可现在启动",
           "note": "coupling recon: facts/extract.ts 仅 import INJECTION_PATTERNS from think/sanitize.ts。"
+        },
+        {
+          "q": "queue/fence_write/backstop port 偏离决策",
+          "answer": "省略 embedding 余弦去重(NewFact 无 embedding 字段；TS 该路径本就 no-op)。FenceWriteResult.ids 恒空(Rust engine.insert_fact 单数签名只返 FactInsertStatus 不返 id；生产 queue 模式本就丢弃计数)。TS src/core/facts/*.ts 因 recall.ts/extract-conversation-facts.ts 活引用 decay/forget/extract 暂不删，须待命令层迁完再删。",
+          "note": "facts:: 55 passed；queue 自包含有界内存队列(进程单例+StdMutex，process-singleton 设计)，fence_write 复用 upsert_fact_row/page_lock_for，backstop 复用 extract_facts_from_turn + resolve_entity_slug + insert_fact + write_facts_to_fence。"
         }
       ],
-      "notes": "facts 核心已全量 port 到 crates/zbrain-core/src/facts/（leaf 模块 + forget）：decay.rs(6t), eligibility.rs(7t), classify.rs(5t), extract.rs(7t), absorb_log.rs(7t), forget.rs(fence-first 遗忘 v0.32.2 contract: plan_forget 纯路由决策 + apply_fence_rewrite 原子文件改写 + page_lock 进程内锁 + rewrite_fence_for_forget, 10t)。facts_fence.rs 在 facts:: 下 re-export 统一命名空间。cargo test -p zbrain-core facts:: = 46 passed。附带的共享 bug 修复：facts_fence::parse_row_cells 原先裸 split('|') 不尊重 escape_fence_cell 的 '\\|' 转义，导致含管道符的单元格(context 里 'forgotten: <reason>')在 render+reparse 往返错位；改为仅在未转义的 '|' 分列并反向 unescape '\\|'->'|'。Deferred（无 TS 调用方 / 需要 FactsQueue 基础设施，单列跟踪）：queue.ts(FactsQueue 编排)、backstop.ts(页面级编排器)。forget 之前 Rust 的 forget_fact op 仅有 expire_fact 退化路径，现已接 forget.rs 的 markdown-first 路径。"
+      "notes": "facts 核心已全量 port 到 crates/zbrain-core/src/facts/（leaf 模块 + forget）：decay.rs(6t), eligibility.rs(7t), classify.rs(5t), extract.rs(7t), absorb_log.rs(7t), forget.rs(fence-first 遗忘 v0.32.2 contract: plan_forget 纯路由决策 + apply_fence_rewrite 原子文件改写 + page_lock 进程内锁 + rewrite_fence_for_forget, 10t)。facts_fence.rs 在 facts:: 下 re-export 统一命名空间。cargo test -p zbrain-core facts:: = 46 passed。附带的共享 bug 修复：facts_fence::parse_row_cells 原先裸 split('|') 不尊重 escape_fence_cell 的 '\\|' 转义，导致含管道符的单元格(context 里 'forgotten: <reason>')在 render+reparse 往返错位；改为仅在未转义的 '|' 分列并反向 unescape '\\|'->'|'。Deferred（无 TS 调用方 / 需要 FactsQueue 基础设施，单列跟踪）：queue.ts(FactsQueue 编排)、backstop.ts(页面级编排器)。forget 之前 Rust 的 forget_fact op 仅有 expire_fact 退化路径，现已接 forget.rs 的 markdown-first 路径。 2026-08-07 queue.ts/fence-write.ts/backstop.ts 补齐 port → crates/zbrain-core/src/facts/{queue,fence_write,backstop}.rs；facts:: = 55 passed (46 原 + queue 5 + backstop 4)。偏离决策：(1) Rust extractor 不产 embedding，NewFact 无 embedding 字段 → embedding 余弦去重整段省略(TS 该路径本就 no-op)；(2) Rust engine.insert_fact 单数签名只返 FactInsertStatus 不返 id → FenceWriteResult.ids 恒为空(生产 queue 模式本就丢弃计数)。TS src/core/facts/*.ts 暂不删：recall.ts 仍 import decay/forget、extract-conversation-facts.ts 仍 import extract，须待这些命令迁完再删(否则破坏 TS baseline)。"
     },
     "1-9": {
       "id": "1-9",

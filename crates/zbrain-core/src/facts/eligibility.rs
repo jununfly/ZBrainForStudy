@@ -39,13 +39,15 @@ pub struct ParsedPageLite<'a> {
 /// Should this page write fire the facts extraction backstop?
 #[must_use]
 pub fn is_facts_backstop_eligible(slug: &str, parsed: Option<&ParsedPageLite<'_>>) -> EligibilityResult {
-    let Some(parsed) = parsed else {
-        return EligibilityResult::Ineligible { reason: "no_parsed_page".into() };
-    };
-
+    // Subagent namespaces are never eligible, regardless of parsed content
+    // (the slug shape wins before we even require a parsed page).
     if slug.starts_with("wiki/agents/") {
         return EligibilityResult::Ineligible { reason: "subagent_namespace".into() };
     }
+
+    let Some(parsed) = parsed else {
+        return EligibilityResult::Ineligible { reason: "no_parsed_page".into() };
+    };
 
     if parsed.frontmatter.get("dream_generated") == Some(&Value::Bool(true)) {
         return EligibilityResult::Ineligible { reason: "dream_generated".into() };

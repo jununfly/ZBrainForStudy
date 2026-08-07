@@ -7,6 +7,9 @@
 //!   - `absorb_log`   — best-effort `facts:absorb` failure writer.
 //!   - `extract`      — extraction kill-switch + model resolution + JSON parse.
 //!   - `forget`       — markdown-first fence-rewrite forget (v0.32.2 contract).
+//!   - `queue`        — bounded in-memory extraction queue (FactsQueue).
+//!   - `fence_write`  — markdown-first fence write path (writeFactsToFence).
+//!   - `backstop`     — runFactsBackstop / runFactsPipeline orchestrator.
 //!
 //! Fence parsing/rendering/upsert was ported earlier under
 //! [`crate::facts_fence`] (no `facts/` directory then existed); it is
@@ -18,6 +21,9 @@ pub mod decay;
 pub mod eligibility;
 pub mod extract;
 pub mod forget;
+pub mod queue;
+pub mod fence_write;
+pub mod backstop;
 
 // Re-export the fence surface under the unified `facts` namespace.
 pub use crate::facts_fence::{
