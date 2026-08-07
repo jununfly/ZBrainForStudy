@@ -3,12 +3,13 @@
 //! ## TS reference
 //!
 //! Registered as `"consolidate"` in `src/commands/jobs.ts`. Core logic in
-//! `src/core/autopilot/cycle.ts` consolidate phase. v1 skeleton: runCycle
-//! not yet ported.
+//! `src/core/autopilot/cycle.ts` consolidate phase. Wired to the Rust
+//! `run_cycle` orchestrator (Part12 port) via `CyclePhase::Consolidate`.
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
+use crate::autopilot::cycle::{run_cycle, CycleOpts, CyclePhase};
 use crate::minions::handler::{MinionHandler, MinionJobContext};
 use crate::Result;
 
@@ -16,8 +17,27 @@ pub struct ConsolidateHandler;
 
 #[async_trait]
 impl MinionHandler for ConsolidateHandler {
-    async fn handle(&self, _ctx: &MinionJobContext) -> Result<Value> {
-        Ok(json!({"status": "not_implemented", "detail": "consolidate phase pending runCycle port"}))
+    async fn handle(&self, ctx: &MinionJobContext) -> Result<Value> {
+        let data = &ctx.data;
+        let brain_dir = data
+            .get("dir")
+            .or_else(|| data.get("brain_dir"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let opts = CycleOpts {
+            dry_run: data.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false),
+            phases: Some(vec![CyclePhase::Consolidate]),
+            brain_dir,
+            pull: data.get("pull").and_then(|v| v.as_bool()).unwrap_or(false),
+            source_id: data.get("source_id").and_then(|v| v.as_str()).map(String::from),
+            ..Default::default()
+        };
+        let engine = ctx.engine();
+        let report = run_cycle(engine.as_ref(), &opts).await;
+        let value = serde_json::to_value(&report)
+            .map_err(|e| crate::Error::new("SerializationError", "cycle_report", &e.to_string()))?;
+        Ok(value)
     }
 }
 
@@ -35,7 +55,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn consolidate_smoke_does_not_panic() {
+    async fn consolidate_runs_phase() {
         let eng = engine();
         let context = MinionJobContext::new(
             Arc::clone(&eng) as Arc<dyn BrainEngine>,
@@ -44,6 +64,9 @@ mod tests {
         );
         let handler = ConsolidateHandler;
         let result = handler.handle(&context).await.expect("should not panic");
-        assert_eq!(result["status"], "not_implemented");
+        assert!(
+            result.get("status").is_some(),
+            "expected a CycleReport JSON with a status field, got: {result}"
+        );
     }
 }

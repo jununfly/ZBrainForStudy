@@ -1,0 +1,292 @@
+{
+  "title": "Part13 - minion/MCP handler 接线（接已完成 Rust cycle + CLI verbs）",
+  "description": "将 crates/zbrain-core/src/minions/handlers/ 下 19 个 not_implemented 桩接到已完成 Rust 子系统：cycle-phase 经 run_cycle、现有 CLI verb 直接 delegate、无 verb/死技术/LLM-seam 单独决策。",
+  "version": 1,
+  "nodes": {
+    "1": {
+      "id": "1",
+      "label": "Part13 - minion/MCP handler 接线（接已完成 Rust cycle + CLI verbs）",
+      "status": "in_progress",
+      "mode": "explore",
+      "parent": null,
+      "children": [
+        "1-1",
+        "1-2",
+        "1-3",
+        "1-4"
+      ],
+      "decisions": [
+        {
+          "q": "Part13 范围如何界定？minions/handlers 有 19 个 not_implemented 桩，分几类、先做什么？",
+          "answer": "按可接线性分四簇：cycle-phase(7,经 run_cycle)、现有 verb(3,integrity/reindex/sync)、无 verb(6,命令未迁/死技术)、LLM/embedding-seam(3,需 infra)。先机械簇(1-1+1-2)后阻塞簇(1-3+1-4)。",
+          "note": "核查依据：CLI verbs 仅 Integrity/Reindex/Sync 存在；extract/integrity_auto/lint/lint_fix/repair_jsonb/sync_retry_failed 无对应 Rust verb（选项 C 删除 TS 命令后无替代，部分属 KNOWN-GAPS G74/G78；repair_jsonb=pglite 死技术）。cycle-phase 七桩全部可经 run_cycle(支持 phase 过滤) 机械接线。LLM/embedding 三桩需 embedding client / ChatProvider 注入（G30/G41/G60 相关）。backlinks.rs 已实现为 delegate 模板：读 ctx.data → 调引擎 op → 返回 JSON。"
+        }
+      ],
+      "notes": ""
+    },
+    "1-1": {
+      "id": "1-1",
+      "label": "cycle-phase minion handler 接线（delegate 到 run_cycle / 指定 phase）",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1",
+      "children": [
+        "1-1-1",
+        "1-1-2",
+        "1-1-3",
+        "1-1-4",
+        "1-1-5",
+        "1-1-6",
+        "1-1-7"
+      ],
+      "decisions": [
+        {
+          "q": "如何将 7 个 cycle-phase minion handler 接到 run_cycle？",
+          "answer": "每个 handler 构造 CycleOpts（ctx.data 读 dir/dry_run/pull/source_id，brain_dir 默认空串）后调 run_cycle；autopilot_cycle 用 phases=None 跑完整 cycle，其余 6 个用 phases=Some([特定 CyclePhase]) 跑单 phase，返回 CycleReport 序列化为 JSON。",
+          "note": "验证：cargo test -p zbrain-core --lib minions::handlers 7 个新测试全 ok（InMemory engine，autopilot_cycle 用 dry_run=true 防重副作用）。模板仿 backlinks.rs（读 ctx.data -> 调引擎 -> 返回 JSON）。LLM 依赖子步骤在无 ChatProvider 时按 run_cycle 既有行为 Skipped，与 CLI dream 一致。注意：lib 另有 14 个无关模块测试（search/dedup/fusion/intent、operation think dispatch、skillify、think entity/gather/sanitize）在本分支已失败，非本次改动引入（未触碰相关文件），属预存负债/环境相关，留待独立排查。"
+        }
+      ],
+      "notes": ""
+    },
+    "1-2": {
+      "id": "1-2",
+      "label": "现有 Rust CLI verb delegate handler 接线",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1",
+      "children": [
+        "1-2-1",
+        "1-2-2",
+        "1-2-3"
+      ],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-3": {
+      "id": "1-3",
+      "label": "无对应 Rust verb 的 handler（命令未迁 / 死技术，需决策）",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1",
+      "children": [
+        "1-3-1",
+        "1-3-2",
+        "1-3-3",
+        "1-3-4",
+        "1-3-5",
+        "1-3-6"
+      ],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-4": {
+      "id": "1-4",
+      "label": "LLM/embedding-seam handler 接线（需 infra 注入）",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1",
+      "children": [
+        "1-4-1",
+        "1-4-2",
+        "1-4-3"
+      ],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-1-1": {
+      "id": "1-1-1",
+      "label": "autopilot_cycle handler → run_cycle（完整 cycle）",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-1-2": {
+      "id": "1-1-2",
+      "label": "consolidate handler → run_cycle phase=Consolidate",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-1-3": {
+      "id": "1-1-3",
+      "label": "extract_facts handler → run_cycle phase=ExtractFacts",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-1-4": {
+      "id": "1-1-4",
+      "label": "recompute_emotional_weight handler → run_cycle phase=RecomputeEmotionalWeight",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-1-5": {
+      "id": "1-1-5",
+      "label": "resolve_symbol_edges handler → run_cycle phase=ResolveSymbolEdges",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-1-6": {
+      "id": "1-1-6",
+      "label": "synthesize handler → run_cycle phase=Synthesize",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-1-7": {
+      "id": "1-1-7",
+      "label": "extract_conversation_facts handler → run_cycle phase=ConversationFactsBackfill",
+      "status": "completed",
+      "mode": "exploit",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-2-1": {
+      "id": "1-2-1",
+      "label": "integrity handler → zbrain integrity verb",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-2",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-2-2": {
+      "id": "1-2-2",
+      "label": "reindex handler → zbrain reindex verb（Reindex::Pages 已存在）",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-2",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-2-3": {
+      "id": "1-2-3",
+      "label": "sync handler → zbrain sync verb",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-2",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-3-1": {
+      "id": "1-3-1",
+      "label": "lint handler — 无 Lint verb（命令未迁，需决策）",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-3",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-3-2": {
+      "id": "1-3-2",
+      "label": "lint_fix handler — 无 LintFix verb（命令未迁，需决策）",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-3",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-3-3": {
+      "id": "1-3-3",
+      "label": "extract handler — 无 Extract verb（选项 C 已删 TS 命令，需决策）",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-3",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-3-4": {
+      "id": "1-3-4",
+      "label": "integrity_auto handler — 无 IntegrityAuto verb（需决策）",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-3",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-3-5": {
+      "id": "1-3-5",
+      "label": "sync_retry_failed handler — 无 SyncRetryFailed verb（需决策）",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-3",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-3-6": {
+      "id": "1-3-6",
+      "label": "repair_jsonb handler — pglite 死技术 → wontfix 候选",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-3",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-4-1": {
+      "id": "1-4-1",
+      "label": "embed handler → embedding client 接线",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-4",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-4-2": {
+      "id": "1-4-2",
+      "label": "embed_backfill handler → embedding + BudgetMeter 接线",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-4",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-4-3": {
+      "id": "1-4-3",
+      "label": "contextual_reindex handler → Haiku LLM + rate-lease 接线",
+      "status": "pending",
+      "mode": "exploit",
+      "parent": "1-4",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    }
+  },
+  "metadata": {
+    "created": "2026-08-08 01:18:16",
+    "updated": "2026-08-08 01:45:11",
+    "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART13_MINION_HANDLER_WIRING.md"
+  }
+}
