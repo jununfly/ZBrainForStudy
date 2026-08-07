@@ -559,6 +559,10 @@ pub enum Commands {
     #[command(name = "find-trajectory")]
     FindTrajectory(FindTrajectoryArgs),
 
+    /// Recall hot memory (facts) for an entity / session / time window
+    #[command(name = "recall")]
+    Recall(RecallArgs),
+
     /// Locate a code symbol definition
     #[command(name = "code-def")]
     CodeDef(CodeDefArgs),
@@ -594,6 +598,10 @@ pub enum Commands {
     /// Personalized chapter-by-chapter book analysis (fan-out subagents).
     #[command(name = "book-mirror")]
     BookMirror(book_mirror::BookMirrorArgs),
+
+    /// Re-embed content to refresh the search vector index
+    #[command(name = "reindex", subcommand)]
+    Reindex(ReindexAction),
 }
 
 /// Subcommands for `zbrain jobs`.
@@ -1971,6 +1979,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::FindTrajectory(args) => {
             run_find_trajectory_command(args, cli.config.as_deref(), timeout_ms).await?
         }
+        Commands::Recall(args) => {
+            run_recall_command(args, cli.config.as_deref(), timeout_ms).await?
+        }
         Commands::CodeDef(args) => {
             run_code_def_command(args, cli.config.as_deref(), timeout_ms).await?
         }
@@ -2003,6 +2014,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Commands::BookMirror(args) => {
             run_book_mirror_command(args, cli.config.as_deref()).await?
+        }
+        Commands::Reindex(action) => {
+            run_reindex_command(action, cli.config.as_deref()).await?
         }
     }
     Ok(())
@@ -2138,6 +2152,62 @@ pub struct FindTrajectoryArgs {
     pub until: Option<String>,
     #[arg(long, default_value_t = 100)]
     pub limit: u32,
+}
+
+/// Arguments for `zbrain recall`.
+#[derive(Debug, clap::Args)]
+pub struct RecallArgs {
+    /// Entity slug to recall facts about (newest first)
+    #[arg(long)]
+    pub entity: Option<String>,
+    /// ISO datetime or duration shorthand (e.g. "8 hours ago")
+    #[arg(long)]
+    pub since: Option<String>,
+    /// Source session id
+    #[arg(long)]
+    pub session_id: Option<String>,
+    /// Include expired facts
+    #[arg(long)]
+    pub include_expired: bool,
+    /// Return only the supersession audit log
+    #[arg(long)]
+    pub supersessions: bool,
+    /// Max rows to return (default 50, cap 500)
+    #[arg(long, default_value_t = 50)]
+    pub limit: i64,
+    /// Substring filter on fact text (case-insensitive)
+    #[arg(long)]
+    pub grep: Option<String>,
+    /// Include pending_consolidation_count in the response
+    #[arg(long)]
+    pub include_pending: bool,
+}
+
+/// Subcommands for `zbrain reindex`.
+#[derive(Debug, Subcommand)]
+pub enum ReindexAction {
+    /// Re-embed all live pages from their `compiled_truth` (page-level vector).
+    Pages(ReindexPagesArgs),
+    /// Re-embed code symbols (tree-sitter edges). [not yet implemented]
+    Code,
+    /// Re-embed frontmatter. [not yet implemented]
+    Frontmatter,
+    /// Re-embed stored images (multimodal). [not yet implemented]
+    Multimodal,
+}
+
+/// Arguments for `zbrain reindex pages`.
+#[derive(Debug, clap::Args)]
+pub struct ReindexPagesArgs {
+    /// Source scope; omit to re-embed every source.
+    #[arg(long)]
+    pub source_id: Option<String>,
+    /// List what would be re-embedded without writing vectors.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Page batch size per embedding call.
+    #[arg(long, default_value_t = 50)]
+    pub batch: usize,
 }
 
 #[derive(Debug, clap::Args)]
@@ -2393,6 +2463,27 @@ async fn run_find_trajectory_command(
     Ok(())
 }
 
+/// Execute `zbrain recall` command.
+async fn run_recall_command(
+    args: RecallArgs,
+    config_path: Option<&Path>,
+    timeout_ms: Option<u64>,
+) -> anyhow::Result<()> {
+    let params = serde_json::json!({
+        "entity": args.entity,
+        "since": args.since,
+        "session_id": args.session_id,
+        "include_expired": args.include_expired,
+        "supersessions": args.supersessions,
+        "limit": args.limit,
+        "grep": args.grep,
+        "include_pending": args.include_pending,
+    });
+    let output = run_operation("recall", params, config_path, timeout_ms).await?;
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
 /// Execute `zbrain code-def` command.
 async fn run_code_def_command(
     args: CodeDefArgs,
@@ -2407,6 +2498,112 @@ async fn run_code_def_command(
     let output = run_operation("code_def", params, config_path, timeout_ms).await?;
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
+}
+
+/// Execute `zbrain reindex`: re-compute embeddings for content.
+async fn run_reindex_command(
+    action: ReindexAction,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    match action {
+        ReindexAction::Pages(args) => run_reindex_pages(args, config_path).await,
+        ReindexAction::Code => anyhow::bail!(
+            "reindex code is not yet implemented (tracked as G75 in docs/plans/KNOWN-GAPS.md)"
+        ),
+        ReindexAction::Frontmatter => anyhow::bail!(
+            "reindex frontmatter is not yet implemented (tracked as G75)"
+        ),
+        ReindexAction::Multimodal => anyhow::bail!(
+            "reindex multimodal is not yet implemented (tracked as G75)"
+        ),
+    }
+}
+
+/// Re-embed all live pages from their `compiled_truth` into the page-level
+/// vector column. Mirrors the ingest-time embedding path so search parity is
+/// preserved. Requires an embedding provider (`ZEROENTROPY_API_KEY`).
+async fn run_reindex_pages(
+    args: ReindexPagesArgs,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    use zbrain_core::engine::{BrainEngine, EngineConfig, PageFilters};
+    use zbrain_core::libsql::LibsqlEngine;
+    use zbrain_core::embedding::EmbeddingClient;
+
+    let client = EmbeddingClient::from_env().ok_or_else(|| {
+        anyhow::anyhow!(
+            "embedding provider not configured: set ZEROENTROPY_API_KEY to re-embed pages"
+        )
+    })?;
+
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    let batch = args.batch.max(1);
+    let mut offset: usize = 0;
+    let mut scanned = 0usize;
+    let mut embedded = 0usize;
+
+    loop {
+        let filters = PageFilters {
+            page_type: None,
+            tag: None,
+            limit: Some(batch),
+            offset: Some(offset),
+            updated_after: None,
+            slug_prefix: None,
+            include_deleted: false,
+            sort: None,
+            source_id: args.source_id.clone(),
+            source_ids: None,
+        };
+        let pages = engine.list_pages(&filters).await?;
+        if pages.is_empty() {
+            break;
+        }
+        scanned += pages.len();
+
+        if args.dry_run {
+            for p in &pages {
+                println!("[dry-run] would re-embed {} (source {})", p.slug, p.source_id);
+            }
+            offset += pages.len();
+            continue;
+        }
+
+        let texts: Vec<String> = pages.iter().map(|p| p.compiled_truth.clone()).collect();
+        let vectors = client.embed_batch(&texts, None).await?;
+        for (p, vec) in pages.iter().zip(vectors.into_iter()) {
+            let bytes = encode_embedding_le(&vec);
+            engine
+                .put_page_embedding(&p.slug, &p.source_id, bytes)
+                .await?;
+            embedded += 1;
+        }
+        offset += pages.len();
+        println!("reindex pages: embedded batch -> total embedded={embedded}");
+    }
+
+    engine.disconnect().await?;
+    println!("reindex pages complete: scanned={scanned} embedded={embedded}");
+    Ok(())
+}
+
+/// Encode an f32 embedding vector as a little-endian byte blob (matches the
+/// `f32-LE BLOB` encoding used by `LibsqlEngine::put_page`).
+fn encode_embedding_le(v: &[f32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(v.len() * 4);
+    for x in v {
+        out.extend_from_slice(&x.to_le_bytes());
+    }
+    out
 }
 
 /// Execute `zbrain code-refs` command.

@@ -41,17 +41,26 @@ Rust **无等价 verb**，按主题聚合为缺口簇（详见 KNOWN-GAPS.md G74
 | 簇 | 缺口 | 命令文件 | 当前 Rust 覆盖 |
 |---|---|---|---|
 | eval 评测族 | **G74** | eval, eval-brainstorm, eval-code-retrieval, eval-compare, eval-cross-modal, eval-export, eval-extract-atoms, eval-gate, eval-longmemeval, eval-markdown-greenfield, eval-prune, eval-replay, eval-run-all, eval-schema-authoring, eval-suspected-contradictions, eval-synthesize-concepts, eval-takes-quality, eval-trajectory, eval-whoknows（19） | 仅 `eval_drift`（漂移检测，语义不同） |
-| reindex 索引重建 | **G75** | reindex, reindex-code, reindex-frontmatter, reindex-multimodal（4） | 无；`Capture` 仅增量 embed |
-| extract 抽取 | **G76** | extract, extract-conversation-facts（2） | `Facts` 仅 insert/list/health/expire |
-| 图维护 | **G77** | backfill, edges-backfill, backlinks, reconcile-links（4） | `Links` 基础子命令未覆盖 |
-| 摄入/迁移 | **G78** | embed, import, migrate-engine, migrations(+index/types), upgrade, reinit-pglite, repair-jsonb（9） | 部分 `Capture`/`ApplyMigrations` 可覆盖，其余无 |
-| 杂项单命令 | **G79** | auth, brainstorm, bench-publish, export, files, founder-scorecard, friction, frontmatter, frontmatter-install-hook, init-mode-picker, integrations, lsd, notability-eval, providers, recall, ze-switch（16） | 无（init 选择逻辑 Rust 未覆盖） |
+| reindex 索引重建 | **G75** | reindex, reindex-code, reindex-frontmatter, reindex-multimodal（4） | **`Reindex::Pages` 已补迁**（2026-08-07：遍历 live 页重嵌 `compiled_truth`）；code/frontmatter/multimodal 暂以 G75 错误返回 |
+| extract 抽取 | **G76** | extract, extract-conversation-facts（2） | `Facts` 仅 insert/list/health/expire；抽取依赖 LLM（G35/G60 阻塞） |
+| 图维护 | **G77** | backfill, edges-backfill, backlinks, reconcile-links（4） | **`backlinks` 已被 `Links::Backlinks` 覆盖**；backfill/edges-backfill/reconcile-links 无 core op |
+| 摄入/迁移 | **G78** | embed, import, migrate-engine, migrations(+index/types), upgrade, reinit-pglite, repair-jsonb（9） | 部分 `Capture`/`ApplyMigrations` 可覆盖；`reinit-pglite`/`repair-jsonb` 为 pglite 死技术→建议 wontfix |
+| 杂项单命令 | **G79** | auth, brainstorm, bench-publish, export, files, founder-scorecard, friction, frontmatter, frontmatter-install-hook, init-mode-picker, integrations, lsd, notability-eval, providers, recall, ze-switch（16） | **`recall` 已补迁为 `Recall` verb**（2026-08-07，接线 `RecallOperation`）；其余无 |
 | lint 真实实现 | **G65**（既有） | lint.ts（1） | Rust `LintHandler` 为 not_implemented（返回 Skipped） |
 
 ## 沙箱注意事项（本回合踩坑）
 
 - 多文件 `git rm` 会触发 safe-delete 守卫**中途拦截**并留僵尸 `.git/index.lock`，导致半截删除 + 重放式大范围误删（本回合一度出现 119 个文件被暂存删除，已 `git reset --hard HEAD` 恢复）。
 - **安全删除流程**：`mv <file> <trash>`（改名不触发守卫）→ `git rm --cached <file>`（仅改索引、不碰磁盘）。单文件操作，无锁、无误删。
+
+## 已补迁的 Rust verb（选项 C 之后，2026-08-07）
+
+| 新 verb | 覆盖的原 TS 命令 | 实现要点 | 缺口 |
+|---|---|---|---|
+| `Recall` | recall（G79） | 接线 `RecallOperation`（operation.rs:5812），CLI 传参 → `run_operation("recall", …)`；零新逻辑 | 实体解析未迁（G53），须传精确 slug |
+| `Reindex::Pages` | reindex（G75） | 遍历 live 页 → `EmbeddingClient::from_env()` 重嵌 `compiled_truth` → `put_page_embedding`；支持 `--source-id`/`--dry-run`/`--batch` | `code`/`frontmatter`/`multimodal` 暂以 G75 错误返回 |
+
+> 这两个 verb 证明了「先删后补」路线可行：功能缺口（G74–G79）在命令文件删除后仍可独立补迁为 Rust verb，不依赖 TS 残留。
 
 ## 后续
 
