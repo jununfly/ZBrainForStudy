@@ -1,11 +1,11 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-08-07 18:26:33
+> 数据文件: `zbrain-ts-to-rust-part11-residual-ts-endgame.json` | 最后更新: 2026-08-07 19:36:58
 
 [~][X+] 1. Part11 — 残留 TS 收尾 (综合容器)
-├── [~][X+] 1-1. skillpack / skillify 迁移 (27+ 文件 Schema/Subagent 包)
-│   └── [ ][X+] 1-1-1. skillify check 子命令迁移 (skillify-check.ts 11 项审计 → Rust zbrain skillify check)
+├── [x][X+] 1-1. skillpack / skillify 迁移 (27+ 文件 Schema/Subagent 包)
+│   └── [x][X+] 1-1-1. skillify check 子命令迁移 (skillify-check.ts 11 项审计 → Rust zbrain skillify check)
 ├── [x][X+] 1-2. eval 一族迁移 (~20 eval-* 命令 + src/eval + core/eval)
 ├── [x][X+] 1-3. calibration 算法迁移 (10 文件，当前仅 DB 层)
 │   ├── [x][Y+] 1-3-1. calibration 纯函数 port (Phase 1: 零依赖纯函数)
@@ -51,15 +51,18 @@
 └── [x][X+] 1-14. 残留 TS 活性审计（415 文件 live/orphan 分类 + 依赖测试面）
     └── [ ][X+] 1-14-1. 删除17个孤儿src + 收口1-13-1-3-2 (零风险，与引擎port并行)
 
-### 当前施工：1-1. skillpack / skillify 迁移 (27+ 文件 Schema/Subagent 包)
+### 当前施工：1-7. search core 模块补齐 (C 类，src/core/search 23 文件)
 
-skillify scaffold 已迁 Rust（zbrain-core skillify 模块 + zbrain-cli skillify scaffold 子命令），TS 源文件 src/core/skillify/*.ts、src/commands/skillify.ts、tests/unit/skillify-scaffold.test.ts 已删除。剩 check 子命令（11 项审计）由子节点 1-1-1 跟踪（仍留 TS src/commands/skillify-check.ts）。
+实际 MISSING: src/core/search 22 模块 0 Rust 覆盖(domain reconciliation 2026-08-05)。Rust 无 search engine 模块。路线图原标[x]为假。
 
 **决策：**
-- Q: 最终冲刺（1-8 facts 完成后）的下一步优先级？ → 先收口 skillify（关 1-1）：仅 2 文件，最小代价关闭节点；output(1-4-2) 阻塞与 eval-* 系列押后，待后续 grill 逐项决策。 (roadmap JSON 已反映 1-8 completed；RESIDUAL_TS_AUDIT.md(08-06) 滞后，仍列 facts 未启动，需刷新。)
-- Q: 「关闭 1-1」的 skillify 范围？ → scaffold-only：port core/skillify(generator+templates)→Rust + 新建 zbrain skillify scaffold CLI + 迁 skillify-scaffold.test.ts→Rust；删 core/skillify/*.ts。check 子命令(skillify-check.ts, 11项审计，部分已由 check-resolvable/check-brain-first 覆盖) 不在 2 文件口径，拆为 1-1-1 子节点押后。 (Rust 侧尚无任何 Skillify 命令枚举；resolver-filenames 已迁可复用；autoDetectSkillsDir 对应 skill_resolver/repo_root.rs。)
-- Q: skillify scaffold 实现状态？ → 已迁 Rust：zbrain-core skillify 模块 (templates/generator + ScaffoldPlan/apply_scaffold/detect_existing_resolver_row) + zbrain-cli skillify scaffold 子命令；复用 skill_resolver::resolver_filenames/find_resolver_file 与 auto_detect_skills_dir。TS src/core/skillify/*.ts、src/commands/skillify.ts、tests/unit/skillify-scaffold.test.ts 已删除。check 审计 (11 项) 仍留 TS src/commands/skillify-check.ts，由子节点 1-1-1 跟踪。
+- Q: leaf-first 下的执行顺序角色 → 第一刀：search core 先于 think/facts/output/commands (predecessors=none(纯leaf)；successors=1-9 think(thinks依赖search)。Rust已有lexical search op(1-6-7-7)，文件名'MISSING'高估缺口，真正缺口待recon(semantic/rerank/federation/search_by_image)。src/core/search 22 .ts(roadmap标23含1非.ts)。)
+- Q: port结构与并行策略（1-7体量22文件怎么执行） → 拆4簇+融合核心优先+独立leaf并行：1-7-1融合核心(≈11文件含think要的hybridSearch)先port解锁1-9；1-7-2语义检索；1-7-3图像检索(NET_NEW)；1-7-4工具观测。facts(1-8)只依赖think的INJECTION_PATTERNS小常量、output(1-4)独立leaf，均不依赖search→与1-7并行。think(1-9)在1-7-1就绪后启。commands最后。 (实测耦合：think只import hybridSearch+sanitizeQueryForPrompt；facts只import INJECTION_PATTERNS；output无未移植域依赖。严格leaf-first过度阻塞facts/output。)
+- Q: 1-7 search 真实缺口（文件名MISSING误判修正） → rerank/recency-decay/token-budget 已在Rust(rerank_client+rerank_audit / recency_decay / token_budget.rs)，不重做；真实缺口≈8文件：hybrid.ts(1353L融合核心,CRUX,0 Rust匹配) + mode.sql-ranking.graph-signals.intent-weights.source-boost.two-pass + expansion(sanitizeQueryForPrompt已在ai/expand.rs)。本回合已port纯融合数学(search/fusion.rs: cosine_similarity/rrf_fusion/rrf_fusion_weighted/compute_floor_threshold/apply_backlink_boost/apply_salience_boost, 20+#[test]; applyRecencyBoost复用recency_decay)。 (符号级复盘：grep HybridSearch/hybrid_search=0; search_mode/sql_rank/intent_weight/two_pass=0; rerank→rerank_client(138L TS被762+491L覆盖); recency-decay→recency_decay(201L→579L); token-budget→token_budget.rs已存在。)
 
 **当前子树：**
-└── [ ][X+] 1-1-1. skillify check 子命令迁移 (skillify-check.ts 11 项审计 → Rust zbrain skillify check)
+├── [x][X+] 1-7-1. search 融合核心 port (hybrid+expansion+mode+sql-ranking+graph-signals+intent-weights+rerank+source-boost+token-budget+recency-decay+two-pass)
+├── [x][X+] 1-7-2. search 语义检索 port (query-intent+llm-intent+query-cache+query-cache-gate+embedding-column)
+├── [ ][X+] 1-7-3. search 图像检索 port (by-image+image-loader, NET_NEW 1-6-7-11)
+└── [ ][X+] 1-7-4. search 工具/观测 port (eval+telemetry+dedup+explain-formatter)
 <!-- ROADMAP_SECTION_END -->

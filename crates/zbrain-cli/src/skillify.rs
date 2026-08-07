@@ -1,12 +1,13 @@
-//! skillify CLI subcommands — scaffold (real), check (stub → node 1-1-1).
+//! skillify CLI subcommands — `scaffold` (real) and `check` (real).
 //!
-//! Ported from `src/commands/skillify.ts`'s scaffold branch. The `check`
-//! half (11-item audit) remains in TS (`src/commands/skillify-check.ts`) and
-//! is tracked by roadmap node `1-1-1`.
+//! Both halves ported from the original TS:
+//!   - `scaffold`  ← `src/commands/skillify.ts` scaffold branch
+//!   - `check`     ← `src/commands/skillify-check.ts` (12-item audit), now
+//!                   delegated to `zbrain_core::skillify::check`.
 
-use std::collections::HashMap;
-use std::env;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use anyhow::{anyhow, Result};
 use clap::Parser;
@@ -14,8 +15,8 @@ use clap::Parser;
 use zbrain_core::skill_resolver::repo_root::auto_detect_skills_dir;
 use zbrain_core::skill_resolver::resolver_filenames::RESOLVER_FILENAMES_LABEL;
 use zbrain_core::skillify::{
-    apply_scaffold, plan_scaffold, ScaffoldFileKind, ScaffoldOptions, ScaffoldVars,
-    SkillifyScaffoldError,
+    derive_root, resolve_skills_dir, run_skillify_check_target, apply_scaffold, plan_scaffold,
+    CheckResult, ScaffoldFileKind, ScaffoldOptions, ScaffoldVars, SkillifyScaffoldError,
 };
 
 /// Subcommands for `zbrain skillify`.
@@ -24,7 +25,7 @@ pub enum SkillifySubcommand {
     /// Create SKILL.md, script, routing-eval, test stubs and append a resolver row.
     Scaffold(ScaffoldOptionsCli),
 
-    /// Run the 11-item skillify audit (tracked by roadmap node 1-1-1; still in TS).
+    /// Run the 12-item skillify audit (post-task). Delegates to zbrain_core::skillify::check.
     Check(CheckOptionsCli),
 }
 
@@ -68,18 +69,16 @@ pub struct CheckOptionsCli {
     /// Audit recently-changed skills instead of a path.
     #[arg(long)]
     pub recent: bool,
+    /// Emit JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Main entry point for `zbrain skillify` subcommands.
 pub async fn run_skillify(cmd: SkillifySubcommand) -> Result<()> {
     match cmd {
         SkillifySubcommand::Scaffold(opts) => run_skillify_scaffold(opts).await,
-        SkillifySubcommand::Check(_opts) => {
-            anyhow::bail!(
-                "skillify check not yet migrated to Rust — tracked by roadmap node 1-1-1. \
-                 It still runs from TS (src/commands/skillify-check.ts) for now."
-            );
-        }
+        SkillifySubcommand::Check(opts) => run_skillify_check(opts).await,
     }
 }
 
@@ -112,8 +111,8 @@ fn error_code(e: &SkillifyScaffoldError) -> &'static str {
 }
 
 async fn run_skillify_scaffold(opts: ScaffoldOptionsCli) -> Result<()> {
-    let cwd = env::current_dir()?;
-    let env: HashMap<String, String> = env::vars().collect();
+    let cwd = std::env::current_dir()?;
+    let env: std::collections::HashMap<String, String> = std::env::vars().collect();
 
     // Resolve skills directory.
     let skills_dir = if let Some(p) = &opts.skills_dir {
@@ -262,6 +261,120 @@ async fn run_skillify_scaffold(opts: ScaffoldOptionsCli) -> Result<()> {
     Ok(())
 }
 
+const CHECK_HELP: &str = "zbrain skillify check [path] [--recent] [--json]
+
+Run the 12-item skillify audit (post-task). Reports whether each item
+passes and what to create next.
+
+Arguments:
+  path            Path to the script/file to audit.
+  --recent        Audit all files modified in the last 7 days.
+  --json          Emit JSON.
+  -h, --help      Show this message.
+
+Exit code 0 when all REQUIRED items pass; 1 otherwise.
+";
+
+async fn run_skillify_check(opts: CheckOptionsCli) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    if opts.path.is_none() && !opts.recent {
+        println!("{CHECK_HELP}");
+        std::process::exit(1);
+    }
+
+    let skills_dir = resolve_skills_dir(&cwd);
+    let root = derive_root(&skills_dir);
+
+    let targets: Vec<PathBuf> = if opts.recent {
+        recently_modified(&root, 7)
+    } else {
+        match &opts.path {
+            Some(p) => vec![if p.is_absolute() { p.clone() } else { cwd.join(p) }],
+            None => vec![],
+        }
+    };
+    if targets.is_empty() {
+        eprintln!("No targets. Pass a path or --recent.");
+        std::process::exit(1);
+    }
+
+    let results: Vec<CheckResult> = targets
+        .iter()
+        .map(|t| run_skillify_check_target(t, &skills_dir, &root))
+        .collect();
+
+    if opts.json {
+        println!("{}", serde_json::to_string_pretty(&results)?);
+    } else {
+        for r in &results {
+            println!(
+                "\n{}  [{}]  {}/{}",
+                r.path, r.skill_name, r.score, r.total
+            );
+            for item in &r.items {
+                let mark = if item.passed {
+                    '✓'
+                } else if item.required {
+                    '✗'
+                } else {
+                    '·'
+                };
+                let tag = if item.required {
+                    String::new()
+                } else {
+                    " (optional)".to_string()
+                };
+                let detail = item
+                    .detail
+                    .as_ref()
+                    .map(|d| format!("  — {d}"))
+                    .unwrap_or_default();
+                println!("  {mark} {}{}{}", item.name, tag, detail);
+            }
+            println!("  → {}", r.recommendation);
+        }
+    }
+
+    let any_failed = results
+        .iter()
+        .any(|r| r.items.iter().any(|i| !i.passed && i.required));
+    std::process::exit(if any_failed { 1 } else { 0 });
+}
+
+/// Flat scan of `src/commands`, `src/core`, `scripts` for recently-modified
+/// code files (mirrors TS `recentlyModified`).
+fn recently_modified(root: &Path, days: i64) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let cutoff = SystemTime::now() - Duration::from_secs((days * 24 * 3600) as u64);
+    const RECENT_EXTS: &[&str] = &["ts", "mjs", "js", "py"];
+    for sub in ["src/commands", "src/core", "scripts"] {
+        let dir = root.join(sub);
+        if !dir.is_dir() {
+            continue;
+        }
+        if let Ok(entries) = fs::read_dir(&dir) {
+            for e in entries.flatten() {
+                let fp = e.path();
+                if !fp.is_file() {
+                    continue;
+                }
+                let ext = fp.extension().and_then(|s| s.to_str()).unwrap_or("");
+                if !RECENT_EXTS.iter().any(|x| x == &ext) {
+                    continue;
+                }
+                if let Ok(meta) = e.metadata() {
+                    if let Ok(mt) = meta.modified() {
+                        if mt >= cutoff {
+                            out.push(fp);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,15 +394,13 @@ mod tests {
         ])
         .is_ok());
         // missing --description must fail (clap-required).
-        assert!(SkillifySubcommand::try_parse_from([
-            "skillify", "scaffold", "my-skill"
-        ])
-        .is_err());
+        assert!(SkillifySubcommand::try_parse_from(["skillify", "scaffold", "my-skill"]).is_err());
     }
 
     #[test]
     fn check_verb_parses() {
         assert!(SkillifySubcommand::try_parse_from(["skillify", "check", "scripts/foo.mjs"]).is_ok());
         assert!(SkillifySubcommand::try_parse_from(["skillify", "check", "--recent"]).is_ok());
+        assert!(SkillifySubcommand::try_parse_from(["skillify", "check", "scripts/foo.mjs", "--json"]).is_ok());
     }
 }

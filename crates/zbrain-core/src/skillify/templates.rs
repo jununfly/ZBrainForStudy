@@ -121,7 +121,7 @@ pub fn skill_md_template(v: &ScaffoldVars) -> String {
         "Pass criteria: every dim mean >=7 AND no model scored any dim <5. Receipts".to_string(),
     );
     lines.push(
-        "land at `~/.zbrain/.zbrain/eval-receipts/<slug>-<sha8>.json` (sha-8 of SKILL.md".to_string(),
+        "land at `~/.zbrain/eval-receipts/<slug>-<sha8>.json` (sha-8 of SKILL.md".to_string(),
     );
     lines.push(
         "content). `zbrain skillify check` surfaces the receipt status as informational.".to_string(),

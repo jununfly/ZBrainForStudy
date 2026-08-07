@@ -41,7 +41,7 @@ Rust CLI 27 顶层命令（`crates/zbrain-cli/src/lib.rs` `enum Commands` L344�
 | TS 子系统/命令 | 体量 | 硬锚点 / KNOWN-GAPS |
 |---|---|---|
 | `schema-pack`（32 verb Schema Cathedral） | 26 | **G4** + `UNMIGRATED_TS_SCHEMA_PACK_VERBS`（lib.rs:2990）+ 锚点测试 |
-| ~~`skillpack`(27) + `skillify`~~ | 27+ | **Rust core 已完整（26 模块 7499 行）+ CLI 13/15 verb 已接线**（2026-07-23）：init/scaffold/search/info/install/doctor/pack/harvest/scrub-legacy/list/reference/registry/endorse 真实接线；migrate-fence/check 保留占位（core 无对应实现）。TS 端 skillify-check.ts 等消费者仍在，暂不删 TS。 |
+| ~~`skillpack`(27) + `skillify`~~ | 27+ | **Rust core 已完整（26 模块 7499 行）+ CLI 15/15 verb 已接线**（2026-08-07）：init/scaffold/search/info/install/doctor/pack/harvest/scrub-legacy/list/reference/registry/endorse 真实接线；skillify 的 scaffold + check(12 项审计) 均已迁 Rust（1-1 + 1-1-1 完成），`skillify-check.ts` 已删。 |
 | eval 一族（约 20 个 `eval-*` 命令 + `src/eval` + `src/core/eval*`） | 大 | ts_keep_seeds Phase10 段钉住 |
 | `eval-contradictions`(15) | 15 | Rust 无 |
 | `takes-quality-eval`(10) | 10 | Rust 无 |
@@ -83,7 +83,7 @@ Rust CLI 27 顶层命令（`crates/zbrain-cli/src/lib.rs` `enum Commands` L344�
 按「体量大 + 有硬锚点追踪 + 内聚边界清晰」优先：
 
 1. **schema-pack（G4，32 verb）** — ✅ **已完成（2026-07-23）**。全部 32 verb 迁移到 Rust，188 单测全绿，`UNMIGRATED_TS_SCHEMA_PACK_VERBS` 常量已清空。
-2. **skillpack / skillify** — ✅ **CLI 接线完成（2026-07-23）**。Core 26 模块 7499 行完整实现，CLI 13/15 verb 真实接线（余 2 占位：migrate-fence/check 在 core 无实现）。TS 端消费者（skillify-check.ts）仍在，暂不删 TS。
+2. **skillpack / skillify** — ✅ **CLI 接线完成（2026-08-07）**。Core 26 模块 7499 行完整实现，CLI 15/15 verb 真实接线（skillify 的 scaffold + check 均已迁 Rust，skillify-check.ts 已删）。
 3. **eval 一族** — 数量多但同质（约 20 个 eval 命令 + core/eval），适合整体作为一个独立 Phase 推进。
 4. **doctor 11 检查（G5）** — 有 `UNMIGRATED_TS_DOCTOR_CHECKS` 锚点，逐项迁出（`reranker_health` 已示范迁出模式）。
 5. 部分覆盖类（search/facts/think）可穿插补齐 core 逻辑。

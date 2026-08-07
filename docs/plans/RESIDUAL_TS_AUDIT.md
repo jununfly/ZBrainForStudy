@@ -9,8 +9,8 @@
 ## 总体
 
 - 扫描 `src/**/*.ts` 共 **414** 个文件。
-- 已 MIGRATED（Rust 接管逻辑）：**128** 个（分布在已迁模块）。
-- 仍 UNMIGRATED（真前沿）：**286** 个。
+- 已 MIGRATED（Rust 接管逻辑）：**142** 个（分布在已迁模块）。
+- 仍 UNMIGRATED（真前沿）：**272** 个。
 
 ## 已 MIGRATED 模块（Rust 拥有逻辑，TS 为胶水）
 
@@ -27,8 +27,10 @@
 | core/resolvers | 3 |
 | core/code-intel | 2 |
 | core/budget | 1 |
+| core/facts | 11 |
+| core/skillify | 3 |
 
-> 注：`core/skillpack` 已迁但 `core/skillify`(2) 仍 UNMIGRATED → 1-1 仅 skillpack 部分完成。
+> 注：`core/skillpack` 已迁；`core/skillify` 全量迁 Rust（scaffold + check 12 项审计，1-1 + 1-1-1 完成），TS 源 `src/core/skillify/*.ts`、`src/commands/skillify.ts`、`src/commands/skillify-check.ts` 已删。
 > `core/code-intel` 已迁但 `core/code-intel/sinks`(3) 仍 UNMIGRATED。
 
 ## 真前沿（UNMIGRATED，按文件数）
@@ -39,7 +41,6 @@
 | commands | 70 | 入口/视图，多经 bin/zbrain-rs.js → Rust；验证后可删 |
 | core/ai/recipes | 18 | TS recipes，未 port |
 | core/eval-contradictions | 15 | 评估逻辑，未 port（G66 提及 calibration-join） |
-| core/facts | 11 | **1-8** 未启动 |
 | core/takes-quality-eval | 10 | 评估逻辑，未 port |
 | core/brainstorm | 5 | 未 port |
 | core/claw-test | 5 | 测试harness，未 port |
@@ -53,7 +54,6 @@
 | commands/migrations | 2 | 迁移脚本，未 port |
 | core/audit | 2 | 审计，未 port |
 | core/enrichment | 2 | 富化，未 port |
-| core/skillify | 2 | 1-1 余下 |
 | eval/code-retrieval | 2 | 评估逻辑，未 port |
 | core/artifact | 1 | 未 port |
 | core/claw-test/runners | 1 | 测试harness，未 port |
@@ -66,7 +66,7 @@
 
 ## 真·未启动的核心端口（下一步候选）
 
-1. **facts (1-8)** — 11 文件，brain 中枢，多处被依赖。最高杠杆核心端口。
+1. ~~**facts (1-8)** — 已迁 Rust（完成）。~~ ~~**skillify check (1-1-1)** — 11 项审计已迁 Rust（完成），TS 孤儿 `skillify-check.ts` 已删。~~
 2. **search 图像 (1-7-3) / 观测 (1-7-4)** — NET_NEW，中工作量。
 3. **output infra (1-4-2)** — BLOCKED（BrainWriter 撞逃生舱禁令），需先决策。
 4. **eval-* 族**（eval-contradictions/takes-quality-eval/cross-modal-eval/longmemeval/code-retrieval）— 评估逻辑，可并行。

@@ -57,7 +57,7 @@
     "1-1": {
       "id": "1-1",
       "label": "skillpack / skillify 迁移 (27+ 文件 Schema/Subagent 包)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [
@@ -80,7 +80,7 @@
           "note": ""
         }
       ],
-      "notes": "skillify scaffold 已迁 Rust（zbrain-core skillify 模块 + zbrain-cli skillify scaffold 子命令），TS 源文件 src/core/skillify/*.ts、src/commands/skillify.ts、tests/unit/skillify-scaffold.test.ts 已删除。剩 check 子命令（11 项审计）由子节点 1-1-1 跟踪（仍留 TS src/commands/skillify-check.ts）。"
+      "notes": "skillify 全量迁 Rust并已完成（1-1）。scaffold + check(scaffold.ts 12 项审计) 均在 zbrain-core skillify 模块 + zbrain-cli skillify 子命令实现。TS 源 src/core/skillify/*.ts、src/commands/skillify.ts、src/commands/skillify-check.ts、tests/unit/skillify-scaffold.test.ts 已全部删除。复用 skill_resolver::check_resolvable / brain_first / skill_frontmatter + auto_detect_skills_dir + zbrain_home。"
     },
     "1-2": {
       "id": "1-2",
@@ -2943,17 +2943,23 @@
     "1-1-1": {
       "id": "1-1-1",
       "label": "skillify check 子命令迁移 (skillify-check.ts 11 项审计 → Rust zbrain skillify check)",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-1",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "skillify check 实现状态？",
+          "answer": "已迁 Rust：zbrian-core skillify/check.rs (12 项审计) + receipt.rs (cross-modal receipt 查找) + 改写 zbrain-cli skillify.rs Check 分支为真实实现；复用 skill_resolver::check_resolvable / brain_first::analyze_skill_brain_first / skill_frontmatter::parse_skill_frontmatter + auto_detect_skills_dir + zbrain_home。TS src/commands/skillify-check.ts 已删除。",
+          "note": ""
+        }
+      ],
       "notes": ""
     }
   },
   "metadata": {
     "created": "2026-07-15 18:52:44",
-    "updated": "2026-08-07 18:26:33",
+    "updated": "2026-08-07 19:36:58",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
   },
   "md_file": "C:\\workspace\\github\\jununfly\\zbrain\\docs\\plans\\ZBRAIN_TS_TO_RUST_PART11_RESIDUAL_TS_ENDGAME.md"
