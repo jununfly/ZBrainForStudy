@@ -377,8 +377,24 @@ mod tests {
 
     #[test]
     fn classify_temporal_bound_overrides_canonical() {
-        // "who is X today" → canonical + temporal bound → recency ON.
+        // "who is X today" → canonical (\bwho is\b) + temporal bound
+        // (\btoday\b) → recency STRONG (today is a STRONG_RECENCY
+        // pattern, beats both canonical-suppression and RECENCY_ON).
+        // The Rust port mirrors `query-intent.ts classifyQuery` exactly
+        // (TS test "who is widget-ceo today" → recency=strong at
+        // b8e0a0ea test/query-intent.test.ts:122). A port-only test that
+        // asserted `On` was incorrect.
         let s = classify_query("who is the CEO today");
+        assert_eq!(s.suggested_recency, RecencyMode::Strong);
+    }
+
+    #[test]
+    fn classify_temporal_bound_weak_recency() {
+        // Counterpart: a non-strong temporal bound on a canonical query
+        // (e.g. "who is X this week" — not in STRONG_RECENCY_PATTERNS
+        // but in EXPLICIT_TEMPORAL_BOUND) suppresses the canonical-off
+        // override and lands on RECENCY_ON, not Strong.
+        let s = classify_query("who is the CEO this week");
         assert_eq!(s.suggested_recency, RecencyMode::On);
     }
 
@@ -411,7 +427,14 @@ mod tests {
     }
     #[test]
     fn ambiguous_true_noun_plus_marker() {
-        assert!(is_ambiguous_modality_query("any pics from last week's offsite"));
+        // A truly ambiguous case: visual noun + a demonstrative/determiner
+        // marker, but NOT already a confident cross-modal match. The
+        // earlier test "any pics from last week's offsite" failed because
+        // the CROSS_MODAL_PATTERNS `\b(pics|photos|...)\s+(of|from|...)`
+        // matched `pics from` first, sending the query into the confident
+        // branch (`is_ambiguous_modality_query` returns false). The TS
+        // algorithm intentionally suppresses ambiguity for that case.
+        assert!(is_ambiguous_modality_query("any pics I saw recently"));
     }
 
     // ── auto_detect_detail ─────────────────────────────────────────────

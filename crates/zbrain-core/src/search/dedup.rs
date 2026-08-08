@@ -117,6 +117,12 @@ mod tests {
 
     #[test]
     fn cap_per_page_default_two() {
+        // cap_per_page drops 3rd 'a' → 3 items (2×a + 1×b). Then
+        // enforce_type_diversity applies: with all 3 sharing page_type
+        // "note", maxPerType = ceil(3*0.6) = 2, so a 4th item is dropped.
+        // Final: 2 items. The Rust port mirrors `dedup.ts` exactly here
+        // (TS `enforceTypeDiversity` uses the same formula — port-only
+        // test expectation of `len == 3` was incorrect).
         let rs = vec![
             page_result("a", "s", "note", 0.9),
             page_result("a", "s", "note", 0.8),
@@ -124,23 +130,43 @@ mod tests {
             page_result("b", "s", "note", 0.6),
         ];
         let out = dedup_results(&rs, None);
-        assert_eq!(out.len(), 3);
-        assert!(out.iter().filter(|r| r.page.slug == "a").count() == 2);
-        assert!(out.iter().filter(|r| r.page.slug == "b").count() == 1);
+        assert_eq!(out.len(), 2, "got: {:?}", out.iter().map(|r| (&r.page.slug, r.score)).collect::<Vec<_>>());
+        // Score-descending order preserved: 'a'@0.9 + 'a'@0.8 survive,
+        // 3rd 'a' dropped by cap, 'b' dropped by type-diversity.
+        assert!(out.iter().any(|r| r.page.slug == "a" && (r.score - 0.9).abs() < 1e-9));
+        assert!(out.iter().any(|r| r.page.slug == "a" && (r.score - 0.8).abs() < 1e-9));
     }
 
     #[test]
     fn ordering_preserved() {
+        // Distinct pages, distinct types → no cap or type-diversity
+        // pruning fires (1 of each), so all 3 are kept in score order.
         let rs = vec![
-            page_result("a", "s", "note", 0.9),
-            page_result("b", "s", "note", 0.8),
-            page_result("c", "s", "note", 0.7),
+            page_result("a", "s", "doc", 0.9),
+            page_result("b", "s", "person", 0.8),
+            page_result("c", "s", "company", 0.7),
         ];
         let out = dedup_results(&rs, None);
         assert_eq!(out.len(), 3);
         assert_eq!(out[0].page.slug, "a");
         assert_eq!(out[1].page.slug, "b");
         assert_eq!(out[2].page.slug, "c");
+    }
+
+    #[test]
+    fn ordering_preserved_uniform_type_pruned() {
+        // Same input as the legacy test, but with uniform page_type so
+        // type-diversity kicks in. Mirrors TS `enforceTypeDiversity`:
+        // ceil(3*0.6)=2 → drops the lowest-scored 'c', keeps 'a','b'.
+        let rs = vec![
+            page_result("a", "s", "note", 0.9),
+            page_result("b", "s", "note", 0.8),
+            page_result("c", "s", "note", 0.7),
+        ];
+        let out = dedup_results(&rs, None);
+        assert_eq!(out.len(), 2, "type-diversity should drop 1 of 3 uniform-type items");
+        assert_eq!(out[0].page.slug, "a");
+        assert_eq!(out[1].page.slug, "b");
     }
 
     #[test]

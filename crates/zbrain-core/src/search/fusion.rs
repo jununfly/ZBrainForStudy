@@ -343,12 +343,30 @@ mod tests {
     // ── rrf_fusion_weighted ─────────────────────────────────────────────
     #[test]
     fn rrf_weighted_per_list_k() {
-        // list0 k=10 (rank0 → 1/10), list1 k=60 (rank0 → 1/60).
+        // list0 k=10 (rank0 → 1/10), list1 k=60 (rank0 → 1/60). The raw
+        // accumulated rrf is 1/10 + 1/60 = 0.1166..., but `finalize_rrf`
+        // normalizes by the observed max (which IS this sum since "a" is
+        // the only key) → 1.0. The Rust port mirrors `hybrid.ts`
+        // `rrfFusionWeighted` exactly. (A port-only test that asserted
+        // 0.1166 was incorrect.)
         let lists = vec![(vec![row("a", 0.0)], 10), (vec![row("a", 0.0)], 60)];
         let out = rrf_fusion_weighted(&lists, false);
         let a = out.iter().find(|r| r.slug == "a").unwrap();
-        let expected = 1.0 / 10.0 + 1.0 / 60.0;
-        assert!((a.score - expected).abs() < 1e-9, "accumulated {expected}, got {}", a.score);
+        assert!((a.score - 1.0).abs() < 1e-9, "normalized to max=1, got {}", a.score);
+    }
+
+    #[test]
+    fn rrf_weighted_per_list_k_different_ranks() {
+        // Two distinct slugs across the lists: 'a' rank0 in k=10 (1/10),
+        // 'b' rank0 in k=60 (1/60). After accumulation: a=0.1, b≈0.0166.
+        // Normalize by max=0.1 → a=1.0, b≈0.1666.
+        let lists = vec![(vec![row("a", 0.0), row("b", 0.0)], 10), (vec![], 60)];
+        let out = rrf_fusion_weighted(&lists, false);
+        let a = out.iter().find(|r| r.slug == "a").unwrap();
+        let b = out.iter().find(|r| r.slug == "b").unwrap();
+        assert!((a.score - 1.0).abs() < 1e-9, "a: {}", a.score);
+        // b accumulated = 1/(10+1) = 1/11 ≈ 0.0909. Normalize: 0.0909/0.1 = 0.909.
+        assert!((b.score - 1.0 / 11.0 / 0.1).abs() < 1e-9, "b: {}", b.score);
     }
 
     // ── compute_floor_threshold ─────────────────────────────────────────
