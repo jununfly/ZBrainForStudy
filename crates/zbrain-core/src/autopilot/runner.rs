@@ -486,7 +486,6 @@ pub async fn run_autopilot_tick(
     if opts.nightly_quality_probe_enabled {
         let probe_deps = NightlyProbeRunnerDeps {
             enabled: true,
-            repo_root: opts.repo_path.clone(),
             max_usd: opts.nightly_probe_max_usd,
             audit_dir: opts.audit_dir.clone(),
         };
@@ -509,7 +508,6 @@ pub async fn run_autopilot_tick(
 
 struct NightlyProbeRunnerDeps {
     enabled: bool,
-    repo_root: String,
     max_usd: f64,
     /// Directory for quality-probe audit JSONL. `None` = audit disabled
     /// (rate limit never fires, no rows written) — used by unit tests.
@@ -534,13 +532,8 @@ impl NightlyProbeDeps for NightlyProbeRunnerDeps {
         self.max_usd
     }
 
-    async fn resolve_repo_root(&self) -> String {
-        self.repo_root.clone()
-    }
-
     async fn run_long_mem_eval(
         &self,
-        _fixture_path: &str,
         _output_path: &str,
     ) -> Result<(), String> {
         // registered in docs/plans/KNOWN-GAPS.md (G58)

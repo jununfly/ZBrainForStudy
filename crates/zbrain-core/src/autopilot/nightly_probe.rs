@@ -19,9 +19,6 @@ const NIGHTLY_WINDOW: Duration = Duration::hours(24);
 /// Default max spend per run; matches eval-cross-modal --max-usd default.
 const DEFAULT_MAX_USD: f64 = 5.0;
 
-/// Committed fixture path relative to the repo root.
-const NIGHTLY_FIXTURE_REL_PATH: &str = "tests/unit/fixtures/longmemeval-nightly.jsonl";
-
 /// Convert a `DateTime<Utc>` to an ISO 8601 string for audit storage.
 fn dt_to_iso(dt: DateTime<Utc>) -> String {
     dt.to_rfc3339()
@@ -199,11 +196,9 @@ pub trait NightlyProbeDeps: Send + Sync {
     async fn has_embedding_provider(&self) -> bool;
     /// Resolves the cost cap (config override or DEFAULT_MAX_USD).
     async fn resolve_max_usd(&self) -> f64;
-    /// Resolves the repo root so we can find the committed fixture.
-    async fn resolve_repo_root(&self) -> String;
     /// Runs the long‑mem‑eval command, writing per‑question hypotheses to
     /// `output_path`.
-    async fn run_long_mem_eval(&self, fixture_path: &str, output_path: &str) -> Result<(), String>;
+    async fn run_long_mem_eval(&self, output_path: &str) -> Result<(), String>;
     /// Runs the cross‑modal batch. Returns exit code and optional summary.
     async fn run_cross_modal_batch(
         &self,
@@ -299,17 +294,20 @@ pub async fn run_nightly_quality_probe(deps: &dyn NightlyProbeDeps) -> NightlyPr
         };
     }
 
-    // 4. Resolve repo root + fixture path.
-    let repo_root = deps.resolve_repo_root().await;
-    let fixture_path = format!("{}/{}", repo_root, NIGHTLY_FIXTURE_REL_PATH);
-    let fixture_sha8 = None; // sha8 computed by filesystem in production adapter
+    // 4. Resolve cost cap. The probe no longer reads a bundled fixture — the
+    //    previous `NIGHTLY_FIXTURE_REL_PATH` pointed at the retired tests/
+    //    unit fixtures, and `run_long_mem_eval` is a G58 placeholder that
+    //    returns Err unconditionally (TS longmemeval is not runnable post
+    //    Phase11 minions teardown).
+    let fixture_sha8 = None;
     let max_usd = deps.resolve_max_usd().await;
 
     // 5. Run evaluations.
     // Scratch files live under the OS temp dir, namespaced by the probe's
     // `now` timestamp so concurrent/repeat runs never clobber each other.
-    // The production adapter (bun spawn) reads the fixture + writes these;
-    // test stubs ignore the paths entirely.
+    // `run_long_mem_eval` is a G58 placeholder that returns Err unconditionally
+    // (the TS longmemeval command is not runnable post-Phase11); test stubs
+    // ignore the paths entirely.
     let scratch = std::env::temp_dir();
     let stamp = now.timestamp_millis();
     let lme_out = scratch
@@ -321,7 +319,7 @@ pub async fn run_nightly_quality_probe(deps: &dyn NightlyProbeDeps) -> NightlyPr
         .to_string_lossy()
         .into_owned();
 
-    match deps.run_long_mem_eval(&fixture_path, &lme_out).await {
+    match deps.run_long_mem_eval(&lme_out).await {
         Ok(()) => {}
         Err(detail) => {
             eprintln!("[nightly-quality-probe] runtime error: {}", detail);
@@ -484,7 +482,6 @@ mod tests {
         enabled: bool,
         has_embedding: bool,
         max_usd: f64,
-        repo_root: String,
         now: DateTime<Utc>,
         long_mem_eval_result: Result<(), String>,
         cross_modal_result: Result<(i32, Option<super::CrossModalSummary>), String>,
@@ -498,7 +495,6 @@ mod tests {
                 enabled: true,
                 has_embedding: true,
                 max_usd: super::DEFAULT_MAX_USD,
-                repo_root: "/tmp/brain".into(),
                 now: dt("2026-07-14T12:00:00Z"),
                 long_mem_eval_result: Ok(()),
                 cross_modal_result: Ok((
@@ -533,12 +529,8 @@ mod tests {
         async fn resolve_max_usd(&self) -> f64 {
             self.max_usd
         }
-        async fn resolve_repo_root(&self) -> String {
-            self.repo_root.clone()
-        }
         async fn run_long_mem_eval(
             &self,
-            _fixture_path: &str,
             _output_path: &str,
         ) -> Result<(), String> {
             self.long_mem_eval_result.clone()
