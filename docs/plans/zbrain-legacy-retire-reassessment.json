@@ -1,0 +1,90 @@
+{
+  "title": "Legacy GBrain 资产退役重评估",
+  "description": "重评估 132 个 legacy 文件删除：范围/ripple/可验证性/决策。本机 WSL+Rust(cargo) 已于 2026-08-08 落地，原 blocker 解除",
+  "version": 1,
+  "nodes": {
+    "1": {
+      "id": "1",
+      "label": "Legacy GBrain 资产退役重评估",
+      "status": "in_progress",
+      "mode": "explore",
+      "parent": null,
+      "children": [
+        "1-1",
+        "1-2",
+        "1-3",
+        "1-4",
+        "1-5"
+      ],
+      "decisions": [
+        {
+          "q": "重评估推荐路径？",
+          "answer": "推荐选项 B（拆多 commit + 逐 ripple 修复），因现在可本地 verify，风险可控。",
+          "note": "选项 A（批量删，接 ripple break）CI 必红代价高；C（不提交）工作树长期脏；D（撤回）已撤过。B 每步可回滚、信号清晰。"
+        }
+      ],
+      "notes": ""
+    },
+    "1-1": {
+      "id": "1-1",
+      "label": "范围盘点与分类（132 文件 by 目录）",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-2": {
+      "id": "1-2",
+      "label": "外部 ripple 影响评估（6 文件 ~50 引用）",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-3": {
+      "id": "1-3",
+      "label": "可验证性重估（WSL+Rust cargo 已落地）",
+      "status": "in_progress",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [
+        {
+          "q": "本机能否本地 verify ripple 修复？",
+          "answer": "能。WSL2 Ubuntu + Rust 1.97.1 + cargo 已于 2026-08-08 落地，cargo build/test 全绿。",
+          "note": "原 pending doc 主 blocker（本机无 cargo 无法 verify）已解除；TS 侧 ripple（package.json/.github/bunfig/admin）仍依赖 bun/node，WSL 也可跑 node 部分验证，但 CI 全链路需 push 后 GitHub Actions 确认。"
+        }
+      ],
+      "notes": ""
+    },
+    "1-4": {
+      "id": "1-4",
+      "label": "决策选项 A/B/C/D 对比",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-5": {
+      "id": "1-5",
+      "label": "推荐路径与执行",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    }
+  },
+  "metadata": {
+    "created": "2026-08-08 20:39:32",
+    "updated": "2026-08-08 20:39:53",
+    "md_file": "docs/plans/ZBRAIN_LEGACY_RETIRE_REASSESSMENT.md"
+  }
+}
