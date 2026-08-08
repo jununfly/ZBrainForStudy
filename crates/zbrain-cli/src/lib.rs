@@ -1503,8 +1503,10 @@ pub struct CalibrationArgs {
 /// un-migrated boost axes are tracked in docs/plans/KNOWN-GAPS.md (G13).
 #[derive(Debug, Parser)]
 pub struct QueryArgs {
-    /// Search query text
-    pub query: String,
+    /// Search query text. Ignored when `--stats` is set; the stats
+    /// branch reads the telemetry file directly and doesn't dispatch
+    /// through the engine.
+    pub query: Option<String>,
 
     /// Maximum number of results (default: 20)
     #[arg(long)]
@@ -1522,6 +1524,21 @@ pub struct QueryArgs {
     /// of JSON.
     #[arg(long)]
     pub explain: bool,
+
+    /// Print aggregate search telemetry stats (G72) instead of running a
+    /// query. Reads `<ZBRAIN_HOME>/telemetry/search.jsonl`, aggregates over
+    /// the window selected by `--stats-window`, prints a human-readable
+    /// summary (count, p50/p95 latency, top queries, by-intent / by-mode
+    /// breakdowns). Mutually exclusive with all search parameters because
+    /// the call short-circuits before engine invocation.
+    #[arg(long, conflicts_with_all = ["limit", "offset", "source_id", "explain"])]
+    pub stats: bool,
+
+    /// Time window for `--stats` output. Ignored when `--stats` is not set.
+    /// One of `hour` / `day` / `week` / `all` (default: `day`). Mirrors the
+    /// `StatsWindow` enum in `zbrain-core/src/search/telemetry.rs`.
+    #[arg(long, default_value = "day", requires = "stats")]
+    pub stats_window: Option<String>,
 }
 
 /// Arguments for `zbrain init` command.
@@ -3349,8 +3366,27 @@ async fn run_calibration_command(
 
 /// Execute `zbrain query` command.
 async fn run_query_command(args: QueryArgs, config_path: Option<&Path>, timeout_ms: Option<u64>) -> anyhow::Result<()> {
+    // G72 — short-circuit to stats when `--stats` is set. We read the
+    // telemetry JSONL directly rather than going through the engine,
+    // because stats are a pure file-IO operation and don't need the
+    // brain loaded. The path is resolved the same way the runtime
+    // writer resolves it (`SearchTelemetryWriter::default_path`).
+    if args.stats {
+        let window = parse_stats_window(args.stats_window.as_deref())?;
+        let path = zbrain_core::search::SearchTelemetryWriter::default_path()
+            .ok_or_else(|| anyhow::anyhow!(
+                "could not resolve telemetry path — set $ZBRAIN_HOME or $HOME"
+            ))?;
+        let stats = zbrain_core::search::read_search_stats(&path, window)?;
+        print!("{}", format_search_stats(&stats, &path));
+        return Ok(());
+    }
+
+    let query = args.query.as_deref().ok_or_else(|| {
+        anyhow::anyhow!("query text is required unless --stats is set")
+    })?;
     let params = serde_json::json!({
-        "query": args.query,
+        "query": query,
         "limit": args.limit,
         "offset": args.offset,
         "source_id": args.source_id,
@@ -3373,6 +3409,61 @@ async fn run_query_command(args: QueryArgs, config_path: Option<&Path>, timeout_
         println!("{}", serde_json::to_string_pretty(&output)?);
     }
     Ok(())
+}
+
+/// Parse the `--stats-window` CLI string into the `StatsWindow` enum.
+fn parse_stats_window(s: Option<&str>) -> anyhow::Result<zbrain_core::search::StatsWindow> {
+    use zbrain_core::search::StatsWindow;
+    match s.unwrap_or("day") {
+        "hour" => Ok(StatsWindow::LastHour),
+        "day" => Ok(StatsWindow::LastDay),
+        "week" => Ok(StatsWindow::LastWeek),
+        "all" => Ok(StatsWindow::All),
+        other => Err(anyhow::anyhow!(
+            "invalid --stats-window `{other}` (expected hour|day|week|all)"
+        )),
+    }
+}
+
+/// Render a `SearchStats` aggregate as a human-readable text block. The
+/// formatter intentionally keeps the surface minimal — operators reading
+/// the JSONL directly get full per-event detail; the CLI only summarizes
+/// the headline numbers.
+fn format_search_stats(stats: &zbrain_core::search::SearchStats, path: &Path) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    let _ = writeln!(out, "Search telemetry (window: {:?})", stats.window);
+    let _ = writeln!(out, "Source: {}", path.display());
+    let _ = writeln!(out, "");
+    let _ = writeln!(out, "  count:          {}", stats.count);
+    let _ = writeln!(out, "  p50 latency:    {} ms", stats.p50_latency_ms);
+    let _ = writeln!(out, "  p95 latency:    {} ms", stats.p95_latency_ms);
+    if !stats.by_intent.is_empty() {
+        let _ = writeln!(out, "");
+        let _ = writeln!(out, "  by intent:");
+        let mut entries: Vec<_> = stats.by_intent.iter().collect();
+        entries.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+        for (intent, count) in entries {
+            let _ = writeln!(out, "    {intent:20} {count}");
+        }
+    }
+    if !stats.mode_counts.is_empty() {
+        let _ = writeln!(out, "");
+        let _ = writeln!(out, "  by mode:");
+        let mut entries: Vec<_> = stats.mode_counts.iter().collect();
+        entries.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+        for (mode, count) in entries {
+            let _ = writeln!(out, "    {mode:20} {count}");
+        }
+    }
+    if !stats.top_queries.is_empty() {
+        let _ = writeln!(out, "");
+        let _ = writeln!(out, "  top queries:");
+        for (query, count) in &stats.top_queries {
+            let _ = writeln!(out, "    {count:3}× {query}");
+        }
+    }
+    out
 }
 
 /// Execute `zbrain put-page` command.

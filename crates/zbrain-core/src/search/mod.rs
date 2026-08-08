@@ -19,6 +19,7 @@ pub mod engine;
 pub mod eval;
 pub mod fusion;
 pub mod intent;
+pub mod telemetry;
 
 pub use dedup::{dedup_results, DedupOpts, MAX_PER_PAGE, MAX_TYPE_RATIO};
 pub use eval::{
@@ -33,4 +34,8 @@ pub use fusion::{
 pub use intent::{
     auto_detect_detail, classify_query, classify_query_intent, is_ambiguous_modality_query,
     ModalityMode, QueryIntent, QuerySuggestions, RecencyMode, SalienceMode, SearchDetail,
+};
+pub use telemetry::{
+    read_search_stats, SearchStats, SearchTelemetryEvent, SearchTelemetryWriter, SearchTimer,
+    StatsWindow, DEFAULT_TELEMETRY_PATH,
 };

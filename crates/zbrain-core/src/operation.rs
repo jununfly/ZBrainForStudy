@@ -490,6 +490,19 @@ pub struct OperationContext {
     /// in tests via `with_chat_provider`.
     #[serde(skip)]
     pub chat_provider: Option<std::sync::Arc<dyn crate::ai::chat::ChatProvider>>,
+    /// Search telemetry writer for `query` / `search` operations (G72).
+    ///
+    /// `None` → telemetry is a no-op (the writer returned by
+    /// `SearchTelemetryWriter::new(None)` discards every record). When
+    /// set, `QueryOperation::execute` and `SearchOperation::execute` call
+    /// `writer.record(event)` after the search returns, appending one
+    /// JSONL event per call. Mirrors the `embedding` / `rerank` /
+    /// `mount_resolver` / `chat_provider` injection pattern. Not
+    /// serialized — carries a live writer handle wired at CLI
+    /// construction or in tests via `with_telemetry_writer`. See
+    /// `docs/plans/KNOWN-GAPS.md` (G72) for the design rationale.
+    #[serde(skip)]
+    pub telemetry_writer: Option<std::sync::Arc<crate::search::SearchTelemetryWriter>>,
 }
 
 impl fmt::Debug for OperationContext {
@@ -539,6 +552,7 @@ impl OperationContext {
             embedding: None,
             mount_resolver: None,
             chat_provider: None,
+            telemetry_writer: None,
         }
     }
 
@@ -567,6 +581,7 @@ impl OperationContext {
             embedding: None,
             mount_resolver: None,
             chat_provider: None,
+            telemetry_writer: None,
         }
     }
 
@@ -621,6 +636,23 @@ impl OperationContext {
         provider: std::sync::Arc<dyn crate::ai::chat::ChatProvider>,
     ) -> Self {
         self.chat_provider = Some(provider);
+        self
+    }
+
+    /// Attach a search telemetry writer (G72).
+    ///
+    /// Absent this, `QueryOperation::execute` and `SearchOperation::execute`
+    /// skip the telemetry append — the hot path is unaffected. When set,
+    /// every search call records one event to the writer (JSONL append
+    /// to the writer's path, or a no-op if the writer was constructed
+    /// with `None`). Mirrors the `with_chat_provider` / `with_embedding`
+    /// injection precedent. See `docs/plans/KNOWN-GAPS.md` (G72).
+    #[must_use]
+    pub fn with_telemetry_writer(
+        mut self,
+        writer: std::sync::Arc<crate::search::SearchTelemetryWriter>,
+    ) -> Self {
+        self.telemetry_writer = Some(writer);
         self
     }
 
@@ -1999,6 +2031,14 @@ impl TypedOperation for QueryOperation {
     }
 
     async fn execute(&self, ctx: &OperationContext, params: Self::Params) -> OperationResult<Self::Output> {
+        // G72 — telemetry timer started at the top of the call so the
+        // recorded latency reflects the full path (engine round-trip +
+        // rerank stage + pagination). Failures below `?` early-return,
+        // skipping the record — that's the correct posture: a
+        // mid-pipeline error is interesting to the operator as a
+        // distinct event, not a partial search. (The TS port did the
+        // same: `record` only fired on the success path.)
+        let timer = crate::search::SearchTimer::start();
         let engine = ctx.engine.as_ref().ok_or_else(|| {
             OperationError::new(ErrorCode::StorageError, "query operation requires an engine")
         })?;
@@ -2110,6 +2150,27 @@ impl TypedOperation for QueryOperation {
             })
             .collect();
 
+        // G72 — record one telemetry event per query. `mode = "hybrid"`
+        // (we used the engine's fused hybrid path), `intent` derived from
+        // the query text by the writer's helper. Failures are logged
+        // and swallowed so a misconfigured telemetry path can never
+        // break a search (mirrors TS "swallow per-bucket" posture).
+        if let Some(writer) = ctx.telemetry_writer.as_ref() {
+            let event = crate::search::SearchTelemetryEvent::from_search(
+                &query_text,
+                Some("hybrid"),
+                None,
+                paginated.len() as u32,
+                0,
+                &timer,
+            );
+            if let Err(e) = writer.record(&event) {
+                if let Some(logger) = ctx.logger.as_ref() {
+                    logger.warn(&format!("telemetry record failed: {e}"));
+                }
+            }
+        }
+
         Ok(QueryOutput {
             results: paginated,
             total,
@@ -2209,6 +2270,9 @@ impl TypedOperation for SearchOperation {
         ctx: &OperationContext,
         params: Self::Params,
     ) -> OperationResult<Self::Output> {
+        // G72 — telemetry timer covers the engine round-trip + the
+        // optional in-memory pagination tail.
+        let timer = crate::search::SearchTimer::start();
         let engine = ctx.engine()?;
 
         // Scope resolution mirrors TS `sourceScopeOpts(ctx)` + the `source_id`
@@ -2237,6 +2301,25 @@ impl TypedOperation for SearchOperation {
                 results.clear();
             } else {
                 results = results.split_off(offset);
+            }
+        }
+
+        // G72 — record one telemetry event per search call. `mode = "lexical"`
+        // because the `search` op runs keyword-only (no vector path,
+        // matching TS `searchKeyword`).
+        if let Some(writer) = ctx.telemetry_writer.as_ref() {
+            let event = crate::search::SearchTelemetryEvent::from_search(
+                &params.query,
+                Some("lexical"),
+                None,
+                results.len() as u32,
+                0,
+                &timer,
+            );
+            if let Err(e) = writer.record(&event) {
+                if let Some(logger) = ctx.logger.as_ref() {
+                    logger.warn(&format!("telemetry record failed: {e}"));
+                }
             }
         }
 
