@@ -4,10 +4,10 @@
  * The admin tsconfig.json scopes `include: ['src']` to admin/src/, so we
  * cannot directly import from ../../src/core/scope.ts without breaking the
  * SPA's compile boundary. Instead, this file is a hand-maintained duplicate;
- * scripts/check-admin-scope-drift.sh fails the build if the two lists drift.
+ * a scope-drift check fails the build if the two lists drift.
  *
  * If you change ALLOWED_SCOPES in src/core/scope.ts, update this file too,
- * or `bun run verify` will reject the change.
+ * or the build's scope-drift check will reject the change.
  */
 
 export type Scope = 'read' | 'write' | 'admin' | 'sources_admin' | 'users_admin' | 'agent';

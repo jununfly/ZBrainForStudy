@@ -1,8 +1,7 @@
 # docker-compose.ci.yml
 #
 # Local CI gate with 4-way E2E sharding. Spins up 4 pgvector services + a bun
-# runner that bind-mounts the repo. Used by `bun run ci:local` and
-# `bun run ci:local:diff` (see scripts/ci-local.sh).
+# runner that bind-mounts the repo.
 #
 # All services are pulled as `image:` (no build) so `docker compose pull`
 # refreshes everything. The bun version floats with `oven/bun:1` to track CI's
@@ -97,7 +96,7 @@ services:
         condition: service_healthy
       postgres-4:
         condition: service_healthy
-    # No global DATABASE_URL — scripts/ci-local.sh sets per-shard URL via -e.
+    # No global DATABASE_URL — the local CI runner sets per-shard URL via -e.
     # Unit phase explicitly unsets DATABASE_URL so tests/unit/e2e/* gracefully skip.
     volumes:
       - .:/app
