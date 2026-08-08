@@ -30,10 +30,11 @@ fn ci(pat: &str) -> Regex {
 }
 
 // `[slug#3]` → take; `[slug]` → page; `[slug/with/path#7]` → take multi-segment.
-// Slugs match the validatePageSlug allowlist (lowercase alnum + hyphen +
-// forward-slash). Anything outside that pattern won't match.
+// Slugs match the validatePageSlug allowlist (alnum + hyphen + forward-slash),
+// case-insensitive (TS uses `gi` flag — see `src/core/think/cite-render.ts`).
+// Anything outside that pattern won't match.
 static CITATION_RX: LazyLock<Regex> = LazyLock::new(|| {
-    ci(r"\[([a-z0-9][a-z0-9\-]*(?:/[a-z0-9][a-z0-9\-]*)*)(?:#(\d+))?\]")
+    ci(r"(?i)\[([a-z0-9][a-z0-9\-]*(?:/[a-z0-9][a-z0-9\-]*)*)(?:#(\d+))?\]")
 });
 
 /// Extract citation markers from an answer body (fallback path).

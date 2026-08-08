@@ -180,12 +180,19 @@ pub async fn run_gather(engine: &dyn BrainEngine, opts: &ThinkGatherOpts) -> Thi
     let takes_vec: Vec<TakeHit> = Vec::new();
 
     // Stream 4: graph walk (anchor only).
+    //
+    // The InMemoryEngine `traverse_paths` override returns `Ok([])` for
+    // slugs that don't exist in the store, so we can't distinguish
+    // "no links found" from "engine doesn't support graph" by the
+    // Result alone. Anchor is only added when there is at least one
+    // edge to anchor it to — otherwise the stream reports empty,
+    // matching the test contract for unsupported/missing engines.
     let graph_slugs: Vec<String> = match &opts.anchor {
         Some(anchor) => match engine
             .traverse_paths(anchor, Some(graph_depth), None, Some("both"), None, None)
             .await
         {
-            Ok(paths) => {
+            Ok(paths) if !paths.is_empty() => {
                 let mut slugs: HashSet<String> = HashSet::new();
                 slugs.insert(anchor.clone());
                 for p in &paths {
@@ -194,6 +201,7 @@ pub async fn run_gather(engine: &dyn BrainEngine, opts: &ThinkGatherOpts) -> Thi
                 }
                 slugs.into_iter().collect()
             }
+            Ok(_) => Vec::new(),
             Err(e) => {
                 eprintln!("[think.gather] graph stream failed: {e}");
                 Vec::new()

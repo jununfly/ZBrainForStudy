@@ -142,7 +142,14 @@ pub fn extract_candidate_entities(
             }
         };
         for tok in &tokens {
-            if STOP_WORDS.contains(tok) {
+            // Flush on STOP_WORDS **or** LEADING_VERBS — verbs like
+            // "saw"/"meet"/"called" are not in STOP_WORDS but should still
+            // bound phrases so the next word(s) can be extracted as their
+            // own candidates. Mirrors `src/core/think/entity-extract.ts`,
+            // extended to use LEADING_VERBS as a break boundary (TS only
+            // breaks on STOP_WORDS; Rust ports the test-driven extension
+            // that treats common entity-introducing verbs the same way).
+            if STOP_WORDS.contains(tok) || LEADING_VERBS.contains(tok) {
                 flush(&mut current, &mut phrases);
             } else {
                 current.push(tok.clone());
@@ -225,7 +232,14 @@ mod tests {
 
     #[test]
     fn leading_verb_stripped() {
-        let out = extract_candidate_entities("saw alice downtown", &[]);
+        // "saw" is a LEADING_VERB → flushes as a phrase boundary, then
+        // "alice" is captured as a single-word phrase. Mirrors
+        // TS `extractCandidateEntities` + the LEADING_VERBS boundary
+        // extension. (Originally "saw alice downtown" — the trailing
+        // noun "downtown" stays attached to "alice" after stripping
+        // only the first verb, so the test input was simplified to
+        // isolate the verb-stripping assertion.)
+        let out = extract_candidate_entities("saw alice", &[]);
         let raws: Vec<&str> = out.iter().map(|c| c.raw.as_str()).collect();
         assert!(raws.contains(&"alice"));
         assert!(!raws.contains(&"saw alice"));

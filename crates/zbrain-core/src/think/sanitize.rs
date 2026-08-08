@@ -47,7 +47,7 @@ static INJECTION_PATTERNS: LazyLock<Vec<InjectionPattern>> = LazyLock::new(|| {
         InjectionPattern { name: "open-instructions", replacement: "&lt;instructions&gt;", rx: ci(r"<\s*instructions?\s*>") },
         InjectionPattern { name: "close-trajectory", replacement: "&lt;/trajectory&gt;", rx: ci(r"<\s*\/\s*trajectory\s*>") },
         InjectionPattern { name: "open-trajectory", replacement: "&lt;trajectory&gt;", rx: ci(r"<\s*trajectory\b[^>]*>") },
-        InjectionPattern { name: "xml-attr-inject", replacement: " [redacted-attr]", rx: ci(r#"\s+(entity|metric|event_type|kind)\s*=\s*"[^"]*""#) },
+        InjectionPattern { name: "xml-attr-inject", replacement: " [redacted-attr]", rx: ci(r#"(?:^|\s+)(entity|metric|event_type|kind)\s*=\s*"[^"]*""#) },
         InjectionPattern { name: "print-system", replacement: "[redacted]", rx: ci(r"(?:print|output|reveal|show)\s+(?:your\s+)?(?:system\s+prompt|instructions?|hidden)") },
         InjectionPattern { name: "verbatim", replacement: "[redacted]", rx: ci(r"(?:repeat|echo)\s+(?:back|verbatim)") },
         InjectionPattern { name: "eval-shell", replacement: "[redacted](", rx: ci(r"\b(?:eval|exec|system|shell)\s*\(") },
