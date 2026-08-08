@@ -73,9 +73,9 @@ strict behavior when unset.
 - `gbrain.yml` (brain repo root, v0.22.11) — Optional storage tiering config. Top-level `storage:` section with `db_tracked:` and `db_only:` array-valued keys. `gbrain sync` auto-manages `.gitignore` for `db_only` paths on successful sync (skips on dry-run, blocked-by-failures, submodule context, or `GBRAIN_NO_GITIGNORE=1`). `gbrain export --restore-only [--repo P] [--type T] [--slug-prefix S]` repopulates missing `db_only` files from the database.
 - `src/core/supabase-admin.ts` — Supabase admin API (project discovery, pgvector check)
 - `src/core/file-resolver.ts` — File resolution with fallback chain (local -> .redirect.yaml -> .redirect -> .supabase)
-- `src/core/chunkers/` — 3-tier chunking (recursive, semantic, LLM-guided). v0.19.0 adds `code.ts` — tree-sitter-based semantic chunker for 30 languages (v0.41 added SQL via DerekStride/tree-sitter-sql) with embedded-asset WASMs (`src/assets/wasm/`), `@dqbd/tiktoken` cl100k_base tokenizer, small-sibling merging. `CHUNKER_VERSION` constant folded into `importCodeFile`'s `content_hash` so chunker shape changes force clean re-chunks across releases. **v0.41 D2 SQL wave (#1173):** `extractSymbolName` gains an inline SQL branch (`extractSqlSymbolName`) that dives through DerekStride's `statement` wrapper into the inner DDL child (`create_table`/`create_function`/`create_view`/`create_index`/`create_procedure`/`create_type`/`create_schema`/`create_database`/`create_trigger`/`alter_table`/`alter_view`) and extracts the target identifier via the `name` field with identifier-shaped fallback. DML kinds (`select`/`insert`/`update`/`delete`/`merge`/`with`) deliberately return null so chunks emit unnamed — code-def is a DDL signal. `normalizeSymbolType` gains parallel SQL branches mapping `create_table → 'table'`, `create_view → 'view'`, etc. `src/commands/code-def.ts:DEF_TYPES` was extended in the same wave with `'table' | 'view' | 'index' | 'procedure' | 'schema' | 'database' | 'trigger'` so the new chunks surface in `gbrain code-def <name>` queries.
+- `src/core/chunkers/` (RETIRED — TS-era) — 3-tier chunking (recursive, semantic, LLM-guided). The legacy `code.ts` tree-sitter-based semantic chunker for 30 languages used embedded-asset WASMs; the Rust port replaces this with `tree-sitter` compiled from source (no committed `.wasm`). `CHUNKER_VERSION` constant folded into `importCodeFile`'s `content_hash` so chunker shape changes force clean re-chunks across releases. **v0.41 D2 SQL wave (#1173):** `extractSymbolName` gains an inline SQL branch (`extractSqlSymbolName`) that dives through DerekStride's `statement` wrapper into the inner DDL child (`create_table`/`create_function`/`create_view`/`create_index`/`create_procedure`/`create_type`/`create_schema`/`create_database`/`create_trigger`/`alter_table`/`alter_view`) and extracts the target identifier via the `name` field with identifier-shaped fallback. DML kinds (`select`/`insert`/`update`/`delete`/`merge`/`with`) deliberately return null so chunks emit unnamed — code-def is a DDL signal. `normalizeSymbolType` gains parallel SQL branches mapping `create_table → 'table'`, `create_view → 'view'`, etc. `src/commands/code-def.ts:DEF_TYPES` was extended in the same wave with `'table' | 'view' | 'index' | 'procedure' | 'schema' | 'database' | 'trigger'` so the new chunks surface in `gbrain code-def <name>` queries.
 - `src/core/errors.ts` (v0.19.0) — `StructuredAgentError` + `buildError` + `serializeError`. Every new v0.19.0 agent-facing surface (code-def, code-refs, usage errors) uses this envelope; matches v0.17.0 `CycleReport.PhaseResult.error` shape.
-- `src/assets/wasm/` (v0.19.0, extended v0.41) — 37 tree-sitter grammar WASMs + tree-sitter runtime. Committed to the repo so `bun --compile` embeds them deterministically via `import path from ... with { type: 'file' }`. The CI guard `scripts/check-wasm-embedded.sh` fails the build if the compiled binary ever silently falls through to recursive chunks. **v0.41 D2 wave (#1173):** `tree-sitter-sql.wasm` (DerekStride/tree-sitter-sql @ c2e1e08db1ea20dc23bdb8d228a81a8756e9c450, built with tree-sitter-cli@v0.26.3 --abi 14) adds SQL coverage at 11 MB — substantially larger than peers because the grammar covers PostgreSQL + MySQL + SQLite + T-SQL basics (40 MB of generated parser.c). The compiled gbrain binary grows ~6% as a result; tracked as a follow-up TODO whether to switch to a smaller-coverage grammar.
+- `src/assets/wasm/` (RETIRED) — The TS-era tree-sitter grammar WASMs were committed here and embedded via `bun --compile` for the legacy `gbrain` binary. The Rust port (`crates/zbrain-core`) uses the `tree-sitter` crate compiled from source instead; 8 R&D-era WASMs were removed in the legacy-retirement pass and the remaining 29 are not referenced by the Rust build. The `scripts/check-wasm-embedded.sh` CI guard was retired with `scripts/`.
 - `src/commands/code-def.ts` + `src/commands/code-refs.ts` (v0.19.0) — symbol definition + references lookup. Query `content_chunks.symbol_name` or chunk_text ILIKE with `page_kind='code'` filter. Auto-JSON when stdout is not a TTY (gh-CLI convention). Bypass the standard `searchKeyword` `DISTINCT ON (slug)` collapse so multiple call-sites from the same file surface.
 - `src/core/search/` — Hybrid search: vector + keyword + RRF + multi-query expansion + dedup. As of v0.22.0, `searchKeyword` / `searchKeywordChunks` / `searchVector` apply source-aware ranking at the SQL layer (curated content like `originals/`, `concepts/`, `writing/` outranks bulk content like `wintermute/chat/`, `daily/`, `media/x/`). `searchVector` uses a two-stage CTE so source-boost re-ranking doesn't kill the HNSW index. Hard-exclude prefixes (`tests/unit/`, `archive/`, `attachments/`, `.raw/` by default) filter at retrieval, not post-rank. Both gates honor `detail !== 'high'` so temporal queries surface chat pages normally.
 - `src/core/search/intent.ts` — Query intent classifier (entity/temporal/event/general → auto-selects detail level)
@@ -284,7 +284,7 @@ strict behavior when unset.
 - `scripts/llms-config.ts` + `scripts/build-llms.ts` — Generator for `llms.txt` (llmstxt.org-spec web index) + `llms-full.txt` (inlined single-fetch bundle). Curated config drives both. Run `bun run build:llms` after adding a new doc. `LLMS_REPO_BASE` env var lets forks regenerate with their own URL base. `FULL_SIZE_BUDGET` (600KB) caps the inline bundle; generator WARNs if exceeded. Committed output is not analogous to `schema-embedded.ts` (no runtime consumer); we commit for GitHub browsing and fork-safe fetching.
 - `AGENTS.md` — Local-clone entry point for non-Claude agents (Codex, Cursor, OpenClaw, Aider). Mirrors `CLAUDE.md` intent via relative links. Claude Code keeps using `CLAUDE.md`.
 - `docs/UPGRADING_DOWNSTREAM_AGENTS.md` — Patches for downstream agent skill forks to apply when upgrading. Each release appends a new section. v0.10.3 includes diffs for brain-ops, meeting-ingestion, signal-detector, enrich.
-- `src/core/schema-embedded.ts` — AUTO-GENERATED from schema.sql (run `bun run build:schema`)
+- `crates/zbrain-core/migrations/` + `crates/zbrain-core/migrations-sqlite/` — Full Postgres + SQLite DDL (source of truth). The legacy TS `src/core/schema-embedded.ts` (AUTO-GENERATED via `bun run build:schema`) was retired with the TS port.
 - `src/schema.sql` — Full Postgres + pgvector DDL (source of truth, generates schema-embedded.ts)
 - `src/commands/integrations.ts` — Standalone integration recipe management (no DB needed). Exports `getRecipeDirs()` (trust-tagged recipe sources), SSRF helpers (`isInternalUrl`, `parseOctet`, `hostnameToOctets`, `isPrivateIpv4`). Only package-bundled recipes are `embedded=true`; `$GBRAIN_RECIPES_DIR` and cwd `./recipes/` are untrusted and cannot run `command`/`http`/string health checks.
 - `src/core/search/expansion.ts` — Multi-query expansion via Haiku. Exports `sanitizeQueryForPrompt` + `sanitizeExpansionOutput` (prompt-injection defense-in-depth). Sanitized query is only used for the LLM channel; original query still drives search.
@@ -737,26 +737,29 @@ Key commands added in v0.22.16 (claw-test friction loop):
 
 ## Testing
 
-### Test command tiers (v0.26.4 — parallel fast loop)
+### Test command tiers (Rust port — cargo)
 
-Five tiers of test commands, each with a clear scope:
+The Rust port uses `cargo` as the single build/test truth source. The legacy
+TS-era `bun run test` / `scripts/*.sh` gates were retired with the `scripts/`
+directory (see `docs/plans/zbrain-legacy-retire-reassessment.json`).
 
-| Command | What it runs | Wallclock | When to use |
-|---|---|---|---|
-| `bun run test` | Parallel unit-test fast loop. 8-shard fan-out via `scripts/run-unit-parallel.sh`, then a serial pass over `*.serial.test.ts`. Excludes `*.slow.test.ts` and `tests/unit/e2e/*`. No pre-checks, no typecheck. | ~85s on a Mac dev box (3650+ tests) | Inner edit loop. Default. |
-| `bun run verify` | CI's authoritative pre-test gate set: `check:privacy && check:jsonb && check:progress && check:wasm && bun run typecheck`. The 4 checks `.github/workflows/test.yml` runs on shard 1 + typecheck. Single source of truth — CI literally calls `bun run verify`. | ~12s (wasm-compile dominates) | Before pushing; before `/ship`. |
-| `bun run test:full` | `verify && bun run test && bun run test:slow && [smart e2e]`. The local equivalent of "everything CI runs." Smart e2e: runs e2e only when `DATABASE_URL` is set; else loud skip notice to stderr. | ~3-5min depending on slow + e2e | Pre-merge sanity, before opening a PR. |
-| `bun run test:slow` | Just the `*.slow.test.ts` set (intentional cold-path correctness checks). | seconds-to-minutes | When touching slow-path code. |
-| `bun run test:serial` | Just the `*.serial.test.ts` set (cross-file-contention quarantine; runs at `--max-concurrency=1`). | ~1s per quarantined file | Debugging a specific quarantined file. |
-| `bun run test:e2e` | Real Postgres E2E. Requires Docker + `DATABASE_URL`. Sequential (template-DB parallelization is a v0.27+ TODO). | ~5-10min | Pre-ship; nightly. |
-| `bun run check:all` | All 7 historical pre-checks (privacy + jsonb + progress + no-legacy-getconnection + trailing-newline + wasm + exports-count). Superset of `verify`. | ~10s | Local-only sweep. The 4 not in `verify` are nice-to-haves. |
+| Command | What it runs | When to use |
+|---|---|---|
+| `cargo build --workspace` | Compile all crates (debug). | After any Rust change. |
+| `cargo test -p <crate>` | Unit + integration tests for one crate. | Inner edit loop. Default. |
+| `cargo test --workspace` | Full workspace test sweep. | Pre-merge / pre-push sanity. |
+| `zbrain check-resolvable --strict` | Resolver drift gate on bundled skills. | After changing `skills/`. |
 
-### CI vs local: intentionally divergent file sets
+CI runs the cargo suite via `.github/workflows/rust-tests.yml`; there is no
+longer a sharded `bun` matrix.
 
-- **CI matrix** (`.github/workflows/test.yml`) runs `scripts/test-shard.sh` 4-way, which uses FNV-1a hash bucketing and INCLUDES `*.slow.test.ts`. As of v0.31.4.1, CI EXCLUDES `*.serial.test.ts` from the hash buckets and runs them on shard 1 via `bun run test:serial` at `--max-concurrency=1`. Before that, serial files were hashed in alongside parallel files, which broke the `mock.module` quarantine (top-level mocks in serial files leaked into the parallel files they shared a shard process with — most visibly, `eval-takes-quality-runner.serial.test.ts` stubbed `gateway.ts` and broke every `gateway.embedMultimodal` test in `voyage-multimodal.test.ts` on shard 2). CI is the ground truth for "did everything pass."
-- **Local fast loop** (`scripts/run-unit-shard.sh` via the parallel wrapper) uses round-robin-by-index sharding and EXCLUDES `*.slow.test.ts` AND `*.serial.test.ts`. Local trades coverage for inner-loop speed; CI catches what local skips.
+### CI vs local
 
-This divergence is intentional. Don't try to make them equal — the two scripts deliberately solve different problems. The regression test at `tests/unit/scripts/run-unit-shard.test.ts` pins what the local fast loop should and shouldn't include.
+The legacy sharded `bun` matrix (`.github/workflows/test.yml`) was retired and
+replaced with a minimal `cargo build` + `cargo test` smoke gate; the full Rust
+test suite runs in `.github/workflows/rust-tests.yml`. Cargo's own test
+parallelism is the fast loop — there is no separate local/CI file-set divergence
+to maintain anymore.
 
 ### Failure-first logging
 
@@ -780,18 +783,13 @@ If a shard wedges (per-shard `GBRAIN_TEST_SHARD_TIMEOUT` cap, default 600s), the
 
 The intra-file parallelism project (turn `bun test` into `bun test --concurrent` after sweeping shared-state contention sites) is sliced across v0.26.7 (foundation), v0.26.8 (env-mutation sweep), and v0.26.9 (PGLite sweep + codemod + measurement). v0.26.4 ships file-level parallelism only.
 
-### Test-isolation lint and helpers (v0.26.7)
+### Test-isolation lint and helpers (RETIRED)
 
-The cross-file flake class is enforced statically by `scripts/check-test-isolation.sh`, wired into `bun run verify` and `bun run check:all`. Rules (non-serial unit files only; `*.serial.test.ts` and `tests/unit/e2e/*` are skipped):
-
-| Rule | What it bans | Fix |
-|---|---|---|
-| **R1** | `process.env.X = ...`, bracket assignment, `delete process.env.X`, `Object.assign(process.env, ...)`, `Reflect.set(process.env, ...)` | Use `withEnv()` from `tests/unit/helpers/with-env.ts`, OR rename file to `*.serial.test.ts` |
-| **R2** | `mock.module(...)` anywhere in the file | Rename file to `*.serial.test.ts` (no DI on production code for testability) |
-| **R3** | `new PGLiteEngine(` outside ~50 lines after a `beforeAll(` line | Use the canonical block (below) inside `beforeAll(` |
-| **R4** | Files creating `new PGLiteEngine(` without `engine.disconnect(` inside an `afterAll(` block | Add `afterAll(() => engine.disconnect())` |
-
-Files that violated these rules at the v0.26.7 baseline are listed in `scripts/check-test-isolation.allowlist`. **The allow-list MUST shrink over time** — never add new entries. v0.26.8 (env sweep) and v0.26.9 (PGLite sweep) remove entries as files get fixed.
+The TS-era cross-file flake class was enforced by `scripts/check-test-isolation.sh`
+(wired into `bun run verify` / `bun run check:all`). That script and the
+`*.test.ts` suite it guarded were retired with the TS→Rust port. The Rust
+port enforces isolation at the type/lifetime level instead; see
+`crates/zbrain-core/tests/` for the cargo-based integration tests.
 
 #### Canonical PGLite block (R3 + R4 compliant)
 
