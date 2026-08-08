@@ -180,10 +180,11 @@ pub fn release_pid_lock(pid_file: &std::path::Path) {
 fn is_pid_alive(pid: i32) -> bool {
     #[cfg(unix)]
     {
-        // kill(pid, 0) sends the null signal — error checking only,
-        // no actual signal delivered. Returns 0 if the process exists,
-        // -1 with ESRCH if it doesn't.
-        unsafe { libc::kill(pid, 0) == 0 }
+        // `/proc/<pid>` exists iff the process is alive. Equivalent in intent to
+        // `kill(pid, 0)` but stays within safe std — the workspace forbids `unsafe`
+        // (`unsafe_code = "forbid"`) and this crate has no `libc` dependency.
+        // Mirrors `schema_pack::pack_lock::default_is_pid_alive`.
+        pid > 0 && std::path::Path::new(&format!("/proc/{}", pid)).exists()
     }
     #[cfg(not(unix))]
     {

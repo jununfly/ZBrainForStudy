@@ -6624,7 +6624,14 @@ async fn run_links_rebuild_md_links(
     let result = extract_links(&engine, &opts).await?;
 
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&result)?);
+        // `ExtractLinksResult` is a plain core value type (no serde derive);
+        // project it here, following the CLI's existing `json!` convention.
+        let output = serde_json::json!({
+            "pages_processed": result.pages_processed,
+            "links_created": result.links_created,
+            "dangling": result.dangling,
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         println!(
             "rebuild-md-links: pages={} created={} dangling={}",

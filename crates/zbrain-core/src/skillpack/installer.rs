@@ -207,8 +207,11 @@ fn check_acquire_lock(lock_path: &Path, force_unlock: bool, stale_threshold_ms: 
     }
 
     // Check if PID is still running (works on Unix, always false on Windows).
+    // Unix: `/proc/<pid>` exists iff the process is alive. Mirrors
+    // `schema_pack::pack_lock::default_is_pid_alive`; keeps this crate free of
+    // `unsafe` (workspace lint `unsafe_code = "forbid"`) and of a `libc` dependency.
     #[cfg(unix)]
-    let pid_running = unsafe { libc::kill(lock.pid, 0) == 0 };
+    let pid_running = std::path::Path::new(&format!("/proc/{}", lock.pid)).exists();
     #[cfg(not(unix))]
     let pid_running = false;
 

@@ -486,8 +486,20 @@ pub fn derive_root(skills_dir: &Path) -> PathBuf {
 mod tests {
     use super::*;
 
+    /// Unique scratch dir per call.
+    ///
+    /// Keying only on the pid made every test in this binary share one path,
+    /// and each call opened with `remove_dir_all` — so two tests running in
+    /// parallel wiped each other's fixture (flaky on many-core Linux, latent
+    /// on Windows). The per-call counter restores test isolation.
     fn tmp_root() -> PathBuf {
-        let p = std::env::temp_dir().join(format!("zb_chk_{}", std::process::id()));
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static SEQ: AtomicU32 = AtomicU32::new(0);
+        let p = std::env::temp_dir().join(format!(
+            "zb_chk_{}_{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).unwrap();
         p
