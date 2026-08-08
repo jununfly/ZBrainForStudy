@@ -16,10 +16,15 @@
 
 pub mod dedup;
 pub mod engine;
+pub mod eval;
 pub mod fusion;
 pub mod intent;
 
 pub use dedup::{dedup_results, DedupOpts, MAX_PER_PAGE, MAX_TYPE_RATIO};
+pub use eval::{
+    build_grades_map, keyword_search_slugs, ndcg_at_k, parse_qrels, precision_at_k, recall_at_k,
+    run_eval, EvalConfig, EvalQrel, EvalQrelFile, EvalReport, EvalStrategy, QueryResult,
+};
 pub use engine::{hybrid_search, HybridSearchOpts};
 pub use fusion::{
     apply_backlink_boost, apply_salience_boost, compute_floor_threshold, cosine_similarity,
