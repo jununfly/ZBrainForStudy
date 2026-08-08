@@ -112,6 +112,11 @@
           "q": "How to wire the 3 embedding-seam handlers + deferred reindex?",
           "answer": "Wire reindex/embed/embed_backfill/contextual_reindex via shared embed_pages helper (list_pages/list_stale_pages -> EmbeddingClient::from_env + embed_batch -> put_page_embedding), feature-gated behind 'embedding'. contextual_reindex performs the embed loop but defers per-chunk LLM context synthesis (needs ChatProvider injected into handler ctx) -> tracked G84. Without the feature or a configured ZEROENTROPY_API_KEY the handlers fail with a clear error.",
           "note": ""
+        },
+        {
+          "q": "contextual_reindex per-chunk LLM context augmentation (G84) how implemented?",
+          "answer": "ChatProvider injected via registry DI same as subagent: ContextualReindexHandler::new(chat_provider) registered with Arc::clone in register_builtin_handlers. handle synthesizes per-page context via LLM then embeds context+compiled_truth; LLM failure falls back per-page to raw compiled_truth (llm_context_failures counted, report marked partial). embed_pages_augmented takes (slug,source_id,text) triples reusing put_page_embedding. G84 now resolved 2026-08-08.",
+          "note": ""
         }
       ],
       "notes": ""
@@ -309,7 +314,7 @@
   },
   "metadata": {
     "created": "2026-08-08 01:18:16",
-    "updated": "2026-08-08 11:15:55",
+    "updated": "2026-08-08 11:45:42",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART13_MINION_HANDLER_WIRING.md"
   }
 }

@@ -124,7 +124,7 @@ pub fn register_builtin_handlers(
     let _ = engine; // engine is available for handler construction (1-4-2 / 1-4-5)
 
     // Subagent handler v1 — gateway path (1-4-4).
-    registry.register("subagent", Arc::new(SubagentHandler::new(chat_provider)));
+    registry.register("subagent", Arc::new(SubagentHandler::new(Arc::clone(&chat_provider))));
 
     // ── 1-4-2 low-complexity handlers ─────────────────────────────────────
     registry.register("backlinks", Arc::new(BacklinksHandler));
@@ -153,7 +153,10 @@ pub fn register_builtin_handlers(
     registry.register("synthesize", Arc::new(SynthesizeHandler));
 
     // ── 1-4-5 medium-complexity handlers ──────────────────────────────────
-    registry.register("contextual_reindex_per_chunk", Arc::new(ContextualReindexHandler));
+    registry.register(
+        "contextual_reindex_per_chunk",
+        Arc::new(ContextualReindexHandler::new(Arc::clone(&chat_provider))),
+    );
     registry.register("embed-backfill", Arc::new(EmbedBackfillHandler));
     registry.register("extract-conversation-facts", Arc::new(ExtractConversationFactsHandler));
     registry.register("ingest_capture", Arc::new(IngestCaptureHandler));

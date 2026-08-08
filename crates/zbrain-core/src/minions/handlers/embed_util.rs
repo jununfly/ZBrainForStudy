@@ -50,3 +50,35 @@ pub(crate) async fn embed_pages(
     }
     Ok((scanned, embedded))
 }
+
+/// Re-embed `items` where each item is `(slug, source_id, text_to_embed)`. The
+/// caller supplies the embedding text — for `contextual_reindex` that text is
+/// the LLM-augmented `context + compiled_truth`; the plain handlers use
+/// [`embed_pages`] with raw `compiled_truth`. Writes the page-level vectors back
+/// through `engine.put_page_embedding` and returns `(scanned, embedded)`.
+#[cfg(feature = "embedding")]
+pub(crate) async fn embed_pages_augmented(
+    engine: &(dyn crate::engine::BrainEngine + 'static),
+    client: &crate::embedding::EmbeddingClient,
+    items: Vec<(String, String, String)>,
+    dry_run: bool,
+) -> Result<(usize, usize)> {
+    let scanned = items.len();
+    if dry_run {
+        return Ok((scanned, 0));
+    }
+    let texts: Vec<String> = items.iter().map(|(_s, _id, t)| t.clone()).collect();
+    let vectors = client
+        .embed_batch(&texts, None)
+        .await
+        .map_err(|e| crate::Error::new("EmbeddingError", "embed_pages_augmented", &e.to_string()))?;
+    let mut embedded = 0usize;
+    for ((slug, source_id, _t), vec) in items.into_iter().zip(vectors.into_iter()) {
+        let bytes = encode_embedding_le(&vec);
+        engine
+            .put_page_embedding(&slug, &source_id, bytes)
+            .await?;
+        embedded += 1;
+    }
+    Ok((scanned, embedded))
+}

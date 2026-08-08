@@ -113,7 +113,7 @@
 | G81 | **`lint-fix` minion 作业无 Rust verb** | `minions/handlers/lint_fix.rs` 原桩转为显式 `Unsupported`，指向本行。TS `lint-fix` 命令 option C 删除、无 Rust 替代 | TS `src/commands/lint-fix.ts` 已删除 | **wontfix** |
 | G82 | **`integrity-auto` minion 作业无 Rust verb** | `minions/handlers/integrity_auto.rs` 原桩转为显式 `Unsupported`，指向本行。ad-hoc integrity 已由 `integrity` handler（`scan_integrity`）覆盖 | TS `src/commands/integrity-auto.ts` 已删除 | **wontfix** |
 | G83 | **`sync-retry-failed` minion 作业无 Rust verb** | `minions/handlers/sync_retry_failed.rs` 原桩转为显式 `Unsupported`，指向本行。失败 sync 可经 `sync` handler（`SyncBrainOperation`）重试 | TS `src/commands/sync-retry-failed.ts` 已删除 | **wontfix** |
-| G84 | **`contextual_reindex_per_chunk` minion 作业 LLM 上下文增强未接** | `minions/handlers/contextual_reindex.rs` 已实现 embedding 部分（NULL-embedding 页经 `embed_pages` 重嵌），但 per-chunk LLM 上下文合成（TS 用 Haiku + rate-lease）**推迟**：需把 `ChatProvider` 注入 minion handler context（当前 worker 仅给 `subagent` 注入）。handler 返回 `llm_context_augmentation: "deferred"` | TS `src/commands/jobs.ts` `contextual_reindex_per_chunk` handler（247 行） | **open** (blocked: ChatProvider 注入 seam) |
+| G84 | **`contextual_reindex_per_chunk` minion 作业 LLM 上下文增强** | 已接：`ContextualReindexHandler` 构造时注入 `Arc<dyn ChatProvider>`（与 `subagent` 同一 registry DI seam，见 `register_builtin_handlers`），`handle` 对每页用 LLM 合成上下文段落后嵌 `context + compiled_truth`；LLM 失败按页回退到裸 `compiled_truth`（`llm_context_failures` 计数，report 标 `partial`）。embedding 半部仍 feature-gated 于 `embedding`。现载体：`crates/zbrain-core/src/minions/handlers/contextual_reindex.rs` | TS `src/commands/jobs.ts` `contextual_reindex_per_chunk` handler（247 行） | **resolved** (2026-08-08) |
 
 ## G1 详情 — Think/evidence 检索丢失 rerank
 
