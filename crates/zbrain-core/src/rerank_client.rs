@@ -20,6 +20,7 @@
 //! payload cap.
 
 use crate::rerank_audit::RerankFailureReason;
+use crate::SearchResult;
 
 /// How many of the top RRF results are sent to the cross-encoder. Mirrors the
 /// TS `applyReranker` `topNIn` default of 30 (`src/core/search/rerank.ts:27`):
@@ -265,6 +266,112 @@ pub async fn apply_reranker<T>(
 
     reordered.extend(tail);
     reordered
+}
+
+// --- Shared operation-layer post-processing entry points (G1) ---
+//
+// Both `QueryOperation` and the Think gather path produce a `Vec<SearchResult>`
+// and need the exact same "rerank head, stamp delta, fail open" behavior. The
+// TS pipeline makes this implicit — `hybridSearch` always invokes
+// `applyReranker` for modes that have reranking enabled, so the Think caller
+// inherits rerank for free. The Rust port placed rerank inside
+// `QueryOperation::execute`, which meant the Think pipeline — which talks to
+// `engine.search_pages` / `hybrid_search` directly rather than going through
+// the operation layer — silently dropped it. These helpers restore parity by
+// putting the post-processing at a layer every call site can reach.
+//
+// `rerank_results` is the primitive: it takes already-owned results and
+// reorders them. `retrieve_and_rerank` is the convenience wrapper that runs
+// the retrieve closure first, then reranks its output. The closure takes no
+// arguments and owns its captured `engine` / `opts` so its returned future is
+// `'static` — this is the same trick that unblocked G73: avoid HRTB-bound
+// futures on a `&str` parameter by holding the data in the closure body
+// instead. See KNOWN-GAPS G1 for the layering rationale.
+
+/// Project the [`SearchResult`] document text used by the cross-encoder.
+///
+/// Mirrors the Query post-processing slot: the matched span (`snippet`) if
+/// present and non-empty, else the compiled page truth, else the page title.
+/// Centralized here so the Query + Think call sites do not drift.
+pub fn rerank_document_of(r: &SearchResult) -> String {
+    r.snippet
+        .clone()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            let t = r.page.compiled_truth.clone();
+            if t.is_empty() { None } else { Some(t) }
+        })
+        .unwrap_or_else(|| r.page.title.clone())
+}
+
+/// Stamp the per-result attribution fields the `--explain` output renders.
+///
+/// `rerank_score` = the cross-encoder's relevance score. `reranker_delta` =
+/// the rank movement (positive = moved up). Both are populated only when
+/// rerank actually fires — when the reranker is off, the fields stay `None`.
+pub fn rerank_stamp(r: &mut SearchResult, score: f64, delta: i64) {
+    r.rerank_score = Some(score);
+    r.reranker_delta = Some(delta);
+}
+
+/// Reorder owned `SearchResult`s through the rerank post-processing stage.
+///
+/// When `settings` is `Some`, calls [`apply_reranker`] with the standard
+/// Query + Think document/stamp projections. When `None`, returns the input
+/// unchanged. Fail-open: any rerank error is logged as one audit row and the
+/// fused RRF order is preserved.
+///
+/// This is the primitive both call sites share — `QueryOperation::execute`
+/// passes the results of `engine.search_pages(...)`, and the Think gather
+/// pass passes the results of `engine.hybrid_search(...)`. G1 unified path:
+/// every retrieval that previously called `apply_reranker` inline now goes
+/// through here, so the Think pipeline stops silently dropping the rerank
+/// stage.
+pub async fn rerank_results(
+    query: &str,
+    settings: Option<&RerankSettings>,
+    results: Vec<SearchResult>,
+) -> Vec<SearchResult> {
+    match settings {
+        Some(rerank) => {
+            apply_reranker(
+                rerank.client.as_ref(),
+                true,
+                query,
+                results,
+                &rerank.audit_dir,
+                rerank.model.as_deref(),
+                rerank_document_of,
+                rerank_stamp,
+            )
+            .await
+        }
+        None => results,
+    }
+}
+
+/// Run a retrieve closure and reorder its results through rerank.
+///
+/// `retrieve` is a no-arg, owned-closure future — the closure body captures
+/// the `&dyn BrainEngine` and any per-call `SearchOpts` it needs. Returning
+/// the retrieved `Vec<SearchResult>` and the reranked output is a
+/// single-`?`-propagating helper, so call sites stay free of the
+/// `Some(settings) => { ... }` boilerplate the inline block required.
+///
+/// `query` is forwarded to the cross-encoder (also used as the audit hash
+/// input). `settings` is the same `OperationContext.rerank` value the Query
+/// post-processing slot already consults.
+pub async fn retrieve_and_rerank<F, Fut>(
+    query: &str,
+    settings: Option<&RerankSettings>,
+    retrieve: F,
+) -> crate::Result<Vec<SearchResult>>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = crate::Result<Vec<SearchResult>>>,
+{
+    let results = retrieve().await?;
+    Ok(rerank_results(query, settings, results).await)
 }
 
 // --- Real ZeroEntropy HTTP client (requires the `rerank` feature) ---
@@ -712,6 +819,182 @@ mod tests {
         .await;
         assert_eq!(out, input, "malformed/empty upstream response = pass through, no stamps");
         assert!(audit_file(dir.path()).is_none(), "empty response is not a failure");
+    }
+
+    // --- G1: shared operation-layer helpers ---------------------------------
+    //
+    // These pin the new `rerank_results` and `retrieve_and_rerank` helpers:
+    // both call sites (Query + Think) must go through the same canonical
+    // post-processing contract, so the unit tests live here next to the
+    // primitive they wrap. They are inside `mod tests` (the `#[cfg(test)]`
+    // block), not `ze_wire_tests` (the `#[cfg(all(test, feature = "rerank"))]`
+    // block), so they are covered by the default test build — the helpers
+    // themselves are not feature-gated, only the real `ZeroEntropyRerankClient`
+    // HTTP transport is.
+
+    use crate::engine::{Page as EnginePage, SearchResult as EngineSearchResult};
+    use std::sync::Arc;
+
+    fn make_result(slug: &str, title: &str, truth: &str, snippet: Option<&str>) -> EngineSearchResult {
+        // Page derives Default; override only the fields the rerank
+        // post-processing stage inspects. Frontmatter defaults to Value::Null
+        // which is fine for the canonical document_of projection.
+        let mut page = EnginePage::default();
+        page.slug = slug.to_string();
+        page.title = title.to_string();
+        page.compiled_truth = truth.to_string();
+        EngineSearchResult {
+            page,
+            score: 0.0,
+            base_score: 0.0,
+            snippet: snippet.map(str::to_string),
+            rerank_score: None,
+            reranker_delta: None,
+            salience_boost: None,
+            recency_boost: None,
+        }
+    }
+
+    fn temp_audit_dir() -> TempDir {
+        tempfile::tempdir().expect("tempdir")
+    }
+
+    #[tokio::test]
+    async fn rerank_results_none_is_passthrough() {
+        // G1: when no settings, the helper is a transparent pass-through.
+        // Order and rerank fields are preserved (still None). This is the
+        // shape every existing test that does not install a rerank client
+        // (the think and search suites, mostly) relies on.
+        let dir = temp_audit_dir();
+        let results = vec![
+            make_result("a", "A", "body a", Some("snippet a")),
+            make_result("b", "B", "body b", Some("snippet b")),
+        ];
+        let original = results.clone();
+        let out = rerank_results("q", None, results).await;
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].page.slug, original[0].page.slug);
+        assert_eq!(out[1].page.slug, original[1].page.slug);
+        assert!(out.iter().all(|r| r.rerank_score.is_none()));
+        assert!(out.iter().all(|r| r.reranker_delta.is_none()));
+        // No audit row should be written on the no-op path.
+        assert!(audit_file(dir.path()).is_none());
+    }
+
+    #[tokio::test]
+    async fn rerank_results_some_stamps_score_and_delta() {
+        // G1: when settings are set, the head of the results is reordered and
+        // the stamp fields are populated. The reranker returns `index=1` as
+        // the most-relevant outcome, so the row with slug "b" floats to the
+        // top and "a" drops to position 1.
+        let dir = temp_audit_dir();
+        let client = Arc::new(MockRerank::ok(vec![
+            RerankOutcome { index: 1, relevance_score: 0.91 },
+            RerankOutcome { index: 0, relevance_score: 0.42 },
+        ]));
+        let settings = RerankSettings {
+            client: client.clone(),
+            audit_dir: dir.path().to_path_buf(),
+            model: Some("provider:test-model".to_string()),
+        };
+        let results = vec![
+            make_result("a", "A", "body a", Some("snippet a")),
+            make_result("b", "B", "body b", Some("snippet b")),
+        ];
+        let out = rerank_results("query text", Some(&settings), results).await;
+        // Reordered: index 1 first, then 0.
+        assert_eq!(out[0].page.slug, "b");
+        assert_eq!(out[1].page.slug, "a");
+        // Stamps: rerank_score set on the head row, delta = original RRF
+        // index - new head position (positive = moved up). Index 1 → 0
+        // means delta = 1 - 0 = +1.
+        assert_eq!(out[0].rerank_score, Some(0.91));
+        assert_eq!(out[0].reranker_delta, Some(1));
+        assert_eq!(out[1].rerank_score, Some(0.42));
+        assert_eq!(out[1].reranker_delta, Some(-1));
+    }
+
+    #[tokio::test]
+    async fn rerank_results_some_with_only_title_falls_back() {
+        // G1: when both snippet and compiled_truth are empty, the canonical
+        // document_of projection falls back to the page title. The rerank
+        // call still gets a non-empty document (which is the only thing the
+        // cross-encoder can score on).
+        let dir = temp_audit_dir();
+        let client = Arc::new(MockRerank::ok(vec![
+            RerankOutcome { index: 0, relevance_score: 0.5 },
+        ]));
+        let settings = RerankSettings {
+            client: client.clone(),
+            audit_dir: dir.path().to_path_buf(),
+            model: None,
+        };
+        let results = vec![make_result("a", "Title A", "", None)];
+        let out = rerank_results("q", Some(&settings), results).await;
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].page.slug, "a");
+        assert_eq!(out[0].rerank_score, Some(0.5));
+        // Mock captured the request — the document must be the page title.
+        let seen = client.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].documents, vec!["Title A".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn retrieve_and_rerank_runs_closure_then_reranks() {
+        // G1: the closure wrapper runs the retrieve future, propagates
+        // errors, then forwards results to the rerank slot. The closure is
+        // the 'static-data-in-closure-body' pattern that unblocks the HRTB
+        // trap (see G73 writeup).
+        let dir = temp_audit_dir();
+        let client = Arc::new(MockRerank::ok(vec![
+            RerankOutcome { index: 0, relevance_score: 0.99 },
+        ]));
+        let settings = RerankSettings {
+            client: client.clone(),
+            audit_dir: dir.path().to_path_buf(),
+            model: None,
+        };
+        // Capture in the closure body to prove the no-arg signature works.
+        let captured: Vec<EngineSearchResult> = vec![
+            make_result("x", "X", "body x", Some("snippet x")),
+        ];
+        let out = retrieve_and_rerank(
+            "q",
+            Some(&settings),
+            move || async move {
+                Ok::<_, crate::Error>(captured)
+            },
+        )
+        .await
+        .expect("retrieve_and_rerank should not error");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].page.slug, "x");
+        assert_eq!(out[0].rerank_score, Some(0.99));
+    }
+
+    #[tokio::test]
+    async fn retrieve_and_rerank_propagates_retrieve_error() {
+        // G1: the retrieve closure's error must propagate — only the rerank
+        // stage is fail-open; the retriever is allowed to fail the call.
+        // This is the behavior the Query + Think call sites need so a
+        // transient engine error is not silently swallowed.
+        let settings = RerankSettings {
+            client: Arc::new(MockRerank::ok(Vec::new())),
+            audit_dir: temp_audit_dir().path().to_path_buf(),
+            model: None,
+        };
+        let result = retrieve_and_rerank(
+            "q",
+            Some(&settings),
+            || async {
+                Err::<Vec<EngineSearchResult>, _>(crate::Error::new(
+                    "Engine", "engine_error", "boom",
+                ))
+            },
+        )
+        .await;
+        assert!(result.is_err());
     }
 }
 

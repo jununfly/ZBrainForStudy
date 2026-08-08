@@ -1765,6 +1765,12 @@ impl TypedOperation for ThinkOperation {
                         embedding_client: ctx.embedding.clone(),
                         takes_holders_allow_list: ctx.takes_holders_allow_list.clone(),
                         question_embedding: None,
+                        // G1: forward the operation-layer rerank settings so
+                        // the Think gather pipeline reranks its hybrid-search
+                        // head through the same stage the Query operation
+                        // uses. Restores TS parity (TS `hybridSearch` always
+                        // applied `applyReranker` for enabled modes).
+                        rerank: ctx.rerank.clone(),
                     },
                 )
                 .await;
@@ -2034,41 +2040,17 @@ impl TypedOperation for QueryOperation {
         // the TS `applyReranker` slot in hybridSearch (after fusion/dedup,
         // before the token-budget/pagination cut).
         //
-        // NOTE: Think/evidence internal retrieval (operation.rs ThinkOperation
-        // search path) intentionally does NOT rerank — whether that path
-        // should pay an extra cross-encoder round-trip is a separate product
-        // decision handled elsewhere, not wired here.
-        let results = if let Some(rerank) = ctx.rerank.as_ref() {
-            let query_text = params.query.as_deref().unwrap_or_default().to_string();
-            crate::rerank_client::apply_reranker(
-                rerank.client.as_ref(),
-                true,
-                &query_text,
-                results,
-                &rerank.audit_dir,
-                rerank.model.as_deref(),
-                // Document text sent to the cross-encoder: the display snippet
-                // if present, else the compiled page truth. Falls back to the
-                // page title so an empty body never sends a blank document.
-                |r| {
-                    r.snippet
-                        .clone()
-                        .filter(|s| !s.is_empty())
-                        .or_else(|| {
-                            let t = r.page.compiled_truth.clone();
-                            if t.is_empty() { None } else { Some(t) }
-                        })
-                        .unwrap_or_else(|| r.page.title.clone())
-                },
-                |r, score, delta| {
-                    r.rerank_score = Some(score);
-                    r.reranker_delta = Some(delta);
-                },
-            )
-            .await
-        } else {
-            results
-        };
+        // G1 unified path: the same helper is used by the Think gather
+        // stage, so the Think pipeline stops silently dropping rerank. The
+        // document/stamp projections live in `rerank_client` as the canonical
+        // post-processing contract.
+        let query_text = params.query.as_deref().unwrap_or_default().to_string();
+        let results = crate::rerank_client::rerank_results(
+            &query_text,
+            ctx.rerank.as_ref(),
+            results,
+        )
+        .await;
 
         let total = results.len();
 

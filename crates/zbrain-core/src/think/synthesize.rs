@@ -139,6 +139,13 @@ pub struct ThinkSynthesizeOpts {
     /// **G71**: the vector-takes stream is blocked, so this is accepted but
     /// currently only forwarded to `run_gather` for parity.
     pub question_embedding: Option<Vec<f32>>,
+    /// Rerank post-processing settings (G1). When set, the Think gather
+    /// pipeline reranks the head of its hybrid-search results through the
+    /// same stage the Query operation uses, restoring parity with the TS
+    /// `hybridSearch` (which always invokes `applyReranker` for modes that
+    /// have reranking enabled). `None` keeps the legacy "no rerank" behavior
+    /// (e.g. for tests that don't install a rerank client).
+    pub rerank: Option<crate::rerank_client::RerankSettings>,
 }
 
 /// Per-call diagnostics for `--explain` / telemetry.
@@ -216,6 +223,7 @@ pub async fn run_think(engine: &dyn BrainEngine, opts: &ThinkSynthesizeOpts) -> 
             question_embedding: opts.question_embedding.clone(),
             embedding_client: opts.embedding_client.clone(),
             takes_holders_allow_list: opts.takes_holders_allow_list.clone(),
+            rerank: opts.rerank.clone(),
         },
     )
     .await;

@@ -29,7 +29,7 @@
 
 | ID | 缺口 | 现载体 (代码锚点) | TS 权威来源 | 推荐路径 | 状态 |
 |----|------|------------------|-------------|----------|------|
-| G1 | **Think/evidence 检索丢失 rerank** | `crates/zbrain-core/src/operation.rs` `ThinkOperation::execute` 内 `engine.search_pages` 调用处 `FUTURE(think-rerank)` 注释 | `src/core/think/gather.ts:110` → `hybridSearch` → `src/core/search/hybrid.ts` 内建 `applyReranker`（受 `mode.reranker_enabled` 门控） | 见下方 **G1 详情** | open |
+| G1 | ~~Think/evidence 检索丢失 rerank~~ **RESOLVED** | 现载体：`crates/zbrain-core/src/rerank_client.rs` 新增 `rerank_results` + `retrieve_and_rerank` 共享 helper（Query + Think 都调它）；`operation.rs` `QueryOperation::execute` 改用 helper；`think/synthesize.rs` `ThinkSynthesizeOpts.rerank` 透传 `ctx.rerank`；`think/gather.rs` `run_gather` Stream1 把 `hybrid_search` 结果包 `rerank_results`；`operation.rs` `ThinkOperation::execute` 同步透传 `ctx.rerank.clone()` | `src/core/think/gather.ts:110` → `hybridSearch` → `src/core/search/hybrid.ts` 内建 `applyReranker`（受 `mode.reranker_enabled` 门控） | 病根：分层错位（rerank 挂在 operation 层，Think 走 `engine.search_pages`/`hybrid_search` 绕过）。推荐路径（钉方向）落地：抽 operation 层共享 helper `rerank_results`，Query/Think 共用。**否决**：engine 层下沉（trait 拿不到 config/audit_dir，会污染双实现）/operation 层复制（DRY 债）。Fail-open 沿用：`apply_reranker` 在 `enabled=false`/空/错误时原样返回，记 audit，绝不 panic。`GATHER_LIMIT_DEFAULT=40 > DEFAULT_RERANK_TOP_N=30`：rerank 只重排 head (`min(retrieved,30)`)，tail 原 RRF 序追加，recall 保留。**新增 5 个 G1 unit test**（`rerank_client::tests::rerank_results_*` / `retrieve_and_rerank_*`）覆盖 pass-through / reorder+stamp / title fallback / 闭包 HRTB-safe / retrieve 错误传播。Query 16 + rerank_client 19 + think::synthesize 8 + think::gather 5/6（1 pre-existing flake, see test failure notes）+ search::engine 2 全绿。`git status` 4 modified files 待 commit。 | resolved |
 | G3 | ~~进度上报三态 flag 无消费者~~ | — | — | ✅ 已落地（roadmap 1-2-2）：`crates/zbrain-core/src/progress.rs` 端到端接线 `sync perform_full_sync/perform_sync` per-path 循环 + `--quiet/--progress-json/--progress-interval` clap flags | resolved |
 | G14 | progress reporter 缺信号协调器（SIGINT/SIGTERM） | `crates/zbrain-core/src/progress.rs:11` | TS `progress.ts` `setupSignalHandlers` / `runAbortHandlers` | 实现 signal handler 的 graceful shutdown + abort handlers。当前 Rust 依赖 `anyhow` error 传播，无显式信号处理 | open |
 | G15 | progress reporter 缺 EPIPE 防御 | `crates/zbrain-core/src/progress.rs:12` | TS `progress.ts` `safeWrite` + `brokenStreams` Set | 实现 safe write（write → EPIPE → 标记 broken → 后续 write 吞掉）+ broken reset 恢复 | open |
@@ -115,33 +115,6 @@
 | G83 | **`sync-retry-failed` minion 作业无 Rust verb** | `minions/handlers/sync_retry_failed.rs` 原桩转为显式 `Unsupported`，指向本行。失败 sync 可经 `sync` handler（`SyncBrainOperation`）重试 | TS `src/commands/sync-retry-failed.ts` 已删除 | **wontfix** |
 | G84 | **`contextual_reindex_per_chunk` minion 作业 LLM 上下文增强** | 已接：`ContextualReindexHandler` 构造时注入 `Arc<dyn ChatProvider>`（与 `subagent` 同一 registry DI seam，见 `register_builtin_handlers`），`handle` 对每页用 LLM 合成上下文段落后嵌 `context + compiled_truth`；LLM 失败按页回退到裸 `compiled_truth`（`llm_context_failures` 计数，report 标 `partial`）。embedding 半部仍 feature-gated 于 `embedding`。现载体：`crates/zbrain-core/src/minions/handlers/contextual_reindex.rs` | TS `src/commands/jobs.ts` `contextual_reindex_per_chunk` handler（247 行） | **resolved** (2026-08-08) |
 
-## G1 详情 — Think/evidence 检索丢失 rerank
+## 已 resolved 索引（不再单列详情，原"详情"段已折叠入主表）
 
-**病根：接入点分层错位，不是"要不要 rerank"。**
-
-- TS 里"是否 rerank"**不是 Think 层的产品判断**，而是 `hybridSearch` 引擎级检索原语的
-  内建行为，由 search mode（`conservative` 关 / `balanced`·`tokenmax` 开，默认 `balanced`）
-  的 `reranker_enabled` 统一决定。`gather.ts:110` 的 Think 检索调 `hybridSearch`，
-  因此 TS 里 **Think 检索本就 rerank**（继承 `hybridSearch` 的内建行为），并非 Think
-  显式选择了 rerank。
-- Rust 侧上一刀（roadmap 1-4-2-2）把 rerank 接在 **operation 层**（`QueryOperation::execute`
-  内联的 rerank 段：门控 `apply_reranker`，`document_of` 取 snippet→compiled_truth→title 回退，
-  stamp `rerank_score`/`reranker_delta`）。而 `ThinkOperation::execute` 走
-  `engine.search_pages`（`operation.rs` ~1580，`limit:5`、`min_score:0.1`、
-  `query_embedding:None` 向量路关闭），**绕过了 operation 层的后处理** → Think 意外丢失了
-  TS 本有的 rerank。
-- **推荐路径（钉方向，本刀不实现）**：抽 operation 层共享检索后处理 helper
-  `retrieve_and_rerank(ctx, opts, ...)`，`QueryOperation` 与 `ThinkOperation`（及未来
-  evidence/brainstorm 入口）都调它。理由：
-  - **否决"engine 层下沉"**：违背 1-4-2-2 Q2 明确排除的方案——engine trait 是纯存储抽象，
-    拿不到 `config`/`audit_dir`，且会用 HTTP 污染 InMemory/Postgres 双实现。一刀前才确认，
-    不该一刀后自推翻。
-  - **否决"operation 层复制"**：Query/Think/未来入口每处复制一遍
-    `apply_reranker` + `document_of`/stamp 闭包，改策略要同步 N 处，埋 DRY 债。
-  - 共享 helper 是 TS 精神（rerank 是检索原语的一部分、调用方自动继承）在 Rust 分层约束下的
-    正确落点：TS 放 `hybridSearch`，Rust 因 engine trait 拿不到 config/audit_dir 而放紧挨其上的
-    operation 层共享 helper——同一意图的合理映射。顺带把上一刀内联的 rerank 段重构成可复用单元。
-- **风险权衡**：若 Think 迟迟不需要 rerank（LLM 合成对证据顺序不敏感 + 多一次 rerank API
-  往返的延迟/成本），共享 helper 的抽取属投机。但"钉方向不实现"零投机成本，未来真接时按此路径走即可。
-  另注 Think 检索还有 `limit:5 < TOP_N` 与 `rerank_score` 当前无消费者两个语义问题，
-  接线时需一并处理。
+- G1：Think/evidence 检索丢失 rerank — 病根+推荐路径详见历史版本。**resolved 2026-08-08**：抽 `rerank_results` + `retrieve_and_rerank` 共享 helper（Query/Think 共用），5 个 G1 unit test 通过。

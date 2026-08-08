@@ -22,6 +22,8 @@ use crate::types::{SearchTakesOpts, TakeHit};
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use crate::rerank_client::RerankSettings;
+
 /// Default soft cap on total page results across all streams.
 pub const GATHER_LIMIT_DEFAULT: usize = 40;
 /// Default soft cap on take results.
@@ -37,7 +39,7 @@ pub const PAGE_EXCERPT_LEN: usize = 600;
 /// `embedding_client` are both optional: stream 1 (hybrid) needs the embedding
 /// client to embed the query; stream 3 (vector takes) needs a pre-computed
 /// `question_embedding` — and is currently a no-op until G71 lands.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct ThinkGatherOpts {
     pub question: String,
     /// Anchor entity slug. When set, the graph stream activates.
@@ -56,6 +58,27 @@ pub struct ThinkGatherOpts {
     pub embedding_client: Option<Arc<EmbeddingClient>>,
     /// Per-token allow-list for the `holder` field on take search.
     pub takes_holders_allow_list: Option<Vec<String>>,
+    /// Rerank post-processing settings (G1). When set, the head of the
+    /// hybrid-search results is reordered through the same cross-encoder
+    /// stage the Query operation uses, restoring parity with the TS
+    /// `hybridSearch` rerank slot.
+    pub rerank: Option<RerankSettings>,
+}
+
+impl Default for ThinkGatherOpts {
+    fn default() -> Self {
+        Self {
+            question: String::new(),
+            anchor: None,
+            gather_limit: None,
+            takes_limit: None,
+            graph_depth: None,
+            question_embedding: None,
+            embedding_client: None,
+            takes_holders_allow_list: None,
+            rerank: None,
+        }
+    }
 }
 
 /// Diagnostics for telemetry / `--explain` path.
@@ -95,20 +118,37 @@ pub async fn run_gather(engine: &dyn BrainEngine, opts: &ThinkGatherOpts) -> Thi
     let graph_depth = opts.graph_depth.unwrap_or(GRAPH_DEPTH_DEFAULT);
 
     // Stream 1: hybrid page search (existing primitive).
-    let pages = hybrid_search(
+    //
+    // G1 unified path: the head of the hybrid results is fed through the
+    // same rerank post-processing slot the Query operation uses, so Think
+    // inherits the rerank the TS `hybridSearch` always applied. When no
+    // reranker is configured (`opts.rerank.is_none()`) the helper is a
+    // pass-through. Stream failures remain fail-open — a retriever error
+    // yields an empty list rather than aborting the pipeline.
+    let pages: Vec<SearchResult> = match hybrid_search(
         engine,
         &opts.question,
         &HybridSearchOpts {
-            limit: Some(gather_limit),
+            limit: Some(opts.gather_limit.unwrap_or(GATHER_LIMIT_DEFAULT)),
             embedding_client: opts.embedding_client.clone(),
             ..Default::default()
         },
     )
     .await
-    .unwrap_or_else(|e| {
-        eprintln!("[think.gather] hybrid stream failed: {e}");
-        Vec::new()
-    });
+    {
+        Ok(results) => {
+            crate::rerank_client::rerank_results(
+                &opts.question,
+                opts.rerank.as_ref(),
+                results,
+            )
+            .await
+        }
+        Err(e) => {
+            eprintln!("[think.gather] hybrid stream failed: {e}");
+            Vec::new()
+        }
+    };
 
     // Stream 2: keyword search across takes.
     let takes_kw = engine
