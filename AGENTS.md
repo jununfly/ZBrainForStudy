@@ -9,61 +9,62 @@ This is your install + operating protocol. Claude Code reads `./CLAUDE.md` autom
 - Canonical product language: **ZBrain**.
 - Canonical executable/config examples: `zbrain`, `zbrain.yml`, `ZBRAIN_*`, `.zbrain*`, `~/.zbrain`.
 - Domain terms `brain` and `source` are still valid and should not be renamed.
-- TypeScript code is legacy but not deleted mechanically. Delete TS surfaces only after a Rust replacement slice lands and the corresponding behavior is verified.
+- TypeScript code (`src/`, `admin/`) is legacy but not deleted mechanically. Delete TS surfaces only after a Rust replacement slice lands and the corresponding behavior is verified.
 - Do not add GBrain aliases or compatibility fallbacks in the first cleanup phase. There are no online users yet.
-- If a TS remnant is not safe to delete during Rust migration, stop and record an explicit decision.
+- If a TS remnant is not safe to delete during Rust migration, stop and record an explicit decision (see [`docs/plans/KNOWN-GAPS.md`](docs/plans/KNOWN-GAPS.md)).
 
-## Install (current ZBrain line)
+## Build + run (current ZBrain line)
 
-1. Install dependencies with Bun:
-   ```bash
-   curl -fsSL https://bun.sh/install | bash
-   export PATH="$HOME/.bun/bin:$PATH"
-   bun install
-   ```
-2. Build the CLI:
-   ```bash
-   bun run build
-   ```
-3. Init the brain:
-   ```bash
-   zbrain init
-   ```
-   ZBrain defaults to PGLite for zero-config local use. For 1000+ files or multi-machine sync, prefer Postgres + pgvector.
-4. **STOP — ask the user about search mode.** `zbrain init` may print a 9-cell cost matrix (mode x downstream model) preceded by `[AGENT]` markers. Relay the matrix to the operator and confirm their choice before continuing. Cost spread between corners is large; silent acceptance is the wrong default. See [`./INSTALL_FOR_AGENTS.md`](./INSTALL_FOR_AGENTS.md) for the full ask-the-user protocol.
-5. Read [`./INSTALL_FOR_AGENTS.md`](./INSTALL_FOR_AGENTS.md) for the full install flow: API keys, identity, cron, and verification.
+The product is a Cargo workspace. There is no `bun run build` for the engine/CLI anymore — the CLI and core are Rust.
+
+```bash
+# Build the CLI
+cargo build --release -p zbrain-cli
+
+# Run tests / lints across the whole workspace (required before shipping)
+cargo test    --workspace --all-targets
+cargo clippy  --workspace --all-targets -- -D warnings
+
+# Run the CLI directly, or via the cross-platform Node wrapper
+./target/release/zbrain --help
+node bin/zbrain-rs.js --help     # locates the built binary; falls back to `cargo build`
+```
+
+The `bin/zbrain-rs.js` wrapper is a transparent argv pass-through that finds the compiled binary in `target/` per-platform and forwards exit codes. It does **not** parse flags — global-flag semantics live in the Rust `clap` layer (`crates/zbrain-cli/src/lib.rs`).
 
 ## Read this order
 
 1. `./AGENTS.md` (this file) — install + operating protocol.
-2. `./ZJ-CONTEXT.md` — canonical domain language for the Rust rewrite and brand migration.
-3. [`./docs/zj-adr/ZJ-0001-zbrain-rust-rewrite-brand.md`](./docs/zj-adr/ZJ-0001-zbrain-rust-rewrite-brand.md) — repository-level decision record for ZBrain naming and compatibility stance.
-4. [`./CLAUDE.md`](./CLAUDE.md) — architecture reference, key files, trust boundaries, test layout.
-5. [`./docs/architecture/brains-and-sources.md`](./docs/architecture/brains-and-sources.md) — the two-axis mental model: brain = which DB, source = which repo in the DB. Every query routes on both axes.
-6. [`./skills/conventions/brain-routing.md`](./skills/conventions/brain-routing.md) — agent-facing decision table for brain/source switching and cross-brain federation.
-7. [`./skills/RESOLVER.md`](./skills/RESOLVER.md) — skill dispatcher. Read before any task.
+2. [`./ZJ-CONTEXT.md`](./ZJ-CONTEXT.md) — canonical domain language for the Rust rewrite and brand migration.
+3. [`./RUST_REWRITE.md`](./RUST_REWRITE.md) — migration status + slice map (supersedes the stale 8-slice table; current work is tracked in `docs/plans/`).
+4. [`./docs/plans/`](./docs/plans/) — roadmap (Part1–Part13), residual-TS inventory, and known gaps.
+5. [`./CLAUDE.md`](./CLAUDE.md) — architecture reference, key files, trust boundaries, test layout.
+6. [`./docs/architecture/brains-and-sources.md`](./docs/architecture/brains-and-sources.md) — the two-axis mental model: brain = which DB, source = which repo in the DB. Every query routes on both axes.
+7. [`./CONTRIBUTING.md`](./CONTRIBUTING.md) — contributor guide, test discipline, eval-capture mode.
 
 ## Trust boundary (critical)
 
-ZBrain distinguishes **trusted local CLI callers** (`OperationContext.remote = false`, set by `src/cli.ts`) from **untrusted agent-facing callers** (`remote = true`, set by `src/mcp/server.ts`). Security-sensitive operations like `file_upload` tighten filesystem confinement when `remote = true` and default to strict behavior when unset. If you are writing or reviewing an operation, consult `src/core/operations.ts` for the contract.
+ZBrain distinguishes **trusted local CLI callers** from **untrusted agent-facing callers** via `OperationContext.remote` (set `false` for local CLI, `true` for MCP/HTTP transports). Security-sensitive operations tighten filesystem confinement or require `admin` scope when `remote = true`. The operation contract and the `remote` flag live in `crates/zbrain-core/src/operation.rs` — consult it when writing or reviewing an operation. The CLI entrypoint sets the flag in `crates/zbrain-cli/src/lib.rs`; the MCP/HTTP servers set it before dispatch.
 
 ## Common tasks
 
-- **Configure:** [`docs/ENGINES.md`](./docs/ENGINES.md), [`docs/guides/live-sync.md`](./docs/guides/live-sync.md), [`docs/mcp/DEPLOY.md`](./docs/mcp/DEPLOY.md).
-- **Debug:** [`docs/ZBRAIN_VERIFY.md`](./docs/ZBRAIN_VERIFY.md), [`docs/guides/minions-fix.md`](./docs/guides/minions-fix.md), `zbrain doctor --fix`.
-- **Migrate / upgrade:** `zbrain upgrade`, [`docs/UPGRADING_DOWNSTREAM_AGENTS.md`](./docs/UPGRADING_DOWNSTREAM_AGENTS.md), [`skills/migrations/`](./skills/migrations/), `zbrain apply-migrations --yes`.
-- **Eval retrieval changes:** capture is off by default. To benchmark a retrieval change against real captured queries, set `ZBRAIN_CONTRIBUTOR_MODE=1`, then `zbrain eval export --since 7d > base.ndjson` and `zbrain eval replay --against base.ndjson`. For public benchmark coverage, `zbrain eval longmemeval <dataset.jsonl>` runs against an isolated in-memory PGLite per question; your `~/.zbrain` is never opened. Full guide: [`docs/eval-bench.md`](./docs/eval-bench.md).
-- **Drive the brain to a target health score:** `zbrain doctor --remediation-plan --json` previews fixes; `zbrain doctor --remediate --yes --target-score 90 --max-usd 5` walks a dependency-ordered plan and refuses to spend past the cost cap.
-- **Track temporal entity updates:** use `zbrain eval trajectory <entity-slug>` or `zbrain founder scorecard <entity-slug>` for chronological history and signal rollups.
-- **Everything else:** [`./llms.txt`](./llms.txt) is the full documentation map. [`./llms-full.txt`](./llms-full.txt) is the same map with core docs inlined for single-fetch ingestion.
+- **Configure / engines:** [`docs/ENGINES.md`](./docs/ENGINES.md), [`docs/architecture/brains-and-sources.md`](./docs/architecture/brains-and-sources.md).
+- **Debug:** `zbrain doctor`, `zbrain doctor --fix`.
+- **Migrate / upgrade:** `zbrain apply-migrations`.
+- **Eval retrieval changes:** capture is off by default. To benchmark a retrieval change against real captured queries, set `ZBRAIN_CONTRIBUTOR_MODE=1`, then `zbrain eval export --since 7d > base.ndjson` and `zbrain eval replay --against base.ndjson`. Full guide: [`docs/eval-bench.md`](./docs/eval-bench.md).
+- **Track temporal entity updates:** `zbrain find-trajectory <entity-slug>` for chronological history and signal rollups.
+- **Everything else:** [`./llms.txt`](./llms.txt) is the full documentation map for single-fetch ingestion.
 
 ## Before shipping
 
-Easiest path: `bun run ci:local` runs the full CI gate inside Docker. Use `bun run ci:local:diff` for the diff-aware subset during focused iteration.
+Easiest path — run the workspace gate locally:
 
-Manual path: `bun test` plus the E2E lifecycle described in `./CLAUDE.md`.
+```bash
+cargo test    --workspace --all-targets
+cargo clippy  --workspace --all-targets -- -D warnings
+```
 
-Ship via the `/ship` skill, not by hand.
+Ship via the project's release flow, not by hand.
 
 ## Privacy
 
@@ -71,4 +72,4 @@ Never commit real names of people, companies, or funds into public artifacts. Pu
 
 ## Forks
 
-If you are a fork, regenerate `llms.txt` + `llms-full.txt` with your own URL base before publishing: `LLMS_REPO_BASE=https://raw.githubusercontent.com/your-org/your-fork/main bun run build:llms`.
+If you are a fork, regenerate `llms.txt` + `llms-full.txt` with your own URL base before publishing (the generator lives under `tools/` and is being ported to Rust alongside the rest of the CLI).
