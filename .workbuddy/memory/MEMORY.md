@@ -1,5 +1,12 @@
 # zbrain 项目记忆
 
+## 多机 build/test 规约（2026-08-08）
+- **机器**：`jununfly-ROG`（另一台 Windows 笔电，已装 Rust 直接 cargo build）/ `jununfly-WinPC`（本机，**手动装 WSL+Ubuntu+Rust**，不写脚本）。git author 区分
+- **本机 toolchain 状态（2026-08-08）**：本机无 cargo。手动装步骤见今日 log `2026-08-08.md`（用户执行）
+- **Windows ↔ WSL 路径**：WSL 访问仓库走 `/mnt/d/workspace/github/jununfly/ZBrain`（mount 不是 symlink）。**CARGO_TARGET_DIR 建议用 Linux 路径**（`/mnt/d/.../target` 或 `$HOME/.cache/...`），不用 Windows 路径
+- **Rust 装法参考**（不走 rustup，直接 tarball）：`static.rust-lang.org/dist/<RUST_DATE>/rust-<VER>-x86_64-unknown-linux-gnu.tar.gz` → `install.sh --prefix=$HOME/.rust --components=cargo,rustc,rust-std-x86_64-unknown-linux-gnu --without=rust-docs`。rustup 在受限环境常因 CA 失败
+- **cargo sparse 镜像**：`~/.cargo/config.toml` 加 `[source.crates-io] replace-with='rsproxy-sparse'` + `[source.rsproxy-sparse] registry="sparse+https://rsproxy.cn/index/"`（CN 网络明显加速）
+
 ## 项目方向
 - TS → Rust 迁移（"Rust 重写线 ZBrain"）。整仓统一迁 ZBrain；GBrain 品牌改名 ZBrain（无线上用户，破坏性改名、不留兼容别名）。`brain`/`source` 作领域词不改。
 - 原则：TS 先不动，Rust 迁成一块删一块；不适合删的到时讨论记录决策。
@@ -37,6 +44,8 @@
 - **opts 覆盖铁律**：phase 接真实引擎 config 时，ad-hoc opts 覆盖须逐字段 `opts.X.or_else(|| stored)` 保留优先级，丢一个就回归既有测试。
 - **Git HEAD 报 "bad object" 修复（2026-08-08 经验订正）**：`fatal: bad object HEAD` + `git fsck` 列一堆 missing blobs/trees 时，**先 `git fetch origin`**——大多是沙箱重启后本地 object store 没拉最新 tip（ref 指向 `0015ad18...` 但 local 没这个 commit 及其 28 blobs + 2 trees），`git fetch` 静默拉全（exit 0）、ref 即刻 valid。**不要**直接套 `git hash-object -w <worktree-path>` 重建（你不知道目标 hash 对应什么路径+内容，重建会偏）。诊断顺序：`git cat-file -t <ref-sha>`（missing→fetch 即可）+ `git fetch origin` + 再 `git fsck --no-reflogs` 验证 missing 数归零。
 - **TypeScript 基线 gate 假阳性**：`scripts/tsc-baseline.txt` **未排序**，而 `scripts/typecheck-baseline.sh` 用 `comm` 比对 → 误报新增错误（exit 1）且谎称「N baseline errors no longer reproduce」。真值须 `sort` 两侧后再 `comm -13`。别信这个 gate 的 exit code，真零新增时它也会红。
+- **沙箱禁用 `git stash`（2026-08-08 灾难）**：`git stash push` 失败时（commit 对象创建 OK 但 ref transaction 失败），sandbox 让 `git` 内部 cleanup 把 `.git/refs/` 整目录删了 → HEAD orphan → "No commits yet" → index 把 1687 个 working tree 文件全报 "staged as new"。**修法**（按顺序，必做齐全）：① `git fetch origin <branch> --force --no-tags`（首次可能 objects 还没拉，**第二次 fetch** 才会进 pack），② `mkdir -p .git/refs/heads .git/refs/remotes/origin .git/refs/tags` 重建 ref 目录，③ `git symbolic-ref HEAD refs/heads/<branch>`，④ `git update-ref refs/heads/<branch> <sha>`（SHA 必须是 commit hash 不能是 refname），⑤ `git rev-parse HEAD` 验证 resolved 到具体 SHA。**严禁**在 orphan HEAD 状态用 `git reset HEAD` 拆 staging——会解析到 `stash@0`（孤儿 stash）。改用 `git reset <commit-sha>` 显式。**后续 stash 需求**：写 untracked 描述文件 `docs/plans/YYYY-MM-DD-pending.md` 代替，或直接 commit WIP（commit 对象 sandbox 不清，ref 重建 1 次后稳）。
+- **沙箱对 `.git/refs/*` 删除无防护**：`safe-delete` 不覆盖 `.git/` 内部，git 自身 ref 改动失败时 cleanup 会真删 `refs/heads/*`、`refs/tags/*` 等。`refs/remotes/origin/*` 有 packed-refs 备份（fetch 会重写），`refs/heads/*` 没备份。`git update-ref` 之后 `git rev-parse HEAD` 必跑验证一次。
 - **路线图系统性滞后**：Part11 residual-endgame 路线图常比仓库真实状态滞后数月（删 TS 执行层 / cycle 大迁移 等里程碑早已 commit 完成却仍标 in_progress/pending）。**以仓库 HEAD + grep/ls 真相为准**，roadmap 节点仅作索引；re-baseline 前先 `git ls-files` + `cargo build` + `bun` typecheck 验证。残差审计方法：目录级查 `crates/zbrain-core/src/<mod>`（剥前缀 `core/` + kebab↔snake），勿按文件名。
 - **接活前必查 `git status`**：会话中断会留下**未提交的大规模改动**（曾发现 338 文件 / -92,427 行的 `src/core` 整树删除处于未提交状态）。开新节点前先 `git status --short | awk '{print $1}' | sort | uniq -c` 摸底，否则会在错误的地基上动工（`git rm` 会报 pathspec 不匹配 = 信号）。
 - **`.git/index.lock` 僵尸锁 + 沙箱 safe-delete**：网络中断遗留 0 字节 `.git/index.lock` → 所有 git 写操作失败。**`rm -f` 和 python `os.remove()` 都会被沙箱 `[safe-delete][SAFE_DELETE_FAIL_CLOSED]` 拦截**（Windows 回收站不可用）。唯一可行绕法：**`mv` 改名**（`mv .git/index.lock .git/index.lock.stale-$(date +%s)`），重命名不触发删除守卫。
