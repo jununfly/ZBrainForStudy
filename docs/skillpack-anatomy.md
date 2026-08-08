@@ -77,7 +77,7 @@ status + paste-ready fix for every failure.
 | 9 | `bootstrap_runbook_present` | pack declares runbooks.bootstrap and the file is non-empty | yes |
 | 10 | `license_present` | LICENSE file exists at the pack root (informational badge) | yes |
 
-_Generated from `src/core/skillpack/rubric.ts` by `bun run scripts/build-skillpack-anatomy.ts`._
+_Generated from the skillpack rubric (TS-era `src/core/skillpack/rubric.ts`); the `scripts/build-skillpack-anatomy.ts` generator was retired with the `scripts/` directory._
 
 <!-- END auto-generated:rubric -->
 ## Tier eligibility
@@ -108,5 +108,3 @@ gbrain skillpack registry --url X     # point at a custom registry
 ## See also
 
 - `examples/skillpack-reference/` — the live 10/10 reference pack
-- `docs/designs/SKILLPACK_REGISTRY_V1_SPEC.md` — strategic spec + decisions
-- `docs/guides/skillpacks-as-scaffolding.md` — v0.36 scaffold/reference model

@@ -246,4 +246,4 @@ to debug MCP connection issues (see request/response headers, latency, errors).
 
 ---
 
-*Part of the [GBrain Skillpack](../docs/GBRAIN_SKILLPACK.md). See also: [Voice-to-Brain](twilio-voice-brain.md), [Remote MCP Deployment](../docs/mcp/DEPLOY.md)*
+*Part of the [GBrain Skillpack](../docs/ZBRAIN_SKILLPACK.md). See also: [Voice-to-Brain](twilio-voice-brain.md)*

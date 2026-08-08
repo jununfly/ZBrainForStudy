@@ -61,14 +61,6 @@ zbrain serve                      # stdio MCP (Claude Desktop / Code / Cursor)
 zbrain serve --http               # HTTP MCP with OAuth 2.1 + admin dashboard
 ```
 
-Per-client setup guides live in [`docs/mcp/`](mcp/):
-
-- [`docs/mcp/CLAUDE_CODE.md`](mcp/CLAUDE_CODE.md)
-- [`docs/mcp/CLAUDE_DESKTOP.md`](mcp/CLAUDE_DESKTOP.md)
-- [`docs/mcp/CHATGPT.md`](mcp/CHATGPT.md)
-- [`docs/mcp/PERPLEXITY.md`](mcp/PERPLEXITY.md)
-- [`docs/mcp/DEPLOY.md`](mcp/DEPLOY.md) — production deploy patterns
-
 The HTTP server ships with an admin SPA at `/admin`, an SSE activity feed at `/admin/events`, DCR-style client registration, scope-gated `read`/`write`/`admin` access, and rate limiting.
 
 ## Thin-client mode

@@ -8,9 +8,8 @@ querying, or routing experts. It is the single source of truth for
 "what's in your brain."
 
 The v0.39.0.0 wave shipped a full schema-pack cathedral. This doc is the
-user-facing reference; for implementation details see
-`docs/designs/V038_SCHEMA_PACKS.md` (CEO plan) and the engine layer in
-`src/core/schema-pack/`.
+user-facing reference; for implementation details see the Rust engine layer in
+`crates/zbrain-core/src/schema_pack/`.
 
 ## What ships in the box
 
@@ -23,7 +22,7 @@ Two bundled packs:
   `ALL_PAGE_TYPES` list).
 
 - **`gbrain-recommended`** — extends `gbrain-base` with the 13 additional
-  directories described in `docs/GBRAIN_RECOMMENDED_SCHEMA.md`: deal,
+  directories described in `docs/ZBRAIN_RECOMMENDED_SCHEMA.md`: deal,
   meeting, concept, project, source, daily, personal, civic, original,
   place, trip, conversation, writing. If you like the documented
   operational-brain pattern, activate this with:

@@ -127,4 +127,5 @@ gbrain eval replay --against before.ndjson
 gbrain eval --qrels labels.tsv --config balanced.json
 ```
 
-Methodology + metric glossary in [`docs/eval/SEARCH_MODE_METHODOLOGY.md`](../eval/SEARCH_MODE_METHODOLOGY.md).
+Methodology + metric glossary lived in the retired `docs/eval/` tree; the
+eval harness now lives under `src/eval/` (Rust).
