@@ -51,7 +51,7 @@
     "1-2": {
       "id": "1-2",
       "label": "现有 Rust CLI verb delegate handler 接线",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1",
       "children": [
@@ -82,13 +82,24 @@
         "1-3-5",
         "1-3-6"
       ],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "How to dispose of the 6 orphaned 1-3 handlers (no Rust verb / dead tech)?",
+          "answer": "Mark blocked (wontfix): convert each silent not_implemented stub to an explicit Unsupported error pointing at KNOWN-GAPS (extract->G76, lint/lint_fix/integrity_auto/sync_retry_failed->G80-G83, repair_jsonb->G78). No dead features built; jobs now fail loudly instead of silently returning not_implemented.",
+          "note": ""
+        },
+        {
+          "q": "How to dispose of the 6 orphaned 1-3 handlers (no Rust verb / dead tech)?",
+          "answer": "Mark blocked (wontfix): convert each silent not_implemented stub to an explicit Unsupported error pointing at KNOWN-GAPS (extract->G76, lint/lint_fix/integrity_auto/sync_retry_failed->G80-G83, repair_jsonb->G78). No dead features built; jobs now fail loudly instead of silently returning not_implemented.",
+          "note": ""
+        }
+      ],
       "notes": ""
     },
     "1-4": {
       "id": "1-4",
       "label": "LLM/embedding-seam handler 接线（需 infra 注入）",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1",
       "children": [
@@ -96,7 +107,13 @@
         "1-4-2",
         "1-4-3"
       ],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "How to wire the 3 embedding-seam handlers + deferred reindex?",
+          "answer": "Wire reindex/embed/embed_backfill/contextual_reindex via shared embed_pages helper (list_pages/list_stale_pages -> EmbeddingClient::from_env + embed_batch -> put_page_embedding), feature-gated behind 'embedding'. contextual_reindex performs the embed loop but defers per-chunk LLM context synthesis (needs ChatProvider injected into handler ctx) -> tracked G84. Without the feature or a configured ZEROENTROPY_API_KEY the handlers fail with a clear error.",
+          "note": ""
+        }
+      ],
       "notes": ""
     },
     "1-1-1": {
@@ -182,7 +199,7 @@
     "1-2-2": {
       "id": "1-2-2",
       "label": "reindex handler → zbrain reindex verb（Reindex::Pages 已存在）",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-2",
       "children": [],
@@ -202,67 +219,67 @@
     "1-3-1": {
       "id": "1-3-1",
       "label": "lint handler — 无 Lint verb（命令未迁，需决策）",
-      "status": "pending",
+      "status": "blocked",
       "mode": "exploit",
       "parent": "1-3",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "wontfix: no Rust verb / dead tech; handler returns explicit Unsupported error. Tracked in KNOWN-GAPS (extract->G76, lint/lint_fix/integrity_auto/sync_retry_failed new G80-G83, repair_jsonb->G78)."
     },
     "1-3-2": {
       "id": "1-3-2",
       "label": "lint_fix handler — 无 LintFix verb（命令未迁，需决策）",
-      "status": "pending",
+      "status": "blocked",
       "mode": "exploit",
       "parent": "1-3",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "wontfix: no Rust verb / dead tech; handler returns explicit Unsupported error. Tracked in KNOWN-GAPS (extract->G76, lint/lint_fix/integrity_auto/sync_retry_failed new G80-G83, repair_jsonb->G78)."
     },
     "1-3-3": {
       "id": "1-3-3",
       "label": "extract handler — 无 Extract verb（选项 C 已删 TS 命令，需决策）",
-      "status": "pending",
+      "status": "blocked",
       "mode": "exploit",
       "parent": "1-3",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "wontfix: no Rust verb / dead tech; handler returns explicit Unsupported error. Tracked in KNOWN-GAPS (extract->G76, lint/lint_fix/integrity_auto/sync_retry_failed new G80-G83, repair_jsonb->G78)."
     },
     "1-3-4": {
       "id": "1-3-4",
       "label": "integrity_auto handler — 无 IntegrityAuto verb（需决策）",
-      "status": "pending",
+      "status": "blocked",
       "mode": "exploit",
       "parent": "1-3",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "wontfix: no Rust verb / dead tech; handler returns explicit Unsupported error. Tracked in KNOWN-GAPS (extract->G76, lint/lint_fix/integrity_auto/sync_retry_failed new G80-G83, repair_jsonb->G78)."
     },
     "1-3-5": {
       "id": "1-3-5",
       "label": "sync_retry_failed handler — 无 SyncRetryFailed verb（需决策）",
-      "status": "pending",
+      "status": "blocked",
       "mode": "exploit",
       "parent": "1-3",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "wontfix: no Rust verb / dead tech; handler returns explicit Unsupported error. Tracked in KNOWN-GAPS (extract->G76, lint/lint_fix/integrity_auto/sync_retry_failed new G80-G83, repair_jsonb->G78)."
     },
     "1-3-6": {
       "id": "1-3-6",
       "label": "repair_jsonb handler — pglite 死技术 → wontfix 候选",
-      "status": "pending",
+      "status": "blocked",
       "mode": "exploit",
       "parent": "1-3",
       "children": [],
       "decisions": [],
-      "notes": ""
+      "notes": "wontfix: no Rust verb / dead tech; handler returns explicit Unsupported error. Tracked in KNOWN-GAPS (extract->G76, lint/lint_fix/integrity_auto/sync_retry_failed new G80-G83, repair_jsonb->G78)."
     },
     "1-4-1": {
       "id": "1-4-1",
       "label": "embed handler → embedding client 接线",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-4",
       "children": [],
@@ -272,7 +289,7 @@
     "1-4-2": {
       "id": "1-4-2",
       "label": "embed_backfill handler → embedding + BudgetMeter 接线",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-4",
       "children": [],
@@ -282,7 +299,7 @@
     "1-4-3": {
       "id": "1-4-3",
       "label": "contextual_reindex handler → Haiku LLM + rate-lease 接线",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-4",
       "children": [],
@@ -292,7 +309,7 @@
   },
   "metadata": {
     "created": "2026-08-08 01:18:16",
-    "updated": "2026-08-08 10:05:00",
+    "updated": "2026-08-08 11:15:55",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART13_MINION_HANDLER_WIRING.md"
   }
 }

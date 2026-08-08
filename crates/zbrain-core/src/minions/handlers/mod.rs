@@ -14,6 +14,11 @@
 pub mod registry;
 pub mod subagent;
 
+// ── shared helpers for embedding-family handlers ─────────────────────────────
+pub(crate) mod embed_util;
+// ── shared helpers for unsupported / wontfix handlers ──────────────────────
+pub(crate) mod util;
+
 // ── 1-4-2 low-complexity handlers ──────────────────────────────────────────
 pub mod backlinks;
 pub mod embed;
