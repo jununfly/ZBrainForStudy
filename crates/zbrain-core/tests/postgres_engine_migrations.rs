@@ -7,9 +7,10 @@ mod support;
 
 use sqlx::postgres::PgPoolOptions;
 use zbrain_core::engine::BrainEngine;
+use zbrain_core::postgres::POSTGRES_MIGRATIONS;
 
 #[tokio::test]
-async fn fresh_db_runs_all_ten_migrations_ends_at_version_10() {
+async fn fresh_db_runs_all_migrations_ends_at_latest_version() {
     let fix = support::pg_fixture::PgFixture::start().await;
     let pool = PgPoolOptions::new()
         .max_connections(1)
@@ -22,7 +23,7 @@ async fn fresh_db_runs_all_ten_migrations_ends_at_version_10() {
         .await
         .expect("Failed to read version");
 
-    assert_eq!(version.0, 10);
+    assert_eq!(version.0, POSTGRES_MIGRATIONS.latest_version());
 }
 
 #[tokio::test]
@@ -39,7 +40,7 @@ async fn idempotent_init_schema_applies_zero_migrations_second_run() {
         .fetch_one(&pool)
         .await
         .expect("Failed to read version");
-    assert_eq!(v1.0, 10);
+    assert_eq!(v1.0, POSTGRES_MIGRATIONS.latest_version());
 
     // Second run should be idempotent
     fix.engine.init_schema().await.expect("init_schema should be idempotent");
@@ -47,7 +48,7 @@ async fn idempotent_init_schema_applies_zero_migrations_second_run() {
         .fetch_one(&pool)
         .await
         .expect("Failed to read version");
-    assert_eq!(v2.0, 10);
+    assert_eq!(v2.0, POSTGRES_MIGRATIONS.latest_version());
 }
 
 #[tokio::test]
