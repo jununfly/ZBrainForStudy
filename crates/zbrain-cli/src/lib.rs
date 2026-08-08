@@ -3971,6 +3971,20 @@ async fn run_operation(
         }
     }
 
+    // G72 — wire the default search telemetry writer. `QueryOperation` and
+    // `SearchOperation` both append one JSONL event per call when
+    // `ctx.telemetry_writer` is `Some`. The writer is opt-in at the
+    // `SearchTelemetryWriter` layer (a `None` payload short-circuits to
+    // no-op), so a failed path-resolution (e.g. no `$ZBRAIN_HOME` and no
+    // `$HOME`) simply leaves telemetry off rather than breaking search.
+    // Mirrors the rerank / embedding / mount_resolver injection
+    // precedent — every production wiring is here so the test code can
+    // pass `None` to keep the hot path deterministic.
+    if let Some(path) = zbrain_core::search::SearchTelemetryWriter::default_path() {
+        let writer = zbrain_core::search::SearchTelemetryWriter::new(Some(path));
+        ctx = ctx.with_telemetry_writer(std::sync::Arc::new(writer));
+    }
+
     // Wire the embedding client for the query vector path when hybrid search is
     // enabled in config AND the API key is present in the environment (same
     // secrets-never-in-config posture as the reranker above). Missing key with
