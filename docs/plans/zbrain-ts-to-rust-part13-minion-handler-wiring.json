@@ -6,7 +6,7 @@
     "1": {
       "id": "1",
       "label": "Part13 - minion/MCP handler 接线（接已完成 Rust cycle + CLI verbs）",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": null,
       "children": [
@@ -385,7 +385,7 @@
   },
   "metadata": {
     "created": "2026-08-08 01:18:16",
-    "updated": "2026-08-08 18:25:50",
+    "updated": "2026-08-09 00:19:57",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART13_MINION_HANDLER_WIRING.md"
   }
 }

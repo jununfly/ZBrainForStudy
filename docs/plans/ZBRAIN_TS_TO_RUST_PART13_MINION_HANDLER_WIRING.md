@@ -1,9 +1,9 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-ts-to-rust-part13-minion-handler-wiring.json` | 最后更新: 2026-08-08 18:25:50
+> 数据文件: `zbrain-ts-to-rust-part13-minion-handler-wiring.json` | 最后更新: 2026-08-09 00:19:57
 
-[~][X+] 1. Part13 - minion/MCP handler 接线（接已完成 Rust cycle + CLI verbs）
+[x][X+] 1. Part13 - minion/MCP handler 接线（接已完成 Rust cycle + CLI verbs）
 ├── [x][Y+] 1-1. cycle-phase minion handler 接线（delegate 到 run_cycle / 指定 phase）
 │   ├── [x][Y+] 1-1-1. autopilot_cycle handler → run_cycle（完整 cycle）
 │   ├── [x][Y+] 1-1-2. consolidate handler → run_cycle phase=Consolidate
