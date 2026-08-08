@@ -1091,6 +1091,10 @@ pub enum LinksAction {
     #[command(name = "backlinks")]
     Backlinks(LinksBacklinksArgs),
 
+    /// Re-extract markdown + wikilinks from every page body and upsert page_links
+    #[command(name = "rebuild-md-links")]
+    RebuildMdLinks(LinksRebuildMdLinksArgs),
+
     /// Remove a link
     #[command(name = "rm")]
     Remove(LinksRemoveArgs),
@@ -1158,6 +1162,21 @@ pub struct LinksBacklinksArgs {
     pub source: String,
 
     /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `zbrain links rebuild-md-links`.
+///
+/// Scans every page's compiled_truth for markdown + wikilink references and
+/// upserts the resulting outbound links into `page_links`. Closes G77-1.
+#[derive(Debug, Parser)]
+pub struct LinksRebuildMdLinksArgs {
+    /// Process a single page slug only (default: every page in the brain).
+    #[arg(long)]
+    pub slug: Option<String>,
+
+    /// Output as JSON.
     #[arg(long)]
     pub json: bool,
 }
@@ -6458,6 +6477,9 @@ async fn run_links_command(action: LinksAction, config_path: Option<&Path>) -> a
         LinksAction::Add(args) => run_links_add(args, config_path).await?,
         LinksAction::List(args) => run_links_list(args, config_path).await?,
         LinksAction::Backlinks(args) => run_links_backlinks(args, config_path).await?,
+        LinksAction::RebuildMdLinks(args) => {
+            run_links_rebuild_md_links(args, config_path).await?
+        }
         LinksAction::Remove(args) => run_links_remove(args, config_path).await?,
     }
     Ok(())
@@ -6570,6 +6592,44 @@ async fn run_links_backlinks(args: LinksBacklinksArgs, config_path: Option<&Path
             }
             println!("\n{} backlink(s)", backlinks.len());
         }
+    }
+
+    engine.disconnect().await?;
+    Ok(())
+}
+
+/// Execute `zbrain links rebuild-md-links`.
+///
+/// Rescans every page body (or one specific page) for markdown + wikilink
+/// references, resolves each target against existing slugs, and upserts the
+/// resulting outbound links via `auto_fix::extract_links`. Closes G77-1.
+async fn run_links_rebuild_md_links(
+    args: LinksRebuildMdLinksArgs,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    use zbrain_core::auto_fix::{extract_links, ExtractLinksOpts};
+    use zbrain_core::engine::{BrainEngine, EngineConfig};
+
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    let opts = ExtractLinksOpts { slug: args.slug.clone() };
+    let result = extract_links(&engine, &opts).await?;
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        println!(
+            "rebuild-md-links: pages={} created={} dangling={}",
+            result.pages_processed, result.links_created, result.dangling
+        );
     }
 
     engine.disconnect().await?;
