@@ -33,6 +33,19 @@ function Write-Section {
     Write-Host "===== $Text =====" -ForegroundColor Cyan
 }
 
+function Test-RebootPending {
+    # Checks CBS / Windows Update reboot flags. If true, subsequent dism
+    # /online /enable-feature calls will be blocked.
+    $paths = @(
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired",
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending"
+    )
+    foreach ($p in $paths) {
+        if (Test-Path $p) { return $true }
+    }
+    return $false
+}
+
 function Test-WSLFeature {
     param([string]$FeatureName)
     $f = Get-WindowsOptionalFeature -Online -FeatureName $FeatureName -ErrorAction SilentlyContinue
@@ -46,6 +59,16 @@ function Test-DistroInstalled {
     return ($list -match [regex]::Escape($DistroName))
 }
 
+# ---- 0. Reboot-pending guard ----
+Write-Section "Step 0/6: Check reboot-pending"
+if (Test-RebootPending) {
+    Write-Host "  Reboot is pending (Windows Update or CBS flag set)." -ForegroundColor Red
+    Write-Host "  dism /online /enable-feature will be BLOCKED until you reboot." -ForegroundColor Red
+    Write-Host "  Please reboot, then re-run this script." -ForegroundColor Red
+    exit 2
+}
+Write-Host "  No pending reboot." -ForegroundColor Green
+
 # ---- 1. WSL feature ----
 Write-Section "Step 1/6: Enable WSL feature"
 if (Test-WSLFeature "Microsoft-Windows-Subsystem-Linux") {
@@ -53,10 +76,21 @@ if (Test-WSLFeature "Microsoft-Windows-Subsystem-Linux") {
 } else {
     Write-Host "  Enabling Microsoft-Windows-Subsystem-Linux ..." -ForegroundColor Yellow
     dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart
-    if ($LASTEXITCODE -ne 0) {
-        throw "dism failed to enable WSL feature (exit $LASTEXITCODE)"
+    # dism exit codes:
+    #   0    = SUCCESS
+    #   3010 = SUCCESS_REBOOT_REQUIRED  (Windows 10 + some Win11 builds)
+    #   740  = ELEVATION_REQUIRED  (re-run PowerShell as Administrator)
+    #   0x800f0922 = missing dependency  (often: install media not mounted)
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "  WSL feature enabled." -ForegroundColor Green
+    } elseif ($LASTEXITCODE -eq 3010) {
+        Write-Host "  WSL feature enabled (REBOOT REQUIRED before step 3 will work)." -ForegroundColor Yellow
+        Write-Host "  Save your work, then re-run this script after reboot." -ForegroundColor Yellow
+        Write-Host "  Skipping remaining steps to avoid half-configured state." -ForegroundColor Yellow
+        exit 0
+    } else {
+        throw "dism failed to enable WSL feature (exit $LASTEXITCODE). Try: (1) ensure PowerShell is run as Administrator; (2) check that no pending reboot is blocking (reboot then retry); (3) if 0x800f0922, run \`DISM /Online /Cleanup-Image /RestoreHealth\` then retry."
     }
-    Write-Host "  WSL feature enabled." -ForegroundColor Green
 }
 
 # ---- 2. VirtualMachinePlatform ----
@@ -64,12 +98,17 @@ Write-Section "Step 2/6: Enable VirtualMachinePlatform (WSL2 backend)"
 if (Test-WSLFeature "VirtualMachinePlatform") {
     Write-Host "  VirtualMachinePlatform already enabled." -ForegroundColor Green
 } else {
-    Write-Host "  Enabling VirtualMachinePlatform (Win11: no reboot required) ..." -ForegroundColor Yellow
+    Write-Host "  Enabling VirtualMachinePlatform ..." -ForegroundColor Yellow
     dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart
-    if ($LASTEXITCODE -ne 0) {
-        throw "dism failed to enable VirtualMachinePlatform (exit $LASTEXITCODE)"
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "  VirtualMachinePlatform enabled." -ForegroundColor Green
+    } elseif ($LASTEXITCODE -eq 3010) {
+        Write-Host "  VirtualMachinePlatform enabled (REBOOT REQUIRED before step 3 will work)." -ForegroundColor Yellow
+        Write-Host "  Save your work, then re-run this script after reboot." -ForegroundColor Yellow
+        exit 0
+    } else {
+        throw "dism failed to enable VirtualMachinePlatform (exit $LASTEXITCODE). Try as Administrator and after a reboot."
     }
-    Write-Host "  VirtualMachinePlatform enabled." -ForegroundColor Green
 }
 
 # ---- 3. Default WSL version ----

@@ -75,8 +75,11 @@ wsl -d Ubuntu -- bash -c "cd /mnt/d/workspace/github/jununfly/ZBrain && cargo te
 
 | 症状 | 原因 | 解决 |
 |---|---|---|
+| `dism failed to enable WSL feature (exit 3010)` | dism 成功但**需要重启**（Win10 + 部分 Win11 build）| **重启电脑**，再跑脚本。脚本会在 step 0 检测 reboot-pending 提前退出，避免半配置状态 |
 | `wsl --install` 一直卡下载 | 国内网络 | 手动从 [WSL2 kernel update](https://aka.ms/wsl2kernel) 装 |
-| `dism` 报 0x800f0922 | 缺管理员 | 重开管理员 PowerShell |
+| `dism` 报 `0x800f0922` | 缺管理员或缺 install media | 重开管理员 PowerShell；或 `DISM /Online /Cleanup-Image /RestoreHealth` 修复后重试 |
+| `dism` 报 `740` (ELEVATION_REQUIRED) | 没以管理员运行 | 重开"以管理员身份运行"的 PowerShell |
+| 脚本 step 0 直接退出 exit code 2 | reboot-pending 标记存在 | 重启后再跑 |
 | `rustup` 下载报 CA 错 | 已知 bug | 脚本已绕过：用 static tarball 直装 |
 | `cargo` 拉 crate 慢 | 走 crates.io | 脚本已配 rsproxy.cn sparse 镜像 |
 | 测试跑出 `0xc0000005` | Windows libsql FFI flake | 在 WSL Ubuntu 跑，无此问题 |
