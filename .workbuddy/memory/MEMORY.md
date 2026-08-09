@@ -27,6 +27,7 @@
 
 ## Roadmap 铁律
 - 所有 .json/.md 放 docs/plans/。render 只认 ROADMAP_SECTION_START/END marker（不符会追加成重复段 → 先删 md 再 render）。CLI 第一参数 JSON 完整路径。
+- **render 脚本 cwd 陷阱（2026-08-09 实测）**：`roadmap_cli.py render` 按 `metadata.md_file` 写 md，但路径相对**脚本自身 cwd** 解析。若从 `.workbuddy/skills/zj-roadmap-driven/` 内运行，会在该目录内误生成 `docs/plans/<x>.md` 副本（且**不反映** JSON 的 status/notes 变更，等于空转），而非更新仓库 `docs/plans/`。正确做法：从**仓库根**运行 `python3 .workbuddy/skills/zj-roadmap-driven/roadmap_cli.py render docs/plans/<x>.json`；或干脆手编 md（手编「当前施工」段 prose 更可靠，render 只忠实重画 tree）。阶段7 即手编 md 收口。
 - decisions 项须 {"q","answer","note?"}（用 a 会 KeyError）。路线图系统性滞后：以 HEAD+git ls-files+编译为准，节点只作索引。
 
 ## 迁移工程规则
