@@ -8,3 +8,5 @@ pub mod schema_authoring;
 pub mod gate;
 pub mod replay;
 pub mod whoknows;
+pub mod run_all;
+pub mod compare;

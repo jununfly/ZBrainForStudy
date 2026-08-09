@@ -469,6 +469,15 @@ pub enum Commands {
     /// Two-layer whoknows eval gate (TS `eval-whoknows`; G74 1-1-4 stage 5)
     EvalWhoknows(EvalWhoknowsArgs),
 
+    /// Run every selected eval gate and aggregate their verdicts into one
+    /// report. Redesign of the TS `eval run-all` stub — orchestrates the real
+    /// Rust gates (gate/replay/whoknows) instead of writing skipped audit rows
+    /// (G74 1-1-4 stage 6)
+    EvalRunAll(EvalRunAllArgs),
+
+    /// Diff two `eval run-all` reports and surface regressions (G74 1-1-4 stage 6)
+    EvalCompare(EvalCompareArgs),
+
     /// Extract links / timeline entries from page bodies (TS `extract`)
     #[command(subcommand)]
     Extract(ExtractAction),
@@ -1340,6 +1349,75 @@ pub struct EvalWhoknowsArgs {
     /// Top-K to grade (default 5; the eval itself grades top-3).
     #[arg(long, value_name = "N", default_value_t = 5)]
     pub limit: usize,
+}
+
+/// Args for `zbrain eval-run-all` (G74 1-1-4 stage 6).
+///
+/// Redesign of the TS `eval run-all` stub: instead of sweeping TS-only search
+/// modes and writing `skipped` audit rows, this genuinely orchestrates the
+/// verdict-producing Rust gates (gate / replay / whoknows) and aggregates
+/// their verdicts into one report.
+#[derive(Debug, Parser)]
+pub struct EvalRunAllArgs {
+    /// Which eval gates to run and aggregate. Subset of
+    /// `gate,replay,whoknows` (default: all three).
+    #[arg(long = "checks", value_name = "LIST", value_delimiter = ',')]
+    pub checks: Option<Vec<String>>,
+
+    /// Qrels ground truth for the `gate` check. Required when `gate` is
+    /// selected. Accepts a file path or an inline `json:` object.
+    #[arg(long = "qrels", value_name = "PATH|JSON")]
+    pub qrels: Option<String>,
+
+    /// NDJSON snapshot from `zbrain eval-export` for the `replay` check.
+    /// Required when `replay` is selected.
+    #[arg(long = "against", value_name = "FILE")]
+    pub against: Option<String>,
+
+    /// Hand-labeled fixture for the `whoknows` check. Required when
+    /// `whoknows` is selected.
+    #[arg(long = "fixture", value_name = "PATH")]
+    pub fixture: Option<String>,
+
+    /// Recall@k cutoff depth (also the per-query retrieval depth) for the
+    /// `gate` check (default 10).
+    #[arg(long, value_name = "N", default_value_t = 10)]
+    pub k: usize,
+
+    /// Per-row / top-K limit for `replay` and `whoknows` (default 5).
+    #[arg(long, value_name = "N", default_value_t = 5)]
+    pub limit: usize,
+
+    /// Write the run report to this path. Default:
+    /// `.zbrain-evals/run-all-<run_id>.json`.
+    #[arg(long = "output", value_name = "PATH")]
+    pub output: Option<String>,
+
+    /// Emit the JSON run report instead of a human summary.
+    #[arg(long)]
+    pub json: bool,
+
+    /// Skip Layer 2 (regression) of the `whoknows` check.
+    #[arg(long = "skip-replay")]
+    pub skip_replay: bool,
+}
+
+/// Args for `zbrain eval-compare` (G74 1-1-4 stage 6).
+///
+/// Reads two `eval run-all` reports and surfaces per-check regressions.
+#[derive(Debug, Parser)]
+pub struct EvalCompareArgs {
+    /// Baseline run-all report (JSON) written by `zbrain eval-run-all`.
+    #[arg(long = "baseline", value_name = "PATH", required = true)]
+    pub baseline: String,
+
+    /// Current run-all report (JSON) written by `zbrain eval-run-all`.
+    #[arg(long = "current", value_name = "PATH", required = true)]
+    pub current: String,
+
+    /// Emit the JSON compare report instead of a human table.
+    #[arg(long)]
+    pub json: bool,
 }
 
 // ── Extract subcommands ────────────────────────────────────────
@@ -2312,6 +2390,12 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Commands::EvalWhoknows(args) => {
             run_eval_whoknows_command(args, cli.config.as_deref()).await?
+        }
+        Commands::EvalRunAll(args) => {
+            run_eval_run_all_command(args, cli.config.as_deref()).await?
+        }
+        Commands::EvalCompare(args) => {
+            run_eval_compare_command(args, cli.config.as_deref()).await?
         }
         Commands::Extract(action) => run_extract_command(action, cli.config.as_deref()).await?,
         Commands::Links(action) => run_links_command(action, cli.config.as_deref()).await?,
@@ -6826,8 +6910,6 @@ const UNPORTED_EVAL_SUBCOMMANDS: &[&str] = &[
     "brainstorm",
     "suspected-contradictions",
     "trajectory",
-    "run-all",
-    "compare",
 ];
 
 /// Reject any positional token after `zbrain eval`.
@@ -7717,6 +7799,460 @@ fn print_whoknows_human(
     }
     println!();
     println!("VERDICT: {}", if r.overall_passed { "PASS" } else { "FAIL" });
+}
+
+/// Parse `--checks` into the validated set of gates to run.
+///
+/// `None` or an empty list means "all three" (gate, replay, whoknows). Any
+/// other token is rejected so a typo fails fast instead of silently skipping.
+fn parse_check_list(checks: &Option<Vec<String>>) -> anyhow::Result<Vec<String>> {
+    let allowed = ["gate", "replay", "whoknows"];
+    match checks {
+        None => Ok(allowed.iter().map(|s| s.to_string()).collect()),
+        Some(list) if list.is_empty() => Ok(allowed.iter().map(|s| s.to_string()).collect()),
+        Some(list) => {
+            let mut out = Vec::with_capacity(list.len());
+            for s in list {
+                if !allowed.contains(&s.as_str()) {
+                    anyhow::bail!(
+                        "--checks: '{}' is not a valid gate (use gate|replay|whoknows)",
+                        s
+                    );
+                }
+                out.push(s.clone());
+            }
+            Ok(out)
+        }
+    }
+}
+
+/// Read an eval input that may be an inline `json:` object or a file path.
+fn read_eval_input(s: &str) -> anyhow::Result<String> {
+    if let Some(inline) = s.strip_prefix("json:") {
+        Ok(inline.to_string())
+    } else {
+        std::fs::read_to_string(s).map_err(|e| anyhow::anyhow!("cannot read {s}: {e}"))
+    }
+}
+
+/// Best-effort short git commit of the working tree (for the run report).
+fn current_commit() -> String {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                String::from_utf8(o.stdout).ok()
+            } else {
+                None
+            }
+        })
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Run every selected eval gate and aggregate their verdicts into one report.
+///
+/// Redesign of the TS `eval run-all` stub: the TS version swept TS-only search
+/// modes and only ever wrote `status: "skipped"` audit rows. This builds the
+/// real Rust gates (gate / replay / whoknows) and collects their verdicts.
+async fn run_eval_run_all_command(
+    args: EvalRunAllArgs,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    use std::collections::BTreeMap;
+    use zbrain_core::engine::{BrainEngine, EngineConfig, EvalCandidateFilter, SearchOpts};
+    use zbrain_core::eval::run_all::{assemble_run_all_report, RunAllCheck, RunAllStatus};
+    use zbrain_core::eval::gate::{
+        assemble_gate_result, evaluate_correctness_gate, parse_qrels_file, run_correctness_gate,
+        GateVerdict, QrelsThresholds,
+    };
+    use zbrain_core::eval::replay::{replay_core, ReplayTool};
+    use zbrain_core::eval::whoknows::{
+        assemble_report, read_fixture, run_quality_gate, run_regression_gate, ReplayRow,
+        REGRESSION_THRESHOLD,
+    };
+    use zbrain_core::search::{hybrid_search, keyword_search_slugs, HybridSearchOpts};
+    use zbrain_core::whoknows::{self, FindExpertsOpts};
+
+    let checks = parse_check_list(&args.checks)?;
+
+    // Validate required inputs up front (before touching the DB).
+    if checks.contains(&"gate".to_string()) && args.qrels.is_none() {
+        anyhow::bail!("eval run-all: --qrels is required when 'gate' is in --checks");
+    }
+    if checks.contains(&"replay".to_string()) && args.against.is_none() {
+        anyhow::bail!("eval run-all: --against is required when 'replay' is in --checks");
+    }
+    if checks.contains(&"whoknows".to_string()) && args.fixture.is_none() {
+        anyhow::bail!("eval run-all: --fixture is required when 'whoknows' is in --checks");
+    }
+
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine
+        .connect(&EngineConfig {
+            database_url: None,
+            database_path: Some(db_path),
+        })
+        .await?;
+    engine.init_schema().await?;
+    let engine_ref = &engine;
+
+    let started = std::time::Instant::now();
+    let mut run_checks: Vec<RunAllCheck> = Vec::new();
+
+    // ── gate ──────────────────────────────────────────────────────────────
+    if checks.contains(&"gate".to_string()) {
+        let qrels_content = read_eval_input(args.qrels.as_ref().unwrap())?;
+        match parse_qrels_file(&qrels_content) {
+            Ok(qrels) => {
+                let k = args.k.max(1);
+                let thresholds = QrelsThresholds {
+                    recall_at_k: 0.70,
+                    first_relevant_hit: 0.60,
+                    expected_top1: 0.50,
+                    k,
+                };
+                let query_fn = |q: &str, k: usize| {
+                    let opts = SearchOpts {
+                        keywords: vec![q.to_string()],
+                        limit: Some(k),
+                        ..Default::default()
+                    };
+                    async move {
+                        let results = engine_ref.search_pages(&opts).await?;
+                        let keys: Vec<String> = results
+                            .into_iter()
+                            .map(|r| format!("{}::{}", r.page.source_id, r.page.slug))
+                            .collect();
+                        Ok(keys)
+                    }
+                };
+                match run_correctness_gate(&qrels, k, query_fn).await {
+                    Ok(result) => {
+                        let breaches = evaluate_correctness_gate(&result, &thresholds);
+                        let gate = assemble_gate_result(None, &result, &thresholds, breaches);
+                        let status = if gate.verdict == GateVerdict::Fail {
+                            RunAllStatus::Failed
+                        } else {
+                            RunAllStatus::Passed
+                        };
+                        let mut metrics = BTreeMap::new();
+                        metrics.insert(
+                            "mean_recall_at_k".into(),
+                            serde_json::json!(gate.correctness_gate.summary.mean_recall_at_k),
+                        );
+                        metrics.insert(
+                            "first_relevant_hit_rate".into(),
+                            serde_json::json!(gate.correctness_gate.summary.first_relevant_hit_rate),
+                        );
+                        metrics.insert(
+                            "queries_errored".into(),
+                            serde_json::json!(gate.correctness_gate.summary.queries_errored),
+                        );
+                        metrics.insert(
+                            "breaches".into(),
+                            serde_json::json!(gate.correctness_gate.breaches.len()),
+                        );
+                        run_checks.push(RunAllCheck {
+                            name: "gate".into(),
+                            status,
+                            metrics,
+                            detail: None,
+                            error: None,
+                        });
+                    }
+                    Err(e) => run_checks.push(RunAllCheck {
+                        name: "gate".into(),
+                        status: RunAllStatus::Errored,
+                        metrics: BTreeMap::new(),
+                        detail: None,
+                        error: Some(e.to_string()),
+                    }),
+                }
+            }
+            Err(e) => run_checks.push(RunAllCheck {
+                name: "gate".into(),
+                status: RunAllStatus::Errored,
+                metrics: BTreeMap::new(),
+                detail: None,
+                error: Some(e.to_string()),
+            }),
+        }
+    }
+
+    // ── replay ──────────────────────────────────────────────────────────────
+    if checks.contains(&"replay".to_string()) {
+        let content = std::fs::read_to_string(args.against.as_ref().unwrap())
+            .map_err(|e| anyhow::anyhow!("cannot read --against: {e}"))?;
+        let query_fn = move |q: &str, tool: ReplayTool, limit: usize| {
+            let q = q.to_string();
+            Box::pin(async move {
+                let slugs: Vec<String> = match tool {
+                    ReplayTool::Search => keyword_search_slugs(engine_ref, &q, limit).await?,
+                    ReplayTool::Query => {
+                        let opts = HybridSearchOpts {
+                            limit: Some(limit),
+                            ..Default::default()
+                        };
+                        let results = hybrid_search(engine_ref, &q, &opts).await?;
+                        results.into_iter().map(|r| r.page.slug).collect()
+                    }
+                };
+                Ok(slugs)
+            })
+        };
+        match replay_core(&query_fn, &content, None, None).await {
+            Ok((summary, _)) => {
+                // A row that errored is a hard failure; the >2x latency alarm
+                // is informational and surfaced as a metric, not a verdict.
+                let status = if summary.rows_errored > 0 {
+                    RunAllStatus::Failed
+                } else {
+                    RunAllStatus::Passed
+                };
+                let mut metrics = BTreeMap::new();
+                metrics.insert("mean_jaccard".into(), serde_json::json!(summary.mean_jaccard));
+                metrics.insert(
+                    "top1_stability_rate".into(),
+                    serde_json::json!(summary.top1_stability_rate),
+                );
+                metrics.insert(
+                    "rows_over_2x_latency".into(),
+                    serde_json::json!(summary.rows_over_2x_latency),
+                );
+                metrics.insert("rows_errored".into(), serde_json::json!(summary.rows_errored));
+                run_checks.push(RunAllCheck {
+                    name: "replay".into(),
+                    status,
+                    metrics,
+                    detail: None,
+                    error: None,
+                });
+            }
+            Err(e) => run_checks.push(RunAllCheck {
+                name: "replay".into(),
+                status: RunAllStatus::Errored,
+                metrics: BTreeMap::new(),
+                detail: None,
+                error: Some(e.to_string()),
+            }),
+        }
+    }
+
+    // ── whoknows ─────────────────────────────────────────────────────────────
+    if checks.contains(&"whoknows".to_string()) {
+        let fixture_path = args.fixture.clone().unwrap();
+        let fixture_content = std::fs::read_to_string(&fixture_path)
+            .map_err(|e| anyhow::anyhow!("cannot read --fixture: {e}"))?;
+        let fixture = match read_fixture(&fixture_content) {
+            Ok(f) => f,
+            Err(e) => {
+                run_checks.push(RunAllCheck {
+                    name: "whoknows".into(),
+                    status: RunAllStatus::Errored,
+                    metrics: BTreeMap::new(),
+                    detail: None,
+                    error: Some(e.to_string()),
+                });
+                Vec::new()
+            }
+        };
+        if !fixture.is_empty() {
+            let whoknows_fn = move |topic: &str, limit: usize| {
+                let topic = topic.to_string();
+                Box::pin(async move {
+                    let results = whoknows::find_experts(
+                        engine_ref,
+                        &FindExpertsOpts {
+                            topic,
+                            limit: Some(limit),
+                            types: None,
+                            source_id: None,
+                        },
+                    )
+                    .await?;
+                    Ok(results.into_iter().map(|r| r.slug).collect::<Vec<String>>())
+                })
+            };
+            let quality = run_quality_gate(&whoknows_fn, &fixture, args.limit).await;
+            let regression = if args.skip_replay {
+                zbrain_core::eval::whoknows::RegressionReport {
+                    status: "skipped".to_string(),
+                    reason: Some("--skip-replay".to_string()),
+                    total: 0,
+                    mean_jaccard: 0.0,
+                    threshold: REGRESSION_THRESHOLD,
+                    rows: Vec::new(),
+                }
+            } else {
+                let captured = engine_ref
+                    .list_eval_candidates(&EvalCandidateFilter {
+                        tool_name: Some("query".to_string()),
+                        since: None,
+                        limit: Some(200),
+                    })
+                    .await
+                    .unwrap_or_default();
+                let replay_rows: Vec<ReplayRow> = captured
+                    .into_iter()
+                    .map(|c| ReplayRow {
+                        query: c.query,
+                        retrieved_slugs: c.retrieved_slugs,
+                    })
+                    .collect();
+                run_regression_gate(&whoknows_fn, &replay_rows, args.limit).await
+            };
+            let report = assemble_report(&fixture_path, quality, regression);
+            let status = if report.overall_passed {
+                RunAllStatus::Passed
+            } else {
+                RunAllStatus::Failed
+            };
+            let mut metrics = BTreeMap::new();
+            metrics.insert("quality_hit_rate".into(), serde_json::json!(report.quality.hit_rate));
+            metrics.insert(
+                "regression_status".into(),
+                serde_json::json!(report.regression.status),
+            );
+            metrics.insert(
+                "regression_mean_jaccard".into(),
+                serde_json::json!(report.regression.mean_jaccard),
+            );
+            run_checks.push(RunAllCheck {
+                name: "whoknows".into(),
+                status,
+                metrics,
+                detail: None,
+                error: None,
+            });
+        }
+    }
+
+    let duration_ms = started.elapsed().as_millis() as u64;
+    let commit = current_commit();
+    let run_id = format!("{}-{}", commit, chrono::Utc::now().format("%Y%m%dT%H%M%S"));
+    let ran_at = chrono::Utc::now().to_rfc3339();
+    let report = assemble_run_all_report(run_id.clone(), ran_at, commit, run_checks, duration_ms);
+
+    // Persist the report to disk (default: .zbrain-evals/run-all-<run_id>.json).
+    let output_path = match &args.output {
+        Some(p) => p.clone(),
+        None => {
+            let dir = std::path::Path::new(".zbrain-evals");
+            std::fs::create_dir_all(dir).ok();
+            dir.join(format!("run-all-{run_id}.json"))
+                .to_string_lossy()
+                .to_string()
+        }
+    };
+    if let Err(e) = std::fs::write(&output_path, serde_json::to_string_pretty(&report)?) {
+        anyhow::bail!("failed to write run-all report to {output_path}: {e}");
+    }
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print_run_all_human(&report);
+        eprintln!("report written to: {output_path}");
+    }
+
+    if !report.overall_passed {
+        anyhow::bail!("eval run-all FAILED (one or more gates did not pass)");
+    }
+    Ok(())
+}
+
+/// Render the human-readable run-all summary.
+fn print_run_all_human(r: &zbrain_core::eval::run_all::RunAllReport) {
+    println!(
+        "eval run-all — {}",
+        if r.overall_passed { "PASS" } else { "FAIL" }
+    );
+    println!("run_id:     {}", r.run_id);
+    println!("commit:     {}", r.commit);
+    println!("ran_at:     {}", r.ran_at);
+    println!("duration:   {}ms", r.duration_ms);
+    println!();
+    for c in &r.checks {
+        let st = match c.status {
+            zbrain_core::eval::run_all::RunAllStatus::Passed => "PASS ",
+            zbrain_core::eval::run_all::RunAllStatus::Failed => "FAIL ",
+            zbrain_core::eval::run_all::RunAllStatus::Errored => "ERROR",
+            zbrain_core::eval::run_all::RunAllStatus::Skipped => "SKIP ",
+        };
+        if let Some(e) = &c.error {
+            println!("  [{st}] {}  error: {e}", c.name);
+        } else {
+            println!("  [{st}] {}  ({} metric(s))", c.name, c.metrics.len());
+        }
+    }
+}
+
+/// Diff two run-all reports and surface regressions.
+async fn run_eval_compare_command(
+    args: EvalCompareArgs,
+    _config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    use zbrain_core::eval::compare::compare_reports;
+    use zbrain_core::eval::run_all::RunAllReport;
+
+    let baseline_content = std::fs::read_to_string(&args.baseline)
+        .map_err(|e| anyhow::anyhow!("cannot read --baseline {}: {}", args.baseline, e))?;
+    let current_content = std::fs::read_to_string(&args.current)
+        .map_err(|e| anyhow::anyhow!("cannot read --current {}: {}", args.current, e))?;
+    let baseline: RunAllReport = serde_json::from_str(&baseline_content)
+        .map_err(|e| anyhow::anyhow!("invalid --baseline report: {e}"))?;
+    let current: RunAllReport = serde_json::from_str(&current_content)
+        .map_err(|e| anyhow::anyhow!("invalid --current report: {e}"))?;
+
+    let cmp = compare_reports(&baseline, &current);
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&cmp)?);
+    } else {
+        print_compare_human(&cmp);
+    }
+
+    if cmp.any_regression {
+        let n = cmp.checks.iter().filter(|d| d.regression).count();
+        anyhow::bail!("eval compare: {n} regression(s) detected");
+    }
+    Ok(())
+}
+
+/// Render the human-readable compare table.
+fn print_compare_human(cmp: &zbrain_core::eval::compare::CompareReport) {
+    fn st(s: zbrain_core::eval::run_all::RunAllStatus) -> &'static str {
+        match s {
+            zbrain_core::eval::run_all::RunAllStatus::Passed => "pass",
+            zbrain_core::eval::run_all::RunAllStatus::Failed => "fail",
+            zbrain_core::eval::run_all::RunAllStatus::Errored => "error",
+            zbrain_core::eval::run_all::RunAllStatus::Skipped => "skip",
+        }
+    }
+    println!(
+        "eval compare — baseline {} vs current {}",
+        cmp.baseline_run_id, cmp.current_run_id
+    );
+    println!();
+    println!("| check      | baseline | current | changed | regression |");
+    println!("|------------|----------|---------|---------|------------|");
+    for d in &cmp.checks {
+        println!(
+            "| {:<10} | {:^8} | {:^7} | {:^7} | {:^10} |",
+            d.name,
+            st(d.baseline),
+            st(d.current),
+            if d.changed { "yes" } else { "no" },
+            if d.regression { "YES" } else { "no" }
+        );
+    }
+    println!();
+    println!("any_regression: {}", cmp.any_regression);
 }
 
 async fn run_eval_command(args: EvalArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
@@ -12338,6 +12874,105 @@ mod tests {
                 assert_eq!(args.limit, 10);
             }
             _ => panic!("expected EvalWhoknows"),
+        }
+    }
+
+    #[test]
+    fn eval_run_all_defaults_to_all_three_checks() {
+        // No --checks => all three gates; inputs are parsed but not required
+        // here (the CLI validates required inputs at runtime).
+        let cli = Cli::try_parse_from([
+            "zbrain",
+            "eval-run-all",
+            "--qrels",
+            "./q.json",
+            "--against",
+            "./b.ndjson",
+            "--fixture",
+            "./f.jsonl",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::EvalRunAll(args) => {
+                assert!(args.checks.is_none());
+                assert_eq!(args.qrels.as_deref(), Some("./q.json"));
+                assert_eq!(args.against.as_deref(), Some("./b.ndjson"));
+                assert_eq!(args.fixture.as_deref(), Some("./f.jsonl"));
+                assert_eq!(args.k, 10);
+                assert_eq!(args.limit, 5);
+            }
+            _ => panic!("expected EvalRunAll"),
+        }
+    }
+
+    #[test]
+    fn eval_run_all_parses_checks_list_and_flags() {
+        let cli = Cli::try_parse_from([
+            "zbrain",
+            "eval-run-all",
+            "--checks",
+            "gate,replay",
+            "--qrels",
+            "./q.json",
+            "--against",
+            "./b.ndjson",
+            "--k",
+            "20",
+            "--json",
+            "--output",
+            "./report.json",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::EvalRunAll(args) => {
+                assert_eq!(args.checks, Some(vec!["gate".to_string(), "replay".to_string()]));
+                assert_eq!(args.k, 20);
+                assert!(args.json);
+                assert_eq!(args.output.as_deref(), Some("./report.json"));
+            }
+            _ => panic!("expected EvalRunAll"),
+        }
+    }
+
+    #[test]
+    fn eval_run_all_rejects_unknown_check() {
+        // `--checks` accepts any string at parse time; the invalid value is
+        // rejected by `parse_check_list` (runtime), which is what the CLI
+        // actually calls.
+        let err = parse_check_list(&Some(vec!["bogus".to_string()])).unwrap_err();
+        assert!(
+            err.to_string().contains("not a valid gate"),
+            "unknown --checks value must be rejected: {err}"
+        );
+    }
+
+    #[test]
+    fn eval_compare_requires_both_reports() {
+        assert!(Cli::try_parse_from(["zbrain", "eval-compare"]).is_err());
+        assert!(
+            Cli::try_parse_from(["zbrain", "eval-compare", "--baseline", "a.json"]).is_err()
+        );
+    }
+
+    #[test]
+    fn eval_compare_parses_both_reports() {
+        let cli = Cli::try_parse_from([
+            "zbrain",
+            "eval-compare",
+            "--baseline",
+            "a.json",
+            "--current",
+            "b.json",
+            "--json",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::EvalCompare(args) => {
+                assert_eq!(args.baseline, "a.json");
+                assert_eq!(args.current, "b.json");
+                assert!(args.json);
+            }
+            _ => panic!("expected EvalCompare"),
         }
     }
 
