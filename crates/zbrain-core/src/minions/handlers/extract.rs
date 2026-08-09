@@ -1,9 +1,18 @@
-//! Extract handler — UNSUPPORTED / wontfix.
+//! Extract handler — UNSUPPORTED (minion surface only).
 //!
-//! The TS `extract` command was deleted under option C and has no Rust verb.
+//! The TS `extract` command was deleted under option C. As of 2026-08-09 a CLI
+//! verb **does** exist — `zbrain extract {links,timeline,all}` (see
+//! `crates/zbrain-cli/src/lib.rs`, backed by `auto_fix::extract_links` /
+//! `auto_fix::extract_timeline`) — so the earlier "has no Rust verb" note is stale.
+//!
+//! This *minion job type* stays unsupported on purpose: enqueueing `extract`
+//! would run a whole-brain extraction that writes link/timeline rows, and the
+//! job-payload contract (scope by slug? whole brain? dry-run?) has not been
+//! decided. Wiring it is registered as node 1-2-4 in
+//! `docs/plans/zbrain-g74-g76-reimpl.json`.
+//!
 //! (Distinct from `extract_facts` / `extract-conversation-facts`, which are wired
-//! through `run_cycle`.) Tracked as G76 in `docs/plans/KNOWN-GAPS.md` (the
-//! command-level gap; this minion job type shares that disposition).
+//! through `run_cycle`.) Tracked as G76 in `docs/plans/KNOWN-GAPS.md`.
 
 use async_trait::async_trait;
 use serde_json::Value;
