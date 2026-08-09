@@ -22,7 +22,8 @@
 - ref 损坏修复：git fetch origin（可能两次）→ mkdir .git/refs/{heads,remotes/origin,tags} → symbolic-ref HEAD → update-ref <sha> → rev-parse 验证。orphan 别用 git reset HEAD（解析到 stash@0）。
 - .git/index.lock 僵尸锁：rm/os.remove 被 safe-delete 拦，唯一绕法 mv 改名。
 - 接活前必查 git status（会话中断常留大规模未提交改动）。
-- **行尾符陷阱**：本仓 core.autocrlf=false 且行尾符**混杂**（`lib.rs`/`MEMORY.md` 是 CRLF，`KNOWN-GAPS.md`/`COMMANDS_TEAR_DOWN.md`/多数 `*.rs` 是 LF）。Edit 工具会整文件改写行尾符 → `git diff --numstat` 出现 `N/N`（每行都改）即中招。改完必查 numstat；异常时按 `git show HEAD:<f>` 的原始行尾符**逐文件**对齐，别一刀切 LF（会把本就 CRLF 的文件全炸）。
+- **行尾符陷阱**：本仓 core.autocrlf=false 且行尾符**混杂**（`lib.rs`/`MEMORY.md` 是 CRLF，`KNOWN-GAPS.md`/`COMMANDS_TEAR_DOWN.md`/多数 `*.rs` 是 LF）。Edit 工具会整文件改写行尾符 → `git diff --numstat` 出现 `N/N`（每行都改）即中招。**提交前必须对改动的【每个 Rust 文件】单独跑 `git diff --numstat` 确认无全文件重写**——只改几行却出现上万行 N/N 必是行尾符泄漏（docs 文件也要查，但 Rust 大文件最易炸）。异常时按 `git show HEAD:<f>` 的原始行尾符**逐文件**对齐，别一刀切 LF（会把本就 CRLF 的文件全炸）。
+- **CRLF 泄漏救回法**：若 Edit 把 LF 文件写成 CRLF，用 python `data.replace(b'\r\n', b'\n')` 改回（别用 sed 批量，易误伤）；**提交前用 `git hash-object` 验证内容无损**：`A=$(git show HEAD:<f> | tr -d '\r' | git hash-object --stdin)` 与 `B=$(git hash-object <f>)` 相等即仅行尾符差异、内容无丢。**事故档案**：2026-08-09 的 1-1-4 stages 0/1/2 提交 `92630e49` 因提交前未查 numstat，把 `engine.rs`/`libsql.rs`/`postgres.rs`/`libsql_engine_migrations.rs` 四个 LF 文件写成 CRLF 推上 `origin/rust-rewrite`，事后用修正提交 `83320030`（CRLF→LF，hash-object 验证内容无损）救回。教训：push 前必查 numstat。
 
 ## Roadmap 铁律
 - 所有 .json/.md 放 docs/plans/。render 只认 ROADMAP_SECTION_START/END marker（不符会追加成重复段 → 先删 md 再 render）。CLI 第一参数 JSON 完整路径。
