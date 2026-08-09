@@ -6,3 +6,4 @@
 
 pub mod schema_authoring;
 pub mod gate;
+pub mod replay;

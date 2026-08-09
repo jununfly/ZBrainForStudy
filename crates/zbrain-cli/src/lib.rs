@@ -463,6 +463,9 @@ pub enum Commands {
     /// Correctness gate against qrels ground truth (TS `eval-gate`; G74 1-1-4 stage 3)
     EvalGate(EvalGateArgs),
 
+    /// Replay captured eval candidates against the current brain (TS `eval-replay`; G74 1-1-4 stage 4)
+    EvalReplay(EvalReplayArgs),
+
     /// Extract links / timeline entries from page bodies (TS `extract`)
     #[command(subcommand)]
     Extract(ExtractAction),
@@ -1271,6 +1274,44 @@ pub struct EvalGateArgs {
     /// Emit the full `GateResult` envelope as JSON.
     #[arg(long)]
     pub json: bool,
+}
+
+/// Replay captured eval candidates against the current brain (TS `eval-replay`;
+/// G74 1-1-4 stage 4).
+///
+/// Reads an NDJSON snapshot produced by `zbrain eval-export`, re-runs each
+/// captured query against the current brain, and reports mean Jaccard@k,
+/// top-1 stability and mean latency delta. Best-effort by design — the brain
+/// may have more pages than at capture time.
+#[derive(Debug, Parser)]
+pub struct EvalReplayArgs {
+    /// NDJSON file from `zbrain eval-export` (required).
+    #[arg(long = "against", value_name = "FILE", required = true)]
+    pub against: String,
+
+    /// Replay at most N rows (default: all).
+    #[arg(long, value_name = "N")]
+    pub limit: Option<usize>,
+
+    /// Force a constant per-call retrieval depth across modes so Jaccard@k
+    /// measures quality drift, not K-drift. When set it overrides the captured
+    /// K and the mode's default limit (default: max(captured, 20)).
+    #[arg(long = "compare-limit", value_name = "N")]
+    pub compare_limit: Option<usize>,
+
+    /// Emit one JSON object on stdout instead of a human table.
+    /// Stable shape for CI consumption.
+    #[arg(long)]
+    pub json: bool,
+
+    /// Include every row's per-row diff in the JSON output (large output).
+    #[arg(long)]
+    pub verbose: bool,
+
+    /// Print the K rows with the worst Jaccard scores (human mode only;
+    /// default 5 in human mode, 0 in `--json`).
+    #[arg(long = "top-regressions", value_name = "K")]
+    pub top_regressions: Option<usize>,
 }
 
 // ── Extract subcommands ────────────────────────────────────────
@@ -2237,6 +2278,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
 
         Commands::EvalGate(args) => {
             run_eval_gate_command(args, cli.config.as_deref()).await?
+        }
+        Commands::EvalReplay(args) => {
+            run_eval_replay_command(args, cli.config.as_deref()).await?
         }
         Commands::Extract(action) => run_extract_command(action, cli.config.as_deref()).await?,
         Commands::Links(action) => run_links_command(action, cli.config.as_deref()).await?,
@@ -6746,7 +6790,6 @@ async fn run_facts_expire(args: FactsExpireArgs, config_path: Option<&Path>) -> 
 /// with a stray positional argument. Every entry here is tracked under
 /// KNOWN-GAPS G74 (categories A/C/D of the reconciliation table).
 const UNPORTED_EVAL_SUBCOMMANDS: &[&str] = &[
-    "replay",
     "cross-modal",
     "code-retrieval",
     "brainstorm",
@@ -7332,6 +7375,164 @@ async fn run_eval_gate_command(
         );
     }
     Ok(())
+}
+
+async fn run_eval_replay_command(
+    args: EvalReplayArgs,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    use zbrain_core::engine::{BrainEngine, EngineConfig};
+    use zbrain_core::eval::replay::{parse_ndjson, replay_core, ReplayTool};
+    use zbrain_core::search::{hybrid_search, keyword_search_slugs, HybridSearchOpts};
+
+    // Read the snapshot up front so missing-file / parse errors surface as
+    // clean exit(1) rather than halfway through the replay.
+    let content = std::fs::read_to_string(&args.against)
+        .map_err(|e| anyhow::anyhow!("cannot read --against {}: {}", args.against, e))?;
+    let rows = parse_ndjson(&content).map_err(|e| anyhow::anyhow!("{e}"))?;
+    if rows.is_empty() {
+        anyhow::bail!("{} contains no rows (empty export)", args.against);
+    }
+
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine
+        .connect(&EngineConfig {
+            database_url: None,
+            database_path: Some(db_path),
+        })
+        .await?;
+    engine.init_schema().await?;
+    let engine_ref = &engine;
+
+    // Retrieval dispatch: a captured `search` row re-runs the bare keyword
+    // path; a captured `query` row re-runs the hybrid path — the same logic
+    // that produced the original retrieval (TS `searchKeyword` vs
+    // `hybridSearch`).
+    let query_fn = move |q: &str, tool: ReplayTool, limit: usize| {
+        let q = q.to_string();
+        Box::pin(async move {
+            let slugs: Vec<String> = match tool {
+                ReplayTool::Search => keyword_search_slugs(engine_ref, &q, limit).await?,
+                ReplayTool::Query => {
+                    let opts = HybridSearchOpts {
+                        limit: Some(limit),
+                        ..Default::default()
+                    };
+                    let results = hybrid_search(engine_ref, &q, &opts).await?;
+                    results.into_iter().map(|r| r.page.slug).collect()
+                }
+            };
+            Ok(slugs)
+        })
+    };
+
+    let (summary, results) =
+        replay_core(&query_fn, &content, args.limit, args.compare_limit).await?;
+
+    if args.json {
+        let out = serde_json::json!({
+            "schema_version": 1,
+            "summary": serde_json::to_value(&summary)?,
+            "results": if args.verbose {
+                Some(serde_json::to_value(&results)?)
+            } else {
+                None
+            },
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+
+    print_replay_human(&summary, &results, args.top_regressions);
+    Ok(())
+}
+
+/// Render the human-readable replay summary + top regressions to stdout
+/// (mirrors TS `printHumanSummary`).
+fn print_replay_human(
+    summary: &zbrain_core::eval::replay::ReplaySummary,
+    results: &[zbrain_core::eval::replay::RowResult],
+    top_regressions: Option<usize>,
+) {
+    let sign = if summary.mean_latency_delta_ms >= 0.0 { "+" } else { "" };
+    println!(
+        "Replayed {} of {} captured queries ({} skipped, {} errored)",
+        summary.rows_replayed, summary.rows_total, summary.rows_skipped, summary.rows_errored
+    );
+    println!("Mean Jaccard@k:    {:.3}", summary.mean_jaccard);
+    println!(
+        "Top-1 stability:   {:.1}%",
+        summary.top1_stability_rate * 100.0
+    );
+    println!(
+        "Mean latency Δ:    {}{:.0}ms (current vs captured)",
+        sign, summary.mean_latency_delta_ms
+    );
+    if summary.rows_over_2x_latency > 0 {
+        println!(
+            "⚠ {} row(s) ran more than 2× slower than captured",
+            summary.rows_over_2x_latency
+        );
+    }
+
+    let top_n = top_regressions.unwrap_or(5);
+    if top_n > 0 {
+        let mut regressions: Vec<&zbrain_core::eval::replay::RowResult> = results
+            .iter()
+            .filter(|r| r.skipped != Some(true) && r.errored != Some(true))
+            .collect();
+        regressions.sort_by(|a, b| a.jaccard.partial_cmp(&b.jaccard).unwrap_or(std::cmp::Ordering::Equal));
+        regressions.truncate(top_n);
+        if let Some(worst) = regressions.first() {
+            if worst.jaccard < 1.0 {
+                println!("\nTop {} regression(s):", regressions.len());
+                for r in regressions {
+                    let trunc: String = if r.query.chars().count() > 60 {
+                        let head: String = r.query.chars().take(57).collect();
+                        format!("{head}...")
+                    } else {
+                        r.query.clone()
+                    };
+                    println!(
+                        "  jaccard={:.2}  captured={}  current={}  \"{}\"",
+                        r.jaccard,
+                        r.captured_slugs.len(),
+                        r.current_slugs.len(),
+                        trunc
+                    );
+                }
+            }
+        }
+    }
+
+    if summary.rows_errored > 0 {
+        let errors: Vec<&zbrain_core::eval::replay::RowResult> = results
+            .iter()
+            .filter(|r| r.errored == Some(true))
+            .take(3)
+            .collect();
+        println!(
+            "\n{} row(s) errored. First {}:",
+            summary.rows_errored,
+            errors.len()
+        );
+        for r in errors {
+            let trunc: String = if r.query.chars().count() > 60 {
+                let head: String = r.query.chars().take(57).collect();
+                format!("{head}...")
+            } else {
+                r.query.clone()
+            };
+            println!(
+                "  id={}  \"{}\"  {}",
+                r.id,
+                trunc,
+                r.error_message.as_deref().unwrap_or("")
+            );
+        }
+    }
 }
 
 async fn run_eval_command(args: EvalArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
@@ -11885,6 +12086,43 @@ mod tests {
                 assert!(args.json);
             }
             _ => panic!("expected EvalGate"),
+        }
+    }
+
+    #[test]
+    fn eval_replay_requires_against() {
+        // --against is required; replay is fully real (1-1-4 stage 4).
+        assert!(Cli::try_parse_from(["zbrain", "eval-replay"]).is_err());
+        assert!(Cli::try_parse_from(["zbrain", "eval-replay", "--json"]).is_err());
+    }
+
+    #[test]
+    fn eval_replay_parses_against_and_flags() {
+        let cli = Cli::try_parse_from([
+            "zbrain",
+            "eval-replay",
+            "--against",
+            "./baseline.ndjson",
+            "--limit",
+            "10",
+            "--compare-limit",
+            "25",
+            "--top-regressions",
+            "3",
+            "--json",
+            "--verbose",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::EvalReplay(args) => {
+                assert_eq!(args.against, "./baseline.ndjson");
+                assert_eq!(args.limit, Some(10));
+                assert_eq!(args.compare_limit, Some(25));
+                assert_eq!(args.top_regressions, Some(3));
+                assert!(args.json);
+                assert!(args.verbose);
+            }
+            _ => panic!("expected EvalReplay"),
         }
     }
 
