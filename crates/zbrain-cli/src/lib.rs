@@ -482,6 +482,7 @@ pub enum Commands {
     /// them. Harness + strategies from scratch (G74 1-1-4 stage 7); the
     /// with-code-intel strategy is wired to real Rust code-intel ops.
     EvalCodeRetrieval(EvalCodeRetrievalArgs),
+    EvalCrossModal(EvalCrossModalArgs),
 
     /// Extract links / timeline entries from page bodies (TS `extract`)
     #[command(subcommand)]
@@ -1470,6 +1471,62 @@ pub struct EvalCodeRetrievalArgs {
     pub json: bool,
 }
 
+/// Args for `zbrain eval cross-modal`.
+///
+/// Rust port of TS `src/commands/eval-cross-modal.ts` (single-task mode).
+/// Three different-provider frontier models score the OUTPUT against the TASK
+/// on a fixed dimension list; verdict PASS(0)/FAIL(1)/INCONCLUSIVE(2).
+/// (Batch `--batch <jsonl>` mode is a follow-up — depends on the longmemeval
+/// command's JSONL output.)
+#[derive(Debug, Parser)]
+pub struct EvalCrossModalArgs {
+    /// What the OUTPUT was meant to achieve.
+    #[arg(long)]
+    pub task: Option<String>,
+
+    /// File whose content gets scored. A `skills/<slug>/SKILL.md` path binds
+    /// the receipt to that skill (T10).
+    #[arg(long)]
+    pub output: Option<String>,
+
+    /// Receipt filename slug. Defaults to inferred slug from --output, or a
+    /// content sha for ad-hoc inputs.
+    #[arg(long)]
+    pub slug: Option<String>,
+
+    /// Comma-separated dimension list. Default: 5 standard dimensions.
+    #[arg(long, value_delimiter = ',')]
+    pub dimensions: Option<Vec<String>>,
+
+    /// 1-3 cycles. Default 3 in TTY, 1 in non-TTY (handled by the handler).
+    #[arg(long)]
+    pub cycles: Option<u32>,
+
+    /// Override default 'openai:gpt-4o'.
+    #[arg(long)]
+    pub slot_a_model: Option<String>,
+
+    /// Override default 'anthropic:claude-opus-4-7'.
+    #[arg(long)]
+    pub slot_b_model: Option<String>,
+
+    /// Override default 'google:gemini-1.5-pro'.
+    #[arg(long)]
+    pub slot_c_model: Option<String>,
+
+    /// Receipt directory. Default: platform eval-receipts dir.
+    #[arg(long)]
+    pub receipt_dir: Option<String>,
+
+    /// Output token budget per call. Default 4000.
+    #[arg(long)]
+    pub max_tokens: Option<u32>,
+
+    /// Emit final aggregate as JSON to stdout (progress to stderr).
+    #[arg(long)]
+    pub json: bool,
+}
+
 // ── Extract subcommands ────────────────────────────────────────
 
 /// Subcommands for `zbrain extract`.
@@ -2449,6 +2506,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Commands::EvalCodeRetrieval(args) => {
             run_eval_code_retrieval_command(args, cli.config.as_deref(), timeout_ms).await?
+        }
+        Commands::EvalCrossModal(args) => {
+            run_eval_cross_modal_command(args, timeout_ms).await?
         }
         Commands::Extract(action) => run_extract_command(action, cli.config.as_deref()).await?,
         Commands::Links(action) => run_links_command(action, cli.config.as_deref()).await?,
@@ -6958,10 +7018,19 @@ async fn run_facts_expire(args: FactsExpireArgs, config_path: Option<&Path>) -> 
 /// with a stray positional argument. Every entry here is tracked under
 /// KNOWN-GAPS G74 (categories A/C/D of the reconciliation table).
 const UNPORTED_EVAL_SUBCOMMANDS: &[&str] = &[
-    "cross-modal",
     "brainstorm",
     "suspected-contradictions",
     "trajectory",
+];
+
+/// TS sub-verbs that ARE ported but live as top-level Rust commands.
+///
+/// Without this table `zbrain eval cross-modal` (the TS spelling) fails with a
+/// misleading "did you mean --qrels cross-modal?" — muscle memory deserves a
+/// pointer at the real command instead.
+const RENAMED_EVAL_SUBCOMMANDS: &[(&str, &str)] = &[
+    ("code-retrieval", "zbrain eval-code-retrieval"),
+    ("cross-modal", "zbrain eval-cross-modal"),
 ];
 
 /// Reject any positional token after `zbrain eval`.
@@ -6977,6 +7046,14 @@ fn reject_eval_subcommand(sub: Option<&str>) -> anyhow::Result<()> {
              (TS-only sub-verb; tracked as KNOWN-GAPS G74). \
              The ported surface is the bare IR-metrics flow: \
              `zbrain eval --qrels <path|json>`"
+        );
+    }
+    if let Some((_, replacement)) =
+        RENAMED_EVAL_SUBCOMMANDS.iter().find(|(name, _)| *name == sub)
+    {
+        anyhow::bail!(
+            "`zbrain eval {sub}` is a top-level command in the Rust port — \
+             run `{replacement}` instead"
         );
     }
     anyhow::bail!(
@@ -8582,6 +8659,165 @@ fn run_eval_code_retrieval_compare(
         anyhow::bail!("eval code-retrieval compare: gate FAILED");
     }
     Ok(())
+}
+
+// ── eval cross-modal ───────────────────────────────────────────
+
+/// Handler for `zbrain eval cross-modal` (single-task mode).
+///
+/// Faithful port of TS `src/commands/eval-cross-modal.ts`: three
+/// different-provider frontier models score the OUTPUT against the TASK;
+/// verdict PASS(0)/FAIL(1)/INCONCLUSIVE(2). The LLM transport is resolved
+/// per `provider:model` slot via the AI gateway's `instantiate_chat`.
+async fn run_eval_cross_modal_command(args: EvalCrossModalArgs, _timeout_ms: Option<u64>) -> anyhow::Result<()> {
+    use std::io::IsTerminal;
+    use std::sync::Arc;
+
+    use zbrain_core::ai::chat::{instantiate_chat, ChatMessage, ChatOpts, ChatProvider, ChatRole};
+    use zbrain_core::ai::resolver::{resolve_recipe_strict, AiConfigError};
+    use zbrain_core::eval::cross_modal::{
+        default_dimensions, default_slots, estimate_cost, infer_slug_from_output_path, run_eval,
+        ChatRequest, RunEvalOpts, SlotConfig, Verdict, RECEIPT_SCHEMA_VERSION,
+    };
+    use zbrain_core::paths::zbrain_path;
+
+    let task = args
+        .task
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("eval cross-modal: --task \"<description>\" is required"))?;
+    let output_path = args
+        .output
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("eval cross-modal: --output <path> is required"))?;
+    if !std::path::Path::new(&output_path).exists() {
+        anyhow::bail!("eval cross-modal: --output path not found: {output_path}");
+    }
+    let output_content = std::fs::read_to_string(&output_path)
+        .map_err(|e| anyhow::anyhow!("eval cross-modal: cannot read --output {output_path}: {e}"))?;
+    if output_content.trim().is_empty() {
+        anyhow::bail!("eval cross-modal: --output file is empty: {output_path}");
+    }
+
+    // Slug: explicit > inferred from `skills/<slug>/SKILL.md` > None (run_eval
+    // falls back to a content sha).
+    let slug = args
+        .slug
+        .clone()
+        .or_else(|| infer_slug_from_output_path(&output_path));
+
+    let cycles = args.cycles.unwrap_or(if std::io::stdout().is_terminal() { 3 } else { 1 });
+    let dimensions = args.dimensions.clone().unwrap_or_else(default_dimensions);
+    let receipt_dir = match &args.receipt_dir {
+        Some(d) => std::path::PathBuf::from(d),
+        None => zbrain_path("eval-receipts").ok_or_else(|| {
+            anyhow::anyhow!(
+                "eval cross-modal: cannot resolve ~/.zbrain — pass --receipt-dir <path> or set ZBRAIN_HOME"
+            )
+        })?,
+    };
+    let max_tokens = args.max_tokens.unwrap_or(4000);
+
+    // Defaults come from the shared DEFAULT_SLOTS table; per-slot overrides win.
+    let defaults = default_slots();
+    let default_model = |idx: usize| -> String {
+        defaults.get(idx).map(|s| s.model.clone()).unwrap_or_default()
+    };
+    let slots: Vec<SlotConfig> = vec![
+        SlotConfig { id: "A".into(), model: args.slot_a_model.clone().unwrap_or_else(|| default_model(0)) },
+        SlotConfig { id: "B".into(), model: args.slot_b_model.clone().unwrap_or_else(|| default_model(1)) },
+        SlotConfig { id: "C".into(), model: args.slot_c_model.clone().unwrap_or_else(|| default_model(2)) },
+    ];
+
+    // Resolve each slot's ChatProvider from its `provider:model` string.
+    let env_lookup = |k: &str| std::env::var(k).ok();
+    let mut resolved: Vec<(String, Arc<dyn ChatProvider>)> = vec![];
+    for slot in &slots {
+        let (_parsed, recipe) = resolve_recipe_strict(&slot.model).map_err(|e: AiConfigError| {
+            anyhow::anyhow!("eval cross-modal: cannot resolve model `{}`: {}", slot.model, e.message)
+        })?;
+        let provider = instantiate_chat(recipe, &slot.model, &env_lookup)
+            .map_err(|e: AiConfigError| {
+                anyhow::anyhow!("eval cross-modal: cannot build provider for `{}`: {}", slot.model, e.message)
+            })?;
+        resolved.push((slot.model.clone(), Arc::from(provider)));
+    }
+
+    // Cost estimate to stderr (T11=B).
+    let cost = estimate_cost(&slots, cycles, max_tokens);
+    eprintln!(
+        "[eval cross-modal] estimated cost: ~${:.2}/cycle, ~${:.2} max for {} cycle(s).",
+        cost.per_cycle_usd, cost.per_run_max_usd, cycles
+    );
+    for note in &cost.notes {
+        eprintln!("[eval cross-modal] note: {note}");
+    }
+
+    // Wiring: the injected chat closure dispatches by model string to the
+    // pre-resolved provider.
+    let providers: Arc<Vec<(String, Arc<dyn ChatProvider>)>> = Arc::new(resolved);
+    let chat = move |req: ChatRequest| {
+        let providers = providers.clone();
+        async move {
+            let provider = providers
+                .iter()
+                .find(|(m, _)| m == &req.model)
+                .map(|(_, p)| p.clone())
+                .ok_or_else(|| anyhow::anyhow!("no provider resolved for model {}", req.model))?;
+            let opts = ChatOpts {
+                model: Some(req.model.clone()),
+                system: Some(req.system.clone()),
+                messages: vec![ChatMessage::text(ChatRole::User, req.prompt.clone())],
+                tools: vec![],
+                max_tokens: Some(req.max_tokens),
+                cache_system: false,
+            };
+            let result = provider.chat(opts).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
+            Ok(result.text)
+        }
+    };
+
+    let opts = RunEvalOpts {
+        task,
+        output: output_content,
+        slug,
+        dimensions: Some(dimensions),
+        slots: Some(slots),
+        cycles: Some(cycles),
+        receipt_dir,
+        max_tokens: Some(max_tokens),
+        on_progress: None,
+    };
+
+    let result = run_eval(&opts, &chat).await?;
+
+    let verdict = result.final_aggregate.verdict;
+    eprintln!();
+    eprintln!("[eval cross-modal] {}", result.final_aggregate.verdict_message);
+    eprintln!("[eval cross-modal] receipt: {}", result.final_receipt_path);
+
+    if args.json {
+        let json_out = serde_json::json!({
+            "verdict": verdict,
+            "aggregate": result.final_aggregate,
+            "cycles": result.cycles.iter().map(|c| serde_json::json!({
+                "cycle": c.cycle,
+                "receipt_path": c.receipt_path,
+                "verdict": c.aggregate.verdict,
+                "overall": c.aggregate.overall,
+            })).collect::<Vec<_>>(),
+            "final_receipt_path": result.final_receipt_path,
+            "schema_version": RECEIPT_SCHEMA_VERSION,
+        });
+        println!("{}", serde_json::to_string_pretty(&json_out)?);
+    }
+
+    // Exit codes: PASS=0, FAIL=1, INCONCLUSIVE=2.
+    let code = match verdict {
+        Verdict::Pass => 0,
+        Verdict::Fail => 1,
+        Verdict::Inconclusive => 2,
+    };
+    std::process::exit(code);
 }
 
 fn read_code_retrieval_report(path: &str) -> anyhow::Result<zbrain_core::eval::code_retrieval::EvalRunReport> {
@@ -13423,6 +13659,79 @@ mod tests {
         assert!(
             Cli::try_parse_from(["zbrain", "eval-code-retrieval", "--compare", "only.json"]).is_err()
         );
+    }
+
+    #[test]
+    fn eval_cross_modal_parses_full_flag_surface() {
+        let cli = Cli::try_parse_from([
+            "zbrain",
+            "eval-cross-modal",
+            "--task",
+            "write a good skill doc",
+            "--output",
+            "skills/my-skill/SKILL.md",
+            "--slug",
+            "my-skill",
+            "--dimensions",
+            "DEPTH,SOURCING",
+            "--cycles",
+            "2",
+            "--slot-a-model",
+            "openai:gpt-4o-mini",
+            "--slot-b-model",
+            "anthropic:claude-sonnet-4-6",
+            "--slot-c-model",
+            "google:gemini-2.0-flash",
+            "--receipt-dir",
+            "/tmp/receipts",
+            "--max-tokens",
+            "1500",
+            "--json",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::EvalCrossModal(args) => {
+                assert_eq!(args.task.as_deref(), Some("write a good skill doc"));
+                assert_eq!(args.output.as_deref(), Some("skills/my-skill/SKILL.md"));
+                assert_eq!(args.slug.as_deref(), Some("my-skill"));
+                assert_eq!(
+                    args.dimensions.as_deref(),
+                    Some(["DEPTH".to_string(), "SOURCING".to_string()].as_slice())
+                );
+                assert_eq!(args.cycles, Some(2));
+                assert_eq!(args.slot_a_model.as_deref(), Some("openai:gpt-4o-mini"));
+                assert_eq!(args.slot_b_model.as_deref(), Some("anthropic:claude-sonnet-4-6"));
+                assert_eq!(args.slot_c_model.as_deref(), Some("google:gemini-2.0-flash"));
+                assert_eq!(args.receipt_dir.as_deref(), Some("/tmp/receipts"));
+                assert_eq!(args.max_tokens, Some(1500));
+                assert!(args.json);
+            }
+            _ => panic!("expected EvalCrossModal"),
+        }
+    }
+
+    #[test]
+    fn eval_cross_modal_defers_required_flags_to_the_handler() {
+        // TS prints usage + returns 1 for a missing --task/--output rather than
+        // failing at parse time; keep clap permissive so the messages match.
+        let cli = Cli::try_parse_from(["zbrain", "eval-cross-modal"]).unwrap();
+        match cli.command {
+            Commands::EvalCrossModal(args) => {
+                assert!(args.task.is_none());
+                assert!(args.output.is_none());
+                assert!(args.cycles.is_none());
+                assert!(!args.json);
+            }
+            _ => panic!("expected EvalCrossModal"),
+        }
+    }
+
+    #[test]
+    fn eval_cross_modal_is_no_longer_an_unported_subverb() {
+        assert!(!UNPORTED_EVAL_SUBCOMMANDS.contains(&"cross-modal"));
+        let err = reject_eval_subcommand(Some("cross-modal")).unwrap_err().to_string();
+        assert!(err.contains("zbrain eval-cross-modal"), "got: {err}");
+        assert!(!err.contains("KNOWN-GAPS"), "must not still claim a gap: {err}");
     }
 
     #[test]

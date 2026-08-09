@@ -11,3 +11,4 @@ pub mod whoknows;
 pub mod run_all;
 pub mod compare;
 pub mod code_retrieval;
+pub mod cross_modal;
