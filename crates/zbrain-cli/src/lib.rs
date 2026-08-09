@@ -460,6 +460,9 @@ pub enum Commands {
     /// Delete old eval candidates (TS `eval-prune`; G74 1-1-4)
     EvalPrune(EvalPruneArgs),
 
+    /// Correctness gate against qrels ground truth (TS `eval-gate`; G74 1-1-4 stage 3)
+    EvalGate(EvalGateArgs),
+
     /// Extract links / timeline entries from page bodies (TS `extract`)
     #[command(subcommand)]
     Extract(ExtractAction),
@@ -1226,6 +1229,48 @@ pub struct EvalPruneArgs {
     /// Report how many would be deleted without deleting anything.
     #[arg(long)]
     pub dry_run: bool,
+}
+
+/// Arguments for `zbrain eval-gate` (TS `eval-gate.ts` correctness half; G74 1-1-4 stage 3).
+///
+/// Runs the **qrels half** of the TS `eval-gate` correctness gate: compares
+/// retrieval against a federated ground-truth qrels file on
+/// `${source_id}::${slug}` keys (eng-D5, multi-source safe). Reuses
+/// `zbrain_core::eval::gate::{run_correctness_gate, evaluate_correctness_gate}`.
+///
+/// The **regression half** (`--baseline`, replay of a previous run) is tracked
+/// separately (1-1-4 stage 4) and is intentionally NOT wired here — this
+/// command never throws the "not implemented" guard because the qrels gate is
+/// fully real.
+#[derive(Debug, Parser)]
+pub struct EvalGateArgs {
+    /// Ground-truth qrels file (federated `{schema_version:1,queries:[...]}`)
+    /// or inline JSON. Accepts both the federated shape (`relevant` +
+    /// `expected_top1`) and the legacy slug-only shape (`relevant_slugs` +
+    /// `first_relevant_slug`, auto-defaulted to source `default`). Required.
+    #[arg(long = "qrels", value_name = "PATH|JSON", required = true)]
+    pub qrels: String,
+
+    /// Recall@k cutoff depth (default 10). Also the per-query retrieval depth.
+    #[arg(long, value_name = "N", default_value_t = 10)]
+    pub k: usize,
+
+    /// Override the recall@k floor (default 0.70).
+    #[arg(long = "recall-at-k", value_name = "F")]
+    pub recall_at_k: Option<f64>,
+
+    /// Override the first-relevant-hit floor (default 0.60).
+    #[arg(long = "first-relevant-hit", value_name = "F")]
+    pub first_relevant_hit: Option<f64>,
+
+    /// Override the expected-top1 floor (default 0.50). Only enforced when at
+    /// least one qrels entry sets `expected_top1`.
+    #[arg(long = "expected-top1", value_name = "F")]
+    pub expected_top1: Option<f64>,
+
+    /// Emit the full `GateResult` envelope as JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 // ── Extract subcommands ────────────────────────────────────────
@@ -2188,6 +2233,10 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Commands::EvalPrune(args) => {
             run_eval_prune_command(args, cli.config.as_deref()).await?
+        }
+
+        Commands::EvalGate(args) => {
+            run_eval_gate_command(args, cli.config.as_deref()).await?
         }
         Commands::Extract(action) => run_extract_command(action, cli.config.as_deref()).await?,
         Commands::Links(action) => run_links_command(action, cli.config.as_deref()).await?,
@@ -6698,7 +6747,6 @@ async fn run_facts_expire(args: FactsExpireArgs, config_path: Option<&Path>) -> 
 /// KNOWN-GAPS G74 (categories A/C/D of the reconciliation table).
 const UNPORTED_EVAL_SUBCOMMANDS: &[&str] = &[
     "replay",
-    "gate",
     "cross-modal",
     "code-retrieval",
     "brainstorm",
@@ -7188,6 +7236,101 @@ async fn run_eval_prune_command(
         "pruned {} eval candidate(s) older than {}",
         deleted, args.older_than
     );
+    Ok(())
+}
+
+async fn run_eval_gate_command(
+    args: EvalGateArgs,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    use zbrain_core::engine::{BrainEngine, EngineConfig, SearchOpts};
+    use zbrain_core::eval::gate::{
+        assemble_gate_result, evaluate_correctness_gate, parse_qrels_file,
+        run_correctness_gate, QrelsThresholds,
+    };
+
+    // The qrels arg accepts either an inline JSON object or a file path.
+    let qrels_content = match args.qrels.strip_prefix("json:") {
+        Some(inline) => inline.to_string(),
+        None => std::fs::read_to_string(&args.qrels).map_err(|e| {
+            anyhow::anyhow!("cannot read --qrels {}: {}", args.qrels, e)
+        })?,
+    };
+    let qrels_path = if args.qrels.strip_prefix("json:").is_some() {
+        None
+    } else {
+        Some(args.qrels.clone())
+    };
+
+    let qrels = parse_qrels_file(&qrels_content).map_err(|e| anyhow::anyhow!("{e}"))?;
+    if qrels.queries.is_empty() {
+        anyhow::bail!("qrels contains no queries");
+    }
+
+    let k = args.k.max(1);
+    let thresholds = QrelsThresholds {
+        recall_at_k: args.recall_at_k.unwrap_or(0.70),
+        first_relevant_hit: args.first_relevant_hit.unwrap_or(0.60),
+        expected_top1: args.expected_top1.unwrap_or(0.50),
+        k,
+    };
+
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine
+        .connect(&EngineConfig {
+            database_url: None,
+            database_path: Some(db_path),
+        })
+        .await?;
+    engine.init_schema().await?;
+
+    // Closure that runs retrieval for one query and returns the
+    // `${source_id}::${slug}` keys (federated, eng-D5).
+    let engine_ref = &engine;
+    let query_fn = |q: &str, k: usize| {
+        let opts = SearchOpts {
+            keywords: vec![q.to_string()],
+            limit: Some(k),
+            ..Default::default()
+        };
+        async move {
+            let results = engine_ref.search_pages(&opts).await?;
+            let keys: Vec<String> = results
+                .into_iter()
+                .map(|r| format!("{}::{}", r.page.source_id, r.page.slug))
+                .collect();
+            Ok(keys)
+        }
+    };
+
+    let result = run_correctness_gate(&qrels, k, query_fn).await?;
+    let breaches = evaluate_correctness_gate(&result, &thresholds);
+    let gate = assemble_gate_result(qrels_path, &result, &thresholds, breaches);
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&gate)?);
+    } else {
+        let c = &gate.correctness_gate;
+        eprintln!(
+            "correctness gate: verdict={}  mean_recall@{k}={:.3}  first_relevant_hit_rate={:.3}  queries_errored={}",
+            serde_json::to_string(&gate.verdict).unwrap_or_default(),
+            c.summary.mean_recall_at_k,
+            c.summary.first_relevant_hit_rate,
+            c.summary.queries_errored,
+        );
+        for b in &c.breaches {
+            eprintln!("  breach: {} observed={:?} threshold={:?}", b.metric, b.observed, b.threshold);
+        }
+    }
+
+    if gate.verdict == zbrain_core::eval::gate::GateVerdict::Fail {
+        anyhow::bail!(
+            "correctness gate FAILED ({} breach(es))",
+            gate.correctness_gate.breaches.len()
+        );
+    }
     Ok(())
 }
 
@@ -11704,6 +11847,44 @@ mod tests {
                 assert!(args.dry_run);
             }
             _ => panic!("expected EvalPrune"),
+        }
+    }
+
+    #[test]
+    fn eval_gate_requires_qrels() {
+        // --qrels is required; the qrels half is fully real (1-1-4 stage 3).
+        assert!(Cli::try_parse_from(["zbrain", "eval-gate"]).is_err());
+        assert!(Cli::try_parse_from(["zbrain", "eval-gate", "--k", "5"]).is_err());
+    }
+
+    #[test]
+    fn eval_gate_parses_qrels_and_floors() {
+        let cli = Cli::try_parse_from([
+            "zbrain",
+            "eval-gate",
+            "--qrels",
+            "./qrels.json",
+            "--k",
+            "20",
+            "--recall-at-k",
+            "0.8",
+            "--first-relevant-hit",
+            "0.7",
+            "--expected-top1",
+            "0.6",
+            "--json",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::EvalGate(args) => {
+                assert_eq!(args.qrels, "./qrels.json");
+                assert_eq!(args.k, 20);
+                assert_eq!(args.recall_at_k, Some(0.8));
+                assert_eq!(args.first_relevant_hit, Some(0.7));
+                assert_eq!(args.expected_top1, Some(0.6));
+                assert!(args.json);
+            }
+            _ => panic!("expected EvalGate"),
         }
     }
 
