@@ -451,6 +451,10 @@ pub enum Commands {
     #[command(subcommand)]
     Facts(FactsAction),
 
+    /// Extract links / timeline entries from page bodies (TS `extract`)
+    #[command(subcommand)]
+    Extract(ExtractAction),
+
     /// Manage links between pages
     #[command(subcommand)]
     Links(LinksAction),
@@ -1072,6 +1076,64 @@ pub struct FactsExpireArgs {
     pub source: String,
 
     /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+// ── Extract subcommands ────────────────────────────────────────
+
+/// Subcommands for `zbrain extract`.
+///
+/// Rust port of the TS `extract` command's `links` / `timeline` / `all`
+/// verbs (db-source path). The TS command is a pure parser — it scans page
+/// bodies for markdown/wikilinks and dated timeline lines, then batch-writes
+/// them through the engine. No LLM is involved; see KNOWN-GAPS G76a for the
+/// corrected scope note (the `--source fs` and `--by-mention` paths are still
+/// outstanding, tracked there).
+#[derive(Debug, Subcommand)]
+pub enum ExtractAction {
+    /// Extract markdown + wikilinks from page bodies into `page_links`
+    Links(ExtractLinksArgs),
+
+    /// Extract dated timeline entries from page bodies into `pages.timeline`
+    Timeline(ExtractTimelineArgs),
+
+    /// Run both link and timeline extraction in one pass
+    All(ExtractAllArgs),
+}
+
+/// Arguments for `zbrain extract links`.
+#[derive(Debug, Parser)]
+pub struct ExtractLinksArgs {
+    /// Process a single page slug only (default: every page in the brain).
+    #[arg(long)]
+    pub slug: Option<String>,
+
+    /// Output as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `zbrain extract timeline`.
+#[derive(Debug, Parser)]
+pub struct ExtractTimelineArgs {
+    /// Process a single page slug only (default: every page in the brain).
+    #[arg(long)]
+    pub slug: Option<String>,
+
+    /// Output as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `zbrain extract all`.
+#[derive(Debug, Parser)]
+pub struct ExtractAllArgs {
+    /// Process a single page slug only (default: every page in the brain).
+    #[arg(long)]
+    pub slug: Option<String>,
+
+    /// Output as JSON.
     #[arg(long)]
     pub json: bool,
 }
@@ -1972,6 +2034,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Sources(action) => run_sources_command(action, cli.config.as_deref(), timeout_ms).await?,
         Commands::Capture(args) => run_capture_command(args, cli.config.as_deref()).await?,
         Commands::Facts(action) => run_facts_command(action, cli.config.as_deref()).await?,
+        Commands::Extract(action) => run_extract_command(action, cli.config.as_deref()).await?,
         Commands::Links(action) => run_links_command(action, cli.config.as_deref()).await?,
         Commands::Takes(action) => run_takes_command(action, cli.config.as_deref()).await?,
         Commands::Salience(args) => run_salience_command(args, cli.config.as_deref()).await?,
@@ -6469,6 +6532,159 @@ async fn run_facts_expire(args: FactsExpireArgs, config_path: Option<&Path>) -> 
     Ok(())
 }
 
+// ── Extract commands ────────────────────────────────────────────
+
+/// Open + init the libsql engine for the `extract` verbs.
+///
+/// The extract subcommands all need the same connected engine; the existing
+/// CLI convention is to inline this per command, which would triple the
+/// boilerplate here.
+async fn connect_extract_engine(
+    config_path: Option<&Path>,
+) -> anyhow::Result<zbrain_core::libsql::LibsqlEngine> {
+    use zbrain_core::engine::{BrainEngine, EngineConfig};
+
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+    Ok(engine)
+}
+
+/// Dispatch `zbrain extract` subcommands.
+async fn run_extract_command(
+    action: ExtractAction,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    match action {
+        ExtractAction::Links(args) => run_extract_links(args, config_path).await?,
+        ExtractAction::Timeline(args) => run_extract_timeline(args, config_path).await?,
+        ExtractAction::All(args) => run_extract_all(args, config_path).await?,
+    }
+    Ok(())
+}
+
+/// Execute `zbrain extract links` — Rust port of TS `extract links --source db`.
+///
+/// Shares the `auto_fix::extract_links` core op with
+/// `zbrain links rebuild-md-links`; this verb exists so the TS `extract`
+/// surface has a faithful Rust equivalent (KNOWN-GAPS G76a-1).
+async fn run_extract_links(
+    args: ExtractLinksArgs,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    use zbrain_core::auto_fix::{extract_links, ExtractLinksOpts};
+    use zbrain_core::engine::BrainEngine;
+
+    let engine = connect_extract_engine(config_path).await?;
+    let opts = ExtractLinksOpts { slug: args.slug.clone() };
+    let result = extract_links(&engine, &opts).await?;
+
+    if args.json {
+        // `ExtractLinksResult` is a plain core value type (no serde derive);
+        // project it here, following the CLI's existing `json!` convention.
+        let output = serde_json::json!({
+            "pages_processed": result.pages_processed,
+            "links_created": result.links_created,
+            "dangling": result.dangling,
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!(
+            "extract links: pages={} created={} dangling={}",
+            result.pages_processed, result.links_created, result.dangling
+        );
+    }
+
+    engine.disconnect().await?;
+    Ok(())
+}
+
+/// Execute `zbrain extract timeline` — Rust port of TS
+/// `extract timeline --source db`.
+///
+/// Scans page bodies for dated entries and appends each as a
+/// `"{date} {summary}"` line to `pages.timeline`, skipping lines already
+/// present (idempotent). Closes KNOWN-GAPS G76a-2: the core op
+/// (`auto_fix::extract_timeline`) already existed but was only reachable
+/// from `run_auto_fix`, with no standalone verb.
+async fn run_extract_timeline(
+    args: ExtractTimelineArgs,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    use zbrain_core::auto_fix::{extract_timeline, ExtractTimelineOpts};
+    use zbrain_core::engine::BrainEngine;
+
+    let engine = connect_extract_engine(config_path).await?;
+    let opts = ExtractTimelineOpts { slug: args.slug.clone() };
+    let result = extract_timeline(&engine, &opts).await?;
+
+    if args.json {
+        let output = serde_json::json!({
+            "pages_processed": result.pages_processed,
+            "entries_added": result.entries_added,
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!(
+            "extract timeline: pages={} entries_added={}",
+            result.pages_processed, result.entries_added
+        );
+    }
+
+    engine.disconnect().await?;
+    Ok(())
+}
+
+/// Execute `zbrain extract all` — Rust port of TS `extract all --source db`.
+///
+/// Runs link extraction then timeline extraction over the same page set in
+/// one connection. Unlike `run_auto_fix` this deliberately omits the
+/// `embed_stale` step: TS `extract all` covers links + timeline only, and
+/// re-embedding is a separate concern (`zbrain reindex`).
+async fn run_extract_all(args: ExtractAllArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+    use zbrain_core::auto_fix::{
+        extract_links, extract_timeline, ExtractLinksOpts, ExtractTimelineOpts,
+    };
+    use zbrain_core::engine::BrainEngine;
+
+    let engine = connect_extract_engine(config_path).await?;
+    let links = extract_links(&engine, &ExtractLinksOpts { slug: args.slug.clone() }).await?;
+    let timeline =
+        extract_timeline(&engine, &ExtractTimelineOpts { slug: args.slug.clone() }).await?;
+
+    if args.json {
+        let output = serde_json::json!({
+            "links": {
+                "pages_processed": links.pages_processed,
+                "links_created": links.links_created,
+                "dangling": links.dangling,
+            },
+            "timeline": {
+                "pages_processed": timeline.pages_processed,
+                "entries_added": timeline.entries_added,
+            },
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!(
+            "extract all: pages={} links_created={} dangling={} entries_added={}",
+            links.pages_processed,
+            links.links_created,
+            links.dangling,
+            timeline.entries_added
+        );
+    }
+
+    engine.disconnect().await?;
+    Ok(())
+}
+
 // ── Links commands ──────────────────────────────────────────────
 
 /// Dispatch `zbrain links` subcommands.
@@ -10515,5 +10731,87 @@ mod tests {
         assert!(parse_relative_duration("abc").is_none());
         assert!(parse_relative_duration("").is_none());
         assert!(parse_relative_duration("5x").is_none());
+    }
+
+    // ── `zbrain extract` verb (KNOWN-GAPS G76a) ──────────────────
+    //
+    // The extraction algorithms themselves are covered by the core-side
+    // inline tests in `zbrain_core::auto_fix` (dangling targets, self-links,
+    // markdown syntax, bullet/header timeline entries, idempotent re-runs,
+    // single-slug scoping). These cases pin the CLI surface only: that the
+    // three subcommands exist, and that `--slug` / `--json` reach the args.
+
+    #[test]
+    fn extract_links_parses_default() {
+        let cli = Cli::try_parse_from(["zbrain", "extract", "links"]).unwrap();
+        match cli.command {
+            Commands::Extract(ExtractAction::Links(args)) => {
+                assert!(args.slug.is_none());
+                assert!(!args.json);
+            },
+            _ => panic!("expected Extract::Links"),
+        }
+    }
+
+    #[test]
+    fn extract_links_parses_slug_and_json() {
+        let cli =
+            Cli::try_parse_from(["zbrain", "extract", "links", "--slug", "alpha", "--json"])
+                .unwrap();
+        match cli.command {
+            Commands::Extract(ExtractAction::Links(args)) => {
+                assert_eq!(args.slug.as_deref(), Some("alpha"));
+                assert!(args.json);
+            },
+            _ => panic!("expected Extract::Links"),
+        }
+    }
+
+    #[test]
+    fn extract_timeline_parses_default() {
+        let cli = Cli::try_parse_from(["zbrain", "extract", "timeline"]).unwrap();
+        match cli.command {
+            Commands::Extract(ExtractAction::Timeline(args)) => {
+                assert!(args.slug.is_none());
+                assert!(!args.json);
+            },
+            _ => panic!("expected Extract::Timeline"),
+        }
+    }
+
+    #[test]
+    fn extract_timeline_parses_slug_and_json() {
+        let cli =
+            Cli::try_parse_from(["zbrain", "extract", "timeline", "--slug", "beta", "--json"])
+                .unwrap();
+        match cli.command {
+            Commands::Extract(ExtractAction::Timeline(args)) => {
+                assert_eq!(args.slug.as_deref(), Some("beta"));
+                assert!(args.json);
+            },
+            _ => panic!("expected Extract::Timeline"),
+        }
+    }
+
+    #[test]
+    fn extract_all_parses_slug_and_json() {
+        let cli =
+            Cli::try_parse_from(["zbrain", "extract", "all", "--slug", "gamma", "--json"])
+                .unwrap();
+        match cli.command {
+            Commands::Extract(ExtractAction::All(args)) => {
+                assert_eq!(args.slug.as_deref(), Some("gamma"));
+                assert!(args.json);
+            },
+            _ => panic!("expected Extract::All"),
+        }
+    }
+
+    #[test]
+    fn extract_rejects_unknown_subcommand() {
+        // Guards against silently accepting the TS-only `--source fs` path
+        // (still outstanding, tracked as G76a-4) as if it were implemented.
+        assert!(Cli::try_parse_from(["zbrain", "extract", "facts"]).is_err());
+        assert!(Cli::try_parse_from(["zbrain", "extract", "links", "--source", "fs"]).is_err());
     }
 }
