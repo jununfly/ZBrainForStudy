@@ -454,6 +454,12 @@ pub enum Commands {
     /// Measure retrieval quality against ground-truth qrels (TS `eval`)
     Eval(EvalArgs),
 
+    /// Stream captured eval candidates as NDJSON (TS `eval-export`; G74 1-1-4)
+    EvalExport(EvalExportArgs),
+
+    /// Delete old eval candidates (TS `eval-prune`; G74 1-1-4)
+    EvalPrune(EvalPruneArgs),
+
     /// Extract links / timeline entries from page bodies (TS `extract`)
     #[command(subcommand)]
     Extract(ExtractAction),
@@ -1184,6 +1190,42 @@ pub struct EvalArgs {
     /// Output as JSON instead of the aligned text table.
     #[arg(long)]
     pub json: bool,
+}
+
+/// Arguments for `zbrain eval-export` (TS `eval-export.ts`, G74 1-1-4).
+///
+/// Streams captured eval candidates (`eval_candidates` table, migration 0030)
+/// as newline-delimited JSON. Each line is `{schema_version:1, candidate:…}`.
+/// The table starts empty until the capture-side writer lands; this verb only
+/// reads what is present.
+#[derive(Debug, Parser)]
+pub struct EvalExportArgs {
+    /// Restrict to a tool: `query` or `search`.
+    #[arg(long, value_name = "TOOL")]
+    pub tool: Option<String>,
+
+    /// Only candidates created at or after this ISO-8601 timestamp.
+    #[arg(long, value_name = "ISO")]
+    pub since: Option<String>,
+
+    /// Max rows to emit (newest first).
+    #[arg(long, value_name = "N")]
+    pub limit: Option<usize>,
+}
+
+/// Arguments for `zbrain eval-prune` (TS `eval-prune.ts`, G74 1-1-4).
+///
+/// Deletes eval candidates older than `--older-than`. With `--dry-run` it only
+/// counts and reports; nothing is deleted.
+#[derive(Debug, Parser)]
+pub struct EvalPruneArgs {
+    /// Delete candidates created before this ISO-8601 timestamp.
+    #[arg(long = "older-than", value_name = "ISO", required = true)]
+    pub older_than: String,
+
+    /// Report how many would be deleted without deleting anything.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 // ── Extract subcommands ────────────────────────────────────────
@@ -2141,6 +2183,12 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Capture(args) => run_capture_command(args, cli.config.as_deref()).await?,
         Commands::Facts(action) => run_facts_command(action, cli.config.as_deref()).await?,
         Commands::Eval(args) => run_eval_command(args, cli.config.as_deref()).await?,
+        Commands::EvalExport(args) => {
+            run_eval_export_command(args, cli.config.as_deref()).await?
+        }
+        Commands::EvalPrune(args) => {
+            run_eval_prune_command(args, cli.config.as_deref()).await?
+        }
         Commands::Extract(action) => run_extract_command(action, cli.config.as_deref()).await?,
         Commands::Links(action) => run_links_command(action, cli.config.as_deref()).await?,
         Commands::Takes(action) => run_takes_command(action, cli.config.as_deref()).await?,
@@ -6649,8 +6697,6 @@ async fn run_facts_expire(args: FactsExpireArgs, config_path: Option<&Path>) -> 
 /// with a stray positional argument. Every entry here is tracked under
 /// KNOWN-GAPS G74 (categories A/C/D of the reconciliation table).
 const UNPORTED_EVAL_SUBCOMMANDS: &[&str] = &[
-    "export",
-    "prune",
     "replay",
     "gate",
     "cross-modal",
@@ -7069,6 +7115,82 @@ fn print_eval_ab_table(
 /// Closes the CLI half of KNOWN-GAPS G74: the harness itself
 /// (`zbrain_core::search::eval`, G73) has been ported since the TS delete but
 /// had **zero callers** — the exact same shape as the `extract timeline` gap.
+async fn run_eval_export_command(
+    args: EvalExportArgs,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    use zbrain_core::engine::{BrainEngine, EngineConfig, EvalCandidateFilter};
+    use std::io::Write;
+
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine
+        .connect(&EngineConfig {
+            database_url: None,
+            database_path: Some(db_path),
+        })
+        .await?;
+    engine.init_schema().await?;
+
+    let filter = EvalCandidateFilter {
+        tool_name: args.tool.clone(),
+        since: args.since.clone(),
+        limit: args.limit,
+    };
+    let candidates = engine.list_eval_candidates(&filter).await?;
+
+    let stdout = std::io::stdout();
+    let mut handle = stdout.lock();
+    for c in &candidates {
+        let line = serde_json::json!({ "schema_version": 1, "candidate": c });
+        serde_json::to_writer(&mut handle, &line)?;
+        handle.write_all(b"\n")?;
+    }
+    eprintln!("exported {} eval candidate(s)", candidates.len());
+    Ok(())
+}
+
+async fn run_eval_prune_command(
+    args: EvalPruneArgs,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    use zbrain_core::engine::{BrainEngine, EngineConfig, EvalCandidateFilter};
+
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine
+        .connect(&EngineConfig {
+            database_url: None,
+            database_path: Some(db_path),
+        })
+        .await?;
+    engine.init_schema().await?;
+
+    if args.dry_run {
+        let all = engine
+            .list_eval_candidates(&EvalCandidateFilter::default())
+            .await?;
+        let older: u64 = all
+            .iter()
+            .filter(|c| c.created_at < args.older_than)
+            .count() as u64;
+        eprintln!(
+            "dry-run: {} candidate(s) older than {} would be deleted ({} present)",
+            older, args.older_than, all.len()
+        );
+        return Ok(());
+    }
+
+    let deleted = engine.delete_eval_candidates_before(&args.older_than).await?;
+    eprintln!(
+        "pruned {} eval candidate(s) older than {}",
+        deleted, args.older_than
+    );
+    Ok(())
+}
+
 async fn run_eval_command(args: EvalArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
     use zbrain_core::engine::{BrainEngine, EngineConfig};
     use zbrain_core::search::parse_qrels;
@@ -11539,6 +11661,50 @@ mod tests {
         assert!(err.contains("flags only"), "unexpected message: {err}");
         // The bare flow (no positional) passes through.
         assert!(reject_eval_subcommand(None).is_ok());
+    }
+
+    #[test]
+    fn eval_export_parses_filters() {
+        let cli = Cli::try_parse_from([
+            "zbrain",
+            "eval-export",
+            "--tool",
+            "search",
+            "--since",
+            "2026-01-01T00:00:00Z",
+            "--limit",
+            "50",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::EvalExport(args) => {
+                assert_eq!(args.tool.as_deref(), Some("search"));
+                assert_eq!(args.since.as_deref(), Some("2026-01-01T00:00:00Z"));
+                assert_eq!(args.limit, Some(50));
+            }
+            _ => panic!("expected EvalExport"),
+        }
+    }
+
+    #[test]
+    fn eval_prune_requires_older_than() {
+        // --older-than is required; without it parsing fails.
+        assert!(Cli::try_parse_from(["zbrain", "eval-prune"]).is_err());
+        let cli = Cli::try_parse_from([
+            "zbrain",
+            "eval-prune",
+            "--older-than",
+            "2026-01-01T00:00:00Z",
+            "--dry-run",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::EvalPrune(args) => {
+                assert_eq!(args.older_than, "2026-01-01T00:00:00Z");
+                assert!(args.dry_run);
+            }
+            _ => panic!("expected EvalPrune"),
+        }
     }
 
     #[test]

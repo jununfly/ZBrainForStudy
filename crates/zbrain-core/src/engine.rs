@@ -1028,6 +1028,58 @@ pub struct EmotionalWeightWrite {
     pub emotional_weight: f64,
 }
 
+// ── Eval candidates (G74 1-1-4: eval-export / eval-prune / eval-replay) ──
+//
+// Mirrors TS `eval_candidates` (src/schema.sql, v0.25.0 BrainBench-Real
+// substrate), created by migration 0030 (dual dialect). Capture-side writes
+// are not yet wired (honest gap), so the table starts empty until that lands.
+// These types + the default trait methods below live at module level so all
+// backends (incl. the InMemory test engine) compile unchanged; libsql and
+// postgres override with real SQL.
+
+/// Filter for `list_eval_candidates` (eval-export / eval-replay / eval-whoknows-L2).
+#[derive(Debug, Clone, Default)]
+pub struct EvalCandidateFilter {
+    /// Restrict to a tool: `query` or `search`.
+    pub tool_name: Option<String>,
+    /// ISO-8601 lower bound on `created_at` (inclusive).
+    pub since: Option<String>,
+    /// Max rows to return (newest first).
+    pub limit: Option<usize>,
+}
+
+/// A captured eval candidate row.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct EvalCandidate {
+    pub id: i64,
+    pub tool_name: String,
+    pub query: String,
+    #[serde(default)]
+    pub retrieved_slugs: Vec<String>,
+    #[serde(default)]
+    pub retrieved_chunk_ids: Vec<i64>,
+    #[serde(default)]
+    pub source_ids: Vec<String>,
+    pub expand_enabled: Option<bool>,
+    pub detail: Option<String>,
+    pub detail_resolved: Option<String>,
+    pub vector_enabled: bool,
+    pub expansion_applied: bool,
+    pub latency_ms: i64,
+    pub remote: bool,
+    pub job_id: Option<i64>,
+    pub subagent_id: Option<i64>,
+    pub created_at: String,
+    pub as_of_ts: Option<String>,
+    pub salience_param: Option<String>,
+    pub recency_param: Option<String>,
+    pub salience_resolved: Option<String>,
+    pub recency_resolved: Option<String>,
+    pub salience_source: Option<String>,
+    pub recency_source: Option<String>,
+    pub embedding_column: Option<String>,
+}
+
 #[async_trait]
 pub trait BrainEngine: Send + Sync + std::fmt::Debug {
     // ── Identity ──────────────────────────────────────────────────────────
@@ -2477,6 +2529,31 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
             "unsupported",
             "find_trajectory not yet implemented for this engine",
         ))
+    }
+
+    // ── Eval candidates (G74 1-1-4) ────────────────────────────────────────
+    //
+    // Shared substrate for eval-export / eval-prune / eval-replay /
+    // eval-whoknows-L2. Default impls return empty/0 so engines that predate
+    // the substrate (incl. the InMemory test engine) compile unchanged;
+    // libsql and postgres override with real SQL against the 0030 table.
+
+    /// List captured eval candidates, newest first, filtered by
+    /// `EvalCandidateFilter`. Mirrors TS `engine.listEvalCandidates`.
+    async fn list_eval_candidates(
+        &self,
+        filter: &EvalCandidateFilter,
+    ) -> crate::Result<Vec<EvalCandidate>> {
+        let _ = filter;
+        Ok(Vec::new())
+    }
+
+    /// Delete eval candidates created before `before` (ISO-8601 timestamp).
+    /// Returns the number of rows deleted. Mirrors TS
+    /// `engine.deleteEvalCandidatesBefore`; drives `eval-prune --older-than`.
+    async fn delete_eval_candidates_before(&self, before: &str) -> crate::Result<u64> {
+        let _ = before;
+        Ok(0)
     }
 
     /// List facts created since a given ISO timestamp within a source, newest

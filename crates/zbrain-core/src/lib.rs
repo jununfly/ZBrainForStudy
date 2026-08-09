@@ -17,6 +17,7 @@ pub mod code_intel;
 pub mod cjk;
 pub mod embedding;
 pub mod embedding_context;
+pub mod eval;
 pub mod eval_drift;
 pub mod facts;
 pub mod facts_fence;

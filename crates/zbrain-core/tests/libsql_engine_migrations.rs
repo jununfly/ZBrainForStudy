@@ -57,11 +57,11 @@ async fn read_version_raw(path: &std::path::Path) -> i64 {
 }
 
 /// Current migration version. Bump when new migrations are added.
-/// 28 = through 0028_subagent_tool_executions (latest applied migration). The
-/// actual count is derived from the on-disk migrations/*.sql files; this
+/// 30 = through 0030_eval_candidates (latest applied migration). The
+/// actual count is derived from the on-disk migrations-sqlite/*.sql files; this
 /// constant must track the highest migration number so the fresh-db /
 /// idempotent tests assert the right version.
-const EXPECTED_VERSION: i64 = 29;
+const EXPECTED_VERSION: i64 = 30;
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
 

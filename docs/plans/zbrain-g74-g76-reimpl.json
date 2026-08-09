@@ -153,13 +153,13 @@
     },
     "1-1-4": {
       "id": "1-1-4",
-      "label": "非 LLM 但需新基建的 10 个 eval 命令",
-      "status": "pending",
-      "mode": "explore",
+      "label": "非 LLM 但需新基建的 9 个 eval 命令（eval-brainstorm 复核为 LLM 已移 D 类）",
+      "status": "in_progress",
+      "mode": "build",
       "parent": "1-1",
       "children": [],
       "decisions": [],
-      "notes": "先决条件：eval_candidates 表（export/prune/replay 共同依赖）在 Rust migrations 中不存在，需新增双 dialect migration。缺失基建清单：core/bench/{baseline-file,correctness-gate}、core/eval/metric-glossary、eval/code-retrieval/harness+strategies、core/brainstorm/orchestrator、core/search/mode（Rust search/ 下无 mode.rs）。建议排序：先 export/prune（最薄，随 eval_candidates migration 一起）→ gate（CI 价值最高）→ compare/run-all（编排层）→ 其余。"
+      "notes": "2026-08-09 侦察对账修正（与 1-1-3 同批）：原「10 个非 LLM 需新基建」失准——\n① eval-brainstorm 复核为真 LLM 命令（core/brainstorm/orchestrator.ts 经 gateway.chat + judges.ts 调 LLM），已移 D 类（D 现 5 个）。C 类实为 9 个非 LLM。\n② eval-run-all(356L)/eval-schema-authoring(137L) TS 侧即 stub（run-all `orchestrator stub`、schema-authoring `Full CLI harness lands in v0.39.1`），直译=搬未完成态；schema-authoring 只需移植 aggregateVerdict 纯函数。\n③ eval-compare(256L) 落地即空表（唯一数据源是 run-all 的 stub 输出）。\n④ eval-whoknows 的 find_experts 已在 Rust（whoknows.rs:189），L1 不需新基建。\n⑤ qrels-file 非缺口——search/eval.rs 已有 parse_qrels/EvalQrel。\n⑥ 支撑 core/ 模块须从 bcafcafd^ 取回（src/core/ 在更早 bcafcafd 已删，3c09a69f^ 上是悬空 import）。\n先决条件：eval_candidates 表（export/prune/replay/whoknows-L2 共同依赖）在 Rust migrations 中完全不存在，需新增双 dialect 0030_eval_candidates.sql（26 列；sqlite 数组列降级为 JSON TEXT）；捕获侧写入尚未接线（诚实缺口，表初为空）。\n分阶段构建（推荐序）：\n- [x] 阶段0 eval_candidates migration(0030) + BrainEngine list_eval_candidates/delete_eval_candidates_before（foundation）— 2026-08-09 已 ship：双 dialect SQL + include_str! 注册 + EXPECTED_VERSION=30；libsql/postgres 实现 + InMemory 默认 impl；cargo check 绿、migration 版本测试 + libsql round-trip 测试通过\n- [x] 阶段1 eval-export + eval-prune verbs — 2026-08-09 已 ship：Commands::EvalExport/EvalPrune + 2 clap 解析测试；export 流 NDJSON（每行 {schema_version,candidate}）、prune 支持 --dry-run/--older-than；UNPORTED_EVAL_SUBCOMMANDS 已移除 export/prune\n- [ ] 阶段2 eval-schema-authoring（仅移植 aggregateVerdict 纯函数 + 单测）\n- [ ] 阶段3 eval-gate qrels 半边（复用 search/eval.rs parse_qrels + recall_at_k；baseline 半边等 replay）\n- [ ] 阶段4 eval-replay（重放 hybrid_search + Jaccard@k；依赖捕获写入）\n- [ ] 阶段5 eval-whoknows（L1 find_experts 立即可做，L2 等阶段0）\n- [ ] 阶段6 eval-run-all + eval-compare（依赖 core/search/mode；TS 为 stub，宜重设计而非直译）\n- [ ] 阶段7 eval-code-retrieval（harness + strategies 从零建）"
     },
     "1-1-5": {
       "id": "1-1-5",
@@ -174,7 +174,7 @@
   },
   "metadata": {
     "created": "2026-08-09 00:23:13",
-    "updated": "2026-08-09 10:49:00",
+    "updated": "2026-08-09 13:29:00",
     "md_file": "docs/plans/ZBRAIN_G74_G76_REIMPL.md"
   }
 }

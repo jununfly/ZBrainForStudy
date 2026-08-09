@@ -39,7 +39,8 @@ use sqlx::{QueryBuilder, PgPool, Row};
 
 use crate::engine::{
     page_sort_sql, BrainEngine, CreateSourceInput, DreamVerdict, DreamVerdictInput, EngineConfig,
-    EmotionalInput, EmotionalWeightTake, EmotionalWeightWrite, EngineKind, GetPageOpts, Page,
+    EvalCandidate, EvalCandidateFilter, EmotionalInput, EmotionalWeightTake, EmotionalWeightWrite,
+    EngineKind, GetPageOpts, Page,
     TakeProposalInput, TakeGradeCacheInput, PageFilters, PageInput, PageSort, ResolveSlugsOpts,
     SearchOpts, SearchResult, SourceRow, UpdateSourceInput, fuse_and_boost, is_valid_source_id,
 };
@@ -268,6 +269,8 @@ const MIGRATION_0027: &str = include_str!("../migrations/0027_config.sql");
 const MIGRATION_0028: &str = include_str!("../migrations/0028_subagent_tool_executions.sql");
 /// 1-5: synthesis_evidence — take→synthesis citation FK table (auto-think persistSynthesis).
 const MIGRATION_0029: &str = include_str!("../migrations/0029_synthesis_evidence.sql");
+/// 1-1-4 (G74 Category C): eval_candidates — candidate rows backing `eval export`/`prune`/`replay`.
+const MIGRATION_0030: &str = include_str!("../migrations/0030_eval_candidates.sql");
 
 /// FNV-1a 64-bit hash of a lease key, mapped to a signed int64 for
 /// `pg_advisory_xact_lock`. Matches the TS implementation bit-for-bit.
@@ -430,6 +433,11 @@ pub static POSTGRES_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         name: "synthesis_evidence",
         sql: MIGRATION_0029,
     }));
+    registry.add(Box::new(PostgresMigration {
+        version: 30,
+        name: "eval_candidates",
+        sql: MIGRATION_0030,
+    }));
 
     registry
 });
@@ -459,6 +467,55 @@ pub struct PostgresEngine {
 }
 
 impl PostgresEngine {
+    fn pg_row_to_eval_candidate(row: &sqlx::postgres::PgRow) -> Result<EvalCandidate> {
+        Ok(EvalCandidate {
+            id: row.try_get("id").map_err(|e| Error::engine(format!("ec id: {e}")))?,
+            tool_name: row
+                .try_get("tool_name")
+                .map_err(|e| Error::engine(format!("ec tool: {e}")))?,
+            query: row
+                .try_get("query")
+                .map_err(|e| Error::engine(format!("ec query: {e}")))?,
+            retrieved_slugs: row
+                .try_get::<Vec<String>, _>("retrieved_slugs")
+                .unwrap_or_default(),
+            retrieved_chunk_ids: row
+                .try_get::<Vec<i64>, _>("retrieved_chunk_ids")
+                .unwrap_or_default(),
+            source_ids: row
+                .try_get::<Vec<String>, _>("source_ids")
+                .unwrap_or_default(),
+            expand_enabled: row.try_get("expand_enabled").ok().flatten(),
+            detail: row.try_get("detail").ok().flatten(),
+            detail_resolved: row.try_get("detail_resolved").ok().flatten(),
+            vector_enabled: row
+                .try_get("vector_enabled")
+                .map_err(|e| Error::engine(format!("ec vec: {e}")))?,
+            expansion_applied: row
+                .try_get("expansion_applied")
+                .map_err(|e| Error::engine(format!("ec exp: {e}")))?,
+            latency_ms: row
+                .try_get("latency_ms")
+                .map_err(|e| Error::engine(format!("ec lat: {e}")))?,
+            remote: row
+                .try_get("remote")
+                .map_err(|e| Error::engine(format!("ec remote: {e}")))?,
+            job_id: row.try_get("job_id").ok().flatten(),
+            subagent_id: row.try_get("subagent_id").ok().flatten(),
+            created_at: row
+                .try_get("created_at")
+                .map_err(|e| Error::engine(format!("ec created: {e}")))?,
+            as_of_ts: row.try_get("as_of_ts").ok().flatten(),
+            salience_param: row.try_get("salience_param").ok().flatten(),
+            recency_param: row.try_get("recency_param").ok().flatten(),
+            salience_resolved: row.try_get("salience_resolved").ok().flatten(),
+            recency_resolved: row.try_get("recency_resolved").ok().flatten(),
+            salience_source: row.try_get("salience_source").ok().flatten(),
+            recency_source: row.try_get("recency_source").ok().flatten(),
+            embedding_column: row.try_get("embedding_column").ok().flatten(),
+        })
+    }
+
     /// Construct a disconnected engine. Call [`PostgresEngine::connect`]
     /// before any other method.
     #[must_use]
@@ -4202,6 +4259,51 @@ impl BrainEngine for PostgresEngine {
             });
         }
         Ok(out)
+    }
+
+    async fn list_eval_candidates(
+        &self,
+        filter: &EvalCandidateFilter,
+    ) -> Result<Vec<EvalCandidate>> {
+        let pool = self.pool()?;
+        let mut builder = sqlx::QueryBuilder::new(
+            "SELECT id, tool_name, query, retrieved_slugs, retrieved_chunk_ids, source_ids, \
+                    expand_enabled, detail, detail_resolved, vector_enabled, expansion_applied, \
+                    latency_ms, remote, job_id, subagent_id, created_at::text AS created_at, \
+                    as_of_ts::text AS as_of_ts, salience_param, recency_param, \
+                    salience_resolved, recency_resolved, salience_source, recency_source, \
+                    embedding_column \
+             FROM eval_candidates WHERE 1=1",
+        );
+        if let Some(ref tool) = filter.tool_name {
+            builder.push(" AND tool_name = ");
+            builder.push_bind(tool.clone());
+        }
+        if let Some(ref since) = filter.since {
+            builder.push(" AND created_at >= ");
+            builder.push_bind(since.clone());
+        }
+        builder.push(" ORDER BY created_at DESC, id DESC");
+        if let Some(limit) = filter.limit {
+            builder.push(" LIMIT ");
+            builder.push_bind(limit as i64);
+        }
+        let rows = builder
+            .build()
+            .fetch_all(pool)
+            .await
+            .map_err(|e| Error::engine(format!("list_eval_candidates: {e}")))?;
+        rows.iter().map(|r| Self::pg_row_to_eval_candidate(r)).collect()
+    }
+
+    async fn delete_eval_candidates_before(&self, before: &str) -> Result<u64> {
+        let pool = self.pool()?;
+        let n = sqlx::query("DELETE FROM eval_candidates WHERE created_at < $1")
+            .bind(before)
+            .execute(pool)
+            .await
+            .map_err(|e| Error::engine(format!("delete_eval_candidates_before: {e}")))?;
+        Ok(n.rows_affected())
     }
 
     async fn list_facts_since(

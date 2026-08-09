@@ -36,7 +36,8 @@ use crate::oauth_queries::{
 };
 use crate::engine::{
     fuse_and_boost, page_sort_sql, BrainEngine, CreateSourceInput, DreamVerdict,
-    DreamVerdictInput, EngineConfig, EngineKind, EmotionalInput, EmotionalWeightTake,
+    DreamVerdictInput, EngineConfig, EvalCandidate, EvalCandidateFilter, EngineKind, EmotionalInput,
+    EmotionalWeightTake,
     EmotionalWeightWrite, GetPageOpts, Page, PageFilters, PageInput, PageSort, ResolveSlugsOpts,
     SearchOpts, SearchResult, SourceRow, TakeGradeCacheInput, TakeProposalInput,
     UpdateSourceInput, is_valid_source_id,
@@ -150,6 +151,9 @@ const MIGRATION_0027: &str = include_str!("../migrations-sqlite/0027_config.sql"
 const MIGRATION_0028: &str = include_str!("../migrations-sqlite/0028_subagent_tool_executions.sql");
 /// 1-5: synthesis_evidence — take→synthesis citation FK table (auto-think persistSynthesis).
 const MIGRATION_0029: &str = include_str!("../migrations-sqlite/0029_synthesis_evidence.sql");
+/// 1-1-4 (G74 Category C): eval_candidates — candidate rows backing `eval export`/`prune`/`replay`.
+/// SQLite dialect downgrades PG array columns (steps_taken, scoring_dimensions, etc.) to JSON TEXT.
+const MIGRATION_0030: &str = include_str!("../migrations-sqlite/0030_eval_candidates.sql");
 
 /// Legacy string array — REMOVED in favor of MigrationRegistry.
 /// Use LIBQL_MIGRATIONS instead.
@@ -320,6 +324,11 @@ pub static LIBQL_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 29,
         name: "synthesis_evidence",
         sql: MIGRATION_0029,
+    }));
+    registry.add(Box::new(LibsqlMigration {
+        version: 30,
+        name: "eval_candidates",
+        sql: MIGRATION_0030,
     }));
 
     registry
@@ -5191,6 +5200,60 @@ impl BrainEngine for LibsqlEngine {
         Ok(out)
     }
 
+    async fn list_eval_candidates(
+        &self,
+        filter: &EvalCandidateFilter,
+    ) -> Result<Vec<EvalCandidate>> {
+        let conn = self.conn().await?;
+        let mut sql = String::from(
+            "SELECT id, tool_name, query, retrieved_slugs, retrieved_chunk_ids, source_ids, \
+                    expand_enabled, detail, detail_resolved, vector_enabled, expansion_applied, \
+                    latency_ms, remote, job_id, subagent_id, created_at, as_of_ts, \
+                    salience_param, recency_param, salience_resolved, recency_resolved, \
+                    salience_source, recency_source, embedding_column \
+             FROM eval_candidates WHERE 1=1",
+        );
+        let mut params: Vec<::libsql::Value> = Vec::new();
+        if let Some(ref tool) = filter.tool_name {
+            sql.push_str(" AND tool_name = ?");
+            params.push(::libsql::Value::from(tool.clone()));
+        }
+        if let Some(ref since) = filter.since {
+            sql.push_str(" AND created_at >= ?");
+            params.push(::libsql::Value::from(since.clone()));
+        }
+        sql.push_str(" ORDER BY created_at DESC, id DESC");
+        if let Some(limit) = filter.limit {
+            sql.push_str(" LIMIT ?");
+            params.push(::libsql::Value::from(limit as i64));
+        }
+        let mut rows = conn
+            .query(&sql, ::libsql::params::Params::Positional(params))
+            .await
+            .map_err(|e| Error::engine(format!("list_eval_candidates: {e}")))?;
+        let mut out = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("list_eval_candidates row: {e}")))?
+        {
+            out.push(Self::eval_candidate_from_row(&row)?);
+        }
+        Ok(out)
+    }
+
+    async fn delete_eval_candidates_before(&self, before: &str) -> Result<u64> {
+        let conn = self.conn().await?;
+        let n = conn
+            .execute(
+                "DELETE FROM eval_candidates WHERE created_at < ?1",
+                ::libsql::params![before],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("delete_eval_candidates_before: {e}")))?;
+        Ok(n)
+    }
+
     async fn list_facts_since(
         &self,
         source_id: &str,
@@ -8023,6 +8086,53 @@ fn row_to_fact(row: &::libsql::Row) -> Result<FactRow> {
 // ─── libsql extract_facts cycle-phase helpers (1-1-1) ─────────────────────────
 
 impl LibsqlEngine {
+    fn eval_candidate_from_row(row: &::libsql::Row) -> Result<EvalCandidate> {
+        let retrieved_slugs = Self::parse_json_array::<String>(row.get::<Option<String>>(3).ok().flatten());
+        let retrieved_chunk_ids =
+            Self::parse_json_array::<i64>(row.get::<Option<String>>(4).ok().flatten());
+        let source_ids = Self::parse_json_array::<String>(row.get::<Option<String>>(5).ok().flatten());
+        Ok(EvalCandidate {
+            id: row.get::<i64>(0).map_err(|e| Error::engine(format!("ec id: {e}")))?,
+            tool_name: row
+                .get::<String>(1)
+                .map_err(|e| Error::engine(format!("ec tool: {e}")))?,
+            query: row
+                .get::<String>(2)
+                .map_err(|e| Error::engine(format!("ec query: {e}")))?,
+            retrieved_slugs,
+            retrieved_chunk_ids,
+            source_ids,
+            expand_enabled: row.get::<Option<i64>>(6).ok().flatten().map(|v| v != 0),
+            detail: row.get::<Option<String>>(7).ok().flatten(),
+            detail_resolved: row.get::<Option<String>>(8).ok().flatten(),
+            vector_enabled: row.get::<i64>(9).map_err(|e| Error::engine(format!("ec vec: {e}")))? != 0,
+            expansion_applied: row.get::<i64>(10).map_err(|e| Error::engine(format!("ec exp: {e}")))?
+                != 0,
+            latency_ms: row.get::<i64>(11).map_err(|e| Error::engine(format!("ec lat: {e}")))?,
+            remote: row.get::<i64>(12).map_err(|e| Error::engine(format!("ec remote: {e}")))? != 0,
+            job_id: row.get::<Option<i64>>(13).ok().flatten(),
+            subagent_id: row.get::<Option<i64>>(14).ok().flatten(),
+            created_at: row
+                .get::<String>(15)
+                .map_err(|e| Error::engine(format!("ec created: {e}")))?,
+            as_of_ts: row.get::<Option<String>>(16).ok().flatten(),
+            salience_param: row.get::<Option<String>>(17).ok().flatten(),
+            recency_param: row.get::<Option<String>>(18).ok().flatten(),
+            salience_resolved: row.get::<Option<String>>(19).ok().flatten(),
+            recency_resolved: row.get::<Option<String>>(20).ok().flatten(),
+            salience_source: row.get::<Option<String>>(21).ok().flatten(),
+            recency_source: row.get::<Option<String>>(22).ok().flatten(),
+            embedding_column: row.get::<Option<String>>(23).ok().flatten(),
+        })
+    }
+
+    fn parse_json_array<T: serde::de::DeserializeOwned>(s: Option<String>) -> Vec<T> {
+        match s {
+            Some(text) => serde_json::from_str(&text).unwrap_or_default(),
+            None => Vec::new(),
+        }
+    }
+
     async fn delete_facts_for_page_impl(
         &self,
         slug: &str,
@@ -10740,4 +10850,94 @@ fn unix_now_secs() -> i64 {
 }
 
 // ── TokenQueries ──────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod eval_candidates_tests {
+    use super::*;
+    use crate::engine::{BrainEngine, EngineConfig, EvalCandidateFilter};
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static SEQ: AtomicU32 = AtomicU32::new(0);
+
+    fn unique_db_path() -> std::path::PathBuf {
+        let n = SEQ.fetch_add(1, Ordering::SeqCst);
+        let p = std::env::temp_dir().join(format!("zb_eval_rt_{}_{}.db", std::process::id(), n));
+        let _ = std::fs::remove_file(&p);
+        p
+    }
+
+    #[tokio::test]
+    async fn eval_candidates_round_trip_list_and_delete() {
+        let engine = LibsqlEngine::new();
+        let path = unique_db_path();
+        engine
+            .connect(&EngineConfig {
+                database_url: None,
+                database_path: Some(path.to_string_lossy().into_owned()),
+            })
+            .await
+            .unwrap();
+        engine.init_schema().await.unwrap();
+
+        let conn = engine.conn().await.unwrap();
+        conn.execute(
+            "INSERT INTO eval_candidates \
+             (tool_name, query, retrieved_slugs, retrieved_chunk_ids, source_ids, \
+              vector_enabled, expansion_applied, latency_ms, remote, created_at) \
+             VALUES ('search', 'best pasta', '[\"people/maria\",\"people/luigi\"]', '[101,102]', \
+                     '[\"default\"]', 1, 0, 42, 0, '2024-01-01T00:00:00Z')",
+            ::libsql::params![],
+        )
+        .await
+        .unwrap();
+        conn.execute(
+            "INSERT INTO eval_candidates \
+             (tool_name, query, retrieved_slugs, retrieved_chunk_ids, source_ids, \
+              vector_enabled, expansion_applied, latency_ms, remote, created_at) \
+             VALUES ('query', 'capital of France', '[\"facts/geo\"]', '[]', '[\"default\"]', \
+                     0, 0, 7, 0, '2026-05-01T00:00:00Z')",
+            ::libsql::params![],
+        )
+        .await
+        .unwrap();
+
+        // list all
+        let all = engine
+            .list_eval_candidates(&EvalCandidateFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 2, "expected 2 seeded candidates");
+        assert_eq!(all[0].query, "capital of France"); // newest first (2026 > 2024)
+        assert_eq!(all[0].retrieved_slugs, vec!["facts/geo".to_string()]);
+        assert!(all[0].retrieved_chunk_ids.is_empty());
+        assert_eq!(all[1].retrieved_slugs, vec!["people/maria", "people/luigi"]);
+        assert_eq!(all[1].retrieved_chunk_ids, vec![101, 102]);
+        assert!(all[1].vector_enabled);
+        assert!(!all[1].expansion_applied);
+
+        // tool_name filter
+        let search_only = engine
+            .list_eval_candidates(&EvalCandidateFilter {
+                tool_name: Some("search".to_string()),
+                since: None,
+                limit: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(search_only.len(), 1);
+        assert_eq!(search_only[0].query, "best pasta");
+
+        // delete rows created before 2030 => both seeded rows (2024, 2026) qualify
+        let deleted_old = engine
+            .delete_eval_candidates_before("2030-01-01T00:00:00Z")
+            .await
+            .unwrap();
+        assert_eq!(deleted_old, 2, "both rows are older than 2030");
+        let after = engine
+            .list_eval_candidates(&EvalCandidateFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(after.len(), 0);
+    }
+}
 
