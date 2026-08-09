@@ -67,6 +67,7 @@ pulldown-cmark = "0.12"
 # late-December date can belong to week 53 of the *previous* year) are
 # error-prone to hand-roll, so we lean on chrono's `IsoWeek` + `%G-W%V`.
 chrono = { workspace = true }
+anyhow = { workspace = true }
 tar = "0.4"
 flate2 = { version = "1.0", features = ["miniz_oxide"], default-features = false }
 dirs = "5.0"

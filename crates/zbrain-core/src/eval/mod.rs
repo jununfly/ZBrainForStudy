@@ -10,3 +10,4 @@ pub mod replay;
 pub mod whoknows;
 pub mod run_all;
 pub mod compare;
+pub mod code_retrieval;

@@ -478,6 +478,11 @@ pub enum Commands {
     /// Diff two `eval run-all` reports and surface regressions (G74 1-1-4 stage 6)
     EvalCompare(EvalCompareArgs),
 
+    /// Capture code-retrieval quality (baseline vs with-code-intel) and gate
+    /// them. Harness + strategies from scratch (G74 1-1-4 stage 7); the
+    /// with-code-intel strategy is wired to real Rust code-intel ops.
+    EvalCodeRetrieval(EvalCodeRetrievalArgs),
+
     /// Extract links / timeline entries from page bodies (TS `extract`)
     #[command(subcommand)]
     Extract(ExtractAction),
@@ -1416,6 +1421,51 @@ pub struct EvalCompareArgs {
     pub current: String,
 
     /// Emit the JSON compare report instead of a human table.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `zbrain eval-code-retrieval`.
+///
+/// Three modes (mutually exclusive at the dispatch layer):
+///   - `--baseline`          capture pre-v0.34 retrieval (hybrid search only)
+///   - `--with-code-intel`   capture v0.34 mode (real code-intel ops)
+///   - `--compare A B`       read two saved reports, emit the gate verdict
+#[derive(Debug, Parser)]
+pub struct EvalCodeRetrievalArgs {
+    /// Capture pre-v0.34 retrieval quality (query + hybrid search only).
+    #[arg(long)]
+    pub baseline: bool,
+
+    /// Capture v0.34 mode (wire to real Rust code-intel ops).
+    #[arg(long)]
+    pub with_code_intel: bool,
+
+    /// Compare two saved reports (baseline + with-code-intel). Takes two paths.
+    #[arg(long, num_args = 2, value_name = "REPORT")]
+    pub compare: Option<Vec<String>>,
+
+    /// Brain corpus to query (default: zbrain).
+    #[arg(long, default_value = "zbrain")]
+    pub corpus: String,
+
+    /// Question file (default: bundled v0.34 baseline set).
+    #[arg(long)]
+    pub questions: Option<String>,
+
+    /// Source to scope queries to.
+    #[arg(long)]
+    pub source: Option<String>,
+
+    /// Top-k cutoff (default: 5).
+    #[arg(long, default_value_t = 5)]
+    pub k: usize,
+
+    /// Write the EvalRunReport JSON to disk.
+    #[arg(long)]
+    pub save: Option<String>,
+
+    /// Emit machine-readable JSON to stdout.
     #[arg(long)]
     pub json: bool,
 }
@@ -2396,6 +2446,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Commands::EvalCompare(args) => {
             run_eval_compare_command(args, cli.config.as_deref()).await?
+        }
+        Commands::EvalCodeRetrieval(args) => {
+            run_eval_code_retrieval_command(args, cli.config.as_deref(), timeout_ms).await?
         }
         Commands::Extract(action) => run_extract_command(action, cli.config.as_deref()).await?,
         Commands::Links(action) => run_links_command(action, cli.config.as_deref()).await?,
@@ -6906,7 +6959,6 @@ async fn run_facts_expire(args: FactsExpireArgs, config_path: Option<&Path>) -> 
 /// KNOWN-GAPS G74 (categories A/C/D of the reconciliation table).
 const UNPORTED_EVAL_SUBCOMMANDS: &[&str] = &[
     "cross-modal",
-    "code-retrieval",
     "brainstorm",
     "suspected-contradictions",
     "trajectory",
@@ -8253,6 +8305,325 @@ fn print_compare_human(cmp: &zbrain_core::eval::compare::CompareReport) {
     }
     println!();
     println!("any_regression: {}", cmp.any_regression);
+}
+
+// ── code-retrieval eval (G74 1-1-4 stage 7) ───────────────────────
+
+async fn run_eval_code_retrieval_command(
+    args: EvalCodeRetrievalArgs,
+    config_path: Option<&Path>,
+    timeout_ms: Option<u64>,
+) -> anyhow::Result<()> {
+    use zbrain_core::engine::{BrainEngine, EngineConfig};
+    use zbrain_core::eval::code_retrieval::{
+        load_default_questions, load_questions, run_code_retrieval_eval, CodeQuestion,
+        EvalRunReportMode, RetrievalOutcome,
+    };
+    use zbrain_core::search::{hybrid_search, HybridSearchOpts};
+
+    // ── compare mode: pure JSON read, no engine ──
+    if let Some(reports) = &args.compare {
+        return run_eval_code_retrieval_compare(&args, reports);
+    }
+
+    // ── capture mode: require a mode ──
+    if !args.baseline && !args.with_code_intel {
+        anyhow::bail!(
+            "eval code-retrieval: specify --baseline or --with-code-intel (or --compare A B)"
+        );
+    }
+
+    let mode = if args.baseline {
+        EvalRunReportMode::Baseline
+    } else {
+        EvalRunReportMode::WithCodeIntel
+    };
+
+    let questions_file = match &args.questions {
+        Some(p) => load_questions(Path::new(p))?,
+        None => load_default_questions()?,
+    };
+    let questions: Vec<CodeQuestion> = questions_file.questions;
+
+    // Connect engine (needed for both strategies).
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine
+        .connect(&EngineConfig {
+            database_url: None,
+            database_path: Some(db_path),
+        })
+        .await?;
+    engine.init_schema().await?;
+    let engine_ref = &engine;
+
+    let source_id = args.source.clone();
+    let commit = current_commit();
+
+    // Build the async retrieve closure for this mode. Use `async move` with
+    // inner clones of non-Copy captures (mirrors run_eval's query_fn) so the
+    // returned future owns its data and the closure stays `Fn` across the
+    // per-question loop.
+    let retrieve = |q: &CodeQuestion, k: usize| {
+        // Clone q into an owned value so the async block does not borrow the
+        // closure argument (Fut cannot be parameterized by that lifetime).
+        let q = q.clone();
+        let source_id = source_id.clone();
+        let config_path = config_path;
+        let timeout_ms = timeout_ms;
+        async move {
+            if mode == EvalRunReportMode::Baseline {
+                // query + hybrid search (deterministic, keyword-only: no embedding
+                // client → matches TS expand:false; semantic path needs a provider).
+                let opts = HybridSearchOpts {
+                    limit: Some((k * 3).max(10)),
+                    source_id: source_id.clone(),
+                    ..Default::default()
+                };
+                let t0 = std::time::Instant::now();
+                let results = hybrid_search(engine_ref, &q.query, &opts).await?;
+                let latency_ms = t0.elapsed().as_millis() as u64;
+                // Collapse to file paths via the `code/` slug prefix (mirrors TS
+                // pickFilePath). Take the first k.
+                let mut files: Vec<String> = Vec::new();
+                for r in &results {
+                    if let Some(rest) = r.page.slug.strip_prefix("code/") {
+                        files.push(rest.to_string());
+                        if files.len() >= k {
+                            break;
+                        }
+                    }
+                }
+                Ok(RetrievalOutcome { files, latency_ms })
+            } else {
+                // with-code-intel: dispatch by kind to the real Rust ops.
+                let t0 = std::time::Instant::now();
+                let files = with_code_intel_files(&q, config_path, timeout_ms).await?;
+                let latency_ms = t0.elapsed().as_millis() as u64;
+                Ok(RetrievalOutcome { files, latency_ms })
+            }
+        }
+    };
+
+    let opts = zbrain_core::eval::code_retrieval::RunnerOpts {
+        k: args.k,
+        corpus: args.corpus.clone(),
+        commit,
+    };
+    let report = run_code_retrieval_eval(mode, &questions, &retrieve, &opts).await?;
+
+    if let Some(save) = &args.save {
+        let save_path = Path::new(save);
+        if let Some(parent) = save_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(save_path, serde_json::to_string_pretty(&report)?)?;
+        eprintln!("[eval] saved report to {}", save_path.display());
+    }
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print_code_retrieval_report(&report);
+    }
+
+    Ok(())
+}
+
+/// Dispatch a question to the real Rust code-intel op and extract file paths
+/// from the op JSON output. `cluster_membership` has no Rust op → empty. Any
+/// op error is returned as an empty result (honest baseline), not propagated.
+async fn with_code_intel_files(
+    q: &zbrain_core::eval::code_retrieval::CodeQuestion,
+    config_path: Option<&Path>,
+    timeout_ms: Option<u64>,
+) -> anyhow::Result<Vec<String>> {
+    use zbrain_core::eval::code_retrieval::CodeQuestionKind;
+    let Some(op) = q.kind.code_intel_op() else {
+        // cluster_membership has no Rust op yet → empty (honest).
+        return Ok(Vec::new());
+    };
+    let params = match q.kind {
+        CodeQuestionKind::Callers | CodeQuestionKind::BlastRadius => serde_json::json!({
+            "symbol": q.symbol,
+            "depth": 2,
+            "max_nodes": 50,
+            "exact": false,
+        }),
+        CodeQuestionKind::Callees | CodeQuestionKind::ExecutionFlow => serde_json::json!({
+            "entry_point": q.symbol,
+            "depth": 2,
+            "max_nodes": 50,
+            "exact": false,
+        }),
+        CodeQuestionKind::Definition => serde_json::json!({
+            "symbol": q.symbol,
+            "lang": serde_json::Value::Null,
+            "limit": 10,
+        }),
+        CodeQuestionKind::References => serde_json::json!({
+            "symbol": q.symbol,
+            "lang": serde_json::Value::Null,
+            "limit": 10,
+        }),
+        CodeQuestionKind::ClusterMembership => unreachable!("handled by code_intel_op() == None"),
+    };
+    match run_operation(op, params, config_path, timeout_ms).await {
+        Ok(output) => Ok(extract_code_retrieval_paths(&output)),
+        Err(e) => {
+            eprintln!("[eval] code-intel op {} failed on {}: {}", op, q.id, e);
+            Ok(Vec::new())
+        }
+    }
+}
+
+/// Recursively collect file-path-like strings from an op JSON output.
+fn extract_code_retrieval_paths(v: &serde_json::Value) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    collect_paths(v, &mut out, &mut seen);
+    out
+}
+
+fn collect_paths(
+    v: &serde_json::Value,
+    out: &mut Vec<String>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    match v {
+        serde_json::Value::String(s) => {
+            if looks_like_file_path(s) && seen.insert(s.clone()) {
+                out.push(s.clone());
+            }
+        }
+        serde_json::Value::Array(a) => {
+            for x in a {
+                collect_paths(x, out, seen);
+            }
+        }
+        serde_json::Value::Object(o) => {
+            for (_, val) in o {
+                collect_paths(val, out, seen);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn looks_like_file_path(s: &str) -> bool {
+    if !s.contains('/') || s.len() > 300 {
+        return false;
+    }
+    let l = s.to_ascii_lowercase();
+    l.ends_with(".rs") || l.ends_with(".ts") || l.ends_with(".js") || l.ends_with(".tsx")
+        || l.ends_with(".jsx") || l.ends_with(".py") || l.ends_with(".go") || l.ends_with(".java")
+        || l.ends_with(".cpp") || l.ends_with(".c") || l.ends_with(".h") || l.ends_with(".hpp")
+        || l.ends_with(".md") || l.ends_with(".json") || l.ends_with(".toml")
+        || l.ends_with(".yaml") || l.ends_with(".yml")
+}
+
+fn run_eval_code_retrieval_compare(
+    args: &EvalCodeRetrievalArgs,
+    reports: &[String],
+) -> anyhow::Result<()> {
+    use zbrain_core::eval::code_retrieval::{
+        evaluate_gate, EvalRunReport, EvalRunReportMode, DEFAULT_GATE,
+    };
+    let a: EvalRunReport = read_code_retrieval_report(&reports[0])?;
+    let b: EvalRunReport = read_code_retrieval_report(&reports[1])?;
+    // Convention: first arg is baseline, second is with-code-intel. Swap if
+    // labels disagree so the comparison is meaningful.
+    let (baseline, with_code_intel) = if a.mode == EvalRunReportMode::WithCodeIntel
+        && b.mode == EvalRunReportMode::Baseline
+    {
+        (b, a)
+    } else {
+        (a, b)
+    };
+    let gate = evaluate_gate(&baseline, &with_code_intel, DEFAULT_GATE);
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "schema_version": 1,
+                "passed": gate.passed,
+                "precision_delta_pp": gate.precision_delta_pp,
+                "top_1_stability_rate": gate.top_1_stability_rate,
+                "questions_cleared_bar": gate.questions_cleared_bar,
+                "questions_total": gate.questions_total,
+                "summary": gate.summary,
+            }))?
+        );
+    } else {
+        println!("\n{}\n", gate.summary);
+        println!(
+            "baseline:        precision@{} = {:.1}%   answered = {:.1}%   (commit {})",
+            baseline.k,
+            baseline.mean_precision_at_k * 100.0,
+            baseline.answered_rate * 100.0,
+            baseline.commit
+        );
+        println!(
+            "with-code-intel: precision@{} = {:.1}%   answered = {:.1}%   (commit {})",
+            with_code_intel.k,
+            with_code_intel.mean_precision_at_k * 100.0,
+            with_code_intel.answered_rate * 100.0,
+            with_code_intel.commit
+        );
+        println!(
+            "delta:           +{:.1}pp precision   top-1 stability = {:.1}%",
+            gate.precision_delta_pp,
+            gate.top_1_stability_rate * 100.0
+        );
+        println!("cleared bar:     {}/{}", gate.questions_cleared_bar, gate.questions_total);
+    }
+    if !gate.passed {
+        anyhow::bail!("eval code-retrieval compare: gate FAILED");
+    }
+    Ok(())
+}
+
+fn read_code_retrieval_report(path: &str) -> anyhow::Result<zbrain_core::eval::code_retrieval::EvalRunReport> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("cannot read report {}: {}", path, e))?;
+    serde_json::from_str(&content).map_err(|e| anyhow::anyhow!("invalid report {}: {}", path, e))
+}
+
+fn print_code_retrieval_report(report: &zbrain_core::eval::code_retrieval::EvalRunReport) {
+    println!("\n=== code-retrieval eval (mode={:?}) ===", report.mode);
+    println!("corpus:      {}", report.corpus);
+    println!("commit:      {}", report.commit);
+    println!("captured:    {}", report.captured_at);
+    println!("questions:   {}", report.questions.len());
+    println!("precision@{}: {:.1}%", report.k, report.mean_precision_at_k * 100.0);
+    let answered = report.questions.iter().filter(|q| q.answered).count();
+    println!(
+        "answered:    {}/{} ({:.1}%)",
+        answered,
+        report.questions.len(),
+        report.answered_rate * 100.0
+    );
+    println!(
+        "latency:     {}ms total, {:.0}ms/q",
+        report.total_latency_ms,
+        report.total_latency_ms as f64 / report.questions.len().max(1) as f64
+    );
+    println!("\nper-question:");
+    for q in &report.questions {
+        let status = if q.answered { "+" } else { "-" };
+        println!(
+            "  {} {:<20} p@{} = {:.0}% recall@{} = {:.0}% ({}ms)",
+            status,
+            q.id,
+            report.k,
+            q.precision_at_k * 100.0,
+            report.k,
+            q.recall_at_k * 100.0,
+            q.latency_ms
+        );
+    }
+    println!();
 }
 
 async fn run_eval_command(args: EvalArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
@@ -12974,6 +13345,84 @@ mod tests {
             }
             _ => panic!("expected EvalCompare"),
         }
+    }
+
+    #[test]
+    fn eval_code_retrieval_baseline_parses_flags() {
+        let cli = Cli::try_parse_from([
+            "zbrain",
+            "eval-code-retrieval",
+            "--baseline",
+            "--k",
+            "10",
+            "--corpus",
+            "mybrain",
+            "--save",
+            "out.json",
+            "--json",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::EvalCodeRetrieval(args) => {
+                assert!(args.baseline);
+                assert!(!args.with_code_intel);
+                assert_eq!(args.k, 10);
+                assert_eq!(args.corpus, "mybrain");
+                assert_eq!(args.save.as_deref(), Some("out.json"));
+                assert!(args.json);
+            }
+            _ => panic!("expected EvalCodeRetrieval"),
+        }
+    }
+
+    #[test]
+    fn eval_code_retrieval_with_code_intel_parses() {
+        let cli = Cli::try_parse_from([
+            "zbrain",
+            "eval-code-retrieval",
+            "--with-code-intel",
+            "--questions",
+            "q.json",
+            "--source",
+            "src",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::EvalCodeRetrieval(args) => {
+                assert!(args.with_code_intel);
+                assert_eq!(args.questions.as_deref(), Some("q.json"));
+                assert_eq!(args.source.as_deref(), Some("src"));
+            }
+            _ => panic!("expected EvalCodeRetrieval"),
+        }
+    }
+
+    #[test]
+    fn eval_code_retrieval_compare_requires_two_reports() {
+        let cli = Cli::try_parse_from([
+            "zbrain",
+            "eval-code-retrieval",
+            "--compare",
+            "a.json",
+            "b.json",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::EvalCodeRetrieval(args) => {
+                assert_eq!(
+                    args.compare.as_deref(),
+                    Some(["a.json".to_string(), "b.json".to_string()].as_slice())
+                );
+            }
+            _ => panic!("expected EvalCodeRetrieval"),
+        }
+    }
+
+    #[test]
+    fn eval_code_retrieval_compare_rejects_single_report() {
+        assert!(
+            Cli::try_parse_from(["zbrain", "eval-code-retrieval", "--compare", "only.json"]).is_err()
+        );
     }
 
     #[test]

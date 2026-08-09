@@ -5114,6 +5114,7 @@ name = "zbrain-core"
 version = "0.0.1"
 dependencies = [
  "aes-gcm",
+ "anyhow",
  "async-trait",
  "atty",
  "base64 0.22.1",
