@@ -466,6 +466,9 @@ pub enum Commands {
     /// Replay captured eval candidates against the current brain (TS `eval-replay`; G74 1-1-4 stage 4)
     EvalReplay(EvalReplayArgs),
 
+    /// Two-layer whoknows eval gate (TS `eval-whoknows`; G74 1-1-4 stage 5)
+    EvalWhoknows(EvalWhoknowsArgs),
+
     /// Extract links / timeline entries from page bodies (TS `extract`)
     #[command(subcommand)]
     Extract(ExtractAction),
@@ -1312,6 +1315,31 @@ pub struct EvalReplayArgs {
     /// default 5 in human mode, 0 in `--json`).
     #[arg(long = "top-regressions", value_name = "K")]
     pub top_regressions: Option<usize>,
+}
+
+/// Two-layer whoknows eval gate (TS `eval-whoknows`; G74 1-1-4 stage 5).
+///
+/// Layer 1 (quality): hand-labeled fixture JSONL, pass at >= 80% top-3 hit
+/// rate. Layer 2 (regression): eval_candidates replay set-Jaccard@3 >= 0.4,
+/// auto-skipped when fewer than 20 replay-eligible rows exist.
+#[derive(Debug, Parser)]
+pub struct EvalWhoknowsArgs {
+    /// Hand-labeled fixture JSONL path (one `{query, expected_top_3_slugs}`
+    /// per line). Required.
+    #[arg(value_name = "FIXTURE.jsonl", required = true)]
+    pub fixture_path: String,
+
+    /// Emit the JSON report envelope instead of a human table.
+    #[arg(long)]
+    pub json: bool,
+
+    /// Skip Layer 2 (regression gate) entirely — run the quality gate only.
+    #[arg(long = "skip-replay")]
+    pub skip_replay: bool,
+
+    /// Top-K to grade (default 5; the eval itself grades top-3).
+    #[arg(long, value_name = "N", default_value_t = 5)]
+    pub limit: usize,
 }
 
 // ── Extract subcommands ────────────────────────────────────────
@@ -2281,6 +2309,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Commands::EvalReplay(args) => {
             run_eval_replay_command(args, cli.config.as_deref()).await?
+        }
+        Commands::EvalWhoknows(args) => {
+            run_eval_whoknows_command(args, cli.config.as_deref()).await?
         }
         Commands::Extract(action) => run_extract_command(action, cli.config.as_deref()).await?,
         Commands::Links(action) => run_links_command(action, cli.config.as_deref()).await?,
@@ -6793,7 +6824,6 @@ const UNPORTED_EVAL_SUBCOMMANDS: &[&str] = &[
     "cross-modal",
     "code-retrieval",
     "brainstorm",
-    "whoknows",
     "suspected-contradictions",
     "trajectory",
     "run-all",
@@ -7533,6 +7563,160 @@ fn print_replay_human(
             );
         }
     }
+}
+
+async fn run_eval_whoknows_command(
+    args: EvalWhoknowsArgs,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    use zbrain_core::engine::{BrainEngine, EngineConfig, EvalCandidateFilter};
+    use zbrain_core::eval::whoknows::{
+        assemble_report, read_fixture, run_quality_gate, run_regression_gate, ReplayRow,
+    };
+    use zbrain_core::whoknows::{self};
+
+    // Read + validate the fixture up front so usage errors surface cleanly.
+    let fixture_content = std::fs::read_to_string(&args.fixture_path)
+        .map_err(|e| anyhow::anyhow!("cannot read fixture {}: {}", args.fixture_path, e))?;
+    let fixture = read_fixture(&fixture_content).map_err(|e| anyhow::anyhow!("{e}"))?;
+    if fixture.is_empty() {
+        anyhow::bail!("fixture file is empty: {}", args.fixture_path);
+    }
+
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine
+        .connect(&EngineConfig {
+            database_url: None,
+            database_path: Some(db_path),
+        })
+        .await?;
+    engine.init_schema().await?;
+    let engine_ref = &engine;
+
+    // The whoknows callable — local `find_experts`. Thin-client remote routing
+    // (TS `callRemoteTool`) is deferred; see KNOWN-GAPS G74.
+    let whoknows_fn = move |topic: &str, limit: usize| {
+        let topic = topic.to_string();
+        Box::pin(async move {
+            let results = whoknows::find_experts(
+                engine_ref,
+                &whoknows::FindExpertsOpts {
+                    topic,
+                    limit: Some(limit),
+                    types: None,
+                    source_id: None,
+                },
+            )
+            .await?;
+            Ok(results.into_iter().map(|r| r.slug).collect::<Vec<String>>())
+        })
+    };
+
+    let quality = run_quality_gate(&whoknows_fn, &fixture, args.limit).await;
+
+    // Layer 2 — regression gate. Skipped on --skip-replay; otherwise load
+    // captured `query` rows from eval_candidates (sparseness fallback inside
+    // run_regression_gate handles < 20 rows).
+    let regression = if args.skip_replay {
+        zbrain_core::eval::whoknows::RegressionReport {
+            status: "skipped".to_string(),
+            reason: Some("--skip-replay flag".to_string()),
+            total: 0,
+            mean_jaccard: 0.0,
+            threshold: zbrain_core::eval::whoknows::REGRESSION_THRESHOLD,
+            rows: Vec::new(),
+        }
+    } else {
+        let captured = engine_ref
+            .list_eval_candidates(&EvalCandidateFilter {
+                tool_name: Some("query".to_string()),
+                since: None,
+                limit: Some(200),
+            })
+            .await
+            .unwrap_or_default();
+        let replay_rows: Vec<ReplayRow> = captured
+            .into_iter()
+            .map(|c| ReplayRow {
+                query: c.query,
+                retrieved_slugs: c.retrieved_slugs,
+            })
+            .collect();
+        run_regression_gate(&whoknows_fn, &replay_rows, args.limit).await
+    };
+
+    let report = assemble_report(&args.fixture_path, quality, regression);
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print_whoknows_human(&report);
+    }
+
+    if !report.overall_passed {
+        anyhow::bail!("whoknows eval FAILED (quality gate / regression gate not passed)");
+    }
+    Ok(())
+}
+
+/// Render the human-readable whoknows eval report (mirrors TS
+/// `renderHumanReport`).
+fn print_whoknows_human(
+    r: &zbrain_core::eval::whoknows::EvalWhoknowsReport,
+) {
+    println!("whoknows eval @ {}", r.fixture_path);
+    println!("{}", "─".repeat(60));
+    println!();
+    println!("LAYER 1 — quality gate (hand-labeled fixture)");
+    println!("  total: {}", r.quality.total);
+    println!("  hits:  {}", r.quality.hits);
+    println!(
+        "  rate:  {:.1}%  (threshold {:.0}%)",
+        r.quality.hit_rate * 100.0,
+        r.quality.threshold * 100.0
+    );
+    println!("  {}", if r.quality.passed { "PASS" } else { "FAIL" });
+    if !r.quality.passed {
+        println!();
+        println!("  Misses:");
+        for row in &r.quality.rows {
+            if row.hit {
+                continue;
+            }
+            println!("    \"{}\"", row.query);
+            println!("      expected: {}", row.expected.join(", "));
+            println!(
+                "      got:      {}",
+                if row.actual_top_3.is_empty() {
+                    "(no results)".to_string()
+                } else {
+                    row.actual_top_3.join(", ")
+                }
+            );
+        }
+    }
+    println!();
+    println!("LAYER 2 — regression gate (eval_candidates replay)");
+    if r.regression.status == "skipped" {
+        println!(
+            "  SKIPPED — {}",
+            r.regression.reason.as_deref().unwrap_or("")
+        );
+    } else {
+        println!("  total:  {}", r.regression.total);
+        println!(
+            "  Jaccard mean: {:.3}  (threshold {:.2})",
+            r.regression.mean_jaccard, r.regression.threshold
+        );
+        println!(
+            "  {}",
+            if r.regression.status == "passed" { "PASS" } else { "FAIL" }
+        );
+    }
+    println!();
+    println!("VERDICT: {}", if r.overall_passed { "PASS" } else { "FAIL" });
 }
 
 async fn run_eval_command(args: EvalArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
@@ -12123,6 +12307,37 @@ mod tests {
                 assert!(args.verbose);
             }
             _ => panic!("expected EvalReplay"),
+        }
+    }
+
+    #[test]
+    fn eval_whoknows_requires_fixture() {
+        // The fixture path is a required positional; whoknows is fully real
+        // (1-1-4 stage 5).
+        assert!(Cli::try_parse_from(["zbrain", "eval-whoknows"]).is_err());
+        assert!(Cli::try_parse_from(["zbrain", "eval-whoknows", "--json"]).is_err());
+    }
+
+    #[test]
+    fn eval_whoknows_parses_fixture_and_flags() {
+        let cli = Cli::try_parse_from([
+            "zbrain",
+            "eval-whoknows",
+            "./fixtures/whoknows-eval.jsonl",
+            "--json",
+            "--skip-replay",
+            "--limit",
+            "10",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::EvalWhoknows(args) => {
+                assert_eq!(args.fixture_path, "./fixtures/whoknows-eval.jsonl");
+                assert!(args.json);
+                assert!(args.skip_replay);
+                assert_eq!(args.limit, 10);
+            }
+            _ => panic!("expected EvalWhoknows"),
         }
     }
 
