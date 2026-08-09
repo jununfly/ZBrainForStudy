@@ -276,6 +276,23 @@ pub fn parse_qrels(input: &str) -> Result<Vec<EvalQrel>, Error> {
 // Orchestrator
 // ─────────────────────────────────────────────────────────────────
 
+/// Resolve the per-query retrieval depth for an evaluation run.
+///
+/// Faithful to the TS `const limit = config.limit ?? Math.max(k * 2, 10)`:
+/// the `max(…, 10)` floor applies ONLY to the derived default, never to an
+/// explicit `config.limit`. (The earlier Rust form
+/// `config.limit.unwrap_or(k * 2).max(10)` silently clamped an explicit
+/// `limit: 3` up to 10, changing what the harness measured.)
+///
+/// Exposed because [`run_eval`] delegates the actual retrieval to a caller-
+/// supplied `query_fn` — the caller must size its own backend request with the
+/// *same* number, so this has to be one shared function rather than two copies
+/// of the expression.
+#[must_use]
+pub fn resolve_eval_limit(config: &EvalConfig, k: usize) -> usize {
+    config.limit.unwrap_or_else(|| (k * 2).max(10))
+}
+
 /// Run a full evaluation of one search configuration against all qrels.
 ///
 /// `query_fn` injects the search strategy: given a query string it returns the
@@ -284,8 +301,8 @@ pub fn parse_qrels(input: &str) -> Result<Vec<EvalQrel>, Error> {
 /// evaluated query.
 ///
 /// Faithful to the TS `runEval`: retrieves up to
-/// `limit = config.limit ?? max(k*2, 10)` hits per query, then computes the
-/// per-query metrics and the mean aggregates.
+/// [`resolve_eval_limit`] (`config.limit ?? max(k*2, 10)`) hits per query, then
+/// computes the per-query metrics and the mean aggregates.
 pub async fn run_eval<F, Fut>(
     qrels: &[EvalQrel],
     config: &EvalConfig,
@@ -297,7 +314,7 @@ where
     F: Fn(&str) -> Fut,
     Fut: std::future::Future<Output = Result<Vec<String>, Error>>,
 {
-    let limit = config.limit.unwrap_or(k * 2).max(10);
+    let limit = resolve_eval_limit(config, k);
 
     let mut query_results: Vec<QueryResult> = Vec::with_capacity(qrels.len());
     let total = qrels.len();
@@ -563,6 +580,43 @@ mod tests {
         assert!((report.mean_recall - 1.0).abs() < 1e-9);
         assert!((report.mean_mrr - 1.0).abs() < 1e-9);
         assert!((report.mean_ndcg - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn resolve_eval_limit_honors_explicit_limit_below_the_default_floor() {
+        // Regression: the `max(…, 10)` floor belongs to the DERIVED default
+        // only. TS: `config.limit ?? Math.max(k * 2, 10)`. An earlier Rust
+        // form (`unwrap_or(k * 2).max(10)`) clamped an explicit `limit: 3`
+        // up to 10, so `--limit 3` measured a 10-deep result set.
+        let explicit = EvalConfig { limit: Some(3), ..Default::default() };
+        assert_eq!(resolve_eval_limit(&explicit, 5), 3);
+
+        // Derived default: k*2 when that clears the floor…
+        let derived = EvalConfig::default();
+        assert_eq!(resolve_eval_limit(&derived, 20), 40);
+        // …and the floor when it does not.
+        assert_eq!(resolve_eval_limit(&derived, 2), 10);
+    }
+
+    #[tokio::test]
+    async fn run_eval_truncates_hits_to_an_explicit_small_limit() {
+        // End-to-end guard for the same bug: with `limit: 2` the harness must
+        // only score the top-2 hits, so the third (relevant) slug is invisible.
+        let qrels = vec![EvalQrel {
+            id: None,
+            query: "q".into(),
+            relevant: vec!["c".into()],
+            grades: None,
+        }];
+        let config = EvalConfig { limit: Some(2), ..Default::default() };
+        let query_fn = |_q: &str| async move {
+            Ok(vec!["a".to_string(), "b".to_string(), "c".to_string()])
+        };
+
+        let report = run_eval(&qrels, &config, 5, query_fn, None).await.unwrap();
+        assert_eq!(report.queries[0].hits, vec!["a".to_string(), "b".to_string()]);
+        // "c" was truncated away, so nothing relevant was retrieved.
+        assert!((report.mean_recall - 0.0).abs() < 1e-9);
     }
 
     #[tokio::test]

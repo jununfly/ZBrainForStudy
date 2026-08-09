@@ -25,17 +25,29 @@
           "note": "ChatProvider(OpenAI/Anthropic/Gemini)+ai/tool_loop.rs 已 port 完(Phase8 slice3+5)"
         }
       ],
-      "notes": "教训：KNOWN-GAPS 的 blocked 标注不可全信，动手前必须先做「TS 源 vs Rust 现状」逐能力对账（G76 即因描述失准，被误判为 LLM 阻塞）。G74 同样标 blocked by G58，动手前需同样核实。"
+      "notes": "教训：KNOWN-GAPS 的 blocked 标注不可全信，动手前必须先做「TS 源 vs Rust 现状」逐能力对账。G76 与 G74 已连续两次证实描述失准——G76 被误判为 LLM 阻塞（实为纯解析且大半已实现）；G74 被标「多数依赖 LLM + blocked by G58」（实为 4/19=21% 依赖 LLM，且核心 eval 的底座 run_eval 早已 port 完只缺 verb）。两次的共同模式：**算法层已在 Rust，缺的只是 CLI 出口**。后续 G75/G77/G78/G79 动手前一律先对账。"
     },
     "1-1": {
       "id": "1-1",
       "label": "G74 eval 族命令 Rust 重实现（19 命令）",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "explore",
       "parent": "1",
-      "children": [],
-      "decisions": [],
-      "notes": "依赖 LLM 评测算法 port（longmemeval/cross-modal 等）。TS 源已删，从 git 历史取回 port。前置：先照 G76 的方式做能力对账——core 侧 search/eval.rs(G73 已 resolved, 4 IR 指标+run_eval) 可能已覆盖相当部分，19 命令里真正需 LLM 的应是少数。"
+      "children": [
+        "1-1-1",
+        "1-1-2",
+        "1-1-3",
+        "1-1-4",
+        "1-1-5"
+      ],
+      "decisions": [
+        {
+          "q": "G74 标注的 blocked by G58（LLM seam）是否属实？",
+          "answer": "不属实。19 命令中真依赖 LLM 的只有 4 个（21%）：cross-modal、longmemeval、takes-quality、suspected-contradictions；其中前两个已由 G58 单列。其余 15 个不碰 LLM，G74 整体不应标 blocked。",
+          "note": "审计法：git show 3c09a69f^ 取回 20 个 eval*.ts（含 notability-eval.ts，不在 G74 的 19 个之列），regex 扫 isAvailable('chat')|ChatProvider|anthropic|openai|.chat(|messages.create|gateway。三个疑似命中经逐行核实为假阳性：eval-replay.ts:132 的 OpenAI 只在注释里且指 embedding 非 chat；eval-schema-authoring.ts:12 注释明说走 stubbed gateway test seam；eval-suspected-contradictions.ts:253 的 anthropic 是 resolveModel 的 fallback 模型 ID 字符串——但该文件确实调 runContradictionProbe + judge model + 成本预算门，属真 LLM。"
+        }
+      ],
+      "notes": "G74 能力对账表（19 命令 → 4 类）：\n【A 空壳 scaffold，TS 自身即 not_yet_implemented，建议判废】3 个：eval-extract-atoms(39行)、eval-synthesize-concepts(36行)、eval-markdown-greenfield(40行)。三者都只 return {status:'not_yet_implemented'} + v0.41.1 followup 说明，无任何实现。\n【B 非 LLM 且 Rust 底座已在，只缺 verb】eval.ts(421行) → 依赖 core/search/eval.ts，Rust 侧 crates/zbrain-core/src/search/eval.rs(619行, G73 已 resolved) 已完整 port 4 个 IR 指标 + run_eval，但 run_eval 零调用者（仅 search/mod.rs:27 re-export）。eval-trajectory.ts(232行) → engine.find_trajectory + CLI FindTrajectory verb 已有，缺的只是 computeTrajectoryStats 的回归/漂移统计层。\n【C 非 LLM 但需新基建】10 个：eval-gate(491, 需 bench/{baseline-file,correctness-gate})、eval-whoknows(451, Rust 有 whoknows verb 但无 eval gate 层)、eval-replay(489)、eval-run-all(356)、eval-code-retrieval(260, 需 eval/code-retrieval/harness)、eval-compare(256, 需 metric-glossary)、eval-export(159)、eval-prune(115)、eval-brainstorm(399, 需 brainstorm/orchestrator)、eval-schema-authoring(137)。其中 export/prune/replay 共同依赖 eval_candidates 表——Rust migrations 里完全不存在，是先决条件。\n【D 真 LLM】4 个：eval-cross-modal(849, 26 命中, G58 已列)、eval-longmemeval(887, 9 命中, G58 已列)、eval-takes-quality(259, 7 命中)、eval-suspected-contradictions(427, runContradictionProbe + judge)。"
     },
     "1-2": {
       "id": "1-2",
@@ -108,11 +120,61 @@
       "children": [],
       "decisions": [],
       "notes": "crates/zbrain-core/src/minions/handlers/extract.rs 目前返回 unsupported_job(\"extract\",\"G76\")。CLI verb 已落地，但 minion 侧刻意不接：入队 extract 会跑全脑抽取并写 link/timeline 行，job payload 契约未定（按 slug 限定？全脑？dry-run？）。需要先定契约再接线，接线时 handler 的 extract_is_unsupported 测试要一并改写。doc 注释已于 2026-08-09 更新指向本节点。"
+    },
+    "1-1-1": {
+      "id": "1-1-1",
+      "label": "修正 KNOWN-GAPS/COMMANDS_TEAR_DOWN 的 G74 失准描述",
+      "status": "in_progress",
+      "mode": "build",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": "两处失准：① 「多数依赖 LLM/Anthropic SDK」→ 实为少数（4/19=21%）；② 状态标 open (blocked: LLM seam G58) → 整体 blocked 不成立，应为 partial：15/19 不阻塞、3 个是空壳可判废、仅 4 个真 LLM（其中 2 个已由 G58 单列）。③ 「仅 eval_drift（语义不同）」也不全 —— 还有 search/eval.rs(run_eval + 4 IR 指标, G73)、cli/routing_eval.rs、skill_resolver/routing_eval.rs。保留单 G74 ID（照 G76 先例，拆分只做在描述里，避免打断代码指针）。"
+    },
+    "1-1-2": {
+      "id": "1-1-2",
+      "label": "第一刀：zbrain eval 核心 verb（暴露已 port 的 run_eval）",
+      "status": "completed",
+      "mode": "build",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": "与 1-2-1（extract verb）同构：算法已在、零调用者、只缺 CLI 出口。Rust run_eval 签名与 TS 有意分歧——TS runEval 吃 BrainEngine + config.strategy 内部分派 keyword/vector/hybrid；Rust 为保持 embedding-free + feature-gate-free，改吃一个 async query 闭包由调用方注入策略（见 search/eval.rs 头部 design note）。所以 CLI 层要负责：读 qrels 文件(EvalQrelFile) → 按 --strategy 组装闭包（keyword 走 keyword_search_slugs；vector/hybrid 需 embedding feature 门控）→ run_eval → 渲染 EvalReport（人类可读 + --json）。TS 侧 eval.ts 421 行的 CLI 表面（flags/输出格式）可作保真参照。"
+    },
+    "1-1-3": {
+      "id": "1-1-3",
+      "label": "判废 3 个空壳 scaffold（extract-atoms / synthesize-concepts / markdown-greenfield）",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": "TS 侧本身就只是命令表面 + not_yet_implemented 占位，v0.41.1 的真实现从未落地。迁移它们 = 迁一个 stub，零功能价值。待决策：直接从 G74 计数里移除并标 wontfix，还是照 TS 原样迁成 honest-error stub 以保命令表面一致（参照 G58 的 honest error 范式）。"
+    },
+    "1-1-4": {
+      "id": "1-1-4",
+      "label": "非 LLM 但需新基建的 10 个 eval 命令",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": "先决条件：eval_candidates 表（export/prune/replay 共同依赖）在 Rust migrations 中不存在，需新增双 dialect migration。缺失基建清单：core/bench/{baseline-file,correctness-gate}、core/eval/metric-glossary、eval/code-retrieval/harness+strategies、core/brainstorm/orchestrator、core/search/mode（Rust search/ 下无 mode.rs）。建议排序：先 export/prune（最薄，随 eval_candidates migration 一起）→ gate（CI 价值最高）→ compare/run-all（编排层）→ 其余。"
+    },
+    "1-1-5": {
+      "id": "1-1-5",
+      "label": "真 LLM 的 4 个 eval 命令（cross-modal / longmemeval / takes-quality / suspected-contradictions）",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-1",
+      "children": [],
+      "decisions": [],
+      "notes": "cross-modal + longmemeval 已由 G58 单列（autopilot/runner.rs 的 run_long_mem_eval / run_cross_modal_batch 占位 honest error, flag off）。takes-quality 与 suspected-contradictions 未被 G58 覆盖，是 G74 内独立的 LLM 依赖项。通用 LLM seam（ChatProvider + ai/tool_loop.rs）已 port 完，理论上不阻塞，但各自还需 port 领域 runner（cross-modal-eval/runner、takes-quality-eval/{replay,regress,receipt-write}、eval-contradictions/{runner,severity-classify,cost-prompt,trends}）。"
     }
   },
   "metadata": {
     "created": "2026-08-09 00:23:13",
-    "updated": "2026-08-09 09:25:00",
+    "updated": "2026-08-09 21:34:00",
     "md_file": "docs/plans/ZBRAIN_G74_G76_REIMPL.md"
   }
 }

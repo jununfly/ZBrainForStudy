@@ -31,7 +31,8 @@
 ## 迁移工程规则
 - TS 调 Rust：`src/cli.ts` 走 resolveZbrainBin()（$ZBRAIN_BIN→target/debug→release→PATH）。改子命令后必 cargo build -p zbrain-cli 否则测试 exit 2。
 - port fidelity：Rust 测试与 TS 实现冲突优先改实装、接受 test 为规范；交叉登记 KNOWN-GAPS.md。
-- **KNOWN-GAPS 的 blocked/描述不可全信**（G76 曾被误标"依赖 LLM 被 G35/G60 阻塞"，实为纯解析且 Rust 已实现大半）。动手任一 Gn 前必做「TS 源 vs Rust 现状」逐能力对账：`git show <删除commit>^:<path>` 取回 TS → grep 关键依赖 → grep Rust 侧同名/近义实现 → 列对账表。对账结论要回写 KNOWN-GAPS + COMMANDS_TEAR_DOWN + 相关代码 doc 注释（三处都可能 stale）。
+- **KNOWN-GAPS 的 blocked/描述不可全信**（已连续两次证伪：G76 误标"依赖 LLM 被 G35/G60 阻塞"实为纯解析且 Rust 已实现大半；G74 误标"多数依赖 LLM + blocked by G58"实为仅 4/19=21% 依赖 LLM、核心 `run_eval` 早已 port 完只是零调用者）。**共同模式：算法层已在 Rust，缺的只是 CLI 出口** —— 对账时优先 grep Rust 侧有无同名/近义实现，别默认"没 verb 就是没实现"。动手任一 Gn 前必做「TS 源 vs Rust 现状」逐能力对账：`git show <删除commit>^:<path>` 取回 TS → grep 关键依赖 → grep Rust 侧同名/近义实现 → 列对账表。对账结论要回写 KNOWN-GAPS + COMMANDS_TEAR_DOWN + 相关代码 doc 注释（三处都可能 stale）。
+- **命令族批量对账法**（19+ 文件时高效）：`git show <sha>^` 批量导出到 Temp 目录 → 写 Python 脚本一次扫全部（正则查依赖关键词 + 抽 docstring + 抽 import 列表）→ 出对账表。**grep 命中必须逐行看上下文再定性**：注释提及、fallback 模型 ID 字符串、"走 stub seam" 的说明都会假阳性（G74 三个疑似 LLM 命中全是假的）。另注意小文件（<50 行）常是 `not_yet_implemented` 空壳 scaffold，TS 自身就没实现，迁移零价值。
 - CLI 加 verb 的最小闭环：clap 结构照抄邻近 verb 模板 → Commands enum + Action enum + Args + dispatch + run_ 函数 → lib.rs 尾部 #[cfg(test)] 加 try_parse_from 解析测试（含"拒绝未实现子命令"的负向测试守住缺口）→ e2e 用隔离 config（`-c $WORK/zbrain.yml` + `init --pglite --force`）真库冒烟，必验幂等 + 范围限定 + 不存在实体不崩。
 - 新增 DB migration 三件事：双 dialect 00NN_*.sql + include_str! const + registry.add + 测试 EXPECTED_VERSION bump。
 - 参数加宽坑：&Arc<dyn T>→&dyn T 不自动 coerce（调用方 &*engine）。opts 覆盖逐字段 or_else 保留优先级。

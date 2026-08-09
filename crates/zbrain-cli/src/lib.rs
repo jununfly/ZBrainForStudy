@@ -451,6 +451,9 @@ pub enum Commands {
     #[command(subcommand)]
     Facts(FactsAction),
 
+    /// Measure retrieval quality against ground-truth qrels (TS `eval`)
+    Eval(EvalArgs),
+
     /// Extract links / timeline entries from page bodies (TS `extract`)
     #[command(subcommand)]
     Extract(ExtractAction),
@@ -1076,6 +1079,109 @@ pub struct FactsExpireArgs {
     pub source: String,
 
     /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+// ── Eval command ───────────────────────────────────────────────
+
+/// Search strategy selector for `zbrain eval`.
+///
+/// Mirrors the TS `--strategy hybrid | keyword | vector` literal union. Kept
+/// separate from `zbrain_core::search::EvalStrategy` so the clap surface owns
+/// its own `ValueEnum` derive (core stays dependency-free).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum EvalStrategyArg {
+    /// Lexical only — `search_pages` without a query embedding.
+    Keyword,
+    /// Vector only — embed the query, retrieve on the vector axis alone.
+    Vector,
+    /// Default: lexical + vector, RRF-fused, deduped.
+    Hybrid,
+}
+
+impl From<EvalStrategyArg> for zbrain_core::search::EvalStrategy {
+    fn from(value: EvalStrategyArg) -> Self {
+        match value {
+            EvalStrategyArg::Keyword => zbrain_core::search::EvalStrategy::Keyword,
+            EvalStrategyArg::Vector => zbrain_core::search::EvalStrategy::Vector,
+            EvalStrategyArg::Hybrid => zbrain_core::search::EvalStrategy::Hybrid,
+        }
+    }
+}
+
+/// Arguments for `zbrain eval` — the IR-metrics retrieval benchmark.
+///
+/// Rust port of the TS `eval` command's bare (no sub-verb) flow: load qrels,
+/// run one or two search configurations over them, and report
+/// `P@k` / `R@k` / `MRR` / `nDCG@k` per query plus the means. The metric math
+/// and the `run_eval` orchestrator already landed in
+/// `zbrain_core::search::eval` under **G73**; this verb is the missing CLI
+/// exit — see KNOWN-GAPS G74 for the corrected scope note (`eval` was filed
+/// as "blocked on the LLM seam", which it is not: the harness is pure
+/// retrieval).
+///
+/// The TS `eval` sub-verbs (`export`, `prune`, `replay`, `gate`, …) are NOT
+/// ported; `subcommand` exists purely to reject them loudly instead of
+/// silently running the bare flow with a stray positional.
+#[derive(Debug, Parser)]
+pub struct EvalArgs {
+    /// TS-only `eval` sub-verb (rejected — see KNOWN-GAPS G74).
+    #[arg(value_name = "SUBCOMMAND")]
+    pub subcommand: Option<String>,
+
+    /// Ground truth: path to a qrels JSON file, or inline JSON starting with
+    /// `[` / `{`. Required for the bare flow.
+    #[arg(long, value_name = "PATH|JSON")]
+    pub qrels: Option<String>,
+
+    /// Config for side A (path or inline JSON). CLI flags override its fields.
+    #[arg(long = "config-a", value_name = "PATH|JSON")]
+    pub config_a: Option<String>,
+
+    /// Config for side B (path or inline JSON). Presence triggers A/B mode.
+    /// Faithful to TS, side B takes NO CLI flag overrides.
+    #[arg(long = "config-b", value_name = "PATH|JSON")]
+    pub config_b: Option<String>,
+
+    /// Search strategy for side A (default: hybrid).
+    #[arg(long, value_enum)]
+    pub strategy: Option<EvalStrategyArg>,
+
+    /// Override the RRF K constant. Recorded in the report but not yet honored
+    /// by the Rust retrieval path (KNOWN-GAPS G74b).
+    #[arg(long = "rrf-k", value_name = "N")]
+    pub rrf_k: Option<f64>,
+
+    /// Enable multi-query expansion. Recorded but not yet honored (G74b).
+    #[arg(long, conflicts_with = "no_expand")]
+    pub expand: bool,
+
+    /// Disable multi-query expansion (the eval default).
+    #[arg(long = "no-expand")]
+    pub no_expand: bool,
+
+    /// Override the cosine dedup threshold.
+    #[arg(long = "dedup-cosine", value_name = "F")]
+    pub dedup_cosine: Option<f64>,
+
+    /// Override the page-type ratio cap.
+    #[arg(long = "dedup-type-ratio", value_name = "F")]
+    pub dedup_type_ratio: Option<f64>,
+
+    /// Override the max-results-per-page cap.
+    #[arg(long = "dedup-max-per-page", value_name = "N")]
+    pub dedup_max_per_page: Option<usize>,
+
+    /// Max results to retrieve per query (default: max(k*2, 10)).
+    #[arg(long, value_name = "N")]
+    pub limit: Option<usize>,
+
+    /// Metric cutoff depth.
+    #[arg(long, default_value_t = 5, value_name = "N")]
+    pub k: usize,
+
+    /// Output as JSON instead of the aligned text table.
     #[arg(long)]
     pub json: bool,
 }
@@ -2034,6 +2140,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Sources(action) => run_sources_command(action, cli.config.as_deref(), timeout_ms).await?,
         Commands::Capture(args) => run_capture_command(args, cli.config.as_deref()).await?,
         Commands::Facts(action) => run_facts_command(action, cli.config.as_deref()).await?,
+        Commands::Eval(args) => run_eval_command(args, cli.config.as_deref()).await?,
         Commands::Extract(action) => run_extract_command(action, cli.config.as_deref()).await?,
         Commands::Links(action) => run_links_command(action, cli.config.as_deref()).await?,
         Commands::Takes(action) => run_takes_command(action, cli.config.as_deref()).await?,
@@ -6532,6 +6639,529 @@ async fn run_facts_expire(args: FactsExpireArgs, config_path: Option<&Path>) -> 
     Ok(())
 }
 
+// ── Eval command ────────────────────────────────────────────────
+
+/// TS `eval` sub-verbs that exist in the deleted TypeScript surface but have
+/// no Rust port yet.
+///
+/// Listed explicitly so `zbrain eval export …` fails with a pointer to the gap
+/// register instead of silently falling through to the bare IR-metrics flow
+/// with a stray positional argument. Every entry here is tracked under
+/// KNOWN-GAPS G74 (categories A/C/D of the reconciliation table).
+const UNPORTED_EVAL_SUBCOMMANDS: &[&str] = &[
+    "export",
+    "prune",
+    "replay",
+    "gate",
+    "cross-modal",
+    "code-retrieval",
+    "brainstorm",
+    "whoknows",
+    "suspected-contradictions",
+    "trajectory",
+    "run-all",
+    "compare",
+];
+
+/// Reject any positional token after `zbrain eval`.
+///
+/// The bare flow is flag-only, so a positional can only be a TS sub-verb (not
+/// ported) or a typo. Split out as a pure function so the guard is unit
+/// testable without touching a database.
+fn reject_eval_subcommand(sub: Option<&str>) -> anyhow::Result<()> {
+    let Some(sub) = sub else { return Ok(()) };
+    if UNPORTED_EVAL_SUBCOMMANDS.contains(&sub) {
+        anyhow::bail!(
+            "`zbrain eval {sub}` is not implemented in Rust yet \
+             (TS-only sub-verb; tracked as KNOWN-GAPS G74). \
+             The ported surface is the bare IR-metrics flow: \
+             `zbrain eval --qrels <path|json>`"
+        );
+    }
+    anyhow::bail!(
+        "unexpected argument `{sub}` — `zbrain eval` takes flags only \
+         (did you mean `--qrels {sub}`?)"
+    )
+}
+
+/// Load an `EvalConfig` from a path or an inline JSON object.
+///
+/// Mirrors the TS `loadConfigFile`: a value whose first non-space character is
+/// `{` is parsed inline, anything else is read from disk.
+fn load_eval_config(path_or_json: &str) -> anyhow::Result<zbrain_core::search::EvalConfig> {
+    let raw = if path_or_json.trim_start().starts_with('{') {
+        path_or_json.to_string()
+    } else {
+        std::fs::read_to_string(path_or_json).map_err(|e| {
+            anyhow::anyhow!("could not read eval config `{path_or_json}`: {e}")
+        })?
+    };
+    serde_json::from_str(&raw)
+        .map_err(|e| anyhow::anyhow!("invalid eval config `{path_or_json}`: {e}"))
+}
+
+/// Assemble the side-A config: config file/inline JSON as the base, then CLI
+/// flag overrides on top, then the `Config A` / `hybrid` defaults.
+///
+/// Faithful to the TS `buildConfig(opts, 'a')`.
+fn build_eval_config_a(args: &EvalArgs) -> anyhow::Result<zbrain_core::search::EvalConfig> {
+    let mut base = match args.config_a.as_deref() {
+        Some(src) => load_eval_config(src)?,
+        None => zbrain_core::search::EvalConfig::default(),
+    };
+
+    if let Some(s) = args.strategy {
+        base.strategy = Some(s.into());
+    }
+    if let Some(v) = args.rrf_k {
+        base.rrf_k = Some(v);
+    }
+    // `--expand` / `--no-expand` are `conflicts_with` siblings, so at most one
+    // is set; neither means "leave whatever the config file said".
+    if args.expand {
+        base.expand = Some(true);
+    } else if args.no_expand {
+        base.expand = Some(false);
+    }
+    if let Some(v) = args.dedup_cosine {
+        base.dedup_cosine_threshold = Some(v);
+    }
+    if let Some(v) = args.dedup_type_ratio {
+        base.dedup_type_ratio = Some(v);
+    }
+    if let Some(v) = args.dedup_max_per_page {
+        base.dedup_max_per_page = Some(v);
+    }
+    if let Some(v) = args.limit {
+        base.limit = Some(v);
+    }
+
+    if base.name.is_none() {
+        base.name = Some("Config A".to_string());
+    }
+    if base.strategy.is_none() {
+        base.strategy = Some(zbrain_core::search::EvalStrategy::Hybrid);
+    }
+    Ok(base)
+}
+
+/// Assemble the side-B config. Faithful to TS, side B comes ENTIRELY from its
+/// own config file — CLI flags tune side A only, otherwise A/B would compare
+/// two identically-flagged configs.
+fn build_eval_config_b(src: &str) -> anyhow::Result<zbrain_core::search::EvalConfig> {
+    let mut base = load_eval_config(src)?;
+    if base.name.is_none() {
+        base.name = Some("Config B".to_string());
+    }
+    if base.strategy.is_none() {
+        base.strategy = Some(zbrain_core::search::EvalStrategy::Hybrid);
+    }
+    Ok(base)
+}
+
+/// Project the dedup knobs out of an `EvalConfig` into engine `DedupOpts`.
+fn eval_dedup_opts(config: &zbrain_core::search::EvalConfig) -> zbrain_core::search::DedupOpts {
+    zbrain_core::search::DedupOpts {
+        cosine_threshold: config.dedup_cosine_threshold,
+        max_type_ratio: config.dedup_type_ratio,
+        max_per_page: config.dedup_max_per_page,
+    }
+}
+
+/// Run one configuration over the qrels, wiring the strategy-specific query
+/// closure that `zbrain_core::search::run_eval` expects.
+///
+/// `run_eval` is deliberately embedding-free (see its module docs): it takes an
+/// async `Fn(&str) -> Future<Result<Vec<slug>>>` rather than switching on the
+/// strategy internally. Composing that closure is exactly this CLI layer's job.
+async fn run_one_eval_config(
+    engine: &dyn zbrain_core::engine::BrainEngine,
+    embedding_client: Option<&std::sync::Arc<zbrain_core::embedding::EmbeddingClient>>,
+    qrels: &[zbrain_core::search::EvalQrel],
+    config: &zbrain_core::search::EvalConfig,
+    k: usize,
+    show_progress: bool,
+) -> anyhow::Result<zbrain_core::search::EvalReport> {
+    use zbrain_core::engine::SearchOpts;
+    use zbrain_core::search::{
+        hybrid_search, keyword_search_slugs, resolve_eval_limit, run_eval, EvalStrategy,
+        HybridSearchOpts,
+    };
+
+    let limit = resolve_eval_limit(config, k);
+    let strategy = config.strategy.unwrap_or_default();
+    let dedup_opts = eval_dedup_opts(config);
+    let client = embedding_client.cloned();
+    let engine_ref = engine;
+
+    let query_fn = move |q: &str| {
+        let q = q.to_string();
+        let client = client.clone();
+        let dedup_opts = dedup_opts.clone();
+        async move {
+            match strategy {
+                EvalStrategy::Keyword => keyword_search_slugs(engine_ref, &q, limit).await,
+                EvalStrategy::Vector => {
+                    // Pure vector axis: no keywords, so fusion runs over the
+                    // single embedding list (mirrors TS `engine.searchVector`).
+                    let client = client.ok_or_else(|| {
+                        zbrain_core::Error::new(
+                            "EvalError",
+                            "run_eval",
+                            "--strategy vector needs an embedding provider — \
+                             set ZEROENTROPY_API_KEY (or use --strategy keyword)",
+                        )
+                    })?;
+                    let embedding = client.embed_query(&q).await.map_err(|e| {
+                        zbrain_core::Error::new("EvalError", "run_eval", &e.to_string())
+                    })?;
+                    let results = engine_ref
+                        .search_pages(&SearchOpts {
+                            query_embedding: Some(embedding),
+                            limit: Some(limit),
+                            ..Default::default()
+                        })
+                        .await?;
+                    Ok(results.into_iter().map(|r| r.page.slug).collect())
+                }
+                EvalStrategy::Hybrid => {
+                    let opts = HybridSearchOpts {
+                        limit: Some(limit),
+                        dedup_opts: Some(dedup_opts),
+                        embedding_client: client,
+                        ..Default::default()
+                    };
+                    let results = hybrid_search(engine_ref, &q, &opts).await?;
+                    Ok(results.into_iter().map(|r| r.page.slug).collect())
+                }
+            }
+        }
+    };
+
+    let label = config.name.clone().unwrap_or_else(|| "eval".to_string());
+    let tick = |done: usize, total: usize, _q: &str| {
+        eprint!("\r{label}: {done}/{total} queries");
+        if done == total {
+            eprintln!();
+        }
+    };
+    let progress: Option<&dyn Fn(usize, usize, &str)> =
+        if show_progress { Some(&tick) } else { None };
+
+    let report = run_eval(qrels, config, k, query_fn, progress).await?;
+    Ok(report)
+}
+
+// Table formatting helpers — ports of the TS `padR` / `padL` / `truncate` /
+// `fmt` used by `printSingleTable` / `printABTable`. Widths are counted in
+// `char`s rather than UTF-16 code units, so a CJK query pads without panicking
+// mid-codepoint (the TS original could slice a surrogate pair in half).
+
+fn eval_fmt(n: f64) -> String {
+    format!("{n:.2}")
+}
+
+fn eval_pad_r(s: &str, width: usize) -> String {
+    let len = s.chars().count();
+    if len >= width {
+        s.chars().take(width).collect()
+    } else {
+        let mut out = s.to_string();
+        out.push_str(&" ".repeat(width - len));
+        out
+    }
+}
+
+fn eval_pad_l(s: &str, width: usize) -> String {
+    let len = s.chars().count();
+    if len >= width {
+        s.chars().take(width).collect()
+    } else {
+        let mut out = " ".repeat(width - len);
+        out.push_str(s);
+        out
+    }
+}
+
+fn eval_truncate(s: &str, max: usize) -> String {
+    if s.chars().count() > max {
+        let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+        out.push('…');
+        out
+    } else {
+        s.to_string()
+    }
+}
+
+fn eval_plural(n: usize) -> &'static str {
+    if n == 1 {
+        "y"
+    } else {
+        "ies"
+    }
+}
+
+/// Render the single-config report. Byte-faithful to the TS `printSingleTable`
+/// except for the product name (`gbrain` → `zbrain`; the rename is
+/// deliberate and breaking, see MEMORY / the GBrain→ZBrain decision).
+fn print_eval_single_table(report: &zbrain_core::search::EvalReport) {
+    const COL_QUERY: usize = 36;
+    const COL_NUM: usize = 7;
+
+    let k = report.k;
+    // TS quirk preserved on purpose: the header reads `strategy: <label>` but
+    // `label = config.name ?? config.strategy ?? 'hybrid'`, and `buildConfig`
+    // always fills `name`. So a default run prints `strategy: Config A`, not
+    // `strategy: hybrid`. Do not "fix" this without also changing the TS
+    // reference output the port is measured against.
+    let label = report
+        .config
+        .name
+        .clone()
+        .or_else(|| {
+            report
+                .config
+                .strategy
+                .map(|s| format!("{s:?}").to_lowercase())
+        })
+        .unwrap_or_else(|| "hybrid".to_string());
+    let n = report.queries.len();
+
+    println!(
+        "\nzbrain eval — {n} quer{} · strategy: {label} · k={k}\n",
+        eval_plural(n)
+    );
+
+    let header = format!(
+        "{}{}{}{}{}",
+        eval_pad_r("Query", COL_QUERY),
+        eval_pad_l(&format!("P@{k}"), COL_NUM),
+        eval_pad_l(&format!("R@{k}"), COL_NUM),
+        eval_pad_l("MRR", COL_NUM),
+        eval_pad_l(&format!("nDCG@{k}"), COL_NUM),
+    );
+    let divider = "─".repeat(header.chars().count());
+
+    println!("{header}");
+    println!("{divider}");
+
+    for q in &report.queries {
+        println!(
+            "{}{}{}{}{}",
+            eval_pad_r(&eval_truncate(&q.query, COL_QUERY - 1), COL_QUERY),
+            eval_pad_l(&eval_fmt(q.precision_at_k), COL_NUM),
+            eval_pad_l(&eval_fmt(q.recall_at_k), COL_NUM),
+            eval_pad_l(&eval_fmt(q.mrr), COL_NUM),
+            eval_pad_l(&eval_fmt(q.ndcg_at_k), COL_NUM),
+        );
+    }
+
+    println!("{divider}");
+    println!(
+        "{}{}{}{}{}",
+        eval_pad_r("Mean", COL_QUERY),
+        eval_pad_l(&eval_fmt(report.mean_precision), COL_NUM),
+        eval_pad_l(&eval_fmt(report.mean_recall), COL_NUM),
+        eval_pad_l(&eval_fmt(report.mean_mrr), COL_NUM),
+        eval_pad_l(&eval_fmt(report.mean_ndcg), COL_NUM),
+    );
+    println!();
+}
+
+/// Render the A/B comparison table. Port of the TS `printABTable`; the winner
+/// is decided on mean nDCG@k, matching TS.
+fn print_eval_ab_table(
+    a: &zbrain_core::search::EvalReport,
+    b: &zbrain_core::search::EvalReport,
+    k: usize,
+) {
+    const COL_QUERY: usize = 34;
+    const COL_METRIC: usize = 8;
+    const COLS_PER_SIDE: usize = 3;
+
+    let label_a = a.config.name.clone().unwrap_or_else(|| "Config A".into());
+    let label_b = b.config.name.clone().unwrap_or_else(|| "Config B".into());
+    let n = a.queries.len();
+
+    println!(
+        "\nzbrain eval — {n} quer{} · A/B comparison · k={k}\n",
+        eval_plural(n)
+    );
+
+    let side = COL_METRIC * COLS_PER_SIDE;
+    let clip = side.saturating_sub(2);
+    let a_label: String = format!(" {label_a} ").chars().take(clip).collect();
+    let b_label: String = format!(" {label_b} ").chars().take(clip).collect();
+    let line1 = format!(
+        "{}{}{}  Δ nDCG",
+        " ".repeat(COL_QUERY),
+        eval_pad_r(&format!("── {a_label} "), side),
+        eval_pad_r(&format!("── {b_label} "), side),
+    );
+    println!("{line1}");
+
+    let metric_header = || {
+        format!(
+            "{}{}{}",
+            eval_pad_l(&format!("P@{k}"), COL_METRIC),
+            eval_pad_l("MRR", COL_METRIC),
+            eval_pad_l(&format!("nDCG@{k}"), COL_METRIC),
+        )
+    };
+    let line2 = format!(
+        "{}{}  {}  {}",
+        eval_pad_r("Query", COL_QUERY),
+        metric_header(),
+        metric_header(),
+        eval_pad_l("Δ nDCG", 10),
+    );
+    println!("{line2}");
+    let divider = "─".repeat(line2.chars().count());
+    println!("{divider}");
+
+    for (qa, qb) in a.queries.iter().zip(b.queries.iter()) {
+        let delta = qb.ndcg_at_k - qa.ndcg_at_k;
+        let delta_str = if delta > 0.0 {
+            format!("+{}", eval_fmt(delta))
+        } else {
+            eval_fmt(delta)
+        };
+        println!(
+            "{}{}{}{}  {}{}{}  {}",
+            eval_pad_r(&eval_truncate(&qa.query, COL_QUERY - 1), COL_QUERY),
+            eval_pad_l(&eval_fmt(qa.precision_at_k), COL_METRIC),
+            eval_pad_l(&eval_fmt(qa.mrr), COL_METRIC),
+            eval_pad_l(&eval_fmt(qa.ndcg_at_k), COL_METRIC),
+            eval_pad_l(&eval_fmt(qb.precision_at_k), COL_METRIC),
+            eval_pad_l(&eval_fmt(qb.mrr), COL_METRIC),
+            eval_pad_l(&eval_fmt(qb.ndcg_at_k), COL_METRIC),
+            eval_pad_l(&delta_str, 10),
+        );
+    }
+
+    println!("{divider}");
+
+    let mean_delta = b.mean_ndcg - a.mean_ndcg;
+    let sign = if mean_delta > 0.0 { "+" } else { "" };
+    let winner = if mean_delta > 0.0 {
+        " ✓ B wins"
+    } else if mean_delta < 0.0 {
+        " ✓ A wins"
+    } else {
+        " tie"
+    };
+    println!(
+        "{}{}{}{}  {}{}{}  {}",
+        eval_pad_r("Mean", COL_QUERY),
+        eval_pad_l(&eval_fmt(a.mean_precision), COL_METRIC),
+        eval_pad_l(&eval_fmt(a.mean_mrr), COL_METRIC),
+        eval_pad_l(&eval_fmt(a.mean_ndcg), COL_METRIC),
+        eval_pad_l(&eval_fmt(b.mean_precision), COL_METRIC),
+        eval_pad_l(&eval_fmt(b.mean_mrr), COL_METRIC),
+        eval_pad_l(&eval_fmt(b.mean_ndcg), COL_METRIC),
+        eval_pad_l(&format!("{sign}{}{winner}", eval_fmt(mean_delta)), 10),
+    );
+    println!();
+}
+
+/// Execute `zbrain eval` — Rust port of the TS `eval` bare IR-metrics flow.
+///
+/// Closes the CLI half of KNOWN-GAPS G74: the harness itself
+/// (`zbrain_core::search::eval`, G73) has been ported since the TS delete but
+/// had **zero callers** — the exact same shape as the `extract timeline` gap.
+async fn run_eval_command(args: EvalArgs, config_path: Option<&Path>) -> anyhow::Result<()> {
+    use zbrain_core::engine::{BrainEngine, EngineConfig};
+    use zbrain_core::search::parse_qrels;
+
+    reject_eval_subcommand(args.subcommand.as_deref())?;
+
+    let qrels_src = args
+        .qrels
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("--qrels <path|json> is required"))?;
+    let qrels = parse_qrels(qrels_src)?;
+    if qrels.is_empty() {
+        anyhow::bail!("qrels contains no queries");
+    }
+
+    let k = args.k;
+    if k == 0 {
+        anyhow::bail!("--k must be >= 1");
+    }
+
+    let config_a = build_eval_config_a(&args)?;
+    let config_b = match args.config_b.as_deref() {
+        Some(src) => Some(build_eval_config_b(src)?),
+        None => None,
+    };
+
+    // Honesty pass: these two knobs round-trip into the report (so the run is
+    // self-describing) but the Rust retrieval path cannot act on them yet —
+    // `RRF_K` is a `const` inside `engine::fuse_and_boost` and multi-query
+    // expansion has no Rust equivalent. Warn rather than pretend.
+    let unsupported = [
+        config_a.rrf_k.is_some() || config_b.as_ref().is_some_and(|c| c.rrf_k.is_some()),
+        config_a.expand == Some(true)
+            || config_b.as_ref().is_some_and(|c| c.expand == Some(true)),
+    ];
+    if unsupported[0] {
+        eprintln!(
+            "warning: --rrf-k is recorded in the report but not yet honored by the Rust \
+             retrieval path (RRF_K is a const in fuse_and_boost) — KNOWN-GAPS G74b"
+        );
+    }
+    if unsupported[1] {
+        eprintln!(
+            "warning: expansion is recorded in the report but multi-query expansion is not \
+             ported to Rust — KNOWN-GAPS G74b"
+        );
+    }
+
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine
+        .connect(&EngineConfig { database_url: None, database_path: Some(db_path) })
+        .await?;
+    engine.init_schema().await?;
+
+    // Same posture as `run_query_command`'s MCP context: a missing key leaves
+    // the vector axis off and hybrid degrades to lexical (TS behaves the same
+    // when no embedding provider is configured). `--strategy vector` errors
+    // instead, because a vector-only run with no vectors is meaningless.
+    let embedding_client = zbrain_core::embedding::EmbeddingClient::from_env().map(std::sync::Arc::new);
+
+    let show_progress = !args.json;
+    let report_a =
+        run_one_eval_config(&engine, embedding_client.as_ref(), &qrels, &config_a, k, show_progress)
+            .await?;
+    let report_b = match &config_b {
+        Some(cfg) => Some(
+            run_one_eval_config(&engine, embedding_client.as_ref(), &qrels, cfg, k, show_progress)
+                .await?,
+        ),
+        None => None,
+    };
+
+    engine.disconnect().await?;
+
+    match (&report_b, args.json) {
+        (Some(b), true) => {
+            let out = serde_json::json!({
+                "a": report_a,
+                "b": b,
+                "delta_mean_ndcg": b.mean_ndcg - report_a.mean_ndcg,
+            });
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+        (Some(b), false) => print_eval_ab_table(&report_a, b, k),
+        (None, true) => println!("{}", serde_json::to_string_pretty(&report_a)?),
+        (None, false) => print_eval_single_table(&report_a),
+    }
+
+    Ok(())
+}
+
 // ── Extract commands ────────────────────────────────────────────
 
 /// Open + init the libsql engine for the `extract` verbs.
@@ -10813,5 +11443,156 @@ mod tests {
         // (still outstanding, tracked as G76a-4) as if it were implemented.
         assert!(Cli::try_parse_from(["zbrain", "extract", "facts"]).is_err());
         assert!(Cli::try_parse_from(["zbrain", "extract", "links", "--source", "fs"]).is_err());
+    }
+
+    // ── `zbrain eval` verb (KNOWN-GAPS G74) ──────────────────────
+    //
+    // The IR metric math and the `run_eval` orchestrator are covered by the
+    // core-side inline tests in `zbrain_core::search::eval` (P@k divides by k,
+    // graded nDCG, qrels parsing, explicit-limit truncation). These cases pin
+    // the CLI surface only: flag plumbing, config assembly, the still-unported
+    // sub-verb guard, and the table formatting helpers.
+
+    #[test]
+    fn eval_parses_minimal_qrels_flag() {
+        let cli = Cli::try_parse_from(["zbrain", "eval", "--qrels", "./qrels.json"]).unwrap();
+        match cli.command {
+            Commands::Eval(args) => {
+                assert_eq!(args.qrels.as_deref(), Some("./qrels.json"));
+                assert!(args.subcommand.is_none());
+                assert_eq!(args.k, 5, "k defaults to 5, matching TS");
+                assert!(args.strategy.is_none());
+                assert!(!args.json);
+            }
+            _ => panic!("expected Eval"),
+        }
+    }
+
+    #[test]
+    fn eval_parses_full_flag_surface() {
+        let cli = Cli::try_parse_from([
+            "zbrain",
+            "eval",
+            "--qrels",
+            "q.json",
+            "--config-a",
+            "a.json",
+            "--config-b",
+            "b.json",
+            "--strategy",
+            "keyword",
+            "--rrf-k",
+            "30",
+            "--no-expand",
+            "--dedup-cosine",
+            "0.9",
+            "--dedup-type-ratio",
+            "0.5",
+            "--dedup-max-per-page",
+            "3",
+            "--limit",
+            "20",
+            "--k",
+            "10",
+            "--json",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Eval(args) => {
+                assert_eq!(args.config_a.as_deref(), Some("a.json"));
+                assert_eq!(args.config_b.as_deref(), Some("b.json"));
+                assert_eq!(args.strategy, Some(EvalStrategyArg::Keyword));
+                assert_eq!(args.rrf_k, Some(30.0));
+                assert!(args.no_expand && !args.expand);
+                assert_eq!(args.dedup_cosine, Some(0.9));
+                assert_eq!(args.dedup_type_ratio, Some(0.5));
+                assert_eq!(args.dedup_max_per_page, Some(3));
+                assert_eq!(args.limit, Some(20));
+                assert_eq!(args.k, 10);
+                assert!(args.json);
+            }
+            _ => panic!("expected Eval"),
+        }
+    }
+
+    #[test]
+    fn eval_rejects_conflicting_expand_flags() {
+        assert!(
+            Cli::try_parse_from(["zbrain", "eval", "--qrels", "q.json", "--expand", "--no-expand"])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn eval_rejects_unported_ts_subverbs() {
+        // Guards the gap: every TS `eval <sub>` verb must fail loudly rather
+        // than fall through to the bare IR-metrics flow (KNOWN-GAPS G74).
+        for sub in UNPORTED_EVAL_SUBCOMMANDS {
+            let err = reject_eval_subcommand(Some(sub)).unwrap_err().to_string();
+            assert!(
+                err.contains("not implemented in Rust yet"),
+                "sub-verb `{sub}` must be rejected with the gap pointer, got: {err}"
+            );
+        }
+        // A typo is rejected too, but with the flags-only hint instead.
+        let err = reject_eval_subcommand(Some("qrels.json")).unwrap_err().to_string();
+        assert!(err.contains("flags only"), "unexpected message: {err}");
+        // The bare flow (no positional) passes through.
+        assert!(reject_eval_subcommand(None).is_ok());
+    }
+
+    #[test]
+    fn eval_config_a_applies_cli_overrides_over_the_config_file() {
+        let cli = Cli::try_parse_from([
+            "zbrain",
+            "eval",
+            "--qrels",
+            "q.json",
+            "--config-a",
+            r#"{"name":"baseline","strategy":"hybrid","limit":50}"#,
+            "--strategy",
+            "keyword",
+            "--limit",
+            "7",
+        ])
+        .unwrap();
+        let Commands::Eval(args) = cli.command else { panic!("expected Eval") };
+        let cfg = build_eval_config_a(&args).unwrap();
+        assert_eq!(cfg.name.as_deref(), Some("baseline"), "file name survives");
+        assert_eq!(cfg.strategy, Some(zbrain_core::search::EvalStrategy::Keyword));
+        assert_eq!(cfg.limit, Some(7), "CLI --limit wins over the config file");
+    }
+
+    #[test]
+    fn eval_config_a_defaults_to_hybrid_named_config_a() {
+        let cli = Cli::try_parse_from(["zbrain", "eval", "--qrels", "q.json"]).unwrap();
+        let Commands::Eval(args) = cli.command else { panic!("expected Eval") };
+        let cfg = build_eval_config_a(&args).unwrap();
+        assert_eq!(cfg.name.as_deref(), Some("Config A"));
+        assert_eq!(cfg.strategy, Some(zbrain_core::search::EvalStrategy::Hybrid));
+        assert!(cfg.limit.is_none(), "unset --limit leaves the derived default");
+    }
+
+    #[test]
+    fn eval_config_b_ignores_cli_flags() {
+        // Faithful to TS `buildConfig(opts, 'b')`: side B comes entirely from
+        // its own JSON, otherwise A/B would compare two identical configs.
+        let cfg = build_eval_config_b(r#"{"strategy":"keyword"}"#).unwrap();
+        assert_eq!(cfg.name.as_deref(), Some("Config B"));
+        assert_eq!(cfg.strategy, Some(zbrain_core::search::EvalStrategy::Keyword));
+    }
+
+    #[test]
+    fn eval_table_helpers_are_codepoint_safe() {
+        assert_eq!(eval_fmt(0.5), "0.50");
+        assert_eq!(eval_pad_r("ab", 5), "ab   ");
+        assert_eq!(eval_pad_l("ab", 5), "   ab");
+        // Over-width input is clipped, not padded.
+        assert_eq!(eval_pad_r("abcdef", 3), "abc");
+        // CJK must clip on char boundaries (a byte slice would panic here).
+        assert_eq!(eval_truncate("知识库检索评测", 4), "知识库…");
+        assert_eq!(eval_truncate("short", 40), "short");
+        assert_eq!(eval_plural(1), "y");
+        assert_eq!(eval_plural(2), "ies");
     }
 }
