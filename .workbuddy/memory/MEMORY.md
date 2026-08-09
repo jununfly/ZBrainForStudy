@@ -8,7 +8,9 @@
 ## 构建环境（WSL2 Ubuntu，无原生 cargo）
 - 机器：jununfly-ROG（原生 cargo）/ jununfly-WinPC（本机 WSL2）。WSL 用普通用户 `zb`（root 下 pg-embed initdb 全报 PgInitFailure）。
 - 调用范式：`wsl -d Ubuntu -u zb -- bash /mnt/c/Users/jununfly/AppData/Local/Temp/<script>.sh`。写脚本喂路径，别命令行内联传参（引号吞噬 $var）。日志写 /mnt/c/.../Temp/*.log，别写 /tmp（VM 回收）。
-- Rust 装法（绕 rustup CA）：static.rust-lang.org tarball → --prefix=$HOME/.rust。cargo 镜像 rsproxy-sparse。
+- Rust 装法（绕 rustup CA）：static.rust-lang.org tarball → --prefix=$HOME/.rust。cargo 镜像 rsproxy-sparse。**但 WSL 内 cargo 实际在 `$HOME/.cargo/bin`**（脚本 export PATH 用它，不是 .rust/bin）。
+- WSL 侧 `git status` 因 CRLF 差异把整树报成 modified → **判断改动范围一律以 Windows 侧 git 为准**。
+- 热缓存下 WSL 增量成本参考：`cargo check -p zbrain-cli` ~49s、`cargo test -p zbrain-cli --lib` ~54s 编译 + 30s 跑、`cargo check --workspace --all-targets` ~41s。比 Windows 快一个量级，改 Rust 优先走 WSL。
 - **Windows 构建被监视器锁死**：`CARGO_TARGET_DIR=C:/Users/<u>/AppData/Local/Temp/zb_targetN`（必须 Windows 绝对路径，/c/ 会被 MSYS 拼成 C:/c/...）。先 robocopy 旧 target 的 deps+.fingerprint+build+incremental（/XF *.lock），cache 路径无关可复用重依赖 rlib，避 53min codegen。
 - `cargo check` 不编 #[cfg(test)] → test-only 错误只有 cargo test 暴露。改测试代码必须真跑 test。
 - libsql FFI Windows 间歇 0xc0000005 代码层无解；集成测试加进程级 OnceLock<Mutex<()>> 降频，CI 跑 ubuntu。
@@ -20,6 +22,7 @@
 - ref 损坏修复：git fetch origin（可能两次）→ mkdir .git/refs/{heads,remotes/origin,tags} → symbolic-ref HEAD → update-ref <sha> → rev-parse 验证。orphan 别用 git reset HEAD（解析到 stash@0）。
 - .git/index.lock 僵尸锁：rm/os.remove 被 safe-delete 拦，唯一绕法 mv 改名。
 - 接活前必查 git status（会话中断常留大规模未提交改动）。
+- **行尾符陷阱**：本仓 core.autocrlf=false 且行尾符**混杂**（`lib.rs`/`MEMORY.md` 是 CRLF，`KNOWN-GAPS.md`/`COMMANDS_TEAR_DOWN.md`/多数 `*.rs` 是 LF）。Edit 工具会整文件改写行尾符 → `git diff --numstat` 出现 `N/N`（每行都改）即中招。改完必查 numstat；异常时按 `git show HEAD:<f>` 的原始行尾符**逐文件**对齐，别一刀切 LF（会把本就 CRLF 的文件全炸）。
 
 ## Roadmap 铁律
 - 所有 .json/.md 放 docs/plans/。render 只认 ROADMAP_SECTION_START/END marker（不符会追加成重复段 → 先删 md 再 render）。CLI 第一参数 JSON 完整路径。
@@ -28,6 +31,8 @@
 ## 迁移工程规则
 - TS 调 Rust：`src/cli.ts` 走 resolveZbrainBin()（$ZBRAIN_BIN→target/debug→release→PATH）。改子命令后必 cargo build -p zbrain-cli 否则测试 exit 2。
 - port fidelity：Rust 测试与 TS 实现冲突优先改实装、接受 test 为规范；交叉登记 KNOWN-GAPS.md。
+- **KNOWN-GAPS 的 blocked/描述不可全信**（G76 曾被误标"依赖 LLM 被 G35/G60 阻塞"，实为纯解析且 Rust 已实现大半）。动手任一 Gn 前必做「TS 源 vs Rust 现状」逐能力对账：`git show <删除commit>^:<path>` 取回 TS → grep 关键依赖 → grep Rust 侧同名/近义实现 → 列对账表。对账结论要回写 KNOWN-GAPS + COMMANDS_TEAR_DOWN + 相关代码 doc 注释（三处都可能 stale）。
+- CLI 加 verb 的最小闭环：clap 结构照抄邻近 verb 模板 → Commands enum + Action enum + Args + dispatch + run_ 函数 → lib.rs 尾部 #[cfg(test)] 加 try_parse_from 解析测试（含"拒绝未实现子命令"的负向测试守住缺口）→ e2e 用隔离 config（`-c $WORK/zbrain.yml` + `init --pglite --force`）真库冒烟，必验幂等 + 范围限定 + 不存在实体不崩。
 - 新增 DB migration 三件事：双 dialect 00NN_*.sql + include_str! const + registry.add + 测试 EXPECTED_VERSION bump。
 - 参数加宽坑：&Arc<dyn T>→&dyn T 不自动 coerce（调用方 &*engine）。opts 覆盖逐字段 or_else 保留优先级。
 - crate::Result = Result<T, StructuredError>；serde_json::Error 不能 ? 须 map_err。
