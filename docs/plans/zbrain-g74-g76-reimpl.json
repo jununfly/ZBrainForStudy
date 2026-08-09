@@ -163,13 +163,81 @@
     },
     "1-1-5": {
       "id": "1-1-5",
-      "label": "真 LLM 的 4 个 eval 命令（cross-modal / longmemeval / takes-quality / suspected-contradictions）",
-      "status": "pending",
+      "label": "真 LLM 的 5 个 eval 命令（cross-modal / longmemeval / takes-quality / suspected-contradictions / brainstorm）",
+      "status": "in_progress",
       "mode": "explore",
       "parent": "1-1",
+      "children": [
+        "1-1-5-1",
+        "1-1-5-2",
+        "1-1-5-3",
+        "1-1-5-4",
+        "1-1-5-5"
+      ],
+      "decisions": [
+        {
+          "q": "保真度策略（5 族统一）？",
+          "answer": "q-0 → 全保真 port（逐文件搬，最接近 TS 原貌）",
+          "note": "用户 2026-08-09 在「开始 1-1-5」时确认；TS 源从 git 历史 3c09a69f^ 取回"
+        }
+      ],
+      "notes": "5 个真 LLM eval 命令（D 类；eval-brainstorm 由 1-1-4 的 C 类复核中移入）。通用 LLM seam（ChatProvider + ai/tool_loop.rs）已 port 完，理论上不阻塞，但各自需 port 领域 runner。保真策略用户确认 q-0 全保真 port。进度：#59 cross-modal 已完成（1-1-5-1，core+CLI+e2e 全绿）；#60 longmemeval / #61 takes-quality / #62 suspected-contradictions / #63 brainstorm 待启动（各建独立子节点）。后续族开工前一律先「TS 源 vs Rust 现状」对账。"
+    },
+    "1-1-5-1": {
+      "id": "1-1-5-1",
+      "label": "eval-cross-modal（#59 全保真 port，core+CLI+e2e 全绿）",
+      "status": "completed",
+      "mode": "build",
+      "parent": "1-1-5",
+      "children": [],
+      "decisions": [
+        {
+          "q": "保真度策略？",
+          "answer": "q-0 → 全保真 port（逐文件搬，最接近 TS 原貌）",
+          "note": "TS 源 eval-cross-modal.ts 849 行；Rust 落在 crates/zbrain-core/src/eval/cross_modal.rs"
+        }
+      ],
+      "notes": "2026-08-09 完成。交付：① crates/zbrain-core/src/eval/cross_modal.rs 新建（run_eval 函数式注入 Fn(ChatRequest)->Fut 闭包、4 策略 parse_model_json[stripFences→首{..末}切片→repair_json→nuclear]、default_dimensions/default_slots、infer_slug_from_skill_path/infer_slug_from_output_path、estimate_cost、RECEIPT_SCHEMA_VERSION）；② crates/zbrain-cli/src/lib.rs 加 EvalCrossModalArgs + run_eval_cross_modal_command（经 resolve_recipe_strict+instantiate_chat 接真实 Arc<dyn ChatProvider>，无 key 诚实降级 EXIT1 不写伪收据）、RENAMED_EVAL_SUBCOMMANDS 重定向 cross-modal→eval-cross-modal、3 个 CLI 解析测试；③ eval/mod.rs 暴露模块。校验：cargo check -p zbrain-core/-p zbrain-cli 绿；core cross_modal 单测 21 passed；cli lib 325 passed；core lib 全量 2439 passed；clippy regex-in-loop=0；e2e 空 brain 诚实降级全绿（缺 flag/output 不存在/空文件 EXIT1 清晰报错；无 key 报 Missing API key EXIT1 不落收据）。修复 1 个真移植 bug：repair_json 原 str::replace 字面替换未用正则→尾逗号未修，改 Regex::replace_all（单引号修复用捕获边界+固定点有界循环，因 regex crate 无 lookbehind/lookahead）。"
+    },
+    "1-1-5-2": {
+      "id": "1-1-5-2",
+      "label": "eval-longmemeval（#60，替换 G58 占位）",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-1-5",
       "children": [],
       "decisions": [],
-      "notes": "cross-modal + longmemeval 已由 G58 单列（autopilot/runner.rs 的 run_long_mem_eval / run_cross_modal_batch 占位 honest error, flag off）。takes-quality 与 suspected-contradictions 未被 G58 覆盖，是 G74 内独立的 LLM 依赖项。通用 LLM seam（ChatProvider + ai/tool_loop.rs）已 port 完，理论上不阻塞，但各自还需 port 领域 runner（cross-modal-eval/runner、takes-quality-eval/{replay,regress,receipt-write}、eval-contradictions/{runner,severity-classify,cost-prompt,trends}）。"
+      "notes": "TS 源 eval-longmemeval.ts 887 行（git 历史 3c09a69f^ 取回）。当前由 G58 单列：autopilot/runner.rs 的 run_long_mem_eval 占位 honest error、flag off。需 port 领域 runner 接真实 ChatProvider seam（judge 评估长程记忆一致性）。前置：无 API key 时诚实降级。待 #59 收尾后启动。"
+    },
+    "1-1-5-3": {
+      "id": "1-1-5-3",
+      "label": "eval-takes-quality（#61，新建 EvalTakesQuality variant）",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-1-5",
+      "children": [],
+      "decisions": [],
+      "notes": "TS 源 eval-takes-quality.ts 259 行、7 命中 LLM。当前 CLI 未登记该 variant（UNPORTED_EVAL_SUBCOMMANDS 仍含）。需新建 EvalTakesQuality enum variant + 顶层 verb + port 评分逻辑。依赖 ChatProvider seam（已 port）。"
+    },
+    "1-1-5-4": {
+      "id": "1-1-5-4",
+      "label": "eval-suspected-contradictions（#62，最大一族 judge×153）",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-1-5",
+      "children": [],
+      "decisions": [],
+      "notes": "TS 源 eval-suspected-contradictions.ts 427 行：runContradictionProbe + judge model + 成本预算门。最大一族（judge×153），建议拆子阶段（probe 抽取→judge 评分→severity-classify→cost-prompt→trends 汇总）。诚实缺口：无 LLM key 时降级。"
+    },
+    "1-1-5-5": {
+      "id": "1-1-5-5",
+      "label": "eval-brainstorm（#63，前置 port 3 引擎方法）",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-1-5",
+      "children": [],
+      "decisions": [],
+      "notes": "eval-brainstorm 复核为真 LLM 命令（core/brainstorm/orchestrator.ts 经 gateway.chat + judges.ts）。前置：需 port 3 个引擎方法 listPrefixSampledPages / enumeratePrefixes / fetchFar，再全族 port。从 D 类移入（原 1-1-4 notes 记录）。"
     }
   },
   "metadata": {
