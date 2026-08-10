@@ -309,8 +309,8 @@ use crate::error::Result;
 ///    对每个 chunk_text 批量 embed 填 `ChunkInput.embedding`。fail-open：
 ///    embedding provider 失败时降级为 `None`（chunk 仍存，向量路降级为 lexical-only），
 ///    绝不因 embedding 抖动而让整个导入失败。`None` client → 全部 chunk.embedding 为 None。
-/// 3. 调用 engine.upsert_chunks()
-/// 4. 更新页面元数据
+/// 3. 调用 engine.put_page() 落 page 行
+/// 4. 调用 engine.upsert_chunks()
 /// 5. 返回 ImportResult
 pub async fn import_from_content(
     engine: &dyn crate::engine::BrainEngine,
@@ -363,10 +363,33 @@ pub async fn import_from_content(
         }
     }
 
-    // 3. 存储 chunks
+    // 3. 落 page 行。
+    //
+    // TS `importFromContent` 在 `tx.upsertChunks` 之前先 `tx.putPage(...)`；
+    // 此前的 Rust 版漏了这一步，导致导入的内容**永远检索不到**：
+    // `search_pages` 的 lexical 腿扫的是 page 列（title / compiled_truth /
+    // frontmatter），从不看 chunk 存储，所以「只写 chunks」的导入产出的是一个
+    // 可写但不可搜的 brain。longmemeval benchmark 的 recall 因此恒为 0。
+    // 字段取值对齐 TS：来自 `parse_markdown` 的 type/title/compiled_truth/
+    // timeline/frontmatter，加上归一化后的 content_hash。
+    let parsed = crate::markdown::parse_markdown(content, slug, None);
+    let page_input = crate::engine::PageInput {
+        page_type: parsed.type_.clone(),
+        title: title
+            .map(std::string::ToString::to_string)
+            .unwrap_or_else(|| parsed.title.clone()),
+        compiled_truth: parsed.compiled_truth.clone(),
+        timeline: Some(parsed.timeline.clone()),
+        frontmatter: Some(parsed.frontmatter.clone()),
+        content_hash: Some(crate::ingestion::compute_content_hash(content)),
+        ..Default::default()
+    };
+    engine.put_page(slug, Some(source), &page_input).await?;
+
+    // 4. 存储 chunks
     engine.upsert_chunks(slug, &chunks).await?;
 
-    // 4. 返回结果
+    // 5. 返回结果
     Ok(ImportResult {
         slug: slug.to_string(),
         title: title.map(|t| t.to_string()),

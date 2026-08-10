@@ -483,6 +483,8 @@ pub enum Commands {
     /// with-code-intel strategy is wired to real Rust code-intel ops.
     EvalCodeRetrieval(EvalCodeRetrievalArgs),
     EvalCrossModal(EvalCrossModalArgs),
+    #[command(name = "eval-longmemeval")]
+    EvalLongMemEval(EvalLongMemEvalArgs),
 
     /// Extract links / timeline entries from page bodies (TS `extract`)
     #[command(subcommand)]
@@ -1527,6 +1529,125 @@ pub struct EvalCrossModalArgs {
     pub json: bool,
 }
 
+
+/// Rust port of TS `src/commands/eval-longmemeval.ts`.
+///
+/// Runs the LongMemEval live-LLM benchmark against zbrain hybrid retrieval.
+/// The runner (in `zbrain_core::eval::longmemeval::runner`) owns the heavy
+/// lifting; this CLI verb only resolves the chat / embedding providers and
+/// the config lookup, then hands a reconstructed argv to
+/// `run_eval_long_mem_eval`.
+#[derive(Debug, Parser)]
+pub struct EvalLongMemEvalArgs {
+    /// LongMemEval dataset file (one question per line; JSONL or JSON array).
+    pub dataset: Option<String>,
+
+    /// Run only the first N questions.
+    #[arg(long)]
+    pub limit: Option<usize>,
+
+    /// Override answer-generation model (default: resolveModel).
+    #[arg(long)]
+    pub model: Option<String>,
+
+    /// Skip LLM answer generation; emit retrieved sessions instead.
+    #[arg(long)]
+    pub retrieval_only: bool,
+
+    /// Skip vector embedding; pure keyword retrieval.
+    #[arg(long)]
+    pub keyword_only: bool,
+
+    /// Retrieve K sessions per question (default: 8).
+    #[arg(long)]
+    pub top_k: Option<usize>,
+
+    /// Write JSONL to FILE instead of stdout.
+    #[arg(long)]
+    pub output: Option<String>,
+
+    /// Skip question_ids already present in FILE; resume the remaining
+    /// questions. Typically the same path as --output.
+    #[arg(long)]
+    pub resume_from: Option<String>,
+
+    /// Opt out of trajectory routing for an A/B run.
+    #[arg(long)]
+    pub no_trajectory: bool,
+
+    /// Emit a final JSON line with per-question-type R@k.
+    #[arg(long)]
+    pub by_type: bool,
+
+    /// Exit non-zero if any question_type rate < F ([0, 1]).
+    #[arg(long)]
+    pub by_type_floor: Option<f64>,
+
+    /// Search-mode system override (NOT supported in the Rust pipeline yet;
+    /// passed through so the runner can hard-fail with an honest message).
+    #[arg(long)]
+    pub mode: Option<String>,
+
+    /// Multi-query expansion (NOT supported in the Rust pipeline yet; passed
+    /// through so the runner can hard-fail with an honest message).
+    #[arg(long)]
+    pub expansion: bool,
+}
+
+/// Reconstruct the argv the runner parser expects, so clap stays the single
+/// source of truth for flag spelling while `run_eval_long_mem_eval` keeps
+/// owning semantics (limits, floors, honesty gates).
+fn eval_longmemeval_args_to_vec(a: &EvalLongMemEvalArgs) -> Vec<String> {
+    let mut v = Vec::new();
+    if let Some(d) = &a.dataset {
+        v.push(d.clone());
+    }
+    if let Some(n) = a.limit {
+        v.push("--limit".into());
+        v.push(n.to_string());
+    }
+    if let Some(m) = &a.model {
+        v.push("--model".into());
+        v.push(m.clone());
+    }
+    if a.retrieval_only {
+        v.push("--retrieval-only".into());
+    }
+    if a.keyword_only {
+        v.push("--keyword-only".into());
+    }
+    if let Some(k) = a.top_k {
+        v.push("--top-k".into());
+        v.push(k.to_string());
+    }
+    if let Some(o) = &a.output {
+        v.push("--output".into());
+        v.push(o.clone());
+    }
+    if let Some(r) = &a.resume_from {
+        v.push("--resume-from".into());
+        v.push(r.clone());
+    }
+    if a.no_trajectory {
+        v.push("--no-trajectory".into());
+    }
+    if a.by_type {
+        v.push("--by-type".into());
+    }
+    if let Some(f) = a.by_type_floor {
+        v.push("--by-type-floor".into());
+        v.push(f.to_string());
+    }
+    if let Some(m) = &a.mode {
+        v.push("--mode".into());
+        v.push(m.clone());
+    }
+    if a.expansion {
+        v.push("--expansion".into());
+    }
+    v
+}
+
 // ── Extract subcommands ────────────────────────────────────────
 
 /// Subcommands for `zbrain extract`.
@@ -2509,6 +2630,10 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Commands::EvalCrossModal(args) => {
             run_eval_cross_modal_command(args, timeout_ms).await?
+        }
+
+        Commands::EvalLongMemEval(args) => {
+            run_eval_longmemeval_command(args, cli.config.as_deref()).await?
         }
         Commands::Extract(action) => run_extract_command(action, cli.config.as_deref()).await?,
         Commands::Links(action) => run_links_command(action, cli.config.as_deref()).await?,
@@ -8820,6 +8945,115 @@ async fn run_eval_cross_modal_command(args: EvalCrossModalArgs, _timeout_ms: Opt
     std::process::exit(code);
 }
 
+/// Handler for `zbrain eval-longmemeval`.
+///
+/// Faithful port of TS `src/commands/eval-longmemeval.ts`. Resolves the chat
+/// + embedding providers and the config lookup, then delegates to the
+/// benchmark runner in `zbrain_core`. Honest degradation: without an API key
+/// (and not `--retrieval-only`) we fail loudly instead of fabricating PASSes.
+async fn run_eval_longmemeval_command(
+    args: EvalLongMemEvalArgs,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    use std::sync::Arc;
+
+    use zbrain_core::ai::chat::{instantiate_chat, ChatProvider};
+    use zbrain_core::ai::model_config::{resolve_model, ConfigLookup, ModelTier, ResolveModelOpts};
+    use zbrain_core::ai::resolver::{resolve_recipe_strict, AiConfigError};
+    use zbrain_core::embedding::EmbeddingClient;
+    use zbrain_core::eval::longmemeval::runner::{run_eval_long_mem_eval, RunLongMemEvalOpts};
+
+    let config = crate::config::load_config(config_path)?;
+    let lookup = crate::models::config_to_lookup(&config);
+
+    // Resolve the same models the runner will, so the providers we build
+    // match the model strings it passes into ChatOpts.
+    let chat_model = resolve_model(
+        &lookup,
+        &ResolveModelOpts {
+            cli_flag: args.model.clone(),
+            config_key: Some("models.eval.longmemeval".into()),
+            env_var: Some("ZBRAIN_MODEL".into()),
+            tier: None,
+            fallback: "sonnet".into(),
+        },
+    );
+    let extractor_model = if !args.no_trajectory {
+        resolve_model(
+            &lookup,
+            &ResolveModelOpts {
+                cli_flag: None,
+                config_key: None,
+                env_var: None,
+                tier: Some(ModelTier::Utility),
+                fallback: "haiku".into(),
+            },
+        )
+    } else {
+        String::new()
+    };
+
+    let env_lookup = |k: &str| std::env::var(k).ok();
+
+    // Honest degradation: only build providers we actually need.
+    let chat: Option<Arc<dyn ChatProvider>> = if args.retrieval_only {
+        None
+    } else {
+        let (_parsed, recipe) = resolve_recipe_strict(&chat_model).map_err(|e: AiConfigError| {
+            anyhow::anyhow!(
+                "eval longmemeval: cannot resolve model `{}`: {}",
+                chat_model,
+                e.message
+            )
+        })?;
+        let provider = instantiate_chat(&recipe, &chat_model, &env_lookup).map_err(|e: AiConfigError| {
+            anyhow::anyhow!(
+                "eval longmemeval: cannot build chat provider for `{}`: {}",
+                chat_model,
+                e.message
+            )
+        })?;
+        Some(Arc::from(provider))
+    };
+
+    let extractor_chat: Option<Arc<dyn ChatProvider>> = if args.no_trajectory {
+        None
+    } else {
+        let (_parsed, recipe) = resolve_recipe_strict(&extractor_model)
+            .map_err(|e: AiConfigError| {
+                anyhow::anyhow!(
+                    "eval longmemeval: cannot resolve extractor model `{}`: {}",
+                    extractor_model,
+                    e.message
+                )
+            })?;
+        let provider = instantiate_chat(&recipe, &extractor_model, &env_lookup)
+            .map_err(|e: AiConfigError| {
+                anyhow::anyhow!(
+                    "eval longmemeval: cannot build extractor provider for `{}`: {}",
+                    extractor_model,
+                    e.message
+                )
+            })?;
+        Some(Arc::from(provider))
+    };
+
+    let embedding_client: Option<Arc<EmbeddingClient>> = EmbeddingClient::from_env().map(Arc::new);
+
+    let argv = eval_longmemeval_args_to_vec(&args);
+    let opts = RunLongMemEvalOpts {
+        args: argv,
+        chat,
+        extractor_chat,
+        embedding_client,
+        config_lookup: Some(Arc::new(lookup)),
+    };
+
+    run_eval_long_mem_eval(opts)
+        .await
+        .map_err(|e| anyhow::anyhow!("eval longmemeval: {e}"))
+}
+
 fn read_code_retrieval_report(path: &str) -> anyhow::Result<zbrain_core::eval::code_retrieval::EvalRunReport> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| anyhow::anyhow!("cannot read report {}: {}", path, e))?;
@@ -13723,6 +13957,58 @@ mod tests {
                 assert!(!args.json);
             }
             _ => panic!("expected EvalCrossModal"),
+        }
+    }
+
+    #[test]
+    fn eval_longmemeval_parses_without_dataset() {
+        // The runner owns the dataset-required check; clap must accept the
+        // verb with no positional so the runner can emit its own honest error.
+        let cli = Cli::try_parse_from(["zbrain", "eval-longmemeval"]).unwrap();
+        match cli.command {
+            Commands::EvalLongMemEval(args) => {
+                assert!(args.dataset.is_none());
+                assert!(!args.retrieval_only);
+                assert!(!args.no_trajectory);
+                assert!(args.limit.is_none());
+                assert!(args.by_type_floor.is_none());
+            }
+            _ => panic!("expected EvalLongMemEval"),
+        }
+    }
+
+    #[test]
+    fn eval_longmemeval_reconstructs_argv_for_runner() {
+        let cli = Cli::try_parse_from([
+            "zbrain",
+            "eval-longmemeval",
+            "ds.jsonl",
+            "--limit",
+            "3",
+            "--model",
+            "sonnet",
+            "--retrieval-only",
+            "--top-k",
+            "5",
+            "--by-type-floor",
+            "0.8",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::EvalLongMemEval(args) => {
+                assert_eq!(args.dataset.as_deref(), Some("ds.jsonl"));
+                assert_eq!(args.limit, Some(3));
+                assert_eq!(args.model.as_deref(), Some("sonnet"));
+                assert!(args.retrieval_only);
+                assert_eq!(args.top_k, Some(5));
+                assert_eq!(args.by_type_floor, Some(0.8));
+                let v = eval_longmemeval_args_to_vec(&args);
+                assert!(v.contains(&"ds.jsonl".to_string()));
+                assert!(v.contains(&"--retrieval-only".to_string()));
+                assert!(v.contains(&"--by-type-floor".to_string()));
+                assert!(v.contains(&"0.8".to_string()));
+            }
+            _ => panic!("expected EvalLongMemEval"),
         }
     }
 

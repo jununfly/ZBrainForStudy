@@ -26,6 +26,17 @@ use crate::autopilot::nightly_probe::{
 use crate::engine::{BrainEngine, EngineKind};
 use crate::minions::queue::MinionQueue;
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use crate::ai::chat::{instantiate_chat, ChatProvider};
+use crate::ai::model_config::{resolve_model, ConfigLookup, ResolveModelOpts};
+use crate::ai::resolver::resolve_recipe_strict;
+use crate::embedding::EmbeddingClient;
+use crate::eval::longmemeval::runner::{
+    build_embedding_client, run_eval_long_mem_eval, RunLongMemEvalOpts,
+};
+
 // ── Constants ─────────────────────────────────────────────────────────
 
 /// Lock file TTL: if lock is older than this (minutes), take over.
@@ -484,10 +495,13 @@ pub async fn run_autopilot_tick(
     // Runs only when enabled in config. Wrapped in catch — probe failure
     // must never crash the autopilot cycle.
     if opts.nightly_quality_probe_enabled {
+        let (lme_chat, lme_embedding) = build_nightly_longmemeval_providers();
         let probe_deps = NightlyProbeRunnerDeps {
             enabled: true,
             max_usd: opts.nightly_probe_max_usd,
             audit_dir: opts.audit_dir.clone(),
+            chat: lme_chat,
+            embedding_client: lme_embedding,
         };
         let probe_result = run_nightly_quality_probe(&probe_deps).await;
         events.push(TickEvent::NightlyProbeResult {
@@ -512,6 +526,46 @@ struct NightlyProbeRunnerDeps {
     /// Directory for quality-probe audit JSONL. `None` = audit disabled
     /// (rate limit never fires, no rows written) — used by unit tests.
     audit_dir: Option<std::path::PathBuf>,
+    /// Chat provider for LongMemEval answer generation. `None` when no API
+    /// key is configured (honest degradation: `run_long_mem_eval` returns an
+    /// error instead of fabricating results).
+    chat: Option<Arc<dyn ChatProvider>>,
+    /// Optional embedding client; `None` degrades hybrid search to lexical-only.
+    embedding_client: Option<Arc<EmbeddingClient>>,
+}
+
+/// Build the chat + embedding providers for the nightly LongMemEval probe.
+///
+/// Returns `None` for the chat provider when no API key is configured, so the
+/// probe degrades honestly (the `run_long_mem_eval` impl returns an error
+/// rather than fabricating results). Mirrors the `eval-longmemeval` CLI verb's
+/// provider resolution.
+fn build_nightly_longmemeval_providers(
+) -> (Option<Arc<dyn ChatProvider>>, Option<Arc<EmbeddingClient>>) {
+    let lookup: HashMap<String, String> = HashMap::new();
+    let chat_model = resolve_model(
+        &lookup,
+        &ResolveModelOpts {
+            cli_flag: None,
+            config_key: Some("models.eval.longmemeval".into()),
+            env_var: Some("ZBRAIN_MODEL".into()),
+            tier: None,
+            fallback: "sonnet".into(),
+        },
+    );
+    let env_lookup = |k: &str| std::env::var(k).ok();
+    let chat = match resolve_recipe_strict(&chat_model) {
+        Ok((_, recipe)) => instantiate_chat(&recipe, &chat_model, &env_lookup)
+            .ok()
+            .map(Arc::from),
+        Err(_) => None,
+    };
+    // Honest degradation: `build_embedding_client` yields None when the
+    // `embedding` feature is off or no API key is present, in which case the
+    // nightly probe measures lexical-only retrieval instead of failing or
+    // faking a vector path.
+    let embedding_client = build_embedding_client();
+    (chat, embedding_client)
 }
 
 #[async_trait::async_trait]
@@ -534,30 +588,44 @@ impl NightlyProbeDeps for NightlyProbeRunnerDeps {
 
     async fn run_long_mem_eval(
         &self,
-        _output_path: &str,
+        output_path: &str,
     ) -> Result<(), String> {
-        // registered in docs/plans/KNOWN-GAPS.md (G58)
-        //
-        // The TS longmemeval command (`src/commands/eval-longmemeval.ts`) is
-        // NOT runnable after the Phase11 minions teardown (commit 45fe955):
-        // it imports the deleted `src/core/cli-options.ts`, so `bun test
-        // tests/unit/eval-longmemeval-e2e.slow.test.ts` fails with
-        // "Cannot find module '../core/cli-options.ts'". That breakage is a
-        // deliberately-accepted baseline entry (tsc-baseline.txt froze it as
-        // inherited debt), so spawning the TS via `bun` would only surface
-        // module-not-found.
-        //
-        // Per the eval-disposition decision (KNOWN-GAPS G58): do NOT re-spawn
-        // the dead TS. When the nightly probe genuinely needs to run, the
-        // longmemeval pipeline must be ported to Rust natively (PGLite → an
-        // embedded engine + hybrid search + the LLM answer step), not shelled
-        // out to bun. Until then this returns a probe-level error; the caller
-        // records an `error` outcome and never crashes autopilot.
-        Err(
-            "longmemeval not runnable: TS command broken by Phase11 minions \
-             teardown (missing src/core/cli-options.ts); needs native Rust port"
-                .into(),
-        )
+        // Native Rust port of the LongMemEval benchmark (closes KNOWN-GAPS G58).
+        // Delegates to `zbrain_core::eval::longmemeval::runner`, which spins up
+        // a hermetic InMemoryEngine per run. Honest degradation: without a chat
+        // provider (no API key) or a configured dataset we return an error
+        // instead of fabricating PASSes -- the caller records an `error` outcome
+        // and never crashes the autopilot cycle.
+        let dataset = match std::env::var("LONGMEMEVAL_DATASET") {
+            Ok(d) if !d.trim().is_empty() => d,
+            _ => {
+                return Err(
+                    "longmemeval dataset not configured: set LONGMEMEVAL_DATASET to the                      LongMemEval JSONL/JSON path (download from the HuggingFace LongMemEval repo)"
+                        .into(),
+                )
+            }
+        };
+        let chat = self.chat.as_ref().ok_or_else(|| {
+            "longmemeval requires a chat provider (API key); set an API key or disable the nightly probe"
+                .to_string()
+        })?;
+        let argv = vec![
+            dataset,
+            "--output".to_string(),
+            output_path.to_string(),
+            "--no-trajectory".to_string(),
+        ];
+        let opts = RunLongMemEvalOpts {
+            args: argv,
+            chat: Some(chat.clone()),
+            extractor_chat: None,
+            embedding_client: self.embedding_client.clone(),
+            config_lookup: Some(Arc::new(HashMap::<String, String>::new())),
+        };
+        run_eval_long_mem_eval(opts)
+            .await
+            .map_err(|e| e.to_string())
+
     }
 
     async fn run_cross_modal_batch(
