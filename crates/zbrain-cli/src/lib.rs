@@ -485,6 +485,8 @@ pub enum Commands {
     EvalCrossModal(EvalCrossModalArgs),
     #[command(name = "eval-longmemeval")]
     EvalLongMemEval(EvalLongMemEvalArgs),
+    /// Sample takes from the brain DB and judge their quality (TS `eval-takes-quality`, MVP)
+    EvalTakesQuality(EvalTakesQualityArgs),
 
     /// Extract links / timeline entries from page bodies (TS `extract`)
     #[command(subcommand)]
@@ -1497,6 +1499,56 @@ pub struct EvalCrossModalArgs {
     pub slug: Option<String>,
 
     /// Comma-separated dimension list. Default: 5 standard dimensions.
+    #[arg(long, value_delimiter = ',')]
+    pub dimensions: Option<Vec<String>>,
+
+    /// 1-3 cycles. Default 3 in TTY, 1 in non-TTY (handled by the handler).
+    #[arg(long)]
+    pub cycles: Option<u32>,
+
+    /// Override default 'openai:gpt-4o'.
+    #[arg(long)]
+    pub slot_a_model: Option<String>,
+
+    /// Override default 'anthropic:claude-opus-4-7'.
+    #[arg(long)]
+    pub slot_b_model: Option<String>,
+
+    /// Override default 'google:gemini-1.5-pro'.
+    #[arg(long)]
+    pub slot_c_model: Option<String>,
+
+    /// Receipt directory. Default: platform eval-receipts dir.
+    #[arg(long)]
+    pub receipt_dir: Option<String>,
+
+    /// Output token budget per call. Default 4000.
+    #[arg(long)]
+    pub max_tokens: Option<u32>,
+
+    /// Emit final aggregate as JSON to stdout (progress to stderr).
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Rust port of TS `src/commands/eval-takes-quality.ts` (MVP).
+///
+/// Samples takes from the configured brain database and runs the shared
+/// cross-modal judge panel (3-model parallel) to score their quality.
+/// Verdict PASS(0)/FAIL(1)/INCONCLUSIVE(2). Honest degradation: if no chat
+/// provider can be resolved (no API key) we fail loudly instead of fabricating
+/// a PASS.
+#[derive(Debug, Parser)]
+pub struct EvalTakesQualityArgs {
+    /// How many takes to sample from the corpus.
+    #[arg(long, default_value_t = 100)]
+    pub sample: usize,
+
+    /// Receipt filename slug. Default: a content sha.
+    #[arg(long)]
+    pub slug: Option<String>,
+
+    /// Comma-separated dimension list. Default: 4 takes-quality dimensions.
     #[arg(long, value_delimiter = ',')]
     pub dimensions: Option<Vec<String>>,
 
@@ -2634,6 +2686,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
 
         Commands::EvalLongMemEval(args) => {
             run_eval_longmemeval_command(args, cli.config.as_deref()).await?
+        }
+        Commands::EvalTakesQuality(args) => {
+            run_eval_takes_quality_command(args, cli.config.as_deref()).await?
         }
         Commands::Extract(action) => run_extract_command(action, cli.config.as_deref()).await?,
         Commands::Links(action) => run_links_command(action, cli.config.as_deref()).await?,
@@ -7156,6 +7211,7 @@ const UNPORTED_EVAL_SUBCOMMANDS: &[&str] = &[
 const RENAMED_EVAL_SUBCOMMANDS: &[(&str, &str)] = &[
     ("code-retrieval", "zbrain eval-code-retrieval"),
     ("cross-modal", "zbrain eval-cross-modal"),
+    ("takes-quality", "zbrain eval-takes-quality"),
 ];
 
 /// Reject any positional token after `zbrain eval`.
@@ -8930,6 +8986,154 @@ async fn run_eval_cross_modal_command(args: EvalCrossModalArgs, _timeout_ms: Opt
                 "verdict": c.aggregate.verdict,
                 "overall": c.aggregate.overall,
             })).collect::<Vec<_>>(),
+            "final_receipt_path": result.final_receipt_path,
+            "schema_version": RECEIPT_SCHEMA_VERSION,
+        });
+        println!("{}", serde_json::to_string_pretty(&json_out)?);
+    }
+
+    // Exit codes: PASS=0, FAIL=1, INCONCLUSIVE=2.
+    let code = match verdict {
+        Verdict::Pass => 0,
+        Verdict::Fail => 1,
+        Verdict::Inconclusive => 2,
+    };
+    std::process::exit(code);
+}
+
+/// Handler for `zbrain eval-takes-quality` (MVP).
+///
+/// Rust port of TS `src/commands/eval-takes-quality.ts`. Opens the configured
+/// brain database, samples takes, and delegates to
+/// [`zbrain_core::eval::takes_quality::run`] which reuses the shared
+/// cross-modal judge panel. Honest degradation: if any judge slot cannot be
+/// resolved (no API key) we fail loudly instead of fabricating a PASS.
+async fn run_eval_takes_quality_command(
+    args: EvalTakesQualityArgs,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    use std::io::IsTerminal;
+    use std::sync::Arc;
+
+    use zbrain_core::ai::chat::{instantiate_chat, ChatMessage, ChatOpts, ChatProvider, ChatRole};
+    use zbrain_core::ai::resolver::{resolve_recipe_strict, AiConfigError};
+    use zbrain_core::engine::{BrainEngine, EngineConfig};
+    use zbrain_core::eval::cross_modal::{
+        default_dimensions, default_slots, estimate_cost, ChatRequest, SlotConfig, Verdict,
+        RECEIPT_SCHEMA_VERSION,
+    };
+    use zbrain_core::eval::takes_quality::{self, TakesQualityOpts};
+    use zbrain_core::libsql::LibsqlEngine;
+    use zbrain_core::paths::zbrain_path;
+
+    // Open the engine for the configured database (samples all takes).
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+    let engine: Arc<dyn BrainEngine> = Arc::new(engine);
+
+    let cycles = args.cycles.unwrap_or(if std::io::stdout().is_terminal() { 3 } else { 1 });
+    let dimensions = args.dimensions.clone().unwrap_or_else(default_dimensions);
+    let receipt_dir = match &args.receipt_dir {
+        Some(d) => std::path::PathBuf::from(d),
+        None => zbrain_path("eval-receipts").ok_or_else(|| {
+            anyhow::anyhow!(
+                "eval-takes-quality: cannot resolve ~/.zbrain — pass --receipt-dir <path> or set ZBRAIN_HOME"
+            )
+        })?,
+    };
+    let max_tokens = args.max_tokens.unwrap_or(4000);
+
+    // Defaults come from the shared DEFAULT_SLOTS table; per-slot overrides win.
+    let defaults = default_slots();
+    let default_model = |idx: usize| -> String {
+        defaults.get(idx).map(|s| s.model.clone()).unwrap_or_default()
+    };
+    let slots: Vec<SlotConfig> = vec![
+        SlotConfig { id: "A".into(), model: args.slot_a_model.clone().unwrap_or_else(|| default_model(0)) },
+        SlotConfig { id: "B".into(), model: args.slot_b_model.clone().unwrap_or_else(|| default_model(1)) },
+        SlotConfig { id: "C".into(), model: args.slot_c_model.clone().unwrap_or_else(|| default_model(2)) },
+    ];
+
+    // Resolve each slot's ChatProvider from its `provider:model` string.
+    // Honest degradation: if any slot can't be resolved (no API key), fail
+    // loudly instead of fabricating a PASS.
+    let env_lookup = |k: &str| std::env::var(k).ok();
+    let mut resolved: Vec<(String, Arc<dyn ChatProvider>)> = vec![];
+    for slot in &slots {
+        let (_parsed, recipe) = resolve_recipe_strict(&slot.model).map_err(|e: AiConfigError| {
+            anyhow::anyhow!("eval-takes-quality: cannot resolve model `{}`: {}", slot.model, e.message)
+        })?;
+        let provider = instantiate_chat(recipe, &slot.model, &env_lookup)
+            .map_err(|e: AiConfigError| {
+                anyhow::anyhow!("eval-takes-quality: cannot build provider for `{}`: {}", slot.model, e.message)
+            })?;
+        resolved.push((slot.model.clone(), Arc::from(provider)));
+    }
+
+    // Cost estimate to stderr.
+    let cost = estimate_cost(&slots, cycles, max_tokens);
+    eprintln!(
+        "[eval-takes-quality] estimated cost: ~${:.2}/cycle, ~${:.2} max for {} cycle(s).",
+        cost.per_cycle_usd, cost.per_run_max_usd, cycles
+    );
+    for note in &cost.notes {
+        eprintln!("[eval-takes-quality] note: {note}");
+    }
+
+    // Wiring: the injected chat closure dispatches by model string to the
+    // pre-resolved provider.
+    let providers: Arc<Vec<(String, Arc<dyn ChatProvider>)>> = Arc::new(resolved);
+    let chat = move |req: ChatRequest| {
+        let providers = providers.clone();
+        async move {
+            let provider = providers
+                .iter()
+                .find(|(m, _)| m == &req.model)
+                .map(|(_, p)| p.clone())
+                .ok_or_else(|| anyhow::anyhow!("no provider resolved for model {}", req.model))?;
+            let opts = ChatOpts {
+                model: Some(req.model.clone()),
+                system: Some(req.system.clone()),
+                messages: vec![ChatMessage::text(ChatRole::User, req.prompt.clone())],
+                tools: vec![],
+                max_tokens: Some(req.max_tokens),
+                cache_system: false,
+            };
+            let result = provider.chat(opts).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
+            Ok(result.text)
+        }
+    };
+
+    let tq_opts = TakesQualityOpts {
+        engine: engine.as_ref(),
+        sample: args.sample,
+        dimensions: Some(dimensions),
+        cycles: Some(cycles),
+        max_tokens: Some(max_tokens),
+        receipt_dir,
+        slug: args.slug.clone(),
+    };
+
+    let result = takes_quality::run(&tq_opts, &chat).await?;
+
+    let verdict = result.final_aggregate.verdict;
+    eprintln!();
+    eprintln!("[eval-takes-quality] sampled {} takes", result.n_takes);
+    eprintln!("[eval-takes-quality] {}", result.final_aggregate.verdict_message);
+    eprintln!("[eval-takes-quality] receipt: {}", result.final_receipt_path);
+
+    if args.json {
+        let json_out = serde_json::json!({
+            "verdict": verdict,
+            "n_takes": result.n_takes,
+            "aggregate": result.final_aggregate,
             "final_receipt_path": result.final_receipt_path,
             "schema_version": RECEIPT_SCHEMA_VERSION,
         });
@@ -14009,6 +14213,82 @@ mod tests {
                 assert!(v.contains(&"0.8".to_string()));
             }
             _ => panic!("expected EvalLongMemEval"),
+        }
+    }
+
+    #[test]
+    fn eval_takes_quality_parses_minimal() {
+        // clap stays permissive: the handler owns the "seed takes first" /
+        // "no API key" honest errors, so the verb must accept with no flags.
+        let cli = Cli::try_parse_from(["zbrain", "eval-takes-quality"]).unwrap();
+        match cli.command {
+            Commands::EvalTakesQuality(args) => {
+                assert_eq!(args.sample, 100);
+                assert!(args.slug.is_none());
+                assert!(args.dimensions.is_none());
+                assert!(args.cycles.is_none());
+                assert!(args.slot_a_model.is_none());
+                assert!(args.slot_b_model.is_none());
+                assert!(args.slot_c_model.is_none());
+                assert!(args.receipt_dir.is_none());
+                assert!(args.max_tokens.is_none());
+                assert!(!args.json);
+            }
+            _ => panic!("expected EvalTakesQuality"),
+        }
+    }
+
+    #[test]
+    fn eval_takes_quality_parses_full_flag_surface() {
+        let cli = Cli::try_parse_from([
+            "zbrain",
+            "eval-takes-quality",
+            "--sample",
+            "20",
+            "--slug",
+            "my-brain",
+            "--dimensions",
+            "insight,accuracy,clarity,actionability",
+            "--cycles",
+            "2",
+            "--slot-a-model",
+            "openai:gpt-4o-mini",
+            "--slot-b-model",
+            "anthropic:claude-sonnet-4-6",
+            "--slot-c-model",
+            "google:gemini-2.0-flash",
+            "--receipt-dir",
+            "/tmp/receipts",
+            "--max-tokens",
+            "1500",
+            "--json",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::EvalTakesQuality(args) => {
+                assert_eq!(args.sample, 20);
+                assert_eq!(args.slug.as_deref(), Some("my-brain"));
+                assert_eq!(
+                    args.dimensions.as_deref(),
+                    Some(
+                        [
+                            "insight".to_string(),
+                            "accuracy".to_string(),
+                            "clarity".to_string(),
+                            "actionability".to_string()
+                        ]
+                        .as_slice()
+                    )
+                );
+                assert_eq!(args.cycles, Some(2));
+                assert_eq!(args.slot_a_model.as_deref(), Some("openai:gpt-4o-mini"));
+                assert_eq!(args.slot_b_model.as_deref(), Some("anthropic:claude-sonnet-4-6"));
+                assert_eq!(args.slot_c_model.as_deref(), Some("google:gemini-2.0-flash"));
+                assert_eq!(args.receipt_dir.as_deref(), Some("/tmp/receipts"));
+                assert_eq!(args.max_tokens, Some(1500));
+                assert!(args.json);
+            }
+            _ => panic!("expected EvalTakesQuality"),
         }
     }
 

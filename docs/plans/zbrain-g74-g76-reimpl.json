@@ -23,6 +23,16 @@
           "q": "G58 真实范围与下一步落点？",
           "answer": "G58 实为夜检探针 longmemeval/cross-modal eval 占位(honest error, flag off)；通用 LLM seam(ChatProvider+tool_loop)已存在。选定：攻 G74/G76 命令 Rust 重实现(用现有 seam)，而非做 G58 原生 port",
           "note": "ChatProvider(OpenAI/Anthropic/Gemini)+ai/tool_loop.rs 已 port 完(Phase8 slice3+5)"
+        },
+        {
+          "q": "1-1-5 与 1-2 并行还是串行？",
+          "answer": "串行：先收口 1-1-5 再动 1-2",
+          "note": "1-2 有 G35 阻塞+1-2-4 未决，并行难独立验收"
+        },
+        {
+          "q": "1-1-5 与 1-2 并行还是串行？",
+          "answer": "串行：先收口 1-1-5 再动 1-2",
+          "note": "1-2 有 G35 阻塞+1-2-4 未决，并行难独立验收"
         }
       ],
       "notes": "教训：KNOWN-GAPS 的 blocked 标注不可全信，动手前必须先做「TS 源 vs Rust 现状」逐能力对账。G76 与 G74 已连续两次证实描述失准——G76 被误判为 LLM 阻塞（实为纯解析且大半已实现）；G74 被标「多数依赖 LLM + blocked by G58」（实为 4/19=21% 依赖 LLM，且核心 eval 的底座 run_eval 早已 port 完只缺 verb）。两次的共同模式：**算法层已在 Rust，缺的只是 CLI 出口**。后续 G75/G77/G78/G79 动手前一律先对账。"
@@ -179,6 +189,36 @@
           "q": "保真度策略（5 族统一）？",
           "answer": "q-0 → 全保真 port（逐文件搬，最接近 TS 原貌）",
           "note": "用户 2026-08-09 在「开始 1-1-5」时确认；TS 源从 git 历史 3c09a69f^ 取回"
+        },
+        {
+          "q": "下一步优先级？",
+          "answer": "继续 1-1-5，收口 D 类 5 个真 LLM eval 命令",
+          "note": "G58 已关；剩余 3 项有界(259/399/427L TS 可恢复)；1-2 有 G35 阻塞+1-2-4 未决，不宜并行"
+        },
+        {
+          "q": "3 个命令先后顺序？",
+          "answer": "#61 takes-quality → #63 brainstorm → #62 suspected-contradictions",
+          "note": "#61 最小且有 takes_scorecard Rust 杠杆；#63 需先 port brainstorm orchestrator 前置；#62 逻辑面最大(153 judge) 放最后"
+        },
+        {
+          "q": "无 API key 时构建/验收策略？",
+          "answer": "沿用 G58：provider 无关 + mock 单测，无 key 也 cargo test 绿、无 provider 诚实 Err",
+          "note": "不为 API key 或 libsql Windows FFI flake 卡构建"
+        },
+        {
+          "q": "下一步优先级？",
+          "answer": "继续 1-1-5，收口 D 类 5 个真 LLM eval 命令",
+          "note": "G58 已关；剩余 3 项有界(259/399/427L TS 可恢复)；1-2 有 G35 阻塞+1-2-4 未决，不宜并行"
+        },
+        {
+          "q": "3 个命令先后顺序？",
+          "answer": "#61 takes-quality → #63 brainstorm → #62 suspected-contradictions",
+          "note": "#61 最小且有 takes_scorecard Rust 杠杆；#63 需先 port brainstorm orchestrator 前置；#62 逻辑面最大(153 judge) 放最后"
+        },
+        {
+          "q": "无 API key 时构建/验收策略？",
+          "answer": "沿用 G58：provider 无关 + mock 单测，无 key 也 cargo test 绿、无 provider 诚实 Err",
+          "note": "不为 API key 或 libsql Windows FFI flake 卡构建"
         }
       ],
       "notes": "5 个真 LLM eval 命令（D 类；eval-brainstorm 由 1-1-4 的 C 类复核中移入）。通用 LLM seam（ChatProvider + ai/tool_loop.rs）已 port 完，理论上不阻塞，但各自需 port 领域 runner。保真策略用户确认 q-0 全保真 port。进度：#59 cross-modal 已完成（1-1-5-1，core+CLI+e2e 全绿）；#60 longmemeval / #61 takes-quality / #62 suspected-contradictions / #63 brainstorm 待启动（各建独立子节点）。后续族开工前一律先「TS 源 vs Rust 现状」对账。"
@@ -202,22 +242,52 @@
     "1-1-5-2": {
       "id": "1-1-5-2",
       "label": "eval-longmemeval（#60，替换 G58 占位）",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-1-5",
       "children": [],
-      "decisions": [],
-      "notes": "TS 源 eval-longmemeval.ts 887 行（git 历史 3c09a69f^ 取回）。当前由 G58 单列：autopilot/runner.rs 的 run_long_mem_eval 占位 honest error、flag off。需 port 领域 runner 接真实 ChatProvider seam（judge 评估长程记忆一致性）。前置：无 API key 时诚实降级。待 #59 收尾后启动。"
+      "decisions": [
+        {
+          "q": "1-1-5-2 状态？",
+          "answer": "completed — G58 实际已在 fa70b535 关闭，路线图登记滞后",
+          "note": "遵循项目铁律：以 HEAD+编译为准，节点只作索引；地图系统性滞后"
+        }
+      ],
+      "notes": "G58 closed: longmemeval runner(#237)+CLI verb(#239)+cross-modal batch(#240) done & pushed (ca5ad2c2..fa70b535). Roadmap lagged code; registered post-factum."
     },
     "1-1-5-3": {
       "id": "1-1-5-3",
       "label": "eval-takes-quality（#61，新建 EvalTakesQuality variant）",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "explore",
       "parent": "1-1-5",
-      "children": [],
-      "decisions": [],
-      "notes": "TS 源 eval-takes-quality.ts 259 行、7 命中 LLM。当前 CLI 未登记该 variant（UNPORTED_EVAL_SUBCOMMANDS 仍含）。需新建 EvalTakesQuality enum variant + 顶层 verb + port 评分逻辑。依赖 ChatProvider seam（已 port）。"
+      "children": [
+        "1-1-5-3-1",
+        "1-1-5-3-2"
+      ],
+      "decisions": [
+        {
+          "q": "端口范围？",
+          "answer": "待定（round 2 烤问）",
+          "note": "raw 体量 ~889L 为三者最大；judge 复用 cross_modal，scorecard 复用 calibration_queries"
+        },
+        {
+          "q": "顺序重确认（#61 体量已校正为最大）？",
+          "answer": "维持 #61→#63→#62：#61 复用度最高(judge+scorecard 已就位)+最自包含",
+          "note": "raw 体量 #61~889L>#62 427L>#63 399L，但 #61 新增集中且 judge/scorecard 大块已免做；#62 153-judge 矩阵、#63 orchestrator 前置为更差开局点"
+        },
+        {
+          "q": "端口范围？",
+          "answer": "MVP 先行：takes runner + 复用 cross_modal::run_eval judge + takes_scorecard 数学 + CLI verb；诚实 Err 无 key",
+          "note": "与增量交付/诚实降级哲学一致；receipt/replay/regress/trend(356L) 拆后续子节点"
+        },
+        {
+          "q": "judge 复用？",
+          "answer": "复用 cross_modal::run_eval（三模型 panel），不重 port DEFAULT_MODEL_PANEL",
+          "note": "同一套并行 judge 范式，重 port 违反 DRY 且 verdict 汇总语义分叉"
+        }
+      ],
+      "notes": "CORRECTED scope (2026-08-11): not 259L — full surface = command 259L + takes-quality-eval module (runner 274 + receipt-write 94 + replay 83 + regress 96 + trend 83 = 630L) = ~889L TS + 12 test specs. Judge panel (DEFAULT_MODEL_PANEL, 3-model Promise.allSettled) ALREADY ported into cross_modal.rs (#59) -> reuse cross_modal::run_eval, do NOT re-port. takes_scorecard math already in calibration_queries.rs. Genuinely new: takes-specific runner + receipt/replay/regress/trend harness + CLI verb. Recover module from bcafcafd^ (src/core deleted by bcafcafd)."
     },
     "1-1-5-4": {
       "id": "1-1-5-4",
@@ -238,11 +308,31 @@
       "children": [],
       "decisions": [],
       "notes": "eval-brainstorm 复核为真 LLM 命令（core/brainstorm/orchestrator.ts 经 gateway.chat + judges.ts）。前置：需 port 3 个引擎方法 listPrefixSampledPages / enumeratePrefixes / fetchFar，再全族 port。从 D 类移入（原 1-1-4 notes 记录）。"
+    },
+    "1-1-5-3-1": {
+      "id": "1-1-5-3-1",
+      "label": "eval-takes-quality MVP: takes runner + CLI verb + honest Err(no key)",
+      "status": "completed",
+      "mode": "explore",
+      "parent": "1-1-5-3",
+      "children": [],
+      "decisions": [],
+      "notes": "MVP DONE & pushed-ready (2026-08-11): takes_quality.rs (runner reusing cross_modal::run_eval 3-model panel) + eval/mod.rs pub mod + CLI verb EvalTakesQuality + 2 in-memory unit tests (scored + empty-corpus Err). cargo check core+cli clean; --lib green. Honest Err when no takes / no API key."
+    },
+    "1-1-5-3-2": {
+      "id": "1-1-5-3-2",
+      "label": "eval-takes-quality harness: receipt/replay/regress/trend playback (356L TS)",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-1-5-3",
+      "children": [],
+      "decisions": [],
+      "notes": ""
     }
   },
   "metadata": {
     "created": "2026-08-09 00:23:13",
-    "updated": "2026-08-09 22:50:38",
+    "updated": "2026-08-11 15:43:57",
     "md_file": "docs/plans/ZBRAIN_G74_G76_REIMPL.md"
   }
 }

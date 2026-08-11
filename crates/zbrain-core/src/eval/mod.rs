@@ -16,3 +16,4 @@ pub mod compare;
 pub mod code_retrieval;
 pub mod cross_modal;
 pub mod longmemeval;
+pub mod takes_quality;
