@@ -2517,8 +2517,9 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
     /// Mirrors TS `BrainEngine.findTrajectory` (v0.35.4, D-CDX-6).
     /// Returns facts rows for `entity_slug` ordered by `(valid_from ASC, id ASC)`
     /// with optional metric / kind / visibility / date-window filters.
-    /// `InMemoryEngine` relies on this default (Unsupported) — facts queries are
-    /// not supported in the in-memory backend, matching `list_facts_by_entity`.
+    /// Overridden by `libsql`, `postgres` and `InMemoryEngine`; the default
+    /// below is the `Unsupported` fallback for backends that predate the
+    /// v0.35.4 trajectory columns.
     async fn find_trajectory(
         &self,
         opts: &crate::types::TrajectoryOpts,
@@ -3608,6 +3609,13 @@ pub struct InMemoryEngine {
     // Phase 7B: facts storage (in-memory, for testing)
     facts_store: Mutex<Vec<crate::types::FactRow>>,
     next_fact_id: Mutex<i64>,
+    /// Typed-claim / event columns of the `facts` table, keyed by fact id.
+    /// [`FactRow`] models only the columns the fact CRUD paths read, so the
+    /// v0.35.4 trajectory columns (`claim_metric`, `claim_value`,
+    /// `claim_unit`, `claim_period`, `event_type`) live in this side map
+    /// rather than widening the shared row type for every backend. Written
+    /// by `insert_fact`, read by `find_trajectory`.
+    fact_claims_store: Mutex<std::collections::HashMap<i64, InternalFactClaim>>,
     // Phase 9 (1-1-1): minion job queue storage (in-memory, for testing)
     minion_jobs_store: Mutex<Vec<crate::minions::types::MinionJob>>,
     next_job_id: Mutex<i64>,
@@ -3702,6 +3710,30 @@ struct InternalDreamVerdict {
     worth_processing: bool,
     reasons: Vec<String>,
     judged_at: String,
+}
+
+/// Typed-claim / event columns of one `facts` row (v0.35.4, D-CDX-6). Held
+/// in [`InMemoryEngine::fact_claims_store`] keyed by fact id because
+/// [`FactRow`] does not model them.
+#[derive(Debug, Clone, Default)]
+struct InternalFactClaim {
+    claim_metric: Option<String>,
+    claim_value: Option<f64>,
+    claim_unit: Option<String>,
+    claim_period: Option<String>,
+    event_type: Option<String>,
+}
+
+impl InternalFactClaim {
+    /// `true` when every column is NULL — such a row carries no trajectory
+    /// signal and is not worth storing.
+    fn is_empty(&self) -> bool {
+        self.claim_metric.is_none()
+            && self.claim_value.is_none()
+            && self.claim_unit.is_none()
+            && self.claim_period.is_none()
+            && self.event_type.is_none()
+    }
 }
 
 /// In-memory code-graph edge row. `resolved == true` mirrors a `code_edges_chunk`
@@ -3832,6 +3864,7 @@ impl InMemoryEngine {
             // Phase 7B: facts storage (in-memory, for testing)
             facts_store: Mutex::new(Vec::new()),
             next_fact_id: Mutex::new(1),
+            fact_claims_store: Mutex::new(std::collections::HashMap::new()),
             // Phase 9 (1-1-1): minion job queue storage (in-memory, for testing)
             minion_jobs_store: Mutex::new(Vec::new()),
             next_job_id: Mutex::new(1),
@@ -3864,6 +3897,74 @@ impl InMemoryEngine {
     #[must_use]
     pub fn into_arc(self) -> Arc<dyn BrainEngine> {
         Arc::new(self)
+    }
+
+    /// Reset every per-question data store so the next question starts from a
+    /// clean slate — mirrors the TS `resetTables` called at the top of
+    /// `runOneQuestion` in the LongMemEval harness.
+    ///
+    /// Sources and config are preserved (the benchmark brain is created once
+    /// per run, not per question); identity counters restart at 1 to match
+    /// `TRUNCATE … RESTART IDENTITY`.
+    pub fn reset_for_benchmark(&self) {
+        {
+            let mut store = self.store.lock().expect("InMemoryEngine store poisoned");
+            store.clear();
+            *self.next_id.lock().expect("InMemoryEngine next_id poisoned") = 1;
+        }
+        {
+            let mut chunks = self.chunk_store.lock().expect("InMemoryEngine chunk_store poisoned");
+            chunks.clear();
+        }
+        {
+            let mut facts = self.facts_store.lock().expect("InMemoryEngine facts_store poisoned");
+            facts.clear();
+            *self.next_fact_id.lock().expect("InMemoryEngine next_fact_id poisoned") = 1;
+        }
+        {
+            let mut claims = self
+                .fact_claims_store
+                .lock()
+                .expect("InMemoryEngine fact_claims_store poisoned");
+            claims.clear();
+        }
+        {
+            let mut files = self.file_store.lock().expect("InMemoryEngine file_store poisoned");
+            files.clear();
+            *self.next_file_id.lock().expect("InMemoryEngine next_file_id poisoned") = 1;
+        }
+        {
+            let mut takes = self.takes_store.lock().expect("InMemoryEngine takes_store poisoned");
+            takes.clear();
+            *self.next_take_id.lock().expect("InMemoryEngine next_take_id poisoned") = 1;
+        }
+        {
+            let mut links = self.links_store.lock().expect("InMemoryEngine links_store poisoned");
+            links.clear();
+        }
+        {
+            let mut ingest = self
+                .ingest_log_store
+                .lock()
+                .expect("InMemoryEngine ingest_log_store poisoned");
+            ingest.clear();
+            *self.next_ingest_id.lock().expect("InMemoryEngine next_ingest_id poisoned") = 1;
+        }
+        {
+            let mut versions = self
+                .version_store
+                .lock()
+                .expect("InMemoryEngine version_store poisoned");
+            versions.clear();
+            *self.next_version_id.lock().expect("InMemoryEngine next_version_id poisoned") = 1;
+        }
+        {
+            let mut raw = self
+                .raw_data_store
+                .lock()
+                .expect("InMemoryEngine raw_data_store poisoned");
+            raw.clear();
+        }
     }
 
     /// Add a source row for testing webhook source lookups.
@@ -6614,6 +6715,21 @@ impl BrainEngine for InMemoryEngine {
         };
         store.push(row);
 
+        // Trajectory columns ride in the side map (see `fact_claims_store`).
+        let claim = InternalFactClaim {
+            claim_metric: input.claim_metric.clone(),
+            claim_value: input.claim_value,
+            claim_unit: input.claim_unit.clone(),
+            claim_period: input.claim_period.clone(),
+            event_type: input.event_type.clone(),
+        };
+        if !claim.is_empty() {
+            self.fact_claims_store
+                .lock()
+                .expect("poisoned")
+                .insert(new_id, claim);
+        }
+
         if maybe_supersede.is_some() {
             Ok(FactInsertStatus::Superseded)
         } else {
@@ -6628,8 +6744,14 @@ impl BrainEngine for InMemoryEngine {
     ) -> crate::Result<i64> {
         let mut store = self.facts_store.lock().expect("poisoned");
         let before = store.len();
+        let mut claims = self.fact_claims_store.lock().expect("poisoned");
         store.retain(|f| {
-            !(f.source_markdown_slug.as_deref() == Some(slug) && f.source_id == source_id)
+            let doomed =
+                f.source_markdown_slug.as_deref() == Some(slug) && f.source_id == source_id;
+            if doomed {
+                claims.remove(&f.id);
+            }
+            !doomed
         });
         Ok((before - store.len()) as i64)
     }
@@ -6641,6 +6763,97 @@ impl BrainEngine for InMemoryEngine {
             .filter(|f| f.row_num.is_none() && f.entity_slug.is_some())
             .count();
         Ok(n as i64)
+    }
+
+    /// In-memory trajectory chart. Mirrors the `libsql.rs` SQL clause for
+    /// clause: source scope (array wins over single, `default` when neither
+    /// is set), `entity_slug`, `expired_at IS NULL`, optional
+    /// `visibility = 'world'` / metric / kind / `valid_from` window, ordered
+    /// `(valid_from ASC, id ASC)` and capped at `limit.clamp(1, 500)`
+    /// (default 100).
+    ///
+    /// Two SQL behaviours are reproduced deliberately:
+    /// - A NULL `valid_from` fails any `since` / `until` comparison, so such
+    ///   rows drop out of a windowed query (`Option<String>` compares as
+    ///   `None < Some`, and the window arms test explicitly).
+    /// - Superseded-but-unexpired rows still chart — the SQL filters on
+    ///   `expired_at` only, never `superseded_by`.
+    ///
+    /// `embedding` is always `None`: the in-memory backend does not store
+    /// fact embeddings, so drift-score math is unavailable here.
+    async fn find_trajectory(
+        &self,
+        opts: &crate::types::TrajectoryOpts,
+    ) -> crate::Result<Vec<crate::types::TrajectoryPoint>> {
+        use crate::types::{TrajectoryKind, TrajectoryPoint};
+
+        let scope: Vec<String> = match &opts.source_ids {
+            Some(ids) if !ids.is_empty() => ids.clone(),
+            _ => vec![opts
+                .source_id
+                .clone()
+                .unwrap_or_else(|| "default".to_string())],
+        };
+
+        let store = self.facts_store.lock().expect("poisoned");
+        let claims = self.fact_claims_store.lock().expect("poisoned");
+
+        let mut rows: Vec<&FactRow> = store
+            .iter()
+            .filter(|f| scope.iter().any(|s| *s == f.source_id))
+            .filter(|f| f.entity_slug.as_deref() == Some(opts.entity_slug.as_str()))
+            .filter(|f| f.expired_at.is_none())
+            .filter(|f| !opts.remote || f.visibility == FactVisibility::World)
+            .filter(|f| {
+                let claim = claims.get(&f.id);
+                let metric = claim.and_then(|c| c.claim_metric.as_deref());
+                let event = claim.and_then(|c| c.event_type.as_deref());
+                if let Some(ref want) = opts.metric {
+                    if metric != Some(want.as_str()) {
+                        return false;
+                    }
+                }
+                match opts.kind {
+                    TrajectoryKind::Metric => metric.is_some(),
+                    TrajectoryKind::Event => event.is_some(),
+                    TrajectoryKind::All => true,
+                }
+            })
+            .filter(|f| match (&opts.since, &f.valid_from) {
+                (Some(since), Some(vf)) => vf.as_str() >= since.as_str(),
+                (Some(_), None) => false,
+                (None, _) => true,
+            })
+            .filter(|f| match (&opts.until, &f.valid_from) {
+                (Some(until), Some(vf)) => vf.as_str() <= until.as_str(),
+                (Some(_), None) => false,
+                (None, _) => true,
+            })
+            .collect();
+
+        rows.sort_by(|a, b| a.valid_from.cmp(&b.valid_from).then(a.id.cmp(&b.id)));
+
+        let limit = i64::from(opts.limit.unwrap_or(100)).clamp(1, 500) as usize;
+        Ok(rows
+            .into_iter()
+            .take(limit)
+            .map(|f| {
+                let claim = claims.get(&f.id);
+                TrajectoryPoint {
+                    fact_id: f.id,
+                    valid_from: f.valid_from.clone(),
+                    metric: claim.and_then(|c| c.claim_metric.clone()),
+                    value: claim.and_then(|c| c.claim_value),
+                    unit: claim.and_then(|c| c.claim_unit.clone()),
+                    period: claim.and_then(|c| c.claim_period.clone()),
+                    event_type: claim.and_then(|c| c.event_type.clone()),
+                    text: f.fact.clone(),
+                    source_session: f.source_session.clone(),
+                    source_markdown_slug: f.source_markdown_slug.clone(),
+                    embedding: None,
+                }
+            })
+            .collect())
     }
 
     async fn list_facts_by_entity(
@@ -9842,6 +10055,218 @@ mod tests {
         // Different entity → still inserted
         let s3 = engine.insert_fact("test-source", "bob", &new_fact()).await.unwrap();
         assert_eq!(s3, FactInsertStatus::Inserted);
+    }
+
+    // ── find_trajectory (in-memory backend) ───────────────────────────────
+
+    /// Claim-shaped `NewFact` builder for the trajectory tests.
+    fn traj_fact(
+        text: &str,
+        valid_from: &str,
+        metric: Option<&str>,
+        value: Option<f64>,
+        event_type: Option<&str>,
+    ) -> NewFact {
+        NewFact {
+            fact: text.to_string(),
+            kind: Some(if event_type.is_some() { FactKind::Event } else { FactKind::Fact }),
+            entity_slug: None,
+            visibility: Some(FactVisibility::Private),
+            context: None,
+            valid_from: Some(valid_from.to_string()),
+            valid_until: None,
+            source: "test".to_string(),
+            source_session: Some("sess".to_string()),
+            // Below the 0.9 supersede threshold so each row stays independent —
+            // the point of a trajectory is that every observation survives.
+            confidence: Some(0.5),
+            notability: None,
+            claim_metric: metric.map(str::to_string),
+            claim_value: value,
+            claim_unit: metric.map(|_| "USD".to_string()),
+            claim_period: metric.map(|_| "monthly".to_string()),
+            event_type: event_type.map(str::to_string),
+            row_num: None,
+            source_markdown_slug: Some("chat/s1".to_string()),
+        }
+    }
+
+    async fn seeded_trajectory_engine() -> InMemoryEngine {
+        let engine = InMemoryEngine::new();
+        for f in [
+            traj_fact("MRR 900", "2024-03-01", Some("mrr"), Some(900.0), None),
+            traj_fact("MRR 1200", "2024-05-01", Some("mrr"), Some(1200.0), None),
+            traj_fact("team of 4", "2024-04-01", Some("team_size"), Some(4.0), None),
+            traj_fact("moved to Berlin", "2024-06-01", None, None, Some("location_change")),
+        ] {
+            engine.insert_fact("test-source", "marco", &f).await.unwrap();
+        }
+        // Noise: another entity + another source must never leak in.
+        engine
+            .insert_fact(
+                "test-source",
+                "acme",
+                &traj_fact("MRR 5000", "2024-01-01", Some("mrr"), Some(5000.0), None),
+            )
+            .await
+            .unwrap();
+        engine
+            .insert_fact(
+                "other-source",
+                "marco",
+                &traj_fact("MRR 1", "2024-01-01", Some("mrr"), Some(1.0), None),
+            )
+            .await
+            .unwrap();
+        engine
+    }
+
+    fn traj_opts(entity: &str) -> crate::types::TrajectoryOpts {
+        crate::types::TrajectoryOpts {
+            entity_slug: entity.to_string(),
+            source_id: Some("test-source".to_string()),
+            source_ids: None,
+            remote: false,
+            metric: None,
+            kind: crate::types::TrajectoryKind::All,
+            since: None,
+            until: None,
+            limit: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn find_trajectory_orders_by_date_and_scopes_to_entity_and_source() {
+        let engine = seeded_trajectory_engine().await;
+        let points = engine.find_trajectory(&traj_opts("marco")).await.unwrap();
+
+        let dates: Vec<&str> =
+            points.iter().map(|p| p.valid_from.as_deref().unwrap_or("")).collect();
+        assert_eq!(dates, ["2024-03-01", "2024-04-01", "2024-05-01", "2024-06-01"]);
+        assert!(
+            points.iter().all(|p| p.source_session.as_deref() == Some("sess")),
+            "other entities / sources must not leak into the chart",
+        );
+        // Claim columns survive the round trip through the side map.
+        assert_eq!(points[0].metric.as_deref(), Some("mrr"));
+        assert_eq!(points[0].value, Some(900.0));
+        assert_eq!(points[0].unit.as_deref(), Some("USD"));
+        assert_eq!(points[3].event_type.as_deref(), Some("location_change"));
+        assert_eq!(points[3].metric, None);
+    }
+
+    #[tokio::test]
+    async fn find_trajectory_filters_by_kind_metric_and_window() {
+        let engine = seeded_trajectory_engine().await;
+
+        let metric_only = engine
+            .find_trajectory(&crate::types::TrajectoryOpts {
+                kind: crate::types::TrajectoryKind::Metric,
+                ..traj_opts("marco")
+            })
+            .await
+            .unwrap();
+        assert_eq!(metric_only.len(), 3, "the event row drops out");
+
+        let events = engine
+            .find_trajectory(&crate::types::TrajectoryOpts {
+                kind: crate::types::TrajectoryKind::Event,
+                ..traj_opts("marco")
+            })
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type.as_deref(), Some("location_change"));
+
+        let mrr = engine
+            .find_trajectory(&crate::types::TrajectoryOpts {
+                metric: Some("mrr".to_string()),
+                ..traj_opts("marco")
+            })
+            .await
+            .unwrap();
+        assert_eq!(mrr.len(), 2);
+
+        let windowed = engine
+            .find_trajectory(&crate::types::TrajectoryOpts {
+                since: Some("2024-04-01".to_string()),
+                until: Some("2024-05-01".to_string()),
+                ..traj_opts("marco")
+            })
+            .await
+            .unwrap();
+        assert_eq!(windowed.len(), 2, "the window bounds are inclusive");
+    }
+
+    #[tokio::test]
+    async fn find_trajectory_honours_remote_limit_and_federated_scope() {
+        let engine = seeded_trajectory_engine().await;
+
+        // Everything seeded is `private`, so a remote caller sees nothing.
+        let remote = engine
+            .find_trajectory(&crate::types::TrajectoryOpts {
+                remote: true,
+                ..traj_opts("marco")
+            })
+            .await
+            .unwrap();
+        assert!(remote.is_empty());
+
+        let capped = engine
+            .find_trajectory(&crate::types::TrajectoryOpts {
+                limit: Some(2),
+                ..traj_opts("marco")
+            })
+            .await
+            .unwrap();
+        assert_eq!(capped.len(), 2);
+        assert_eq!(capped[0].valid_from.as_deref(), Some("2024-03-01"));
+
+        // `source_ids` wins over `source_id` and unions both brains.
+        let federated = engine
+            .find_trajectory(&crate::types::TrajectoryOpts {
+                source_id: Some("test-source".to_string()),
+                source_ids: Some(vec![
+                    "test-source".to_string(),
+                    "other-source".to_string(),
+                ]),
+                ..traj_opts("marco")
+            })
+            .await
+            .unwrap();
+        assert_eq!(federated.len(), 5, "both sources contribute");
+        assert_eq!(federated[0].valid_from.as_deref(), Some("2024-01-01"));
+    }
+
+    #[tokio::test]
+    async fn find_trajectory_skips_expired_but_keeps_superseded() {
+        let engine = InMemoryEngine::new();
+        // confidence defaults to 1.0 (> 0.9), so the second insert supersedes
+        // the first. `find_trajectory` filters on `expired_at` only, so BOTH
+        // rows must still chart — matching the libsql SQL.
+        let mut a = traj_fact("MRR 900", "2024-03-01", Some("mrr"), Some(900.0), None);
+        a.confidence = None;
+        let mut b = traj_fact("MRR 1200", "2024-05-01", Some("mrr"), Some(1200.0), None);
+        b.confidence = None;
+        engine.insert_fact("test-source", "marco", &a).await.unwrap();
+        let status = engine.insert_fact("test-source", "marco", &b).await.unwrap();
+        assert_eq!(status, FactInsertStatus::Superseded);
+
+        let points = engine.find_trajectory(&traj_opts("marco")).await.unwrap();
+        assert_eq!(points.len(), 2, "a superseded-but-unexpired row still charts");
+
+        // Expiring the first row removes it.
+        engine.expire_fact("test-source", points[0].fact_id).await.unwrap();
+        let after = engine.find_trajectory(&traj_opts("marco")).await.unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].valid_from.as_deref(), Some("2024-05-01"));
+    }
+
+    #[tokio::test]
+    async fn find_trajectory_returns_empty_for_unknown_entity() {
+        let engine = seeded_trajectory_engine().await;
+        let points = engine.find_trajectory(&traj_opts("nobody")).await.unwrap();
+        assert!(points.is_empty());
     }
 
     #[tokio::test]
