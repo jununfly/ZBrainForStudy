@@ -41,6 +41,7 @@ The `bin/zbrain-rs.js` wrapper is a transparent argv pass-through that finds the
 5. [`./CLAUDE.md`](./CLAUDE.md) — architecture reference, key files, trust boundaries, test layout.
 6. [`./docs/architecture/brains-and-sources.md`](./docs/architecture/brains-and-sources.md) — the two-axis mental model: brain = which DB, source = which repo in the DB. Every query routes on both axes.
 7. [`./CONTRIBUTING.md`](./CONTRIBUTING.md) — contributor guide, test discipline, eval-capture mode.
+8. [`./docs/CROSS_OS_AGENT_GUIDE.md`](./docs/CROSS_OS_AGENT_GUIDE.md) — cross-OS agent dev do's and don'ts (Windows/macOS/WSL git & cargo pitfalls). Read before any git/cargo op from a non-Linux shell.
 
 ## Trust boundary (critical)
 
