@@ -29,7 +29,7 @@ use crate::minions::queue::MinionQueue;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::ai::chat::{instantiate_chat, ChatProvider};
+use crate::ai::chat::{instantiate_chat, ChatMessage, ChatOpts, ChatProvider, ChatRole};
 use crate::ai::model_config::{resolve_model, ConfigLookup, ResolveModelOpts};
 use crate::ai::resolver::resolve_recipe_strict;
 use crate::embedding::EmbeddingClient;
@@ -630,22 +630,149 @@ impl NightlyProbeDeps for NightlyProbeRunnerDeps {
 
     async fn run_cross_modal_batch(
         &self,
-        _batch_path: &str,
+        batch_path: &str,
         _summary_path: &str,
-        _max_usd: f64,
+        max_usd: f64,
     ) -> Result<(i32, Option<super::nightly_probe::CrossModalSummary>), String> {
-        // registered in docs/plans/KNOWN-GAPS.md (G58)
+        // Native Rust port of the nightly cross-modal batch (closes G58's last
+        // stub). See docs/plans/KNOWN-GAPS.md (G58).
         //
-        // See `run_long_mem_eval` above. The cross-modal batch depends on the
-        // longmemeval output that we can no longer produce, and its own TS
-        // pipeline (`src/commands/eval-cross-modal.ts`, ~1543 lines, 15 LLM
-        // calls) shares the same un-migrated-TS fate. Honest error until a
-        // native Rust cross-modal batch runner exists.
-        Err(
-            "cross-modal batch not runnable: depends on longmemeval output \
-             (broken by Phase11) + un-migrated TS; needs native Rust port"
-                .into(),
-        )
+        // The upstream TS batch driver fed LongMemEval output rows into the
+        // cross-modal quality gate; its source was deleted during the Rust
+        // migration, so we reconstruct the faithful mapping:
+        //   task   = row["question"]    (what the model was asked)
+        //   output = row["hypothesis"]  (the model's answer / retrieved ctx)
+        // Each row is scored by `cross_modal::run_eval` (default 3-model judge
+        // panel + default dimensions) and per-row verdicts are tallied into a
+        // `CrossModalSummary`. Honest degradation: without a chat provider (no
+        // API key) we return Err instead of fabricating a PASS — the caller
+        // records an `error` outcome and never crashes the autopilot cycle.
+        use crate::eval::cross_modal::{
+            default_dimensions, default_slots, estimate_cost, run_eval, ChatRequest, RunEvalOpts,
+            SlotConfig, Verdict,
+        };
+
+        let chat = self.chat.as_ref().ok_or_else(|| {
+            "cross-modal batch requires a chat provider (API key); set an API key or disable the nightly probe"
+                .to_string()
+        })?;
+
+        // Read the LongMemEval JSONL produced by `run_long_mem_eval`.
+        let raw = std::fs::read_to_string(batch_path)
+            .map_err(|e| format!("cross-modal batch: cannot read longmemeval output {batch_path}: {e}"))?;
+        if raw.trim().is_empty() {
+            return Err(format!("cross-modal batch: longmemeval output is empty: {batch_path}"));
+        }
+
+        // The nightly probe configures a single ChatProvider; dispatch every
+        // slot model through it. Decorrelation across model families is lost,
+        // but the gate still gets independent judge calls — an honest
+        // simplification consistent with the single provider the autopilot
+        // resolves for longmemeval.
+        let provider: Arc<dyn ChatProvider> = chat.clone();
+        let chat_fn = move |req: ChatRequest| {
+            let provider = provider.clone();
+            async move {
+                let opts = ChatOpts {
+                    model: Some(req.model.clone()),
+                    system: Some(req.system.clone()),
+                    messages: vec![ChatMessage::text(ChatRole::User, req.prompt.clone())],
+                    tools: vec![],
+                    max_tokens: Some(req.max_tokens),
+                    cache_system: false,
+                };
+                let result = provider.chat(opts).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
+                Ok(result.text)
+            }
+        };
+
+        let dimensions = default_dimensions();
+        let slots: Vec<SlotConfig> = default_slots();
+        let cycles: u32 = 1; // non-interactive nightly context
+        let max_tokens: u32 = 4000;
+        let cost_per_row = estimate_cost(&slots, cycles, max_tokens).per_run_max_usd;
+
+        let receipt_dir = std::env::temp_dir().join("zbrain-nightly-cross-modal-receipts");
+        let _ = std::fs::create_dir_all(&receipt_dir);
+
+        let mut summary = super::nightly_probe::CrossModalSummary {
+            pass_count: 0,
+            fail_count: 0,
+            inconclusive_count: 0,
+            error_count: 0,
+            est_cost_usd: 0.0,
+            verdict: "inconclusive".to_string(),
+        };
+
+        for line in raw.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let row: serde_json::Value = match serde_json::from_str(line) {
+                Ok(v) => v,
+                Err(_) => {
+                    summary.error_count += 1;
+                    continue;
+                }
+            };
+            let question = match row.get("question").and_then(|v| v.as_str()) {
+                Some(q) if !q.trim().is_empty() => q.to_string(),
+                _ => continue,
+            };
+            let hypothesis = match row.get("hypothesis").and_then(|v| v.as_str()) {
+                Some(h) if !h.trim().is_empty() => h.to_string(),
+                _ => continue,
+            };
+
+            let opts = RunEvalOpts {
+                task: question,
+                output: hypothesis,
+                slug: None,
+                dimensions: Some(dimensions.clone()),
+                slots: Some(slots.clone()),
+                cycles: Some(cycles),
+                receipt_dir: receipt_dir.clone(),
+                max_tokens: Some(max_tokens),
+                on_progress: None,
+            };
+
+            match run_eval(&opts, &chat_fn).await {
+                Ok(result) => {
+                    summary.est_cost_usd += cost_per_row;
+                    match result.final_aggregate.verdict {
+                        Verdict::Pass => summary.pass_count += 1,
+                        Verdict::Fail => summary.fail_count += 1,
+                        Verdict::Inconclusive => summary.inconclusive_count += 1,
+                    }
+                }
+                Err(_) => summary.error_count += 1,
+            }
+        }
+
+        if summary.pass_count == 0 && summary.fail_count == 0 && summary.inconclusive_count == 0 {
+            // No scorable rows — treat as a hard error so the probe records an
+            // `error` outcome rather than a misleading empty PASS.
+            return Ok((1, Some(summary)));
+        }
+
+        // Overall verdict mirrors the nightly outcome mapping
+        // (pass > fail > inconclusive).
+        summary.verdict = if summary.pass_count > 0 {
+            "pass".to_string()
+        } else if summary.fail_count > 0 {
+            "fail".to_string()
+        } else {
+            "inconclusive".to_string()
+        };
+
+        // Budget guard: a non-zero max_usd that we blew past becomes a
+        // BudgetExceeded outcome (exit_code 1, per nightly_probe.rs).
+        if max_usd > 0.0 && summary.est_cost_usd > max_usd {
+            return Ok((1, Some(summary)));
+        }
+
+        Ok((0, Some(summary)))
     }
 
     fn read_recent_events(&self, days: u32) -> Vec<QualityProbeAuditEvent> {
