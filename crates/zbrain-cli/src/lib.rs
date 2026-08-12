@@ -488,6 +488,12 @@ pub enum Commands {
     /// Sample takes from the brain DB and judge their quality (TS `eval-takes-quality`, MVP)
     EvalTakesQuality(EvalTakesQualityArgs),
 
+    /// Probe the brain for suspected contradictions between takes (TS `eval
+    /// suspected-contradictions`, MVP). `run` is implemented; `trend` /
+    /// `review` are deferred (roadmap node 1-1-5-4).
+    #[command(name = "eval-suspected-contradictions")]
+    EvalSuspectedContradictions(EvalSuspectedContradictionsArgs),
+
     /// Extract links / timeline entries from page bodies (TS `extract`)
     #[command(subcommand)]
     Extract(ExtractAction),
@@ -1579,6 +1585,95 @@ pub struct EvalTakesQualityArgs {
     /// Emit final aggregate as JSON to stdout (progress to stderr).
     #[arg(long)]
     pub json: bool,
+}
+
+/// Rust port of TS `src/commands/eval-suspected-contradictions.ts` — MVP.
+///
+/// The TS command has three sub-subcommands (`run` / `trend` / `review`). In
+/// the Rust port those are expressed as clap subcommands of the top-level
+/// `eval-suspected-contradictions` verb. Only `run` is implemented in the MVP;
+/// `trend` and `review` return an informative "deferred" error (roadmap node
+/// 1-1-5-4 — the run-row table + ASCII chart + findings surfacing are not yet
+/// ported).
+#[derive(Debug, Parser)]
+pub struct EvalSuspectedContradictionsArgs {
+    #[command(subcommand)]
+    pub action: SuspectedContradictionsAction,
+}
+
+/// Subcommands of `zbrain eval-suspected-contradictions`.
+#[derive(Debug, Subcommand)]
+pub enum SuspectedContradictionsAction {
+    /// Execute one contradiction probe pass over the brain's takes.
+    Run(EvalSuspectedContradictionsRunArgs),
+    /// Render the ASCII trend chart from past runs (deferred in MVP).
+    Trend(EvalSuspectedContradictionsTrendArgs),
+    /// Surface findings from the most recent run (deferred in MVP).
+    Review(EvalSuspectedContradictionsReviewArgs),
+}
+
+/// Args for `eval-suspected-contradictions run`.
+#[derive(Debug, Parser)]
+pub struct EvalSuspectedContradictionsRunArgs {
+    /// Number of takes to sample from the corpus for pair generation.
+    #[arg(long, default_value_t = 200)]
+    pub sample: usize,
+
+    /// Hard cap on the number of pairs judged (cost guard). Default 40.
+    #[arg(long, default_value_t = 40)]
+    pub max_pairs: usize,
+
+    /// Conditioning query applied to every pair (query-conditioned judge).
+    #[arg(long)]
+    pub query: Option<String>,
+
+    /// Judge model (`provider:model`). Default utility-tier haiku-equivalent.
+    #[arg(long)]
+    pub judge: Option<String>,
+
+    /// UTF-8-safe per-pair text budget. Default 1500.
+    #[arg(long, default_value_t = 1500)]
+    pub max_pair_chars: usize,
+
+    /// Receipt filename slug. Default: `suspected-contradictions`.
+    #[arg(long)]
+    pub slug: Option<String>,
+
+    /// Receipt directory. Default: platform eval-receipts dir.
+    #[arg(long)]
+    pub receipt_dir: Option<String>,
+
+    /// Output token budget per judge call. Default 2000.
+    #[arg(long)]
+    pub max_tokens: Option<u32>,
+
+    /// Emit the run summary as JSON to stdout (progress to stderr).
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Args for `eval-suspected-contradictions trend` (deferred in MVP).
+#[derive(Debug, Parser)]
+pub struct EvalSuspectedContradictionsTrendArgs {
+    /// Look-back window in days. Default 30.
+    #[arg(long, default_value_t = 30)]
+    pub days: i64,
+
+    /// Emit as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Args for `eval-suspected-contradictions review` (deferred in MVP).
+#[derive(Debug, Parser)]
+pub struct EvalSuspectedContradictionsReviewArgs {
+    /// Filter findings by severity (info|low|medium|high).
+    #[arg(long)]
+    pub severity: Option<String>,
+
+    /// Filter findings since this date (YYYY-MM-DD).
+    #[arg(long)]
+    pub since: Option<String>,
 }
 
 
@@ -2689,6 +2784,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Commands::EvalTakesQuality(args) => {
             run_eval_takes_quality_command(args, cli.config.as_deref()).await?
+        }
+        Commands::EvalSuspectedContradictions(args) => {
+            run_eval_suspected_contradictions_command(args, cli.config.as_deref()).await?
         }
         Commands::Extract(action) => run_extract_command(action, cli.config.as_deref()).await?,
         Commands::Links(action) => run_links_command(action, cli.config.as_deref()).await?,
@@ -7199,7 +7297,6 @@ async fn run_facts_expire(args: FactsExpireArgs, config_path: Option<&Path>) -> 
 /// KNOWN-GAPS G74 (categories A/C/D of the reconciliation table).
 const UNPORTED_EVAL_SUBCOMMANDS: &[&str] = &[
     "brainstorm",
-    "suspected-contradictions",
     "trajectory",
 ];
 
@@ -7212,6 +7309,7 @@ const RENAMED_EVAL_SUBCOMMANDS: &[(&str, &str)] = &[
     ("code-retrieval", "zbrain eval-code-retrieval"),
     ("cross-modal", "zbrain eval-cross-modal"),
     ("takes-quality", "zbrain eval-takes-quality"),
+    ("suspected-contradictions", "zbrain eval-suspected-contradictions"),
 ];
 
 /// Reject any positional token after `zbrain eval`.
@@ -9147,6 +9245,183 @@ async fn run_eval_takes_quality_command(
         Verdict::Inconclusive => 2,
     };
     std::process::exit(code);
+}
+
+/// Handler for `zbrain eval-suspected-contradictions`.
+///
+/// MVP: resolves a single utility-tier judge [`ChatProvider`], opens the
+/// engine, and delegates the probe to [`zbrain_core::eval::contradictions::run`].
+/// Only the `run` subcommand does real work; `trend` / `review` return an
+/// informative deferred error (roadmap node 1-1-5-4). Honest degradation:
+/// without an API key for the judge model we fail loudly instead of
+/// fabricating a clean report.
+async fn run_eval_suspected_contradictions_command(
+    args: EvalSuspectedContradictionsArgs,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    use std::sync::Arc;
+
+    use zbrain_core::ai::chat::{instantiate_chat, ChatMessage, ChatOpts, ChatProvider, ChatRole};
+    use zbrain_core::ai::resolver::{resolve_recipe_strict, AiConfigError};
+    use zbrain_core::engine::{BrainEngine, EngineConfig};
+    use zbrain_core::eval::contradictions::{
+        self, ContradictionOpts, DEFAULT_JUDGE_MODEL, DEFAULT_QUERY,
+    };
+    use zbrain_core::eval::cross_modal::ChatRequest;
+    use zbrain_core::libsql::LibsqlEngine;
+    use zbrain_core::paths::zbrain_path;
+
+    match args.action {
+        SuspectedContradictionsAction::Run(run_args) => {
+            // Resolve the judge provider up front (honest degradation).
+            let judge_model = run_args.judge.clone().unwrap_or_else(|| DEFAULT_JUDGE_MODEL.to_string());
+            let env_lookup = |k: &str| std::env::var(k).ok();
+            let (_parsed, recipe) = resolve_recipe_strict(&judge_model).map_err(|e: AiConfigError| {
+                anyhow::anyhow!(
+                    "eval-suspected-contradictions: cannot resolve judge model `{}`: {}",
+                    judge_model,
+                    e.message
+                )
+            })?;
+            let provider = instantiate_chat(recipe, &judge_model, &env_lookup).map_err(|e: AiConfigError| {
+                anyhow::anyhow!(
+                    "eval-suspected-contradictions: cannot build provider for `{}`: {}",
+                    judge_model,
+                    e.message
+                )
+            })?;
+            let provider: Arc<dyn ChatProvider> = Arc::from(provider);
+
+            // Open the engine (samples all takes).
+            let config = crate::config::load_config(config_path)?;
+            let db_path = resolve_database_path(&config.database_url);
+            let engine_config = EngineConfig {
+                database_url: None,
+                database_path: Some(db_path),
+            };
+            let engine = LibsqlEngine::new();
+            engine.connect(&engine_config).await?;
+            engine.init_schema().await?;
+            let engine: Arc<dyn BrainEngine> = Arc::new(engine);
+
+            let receipt_dir = match &run_args.receipt_dir {
+                Some(d) => std::path::PathBuf::from(d),
+                None => zbrain_path("eval-receipts").ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "eval-suspected-contradictions: cannot resolve ~/.zbrain — pass --receipt-dir <path> or set ZBRAIN_HOME"
+                    )
+                })?,
+            };
+            let max_tokens = run_args.max_tokens.unwrap_or(2000);
+            let query = run_args.query.clone().unwrap_or_else(|| DEFAULT_QUERY.to_string());
+
+            // Cost hint to stderr (bounded by max_pairs).
+            let est_calls = run_args.max_pairs.min(
+                (run_args.sample * (run_args.sample.saturating_sub(1))) / 2,
+            );
+            eprintln!(
+                "[eval-suspected-contradictions] judge={judge_model} sample={} max_pairs={} (~{est_calls} judge calls, capped)",
+                run_args.sample, run_args.max_pairs
+            );
+
+            let providers: Arc<(String, Arc<dyn ChatProvider>)> =
+                Arc::new((judge_model.clone(), provider));
+            let chat = move |req: ChatRequest| {
+                let providers = providers.clone();
+                async move {
+                    let (model, provider) = providers.as_ref();
+                    if model != &req.model {
+                        return Err(anyhow::anyhow!(
+                            "eval-suspected-contradictions: unexpected model {} (expected {model})",
+                            req.model
+                        ));
+                    }
+                    let opts = ChatOpts {
+                        model: Some(req.model.clone()),
+                        system: Some(req.system.clone()),
+                        messages: vec![ChatMessage::text(ChatRole::User, req.prompt.clone())],
+                        tools: vec![],
+                        max_tokens: Some(req.max_tokens),
+                        cache_system: false,
+                    };
+                    let result = provider.chat(opts).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
+                    Ok(result.text)
+                }
+            };
+
+            let sc_opts = ContradictionOpts {
+                engine: engine.as_ref(),
+                sample: run_args.sample,
+                max_pairs: run_args.max_pairs,
+                query,
+                judge_model,
+                max_pair_chars: run_args.max_pair_chars,
+                max_tokens,
+                receipt_dir,
+                slug: run_args.slug.clone(),
+            };
+
+            let result = contradictions::run(&sc_opts, &chat).await?;
+
+            eprintln!();
+            eprintln!(
+                "[eval-suspected-contradictions] sampled {} takes, built {} pairs, judged {}",
+                result.n_takes, result.n_pairs, result.judged
+            );
+            eprintln!(
+                "[eval-suspected-contradictions] verdict breakdown: {:?}",
+                result.verdict_breakdown
+            );
+            eprintln!(
+                "[eval-suspected-contradictions] severity breakdown: {:?}",
+                result.severity_breakdown
+            );
+            if result.judge_errors.total > 0 {
+                eprintln!(
+                    "[eval-suspected-contradictions] judge errors (counted, not silent): {:?}",
+                    result.judge_errors
+                );
+            }
+            eprintln!(
+                "[eval-suspected-contradictions] findings: {} (see receipt for detail)",
+                result.findings.len()
+            );
+            if let Some(p) = &result.receipt_path {
+                eprintln!("[eval-suspected-contradictions] receipt: {p}");
+            }
+
+            if run_args.json {
+                let json_out = serde_json::json!({
+                    "n_takes": result.n_takes,
+                    "n_pairs": result.n_pairs,
+                    "judged": result.judged,
+                    "verdict_breakdown": result.verdict_breakdown,
+                    "severity_breakdown": result.severity_breakdown,
+                    "judge_errors": result.judge_errors,
+                    "n_findings": result.findings.len(),
+                    "findings": result.findings,
+                    "receipt_path": result.receipt_path,
+                });
+                println!("{}", serde_json::to_string_pretty(&json_out)?);
+            }
+
+            // The probe is a report, not a gate: a completed run exits 0.
+            // Findings are carried in the JSON / receipt for downstream review.
+            std::process::exit(0);
+        }
+        SuspectedContradictionsAction::Trend(_) => {
+            anyhow::bail!(
+                "eval-suspected-contradictions trend: deferred in MVP (roadmap node 1-1-5-4). \
+                 The run-row table + ASCII trend chart are not yet ported from TS."
+            );
+        }
+        SuspectedContradictionsAction::Review(_) => {
+            anyhow::bail!(
+                "eval-suspected-contradictions review: deferred in MVP (roadmap node 1-1-5-4). \
+                 Surfacing findings from the most recent run is not yet ported from TS."
+            );
+        }
+    }
 }
 
 /// Handler for `zbrain eval-longmemeval`.
@@ -14298,6 +14573,56 @@ mod tests {
         let err = reject_eval_subcommand(Some("cross-modal")).unwrap_err().to_string();
         assert!(err.contains("zbrain eval-cross-modal"), "got: {err}");
         assert!(!err.contains("KNOWN-GAPS"), "must not still claim a gap: {err}");
+    }
+
+    #[test]
+    fn suspected_contradictions_is_now_a_top_level_verb() {
+        // No longer rejected as an unported sub-verb.
+        assert!(!UNPORTED_EVAL_SUBCOMMANDS.contains(&"suspected-contradictions"));
+        let cli = Cli::try_parse_from([
+            "zbrain",
+            "eval-suspected-contradictions",
+            "run",
+            "--sample",
+            "50",
+            "--max-pairs",
+            "10",
+            "--judge",
+            "anthropic:claude-haiku-4-5",
+            "--query",
+            "do these conflict?",
+            "--slug",
+            "probe1",
+            "--json",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::EvalSuspectedContradictions(args) => match args.action {
+                SuspectedContradictionsAction::Run(r) => {
+                    assert_eq!(r.sample, 50);
+                    assert_eq!(r.max_pairs, 10);
+                    assert_eq!(r.judge.as_deref(), Some("anthropic:claude-haiku-4-5"));
+                    assert_eq!(r.query.as_deref(), Some("do these conflict?"));
+                    assert_eq!(r.slug.as_deref(), Some("probe1"));
+                    assert!(r.json);
+                }
+                _ => panic!("expected Run action"),
+            },
+            _ => panic!("expected EvalSuspectedContradictions"),
+        }
+    }
+
+    #[test]
+    fn eval_suspected_contradictions_redirects_old_subverb() {
+        // `zbrain eval suspected-contradictions` now redirects to the ported
+        // top-level verb instead of claiming it is unimplemented.
+        let err = reject_eval_subcommand(Some("suspected-contradictions"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("eval-suspected-contradictions"),
+            "got: {err}"
+        );
     }
 
     #[test]

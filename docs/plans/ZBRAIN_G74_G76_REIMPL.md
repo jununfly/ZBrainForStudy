@@ -1,7 +1,7 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-g74-g76-reimpl.json` | 最后更新: 2026-08-12 11:01:30
+> 数据文件: `zbrain-g74-g76-reimpl.json` | 最后更新: 2026-08-12 20:41:30
 
 [~][X+] 1. ZBrain G74/G76 eval+extract 命令 Rust 重实现
 ├── [~][X+] 1-1. G74 eval 族命令 Rust 重实现（19 命令）
@@ -18,7 +18,11 @@
 
 ### 当前施工：1-1-5-4. eval-suspected-contradictions（#62，最大一族 judge×153）
 
-TS 源 eval-suspected-contradictions.ts 427 行：runContradictionProbe + judge model + 成本预算门。最大一族（judge×153），建议拆子阶段（probe 抽取→judge 评分→severity-classify→cost-prompt→trends 汇总）。诚实缺口：无 LLM key 时降级。
+TS 源实为 18 文件子系统（orchestrator/judge/calibration/cost-tracker/severity-classify/trends/cache/cross-source/date-filter/auto-supersession/judge-errors），427 行命令文件严重低估体量。Rust 复用资产：facts/classify.rs（fact 级分类器 cosine+LLM）、calibration.rs:1103 部分镜像。
 
-收敛性（2026-08-12 修正）：复用 #59 cross_modal judge panel（DEFAULT_MODEL_PANEL + 默认 dimensions），无新引擎方法、无 generator；比 #63 小得多，单会话可收口 → 已翻转为下一优先（#61→#62→#63）。
+MVP 已交付（2026-08-12）：顶层动词 eval-suspected-contradictions（run/trend/review，仅 run 实装）+ 自有 query-conditioned one-call-one-pair judge（非 cross_modal panel）+ 现有 takes 语料配对发现 + 与 TS 一致的 6 类 verdict / severity 分类法 + judge-errors 一等公民 + 空语料诚实 Err。MVP 自身零新引擎方法。
+
+DEFERRED（需缺失引擎方法）：retrieval 配对发现（engine.hybridSearch / embed_query）、trend（run-row ASCII 图表 + DB）、review 子命令——这些依赖 hybrid_search / listActiveTakesForPages，Rust 尚未 port。
+
+诚实缺口：无 LLM key 时 judge 调用失败 → judge-errors 计入分母（已测）；不伪 PASS。
 <!-- ROADMAP_SECTION_END -->
