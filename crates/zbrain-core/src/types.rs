@@ -487,6 +487,11 @@ pub struct TakesListOpts {
     pub limit: Option<u32>,
     pub offset: Option<u32>,
     pub takes_holders_allow_list: Option<Vec<String>>,
+    /// Restrict to takes on any of the given pages. Faithful Rust port of the
+    /// TS `listActiveTakesForPages(pageIds)` batch method — retrieval pairing
+    /// in `eval/contradictions.rs` fetches takes for every retrieved page in a
+    /// single round-trip. `None` (default) disables the filter.
+    pub page_ids: Option<Vec<u64>>,
 }
 
 /// Options for [`crate::engine::BrainEngine::search_takes`].

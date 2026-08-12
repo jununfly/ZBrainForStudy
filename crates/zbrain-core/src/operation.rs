@@ -3155,6 +3155,7 @@ impl TypedOperation for TakesListOperation {
             // subset of holders can never read other holders' takes, even
             // though the engine returns them for trusted local callers.
             takes_holders_allow_list: ctx.takes_holders_allow_list.clone(),
+            page_ids: None,
         };
         let takes = engine.list_takes(&opts).await?;
         let total = takes.len() as u64;

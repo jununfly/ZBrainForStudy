@@ -8,11 +8,16 @@
 //! severity taxonomy, query-conditioned one-call-one-pair judge, judge-errors
 //! counted as first-class) but deliberately narrower:
 //!
-//! - Pair discovery uses the **existing takes corpus** (enumerate candidate
-//!   pairs from sampled takes), NOT `engine.hybridSearch` retrieval. The
-//!   retrieval-based discovery path is deferred (it needs `hybrid_search` /
-//!   `embed_query` engine methods that are not yet ported — see roadmap node
-//!   1-1-5-4).
+//! Pair discovery has two strategies, selectable via [`PairingMode`]:
+//!   * `Corpus` (MVP default): enumerate candidate pairs from sampled takes
+//!     (cross-page + intra-page takes).
+//!   * `Retrieval` (extension): run `crate::search::hybrid_search` per query,
+//!     take the top-K pages, and pair them cross-page (page `compiled_truth`
+//!     vs page) and intra-page (page `compiled_truth` vs that page's active
+//!     takes, fetched in one batch via `TakesListOpts.page_ids` — the Rust
+//!     port of TS `listActiveTakesForPages`). This is the retrieval-discovery
+//!     path that was deferred at MVP time; it no longer depends on unported
+//!     engine methods (see roadmap node 1-1-5-4).
 //! - Only the `run` probe is implemented. The `trend` (run-row ASCII chart)
 //!   and `review` (surface latest findings) subcommands are present in the CLI
 //!   but return an informative "deferred in MVP" error.
@@ -31,8 +36,9 @@ use std::path::PathBuf;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::engine::BrainEngine;
+use crate::engine::{BrainEngine, SearchResult};
 use crate::eval::cross_modal::ChatRequest;
+use crate::search::{hybrid_search, HybridSearchOpts};
 use crate::types::{Take, TakesListOpts};
 
 /// The six-member verdict taxonomy, faithful to
@@ -105,13 +111,44 @@ pub struct ContradictionPair {
     pub b: PairMember,
 }
 
-/// How the pair was constructed in the MVP (without hybrid_search retrieval).
+/// How the pair was constructed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PairKind {
-    /// Takes from two different pages.
+    /// Takes from two different pages (Corpus mode).
     CrossPage,
-    /// Two takes within the same page.
+    /// Two takes within the same page (Corpus mode).
     IntraPage,
+    /// Two different pages' `compiled_truth` (Retrieval mode, cross-page).
+    RetrievalCross,
+    /// A page's `compiled_truth` vs one of that page's active takes
+    /// (Retrieval mode, intra-page). Mirrors TS `intra_page_chunk_take`.
+    RetrievalIntra,
+}
+
+/// Which discovery strategy [`run`] uses to build candidate pairs.
+#[derive(Debug, Clone)]
+pub enum PairingMode {
+    /// Sample takes from the corpus and pair them (MVP default).
+    Corpus,
+    /// Retrieval-based discovery: run `hybrid_search` for each query, take the
+    /// top-K pages, and pair them cross/intra. `top_k` is the per-query limit.
+    Retrieval {
+        /// One or more retrieval queries; each yields its own candidate pairs.
+        queries: Vec<String>,
+        /// Max pages (`limit`) passed to `hybrid_search` per query.
+        top_k: usize,
+    },
+}
+
+/// A lightweight, testable projection of a `SearchResult` page used by the
+/// retrieval pairing builder. Decouples [`build_retrieval_pairs`] from the
+/// full `SearchResult`/`Page` shape so it can be exercised without standing up
+/// a search engine.
+#[derive(Debug, Clone)]
+pub struct RetrievalHit {
+    pub page_id: u64,
+    pub compiled_truth: String,
+    pub effective_date: Option<String>,
 }
 
 /// The judge's parsed verdict for a single pair.
@@ -206,6 +243,8 @@ pub struct ContradictionOpts<'a> {
     pub max_pairs: usize,
     /// Conditioning query string applied to every pair (query-conditioned judge).
     pub query: String,
+    /// Pair discovery strategy (Corpus default, or Retrieval extension).
+    pub pairing: PairingMode,
     /// Judge model string (`provider:model`). Resolved by the CLI layer.
     pub judge_model: String,
     /// UTF-8-safe per-pair truncation budget.
@@ -337,6 +376,82 @@ fn build_pairs(takes: &[Take], max_pairs: usize, query: &str) -> Vec<Contradicti
     pairs
 }
 
+/// Build retrieval-based candidate pairs from a single query's top-K results.
+///
+/// Faithful to TS `generateCrossSlugPairs` + `generateIntraPagePairs` but
+/// adapted to Rust's **page-level** retrieval surface (Rust `hybrid_search`
+/// returns pages, not chunks):
+///   * `RetrievalCross`: every distinct-page pair of hits (page
+///     `compiled_truth` vs page `compiled_truth`).
+///   * `RetrievalIntra`: each hit's `compiled_truth` paired with every active
+///     take on that page (`takes_by_page`), mirroring TS `intra_page_chunk_take`.
+///
+/// `max_pairs` is a hard cap applied in cross-first then intra-page order. Each
+/// pair inherits `query` as its conditioning string (TS conditions the judge
+/// on the originating query).
+pub fn build_retrieval_pairs(
+    query: &str,
+    hits: &[RetrievalHit],
+    takes_by_page: &HashMap<u64, Vec<Take>>,
+    max_pairs: usize,
+) -> Vec<ContradictionPair> {
+    let mut pairs: Vec<ContradictionPair> = Vec::new();
+    let member_from_hit = |h: &RetrievalHit| PairMember {
+        page_id: h.page_id,
+        take_id: 0,
+        claim: h.compiled_truth.clone(),
+        kind: "page".to_string(),
+        holder: String::new(),
+        since: h.effective_date.clone(),
+    };
+
+    // Cross-page pairs (distinct page ids only).
+    for i in 0..hits.len() {
+        for j in (i + 1)..hits.len() {
+            if hits[i].page_id == hits[j].page_id {
+                continue;
+            }
+            pairs.push(ContradictionPair {
+                kind: PairKind::RetrievalCross,
+                query: query.to_string(),
+                a: member_from_hit(&hits[i]),
+                b: member_from_hit(&hits[j]),
+            });
+            if pairs.len() >= max_pairs {
+                return pairs;
+            }
+        }
+    }
+
+    // Intra-page pairs (page compiled_truth vs that page's active takes).
+    for h in hits {
+        let Some(takes) = takes_by_page.get(&h.page_id) else {
+            continue;
+        };
+        let page_member = member_from_hit(h);
+        for t in takes {
+            pairs.push(ContradictionPair {
+                kind: PairKind::RetrievalIntra,
+                query: query.to_string(),
+                a: page_member.clone(),
+                b: PairMember {
+                    page_id: t.page_id,
+                    take_id: t.id,
+                    claim: t.claim.clone(),
+                    kind: t.kind.clone(),
+                    holder: t.holder.clone(),
+                    since: t.since_date.clone(),
+                },
+            });
+            if pairs.len() >= max_pairs {
+                return pairs;
+            }
+        }
+    }
+
+    pairs
+}
+
 /// Run the suspected-contradictions probe.
 ///
 /// Samples `opts.sample` takes, builds candidate pairs, judges each with the
@@ -348,21 +463,68 @@ where
     F: Fn(ChatRequest) -> Fut,
     Fut: std::future::Future<Output = Result<String>>,
 {
-    let takes = opts
-        .engine
-        .list_takes(&TakesListOpts {
-            limit: Some(opts.sample as u32),
-            ..Default::default()
-        })
-        .await?;
-    let n_takes = takes.len();
-    if n_takes == 0 {
-        anyhow::bail!(
-            "eval-suspected-contradictions: no takes to probe (empty corpus). Seed takes first (e.g. `zbrain extract takes`)."
-        );
-    }
-
-    let pairs = build_pairs(&takes, opts.max_pairs, &opts.query);
+    let (pairs, n_takes) = match &opts.pairing {
+        PairingMode::Corpus => {
+            let takes = opts
+                .engine
+                .list_takes(&TakesListOpts {
+                    limit: Some(opts.sample as u32),
+                    ..Default::default()
+                })
+                .await?;
+            let n = takes.len();
+            if n == 0 {
+                anyhow::bail!(
+                    "eval-suspected-contradictions: no takes to probe (empty corpus). Seed takes first (e.g. `zbrain extract takes`)."
+                );
+            }
+            (build_pairs(&takes, opts.max_pairs, &opts.query), n)
+        }
+        PairingMode::Retrieval { queries, top_k } => {
+            let mut pairs: Vec<ContradictionPair> = Vec::new();
+            let mut n_takes_total: usize = 0;
+            for q in queries {
+                if pairs.len() >= opts.max_pairs {
+                    break;
+                }
+                // Retrieval (page-level). hybrid_search fails open to
+                // keyword-only when no embedding provider is configured, so
+                // this works offline and improves once embeddings are wired.
+                let results: Vec<SearchResult> =
+                    hybrid_search(opts.engine, q, &HybridSearchOpts::with_limit(*top_k)).await?;
+                let page_ids: Vec<u64> = results.iter().map(|r| r.page.id).collect();
+                let fetched = if page_ids.is_empty() {
+                    Vec::new()
+                } else {
+                    // Batch fetch of all retrieved pages' active takes — the
+                    // Rust port of TS `listActiveTakesForPages`.
+                    opts.engine
+                        .list_takes(&TakesListOpts {
+                            page_ids: Some(page_ids),
+                            active: Some(true),
+                            ..Default::default()
+                        })
+                        .await?
+                };
+                n_takes_total += fetched.len();
+                let mut takes_by_page: HashMap<u64, Vec<Take>> = HashMap::new();
+                for t in fetched {
+                    takes_by_page.entry(t.page_id).or_default().push(t);
+                }
+                let hits: Vec<RetrievalHit> = results
+                    .iter()
+                    .map(|r| RetrievalHit {
+                        page_id: r.page.id,
+                        compiled_truth: r.page.compiled_truth.clone(),
+                        effective_date: r.page.effective_date.clone(),
+                    })
+                    .collect();
+                let remaining = opts.max_pairs - pairs.len();
+                pairs.extend(build_retrieval_pairs(q, &hits, &takes_by_page, remaining));
+            }
+            (pairs, n_takes_total)
+        }
+    };
     let n_pairs = pairs.len();
 
     let system = judge_system_prompt();
@@ -479,7 +641,8 @@ fn write_summary_receipt(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::InMemoryEngine;
+    use crate::engine::{InMemoryEngine, PageInput};
+    use crate::search::{hybrid_search, HybridSearchOpts};
     use crate::types::Take;
 
     /// A fake judge returning a clean `no_contradiction` verdict, so the full
@@ -537,6 +700,7 @@ mod tests {
             sample: 50,
             max_pairs: 20,
             query: DEFAULT_QUERY.to_string(),
+            pairing: PairingMode::Corpus,
             judge_model: DEFAULT_JUDGE_MODEL.to_string(),
             max_pair_chars: 1500,
             max_tokens: 1000,
@@ -624,5 +788,167 @@ mod tests {
         let opts = base_opts(&engine, receipt_dir);
         let err = run(&opts, &fake_clean_judge).await.unwrap_err();
         assert!(err.to_string().contains("no takes to probe"));
+    }
+
+    #[test]
+    fn build_retrieval_pairs_builds_cross_and_intra() {
+        // Two distinct pages -> one cross-page pair.
+        let hits = vec![
+            RetrievalHit {
+                page_id: 1,
+                compiled_truth: "Markets show rising valuation concerns.".to_string(),
+                effective_date: Some("2024-01-01".to_string()),
+            },
+            RetrievalHit {
+                page_id: 2,
+                compiled_truth: "Valuation is fair and markets are efficient.".to_string(),
+                effective_date: None,
+            },
+        ];
+        // Two active takes on page 1 only.
+        let takes_by_page = HashMap::from([
+            (
+                1u64,
+                vec![
+                    Take {
+                        id: 100,
+                        page_id: 1,
+                        row_num: 1,
+                        claim: "valuation looks stretched".to_string(),
+                        kind: "bet".to_string(),
+                        holder: "alice".to_string(),
+                        weight: 0.7,
+                        since_date: None,
+                        until_date: None,
+                        source: Some("note".to_string()),
+                        superseded_by: None,
+                        active: true,
+                        resolved_at: None,
+                        resolved_quality: None,
+                        resolved_outcome: None,
+                        resolved_evidence: None,
+                        resolved_value: None,
+                        resolved_unit: None,
+                        resolved_by: None,
+                        created_at: "2026-01-01T00:00:00Z".to_string(),
+                        updated_at: "2026-01-01T00:00:00Z".to_string(),
+                    },
+                    Take {
+                        id: 101,
+                        page_id: 1,
+                        row_num: 2,
+                        claim: "valuation is reasonable".to_string(),
+                        kind: "bet".to_string(),
+                        holder: "bob".to_string(),
+                        weight: 0.6,
+                        since_date: None,
+                        until_date: None,
+                        source: Some("note".to_string()),
+                        superseded_by: None,
+                        active: true,
+                        resolved_at: None,
+                        resolved_quality: None,
+                        resolved_outcome: None,
+                        resolved_evidence: None,
+                        resolved_value: None,
+                        resolved_unit: None,
+                        resolved_by: None,
+                        created_at: "2026-01-01T00:00:00Z".to_string(),
+                        updated_at: "2026-01-01T00:00:00Z".to_string(),
+                    },
+                ],
+            ),
+        ]);
+
+        // Cap of 20 should keep all 3 pairs (1 cross + 2 intra).
+        let pairs = build_retrieval_pairs("valuation", &hits, &takes_by_page, 20);
+        assert_eq!(pairs.len(), 3);
+        let cross = pairs.iter().filter(|p| matches!(p.kind, PairKind::RetrievalCross)).count();
+        let intra = pairs.iter().filter(|p| matches!(p.kind, PairKind::RetrievalIntra)).count();
+        assert_eq!(cross, 1);
+        assert_eq!(intra, 2);
+        // Every pair inherits the conditioning query.
+        assert!(pairs.iter().all(|p| p.query == "valuation"));
+        // Intra pair b is the actual take (take_id set, holder preserved).
+        let intra_pair = pairs.iter().find(|p| matches!(p.kind, PairKind::RetrievalIntra)).unwrap();
+        assert_eq!(intra_pair.b.take_id, 100);
+        assert_eq!(intra_pair.b.holder, "alice");
+        // Page member uses page effective_date as its date anchor.
+        assert_eq!(intra_pair.a.since.as_deref(), Some("2024-01-01"));
+
+        // Hard cap is respected.
+        let capped = build_retrieval_pairs("valuation", &hits, &takes_by_page, 1);
+        assert_eq!(capped.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn run_retrieval_pairs_without_api_key() {
+        let engine = InMemoryEngine::new();
+        // Two pages whose compiled_truth shares the retrieval keyword.
+        engine
+            .put_page(
+                "valuation-notes",
+                Some("default"),
+                &PageInput {
+                    page_type: "note".to_string(),
+                    title: "Valuation notes".to_string(),
+                    compiled_truth: "Markets show rising valuation concerns this quarter.".to_string(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        engine
+            .put_page(
+                "markets-notes",
+                Some("default"),
+                &PageInput {
+                    page_type: "note".to_string(),
+                    title: "Markets notes".to_string(),
+                    compiled_truth: "Valuation is fair and markets are efficient.".to_string(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        // Resolve the retrieved page ids so takes attach to the right pages.
+        let results = hybrid_search(&engine, "valuation", &HybridSearchOpts::with_limit(5))
+            .await
+            .unwrap();
+        assert!(results.len() >= 2, "expected both pages to match 'valuation'");
+        let pid1 = results[0].page.id;
+        // One active take on page 1 -> an intra-page pair candidate.
+        engine.add_take(mk_take(900, pid1, "valuation looks stretched here"));
+
+        let receipt_dir =
+            std::env::temp_dir().join(format!("sc_test_retrieval_{}", std::process::id()));
+        std::fs::create_dir_all(&receipt_dir).ok();
+
+        let opts = ContradictionOpts {
+            engine: &engine,
+            sample: 50,
+            max_pairs: 20,
+            query: DEFAULT_QUERY.to_string(),
+            pairing: PairingMode::Retrieval {
+                queries: vec!["valuation".to_string()],
+                top_k: 5,
+            },
+            judge_model: DEFAULT_JUDGE_MODEL.to_string(),
+            max_pair_chars: 1500,
+            max_tokens: 1000,
+            receipt_dir,
+            slug: Some("test-sc-retrieval".to_string()),
+        };
+        let res = run(&opts, &fake_clean_judge).await.unwrap();
+        // 2 pages -> 1 cross pair; page 1 has 1 take -> 1 intra pair.
+        assert_eq!(res.n_pairs, 2, "expected 1 cross + 1 intra pair");
+        assert_eq!(res.judged, 2);
+        assert_eq!(res.n_takes, 1, "one active take fetched for the page");
+        assert!(res
+            .findings
+            .iter()
+            .all(|f| f.kind == "RetrievalCross" || f.kind == "RetrievalIntra"));
+        assert!(res.receipt_path.is_some());
     }
 }

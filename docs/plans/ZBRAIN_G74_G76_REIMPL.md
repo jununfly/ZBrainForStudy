@@ -22,7 +22,9 @@ TS 源实为 18 文件子系统（orchestrator/judge/calibration/cost-tracker/se
 
 MVP 已交付（2026-08-12）：顶层动词 eval-suspected-contradictions（run/trend/review，仅 run 实装）+ 自有 query-conditioned one-call-one-pair judge（非 cross_modal panel）+ 现有 takes 语料配对发现 + 与 TS 一致的 6 类 verdict / severity 分类法 + judge-errors 一等公民 + 空语料诚实 Err。MVP 自身零新引擎方法。
 
-DEFERRED（需缺失引擎方法）：retrieval 配对发现（engine.hybridSearch / embed_query）、trend（run-row ASCII 图表 + DB）、review 子命令——这些依赖 hybrid_search / listActiveTakesForPages，Rust 尚未 port。
+retrieval 配对发现延伸已 port（2026-08-11）：新增 `PairingMode::Retrieval`（per-query `hybrid_search` 取 top-K 页面 → cross/intra 配对；cross = 页面 compiled_truth×页面，intra = 页面 compiled_truth×该页 takes，faithful 适配 TS chunk 级逻辑到 Rust 页面级）+ `TakesListOpts.page_ids`（三后端 list_takes 批量取 takes，faithful port of TS `listActiveTakesForPages`）+ CLI `--pairing retrieval --queries ... --top-k N`。无 embedding provider 时 hybrid_search fail-open 降级 keyword-only，离线可用；contradictions 模块 6 测试（含 2 retrieval 新测）+ cli 1 解析新测全绿。
+
+DEFERRED：trend（run-row ASCII 图表 + DB）、review 子命令——依赖 TS 专属的 trends/cache 子系统，Rust 尚未 port。
 
 诚实缺口：无 LLM key 时 judge 调用失败 → judge-errors 计入分母（已测）；不伪 PASS。
 <!-- ROADMAP_SECTION_END -->

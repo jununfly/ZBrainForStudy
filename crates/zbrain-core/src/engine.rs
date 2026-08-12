@@ -5836,6 +5836,12 @@ impl BrainEngine for InMemoryEngine {
                     .unwrap_or(true)
             })
             .filter(|t| holder_allowed(&t.holder, &opts.takes_holders_allow_list))
+            .filter(|t| {
+                opts.page_ids
+                    .as_ref()
+                    .map(|ids| ids.contains(&t.page_id))
+                    .unwrap_or(true)
+            })
             .cloned()
             .collect();
         takes.sort_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap_or(std::cmp::Ordering::Equal));

@@ -2911,6 +2911,7 @@ impl BrainEngine for PostgresEngine {
                     OR ($5::boolean = true AND resolved_at IS NOT NULL) \
                     OR ($5::boolean = false AND resolved_at IS NULL)) \
                AND ($6::text[] IS NULL OR holder = ANY($6::text[])) \
+             AND ($9::bigint[] IS NULL OR page_id = ANY($9::bigint[])) \
              ORDER BY weight DESC \
              LIMIT $7 OFFSET $8",
         )
@@ -2922,6 +2923,7 @@ impl BrainEngine for PostgresEngine {
         .bind(opts.takes_holders_allow_list.clone())
         .bind(opts.limit.unwrap_or(100) as i64)
         .bind(opts.offset.unwrap_or(0) as i64)
+        .bind(opts.page_ids.as_ref().map(|v| v.iter().map(|x| *x as i64).collect::<Vec<i64>>()))
         .fetch_all(pool)
         .await
         .map_err(|e| Error::engine(format!("list_takes: {e}")))?;

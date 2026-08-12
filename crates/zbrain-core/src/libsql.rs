@@ -3873,6 +3873,17 @@ impl BrainEngine for LibsqlEngine {
             }
         }
         append_takes_holder_filter(&mut sql, &mut values, &opts.takes_holders_allow_list);
+        if let Some(ids) = &opts.page_ids {
+            if !ids.is_empty() {
+                let placeholders: Vec<String> = (0..ids.len())
+                    .map(|i| format!("?{}", values.len() + 1 + i))
+                    .collect();
+                sql.push_str(&format!(" AND page_id IN ({})", placeholders.join(", ")));
+                for id in ids {
+                    values.push(::libsql::Value::from(*id as i64));
+                }
+            }
+        }
         sql.push_str(" ORDER BY weight DESC");
         let limit = opts.limit.unwrap_or(100) as i64;
         let offset = opts.offset.unwrap_or(0) as i64;

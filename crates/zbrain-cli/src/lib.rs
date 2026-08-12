@@ -1650,6 +1650,21 @@ pub struct EvalSuspectedContradictionsRunArgs {
     /// Emit the run summary as JSON to stdout (progress to stderr).
     #[arg(long)]
     pub json: bool,
+
+    /// Pairing strategy. `corpus` (default): sample takes from the corpus and
+    /// pair them. `retrieval`: run `hybrid_search` per query and pair the top-K
+    /// pages cross/intra (the deferred retrieval-discovery path, now ported).
+    #[arg(long, default_value = "corpus")]
+    pub pairing: String,
+
+    /// Retrieval queries (comma-separated). Each runs hybrid_search. Only used
+    /// when `--pairing retrieval`; defaults to `--query` when omitted.
+    #[arg(long, value_delimiter = ',')]
+    pub queries: Option<Vec<String>>,
+
+    /// Top-K pages per retrieval query. Default 5.
+    #[arg(long, default_value_t = 5)]
+    pub top_k: usize,
 }
 
 /// Args for `eval-suspected-contradictions trend` (deferred in MVP).
@@ -9315,13 +9330,27 @@ async fn run_eval_suspected_contradictions_command(
             let max_tokens = run_args.max_tokens.unwrap_or(2000);
             let query = run_args.query.clone().unwrap_or_else(|| DEFAULT_QUERY.to_string());
 
+            // Pairing strategy (Corpus default, or Retrieval extension).
+            let pairing = if run_args.pairing == "retrieval" {
+                let queries = run_args
+                    .queries
+                    .clone()
+                    .unwrap_or_else(|| vec![query.clone()]);
+                contradictions::PairingMode::Retrieval {
+                    queries,
+                    top_k: run_args.top_k,
+                }
+            } else {
+                contradictions::PairingMode::Corpus
+            };
+
             // Cost hint to stderr (bounded by max_pairs).
             let est_calls = run_args.max_pairs.min(
                 (run_args.sample * (run_args.sample.saturating_sub(1))) / 2,
             );
             eprintln!(
-                "[eval-suspected-contradictions] judge={judge_model} sample={} max_pairs={} (~{est_calls} judge calls, capped)",
-                run_args.sample, run_args.max_pairs
+                "[eval-suspected-contradictions] judge={judge_model} pairing={} sample={} max_pairs={} (~{est_calls} judge calls, capped)",
+                run_args.pairing, run_args.sample, run_args.max_pairs
             );
 
             let providers: Arc<(String, Arc<dyn ChatProvider>)> =
@@ -9354,6 +9383,7 @@ async fn run_eval_suspected_contradictions_command(
                 sample: run_args.sample,
                 max_pairs: run_args.max_pairs,
                 query,
+                pairing,
                 judge_model,
                 max_pair_chars: run_args.max_pair_chars,
                 max_tokens,
@@ -14623,6 +14653,36 @@ mod tests {
             err.contains("eval-suspected-contradictions"),
             "got: {err}"
         );
+    }
+
+    #[test]
+    fn eval_suspected_contradictions_retrieval_flags_parse() {
+        let cli = Cli::try_parse_from([
+            "zbrain",
+            "eval-suspected-contradictions",
+            "run",
+            "--pairing",
+            "retrieval",
+            "--queries",
+            "valuation,markets",
+            "--top-k",
+            "3",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::EvalSuspectedContradictions(args) => match args.action {
+                SuspectedContradictionsAction::Run(r) => {
+                    assert_eq!(r.pairing, "retrieval");
+                    let q = r.queries.expect("queries should be set");
+                    assert_eq!(q.len(), 2);
+                    assert_eq!(q[0], "valuation");
+                    assert_eq!(q[1], "markets");
+                    assert_eq!(r.top_k, 3);
+                }
+                _ => panic!("expected Run action"),
+            },
+            _ => panic!("expected EvalSuspectedContradictions"),
+        }
     }
 
     #[test]
