@@ -21,7 +21,7 @@ This repository is developed across **Windows** (primary, WorkBuddy IDE), **macO
 
 - **DO** `cd` into the repo directory, then run git:
   ```bash
-  cd /c/workspace/github/jununfly/zbrain && git status
+  cd /c/workspace/github/jununfly/ZBrain && git status
   ```
 - **DON'T** use `git -C /c/workspace/.../zbrain ...` or `git clone --local /c/workspace/...`. The native Windows git binary does **not** understand MSYS/POSIX paths and fails with `No such file or directory` even when `ls`/`cp` see the path perfectly fine.
 - **Exception / mental model:** shell builtins and utilities (`cd`, `cp`, `ls`, `find`, `mv`) **do** translate `/c/...` correctly via MSYS. So use MSYS `cp -a` to copy `.git`, but never `git -C`.

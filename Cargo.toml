@@ -15,7 +15,7 @@ version = "0.0.1"
 edition = "2021"
 authors = ["zbrain contributors"]
 license = "MIT"
-repository = "https://github.com/jununfly/zbrain"
+repository = "https://github.com/jununfly/ZBrain"
 rust-version = "1.88"  # MSRV — bumped from 1.82 for pg-embed v1.0 (built/tested on stable, currently 1.95.x).
 
 [workspace.lints.rust]

@@ -42,4 +42,5 @@
 
 ## 其他
 - Admin 路由 Rust 在 /*、TS 在 /admin/api/*（保持）。skillpack 测试仅 --all-features 下编译。
+- **`zbrain-clean` 备份 clone 已于 2026-08-12 废弃**：用户决定不再保留第二份 clone，需要时从 `origin/rust-rewrite` 重新 `git clone`。这意味着 `docs/CROSS_OS_AGENT_GUIDE.md` §0 的"双 clone 互为健康基准 + 原地重建"恢复流程已过时，**不可再信**；当前只有 `zbrain` 一个活跃工作副本，恢复靠重新克隆而非 zbrain-clean。
 - TS 测试套件（tests/，663 文件）已于 2026-08-08 整体退役；Rust 侧 crates/*/tests/*.rs + 内联 #[cfg(test)] 为唯一测试真相源。nightly_probe.rs 的 NIGHTLY_FIXTURE_REL_PATH 死引用已清（run_long_mem_eval 现为 G58 占位、无条件返 Err）→ 全 workspace `cargo test --workspace` 已验证 green（3694 passed / 0 failed）。
