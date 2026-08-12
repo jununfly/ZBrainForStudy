@@ -1,7 +1,7 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-g74-g76-reimpl.json` | 最后更新: 2026-08-11 15:43:57
+> 数据文件: `zbrain-g74-g76-reimpl.json` | 最后更新: 2026-08-12 11:01:30
 
 [~][X+] 1. ZBrain G74/G76 eval+extract 命令 Rust 重实现
 ├── [~][X+] 1-1. G74 eval 族命令 Rust 重实现（19 命令）
@@ -16,17 +16,9 @@
     ├── [ ][X+] 1-2-3. G76b：extract-conversation-facts（真 LLM，blocked by G35）
     └── [ ][X+] 1-2-4. 决策：minion extract job type 是否接线到新 extract verb
 
-### 当前施工：1-1-5-3. eval-takes-quality（#61，新建 EvalTakesQuality variant）
+### 当前施工：1-1-5-4. eval-suspected-contradictions（#62，最大一族 judge×153）
 
-CORRECTED scope (2026-08-11): not 259L — full surface = command 259L + takes-quality-eval module (runner 274 + receipt-write 94 + replay 83 + regress 96 + trend 83 = 630L) = ~889L TS + 12 test specs. Judge panel (DEFAULT_MODEL_PANEL, 3-model Promise.allSettled) ALREADY ported into cross_modal.rs (#59) -> reuse cross_modal::run_eval, do NOT re-port. takes_scorecard math already in calibration_queries.rs. Genuinely new: takes-specific runner + receipt/replay/regress/trend harness + CLI verb. Recover module from bcafcafd^ (src/core deleted by bcafcafd).
+TS 源 eval-suspected-contradictions.ts 427 行：runContradictionProbe + judge model + 成本预算门。最大一族（judge×153），建议拆子阶段（probe 抽取→judge 评分→severity-classify→cost-prompt→trends 汇总）。诚实缺口：无 LLM key 时降级。
 
-**决策：**
-- Q: 端口范围？ → 待定（round 2 烤问） (raw 体量 ~889L 为三者最大；judge 复用 cross_modal，scorecard 复用 calibration_queries)
-- Q: 顺序重确认（#61 体量已校正为最大）？ → 维持 #61→#63→#62：#61 复用度最高(judge+scorecard 已就位)+最自包含 (raw 体量 #61~889L>#62 427L>#63 399L，但 #61 新增集中且 judge/scorecard 大块已免做；#62 153-judge 矩阵、#63 orchestrator 前置为更差开局点)
-- Q: 端口范围？ → MVP 先行：takes runner + 复用 cross_modal::run_eval judge + takes_scorecard 数学 + CLI verb；诚实 Err 无 key (与增量交付/诚实降级哲学一致；receipt/replay/regress/trend(356L) 拆后续子节点)
-- Q: judge 复用？ → 复用 cross_modal::run_eval（三模型 panel），不重 port DEFAULT_MODEL_PANEL (同一套并行 judge 范式，重 port 违反 DRY 且 verdict 汇总语义分叉)
-
-**当前子树：**
-├── [x][X+] 1-1-5-3-1. eval-takes-quality MVP: takes runner + CLI verb + honest Err(no key)
-└── [ ][X+] 1-1-5-3-2. eval-takes-quality harness: receipt/replay/regress/trend playback (356L TS)
+收敛性（2026-08-12 修正）：复用 #59 cross_modal judge panel（DEFAULT_MODEL_PANEL + 默认 dimensions），无新引擎方法、无 generator；比 #63 小得多，单会话可收口 → 已翻转为下一优先（#61→#62→#63）。
 <!-- ROADMAP_SECTION_END -->

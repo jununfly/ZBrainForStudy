@@ -219,6 +219,16 @@
           "q": "无 API key 时构建/验收策略？",
           "answer": "沿用 G58：provider 无关 + mock 单测，无 key 也 cargo test 绿、无 provider 诚实 Err",
           "note": "不为 API key 或 libsql Windows FFI flake 卡构建"
+        },
+        {
+          "q": "下一步优先级重排（推翻 2026-08-09 的 #61→#63→#62）？",
+          "answer": "翻转为 #61 → #62 → #63（#62 优先）",
+          "note": "2026-08-12 对账 git 历史 39e14cd5：#63 实为完整 generator 移植（4 引擎方法缺失 + orchestrator/domain-bank/judges 三模块 + search/embed 集成，多会话量级），原「#63 只需 port 3 引擎方法」前提不成立。#62 复用 cross_modal judge 基础设施、零新引擎方法、无 generator，单会话可收口，故优先。"
+        },
+        {
+          "q": "是否修正 1-1-5-5 过时描述并给 1-1-5-4 补收敛说明？",
+          "answer": "是",
+          "note": "1-1-5-5：「3 引擎方法」→ 真实依赖面（4 引擎方法 + 三模块 + search/embed）；1-1-5-4：补「复用 cross_modal，收敛、无新引擎方法」。地图须反映真实范围，避免后续 agent 按低估前提误判。"
         }
       ],
       "notes": "5 个真 LLM eval 命令（D 类；eval-brainstorm 由 1-1-4 的 C 类复核中移入）。通用 LLM seam（ChatProvider + ai/tool_loop.rs）已 port 完，理论上不阻塞，但各自需 port 领域 runner。保真策略用户确认 q-0 全保真 port。进度：#59 cross-modal 已完成（1-1-5-1，core+CLI+e2e 全绿）；#60 longmemeval / #61 takes-quality / #62 suspected-contradictions / #63 brainstorm 待启动（各建独立子节点）。后续族开工前一律先「TS 源 vs Rust 现状」对账。"
@@ -258,7 +268,7 @@
     "1-1-5-3": {
       "id": "1-1-5-3",
       "label": "eval-takes-quality（#61，新建 EvalTakesQuality variant）",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-1-5",
       "children": [
@@ -292,22 +302,22 @@
     "1-1-5-4": {
       "id": "1-1-5-4",
       "label": "eval-suspected-contradictions（#62，最大一族 judge×153）",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "explore",
       "parent": "1-1-5",
       "children": [],
       "decisions": [],
-      "notes": "TS 源 eval-suspected-contradictions.ts 427 行：runContradictionProbe + judge model + 成本预算门。最大一族（judge×153），建议拆子阶段（probe 抽取→judge 评分→severity-classify→cost-prompt→trends 汇总）。诚实缺口：无 LLM key 时降级。"
+      "notes": "TS 源 eval-suspected-contradictions.ts 427 行：runContradictionProbe + judge model + 成本预算门。最大一族（judge×153），建议拆子阶段（probe 抽取→judge 评分→severity-classify→cost-prompt→trends 汇总）。诚实缺口：无 LLM key 时降级。\n\n收敛性（2026-08-12 修正）：复用 #59 cross_modal judge panel（DEFAULT_MODEL_PANEL + 默认 dimensions），无新引擎方法、无 generator；比 #63 小得多，单会话可收口 → 已翻转为下一优先（#61→#62→#63）。"
     },
     "1-1-5-5": {
       "id": "1-1-5-5",
-      "label": "eval-brainstorm（#63，前置 port 3 引擎方法）",
+      "label": "eval-brainstorm（#63，完整 generator 移植：4 引擎方法 + orchestrator/domain-bank/judges 三模块 + search/embed）",
       "status": "pending",
       "mode": "explore",
       "parent": "1-1-5",
       "children": [],
       "decisions": [],
-      "notes": "eval-brainstorm 复核为真 LLM 命令（core/brainstorm/orchestrator.ts 经 gateway.chat + judges.ts）。前置：需 port 3 个引擎方法 listPrefixSampledPages / enumeratePrefixes / fetchFar，再全族 port。从 D 类移入（原 1-1-4 notes 记录）。"
+      "notes": "真实依赖面（2026-08-12 对账 git 历史 39e14cd5 修正）：\n- TS runBrainstorm 是生成器（先生成 ideas 再打分），非对已有内容打分。\n- 缺失引擎方法：list_prefix_sampled_pages / list_corpus_sample / get_embeddings_by_chunk_ids（×3），外加 search/ai 层 hybrid_search / embed_query。\n- 需新建 3 模块：orchestrator / domain-bank / judges。\n- eval gate 3 轴：DISTANCE≥0.4 / USEFULNESS≥3.5 / GROUNDING=1.0（复用 is_brainstorm_output 标记检测，Rust 已有）。\n- 体量：多会话量级（4 引擎方法 + 3 模块 + search/embed 集成），非一刀可收口。\n- is_brainstorm_output 标记检测 Rust 已有（transcript_discovery.rs）。"
     },
     "1-1-5-3-1": {
       "id": "1-1-5-3-1",
@@ -332,7 +342,7 @@
   },
   "metadata": {
     "created": "2026-08-09 00:23:13",
-    "updated": "2026-08-11 15:43:57",
+    "updated": "2026-08-12 11:01:30",
     "md_file": "docs/plans/ZBRAIN_G74_G76_REIMPL.md"
   }
 }
