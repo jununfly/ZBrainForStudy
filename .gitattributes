@@ -1,0 +1,6 @@
+# ZBrain cross-platform line-ending policy
+# lib.rs MUST stay CRLF (Windows convention); git forces CRLF in the
+# worktree so agents on any OS cannot commit LF and trigger N/N churn.
+crates/zbrain-cli/src/lib.rs text eol=crlf
+# All other text files: normalize repo storage to LF, checkout per-OS.
+* text=auto
