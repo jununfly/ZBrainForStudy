@@ -22,6 +22,15 @@ name: Rust Tests
 # Scope: libsql-backed integration tests + the crate's lib unit tests. The
 # postgres-backed tests (pg-embed) are intentionally excluded — they have
 # their own environment requirements and are out of scope for this flake fix.
+#
+# `eol-check` job (org-level CRLF/LF invariant enforcement): mirrors the
+# .gitattributes contract so a PR that flips lib.rs to LF (or any other file
+# whose canonical line ending is fixed) goes red *before* merge. Pairs with
+# .gitattributes (the authoritative enforcement) to catch things the
+# attribute alone can't — e.g. files not listed in .gitattributes that end
+# up with mixed EOL, or pre-existing violations that survived a re-clone.
+# Runs on Linux because git's CRLF behavior is platform-dependent and we
+# want one canonical check.
 
 on:
   push:
@@ -30,12 +39,18 @@ on:
       - 'crates/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
+      - '.gitattributes'
+      - '.github/workflows/**'
+      - 'docs/**'
   pull_request:
     branches: [master, rust-rewrite]
     paths:
       - 'crates/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
+      - '.gitattributes'
+      - '.github/workflows/**'
+      - 'docs/**'
   workflow_dispatch:
 
 permissions:
@@ -46,10 +61,90 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  eol-check:
+    name: EOL invariant (lib.rs=CRLF, no mixed)
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Install git (CRLF probing)
+        run: |
+          set -euo pipefail
+          apt-get update -qq
+          apt-get install -y -qq git >/dev/null
+
+      - name: Assert lib.rs is CRLF (per .gitattributes text eol=crlf)
+        run: |
+          set -euo pipefail
+          # git ls-files --eol prints 5 tab-separated fields:
+          #   <i_eol> <w_eol> <attr/text=auto> <attr_key=val>... <path>
+          # Our contract from .gitattributes (`text eol=crlf`) is:
+          #   worktree MUST be CRLF (w/crlf) and the `eol=crlf` attr
+          #   MUST be present. Index storage is intentionally LF.
+          EOL="$(git ls-files --eol crates/zbrain-cli/src/lib.rs)"
+          echo "EOL: $EOL"
+          if ! echo "$EOL" | grep -q 'w/crlf'; then
+            echo "::error::lib.rs worktree is not CRLF (.gitattributes says text eol=crlf). Got: $EOL"
+            exit 1
+          fi
+          if ! echo "$EOL" | grep -q 'eol=crlf'; then
+            echo "::error::lib.rs is missing the eol=crlf attribute. Re-apply .gitattributes. Got: $EOL"
+            exit 1
+          fi
+
+      - name: Assert no file is mixed EOL (mixed = index LF but worktree CRLF or vice versa)
+        run: |
+          set -euo pipefail
+          # `git ls-files --eol` flags an `i/lf w/crlf` mismatch when a file
+          # is *stored* as LF but *checked out* as CRLF. For our repo the
+          # inverse (i/crlf w/lf) and any i/mixed/w/mixed are also violations.
+          # We exclude .git itself (no entries) and binary files (git shows
+          # `-` for non-text EOL).
+          BAD="$(git ls-files --eol \
+                  | grep -E 'i/(crlf|mixed)/.*w/(lf|mixed)/' \
+                  || true)"
+          if [ -n "$BAD" ]; then
+            echo "::error::The following tracked files have mismatched index/worktree EOL:"
+            echo "$BAD"
+            exit 1
+          fi
+
+      - name: Assert no .rs file (other than lib.rs) contains CR bytes in HEAD
+        run: |
+          set -euo pipefail
+          # Convention: every crate's `lib.rs` is the entry point and has the
+          # Windows CRLF contract; all other .rs files must be pure LF. We
+          # check the *index* (HEAD) for CR bytes across all non-lib .rs
+          # files in a single `git cat-file --batch` pass.
+          # Note: all 7 `lib.rs` are CRLF by convention (the 6 non-cli ones
+          # are CRLF via git's text=auto behavior on Windows checkouts); if
+          # a non-lib .rs has any CR byte, that is the leak.
+          git ls-files '*.rs' | grep -v '/lib\.rs$' > /tmp/_rs.txt
+          COUNT=$(wc -l < /tmp/_rs.txt)
+          # git cat-file --batch output records of the form:
+          #   <40-hex-sha> <size>\n
+          #   <content of exactly that size>\n
+          # Strip the header lines (40 hex chars + space + digits) by
+          # keeping only lines that do NOT match the header pattern.
+          git ls-tree HEAD -- $(cat /tmp/_rs.txt) \
+            | awk '{print $3}' \
+            | git cat-file --batch \
+            | grep -vE '^[0-9a-f]{40} [0-9]+$' \
+            > /tmp/_rs.blobs
+          CR=$(tr -dc '\r' < /tmp/_rs.blobs | wc -c)
+          rm -f /tmp/_rs.txt /tmp/_rs.blobs
+          if [ "$CR" -ne 0 ]; then
+            echo "::error::Found $CR CR bytes across $COUNT non-lib .rs files in HEAD"
+            exit 1
+          fi
+          echo "OK: $COUNT non-lib .rs files, 0 CR bytes"
+
   cargo-test:
     name: cargo test (zbrain-core, Linux + retry)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    needs: eol-check
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
