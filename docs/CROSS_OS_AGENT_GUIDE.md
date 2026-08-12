@@ -11,9 +11,9 @@ This repository is developed across **Windows** (primary, WorkBuddy IDE), **macO
 - **DO** verify the repo is healthy before any large git operation:
   - `git fsck --full` must exit `0` with no `missing` objects.
   - `git status` should show no unexpectedly large diffs.
-- **History lesson:** the original `zbrain` working copy was corrupted by a missing-tree object (`0e0d0a2d`, a leftover from an earlier `git stash` disaster that orphaned HEAD). It had to be rebuilt **in place** from the healthy `zbrain-clean` clone. Trust `git fsck`, not the folder name.
+- **History lesson:** the original `zbrain` working copy was corrupted by a missing-tree object (`0e0d0a2d`, a leftover from an earlier `git stash` disaster that orphaned HEAD). It had to be rebuilt **in place** from the healthy `zbrain-clean` clone. Trust `git fsck`, not the folder name. *(Note: the `zbrain-clean` sibling backup clone was **removed on 2026-08-12** — treat this lesson as historical; do not assume that clone still exists.)*
 - **DON'T** assume the IDE's default workspace folder is the healthy / active clone. Always confirm HEAD and run `git fsck` first.
-- **DO** treat `zbrain` and `zbrain-clean` as equivalent healthy clones after the rebuild — both sit at the same HEAD. Keep them in sync through `origin/rust-rewrite` (fast-forward only).
+- **DO** treat the single active clone (`zbrain`) as the only source of truth. The `zbrain-clean` sibling backup clone was **removed on 2026-08-12** — there is no longer a second clone to recover from. Recovering a corrupted `zbrain` now means a **fresh clone from `origin/rust-rewrite`** (see §2), not copying `.git` from a local sibling.
 
 ---
 
@@ -32,10 +32,11 @@ This repository is developed across **Windows** (primary, WorkBuddy IDE), **macO
 
 - **DON'T** `rm -rf` or `mv` the whole repo root. The IDE (WorkBuddy) locks the worktree root → `Device or resource busy` (EBUSY).
 - **DON'T** rely on `rm -rf` succeeding. The safe-delete layer (genie-trash) intercepts it; on abort it can relocate `.git` and root files into the trash, leaving a rootless, headless worktree.
-- **DO** rebuild a corrupted repo **in place without renaming**:
+- **DO** rebuild a corrupted repo **in place without renaming**. Because the `zbrain-clean` sibling clone was removed (2026-08-12), the healthy `.git` source is now a **fresh clone from `origin/rust-rewrite`** — not a local sibling:
   ```bash
-  cp -a <healthy-clone>/.git <target>/.git     # MSYS cp creates subdirs, bypasses root lock
-  cd <target> && git reset --hard HEAD          # restore all tracked files to HEAD
+  git clone --no-checkout <origin-url> /tmp/zbrain-fresh   # fetches a clean .git
+  cp -a /tmp/zbrain-fresh/.git <target>/.git               # MSYS cp creates subdirs, bypasses root lock
+  cd <target> && git reset --hard HEAD                     # restore all tracked files to HEAD
   ```
 - **DO** back up unique untracked files (e.g. `.tmp_ts_src/`) before any destructive op, and verify with `sha1sum` on both sides.
 
