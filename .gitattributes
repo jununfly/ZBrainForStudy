@@ -1,6 +1,29 @@
 # ZBrain cross-platform line-ending policy
-# lib.rs MUST stay CRLF (Windows convention); git forces CRLF in the
-# worktree so agents on any OS cannot commit LF and trigger N/N churn.
+#
+# Every crate's `lib.rs` is the entry point and follows the Windows CRLF
+# convention. Without an explicit attribute, git relies on `text=auto`
+# heuristics that produce *different* outcomes on different OSes (a file
+# committed on Windows lands as CRLF everywhere; one committed on Linux
+# lands as LF everywhere). That asymmetry has historically caused agents
+# on different machines to "fight" the same file (one side's edit flips
+# the worktree, the next side's commit produces an N/N full-file churn
+# in `git diff --numstat`).
+#
+# The fix: explicitly pin every lib.rs to CRLF regardless of who/where
+# committed it. Storage stays LF (`text=auto` below keeps the repo
+# canonical), but every checkout, on every OS, by every agent, gets
+# CRLF in the worktree. That removes the asymmetry at the root.
+#
+# Note: git patterns are evaluated bottom-up, so the more specific lines
+# below must come AFTER the catch-all. We list each crate's lib.rs
+# explicitly (no `**/lib.rs` glob — git's `**` matching is fragile across
+# versions, and explicitness is cheap with 7 entries).
+crates/zbrain-chunking/src/lib.rs text eol=crlf
 crates/zbrain-cli/src/lib.rs text eol=crlf
+crates/zbrain-core/src/lib.rs text eol=crlf
+crates/zbrain-mcp/src/lib.rs text eol=crlf
+crates/zbrain-svg/src/lib.rs text eol=crlf
+crates/zbrain-web/src/lib.rs text eol=crlf
+crates/zbrain-worker/src/lib.rs text eol=crlf
 # All other text files: normalize repo storage to LF, checkout per-OS.
 * text=auto
