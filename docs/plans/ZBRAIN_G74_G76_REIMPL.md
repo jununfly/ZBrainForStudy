@@ -16,15 +16,27 @@
     ├── [ ][X+] 1-2-3. G76b：extract-conversation-facts（真 LLM，blocked by G35）
     └── [ ][X+] 1-2-4. 决策：minion extract job type 是否接线到新 extract verb
 
-### 当前施工：1-1-5-4. eval-suspected-contradictions（#62，最大一族 judge×153）
+### 当前施工：1-1-5. 真 LLM 的 5 个 eval 命令（cross-modal / longmemeval / takes-quality / suspected-contradictions / brainstorm）
 
-TS 源实为 18 文件子系统（orchestrator/judge/calibration/cost-tracker/severity-classify/trends/cache/cross-source/date-filter/auto-supersession/judge-errors），427 行命令文件严重低估体量。Rust 复用资产：facts/classify.rs（fact 级分类器 cosine+LLM）、calibration.rs:1103 部分镜像。
+5 个真 LLM eval 命令（D 类；eval-brainstorm 由 1-1-4 的 C 类复核中移入）。通用 LLM seam（ChatProvider + ai/tool_loop.rs）已 port 完，理论上不阻塞，但各自需 port 领域 runner。保真策略用户确认 q-0 全保真 port。进度：#59 cross-modal 已完成（1-1-5-1，core+CLI+e2e 全绿）；#60 longmemeval / #61 takes-quality / #62 suspected-contradictions / #63 brainstorm 待启动（各建独立子节点）。后续族开工前一律先「TS 源 vs Rust 现状」对账。
 
-MVP 已交付（2026-08-12）：顶层动词 eval-suspected-contradictions（run/trend/review，仅 run 实装）+ 自有 query-conditioned one-call-one-pair judge（非 cross_modal panel）+ 现有 takes 语料配对发现 + 与 TS 一致的 6 类 verdict / severity 分类法 + judge-errors 一等公民 + 空语料诚实 Err。MVP 自身零新引擎方法。
+**决策：**
+- Q: 保真度策略（5 族统一）？ → q-0 → 全保真 port（逐文件搬，最接近 TS 原貌） (用户 2026-08-09 在「开始 1-1-5」时确认；TS 源从 git 历史 3c09a69f^ 取回)
+- Q: 下一步优先级？ → 继续 1-1-5，收口 D 类 5 个真 LLM eval 命令 (G58 已关；剩余 3 项有界(259/399/427L TS 可恢复)；1-2 有 G35 阻塞+1-2-4 未决，不宜并行)
+- Q: 3 个命令先后顺序？ → #61 takes-quality → #63 brainstorm → #62 suspected-contradictions (#61 最小且有 takes_scorecard Rust 杠杆；#63 需先 port brainstorm orchestrator 前置；#62 逻辑面最大(153 judge) 放最后)
+- Q: 无 API key 时构建/验收策略？ → 沿用 G58：provider 无关 + mock 单测，无 key 也 cargo test 绿、无 provider 诚实 Err (不为 API key 或 libsql Windows FFI flake 卡构建)
+- Q: 下一步优先级重排（推翻 2026-08-09 的 #61→#63→#62）？ → 翻转为 #61 → #62 → #63（#62 优先） (2026-08-12 对账 git 历史 39e14cd5：#63 实为完整 generator 移植（4 引擎方法缺失 + orchestrator/domain-bank/judges 三模块 + search/embed 集成，多会话量级），原「#63 只需 port 3 引擎方法」前提不成立。#62 复用 cross_modal judge 基础设施、零新引擎方法、无 generator，单会话可收口，故优先。)
+- Q: 是否修正 1-1-5-5 过时描述并给 1-1-5-4 补收敛说明？ → 是 (1-1-5-5：「3 引擎方法」→ 真实依赖面（4 引擎方法 + 三模块 + search/embed）；1-1-5-4：补「复用 cross_modal，收敛、无新引擎方法」。地图须反映真实范围，避免后续 agent 按低估前提误判。)
+- Q: Q6 #62 之后优先级 → 先补 #62 延伸 trend(1-1-5-6)→review(1-1-5-7)，再 #63 brainstorm(1-1-5-5) (trend/review 是小延伸、直接完善 #62 价值；#63 是独立大块宜在 #62 完全收口后做)
 
-retrieval 配对发现延伸已 port（2026-08-11）：新增 `PairingMode::Retrieval`（per-query `hybrid_search` 取 top-K 页面 → cross/intra 配对；cross = 页面 compiled_truth×页面，intra = 页面 compiled_truth×该页 takes，faithful 适配 TS chunk 级逻辑到 Rust 页面级）+ `TakesListOpts.page_ids`（三后端 list_takes 批量取 takes，faithful port of TS `listActiveTakesForPages`）+ CLI `--pairing retrieval --queries ... --top-k N`。无 embedding provider 时 hybrid_search fail-open 降级 keyword-only，离线可用；contradictions 模块 6 测试（含 2 retrieval 新测）+ cli 1 解析新测全绿。
-
-DEFERRED：trend（run-row ASCII 图表 + DB）、review 子命令——依赖 TS 专属的 trends/cache 子系统，Rust 尚未 port。
-
-诚实缺口：无 LLM key 时 judge 调用失败 → judge-errors 计入分母（已测）；不伪 PASS。
+**当前子树：**
+├── [x] 1-1-5-1. eval-cross-modal（#59 全保真 port，core+CLI+e2e 全绿）
+├── [x][X+] 1-1-5-2. eval-longmemeval（#60，替换 G58 占位）
+├── [x][X+] 1-1-5-3. eval-takes-quality（#61，新建 EvalTakesQuality variant）
+│   ... 2 more child nodes; run tree 1-1-5-3 --depth 2 for full view
+├── [x][X+] 1-1-5-4. eval-suspected-contradictions（#62，最大一族 judge×153）
+├── [ ][X+] 1-1-5-5. eval-brainstorm（#63，完整 generator 移植：4 引擎方法 + orchestrator/domain-bank/judges 三模块 + search/embed）
+├── [ ][X+] 1-1-5-6. eval-suspected-contradictions trend 子命令（#62 延伸：write/loadContradictionsRun 引擎方法 + ASCII 图表）
+├── [ ][X+] 1-1-5-7. eval-suspected-contradictions review 子命令（依赖 trend store report_json viewer）
+└── [ ][X+] 1-1-5-8. eval-suspected-contradictions JudgeCache 持久化 judge 缓存（独立性能优化，正交）
 <!-- ROADMAP_SECTION_END -->

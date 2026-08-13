@@ -182,28 +182,16 @@
         "1-1-5-2",
         "1-1-5-3",
         "1-1-5-4",
-        "1-1-5-5"
+        "1-1-5-5",
+        "1-1-5-6",
+        "1-1-5-7",
+        "1-1-5-8"
       ],
       "decisions": [
         {
           "q": "保真度策略（5 族统一）？",
           "answer": "q-0 → 全保真 port（逐文件搬，最接近 TS 原貌）",
           "note": "用户 2026-08-09 在「开始 1-1-5」时确认；TS 源从 git 历史 3c09a69f^ 取回"
-        },
-        {
-          "q": "下一步优先级？",
-          "answer": "继续 1-1-5，收口 D 类 5 个真 LLM eval 命令",
-          "note": "G58 已关；剩余 3 项有界(259/399/427L TS 可恢复)；1-2 有 G35 阻塞+1-2-4 未决，不宜并行"
-        },
-        {
-          "q": "3 个命令先后顺序？",
-          "answer": "#61 takes-quality → #63 brainstorm → #62 suspected-contradictions",
-          "note": "#61 最小且有 takes_scorecard Rust 杠杆；#63 需先 port brainstorm orchestrator 前置；#62 逻辑面最大(153 judge) 放最后"
-        },
-        {
-          "q": "无 API key 时构建/验收策略？",
-          "answer": "沿用 G58：provider 无关 + mock 单测，无 key 也 cargo test 绿、无 provider 诚实 Err",
-          "note": "不为 API key 或 libsql Windows FFI flake 卡构建"
         },
         {
           "q": "下一步优先级？",
@@ -229,6 +217,11 @@
           "q": "是否修正 1-1-5-5 过时描述并给 1-1-5-4 补收敛说明？",
           "answer": "是",
           "note": "1-1-5-5：「3 引擎方法」→ 真实依赖面（4 引擎方法 + 三模块 + search/embed）；1-1-5-4：补「复用 cross_modal，收敛、无新引擎方法」。地图须反映真实范围，避免后续 agent 按低估前提误判。"
+        },
+        {
+          "q": "Q6 #62 之后优先级",
+          "answer": "先补 #62 延伸 trend(1-1-5-6)→review(1-1-5-7)，再 #63 brainstorm(1-1-5-5)",
+          "note": "trend/review 是小延伸、直接完善 #62 价值；#63 是独立大块宜在 #62 完全收口后做"
         }
       ],
       "notes": "5 个真 LLM eval 命令（D 类；eval-brainstorm 由 1-1-4 的 C 类复核中移入）。通用 LLM seam（ChatProvider + ai/tool_loop.rs）已 port 完，理论上不阻塞，但各自需 port 领域 runner。保真策略用户确认 q-0 全保真 port。进度：#59 cross-modal 已完成（1-1-5-1，core+CLI+e2e 全绿）；#60 longmemeval / #61 takes-quality / #62 suspected-contradictions / #63 brainstorm 待启动（各建独立子节点）。后续族开工前一律先「TS 源 vs Rust 现状」对账。"
@@ -302,12 +295,28 @@
     "1-1-5-4": {
       "id": "1-1-5-4",
       "label": "eval-suspected-contradictions（#62，最大一族 judge×153）",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-1-5",
       "children": [],
-      "decisions": [],
-      "notes": "TS 源实为 18 文件子系统（orchestrator/judge/calibration/cost-tracker/severity-classify/trends/cache/cross-source/date-filter/auto-supersession/judge-errors），427 行命令文件严重低估体量。Rust 复用资产：facts/classify.rs（fact 级分类器 cosine+LLM）、calibration.rs:1103 部分镜像。\n\nMVP 已交付（2026-08-12）：顶层动词 eval-suspected-contradictions（run/trend/review，仅 run 实装）+ 自有 query-conditioned one-call-one-pair judge（非 cross_modal panel）+ 现有 takes 语料配对发现 + 与 TS 一致的 6 类 verdict / severity 分类法 + judge-errors 一等公民 + 空语料诚实 Err。MVP 自身零新引擎方法。\n\nretrieval 配对发现延伸已 port（2026-08-11）：新增 `PairingMode::Retrieval`（per-query `hybrid_search` 取 top-K 页面 → cross/intra 配对；cross = 页面 compiled_truth×页面，intra = 页面 compiled_truth×该页 takes，faithful 适配 TS chunk 级逻辑到 Rust 页面级）+ `TakesListOpts.page_ids`（三后端 list_takes 批量取 takes，faithful port of TS `listActiveTakesForPages`）+ CLI `--pairing retrieval --queries ... --top-k N`。无 embedding provider 时 hybrid_search fail-open 降级 keyword-only，离线可用；contradictions 模块 6 测试（含 2 retrieval 新测）+ cli 1 解析新测全绿。\n\nDEFERRED：trend（run-row ASCII 图表 + DB）、review 子命令——依赖 TS 专属的 trends/cache 子系统，Rust 尚未 port。\n\n诚实缺口：无 LLM key 时 judge 调用失败 → judge-errors 计入分母（已测）；不伪 PASS。"
+      "decisions": [
+        {
+          "q": "Q1 #62 收口标准",
+          "answer": "拆出 trend/review 为独立跟踪节点，#62 本体(run+retrieval)标记 completed",
+          "note": "因路线图父子状态自动同步：父有未完成子节点会被强制降级 in_progress，故 trend/review 建为 1-1-5 下平级节点(1-1-5-6/7)而非 1-1-5-4 子节点，否则 #62 无法真正收口"
+        },
+        {
+          "q": "Q2 judge 架构是否终态",
+          "answer": "one-call-one-pair judge 为终态",
+          "note": "TS 仅 1 个 judge 函数 judgeContradiction，标题 judge×153 是调用次数(pairs×runs)非 153 个 judge；复用 Rust facts/classify+calibration.rs 已够，除非评测漏判率高否则不另 port calibration-join/severity-classify"
+        },
+        {
+          "q": "Q3 JudgeCache 是否纳入 #62",
+          "answer": "不纳入 #62，单独建节点(1-1-5-8)",
+          "note": "JudgeCache 是 judge 持久化缓存(30d TTL, 顺序无关 key)，性能优化且与 trend/review 正交；run 已可无缓存工作"
+        }
+      ],
+      "notes": "TS 源实为 18 文件子系统（orchestrator/judge/calibration/cost-tracker/severity-classify/trends/cache/cross-source/date-filter/auto-supersession/judge-errors），427 行命令文件严重低估体量。Rust 复用资产：facts/classify.rs（fact 级分类器 cosine+LLM）、calibration.rs 部分镜像。\nMVP 已交付（2026-08-12）：顶层动词 eval-suspected-contradictions（run/trend/review，仅 run 实装）+ 自有 query-conditioned one-call-one-pair judge（非 cross_modal panel）+ 现有 takes 语料配对发现 + 与 TS 一致的 6 类 verdict / severity 分类法 + judge-errors 一等公民 + 空语料诚实 Err。MVP 自身零新引擎方法。\nretrieval 配对发现延伸已 port（2026-08-12）：新增 PairingMode::Retrieval（per-query hybrid_search 取 top-K 页面 → cross/intra 配对；cross = 页面 compiled_truth×页面，intra = 页面 compiled_truth×该页 takes，faithful 适配 TS chunk 级逻辑到 Rust 页面级）+ TakesListOpts.page_ids（三后端 list_takes 批量取 takes，faithful port of TS listActiveTakesForPages）+ CLI --pairing retrieval --queries ... --top-k N。无 embedding provider 时 hybrid_search fail-open 降级 keyword-only，离线可用；contradictions 模块 6 测试（含 2 retrieval 新测）+ cli 1 解析新测全绿。\n#62 收口（2026-08-13 grill 决策）：run+retrieval 为终态，节点标记 completed。trend/review/JudgeCache 拆为 1-1-5 下平级节点 1-1-5-6/7/8（因路线图父子状态自动同步规则，父有未完成子节点会被强制降级 in_progress，故不能挂为 1-1-5-4 子节点，否则 #62 无法真正收口）。judge 架构确认终态：TS 仅 1 个 judge 函数 judgeContradiction，标题 judge×153 = 调用次数（pairs×runs）非 153 个 judge。\n诚实缺口：无 LLM key 时 judge 调用失败 → judge-errors 计入分母（已测）；不伪 PASS。"
     },
     "1-1-5-5": {
       "id": "1-1-5-5",
@@ -335,6 +344,48 @@
       "status": "pending",
       "mode": "explore",
       "parent": "1-1-5-3",
+      "children": [],
+      "decisions": [],
+      "notes": ""
+    },
+    "1-1-5-6": {
+      "id": "1-1-5-6",
+      "label": "eval-suspected-contradictions trend 子命令（#62 延伸：write/loadContradictionsRun 引擎方法 + ASCII 图表）",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-1-5",
+      "children": [],
+      "decisions": [
+        {
+          "q": "Q4 trend 实现策略",
+          "answer": "忠实 port：三后端各加 writeContradictionsRun/loadContradictionsTrend 引擎方法 + contradictions_runs 表 migration（存 TrendRow + report_json）+ 移植 renderTrendChart ASCII 图表",
+          "note": "TS trends.ts 仅 118 行薄封装，依赖 engine.writeContradictionsRun + engine.loadContradictionsTrend 两方法 + ASCII 图表；'trends 子系统'=2 引擎方法+1 图表渲染器，自包含中等工作量，非大子系统"
+        }
+      ],
+      "notes": "策略(2026-08-13 grill Q4=A)：忠实 port TS trends.ts(118行薄封装)。三后端(InMemory/libsql/postgres)各加引擎方法 writeContradictionsRun(run_row) + loadContradictionsTrend(days)；新增 contradictions_runs 表 migration(列: id, run_at, query, n_pairs, n_judge_errors, judge_error_rate, verdict_breakdown_json, report_json)；移植 renderTrendChart 输出 ASCII 图表。run 子命令写 verdict 后调用 writeContradictionsRun 持久化该行。"
+    },
+    "1-1-5-7": {
+      "id": "1-1-5-7",
+      "label": "eval-suspected-contradictions review 子命令（依赖 trend store report_json viewer）",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-1-5",
+      "children": [],
+      "decisions": [
+        {
+          "q": "Q5 review 范围",
+          "answer": "review = trend store 的 report_json viewer（加载最近一次 run 的 report_json 美化打印 verdict_breakdown/配对明细）",
+          "note": "TS review 依赖 trend store 已存在，仅读最近 run 的 report_json(ProbeReport blob) 展示；不膨胀为交互式标注队列"
+        }
+      ],
+      "notes": "策略(2026-08-13 grill Q5=A)：review = trend store 的 report_json viewer。实现 trend(1-1-5-6) 建好 contradictions_runs 表后，review 仅 loadContradictionsTrend(1)[最近一次] 取 report_json(ProbeReport blob)，美化打印 verdict_breakdown/配对明细/pairs；薄封装，不膨胀为交互式标注队列。依赖 1-1-5-6 先完成。"
+    },
+    "1-1-5-8": {
+      "id": "1-1-5-8",
+      "label": "eval-suspected-contradictions JudgeCache 持久化 judge 缓存（独立性能优化，正交）",
+      "status": "pending",
+      "mode": "explore",
+      "parent": "1-1-5",
       "children": [],
       "decisions": [],
       "notes": ""
