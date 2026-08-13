@@ -19,7 +19,10 @@
 
 ## Git 沙箱铁律
 - 严禁 git stash（失败 cleanup 删 .git/refs → orphan HEAD）。探 baseline 用 git show HEAD:<file>/git diff HEAD。
-- ref 损坏修复：git fetch origin（可能两次）→ mkdir .git/refs/{heads,remotes/origin,tags} → symbolic-ref HEAD → update-ref <sha> → rev-parse 验证。orphan 别用 git reset HEAD（解析到 stash@0）。
+- **沙箱写文件命令会双重执行**（"⚠️ Sandbox bypassed (escalation-approved)"）——`decide`/`add`/`commit` 等跑两次，曾造重复节点/决策；所有写操作须幂等（按 id/q 缺失才补）+ 事后去重。
+- **目录改名（zbrain→ZBrain，NTFS 大小写不敏感）后 cwd 路径串失效**：重命名后的会话里原生 git 偶报 "not a git repository"；用 `cd /c/workspace/github/jununfly/ZBrain && git ...`（MSYS 翻译路径）可恢复，勿用 `git -C /c/...`（小写 /c/ 被原生 git 拒）。
+- **绝不在沙箱里 `git rebase`**（交互式依赖编辑器，本机无 → 报 `could not mark as interactive` 并可能触发 safe-delete 删整个 `.git/refs`，把分支回退到 stale packed-refs 快照、孤立在途提交）。改基线用 `git reset --soft` + `git pull --ff-only`，或 `git reset --hard <远端tip-SHA>`。
+- ref 损坏修复（`.git/refs` 被删）：`mkdir -p .git/refs/{heads,remotes/origin,tags}` → `git fetch origin <branch>` 刷新远端引用 → 用 `git rev-parse <SHA>` 直接核对 commit（**勿信 `packed-refs`/`@{u}`，它们会返回陈旧值**）→ `git reset --hard <远端tip-SHA>` 对齐到权威远端态。被孤立且未推送的在途提交会被 GC 回收、**不可恢复**；故关键在途改动务必幂等脚本化，丢引用后能从对话历史确定性重建。orphan 别用 git reset HEAD（解析到 stash@0）。
 - .git/index.lock 僵尸锁：rm/os.remove 被 safe-delete 拦，唯一绕法 mv 改名。
 - 接活前必查 git status（会话中断常留大规模未提交改动）。
 - **行尾符陷阱**：本仓 core.autocrlf=false 且行尾符**混杂**（`lib.rs`/`MEMORY.md` 是 CRLF，`KNOWN-GAPS.md`/`COMMANDS_TEAR_DOWN.md`/多数 `*.rs` 是 LF）。Edit 工具会整文件改写行尾符 → `git diff --numstat` 出现 `N/N`（每行都改）即中招。**提交前必须对改动的【每个 Rust 文件】单独跑 `git diff --numstat` 确认无全文件重写**——只改几行却出现上万行 N/N 必是行尾符泄漏（docs 文件也要查，但 Rust 大文件最易炸）。异常时按 `git show HEAD:<f>` 的原始行尾符**逐文件**对齐，别一刀切 LF（会把本就 CRLF 的文件全炸）。
@@ -42,5 +45,5 @@
 
 ## 其他
 - Admin 路由 Rust 在 /*、TS 在 /admin/api/*（保持）。skillpack 测试仅 --all-features 下编译。
-- **`zbrain-clean` 备份 clone 已于 2026-08-12 废弃**：用户决定不再保留第二份 clone，需要时从 `origin/rust-rewrite` 重新 `git clone`。这意味着 `docs/CROSS_OS_AGENT_GUIDE.md` §0 的"双 clone 互为健康基准 + 原地重建"恢复流程已过时，**不可再信**；当前只有 `zbrain` 一个活跃工作副本，恢复靠重新克隆而非 zbrain-clean。
+- **`zbrain-clean` 备份 clone 已于 2026-08-12 废弃**：用户决定不再保留第二份 clone，需要时从 `origin/rust-rewrite` 重新 `git clone`。这意味着 `docs/CROSS_OS_AGENT_GUIDE.md` §0 的"双 clone 互为健康基准 + 原地重建"恢复流程已过时，**不可再信**；当前只有 `ZBrain`（2026-08-12 由 `zbrain` 改名为大写 B，对齐 GitHub slug）一个活跃工作副本，恢复靠重新克隆而非 zbrain-clean。
 - TS 测试套件（tests/，663 文件）已于 2026-08-08 整体退役；Rust 侧 crates/*/tests/*.rs + 内联 #[cfg(test)] 为唯一测试真相源。nightly_probe.rs 的 NIGHTLY_FIXTURE_REL_PATH 死引用已清（run_long_mem_eval 现为 G58 占位、无条件返 Err）→ 全 workspace `cargo test --workspace` 已验证 green（3694 passed / 0 failed）。
