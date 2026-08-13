@@ -9280,7 +9280,8 @@ async fn run_eval_suspected_contradictions_command(
     use zbrain_core::ai::resolver::{resolve_recipe_strict, AiConfigError};
     use zbrain_core::engine::{BrainEngine, EngineConfig};
     use zbrain_core::eval::contradictions::{
-        self, ContradictionOpts, DEFAULT_JUDGE_MODEL, DEFAULT_QUERY,
+        self, build_contradictions_run_row, render_trend_chart, ContradictionOpts,
+        DEFAULT_JUDGE_MODEL, DEFAULT_QUERY,
     };
     use zbrain_core::eval::cross_modal::ChatRequest;
     use zbrain_core::libsql::LibsqlEngine;
@@ -9391,7 +9392,19 @@ async fn run_eval_suspected_contradictions_command(
                 slug: run_args.slug.clone(),
             };
 
+            let started = std::time::Instant::now();
             let result = contradictions::run(&sc_opts, &chat).await?;
+            let duration_ms = started.elapsed().as_millis() as u64;
+
+            // Persist the run row so `eval suspected-contradictions trend` can
+            // chart it later (1-1-5-6 / #62). A persist failure is non-fatal:
+            // the probe already succeeded and printed its report above.
+            let row = contradictions::build_contradictions_run_row(&result, duration_ms);
+            if let Err(e) = engine.write_contradictions_run(&row).await {
+                eprintln!(
+                    "[eval-suspected-contradictions] warning: failed to persist run row: {e}"
+                );
+            }
 
             eprintln!();
             eprintln!(
@@ -9431,6 +9444,15 @@ async fn run_eval_suspected_contradictions_command(
                     "n_findings": result.findings.len(),
                     "findings": result.findings,
                     "receipt_path": result.receipt_path,
+                    "run_id": result.run_id,
+                    "judge_model": result.judge_model,
+                    "queries_evaluated": result.queries_evaluated,
+                    "queries_with_contradiction": result.queries_with_contradiction,
+                    "total_contradictions_flagged": result.total_contradictions_flagged,
+                    "wilson_ci_lower": result.wilson_ci_lower,
+                    "wilson_ci_upper": result.wilson_ci_upper,
+                    "cost_usd_total": result.cost_usd_total,
+                    "duration_ms": duration_ms,
                 });
                 println!("{}", serde_json::to_string_pretty(&json_out)?);
             }
@@ -9439,11 +9461,30 @@ async fn run_eval_suspected_contradictions_command(
             // Findings are carried in the JSON / receipt for downstream review.
             std::process::exit(0);
         }
-        SuspectedContradictionsAction::Trend(_) => {
-            anyhow::bail!(
-                "eval-suspected-contradictions trend: deferred in MVP (roadmap node 1-1-5-4). \
-                 The run-row table + ASCII trend chart are not yet ported from TS."
-            );
+        SuspectedContradictionsAction::Trend(trend_args) => {
+            // Open the engine and load the trend of past probe runs.
+            let config = crate::config::load_config(config_path)?;
+            let db_path = resolve_database_path(&config.database_url);
+            let engine_config = EngineConfig {
+                database_url: None,
+                database_path: Some(db_path),
+            };
+            let engine = LibsqlEngine::new();
+            engine.connect(&engine_config).await?;
+            engine.init_schema().await?;
+            let engine: Arc<dyn BrainEngine> = Arc::new(engine);
+
+            let rows = engine
+                .load_contradictions_trend(trend_args.days)
+                .await
+                .map_err(|e| anyhow::anyhow!("eval-suspected-contradictions trend: {e}"))?;
+
+            if trend_args.json {
+                println!("{}", serde_json::to_string_pretty(&rows)?);
+            } else {
+                println!("{}", contradictions::render_trend_chart(&rows));
+            }
+            Ok(())
         }
         SuspectedContradictionsAction::Review(_) => {
             anyhow::bail!(

@@ -232,6 +232,26 @@ pub struct ContradictionsResult {
     pub findings: Vec<ContradictionFinding>,
     /// Path to the written JSON summary receipt (if any).
     pub receipt_path: Option<String>,
+    /// Stable run id (`new_run_id`) so the run can be persisted and trended.
+    pub run_id: String,
+    /// Judge model string used for this run.
+    pub judge_model: String,
+    /// Number of queries evaluated (Rust MVP: 1 probe run = 1 query).
+    pub queries_evaluated: u64,
+    /// Queries whose findings contain at least one `contradiction` verdict.
+    pub queries_with_contradiction: u64,
+    /// Total findings flagged across all pairs (== `findings.len()`).
+    pub total_contradictions_flagged: u64,
+    /// Wilson 95% CI lower bound on the contradiction rate.
+    pub wilson_ci_lower: f64,
+    /// Wilson 95% CI upper bound on the contradiction rate.
+    pub wilson_ci_upper: f64,
+    /// Total judge-call cost in USD (Rust MVP: 0.0, not metered yet).
+    pub cost_usd_total: f64,
+    /// Wall-clock duration of the probe in milliseconds (injected by CLI).
+    pub duration_ms: u64,
+    /// Per-source-tier pair counts (all zero in the MVP).
+    pub source_tier_breakdown: SourceTierBreakdown,
 }
 
 /// Options for [`run`].
@@ -262,6 +282,48 @@ pub const DEFAULT_QUERY: &str = "General consistency audit across the brain's ta
 
 /// Default utility-tier judge model (TS default: anthropic:claude-haiku-4-5).
 pub const DEFAULT_JUDGE_MODEL: &str = "anthropic:claude-haiku-4-5";
+
+/// Eval schema version for the `eval_contradictions_runs` row (mirrors TS
+/// `SCHEMA_VERSION`). Bumped when the run-row shape changes incompatibly.
+pub const SCHEMA_VERSION: u8 = 1;
+
+/// Prompt version stamped on every run-row (mirrors TS `PROMPT_VERSION`).
+pub const PROMPT_VERSION: &str = "2";
+
+/// Per-pair truncation policy label (mirrors TS `TRUNCATION_POLICY`).
+pub const TRUNCATION_POLICY: &str = "1500-chars-utf8-safe";
+
+/// Per-source-tier pair counts that fed a probe run (mirrors TS
+/// `SourceTierBreakdown`). The Rust MVP does not separate corpus tiers yet,
+/// so all counts are zero — recorded honestly rather than fabricated.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SourceTierBreakdown {
+    pub curated_vs_curated: u64,
+    pub curated_vs_bulk: u64,
+    pub bulk_vs_bulk: u64,
+    pub other: u64,
+}
+
+/// One persisted row of a `eval-suspected-contradictions` probe run (mirrors
+/// TS `ContradictionsRunRow` / `TrendRow`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContradictionsRunRow {
+    pub run_id: String,
+    pub ran_at: String,
+    pub schema_version: u8,
+    pub judge_model: String,
+    pub prompt_version: String,
+    pub queries_evaluated: u64,
+    pub queries_with_contradiction: u64,
+    pub total_contradictions_flagged: u64,
+    pub wilson_ci_lower: f64,
+    pub wilson_ci_upper: f64,
+    pub judge_errors_total: u64,
+    pub cost_usd_total: f64,
+    pub duration_ms: u64,
+    pub source_tier_breakdown: SourceTierBreakdown,
+    pub report_json: serde_json::Value,
+}
 
 /// UTF-8-safe truncation: cap at `max_chars` but never split a code point.
 fn truncate_utf8(text: &str, max_chars: usize) -> String {
@@ -585,6 +647,21 @@ where
         }
     }
 
+    // --- Trend-row bookkeeping (mirrors TS runner.ts) ---
+    let run_id = new_run_id();
+    let queries_evaluated: u64 = if n_pairs > 0 { 1 } else { 0 };
+    let queries_with_contradiction: u64 =
+        if findings.iter().any(|f| f.verdict == Verdict::Contradiction) {
+            1
+        } else {
+            0
+        };
+    let total_contradictions_flagged: u64 = findings.len() as u64;
+    let (wilson_ci_lower, wilson_ci_upper, _ci_point) =
+        wilson_ci(queries_with_contradiction, queries_evaluated);
+    let cost_usd_total = 0.0_f64; // MVP: judge cost not metered yet.
+    let source_tier_breakdown = SourceTierBreakdown::default();
+
     // Persist a JSON summary receipt for inspection (mirrors the eval-receipts
     // convention used by cross_modal / takes_quality).
     let receipt_path = write_summary_receipt(opts, n_takes, n_pairs, judged, &verdict_breakdown, &severity_breakdown, &judge_errors, &findings)?;
@@ -598,7 +675,144 @@ where
         judge_errors,
         findings,
         receipt_path,
+        run_id,
+        judge_model: opts.judge_model.clone(),
+        queries_evaluated,
+        queries_with_contradiction,
+        total_contradictions_flagged,
+        wilson_ci_lower,
+        wilson_ci_upper,
+        cost_usd_total,
+        duration_ms: 0,
+        source_tier_breakdown,
     })
+}
+
+/// Wilson score interval (95%) — faithful port of TS `calibration.ts`
+/// `wilsonCI(num, den)`. Returns `(lower, upper, point)`.
+///
+/// With `den <= 0` returns all zeros (no data). `num` is clamped to `[0, den]`.
+pub fn wilson_ci(numerator: u64, denominator: u64) -> (f64, f64, f64) {
+    let z = 1.959963984540054_f64; // Z_{0.975}
+    let n = denominator as f64;
+    let k = (numerator as f64).clamp(0.0, n);
+    if n <= 0.0 {
+        return (0.0, 0.0, 0.0);
+    }
+    let p = k / n;
+    let z2 = z * z;
+    let center = (p + z2 / (2.0 * n)) / (1.0 + z2 / n);
+    let margin = (z * (p * (1.0 - p) / n + z2 / (4.0 * n * n)).sqrt()) / (1.0 + z2 / n);
+    let lower = if k == 0.0 { 0.0 } else { (center - margin).max(0.0) };
+    let upper = if k == n { 1.0 } else { (center + margin).min(1.0) };
+    (lower, upper, center)
+}
+
+/// Build a stable run id. Faithful to TS `runner.ts` (ISO timestamp with
+/// `:`/`.` replaced by `-`), e.g. `2026-08-13T12-34-56-789Z`.
+pub fn new_run_id() -> String {
+    crate::time::current_utc_iso8601()
+        .replace([':', '.'], "-")
+}
+
+/// Assemble a persistable run-row from a finished [`ContradictionsResult`].
+/// `duration_ms` is supplied by the CLI (which wraps `run` with a timer); the
+/// result's own `duration_ms` is the in-probe placeholder.
+pub fn build_contradictions_run_row(
+    result: &ContradictionsResult,
+    duration_ms: u64,
+) -> ContradictionsRunRow {
+    ContradictionsRunRow {
+        run_id: result.run_id.clone(),
+        ran_at: crate::time::current_utc_iso8601(),
+        schema_version: SCHEMA_VERSION,
+        judge_model: result.judge_model.clone(),
+        prompt_version: PROMPT_VERSION.to_string(),
+        queries_evaluated: result.queries_evaluated,
+        queries_with_contradiction: result.queries_with_contradiction,
+        total_contradictions_flagged: result.total_contradictions_flagged,
+        wilson_ci_lower: result.wilson_ci_lower,
+        wilson_ci_upper: result.wilson_ci_upper,
+        judge_errors_total: result.judge_errors.total as u64,
+        cost_usd_total: result.cost_usd_total,
+        duration_ms,
+        source_tier_breakdown: result.source_tier_breakdown.clone(),
+        report_json: serde_json::json!({
+            "n_takes": result.n_takes,
+            "n_pairs": result.n_pairs,
+            "judged": result.judged,
+            "verdict_breakdown": result.verdict_breakdown,
+            "severity_breakdown": result.severity_breakdown,
+            "judge_errors": {
+                "total": result.judge_errors.total,
+                "parse_fail": result.judge_errors.parse_fail,
+                "unknown": result.judge_errors.unknown,
+                "note": result.judge_errors.note,
+            },
+            "findings_count": result.findings.len(),
+            "truncation_policy": TRUNCATION_POLICY,
+        }),
+    }
+}
+
+/// Render the trend as a fixed-width ASCII table (faithful port of TS
+/// `trends.ts` `renderTrendChart`). Columns: ran_at / judge_model /
+/// queries_evaluated / queries_with_contradiction / total_contradictions_flagged
+/// / Wilson CI / bar; the most recent run's `verdict_breakdown` is appended.
+pub fn render_trend_chart(rows: &[ContradictionsRunRow]) -> String {
+    if rows.is_empty() {
+        return "No probe runs recorded yet. Run `zbrain eval suspected-contradictions run` first."
+            .to_string();
+    }
+    let mut out = String::new();
+    out.push_str(
+        "Date (ran_at)            Model                      Q    WithCx Flag  CI95                      Bar\n",
+    );
+    out.push_str(
+        "------------------------ -------------------------- ----- ------- ----- ------------------------- --------------\n",
+    );
+    for r in rows {
+        let date = trunc_display(&r.ran_at, 24);
+        let model = trunc_display(&r.judge_model, 26);
+        let q = format!("{:>5}", r.queries_evaluated);
+        let with_cx = format!("{:>7}", r.queries_with_contradiction);
+        let flag = format!("{:>5}", r.total_contradictions_flagged);
+        let ci = format!("[{:.3}, {:.3}]", r.wilson_ci_lower, r.wilson_ci_upper);
+        let rate = if r.queries_evaluated > 0 {
+            r.queries_with_contradiction as f64 / r.queries_evaluated as f64
+        } else {
+            0.0
+        };
+        let bar_len = (rate * 20.0).round() as usize;
+        let bar = "#".repeat(bar_len.min(20));
+        out.push_str(&format!(
+            "{:<24} {:<26} {:>5} {:>7} {:>5} {:<25} {}\n",
+            date, model, q, with_cx, flag, ci, bar
+        ));
+    }
+    out.push_str("\nLatest run verdict breakdown:\n");
+    if let Some(vb) = rows.first().and_then(|r| r.report_json.get("verdict_breakdown")) {
+        if let Some(map) = vb.as_object() {
+            for (k, v) in map {
+                out.push_str(&format!("  {:<24} {}\n", k, v));
+            }
+        }
+    }
+    out
+}
+
+/// Right-truncate a string to `max` chars for fixed-width display.
+fn trunc_display(s: &str, max: usize) -> String {
+    let mut out = String::new();
+    let mut n = 0;
+    for ch in s.chars() {
+        if n >= max {
+            break;
+        }
+        out.push(ch);
+        n += 1;
+    }
+    out
 }
 
 /// Write a JSON summary to the receipt dir; returns the path (or None on failure).
@@ -950,5 +1164,107 @@ mod tests {
             .iter()
             .all(|f| f.kind == "RetrievalCross" || f.kind == "RetrievalIntra"));
         assert!(res.receipt_path.is_some());
+    }
+
+    #[test]
+    fn wilson_ci_matches_calibration_contract() {
+        // den=0 -> all zeros (no data).
+        assert_eq!(wilson_ci(0, 0), (0.0, 0.0, 0.0));
+        // k==0 -> lower bound clamped to 0.
+        let (lo, hi, _pt) = wilson_ci(0, 1);
+        assert_eq!(lo, 0.0);
+        assert!(hi > 0.0 && hi <= 1.0);
+        // k==n -> upper bound clamped to 1.
+        let (lo2, hi2, _pt2) = wilson_ci(1, 1);
+        assert_eq!(hi2, 1.0);
+        assert!(lo2 >= 0.0 && lo2 < 1.0);
+    }
+
+    #[test]
+    fn new_run_id_is_timestamp_like_and_fs_safe() {
+        let id = new_run_id();
+        // No ':' or '.' remain after the dash substitution.
+        assert!(!id.contains(':') && !id.contains('.'));
+        assert!(id.starts_with("20")); // ISO year prefix
+    }
+
+    #[tokio::test]
+    async fn build_contradictions_run_row_round_trips_scalars() {
+        let engine = InMemoryEngine::new();
+        for i in 0..4u64 {
+            engine.add_take(mk_take(i, i % 2, &format!("take {i}")));
+        }
+        let receipt_dir =
+            std::env::temp_dir().join(format!("sc_test_row_{}", std::process::id()));
+        std::fs::create_dir_all(&receipt_dir).ok();
+        let opts = base_opts(&engine, receipt_dir);
+        let res = run(&opts, &fake_contradiction_judge).await.unwrap();
+        let row = build_contradictions_run_row(&res, 1234);
+        assert_eq!(row.run_id, res.run_id);
+        assert_eq!(row.queries_evaluated, 1);
+        assert_eq!(row.queries_with_contradiction, 1);
+        assert_eq!(row.total_contradictions_flagged, 6);
+        assert_eq!(row.judge_errors_total, 0);
+        assert_eq!(row.duration_ms, 1234);
+        assert_eq!(row.schema_version, SCHEMA_VERSION);
+        assert!(row.report_json.get("findings_count").is_some());
+    }
+
+    #[test]
+    fn render_trend_chart_handles_empty_and_rows() {
+        let empty = render_trend_chart(&[]);
+        assert!(empty.contains("No probe runs recorded yet"));
+        let rows = vec![
+            ContradictionsRunRow {
+                run_id: "r1".to_string(),
+                ran_at: "2026-08-13T00:00:00Z".to_string(),
+                schema_version: 1,
+                judge_model: "anthropic:claude-haiku-4-5".to_string(),
+                prompt_version: "2".to_string(),
+                queries_evaluated: 1,
+                queries_with_contradiction: 1,
+                total_contradictions_flagged: 3,
+                wilson_ci_lower: 0.1,
+                wilson_ci_upper: 0.9,
+                judge_errors_total: 0,
+                cost_usd_total: 0.0,
+                duration_ms: 10,
+                source_tier_breakdown: SourceTierBreakdown::default(),
+                report_json: serde_json::json!({"verdict_breakdown": {"contradiction": 3}}),
+            },
+        ];
+        let chart = render_trend_chart(&rows);
+        assert!(chart.contains("Date (ran_at)"));
+        assert!(chart.contains("Latest run verdict breakdown"));
+        assert!(chart.contains("contradiction"));
+    }
+
+    #[tokio::test]
+    async fn inmemory_write_and_load_trend_round_trip() {
+        let engine = InMemoryEngine::new();
+        let row = ContradictionsRunRow {
+            run_id: "r1".to_string(),
+            ran_at: "2026-08-13T00:00:00Z".to_string(),
+            schema_version: 1,
+            judge_model: "anthropic:claude-haiku-4-5".to_string(),
+            prompt_version: "2".to_string(),
+            queries_evaluated: 1,
+            queries_with_contradiction: 1,
+            total_contradictions_flagged: 3,
+            wilson_ci_lower: 0.1,
+            wilson_ci_upper: 0.9,
+            judge_errors_total: 0,
+            cost_usd_total: 0.0,
+            duration_ms: 10,
+            source_tier_breakdown: SourceTierBreakdown::default(),
+            report_json: serde_json::json!({"verdict_breakdown": {"contradiction": 3}}),
+        };
+        // First write records it.
+        assert!(engine.write_contradictions_run(&row).await.unwrap());
+        // Idempotent replay does not double-count.
+        assert!(!engine.write_contradictions_run(&row).await.unwrap());
+        let trend = engine.load_contradictions_trend(30).await.unwrap();
+        assert_eq!(trend.len(), 1);
+        assert_eq!(trend[0].run_id, "r1");
     }
 }

@@ -271,6 +271,8 @@ const MIGRATION_0028: &str = include_str!("../migrations/0028_subagent_tool_exec
 const MIGRATION_0029: &str = include_str!("../migrations/0029_synthesis_evidence.sql");
 /// 1-1-4 (G74 Category C): eval_candidates — candidate rows backing `eval export`/`prune`/`replay`.
 const MIGRATION_0030: &str = include_str!("../migrations/0030_eval_candidates.sql");
+/// 1-1-5-6 (#62 trend): eval_contradictions_runs — one row per probe run.
+const MIGRATION_0031: &str = include_str!("../migrations/0031_eval_contradictions_runs.sql");
 
 /// FNV-1a 64-bit hash of a lease key, mapped to a signed int64 for
 /// `pg_advisory_xact_lock`. Matches the TS implementation bit-for-bit.
@@ -438,6 +440,11 @@ pub static POSTGRES_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         name: "eval_candidates",
         sql: MIGRATION_0030,
     }));
+    registry.add(Box::new(PostgresMigration {
+        version: 31,
+        name: "eval_contradictions_runs",
+        sql: MIGRATION_0031,
+    }));
 
     registry
 });
@@ -513,6 +520,32 @@ impl PostgresEngine {
             salience_source: row.try_get("salience_source").ok().flatten(),
             recency_source: row.try_get("recency_source").ok().flatten(),
             embedding_column: row.try_get("embedding_column").ok().flatten(),
+        })
+    }
+
+    fn pg_row_to_contradictions_run(row: &sqlx::postgres::PgRow) -> Result<crate::eval::contradictions::ContradictionsRunRow> {
+        let source_tier: serde_json::Value = row
+            .try_get("source_tier_breakdown")
+            .unwrap_or(serde_json::json!({}));
+        let report_json: serde_json::Value = row
+            .try_get("report_json")
+            .unwrap_or(serde_json::Value::Null);
+        Ok(crate::eval::contradictions::ContradictionsRunRow {
+            run_id: row.try_get("run_id").map_err(|e| Error::engine(format!("ec run_id: {e}")))?,
+            ran_at: row.try_get("ran_at").map_err(|e| Error::engine(format!("ec ran_at: {e}")))?,
+            schema_version: row.try_get::<i64, _>("schema_version").map_err(|e| Error::engine(format!("ec sv: {e}")))? as u8,
+            judge_model: row.try_get("judge_model").map_err(|e| Error::engine(format!("ec jm: {e}")))?,
+            prompt_version: row.try_get("prompt_version").map_err(|e| Error::engine(format!("ec pv: {e}")))?,
+            queries_evaluated: row.try_get::<i64, _>("queries_evaluated").map_err(|e| Error::engine(format!("ec qe: {e}")))? as u64,
+            queries_with_contradiction: row.try_get::<i64, _>("queries_with_contradiction").map_err(|e| Error::engine(format!("ec wc: {e}")))? as u64,
+            total_contradictions_flagged: row.try_get::<i64, _>("total_contradictions_flagged").map_err(|e| Error::engine(format!("ec tf: {e}")))? as u64,
+            wilson_ci_lower: row.try_get("wilson_ci_lower").map_err(|e| Error::engine(format!("ec cil: {e}")))?,
+            wilson_ci_upper: row.try_get("wilson_ci_upper").map_err(|e| Error::engine(format!("ec ciu: {e}")))?,
+            judge_errors_total: row.try_get::<i64, _>("judge_errors_total").map_err(|e| Error::engine(format!("ec je: {e}")))? as u64,
+            cost_usd_total: row.try_get("cost_usd_total").map_err(|e| Error::engine(format!("ec cost: {e}")))?,
+            duration_ms: row.try_get::<i64, _>("duration_ms").map_err(|e| Error::engine(format!("ec dur: {e}")))? as u64,
+            source_tier_breakdown: serde_json::from_value(source_tier).unwrap_or_default(),
+            report_json,
         })
     }
 
@@ -4306,6 +4339,70 @@ impl BrainEngine for PostgresEngine {
             .await
             .map_err(|e| Error::engine(format!("delete_eval_candidates_before: {e}")))?;
         Ok(n.rows_affected())
+    }
+
+    async fn write_contradictions_run(
+        &self,
+        row: &crate::eval::contradictions::ContradictionsRunRow,
+    ) -> Result<bool> {
+        let pool = self.pool()?;
+        let inserted = sqlx::query(
+            "INSERT INTO eval_contradictions_runs (\
+                run_id, ran_at, schema_version, judge_model, prompt_version, \
+                queries_evaluated, queries_with_contradiction, total_contradictions_flagged, \
+                wilson_ci_lower, wilson_ci_upper, judge_errors_total, cost_usd_total, \
+                duration_ms, source_tier_breakdown, report_json) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) \
+             ON CONFLICT (run_id) DO NOTHING \
+             RETURNING run_id",
+        )
+        .bind(&row.run_id)
+        .bind(&row.ran_at)
+        .bind(row.schema_version as i32)
+        .bind(&row.judge_model)
+        .bind(&row.prompt_version)
+        .bind(row.queries_evaluated as i64)
+        .bind(row.queries_with_contradiction as i64)
+        .bind(row.total_contradictions_flagged as i64)
+        .bind(row.wilson_ci_lower)
+        .bind(row.wilson_ci_upper)
+        .bind(row.judge_errors_total as i64)
+        .bind(row.cost_usd_total)
+        .bind(row.duration_ms as i64)
+        .bind(serde_json::to_value(&row.source_tier_breakdown).unwrap_or(serde_json::json!({})))
+        .bind(&row.report_json)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::engine(format!("write_contradictions_run: {e}")))?;
+        Ok(inserted.is_some())
+    }
+
+    async fn load_contradictions_trend(
+        &self,
+        days: i64,
+    ) -> Result<Vec<crate::eval::contradictions::ContradictionsRunRow>> {
+        let pool = self.pool()?;
+        let mut builder = sqlx::QueryBuilder::new(
+            "SELECT run_id, ran_at::text AS ran_at, schema_version, judge_model, prompt_version, \
+                    queries_evaluated, queries_with_contradiction, total_contradictions_flagged, \
+                    wilson_ci_lower, wilson_ci_upper, judge_errors_total, cost_usd_total, \
+                    duration_ms, source_tier_breakdown, report_json \
+             FROM eval_contradictions_runs",
+        );
+        if days > 0 {
+            builder.push(" WHERE ran_at >= NOW() - make_interval(days => ");
+            builder.push_bind(days);
+            builder.push(")");
+        }
+        builder.push(" ORDER BY ran_at DESC");
+        let rows = builder
+            .build()
+            .fetch_all(pool)
+            .await
+            .map_err(|e| Error::engine(format!("load_contradictions_trend: {e}")))?;
+        rows.iter()
+            .map(|r| Self::pg_row_to_contradictions_run(r))
+            .collect()
     }
 
     async fn list_facts_since(

@@ -351,7 +351,7 @@
     "1-1-5-6": {
       "id": "1-1-5-6",
       "label": "eval-suspected-contradictions trend 子命令（#62 延伸：write/loadContradictionsRun 引擎方法 + ASCII 图表）",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-1-5",
       "children": [],
@@ -362,7 +362,7 @@
           "note": "TS trends.ts 仅 118 行薄封装，依赖 engine.writeContradictionsRun + engine.loadContradictionsTrend 两方法 + ASCII 图表；'trends 子系统'=2 引擎方法+1 图表渲染器，自包含中等工作量，非大子系统"
         }
       ],
-      "notes": "策略(2026-08-13 grill Q4=A)：忠实 port TS trends.ts(118行薄封装)。三后端(InMemory/libsql/postgres)各加引擎方法 writeContradictionsRun(run_row) + loadContradictionsTrend(days)；新增 contradictions_runs 表 migration(列: id, run_at, query, n_pairs, n_judge_errors, judge_error_rate, verdict_breakdown_json, report_json)；移植 renderTrendChart 输出 ASCII 图表。run 子命令写 verdict 后调用 writeContradictionsRun 持久化该行。"
+      "notes": "策略(2026-08-13 grill Q4=A)：忠实 port TS trends.ts(118行薄封装)。三后端(InMemory/libsql/postgres)各加引擎方法 writeContradictionsRun(run_row) + loadContradictionsTrend(days)；新增 contradictions_runs 表 migration(列: id, run_at, query, n_pairs, n_judge_errors, judge_error_rate, verdict_breakdown_json, report_json)；移植 renderTrendChart 输出 ASCII 图表。run 子命令写 verdict 后调用 writeContradictionsRun 持久化该行。 完成(2026-08-11)：忠实 port 收口——0031 migration 双方言(sqlite+postgres)、三后端 write/load 实现、run 臂持久化+trend 臂 ASCII 图表、Wilson CI(Z=1.959963984540054) 与 run_id ISO 时间戳(fs-safe) 对齐 calibration 契约；5 个新单测 + 6 既有共 11 passed，离线 cargo build --offline 双 crate 0 error。"
     },
     "1-1-5-7": {
       "id": "1-1-5-7",

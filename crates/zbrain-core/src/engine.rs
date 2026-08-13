@@ -2557,6 +2557,27 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
         Ok(0)
     }
 
+    /// Persist one `eval-suspected-contradictions` probe run row (1-1-5-6 / #62
+    /// trend). Default returns `false` (not recorded) so older engines compile;
+    /// libsql and postgres override with real SQL.
+    async fn write_contradictions_run(
+        &self,
+        _row: &crate::eval::contradictions::ContradictionsRunRow,
+    ) -> crate::Result<bool> {
+        let _ = _row;
+        Ok(false)
+    }
+
+    /// Load the trend of past probe runs within `days` (newest first). Default
+    /// returns empty; libsql and postgres override with real SQL.
+    async fn load_contradictions_trend(
+        &self,
+        _days: i64,
+    ) -> crate::Result<Vec<crate::eval::contradictions::ContradictionsRunRow>> {
+        let _ = _days;
+        Ok(Vec::new())
+    }
+
     /// List facts created since a given ISO timestamp within a source, newest
     /// first. Mirrors TS `listFactsSince`. The `entity_slug` opt narrows the
     /// scan to a single entity when present.
@@ -3650,6 +3671,9 @@ pub struct InMemoryEngine {
     /// 1-3-4-6: subagent tool-execution log (in-memory, for testing the read
     /// path; the Rust minion does not yet write this table — KNOWN-GAP).
     subagent_tool_executions_store: Mutex<Vec<InternalSubagentToolExecution>>,
+    /// 1-1-5-6 (#62 trend): persisted probe run rows backing
+    /// `eval suspected-contradictions trend` (in-memory, for testing).
+    contradictions_runs_store: Mutex<Vec<crate::eval::contradictions::ContradictionsRunRow>>,
 }
 
 /// In-memory `subagent_tool_executions` row (1-3-4-6, read-path testing).
@@ -3890,6 +3914,8 @@ impl InMemoryEngine {
             // 1-3-4-6: engine config + subagent tool-execution log (in-memory)
             config_store: Mutex::new(std::collections::HashMap::new()),
             subagent_tool_executions_store: Mutex::new(Vec::new()),
+            // 1-1-5-6 (#62 trend): probe run rows (in-memory, for testing)
+            contradictions_runs_store: Mutex::new(Vec::new()),
         }
     }
 
@@ -4228,6 +4254,49 @@ impl BrainEngine for InMemoryEngine {
 
     async fn init_schema(&self) -> crate::Result<()> {
         Ok(())
+    }
+
+    // ─── 1-1-5-6 (#62 trend): persist + load probe run rows ──────────────────
+
+    async fn write_contradictions_run(
+        &self,
+        row: &crate::eval::contradictions::ContradictionsRunRow,
+    ) -> crate::Result<bool> {
+        let mut store = self
+            .contradictions_runs_store
+            .lock()
+            .expect("InMemoryEngine contradictions_runs_store poisoned");
+        if store.iter().any(|r| r.run_id == row.run_id) {
+            return Ok(false); // idempotent: already recorded
+        }
+        store.push(row.clone());
+        Ok(true)
+    }
+
+    async fn load_contradictions_trend(
+        &self,
+        days: i64,
+    ) -> crate::Result<Vec<crate::eval::contradictions::ContradictionsRunRow>> {
+        let store = self
+            .contradictions_runs_store
+            .lock()
+            .expect("InMemoryEngine contradictions_runs_store poisoned");
+        let mut rows: Vec<crate::eval::contradictions::ContradictionsRunRow> = if days <= 0 {
+            store.clone()
+        } else {
+            let cutoff = chrono::Utc::now() - chrono::Duration::days(days);
+            store
+                .iter()
+                .filter(|r| {
+                    chrono::DateTime::parse_from_rfc3339(&r.ran_at)
+                        .map(|dt| dt.with_timezone(&chrono::Utc) >= cutoff)
+                        .unwrap_or(false)
+                })
+                .cloned()
+                .collect()
+        };
+        rows.sort_by(|a, b| b.ran_at.cmp(&a.ran_at));
+        Ok(rows)
     }
 
     async fn get_source_by_github_repo(

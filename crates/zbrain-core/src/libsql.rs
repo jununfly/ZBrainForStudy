@@ -154,6 +154,8 @@ const MIGRATION_0029: &str = include_str!("../migrations-sqlite/0029_synthesis_e
 /// 1-1-4 (G74 Category C): eval_candidates — candidate rows backing `eval export`/`prune`/`replay`.
 /// SQLite dialect downgrades PG array columns (steps_taken, scoring_dimensions, etc.) to JSON TEXT.
 const MIGRATION_0030: &str = include_str!("../migrations-sqlite/0030_eval_candidates.sql");
+/// 1-1-5-6 (#62 trend): eval_contradictions_runs — one row per probe run.
+const MIGRATION_0031: &str = include_str!("../migrations-sqlite/0031_eval_contradictions_runs.sql");
 
 /// Legacy string array — REMOVED in favor of MigrationRegistry.
 /// Use LIBQL_MIGRATIONS instead.
@@ -329,6 +331,11 @@ pub static LIBQL_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 30,
         name: "eval_candidates",
         sql: MIGRATION_0030,
+    }));
+    registry.add(Box::new(LibsqlMigration {
+        version: 31,
+        name: "eval_contradictions_runs",
+        sql: MIGRATION_0031,
     }));
 
     registry
@@ -5265,6 +5272,83 @@ impl BrainEngine for LibsqlEngine {
         Ok(n)
     }
 
+    async fn write_contradictions_run(
+        &self,
+        row: &crate::eval::contradictions::ContradictionsRunRow,
+    ) -> Result<bool> {
+        let conn = self.conn().await?;
+        let n = conn
+            .execute(
+                "INSERT OR IGNORE INTO eval_contradictions_runs (\
+                    run_id, ran_at, schema_version, judge_model, prompt_version, \
+                    queries_evaluated, queries_with_contradiction, total_contradictions_flagged, \
+                    wilson_ci_lower, wilson_ci_upper, judge_errors_total, cost_usd_total, \
+                    duration_ms, source_tier_breakdown, report_json) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                ::libsql::params![
+                    row.run_id.clone(),
+                    row.ran_at.clone(),
+                    row.schema_version as i64,
+                    row.judge_model.clone(),
+                    row.prompt_version.clone(),
+                    row.queries_evaluated as i64,
+                    row.queries_with_contradiction as i64,
+                    row.total_contradictions_flagged as i64,
+                    row.wilson_ci_lower,
+                    row.wilson_ci_upper,
+                    row.judge_errors_total as i64,
+                    row.cost_usd_total,
+                    row.duration_ms as i64,
+                    serde_json::to_string(&row.source_tier_breakdown).unwrap_or_else(|_| "{}".to_string()),
+                    serde_json::to_string(&row.report_json).unwrap_or_else(|_| "{}".to_string()),
+                ],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("write_contradictions_run: {e}")))?;
+        Ok(n > 0)
+    }
+
+    async fn load_contradictions_trend(
+        &self,
+        days: i64,
+    ) -> Result<Vec<crate::eval::contradictions::ContradictionsRunRow>> {
+        let conn = self.conn().await?;
+        let (sql, params): (String, Vec<::libsql::Value>) = if days <= 0 {
+            (
+                "SELECT run_id, ran_at, schema_version, judge_model, prompt_version, \
+                        queries_evaluated, queries_with_contradiction, total_contradictions_flagged, \
+                        wilson_ci_lower, wilson_ci_upper, judge_errors_total, cost_usd_total, \
+                        duration_ms, source_tier_breakdown, report_json \
+                 FROM eval_contradictions_runs ORDER BY ran_at DESC".to_string(),
+                Vec::new(),
+            )
+        } else {
+            (
+                "SELECT run_id, ran_at, schema_version, judge_model, prompt_version, \
+                        queries_evaluated, queries_with_contradiction, total_contradictions_flagged, \
+                        wilson_ci_lower, wilson_ci_upper, judge_errors_total, cost_usd_total, \
+                        duration_ms, source_tier_breakdown, report_json \
+                 FROM eval_contradictions_runs \
+                 WHERE julianday('now') - julianday(ran_at) <= ?1 \
+                 ORDER BY ran_at DESC".to_string(),
+                vec![::libsql::Value::from(days as f64)],
+            )
+        };
+        let mut rows = conn
+            .query(&sql, ::libsql::params::Params::Positional(params))
+            .await
+            .map_err(|e| Error::engine(format!("load_contradictions_trend: {e}")))?;
+        let mut out = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("load_contradictions_trend row: {e}")))?
+        {
+            out.push(Self::contradictions_run_from_row(&row)?);
+        }
+        Ok(out)
+    }
+
     async fn list_facts_since(
         &self,
         source_id: &str,
@@ -8142,6 +8226,38 @@ impl LibsqlEngine {
             Some(text) => serde_json::from_str(&text).unwrap_or_default(),
             None => Vec::new(),
         }
+    }
+
+    fn contradictions_run_from_row(row: &::libsql::Row) -> Result<crate::eval::contradictions::ContradictionsRunRow> {
+        let source_tier: crate::eval::contradictions::SourceTierBreakdown = row
+            .get::<Option<String>>(13)
+            .ok()
+            .flatten()
+            .and_then(|s| serde_json::from_str::<crate::eval::contradictions::SourceTierBreakdown>(&s).ok())
+            .unwrap_or_default();
+        let report_json: serde_json::Value = row
+            .get::<Option<String>>(14)
+            .ok()
+            .flatten()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .unwrap_or(serde_json::Value::Null);
+        Ok(crate::eval::contradictions::ContradictionsRunRow {
+            run_id: row.get::<String>(0).map_err(|e| Error::engine(format!("ec run_id: {e}")))?,
+            ran_at: row.get::<String>(1).map_err(|e| Error::engine(format!("ec ran_at: {e}")))?,
+            schema_version: row.get::<i64>(2).map_err(|e| Error::engine(format!("ec sv: {e}")))? as u8,
+            judge_model: row.get::<String>(3).map_err(|e| Error::engine(format!("ec jm: {e}")))?,
+            prompt_version: row.get::<String>(4).map_err(|e| Error::engine(format!("ec pv: {e}")))?,
+            queries_evaluated: row.get::<i64>(5).map_err(|e| Error::engine(format!("ec qe: {e}")))? as u64,
+            queries_with_contradiction: row.get::<i64>(6).map_err(|e| Error::engine(format!("ec wc: {e}")))? as u64,
+            total_contradictions_flagged: row.get::<i64>(7).map_err(|e| Error::engine(format!("ec tf: {e}")))? as u64,
+            wilson_ci_lower: row.get::<f64>(8).map_err(|e| Error::engine(format!("ec cil: {e}")))?,
+            wilson_ci_upper: row.get::<f64>(9).map_err(|e| Error::engine(format!("ec ciu: {e}")))?,
+            judge_errors_total: row.get::<i64>(10).map_err(|e| Error::engine(format!("ec je: {e}")))? as u64,
+            cost_usd_total: row.get::<f64>(11).map_err(|e| Error::engine(format!("ec cost: {e}")))?,
+            duration_ms: row.get::<i64>(12).map_err(|e| Error::engine(format!("ec dur: {e}")))? as u64,
+            source_tier_breakdown: source_tier,
+            report_json,
+        })
     }
 
     async fn delete_facts_for_page_impl(
