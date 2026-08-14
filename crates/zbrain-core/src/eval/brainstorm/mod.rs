@@ -20,3 +20,4 @@ pub mod domain_bank;
 pub mod error_classify;
 pub mod judges;
 pub mod orchestrator;
+pub mod store;

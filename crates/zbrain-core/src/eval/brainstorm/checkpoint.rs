@@ -6,17 +6,24 @@
 //!     sort(far)).slice(0,16). NO embedding bits — stable across
 //!     embedding-model swaps.
 //!
-//! Q3 MVP scope: only `compute_run_id` is implemented and tested. The
-//! save/load/list/gc/clear machinery (filesystem JSON, 7-day mtime GC,
-//! resume playback that merges `completed_crosses` into the new run) is
-//! TODO — the orchestrator in this slice does NOT call resume, so stubbing
-//! these as safe no-ops keeps the surface honest without blocking the build.
+//! Run persistence (1-1-5-9): `save_checkpoint` / `list_runs` /
+//! `gc_stale_checkpoints` / `clear_checkpoint` are now real and delegate to
+//! the filesystem [`store`] (one `<run_id>.json` per run under the brainstorm
+//! run-store dir). `load_checkpoint` loads a single run row for resume
+//! playback (wired at 1-1-5-11). All take an explicit `store_dir` so the CLI's
+//! `--store-dir` override is honored everywhere.
 
-use sha2::{Digest, Sha256};
+use std::path::Path;
 
-/// Schema version for the (future) on-disk checkpoint payload.
+use anyhow::Result;
+use sha2::Digest;
+
+use super::orchestrator::BrainstormResult;
+use super::store::{self, BrainstormRunRow, BrainstormRunSummary};
+
+/// Schema version for the on-disk checkpoint payload.
 pub const CURRENT_SCHEMA: u16 = 2;
-/// 7-day staleness window (A5).
+/// 7-day staleness window (A5) — the default GC horizon.
 pub const STALE_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 
 /// A5 amended identity: sha256(question + profile + sort(close) + sort(far))
@@ -44,40 +51,39 @@ pub fn compute_run_id(
         serde_json::to_string(&close).expect("string vec serializes"),
         serde_json::to_string(&far).expect("string vec serializes"),
     );
-    let hash = Sha256::digest(payload.as_bytes());
+    let hash = sha2::Sha256::digest(payload.as_bytes());
     hex::encode(hash)[..16].to_string()
 }
 
-// ── Q3 MVP: resume machinery is TODO ────────────────────────────────────────
-//
-// The orchestrator in this slice does not call resume, so these stubs are
-// safe no-ops that preserve the module surface. They will be filled in when
-// resume playback is wired (full idea bodies per TX3, one --resume flag per
-// TX4, atomic .tmp+rename save, mtime-based GC).
-
-/// Q3 MVP stub: resume playback not wired. Returns `None` (fresh start).
-#[must_use]
-pub fn load_checkpoint(_run_id: &str) -> Option<()> {
-    None
+/// Persist a run to `store_dir` (atomic `.tmp`+rename). Returns the path.
+pub fn save_checkpoint(result: &BrainstormResult, store_dir: &Path) -> Result<std::path::PathBuf> {
+    store::save_run(result, store_dir)
 }
 
-/// Q3 MVP stub: best-effort persistence not wired.
-pub fn save_checkpoint(_run_id: &str) {}
-
-/// Q3 MVP stub: no runs enumerated.
+/// List persisted runs in `store_dir`, newest first.
 #[must_use]
-pub fn list_runs() -> Vec<()> {
-    vec![]
+pub fn list_runs(store_dir: &Path) -> Vec<BrainstormRunSummary> {
+    store::list_runs(store_dir)
 }
 
-/// Q3 MVP stub: no checkpoints reclaimed.
+/// Reclaim runs in `store_dir` older than `max_age_days` (mtime-based).
 #[must_use]
-pub fn gc_stale_checkpoints(_max_age_days: u64) -> u64 {
-    0
+pub fn gc_stale_checkpoints(store_dir: &Path, max_age_days: u64) -> u64 {
+    store::gc_stale_runs(store_dir, max_age_days)
 }
 
-/// Q3 MVP stub: no-op clear.
-pub fn clear_checkpoint(_run_id: &str) {}
+/// Delete a single run by id from `store_dir`.
+#[must_use]
+pub fn clear_checkpoint(store_dir: &Path, run_id: &str) -> bool {
+    store::clear_run(store_dir, run_id)
+}
+
+/// Load a single run row by id (resume playback, 1-1-5-11). Returns `None`
+/// when the run is absent or corrupt.
+#[must_use]
+pub fn load_checkpoint(store_dir: &Path, run_id: &str) -> Option<BrainstormRunRow> {
+    store::load_run(store_dir, run_id)
+}
 
 #[cfg(test)]
 mod tests {
@@ -115,5 +121,32 @@ mod tests {
         let a = compute_run_id("q1", "p", &[], &[]);
         let b = compute_run_id("q2", "p", &[], &[]);
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn checkpoint_facade_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("bs_cp_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).ok();
+        for e in std::fs::read_dir(&dir).unwrap().flatten() {
+            let _ = std::fs::remove_file(e.path());
+        }
+        let result = crate::eval::brainstorm::orchestrator::BrainstormResult {
+            profile_label: "brainstorm",
+            question: "q".to_string(),
+            embedding_model: None,
+            ideas: vec![],
+            close_set: vec![],
+            far_set: vec![],
+            active_bias_tags: None,
+            short_of_target: false,
+            judge_failed: false,
+            cost: crate::eval::brainstorm::orchestrator::BrainstormCost::default(),
+            run_id: "0123456789abcdef".to_string(),
+        };
+        let path = save_checkpoint(&result, &dir).unwrap();
+        assert!(path.exists());
+        assert_eq!(list_runs(&dir).len(), 1);
+        assert!(clear_checkpoint(&dir, "0123456789abcdef"));
+        assert!(list_runs(&dir).is_empty());
     }
 }

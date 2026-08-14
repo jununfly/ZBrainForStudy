@@ -415,9 +415,31 @@ pub struct BrainstormArgs {
     #[arg(long = "force-resume")]
     pub force_resume: bool,
 
-    /// Print saved run_ids and exit (Q3: checkpoint list is a no-op stub).
+    /// Print persisted run-store entries and exit (1-1-5-9).
     #[arg(long = "list-runs")]
     pub list_runs: bool,
+
+    /// Persist the full result JSON to the run store (trend/review/resume).
+    /// Default follows the profile (`brainstorm`=on, `lsd`=off); independent of
+    /// `--save` (which writes a wiki/ideas page).
+    #[arg(long = "save-run")]
+    pub save_run: bool,
+
+    /// Don't persist to the run store (overrides the profile default).
+    #[arg(long = "no-save-run")]
+    pub no_save_run: bool,
+
+    /// Reclaim stale run-store entries (mtime older than `--gc-days`) and exit.
+    #[arg(long = "gc")]
+    pub gc: bool,
+
+    /// Staleness window in days for `--gc` (default 7).
+    #[arg(long = "gc-days")]
+    pub gc_days: Option<u64>,
+
+    /// Override the run-store directory (default: ~/.zbrain/runs/brainstorm).
+    #[arg(long = "store-dir")]
+    pub store_dir: Option<std::path::PathBuf>,
 }
 
 /// CLI args for `zbrain eval-brainstorm`. Mirrors `EvalBrainstormCliArgs`.
@@ -446,6 +468,31 @@ pub struct EvalBrainstormArgs {
     /// Override the grounding threshold (default 1.0).
     #[arg(long = "grounding-min")]
     pub grounding_min: Option<f64>,
+
+    /// Print persisted run-store entries and exit (1-1-5-9).
+    #[arg(long = "list-runs")]
+    pub list_runs: bool,
+
+    /// Persist each fixture's result JSON to the run store (opt-in; default off
+    /// for the batch eval command to avoid auto-cluttering the store).
+    #[arg(long = "save-run")]
+    pub save_run: bool,
+
+    /// Don't persist to the run store (default for this command).
+    #[arg(long = "no-save-run")]
+    pub no_save_run: bool,
+
+    /// Reclaim stale run-store entries (mtime older than `--gc-days`) and exit.
+    #[arg(long = "gc")]
+    pub gc: bool,
+
+    /// Staleness window in days for `--gc` (default 7).
+    #[arg(long = "gc-days")]
+    pub gc_days: Option<u64>,
+
+    /// Override the run-store directory (default: ~/.zbrain/runs/brainstorm).
+    #[arg(long = "store-dir")]
+    pub store_dir: Option<std::path::PathBuf>,
 }
 
 // ── eval-brainstorm helper types (ported from src/commands/eval-brainstorm.ts) ──
@@ -620,20 +667,52 @@ pub async fn run_brainstorm_command(
     };
     use zbrain_core::libsql::LibsqlEngine;
 
-    // TX3 resume is a Q3 no-op; surface it honestly instead of silently.
-    if args.resume.is_some() {
-        anyhow::bail!(
-            "zbrain {}: --resume is not yet wired (Q3 MVP). Re-run the command; checkpoints are not yet persisted.",
-            profile.label
+    // Resolve the run-store directory (no DB needed for store housekeeping).
+    let store_dir = resolve_run_store_dir(args.store_dir.as_deref());
+
+    // --gc: reclaim stale runs and exit (mtime-based, default 7-day window).
+    if args.gc {
+        let days = args.gc_days.unwrap_or(7);
+        let n = checkpoint::gc_stale_checkpoints(&store_dir, days);
+        println!(
+            "Reclaimed {n} stale brainstorm run(s) older than {days} day(s) from {}.",
+            store_dir.display()
         );
+        return Ok(());
     }
+
+    // --list-runs: enumerate persisted runs and exit.
     if args.list_runs {
-        // checkpoint::list_runs() is a stub returning [].
-        let runs = checkpoint::list_runs();
+        let runs = checkpoint::list_runs(&store_dir);
         if runs.is_empty() {
-            println!("No saved brainstorm runs.");
+            println!("No saved brainstorm runs at {}.", store_dir.display());
+        } else {
+            println!("Saved brainstorm runs (newest first):");
+            for r in &runs {
+                println!(
+                    "  {}  [{:>10}]  {}  ideas={}/{}  ${:.4}{}",
+                    r.run_id,
+                    r.profile_label,
+                    r.saved_at,
+                    r.n_passed,
+                    r.n_ideas,
+                    r.actual_usd,
+                    if r.judge_failed { "  (judge failed)" } else { "" }
+                );
+            }
+            println!("\n{} run(s).", runs.len());
         }
         return Ok(());
+    }
+
+    // Resume playback is wired at 1-1-5-11; runs are now persisted, but the
+    // playback merge of completed crosses is not yet implemented.
+    if args.resume.is_some() {
+        anyhow::bail!(
+            "zbrain {}: --resume is not yet wired (roadmap 1-1-5-11). Runs are now persisted to {}; resume playback is the next node.",
+            profile.label,
+            store_dir.display()
+        );
     }
 
     let question = args.question.join(" ");
@@ -783,6 +862,28 @@ pub async fn run_brainstorm_command(
             Err(err) => eprintln!("zbrain {}: save failed: {}", profile.label, err),
         }
     }
+
+    // Run-store persistence (trend/review/resume). Gated on `--save-run` /
+    // `--no-save-run` / the profile default — independent of the wiki save
+    // above. Brainstorm defaults to on; LSD to off.
+    let run_explicit = if args.no_save_run {
+        Some(false)
+    } else if args.save_run {
+        Some(true)
+    } else {
+        None
+    };
+    let should_persist_run = run_explicit.unwrap_or(profile.default_save);
+    if should_persist_run {
+        match checkpoint::save_checkpoint(&result, &store_dir) {
+            Ok(path) => println!(
+                "\n_Run stored: `{}` (run_id {})._",
+                path.display(),
+                result.run_id
+            ),
+            Err(err) => eprintln!("zbrain {}: run-store save failed: {}", profile.label, err),
+        }
+    }
     Ok(())
 }
 
@@ -801,6 +902,52 @@ pub async fn run_eval_brainstorm_command(
         run_brainstorm, BrainstormOptions, BRAINSTORM_PROFILE,
     };
     use zbrain_core::libsql::LibsqlEngine;
+    use zbrain_core::eval::brainstorm::checkpoint;
+
+    // Resolve the run-store directory (no DB needed for store housekeeping).
+    let store_dir = resolve_run_store_dir(args.store_dir.as_deref());
+
+    // --gc: reclaim stale runs and exit (mtime-based, default 7-day window).
+    if args.gc {
+        let days = args.gc_days.unwrap_or(7);
+        let n = checkpoint::gc_stale_checkpoints(&store_dir, days);
+        println!(
+            "Reclaimed {n} stale brainstorm run(s) older than {days} day(s) from {}.",
+            store_dir.display()
+        );
+        return Ok(());
+    }
+
+    // --list-runs: enumerate persisted runs and exit.
+    if args.list_runs {
+        let runs = checkpoint::list_runs(&store_dir);
+        if runs.is_empty() {
+            println!("No saved brainstorm runs at {}.", store_dir.display());
+        } else {
+            println!("Saved brainstorm runs (newest first):");
+            for r in &runs {
+                println!(
+                    "  {}  [{:>10}]  {}  ideas={}/{}  ${:.4}{}",
+                    r.run_id,
+                    r.profile_label,
+                    r.saved_at,
+                    r.n_passed,
+                    r.n_ideas,
+                    r.actual_usd,
+                    if r.judge_failed { "  (judge failed)" } else { "" }
+                );
+            }
+            println!("\n{} run(s).", runs.len());
+        }
+        return Ok(());
+    }
+
+    // Eval default: do NOT auto-persist (batch command — opt-in via --save-run).
+    let should_persist_run = if args.no_save_run {
+        false
+    } else {
+        args.save_run
+    };
 
     let fixture = match &args.fixture {
         Some(f) => f.clone(),
@@ -917,6 +1064,25 @@ pub async fn run_eval_brainstorm_command(
                 let summary = summarize_fixture(&fix.question, &result, &real_slugs);
                 total_cost += summary.cost_usd;
                 per_fixture.push(summary);
+                // Persist the fixture's result to the run store when opted in.
+                if should_persist_run {
+                    match checkpoint::save_checkpoint(&result, &store_dir) {
+                        Ok(path) => {
+                            if !args.json {
+                                eprintln!(
+                                    "[eval-brainstorm] fixture {} stored: {}",
+                                    idx + 1,
+                                    path.display()
+                                );
+                            }
+                        }
+                        Err(err) => eprintln!(
+                            "[eval-brainstorm] fixture {} run-store save failed: {}",
+                            idx + 1,
+                            err
+                        ),
+                    }
+                }
             }
             Err(err) => {
                 if !args.json {
@@ -11217,6 +11383,16 @@ pub(crate) fn resolve_database_path(database_url: &str) -> String {
         }
     }
     path.to_string()
+}
+
+/// Resolve the brainstorm run-store directory. An explicit `--store-dir`
+/// overrides the default (`~/.zbrain/runs/brainstorm`, honoring `ZBRAIN_HOME`).
+#[must_use]
+pub(crate) fn resolve_run_store_dir(store_dir: Option<&std::path::Path>) -> std::path::PathBuf {
+    match store_dir {
+        Some(d) => d.to_path_buf(),
+        None => zbrain_core::eval::brainstorm::store::default_store_dir(),
+    }
 }
 
 /// Dispatch `zbrain autopilot` command.
