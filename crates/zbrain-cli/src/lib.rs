@@ -440,6 +440,19 @@ pub struct BrainstormArgs {
     /// Override the run-store directory (default: ~/.zbrain/runs/brainstorm).
     #[arg(long = "store-dir")]
     pub store_dir: Option<std::path::PathBuf>,
+
+    /// Review a single persisted run by run_id: full report + metadata header
+    /// (1-1-5-10). With `--json`, prints the raw run row.
+    #[arg(long = "review-run")]
+    pub review_run: Option<String>,
+
+    /// Print the pass-rate / grounding trend across persisted runs (1-1-5-10).
+    #[arg(long)]
+    pub trend: bool,
+
+    /// Time window in days for `--trend` (default 30).
+    #[arg(long = "days")]
+    pub days: Option<u64>,
 }
 
 /// CLI args for `zbrain eval-brainstorm`. Mirrors `EvalBrainstormCliArgs`.
@@ -493,6 +506,19 @@ pub struct EvalBrainstormArgs {
     /// Override the run-store directory (default: ~/.zbrain/runs/brainstorm).
     #[arg(long = "store-dir")]
     pub store_dir: Option<std::path::PathBuf>,
+
+    /// Review a single persisted run by run_id: full report + metadata header
+    /// (1-1-5-10). With `--json`, prints the raw run row.
+    #[arg(long = "review-run")]
+    pub review_run: Option<String>,
+
+    /// Print the pass-rate / grounding trend across persisted runs (1-1-5-10).
+    #[arg(long)]
+    pub trend: bool,
+
+    /// Time window in days for `--trend` (default 30).
+    #[arg(long = "days")]
+    pub days: Option<u64>,
 }
 
 // ── eval-brainstorm helper types (ported from src/commands/eval-brainstorm.ts) ──
@@ -689,20 +715,40 @@ pub async fn run_brainstorm_command(
         } else {
             println!("Saved brainstorm runs (newest first):");
             for r in &runs {
+                let rate = if r.n_ideas > 0 {
+                    r.n_passed as f64 / r.n_ideas as f64 * 100.0
+                } else {
+                    0.0
+                };
+                let gnd = r
+                    .mean_grounding
+                    .map_or_else(|| "-".to_string(), |g| format!("{g:.2}"));
                 println!(
-                    "  {}  [{:>10}]  {}  ideas={}/{}  ${:.4}{}",
-                    r.run_id,
-                    r.profile_label,
-                    r.saved_at,
-                    r.n_passed,
-                    r.n_ideas,
-                    r.actual_usd,
-                    if r.judge_failed { "  (judge failed)" } else { "" }
+                    "  {rid}  [{prof:>10}]  {saved}  pass={np}/{ni} ({rate:.1}%)  gnd={gnd}  ${usd:.4}{fail}",
+                    rid = r.run_id,
+                    prof = r.profile_label,
+                    saved = r.saved_at,
+                    np = r.n_passed,
+                    ni = r.n_ideas,
+                    rate = rate,
+                    gnd = gnd,
+                    usd = r.actual_usd,
+                    fail = if r.judge_failed { "  (judge failed)" } else { "" }
                 );
             }
             println!("\n{} run(s).", runs.len());
         }
         return Ok(());
+    }
+
+    // --review-run <run_id>: print a single run's full report and exit (1-1-5-10).
+    if let Some(run_id) = &args.review_run {
+        return print_run_review(&store_dir, run_id, args.json);
+    }
+
+    // --trend: print the pass-rate / grounding trend and exit (1-1-5-10).
+    if args.trend {
+        return print_run_trend(&store_dir, args.days.unwrap_or(30));
     }
 
     // Resume playback is wired at 1-1-5-11; runs are now persisted, but the
@@ -926,20 +972,40 @@ pub async fn run_eval_brainstorm_command(
         } else {
             println!("Saved brainstorm runs (newest first):");
             for r in &runs {
+                let rate = if r.n_ideas > 0 {
+                    r.n_passed as f64 / r.n_ideas as f64 * 100.0
+                } else {
+                    0.0
+                };
+                let gnd = r
+                    .mean_grounding
+                    .map_or_else(|| "-".to_string(), |g| format!("{g:.2}"));
                 println!(
-                    "  {}  [{:>10}]  {}  ideas={}/{}  ${:.4}{}",
-                    r.run_id,
-                    r.profile_label,
-                    r.saved_at,
-                    r.n_passed,
-                    r.n_ideas,
-                    r.actual_usd,
-                    if r.judge_failed { "  (judge failed)" } else { "" }
+                    "  {rid}  [{prof:>10}]  {saved}  pass={np}/{ni} ({rate:.1}%)  gnd={gnd}  ${usd:.4}{fail}",
+                    rid = r.run_id,
+                    prof = r.profile_label,
+                    saved = r.saved_at,
+                    np = r.n_passed,
+                    ni = r.n_ideas,
+                    rate = rate,
+                    gnd = gnd,
+                    usd = r.actual_usd,
+                    fail = if r.judge_failed { "  (judge failed)" } else { "" }
                 );
             }
             println!("\n{} run(s).", runs.len());
         }
         return Ok(());
+    }
+
+    // --review-run <run_id>: print a single run's full report and exit (1-1-5-10).
+    if let Some(run_id) = &args.review_run {
+        return print_run_review(&store_dir, run_id, args.json);
+    }
+
+    // --trend: print the pass-rate / grounding trend and exit (1-1-5-10).
+    if args.trend {
+        return print_run_trend(&store_dir, args.days.unwrap_or(30));
     }
 
     // Eval default: do NOT auto-persist (batch command — opt-in via --save-run).
@@ -11393,6 +11459,54 @@ pub(crate) fn resolve_run_store_dir(store_dir: Option<&std::path::Path>) -> std:
         Some(d) => d.to_path_buf(),
         None => zbrain_core::eval::brainstorm::store::default_store_dir(),
     }
+}
+
+/// Print the full review of a single persisted run (1-1-5-10): metadata
+/// header + the full `format_brainstorm_markdown` report, or the raw run row
+/// JSON when `json` is set. Errors clearly when the run is absent.
+pub(crate) fn print_run_review(
+    store_dir: &std::path::Path,
+    run_id: &str,
+    json: bool,
+) -> anyhow::Result<()> {
+    use zbrain_core::eval::brainstorm::checkpoint;
+    use zbrain_core::eval::brainstorm::orchestrator::{format_brainstorm_markdown, BrainstormResult, FormatOpts};
+
+    let row = checkpoint::load_checkpoint(store_dir, run_id).ok_or_else(|| {
+        anyhow::anyhow!(
+            "zbrain brainstorm: no run with run_id `{run_id}` in {}.",
+            store_dir.display()
+        )
+    })?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&row)?);
+        return Ok(());
+    }
+    let result: BrainstormResult = serde_json::from_value(row.result.clone()).map_err(|e| {
+        anyhow::anyhow!(
+            "zbrain brainstorm: run `{run_id}` payload no longer deserializes: {e}"
+        )
+    })?;
+    println!("{}", checkpoint::render_review_header(&row));
+    println!();
+    let md = format_brainstorm_markdown(
+        &result,
+        &FormatOpts { only_passed: false, include_meta: true },
+    );
+    println!("{md}");
+    println!("\n_Run store: `{}` (run_id {})._", store_dir.display(), run_id);
+    Ok(())
+}
+
+/// Print the run trend (pass-rate% + mean grounding) across persisted runs
+/// within the last `days` (1-1-5-10).
+pub(crate) fn print_run_trend(store_dir: &std::path::Path, days: u64) -> anyhow::Result<()> {
+    use zbrain_core::eval::brainstorm::checkpoint;
+    let runs = checkpoint::list_runs(store_dir);
+    let recent = checkpoint::recent_runs_by_days(&runs, days);
+    let chart = checkpoint::render_trend_chart(&recent);
+    println!("{chart}");
+    Ok(())
 }
 
 /// Dispatch `zbrain autopilot` command.

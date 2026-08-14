@@ -125,7 +125,7 @@ pub struct BrainstormOptions {
 }
 
 /// One idea emitted to the user, with citation transparency (D6).
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BrainstormIdea {
     /// "01" .. "NN", stable within this run.
     pub id: String,
@@ -147,9 +147,9 @@ pub struct BrainstormIdea {
 }
 
 /// Top-level orchestrator result.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BrainstormResult {
-    pub profile_label: &'static str,
+    pub profile_label: String,
     pub question: String,
     pub embedding_model: Option<String>,
     pub ideas: Vec<BrainstormIdea>,
@@ -164,23 +164,23 @@ pub struct BrainstormResult {
 }
 
 /// Close-set citation for the run header.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CloseRefForReport {
     pub slug: String,
     pub title: Option<String>,
 }
 
 /// Far-set citation for the run header.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FarRefForReport {
     pub slug: String,
     pub title: Option<String>,
     pub distance_score: f64,
-    pub source: &'static str,
+    pub source: String,
 }
 
 /// Cost actuals (codex r2 #10).
-#[derive(Debug, Clone, Default, serde::Serialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct BrainstormCost {
     pub estimated_usd: f64,
     pub actual_usd: f64,
@@ -627,7 +627,7 @@ async fn run_brainstorm_impl(
     let run_id = compute_run_id(&opts.question, profile.label, &close_slugs_all, &far_slugs_all);
 
     Ok(BrainstormResult {
-        profile_label: profile.label,
+        profile_label: profile.label.to_string(),
         question: opts.question.clone(),
         embedding_model: embedding_client.as_ref().map(|_| "embedding".to_string()),
         ideas,
@@ -645,7 +645,7 @@ async fn run_brainstorm_impl(
                 slug: f.slug.clone(),
                 title: f.title.clone(),
                 distance_score: f.distance_score,
-                source: f.source,
+                source: f.source.to_string(),
             })
             .collect(),
         active_bias_tags,
@@ -895,7 +895,7 @@ mod tests {
     #[test]
     fn format_markdown_renders_passed_only() {
         let result = BrainstormResult {
-            profile_label: "brainstorm",
+            profile_label: "brainstorm".to_string(),
             question: "q".into(),
             embedding_model: None,
             ideas: vec![
@@ -925,7 +925,7 @@ mod tests {
                 slug: "b".into(),
                 title: None,
                 distance_score: 0.7,
-                source: "prefix-stratified",
+                source: "prefix-stratified".to_string(),
             }],
             active_bias_tags: None,
             short_of_target: false,

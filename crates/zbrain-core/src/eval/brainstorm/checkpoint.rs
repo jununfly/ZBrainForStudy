@@ -85,6 +85,30 @@ pub fn load_checkpoint(store_dir: &Path, run_id: &str) -> Option<BrainstormRunRo
     store::load_run(store_dir, run_id)
 }
 
+/// Rebuild the full typed `BrainstormResult` for `--review-run` (1-1-5-10)
+/// and resume playback (1-1-5-11). Returns `None` when the run is absent or
+/// the JSON no longer deserializes (schema drift).
+#[must_use]
+pub fn load_run_result(store_dir: &Path, run_id: &str) -> Option<BrainstormResult> {
+    store::load_run_result(store_dir, run_id)
+}
+
+/// Filter run summaries to the last `days` (delegates to [`store`]).
+#[must_use]
+pub fn recent_runs_by_days(runs: &[BrainstormRunSummary], days: u64) -> Vec<BrainstormRunSummary> {
+    store::recent_runs_by_days(runs, days)
+}
+
+/// Render the run trend ASCII table (delegates to [`store`]).
+pub fn render_trend_chart(rows: &[BrainstormRunSummary]) -> String {
+    store::render_trend_chart(rows)
+}
+
+/// Render the single-run review metadata header (delegates to [`store`]).
+pub fn render_review_header(row: &BrainstormRunRow) -> String {
+    store::render_review_header(row)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,7 +155,7 @@ mod tests {
             let _ = std::fs::remove_file(e.path());
         }
         let result = crate::eval::brainstorm::orchestrator::BrainstormResult {
-            profile_label: "brainstorm",
+            profile_label: "brainstorm".to_string(),
             question: "q".to_string(),
             embedding_model: None,
             ideas: vec![],

@@ -6,10 +6,11 @@
 //! single `<run_id>.json` file holding the full `BrainstormResult` (as JSON)
 //! plus a `schema_version` + `saved_at` envelope.
 //!
-//! The on-disk `result` is stored as `serde_json::Value` rather than a typed
-//! `BrainstormResult` because `BrainstormResult` (and its `&'static str`
-//! fields) is `Serialize`-only — keeping the store decoupled from the result
-//! type's derive surface. `list_runs` projects a small summary out of the JSON.
+//! The on-disk `result` is stored as `serde_json::Value`, but since
+//! `BrainstormResult` is now `Serialize + Deserialize`, `load_run_result`
+//! can rebuild the full typed result for `--review-run` (and 1-1-5-11 resume)
+//! by deserializing the JSON. `list_runs` projects a small summary out of the
+//! JSON for the trend table.
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -42,6 +43,9 @@ pub struct BrainstormRunSummary {
     pub question: String,
     pub n_ideas: usize,
     pub n_passed: usize,
+    /// Mean `concrete_grounding` (1-5) across judged ideas; `None` when no
+    /// idea was judged (e.g. judge_failed) — the second trend axis (Q2-A).
+    pub mean_grounding: Option<f64>,
     pub actual_usd: f64,
     pub judge_failed: bool,
 }
@@ -138,6 +142,25 @@ pub fn summarize(row: &BrainstormRunRow) -> BrainstormRunSummary {
     let n_passed = ideas
         .map(|a| a.iter().filter(|i| i.get("passes").and_then(|v| v.as_bool()) == Some(true)).count())
         .unwrap_or(0);
+    // Mean grounding (Q2-A): average `judge.scores.concrete_grounding` across
+    // ideas that actually carry a judge verdict. `judge_failed` runs (judge is
+    // null) and unjudged ideas are skipped; if none, None.
+    let mean_grounding = ideas.and_then(|a| {
+        let vals: Vec<f64> = a
+            .iter()
+            .filter_map(|i| {
+                i.get("judge")
+                    .and_then(|j| j.get("scores"))
+                    .and_then(|s| s.get("concrete_grounding"))
+                    .and_then(|v| v.as_f64())
+            })
+            .collect();
+        if vals.is_empty() {
+            None
+        } else {
+            Some(vals.iter().sum::<f64>() / vals.len() as f64)
+        }
+    });
     BrainstormRunSummary {
         run_id: r.get("run_id").and_then(|v| v.as_str()).unwrap_or("<unknown>").to_string(),
         schema_version: row.schema_version,
@@ -150,6 +173,7 @@ pub fn summarize(row: &BrainstormRunRow) -> BrainstormRunSummary {
         question: r.get("question").and_then(|v| v.as_str()).unwrap_or("").to_string(),
         n_ideas,
         n_passed,
+        mean_grounding,
         actual_usd: r
             .get("cost")
             .and_then(|c| c.get("actual_usd"))
@@ -214,9 +238,144 @@ pub fn load_run(store_dir: &Path, run_id: &str) -> Option<BrainstormRunRow> {
     serde_json::from_slice(&data).ok()
 }
 
+/// Rebuild the full typed `BrainstormResult` from a persisted run (1-1-5-10
+/// `--review-run`, and 1-1-5-11 resume). Returns None if the row is missing or
+/// the JSON no longer deserializes (schema drift).
+#[must_use]
+pub fn load_run_result(store_dir: &Path, run_id: &str) -> Option<BrainstormResult> {
+    let row = load_run(store_dir, run_id)?;
+    serde_json::from_value(row.result).ok()
+}
+
+/// Filter run summaries to those within the last `days` (by `saved_at`,
+/// RFC3339). `days == 0` returns all runs. Newest-first order from
+/// `list_runs` is preserved. Unparseable timestamps are kept (not dropped).
+#[must_use]
+pub fn recent_runs_by_days(runs: &[BrainstormRunSummary], days: u64) -> Vec<BrainstormRunSummary> {
+    if days == 0 {
+        return runs.to_vec();
+    }
+    let cutoff = chrono::Utc::now()
+        .date_naive()
+        .checked_sub_days(chrono::Days::new(days))
+        .unwrap_or_else(|| chrono::Utc::now().date_naive());
+    runs.iter()
+        .filter(|r| {
+            chrono::DateTime::parse_from_rfc3339(&r.saved_at)
+                .map(|dt| dt.date_naive() >= cutoff)
+                .unwrap_or(true)
+        })
+        .cloned()
+        .collect()
+}
+
+/// Render the brainstorm run trend as a fixed-width ASCII table (faithful to
+/// the contradictions `render_trend_chart` style). Two axes (Q2-A): pass-rate%
+/// and mean grounding (1-5). Newest-first order is expected from the caller.
+pub fn render_trend_chart(rows: &[BrainstormRunSummary]) -> String {
+    if rows.is_empty() {
+        return "No brainstorm runs recorded yet. Run `zbrain brainstorm` (or `zbrain eval-brainstorm`) first.".to_string();
+    }
+    let mut out = String::new();
+    out.push_str("Date        Profile    Ideas Pass  Rate%  Gnd   PassBar    GndBar\n");
+    out.push_str("----------  ---------  ----- ----- ------ ----- ---------- ----------\n");
+    for r in rows {
+        let date = r.saved_at.get(0..10).unwrap_or(&r.saved_at); // YYYY-MM-DD
+        let profile = trunc_display(&r.profile_label, 10);
+        let pass_rate = if r.n_ideas > 0 {
+            r.n_passed as f64 / r.n_ideas as f64 * 100.0
+        } else {
+            0.0
+        };
+        let rate = format!("{pass_rate:>5.1}%");
+        let gnd = match r.mean_grounding {
+            Some(g) => format!("{g:>5.1}"),
+            None => "    -".to_string(),
+        };
+        let pass_len = ((pass_rate / 100.0) * 10.0).round() as usize;
+        let pass_bar = "#".repeat(pass_len.min(10));
+        let gnd_bar = match r.mean_grounding {
+            Some(g) => {
+                let gnd_len = ((g / 5.0) * 10.0).round() as usize;
+                "=".repeat(gnd_len.min(10))
+            }
+            None => String::new(),
+        };
+        out.push_str(&format!(
+            "{date:<10}  {profile:<10}  {:>5} {:>5} {rate:>6} {gnd:>5} {pass_bar:<10} {gnd_bar}\n",
+            r.n_ideas, r.n_passed
+        ));
+    }
+    out
+}
+
+/// Render the metadata header for a single reviewed run (Q3-A): run_id,
+/// saved_at, profile, question, idea/pass counts, pass-rate, mean grounding,
+/// cost, and judge status. The full idea report is produced separately by
+/// `format_brainstorm_markdown` over the rebuilt `BrainstormResult`.
+pub fn render_review_header(row: &BrainstormRunRow) -> String {
+    let r = &row.result;
+    let run_id = r.get("run_id").and_then(|v| v.as_str()).unwrap_or("<unknown>");
+    let profile = r.get("profile_label").and_then(|v| v.as_str()).unwrap_or("?");
+    let question = r.get("question").and_then(|v| v.as_str()).unwrap_or("");
+    let ideas = r.get("ideas").and_then(|v| v.as_array()).map_or(0, Vec::len);
+    let n_passed = r
+        .get("ideas")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter(|i| i.get("passes").and_then(|v| v.as_bool()) == Some(true))
+                .count()
+        })
+        .unwrap_or(0);
+    let rate = if ideas > 0 {
+        n_passed as f64 / ideas as f64 * 100.0
+    } else {
+        0.0
+    };
+    let gnd = summarize(row).mean_grounding;
+    let cost = r
+        .get("cost")
+        .and_then(|c| c.get("actual_usd"))
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let judge_failed = r.get("judge_failed").and_then(|v| v.as_bool()).unwrap_or(false);
+    let mut out = String::new();
+    out.push_str(&format!("Run:        {run_id}\n"));
+    out.push_str(&format!("Saved:      {}\n", row.saved_at));
+    out.push_str(&format!("Profile:    {profile}\n"));
+    out.push_str(&format!("Question:   {question}\n"));
+    out.push_str(&format!("Ideas:      {ideas}  Passed: {n_passed}  ({rate:.1}%)\n"));
+    out.push_str(&format!(
+        "Grounding:  {}\n",
+        gnd.map_or_else(|| "-".to_string(), |g| format!("{g:.2} / 5"))
+    ));
+    out.push_str(&format!("Cost:       ${cost:.2}\n"));
+    out.push_str(&format!(
+        "Judge:      {}\n",
+        if judge_failed { "FAILED" } else { "ok" }
+    ));
+    out
+}
+
+/// Right-truncate a string to `max` chars for fixed-width display.
+fn trunc_display(s: &str, max: usize) -> String {
+    let mut out = String::new();
+    let mut n = 0;
+    for ch in s.chars() {
+        if n >= max {
+            break;
+        }
+        out.push(ch);
+        n += 1;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::eval::brainstorm::judges::{JudgeAxisScores, JudgeIdeaResult};
     use crate::eval::brainstorm::orchestrator::{
         BrainstormCost, BrainstormIdea, BrainstormResult, CloseRefForReport, FarRefForReport,
     };
@@ -242,7 +401,7 @@ mod tests {
             });
         }
         BrainstormResult {
-            profile_label: "brainstorm",
+            profile_label: "brainstorm".to_string(),
             question: "why do tools converge?".to_string(),
             embedding_model: None,
             ideas,
@@ -251,7 +410,7 @@ mod tests {
                 slug: "b".to_string(),
                 title: None,
                 distance_score: 0.5,
-                source: "prefix-stratified",
+                source: "prefix-stratified".to_string(),
             }],
             active_bias_tags: None,
             short_of_target: false,
@@ -349,6 +508,62 @@ mod tests {
         let s = summarize(&row);
         assert_eq!(s.n_ideas, 4);
         assert_eq!(s.n_passed, 2);
+    }
+
+    #[test]
+    fn summarize_mean_grounding_and_load_result() {
+        let dir = tmp_store().join("gnd");
+        std::fs::create_dir_all(&dir).ok();
+        for e in std::fs::read_dir(&dir).unwrap().flatten() {
+            let _ = std::fs::remove_file(e.path());
+        }
+        // Two judged ideas (grounding 3.0 and 5.0) → mean 4.0.
+        let mut result = mk_result("feedfacefeedface", 2, 2);
+        result.ideas[0].judge = Some(JudgeIdeaResult {
+            id: "01".to_string(),
+            scores: JudgeAxisScores {
+                originality: 4.0,
+                resistance: 4.0,
+                thesis_density: 4.0,
+                concrete_grounding: 3.0,
+                cognitive_load: 4.0,
+            },
+            weighted_score: 4.0,
+            passes: true,
+            note: "ok".to_string(),
+        });
+        result.ideas[1].judge = Some(JudgeIdeaResult {
+            id: "02".to_string(),
+            scores: JudgeAxisScores {
+                originality: 4.0,
+                resistance: 4.0,
+                thesis_density: 4.0,
+                concrete_grounding: 5.0,
+                cognitive_load: 4.0,
+            },
+            weighted_score: 4.0,
+            passes: true,
+            note: "ok".to_string(),
+        });
+        save_run(&result, &dir).unwrap();
+
+        let runs = list_runs(&dir);
+        let s = &runs[0];
+        assert_eq!(s.n_ideas, 2);
+        assert_eq!(s.n_passed, 2);
+        assert!((s.mean_grounding.unwrap() - 4.0).abs() < 1e-9);
+
+        // load_run_result rebuilds the typed BrainstormResult (incl. judges).
+        let loaded = load_run_result(&dir, "feedfacefeedface").expect("rebuild");
+        assert_eq!(loaded.profile_label, "brainstorm");
+        assert_eq!(loaded.ideas.len(), 2);
+        assert!(
+            (loaded.ideas[0].judge.as_ref().unwrap().scores.concrete_grounding - 3.0).abs() < 1e-9
+        );
+
+        // The trend chart renders the row (profile column present).
+        let chart = render_trend_chart(&runs);
+        assert!(chart.contains("brainstorm"));
     }
 
     #[test]

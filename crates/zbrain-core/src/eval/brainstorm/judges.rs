@@ -24,7 +24,7 @@ pub const PROMPT_VERSION: &str = "brainstorm-judge-v1";
 pub const DEFAULT_JUDGE_CHUNK_SIZE: usize = 100;
 
 /// Per-axis 1-5 score.
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct JudgeAxisScores {
     pub originality: f64,
     pub resistance: f64,
@@ -59,7 +59,7 @@ pub struct JudgeIdea {
 }
 
 /// Per-idea verdict the orchestrator consumes.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct JudgeIdeaResult {
     pub id: String,
     pub scores: JudgeAxisScores,
