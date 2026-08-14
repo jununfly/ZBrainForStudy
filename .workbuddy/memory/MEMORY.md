@@ -12,6 +12,7 @@
 - WSL 侧 `git status` 因 CRLF 差异把整树报成 modified → **判断改动范围一律以 Windows 侧 git 为准**。
 - 热缓存下 WSL 增量成本参考：`cargo check -p zbrain-cli` ~49s、`cargo test -p zbrain-cli --lib` ~54s 编译 + 30s 跑、`cargo check --workspace --all-targets` ~41s。比 Windows 快一个量级，改 Rust 优先走 WSL。
 - **Windows 构建被监视器锁死**：`CARGO_TARGET_DIR=C:/Users/<u>/AppData/Local/Temp/zb_targetN`（必须 Windows 绝对路径，/c/ 会被 MSYS 拼成 C:/c/...）。先 robocopy 旧 target 的 deps+.fingerprint+build+incremental（/XF *.lock），cache 路径无关可复用重依赖 rlib，避 53min codegen。
+- **MSVC `link.exe` 链接测试二进制被监视器杀（exit 0xc0000142）→ 用 LLVM `lld-link.exe` 当 linker 绕过**：设 `RUSTFLAGS="-C linker=C:/PROGRA~1/LLVM/bin/lld-link.exe"`（`C:/Program Files/LLVM/bin/lld-link.exe` 的 8.3 短路径，避免空格/引号问题；LLVM CLI 兼容 MSVC，复用 warm msvc target cache，只重编改动 crate）。`cargo test -p zbrain-core --lib --offline` 实测 7m 编完跑完（2524 passed），比 robocopy target 或 WSL 更快。注：rust-lld（`-C linker-features=+lld`）需 nightly + `-Z unstable-options`，stable 不可用，别走这条路；`stable-x86_64-pc-windows-gnu` 冷编全依赖太慢且要 MinGW gcc。
 - `cargo check` 不编 #[cfg(test)] → test-only 错误只有 cargo test 暴露。改测试代码必须真跑 test。
 - libsql FFI Windows 间歇 0xc0000005 代码层无解；集成测试加进程级 OnceLock<Mutex<()>> 降频，CI 跑 ubuntu。
 - workspace forbid(unsafe)：任何 libc::kill 在 Linux 双重报错（unsafe_code+E0433）→ 改 /proc/<pid> 纯 std。Windows 编不到 unix 分支。
