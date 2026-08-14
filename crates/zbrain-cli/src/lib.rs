@@ -1665,6 +1665,11 @@ pub struct EvalSuspectedContradictionsRunArgs {
     /// Top-K pages per retrieval query. Default 5.
     #[arg(long, default_value_t = 5)]
     pub top_k: usize,
+
+    /// Disable the persistent judge cache (1-1-5-8). Every pair is re-judged
+    /// and nothing is written to the cache. Useful for benchmark runs.
+    #[arg(long)]
+    pub no_cache: bool,
 }
 
 /// Args for `eval-suspected-contradictions trend` (deferred in MVP).
@@ -9399,6 +9404,7 @@ async fn run_eval_suspected_contradictions_command(
                 max_tokens,
                 receipt_dir,
                 slug: run_args.slug.clone(),
+                no_cache: run_args.no_cache,
             };
 
             let started = std::time::Instant::now();
@@ -9462,6 +9468,7 @@ async fn run_eval_suspected_contradictions_command(
                     "wilson_ci_upper": result.wilson_ci_upper,
                     "cost_usd_total": result.cost_usd_total,
                     "duration_ms": duration_ms,
+                    "cache": result.cache,
                 });
                 println!("{}", serde_json::to_string_pretty(&json_out)?);
             }

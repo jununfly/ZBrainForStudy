@@ -388,17 +388,43 @@
     "1-1-5-8": {
       "id": "1-1-5-8",
       "label": "eval-suspected-contradictions JudgeCache 持久化 judge 缓存（独立性能优化，正交）",
-      "status": "pending",
-      "mode": "explore",
+      "status": "completed",
+      "mode": "exploit",
       "parent": "1-1-5",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "是否全量忠实 port JudgeCache（0032 表 + 三后端方法 + 顺序无关 buildCacheKey + in-process hit/miss 计数 + 30d ttl + --no-cache）？",
+          "answer": "是，全量忠实 port（采纳推荐）",
+          "note": "不偷工减料；cache 与 run() 解耦，run() 重构接收 JudgeVerdict 而非在 chat 层塞缓存"
+        },
+        {
+          "q": "缓存主键与 upsert 语义？",
+          "answer": "复合 PK 五元组 (chunk_a_hash, chunk_b_hash, model_id, prompt_version, truncation_policy)，ON CONFLICT DO UPDATE 刷新 expires_at",
+          "note": "chunk_a/b 在 buildCacheKey 阶段已排序，保证 (a,b)/(b,a) 命中同一行"
+        },
+        {
+          "q": "run() 如何处理缓存命中？",
+          "answer": "命中则跳过 judge、tally verdict、按 is_finding 发射 finding；未命中 judge 后 store；命中/未命中分别计入 report",
+          "note": "与 TS runner.ts 一致"
+        },
+        {
+          "q": "是否加 --no-cache 开关？",
+          "answer": "是，加 --no-cache（默认 false；disabled 时 lookup 直接 miss、store 跳过）",
+          "note": "对应 TS RunnerOpts.noCache"
+        },
+        {
+          "q": "ttl 与 sweep 策略？",
+          "answer": "默认 ttl 30 天；sweep 不在每次 run 自动调用（MVP 不接周期任务），提供 sweepContradictionCache 方法供显式调用",
+          "note": "与 TS 一致（sweep 由 cache.ts 周期调用，Rust MVP 先不接）"
+        }
+      ],
       "notes": ""
     }
   },
   "metadata": {
     "created": "2026-08-09 00:23:13",
-    "updated": "2026-08-12 20:41:30",
+    "updated": "2026-08-14 17:10:58",
     "md_file": "docs/plans/ZBRAIN_G74_G76_REIMPL.md"
   }
 }

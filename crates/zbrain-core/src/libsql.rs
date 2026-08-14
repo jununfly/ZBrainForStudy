@@ -156,6 +156,8 @@ const MIGRATION_0029: &str = include_str!("../migrations-sqlite/0029_synthesis_e
 const MIGRATION_0030: &str = include_str!("../migrations-sqlite/0030_eval_candidates.sql");
 /// 1-1-5-6 (#62 trend): eval_contradictions_runs — one row per probe run.
 const MIGRATION_0031: &str = include_str!("../migrations-sqlite/0031_eval_contradictions_runs.sql");
+/// 1-1-5-8 (JudgeCache): persistent judge-verdict cache.
+const MIGRATION_0032: &str = include_str!("../migrations-sqlite/0032_eval_contradictions_cache.sql");
 
 /// Legacy string array — REMOVED in favor of MigrationRegistry.
 /// Use LIBQL_MIGRATIONS instead.
@@ -336,6 +338,11 @@ pub static LIBQL_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 31,
         name: "eval_contradictions_runs",
         sql: MIGRATION_0031,
+    }));
+    registry.add(Box::new(LibsqlMigration {
+        version: 32,
+        name: "eval_contradictions_cache",
+        sql: MIGRATION_0032,
     }));
 
     registry
@@ -5347,6 +5354,93 @@ impl BrainEngine for LibsqlEngine {
             out.push(Self::contradictions_run_from_row(&row)?);
         }
         Ok(out)
+    }
+
+    // ─── 1-1-5-8 (JudgeCache): persistent judge-verdict cache ───────────────
+
+    async fn get_contradiction_cache_entry(
+        &self,
+        key: &crate::eval::contradictions::ContradictionCacheKey,
+    ) -> Result<Option<serde_json::Value>> {
+        let conn = self.conn().await?;
+        let mut rows = conn
+            .query(
+                "SELECT verdict FROM eval_contradictions_cache \
+                 WHERE chunk_a_hash = ?1 AND chunk_b_hash = ?2 AND model_id = ?3 \
+                   AND prompt_version = ?4 AND truncation_policy = ?5 \
+                   AND expires_at > datetime('now') \
+                 LIMIT 1",
+                ::libsql::params![
+                    key.chunk_a_hash.clone(),
+                    key.chunk_b_hash.clone(),
+                    key.model_id.clone(),
+                    key.prompt_version.clone(),
+                    key.truncation_policy.clone(),
+                ],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("get_contradiction_cache_entry: {e}")))?;
+        match rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("get_contradiction_cache_entry row: {e}")))?
+        {
+            Some(row) => {
+                let txt: Option<String> = row.get(0).ok().flatten();
+                match txt.and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()) {
+                    Some(v) => Ok(Some(v)),
+                    None => Ok(None),
+                }
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn put_contradiction_cache_entry(
+        &self,
+        entry: &crate::eval::contradictions::ContradictionCacheEntry,
+    ) -> Result<()> {
+        let conn = self.conn().await?;
+        let verdict =
+            serde_json::to_string(&entry.verdict).unwrap_or_else(|_| "null".to_string());
+        let ttl = entry
+            .ttl_seconds
+            .unwrap_or(crate::eval::contradictions::DEFAULT_CACHE_TTL_SECONDS)
+            .to_string();
+        conn.execute(
+            "INSERT INTO eval_contradictions_cache (\
+                chunk_a_hash, chunk_b_hash, model_id, prompt_version, truncation_policy, \
+                verdict, created_at, expires_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'), datetime('now', '+' || ?7 || ' seconds')) \
+             ON CONFLICT (chunk_a_hash, chunk_b_hash, model_id, prompt_version, truncation_policy) \
+             DO UPDATE SET verdict = excluded.verdict, \
+                             created_at = excluded.created_at, \
+                             expires_at = excluded.expires_at",
+            ::libsql::params![
+                entry.chunk_a_hash.clone(),
+                entry.chunk_b_hash.clone(),
+                entry.model_id.clone(),
+                entry.prompt_version.clone(),
+                entry.truncation_policy.clone(),
+                verdict,
+                ttl,
+            ],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("put_contradiction_cache_entry: {e}")))?;
+        Ok(())
+    }
+
+    async fn sweep_contradiction_cache(&self) -> Result<u64> {
+        let conn = self.conn().await?;
+        let n = conn
+            .execute(
+                "DELETE FROM eval_contradictions_cache WHERE expires_at < datetime('now')",
+                ::libsql::params![],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("sweep_contradiction_cache: {e}")))?;
+        Ok(n as u64)
     }
 
     async fn list_facts_since(

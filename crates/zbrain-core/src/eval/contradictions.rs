@@ -35,6 +35,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::engine::{BrainEngine, SearchResult};
 use crate::eval::cross_modal::ChatRequest;
@@ -265,6 +266,8 @@ pub struct ContradictionsResult {
     pub duration_ms: u64,
     /// Per-source-tier pair counts (all zero in the MVP).
     pub source_tier_breakdown: SourceTierBreakdown,
+    /// Persistent judge-cache hit-rate stats (1-1-5-8).
+    pub cache: CacheStats,
 }
 
 /// Options for [`run`].
@@ -288,6 +291,9 @@ pub struct ContradictionOpts<'a> {
     pub receipt_dir: PathBuf,
     /// Receipt filename slug.
     pub slug: Option<String>,
+    /// Disable the persistent judge cache (1-1-5-8). When true, every pair is
+    /// re-judged and nothing is written to the cache.
+    pub no_cache: bool,
 }
 
 /// Default conditioning query when the user does not supply one.
@@ -306,6 +312,9 @@ pub const PROMPT_VERSION: &str = "2";
 /// Per-pair truncation policy label (mirrors TS `TRUNCATION_POLICY`).
 pub const TRUNCATION_POLICY: &str = "1500-chars-utf8-safe";
 
+/// Default judge-cache TTL in seconds (mirrors TS `JudgeCache` default 30 days).
+pub const DEFAULT_CACHE_TTL_SECONDS: i64 = 30 * 86_400;
+
 /// Per-source-tier pair counts that fed a probe run (mirrors TS
 /// `SourceTierBreakdown`). The Rust MVP does not separate corpus tiers yet,
 /// so all counts are zero — recorded honestly rather than fabricated.
@@ -315,6 +324,41 @@ pub struct SourceTierBreakdown {
     pub curated_vs_bulk: u64,
     pub bulk_vs_bulk: u64,
     pub other: u64,
+}
+
+/// In-process cache hit-rate stats (1-1-5-8). Mirrors TS `CacheStats`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CacheStats {
+    pub hits: u64,
+    pub misses: u64,
+    pub hit_rate: f64,
+}
+
+/// Cache key tuple (1-1-5-8 / JudgeCache). Mirrors TS `cache.ts`
+/// `buildCacheKey` output. The two chunk hashes are stored in sorted order so
+/// (a,b) and (b,a) collide onto the same row.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ContradictionCacheKey {
+    pub chunk_a_hash: String,
+    pub chunk_b_hash: String,
+    pub model_id: String,
+    pub prompt_version: String,
+    pub truncation_policy: String,
+}
+
+/// A judge-verdict cache entry to upsert (1-1-5-8). `ttl_seconds` is `None`
+/// → 30-day default. `verdict` is the full [`JudgeVerdict`] round-tripped
+/// through JSON.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContradictionCacheEntry {
+    pub chunk_a_hash: String,
+    pub chunk_b_hash: String,
+    pub model_id: String,
+    pub prompt_version: String,
+    pub truncation_policy: String,
+    pub verdict: serde_json::Value,
+    #[serde(default)]
+    pub ttl_seconds: Option<i64>,
 }
 
 /// One persisted row of a `eval-suspected-contradictions` probe run (mirrors
@@ -527,12 +571,153 @@ pub fn build_retrieval_pairs(
     pairs
 }
 
+/// Stable sha256 hex of a string (UTF-8). Mirrors TS `hashContent`.
+pub fn hash_content(text: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(text.as_bytes());
+    let out = hasher.finalize();
+    let mut s = String::with_capacity(out.len() * 2);
+    for b in out {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
+/// Order-independent cache key: a and b sorted lexically so (a, b) and (b, a)
+/// collide. Mirrors TS `buildCacheKey`. The key tuple also pins the
+/// `prompt_version` + `truncation_policy` so a prompt edit cleanly invalidates
+/// prior verdicts.
+pub fn build_cache_key(text_a: &str, text_b: &str, model_id: &str) -> ContradictionCacheKey {
+    let h_a = hash_content(text_a);
+    let h_b = hash_content(text_b);
+    let (first, second) = if h_a <= h_b { (h_a, h_b) } else { (h_b, h_a) };
+    ContradictionCacheKey {
+        chunk_a_hash: first,
+        chunk_b_hash: second,
+        model_id: model_id.to_string(),
+        prompt_version: PROMPT_VERSION.to_string(),
+        truncation_policy: TRUNCATION_POLICY.to_string(),
+    }
+}
+
+/// Type guard: validates a JSON blob parses to a [`JudgeVerdict`] shape.
+/// Defensive — older or corrupt rows are treated as misses rather than crash.
+fn is_judge_verdict(raw: &serde_json::Value) -> bool {
+    let v = match raw.as_object() {
+        Some(o) => o,
+        None => return false,
+    };
+    matches!(v.get("verdict"), Some(serde_json::Value::String(_)))
+        && matches!(v.get("severity"), Some(serde_json::Value::String(_)))
+        && matches!(v.get("confidence"), Some(serde_json::Value::Number(_)))
+        && matches!(v.get("axis"), Some(serde_json::Value::String(_)))
+}
+
+/// Tally a verdict into the verdict_breakdown map (shared by the cache-hit and
+/// judge-miss paths in [`run`]).
+fn tally_verdict(v: &Verdict, map: &mut HashMap<String, u64>) {
+    *map.entry(serde_json::to_string(v).unwrap_or_default())
+        .or_insert(0) += 1;
+}
+
+/// In-process persistent judge cache (1-1-5-8 / JudgeCache). One per probe run;
+/// tracks hits/misses for the report. Backed by the engine's
+/// `get_contradiction_cache_entry` / `put_contradiction_cache_entry`.
+pub struct JudgeCache<'a> {
+    engine: &'a dyn BrainEngine,
+    model_id: String,
+    ttl_seconds: i64,
+    disabled: bool,
+    hits: u64,
+    misses: u64,
+}
+
+impl<'a> JudgeCache<'a> {
+    /// `disabled` short-circuits every call to a miss (mirrors TS
+    /// `RunnerOpts.noCache`). `ttl_seconds` defaults to 30 days.
+    pub fn new(engine: &'a dyn BrainEngine, model_id: &str, disabled: bool) -> Self {
+        Self {
+            engine,
+            model_id: model_id.to_string(),
+            ttl_seconds: DEFAULT_CACHE_TTL_SECONDS,
+            disabled,
+            hits: 0,
+            misses: 0,
+        }
+    }
+
+    /// Look up a cached verdict for the pair. Returns `None` on miss, expired,
+    /// shape-mismatch, or engine error (all treated as a miss). Counts hits
+    /// and misses.
+    pub async fn lookup(&mut self, text_a: &str, text_b: &str) -> Option<JudgeVerdict> {
+        if self.disabled {
+            self.misses += 1;
+            return None;
+        }
+        let key = build_cache_key(text_a, text_b, &self.model_id);
+        let raw = match self.engine.get_contradiction_cache_entry(&key).await {
+            Ok(v) => v,
+            Err(_) => {
+                self.misses += 1;
+                return None;
+            }
+        };
+        match raw {
+            Some(v) if is_judge_verdict(&v) => match serde_json::from_value::<JudgeVerdict>(v) {
+                Ok(jv) => {
+                    self.hits += 1;
+                    Some(jv)
+                }
+                Err(_) => {
+                    self.misses += 1;
+                    None
+                }
+            },
+            _ => {
+                self.misses += 1;
+                None
+            }
+        }
+    }
+
+    /// Store a judged verdict. No-op when disabled. A persist failure is
+    /// non-fatal: the probe still holds the verdict for this run.
+    pub async fn store(&mut self, text_a: &str, text_b: &str, verdict: &JudgeVerdict) {
+        if self.disabled {
+            return;
+        }
+        let key = build_cache_key(text_a, text_b, &self.model_id);
+        let entry = ContradictionCacheEntry {
+            chunk_a_hash: key.chunk_a_hash,
+            chunk_b_hash: key.chunk_b_hash,
+            model_id: key.model_id,
+            prompt_version: key.prompt_version,
+            truncation_policy: key.truncation_policy,
+            verdict: serde_json::to_value(verdict).unwrap_or(serde_json::Value::Null),
+            ttl_seconds: Some(self.ttl_seconds),
+        };
+        let _ = self.engine.put_contradiction_cache_entry(&entry).await;
+    }
+
+    /// In-process cache stats for the report.
+    pub fn stats(&self) -> CacheStats {
+        let total = self.hits + self.misses;
+        CacheStats {
+            hits: self.hits,
+            misses: self.misses,
+            hit_rate: if total == 0 { 0.0 } else { self.hits as f64 / total as f64 },
+        }
+    }
+}
+
 /// Run the suspected-contradictions probe.
 ///
 /// Samples `opts.sample` takes, builds candidate pairs, judges each with the
 /// supplied `chat` closure, and aggregates verdict / severity breakdowns plus
 /// first-class judge errors. Honest degradation: returns `Err` if the corpus
-/// is empty.
+/// is empty. Each pair is first checked against the persistent judge cache
+/// (1-1-5-8): a hit skips the (paid) judge call entirely; a miss is judged and
+/// the verdict is stored for future runs.
 pub async fn run<F, Fut>(opts: &ContradictionOpts<'_>, chat: &F) -> Result<ContradictionsResult>
 where
     F: Fn(ChatRequest) -> Fut,
@@ -609,8 +794,31 @@ where
     let mut findings: Vec<ContradictionFinding> = Vec::new();
     let mut judged: u64 = 0;
 
+    // Persistent judge cache (1-1-5-8 / JudgeCache). One instance per run;
+    // tracks hits/misses for the report and backs onto the engine.
+    let mut cache = JudgeCache::new(opts.engine, &opts.judge_model, opts.no_cache);
+
     for (idx, pair) in pairs.iter().enumerate() {
         let pair_id = format!("pair-{:04}", idx);
+
+        // Cache lookup first: a hit skips the (paid) judge call entirely.
+        if let Some(v) = cache.lookup(&pair.a.claim, &pair.b.claim).await {
+            tally_verdict(&v.verdict, &mut verdict_breakdown);
+            if v.verdict.is_finding() {
+                findings.push(ContradictionFinding {
+                    pair_id,
+                    kind: format!("{:?}", pair.kind),
+                    verdict: v.verdict,
+                    severity: v.severity,
+                    axis: v.axis,
+                    confidence: v.confidence,
+                    resolution_kind: v.resolution_kind,
+                });
+            }
+            continue;
+        }
+
+        // Cache miss: perform the judge call.
         let prompt = judge_user_prompt(pair, opts.max_pair_chars);
         let req = ChatRequest {
             model: opts.judge_model.clone(),
@@ -633,12 +841,12 @@ where
         match parse_judge_json(&raw) {
             Ok(v) => {
                 judged += 1;
-                *verdict_breakdown
-                    .entry(serde_json::to_string(&v.verdict).unwrap_or_default())
-                    .or_insert(0) += 1;
+                tally_verdict(&v.verdict, &mut verdict_breakdown);
                 *severity_breakdown
                     .entry(serde_json::to_string(&v.severity).unwrap_or_default())
                     .or_insert(0) += 1;
+                // Persist the verdict so future runs can skip this pair.
+                cache.store(&pair.a.claim, &pair.b.claim, &v).await;
                 if v.verdict.is_finding() {
                     findings.push(ContradictionFinding {
                         pair_id,
@@ -698,6 +906,7 @@ where
         cost_usd_total,
         duration_ms: 0,
         source_tier_breakdown,
+        cache: cache.stats(),
     })
 }
 
@@ -768,6 +977,11 @@ pub fn build_contradictions_run_row(
             // `review` subcommand. Earlier the row kept only aggregates; this
             // restores the TS contract so `review` can surface per-pair detail.
             "findings": result.findings,
+            "cache": {
+                "hits": result.cache.hits,
+                "misses": result.cache.misses,
+                "hit_rate": result.cache.hit_rate,
+            },
             "truncation_policy": TRUNCATION_POLICY,
         }),
     }
@@ -1000,6 +1214,7 @@ mod tests {
             max_tokens: 1000,
             receipt_dir,
             slug: Some("test-sc".to_string()),
+            no_cache: false,
         }
     }
 
@@ -1233,6 +1448,7 @@ mod tests {
             max_tokens: 1000,
             receipt_dir,
             slug: Some("test-sc-retrieval".to_string()),
+            no_cache: false,
         };
         let res = run(&opts, &fake_clean_judge).await.unwrap();
         // 2 pages -> 1 cross pair; page 1 has 1 take -> 1 intra pair.
@@ -1378,5 +1594,107 @@ mod tests {
         // Severity filter with no matches -> message.
         let info_only = render_review_report(&report, Some(&Severity::Info));
         assert!(info_only.contains("No findings"));
+    }
+
+    #[test]
+    fn hash_content_is_stable_and_distinct() {
+        let a = hash_content("hello");
+        let b = hash_content("hello");
+        let c = hash_content("world");
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert_eq!(a.len(), 64); // sha256 hex digest
+    }
+
+    #[test]
+    fn build_cache_key_is_order_independent() {
+        let k1 = build_cache_key("alpha", "beta", "m");
+        let k2 = build_cache_key("beta", "alpha", "m");
+        assert_eq!(k1.chunk_a_hash, k2.chunk_a_hash);
+        assert_eq!(k1.chunk_b_hash, k2.chunk_b_hash);
+        // chunk_a_hash is the lexicographically smaller hash.
+        assert!(k1.chunk_a_hash <= k1.chunk_b_hash);
+        assert_eq!(k1.model_id, "m");
+        assert_eq!(k1.prompt_version, PROMPT_VERSION);
+        assert_eq!(k1.truncation_policy, TRUNCATION_POLICY);
+    }
+
+    #[test]
+    fn is_judge_verdict_validates_shape() {
+        assert!(is_judge_verdict(&serde_json::json!({
+            "verdict": "contradiction", "severity": "high", "confidence": 0.9, "axis": "x"
+        })));
+        // Missing confidence -> reject.
+        assert!(!is_judge_verdict(&serde_json::json!({
+            "verdict": "contradiction", "severity": "high", "axis": "x"
+        })));
+        assert!(!is_judge_verdict(&serde_json::json!("not an object")));
+    }
+
+    #[tokio::test]
+    async fn run_hits_cache_on_second_pass_same_engine() {
+        let engine = InMemoryEngine::new();
+        for i in 0..6u64 {
+            engine.add_take(mk_take(i, i % 3, &format!("take {i}: markets are efficient")));
+        }
+        let receipt_dir =
+            std::env::temp_dir().join(format!("sc_cache_{}", std::process::id()));
+        std::fs::create_dir_all(&receipt_dir).ok();
+
+        let mk_opts = |slug: &str| ContradictionOpts {
+            engine: &engine,
+            sample: 50,
+            max_pairs: 20,
+            query: DEFAULT_QUERY.to_string(),
+            pairing: PairingMode::Corpus,
+            judge_model: DEFAULT_JUDGE_MODEL.to_string(),
+            max_pair_chars: 1500,
+            max_tokens: 1000,
+            receipt_dir: receipt_dir.clone(),
+            slug: Some(slug.to_string()),
+            no_cache: false,
+        };
+
+        // First run: nothing cached -> all judged, all misses.
+        let r1 = run(&mk_opts("sc1"), &fake_clean_judge).await.unwrap();
+        assert_eq!(r1.judged, 15);
+        assert_eq!(r1.cache.hits, 0);
+        assert_eq!(r1.cache.misses, 15);
+
+        // Second run on the SAME engine: identical pairs -> all hits.
+        let r2 = run(&mk_opts("sc2"), &fake_clean_judge).await.unwrap();
+        assert_eq!(r2.cache.hits, 15);
+        assert_eq!(r2.cache.misses, 0);
+        assert_eq!(r2.judged, 0);
+    }
+
+    #[tokio::test]
+    async fn run_no_cache_disables_persistence() {
+        let engine = InMemoryEngine::new();
+        for i in 0..6u64 {
+            engine.add_take(mk_take(i, i % 3, &format!("take {i}: markets are efficient")));
+        }
+        let receipt_dir =
+            std::env::temp_dir().join(format!("sc_nocache_{}", std::process::id()));
+        std::fs::create_dir_all(&receipt_dir).ok();
+
+        let opts = ContradictionOpts {
+            engine: &engine,
+            sample: 50,
+            max_pairs: 20,
+            query: DEFAULT_QUERY.to_string(),
+            pairing: PairingMode::Corpus,
+            judge_model: DEFAULT_JUDGE_MODEL.to_string(),
+            max_pair_chars: 1500,
+            max_tokens: 1000,
+            receipt_dir,
+            slug: Some("scn".to_string()),
+            no_cache: true,
+        };
+        let r = run(&opts, &fake_clean_judge).await.unwrap();
+        assert_eq!(r.judged, 15);
+        // disabled -> every lookup is a miss; store is skipped (still miss).
+        assert_eq!(r.cache.hits, 0);
+        assert_eq!(r.cache.misses, 15);
     }
 }

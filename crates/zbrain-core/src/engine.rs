@@ -2578,6 +2578,36 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
         Ok(Vec::new())
     }
 
+    /// Persistent judge-cache entry lookup (1-1-5-8 / JudgeCache). Returns the
+    /// cached verdict JSON if a row matches the key AND is non-expired; `None`
+    /// otherwise (cache miss → caller performs a judge call). Default returns
+    /// `None` so older engines compile; libsql and postgres override.
+    async fn get_contradiction_cache_entry(
+        &self,
+        _key: &crate::eval::contradictions::ContradictionCacheKey,
+    ) -> crate::Result<Option<serde_json::Value>> {
+        let _ = _key;
+        Ok(None)
+    }
+
+    /// Upsert a judged verdict into the persistent cache (1-1-5-8). `ttl_seconds`
+    /// defaults to 30 days when `None`. ON CONFLICT DO UPDATE slides
+    /// expires_at forward for re-judged pairs. Default no-op; libsql and
+    /// postgres override.
+    async fn put_contradiction_cache_entry(
+        &self,
+        _entry: &crate::eval::contradictions::ContradictionCacheEntry,
+    ) -> crate::Result<()> {
+        let _ = _entry;
+        Ok(())
+    }
+
+    /// Delete expired cache entries; returns the count removed. Default no-op
+    /// (returns 0); libsql and postgres override.
+    async fn sweep_contradiction_cache(&self) -> crate::Result<u64> {
+        Ok(0)
+    }
+
     /// List facts created since a given ISO timestamp within a source, newest
     /// first. Mirrors TS `listFactsSince`. The `entity_slug` opt narrows the
     /// scan to a single entity when present.
@@ -3674,6 +3704,21 @@ pub struct InMemoryEngine {
     /// 1-1-5-6 (#62 trend): persisted probe run rows backing
     /// `eval suspected-contradictions trend` (in-memory, for testing).
     contradictions_runs_store: Mutex<Vec<crate::eval::contradictions::ContradictionsRunRow>>,
+    /// 1-1-5-8 (JudgeCache): persisted judge-verdict cache rows (in-memory, for testing).
+    contradictions_cache_store: Mutex<Vec<InternalContradictionCacheRow>>,
+}
+
+/// In-memory `eval_contradictions_cache` row (1-1-5-8 / JudgeCache).
+#[derive(Debug, Clone)]
+struct InternalContradictionCacheRow {
+    chunk_a_hash: String,
+    chunk_b_hash: String,
+    model_id: String,
+    prompt_version: String,
+    truncation_policy: String,
+    verdict: serde_json::Value,
+    created_at: chrono::DateTime<chrono::Utc>,
+    expires_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// In-memory `subagent_tool_executions` row (1-3-4-6, read-path testing).
@@ -3916,6 +3961,7 @@ impl InMemoryEngine {
             subagent_tool_executions_store: Mutex::new(Vec::new()),
             // 1-1-5-6 (#62 trend): probe run rows (in-memory, for testing)
             contradictions_runs_store: Mutex::new(Vec::new()),
+            contradictions_cache_store: Mutex::new(Vec::new()),
         }
     }
 
@@ -4297,6 +4343,77 @@ impl BrainEngine for InMemoryEngine {
         };
         rows.sort_by(|a, b| b.ran_at.cmp(&a.ran_at));
         Ok(rows)
+    }
+
+    // ─── 1-1-5-8 (JudgeCache): persistent judge-verdict cache ───────────────
+
+    async fn get_contradiction_cache_entry(
+        &self,
+        key: &crate::eval::contradictions::ContradictionCacheKey,
+    ) -> crate::Result<Option<serde_json::Value>> {
+        let store = self
+            .contradictions_cache_store
+            .lock()
+            .expect("InMemoryEngine contradictions_cache_store poisoned");
+        let now = chrono::Utc::now();
+        let row = store.iter().find(|r| {
+            r.chunk_a_hash == key.chunk_a_hash
+                && r.chunk_b_hash == key.chunk_b_hash
+                && r.model_id == key.model_id
+                && r.prompt_version == key.prompt_version
+                && r.truncation_policy == key.truncation_policy
+                && r.expires_at > now
+        });
+        Ok(row.map(|r| r.verdict.clone()))
+    }
+
+    async fn put_contradiction_cache_entry(
+        &self,
+        entry: &crate::eval::contradictions::ContradictionCacheEntry,
+    ) -> crate::Result<()> {
+        let mut store = self
+            .contradictions_cache_store
+            .lock()
+            .expect("InMemoryEngine contradictions_cache_store poisoned");
+        let now = chrono::Utc::now();
+        let ttl = entry
+            .ttl_seconds
+            .unwrap_or(crate::eval::contradictions::DEFAULT_CACHE_TTL_SECONDS);
+        let expires_at = now + chrono::Duration::seconds(ttl);
+        if let Some(r) = store.iter_mut().find(|r| {
+            r.chunk_a_hash == entry.chunk_a_hash
+                && r.chunk_b_hash == entry.chunk_b_hash
+                && r.model_id == entry.model_id
+                && r.prompt_version == entry.prompt_version
+                && r.truncation_policy == entry.truncation_policy
+        }) {
+            r.verdict = entry.verdict.clone();
+            r.created_at = now;
+            r.expires_at = expires_at;
+        } else {
+            store.push(InternalContradictionCacheRow {
+                chunk_a_hash: entry.chunk_a_hash.clone(),
+                chunk_b_hash: entry.chunk_b_hash.clone(),
+                model_id: entry.model_id.clone(),
+                prompt_version: entry.prompt_version.clone(),
+                truncation_policy: entry.truncation_policy.clone(),
+                verdict: entry.verdict.clone(),
+                created_at: now,
+                expires_at,
+            });
+        }
+        Ok(())
+    }
+
+    async fn sweep_contradiction_cache(&self) -> crate::Result<u64> {
+        let mut store = self
+            .contradictions_cache_store
+            .lock()
+            .expect("InMemoryEngine contradictions_cache_store poisoned");
+        let now = chrono::Utc::now();
+        let before = store.len();
+        store.retain(|r| r.expires_at > now);
+        Ok((before - store.len()) as u64)
     }
 
     async fn get_source_by_github_repo(

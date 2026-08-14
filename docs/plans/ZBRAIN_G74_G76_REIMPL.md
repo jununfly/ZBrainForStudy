@@ -1,7 +1,7 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-g74-g76-reimpl.json` | 最后更新: 2026-08-12 20:41:30
+> 数据文件: `zbrain-g74-g76-reimpl.json` | 最后更新: 2026-08-14 17:10:58
 
 [~][X+] 1. ZBrain G74/G76 eval+extract 命令 Rust 重实现
 ├── [~][X+] 1-1. G74 eval 族命令 Rust 重实现（19 命令）
@@ -38,5 +38,5 @@
 ├── [ ][X+] 1-1-5-5. eval-brainstorm（#63，完整 generator 移植：4 引擎方法 + orchestrator/domain-bank/judges 三模块 + search/embed）
 ├── [x][X+] 1-1-5-6. eval-suspected-contradictions trend 子命令（#62 延伸：write/loadContradictionsRun 引擎方法 + ASCII 图表）
 ├── [x][X+] 1-1-5-7. eval-suspected-contradictions review 子命令（依赖 trend store report_json viewer）
-└── [ ][X+] 1-1-5-8. eval-suspected-contradictions JudgeCache 持久化 judge 缓存（独立性能优化，正交）
+└── [x][Y+] 1-1-5-8. eval-suspected-contradictions JudgeCache 持久化 judge 缓存（独立性能优化，正交）
 <!-- ROADMAP_SECTION_END -->

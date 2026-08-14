@@ -273,6 +273,8 @@ const MIGRATION_0029: &str = include_str!("../migrations/0029_synthesis_evidence
 const MIGRATION_0030: &str = include_str!("../migrations/0030_eval_candidates.sql");
 /// 1-1-5-6 (#62 trend): eval_contradictions_runs — one row per probe run.
 const MIGRATION_0031: &str = include_str!("../migrations/0031_eval_contradictions_runs.sql");
+/// 1-1-5-8 (JudgeCache): persistent judge-verdict cache.
+const MIGRATION_0032: &str = include_str!("../migrations/0032_eval_contradictions_cache.sql");
 
 /// FNV-1a 64-bit hash of a lease key, mapped to a signed int64 for
 /// `pg_advisory_xact_lock`. Matches the TS implementation bit-for-bit.
@@ -444,6 +446,11 @@ pub static POSTGRES_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 31,
         name: "eval_contradictions_runs",
         sql: MIGRATION_0031,
+    }));
+    registry.add(Box::new(PostgresMigration {
+        version: 32,
+        name: "eval_contradictions_cache",
+        sql: MIGRATION_0032,
     }));
 
     registry
@@ -4403,6 +4410,74 @@ impl BrainEngine for PostgresEngine {
         rows.iter()
             .map(|r| Self::pg_row_to_contradictions_run(r))
             .collect()
+    }
+
+    // ─── 1-1-5-8 (JudgeCache): persistent judge-verdict cache ───────────────
+
+    async fn get_contradiction_cache_entry(
+        &self,
+        key: &crate::eval::contradictions::ContradictionCacheKey,
+    ) -> Result<Option<serde_json::Value>> {
+        let pool = self.pool()?;
+        let row = sqlx::query(
+            "SELECT verdict FROM eval_contradictions_cache \
+             WHERE chunk_a_hash = $1 AND chunk_b_hash = $2 AND model_id = $3 \
+               AND prompt_version = $4 AND truncation_policy = $5 \
+               AND expires_at > NOW() \
+             LIMIT 1",
+        )
+        .bind(&key.chunk_a_hash)
+        .bind(&key.chunk_b_hash)
+        .bind(&key.model_id)
+        .bind(&key.prompt_version)
+        .bind(&key.truncation_policy)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::engine(format!("get_contradiction_cache_entry: {e}")))?;
+        Ok(row.map(|r| {
+            r.try_get::<serde_json::Value, _>("verdict")
+                .unwrap_or(serde_json::Value::Null)
+        }))
+    }
+
+    async fn put_contradiction_cache_entry(
+        &self,
+        entry: &crate::eval::contradictions::ContradictionCacheEntry,
+    ) -> Result<()> {
+        let pool = self.pool()?;
+        let ttl = entry
+            .ttl_seconds
+            .unwrap_or(crate::eval::contradictions::DEFAULT_CACHE_TTL_SECONDS);
+        sqlx::query(
+            "INSERT INTO eval_contradictions_cache (\
+                chunk_a_hash, chunk_b_hash, model_id, prompt_version, truncation_policy, \
+                verdict, created_at, expires_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW() + make_interval(secs => $7::double precision)) \
+             ON CONFLICT (chunk_a_hash, chunk_b_hash, model_id, prompt_version, truncation_policy) \
+             DO UPDATE SET verdict = excluded.verdict, \
+                             created_at = excluded.created_at, \
+                             expires_at = excluded.expires_at",
+        )
+        .bind(&entry.chunk_a_hash)
+        .bind(&entry.chunk_b_hash)
+        .bind(&entry.model_id)
+        .bind(&entry.prompt_version)
+        .bind(&entry.truncation_policy)
+        .bind(&entry.verdict)
+        .bind(ttl)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("put_contradiction_cache_entry: {e}")))?;
+        Ok(())
+    }
+
+    async fn sweep_contradiction_cache(&self) -> Result<u64> {
+        let pool = self.pool()?;
+        let n = sqlx::query("DELETE FROM eval_contradictions_cache WHERE expires_at < NOW()")
+            .execute(pool)
+            .await
+            .map_err(|e| Error::engine(format!("sweep_contradiction_cache: {e}")))?;
+        Ok(n.rows_affected())
     }
 
     async fn list_facts_since(
