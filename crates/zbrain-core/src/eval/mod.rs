@@ -18,3 +18,4 @@ pub mod cross_modal;
 pub mod longmemeval;
 pub mod takes_quality;
 pub mod contradictions;
+pub mod brainstorm;

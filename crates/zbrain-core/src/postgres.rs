@@ -275,6 +275,8 @@ const MIGRATION_0030: &str = include_str!("../migrations/0030_eval_candidates.sq
 const MIGRATION_0031: &str = include_str!("../migrations/0031_eval_contradictions_runs.sql");
 /// 1-1-5-8 (JudgeCache): persistent judge-verdict cache.
 const MIGRATION_0032: &str = include_str!("../migrations/0032_eval_contradictions_cache.sql");
+/// 1-1-5-5 (brainstorm domain-bank): add content_chunks.embedding column.
+const MIGRATION_0033: &str = include_str!("../migrations/0033_content_chunks_embedding.sql");
 
 /// FNV-1a 64-bit hash of a lease key, mapped to a signed int64 for
 /// `pg_advisory_xact_lock`. Matches the TS implementation bit-for-bit.
@@ -451,6 +453,11 @@ pub static POSTGRES_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 32,
         name: "eval_contradictions_cache",
         sql: MIGRATION_0032,
+    }));
+    registry.add(Box::new(PostgresMigration {
+        version: 33,
+        name: "content_chunks_embedding",
+        sql: MIGRATION_0033,
     }));
 
     registry
@@ -695,6 +702,51 @@ fn push_list_pages_pagination(sql: &mut String, param_idx: &mut u32, filters: &P
         let frag = format!(" OFFSET ${param_idx}");
         sql.push_str(&frag);
     }
+}
+
+/// Decode a `content_chunks`-joined page row (from the domain-bank sampling
+/// queries) into the backend-agnostic [`DomainBankRawPage`].
+fn decode_domain_bank_rows(
+    rows: Vec<sqlx::postgres::PgRow>,
+) -> Result<Vec<crate::engine::DomainBankRawPage>> {
+    let mut out = Vec::with_capacity(rows.len());
+    for r in rows {
+        let page_id: i64 = r
+            .try_get("id")
+            .map_err(|e| Error::engine(format!("domain_bank decode id: {e}")))?;
+        let slug: String = r
+            .try_get("slug")
+            .map_err(|e| Error::engine(format!("domain_bank decode slug: {e}")))?;
+        let source_id: String = r
+            .try_get("source_id")
+            .map_err(|e| Error::engine(format!("domain_bank decode source_id: {e}")))?;
+        let title: Option<String> = r
+            .try_get("title")
+            .map_err(|e| Error::engine(format!("domain_bank decode title: {e}")))?;
+        let compiled_truth: String = r
+            .try_get("compiled_truth")
+            .map_err(|e| Error::engine(format!("domain_bank decode compiled_truth: {e}")))?;
+        let last_retrieved_at: Option<String> = r
+            .try_get("last_retrieved_at")
+            .map_err(|e| Error::engine(format!("domain_bank decode last_retrieved_at: {e}")))?;
+        let connection_count: i64 = r
+            .try_get("connection_count")
+            .map_err(|e| Error::engine(format!("domain_bank decode connection_count: {e}")))?;
+        let representative_chunk_id: Option<i64> = r
+            .try_get("representative_chunk_id")
+            .map_err(|e| Error::engine(format!("domain_bank decode representative_chunk_id: {e}")))?;
+        out.push(crate::engine::DomainBankRawPage {
+            page_id: page_id as u64,
+            slug,
+            source_id,
+            title,
+            compiled_truth,
+            last_retrieved_at,
+            connection_count,
+            representative_chunk_id: representative_chunk_id.map(|v| v as u64),
+        });
+    }
+    Ok(out)
 }
 
 #[async_trait]
@@ -2449,6 +2501,165 @@ impl BrainEngine for PostgresEngine {
                 Ok(PageRef { slug, source_id })
             })
             .collect()
+    }
+
+    // ── Domain-bank (1-1-5-5) ───────────────────────────────────────────────
+
+    /// Postgres `list_prefix_sampled_pages`. Uses Postgres `substring(slug
+    /// from '^[^/]+/[^/]+')` for prefix extraction in-SQL and `= ANY($N::text[])`
+    /// for array scoping, then delegates ranking to the shared helper so the
+    /// output is identical across backends.
+    async fn list_prefix_sampled_pages(
+        &self,
+        opts: crate::engine::DomainBankSampleOpts,
+    ) -> Result<Vec<crate::engine::DomainBankRow>> {
+        use crate::engine::{rank_domain_bank_prefix_sample, DomainBankRawPage};
+        if opts.prefixes.is_empty() {
+            return Ok(vec![]);
+        }
+        let pool = self.pool()?;
+        let rows = sqlx::query(
+            "SELECT p.id, p.slug, p.source_id, p.title, p.compiled_truth, p.last_retrieved_at, \
+                    COUNT(pl.id) AS connection_count, \
+                    (SELECT cc.id FROM content_chunks cc WHERE cc.page_id = p.id AND cc.embedding IS NOT NULL ORDER BY cc.chunk_index ASC LIMIT 1) AS representative_chunk_id \
+             FROM pages p LEFT JOIN links pl ON pl.to_page_id = p.id \
+             WHERE p.deleted_at IS NULL \
+               AND (CARDINALITY($1::text[]) = 0 OR p.slug != ALL($1::text[])) \
+               AND ( ($2::text[] IS NOT NULL AND p.source_id = ANY($2::text[])) \
+                     OR ($2::text[] IS NULL AND $3::text IS NOT NULL AND p.source_id = $3) \
+                     OR ($2::text[] IS NULL AND $3::text IS NULL) ) \
+             GROUP BY p.id, p.slug, p.source_id, p.title, p.compiled_truth, p.last_retrieved_at \
+             ORDER BY p.slug ASC",
+        )
+        .bind(&opts.exclude_slugs)
+        .bind(opts.source_ids.clone())
+        .bind(opts.source_id.clone())
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("list_prefix_sampled_pages failed: {e}")))?;
+
+        let raw = decode_domain_bank_rows(rows)?;
+        let prefixes: std::collections::HashSet<String> =
+            opts.prefixes.into_iter().collect();
+        Ok(rank_domain_bank_prefix_sample(
+            raw,
+            &prefixes,
+            opts.stale_bias,
+            opts.stale_threshold_days,
+        ))
+    }
+
+    /// Postgres `list_corpus_sample`. Fetches source-scoped, exclude-filtered,
+    /// live pages, then delegates selection (deterministic Fisher-Yates when
+    /// `seed` set) to the shared helper.
+    async fn list_corpus_sample(
+        &self,
+        opts: crate::engine::CorpusSampleOpts,
+    ) -> Result<Vec<crate::engine::DomainBankRow>> {
+        use crate::engine::{pick_corpus_sample, DomainBankRawPage};
+        if opts.n <= 0 {
+            return Ok(vec![]);
+        }
+        let pool = self.pool()?;
+        let rows = sqlx::query(
+            "SELECT p.id, p.slug, p.source_id, p.title, p.compiled_truth, p.last_retrieved_at, \
+                    COUNT(pl.id) AS connection_count, \
+                    (SELECT cc.id FROM content_chunks cc WHERE cc.page_id = p.id AND cc.embedding IS NOT NULL ORDER BY cc.chunk_index ASC LIMIT 1) AS representative_chunk_id \
+             FROM pages p LEFT JOIN links pl ON pl.to_page_id = p.id \
+             WHERE p.deleted_at IS NULL \
+               AND (CARDINALITY($1::text[]) = 0 OR p.slug != ALL($1::text[])) \
+               AND ( ($2::text[] IS NOT NULL AND p.source_id = ANY($2::text[])) \
+                     OR ($2::text[] IS NULL AND $3::text IS NOT NULL AND p.source_id = $3) \
+                     OR ($2::text[] IS NULL AND $3::text IS NULL) ) \
+             GROUP BY p.id, p.slug, p.source_id, p.title, p.compiled_truth, p.last_retrieved_at \
+             ORDER BY p.slug ASC",
+        )
+        .bind(&opts.exclude_slugs)
+        .bind(opts.source_ids.clone())
+        .bind(opts.source_id.clone())
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("list_corpus_sample failed: {e}")))?;
+
+        let raw = decode_domain_bank_rows(rows)?;
+        Ok(pick_corpus_sample(raw, opts.n, opts.seed))
+    }
+
+    /// Postgres `get_embeddings_by_chunk_ids`. Reads `content_chunks.id` +
+    /// `embedding` (BYTEA f32-LE) for the requested ids on the validated
+    /// column. Mirrors TS `getEmbeddingsByChunkIds` (D12 column defense).
+    async fn get_embeddings_by_chunk_ids(
+        &self,
+        ids: &[u64],
+        column: Option<&str>,
+    ) -> Result<std::collections::HashMap<u64, Vec<f32>>> {
+        use crate::engine::{decode_f32_blob, quote_identifier, validate_embedding_column};
+        let mut out: std::collections::HashMap<u64, Vec<f32>> = std::collections::HashMap::new();
+        if ids.is_empty() {
+            return Ok(out);
+        }
+        let column = validate_embedding_column(column)?;
+        let quoted = quote_identifier(&column);
+        let pool = self.pool()?;
+        let ids_i64: Vec<i64> = ids.iter().map(|v| *v as i64).collect();
+        let sql = format!(
+            "SELECT id, {quoted} AS embedding FROM content_chunks \
+             WHERE id = ANY($1::bigint[]) AND {quoted} IS NOT NULL",
+        );
+        let rows = sqlx::query(&sql)
+            .bind(&ids_i64)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| Error::engine(format!("get_embeddings_by_chunk_ids failed: {e}")))?;
+        for r in rows {
+            let id: i64 = r
+                .try_get("id")
+                .map_err(|e| Error::engine(format!("id decode: {e}")))?;
+            let blob: Option<Vec<u8>> = r
+                .try_get("embedding")
+                .map_err(|e| Error::engine(format!("embedding decode: {e}")))?;
+            if let Some(b) = blob {
+                if let Some(emb) = decode_f32_blob(&b) {
+                    out.insert(id as u64, emb);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Postgres `list_prefixes` — port of TS `enumeratePrefixes`. We fetch
+    /// DISTINCT live, source-scoped slugs and extract each `^[^/]+/[^/]+`
+    /// prefix in Rust via [`domain_bank_prefix`] (faithful to the TS Postgres
+    /// `substring(slug from '^[^/]+/[^/]+')`). Dedup + sort.
+    async fn list_prefixes(
+        &self,
+        opts: crate::engine::ListPrefixesOpts,
+    ) -> Result<Vec<String>> {
+        use crate::engine::domain_bank_prefix;
+        let pool = self.pool()?;
+        let rows = sqlx::query(
+            "SELECT DISTINCT p.slug FROM pages p \
+             WHERE p.deleted_at IS NULL \
+               AND ( ($1::text[] IS NOT NULL AND p.source_id = ANY($1::text[])) \
+                     OR ($1::text[] IS NULL AND $2::text IS NOT NULL AND p.source_id = $2) \
+                     OR ($1::text[] IS NULL AND $2::text IS NULL) ) \
+             ORDER BY p.slug ASC",
+        )
+        .bind(opts.source_ids.clone())
+        .bind(opts.source_id.clone())
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::engine(format!("list_prefixes failed: {e}")))?;
+        let mut prefixes: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for r in rows {
+            let slug: String = r
+                .try_get("slug")
+                .map_err(|e| Error::engine(format!("slug decode: {e}")))?;
+            if let Some(prefix) = domain_bank_prefix(&slug) {
+                prefixes.insert(prefix);
+            }
+        }
+        Ok(prefixes.into_iter().collect())
     }
 
     /// Resolve `slug` → `COALESCE(updated_at, created_at)` for many slugs.

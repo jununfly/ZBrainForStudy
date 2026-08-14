@@ -158,6 +158,8 @@ const MIGRATION_0030: &str = include_str!("../migrations-sqlite/0030_eval_candid
 const MIGRATION_0031: &str = include_str!("../migrations-sqlite/0031_eval_contradictions_runs.sql");
 /// 1-1-5-8 (JudgeCache): persistent judge-verdict cache.
 const MIGRATION_0032: &str = include_str!("../migrations-sqlite/0032_eval_contradictions_cache.sql");
+/// 1-1-5-5 (brainstorm domain-bank): add content_chunks.embedding column.
+const MIGRATION_0033: &str = include_str!("../migrations-sqlite/0033_content_chunks_embedding.sql");
 
 /// Legacy string array — REMOVED in favor of MigrationRegistry.
 /// Use LIBQL_MIGRATIONS instead.
@@ -343,6 +345,11 @@ pub static LIBQL_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 32,
         name: "eval_contradictions_cache",
         sql: MIGRATION_0032,
+    }));
+    registry.add(Box::new(LibsqlMigration {
+        version: 33,
+        name: "content_chunks_embedding",
+        sql: MIGRATION_0033,
     }));
 
     registry
@@ -3503,6 +3510,317 @@ impl BrainEngine for LibsqlEngine {
             out.push(PageRef { slug, source_id });
         }
         Ok(out)
+    }
+
+    // ── Domain-bank (1-1-5-5) ───────────────────────────────────────────────
+
+    /// Libsql `list_prefix_sampled_pages`. Fetches source-scoped, exclude-
+    /// filtered, live pages (with `connection_count` + `representative_chunk_id`
+    /// resolved via a correlated subquery) and delegates ranking to the shared
+    /// helper. SQLite has no regex substring, so prefix grouping happens in
+    /// Rust (`domain_bank_prefix`).
+    async fn list_prefix_sampled_pages(
+        &self,
+        opts: crate::engine::DomainBankSampleOpts,
+    ) -> Result<Vec<crate::engine::DomainBankRow>> {
+        use crate::engine::{
+            rank_domain_bank_prefix_sample, DomainBankRawPage,
+        };
+        if opts.prefixes.is_empty() {
+            return Ok(vec![]);
+        }
+        let conn = self.conn().await?;
+        let mut sql = String::from(
+            "SELECT p.id, p.slug, p.source_id, p.title, p.compiled_truth, p.last_retrieved_at, \
+             COUNT(pl.id) AS connection_count, \
+             (SELECT cc.id FROM content_chunks cc WHERE cc.page_id = p.id AND cc.embedding IS NOT NULL ORDER BY cc.chunk_index ASC LIMIT 1) AS representative_chunk_id \
+             FROM pages p LEFT JOIN links pl ON pl.to_page_id = p.id \
+             WHERE p.deleted_at IS NULL",
+        );
+        let mut params: Vec<::libsql::Value> = Vec::new();
+        if !opts.exclude_slugs.is_empty() {
+            let base = params.len() + 1;
+            let ph: Vec<String> = (0..opts.exclude_slugs.len())
+                .map(|i| format!("?{}", base + i))
+                .collect();
+            sql.push_str(&format!(" AND p.slug NOT IN ({})", ph.join(", ")));
+            for s in &opts.exclude_slugs {
+                params.push(::libsql::Value::Text(s.clone()));
+            }
+        }
+        match (&opts.source_ids, &opts.source_id) {
+            (Some(ids), _) if !ids.is_empty() => {
+                let base = params.len() + 1;
+                let ph: Vec<String> =
+                    (0..ids.len()).map(|i| format!("?{}", base + i)).collect();
+                sql.push_str(&format!(" AND p.source_id IN ({})", ph.join(", ")));
+                for s in ids {
+                    params.push(::libsql::Value::Text(s.clone()));
+                }
+            }
+            (_, Some(id)) => {
+                sql.push_str(&format!(" AND p.source_id = ?{}", params.len() + 1));
+                params.push(::libsql::Value::Text(id.clone()));
+            }
+            _ => {}
+        }
+        sql.push_str(
+            " GROUP BY p.id, p.slug, p.source_id, p.title, p.compiled_truth, p.last_retrieved_at \
+             ORDER BY p.slug ASC",
+        );
+
+        let mut rows = conn
+            .query(&sql, ::libsql::params_from_iter(params))
+            .await
+            .map_err(|e| Error::engine(format!("list_prefix_sampled_pages query failed: {e}")))?;
+        let mut raw: Vec<DomainBankRawPage> = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("row fetch failed: {e}")))?
+        {
+            let page_id: i64 = row
+                .get(0)
+                .map_err(|e| Error::engine(format!("page_id decode: {e}")))?;
+            let slug: String = row
+                .get(1)
+                .map_err(|e| Error::engine(format!("slug decode: {e}")))?;
+            let source_id: String = row
+                .get(2)
+                .map_err(|e| Error::engine(format!("source_id decode: {e}")))?;
+            let title: Option<String> = row
+                .get(3)
+                .map_err(|e| Error::engine(format!("title decode: {e}")))?;
+            let compiled_truth: String = row
+                .get(4)
+                .map_err(|e| Error::engine(format!("compiled_truth decode: {e}")))?;
+            let last_retrieved_at: Option<String> = row
+                .get(5)
+                .map_err(|e| Error::engine(format!("lra decode: {e}")))?;
+            let connection_count: i64 = row
+                .get(6)
+                .map_err(|e| Error::engine(format!("connection_count decode: {e}")))?;
+            let representative_chunk_id: Option<i64> = row
+                .get(7)
+                .map_err(|e| Error::engine(format!("representative_chunk_id decode: {e}")))?;
+            raw.push(DomainBankRawPage {
+                page_id: page_id as u64,
+                slug,
+                source_id,
+                title,
+                compiled_truth,
+                last_retrieved_at,
+                connection_count,
+                representative_chunk_id: representative_chunk_id.map(|v| v as u64),
+            });
+        }
+        let prefixes: std::collections::HashSet<String> =
+            opts.prefixes.into_iter().collect();
+        Ok(rank_domain_bank_prefix_sample(
+            raw,
+            &prefixes,
+            opts.stale_bias,
+            opts.stale_threshold_days,
+        ))
+    }
+
+    /// Libsql `list_corpus_sample`. Fetches candidate pages, then delegates
+    /// selection (deterministic Fisher-Yates when `seed` set) to the shared
+    /// helper — portable across backends without `setseed`/`RANDOM()`.
+    async fn list_corpus_sample(
+        &self,
+        opts: crate::engine::CorpusSampleOpts,
+    ) -> Result<Vec<crate::engine::DomainBankRow>> {
+        use crate::engine::{pick_corpus_sample, DomainBankRawPage};
+        if opts.n <= 0 {
+            return Ok(vec![]);
+        }
+        let conn = self.conn().await?;
+        let mut sql = String::from(
+            "SELECT p.id, p.slug, p.source_id, p.title, p.compiled_truth, p.last_retrieved_at, \
+             COUNT(pl.id) AS connection_count, \
+             (SELECT cc.id FROM content_chunks cc WHERE cc.page_id = p.id AND cc.embedding IS NOT NULL ORDER BY cc.chunk_index ASC LIMIT 1) AS representative_chunk_id \
+             FROM pages p LEFT JOIN links pl ON pl.to_page_id = p.id \
+             WHERE p.deleted_at IS NULL",
+        );
+        let mut params: Vec<::libsql::Value> = Vec::new();
+        if !opts.exclude_slugs.is_empty() {
+            let base = params.len() + 1;
+            let ph: Vec<String> = (0..opts.exclude_slugs.len())
+                .map(|i| format!("?{}", base + i))
+                .collect();
+            sql.push_str(&format!(" AND p.slug NOT IN ({})", ph.join(", ")));
+            for s in &opts.exclude_slugs {
+                params.push(::libsql::Value::Text(s.clone()));
+            }
+        }
+        match (&opts.source_ids, &opts.source_id) {
+            (Some(ids), _) if !ids.is_empty() => {
+                let base = params.len() + 1;
+                let ph: Vec<String> =
+                    (0..ids.len()).map(|i| format!("?{}", base + i)).collect();
+                sql.push_str(&format!(" AND p.source_id IN ({})", ph.join(", ")));
+                for s in ids {
+                    params.push(::libsql::Value::Text(s.clone()));
+                }
+            }
+            (_, Some(id)) => {
+                sql.push_str(&format!(" AND p.source_id = ?{}", params.len() + 1));
+                params.push(::libsql::Value::Text(id.clone()));
+            }
+            _ => {}
+        }
+        sql.push_str(
+            " GROUP BY p.id, p.slug, p.source_id, p.title, p.compiled_truth, p.last_retrieved_at \
+             ORDER BY p.slug ASC",
+        );
+        let mut rows = conn
+            .query(&sql, ::libsql::params_from_iter(params))
+            .await
+            .map_err(|e| Error::engine(format!("list_corpus_sample query failed: {e}")))?;
+        let mut raw: Vec<DomainBankRawPage> = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("row fetch failed: {e}")))?
+        {
+            let page_id: i64 = row
+                .get(0)
+                .map_err(|e| Error::engine(format!("page_id decode: {e}")))?;
+            let slug: String = row
+                .get(1)
+                .map_err(|e| Error::engine(format!("slug decode: {e}")))?;
+            let source_id: String = row
+                .get(2)
+                .map_err(|e| Error::engine(format!("source_id decode: {e}")))?;
+            let title: Option<String> = row
+                .get(3)
+                .map_err(|e| Error::engine(format!("title decode: {e}")))?;
+            let compiled_truth: String = row
+                .get(4)
+                .map_err(|e| Error::engine(format!("compiled_truth decode: {e}")))?;
+            let last_retrieved_at: Option<String> = row
+                .get(5)
+                .map_err(|e| Error::engine(format!("lra decode: {e}")))?;
+            let connection_count: i64 = row
+                .get(6)
+                .map_err(|e| Error::engine(format!("connection_count decode: {e}")))?;
+            let representative_chunk_id: Option<i64> = row
+                .get(7)
+                .map_err(|e| Error::engine(format!("representative_chunk_id decode: {e}")))?;
+            raw.push(DomainBankRawPage {
+                page_id: page_id as u64,
+                slug,
+                source_id,
+                title,
+                compiled_truth,
+                last_retrieved_at,
+                connection_count,
+                representative_chunk_id: representative_chunk_id.map(|v| v as u64),
+            });
+        }
+        Ok(pick_corpus_sample(raw, opts.n, opts.seed))
+    }
+
+    /// Libsql `get_embeddings_by_chunk_ids`. Reads `content_chunks.id` +
+    /// `embedding` (f32-LE BLOB) for the requested ids on the validated
+    /// column. Mirrors TS `getEmbeddingsByChunkIds` (D12 column defense).
+    async fn get_embeddings_by_chunk_ids(
+        &self,
+        ids: &[u64],
+        column: Option<&str>,
+    ) -> Result<std::collections::HashMap<u64, Vec<f32>>> {
+        use crate::engine::{decode_f32_blob, quote_identifier, validate_embedding_column};
+        let mut out: std::collections::HashMap<u64, Vec<f32>> = std::collections::HashMap::new();
+        if ids.is_empty() {
+            return Ok(out);
+        }
+        let column = validate_embedding_column(column)?;
+        let quoted = quote_identifier(&column);
+        let conn = self.conn().await?;
+        let ph: Vec<String> = (0..ids.len()).map(|i| format!("?{}", i + 1)).collect();
+        let sql = format!(
+            "SELECT id, {quoted} AS embedding FROM content_chunks \
+             WHERE id IN ({}) AND {quoted} IS NOT NULL",
+            ph.join(", "),
+        );
+        let params: Vec<::libsql::Value> = ids
+            .iter()
+            .map(|id| ::libsql::Value::Integer(*id as i64))
+            .collect();
+        let mut rows = conn
+            .query(&sql, ::libsql::params_from_iter(params))
+            .await
+            .map_err(|e| Error::engine(format!("get_embeddings_by_chunk_ids query failed: {e}")))?;
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("row fetch failed: {e}")))?
+        {
+            let id: i64 = row
+                .get(0)
+                .map_err(|e| Error::engine(format!("id decode: {e}")))?;
+            let blob: Option<Vec<u8>> = row
+                .get(1)
+                .map_err(|e| Error::engine(format!("embedding decode: {e}")))?;
+            if let Some(b) = blob {
+                if let Some(emb) = decode_f32_blob(&b) {
+                    out.insert(id as u64, emb);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Libsql `list_prefixes` — port of TS `enumeratePrefixes`. SQLite has no
+    /// regex `substring`, so we fetch DISTINCT live, source-scoped slugs and
+    /// extract each `^[^/]+/[^/]+` prefix in Rust via [`domain_bank_prefix`]
+    /// (the canonical, Postgres-regex-faithful implementation). Dedup + sort.
+    async fn list_prefixes(
+        &self,
+        opts: crate::engine::ListPrefixesOpts,
+    ) -> Result<Vec<String>> {
+        use crate::engine::domain_bank_prefix;
+        let conn = self.conn().await?;
+        let mut sql = String::from(
+            "SELECT DISTINCT p.slug FROM pages p WHERE p.deleted_at IS NULL",
+        );
+        let mut params: Vec<::libsql::Value> = Vec::new();
+        match (&opts.source_ids, &opts.source_id) {
+            (Some(ids), _) if !ids.is_empty() => {
+                let base = params.len() + 1;
+                let ph: Vec<String> =
+                    (0..ids.len()).map(|i| format!("?{}", base + i)).collect();
+                sql.push_str(&format!(" AND p.source_id IN ({})", ph.join(", ")));
+                for s in ids {
+                    params.push(::libsql::Value::Text(s.clone()));
+                }
+            }
+            (_, Some(id)) => {
+                sql.push_str(&format!(" AND p.source_id = ?{}", params.len() + 1));
+                params.push(::libsql::Value::Text(id.clone()));
+            }
+            _ => {}
+        }
+        sql.push_str(" ORDER BY p.slug ASC");
+        let mut rows = conn
+            .query(&sql, ::libsql::params_from_iter(params))
+            .await
+            .map_err(|e| Error::engine(format!("list_prefixes query failed: {e}")))?;
+        let mut prefixes: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("row fetch failed: {e}")))?
+        {
+            let slug: String = row
+                .get(0)
+                .map_err(|e| Error::engine(format!("slug decode: {e}")))?;
+            if let Some(prefix) = domain_bank_prefix(&slug) {
+                prefixes.insert(prefix);
+            }
+        }
+        Ok(prefixes.into_iter().collect())
     }
 
     async fn get_page_timestamps(
@@ -11159,6 +11477,244 @@ mod eval_candidates_tests {
             .await
             .unwrap();
         assert_eq!(after.len(), 0);
+    }
+}
+
+/// Domain-bank backend tests against the REAL SQLite schema (`links` join +
+/// `content_chunks.embedding`). Mirrors `domain_bank_inmem_tests` so the
+/// three backends are proven to agree on the same scenarios.
+#[cfg(test)]
+mod domain_bank_libsql_tests {
+    use super::*;
+    use crate::engine::{
+        BrainEngine, CorpusSampleOpts, DomainBankSampleOpts, EngineConfig, PageInput,
+    };
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static SEQ: AtomicU32 = AtomicU32::new(0);
+
+    fn unique_db_path() -> std::path::PathBuf {
+        let n = SEQ.fetch_add(1, Ordering::SeqCst);
+        let p = std::env::temp_dir()
+            .join(format!("zb_db_tests_{}_{}.db", std::process::id(), n));
+        let _ = std::fs::remove_file(&p);
+        p
+    }
+
+    async fn setup() -> (LibsqlEngine, std::path::PathBuf) {
+        let engine = LibsqlEngine::new();
+        let path = unique_db_path();
+        engine
+            .connect(&EngineConfig {
+                database_url: None,
+                database_path: Some(path.to_string_lossy().into_owned()),
+            })
+            .await
+            .unwrap();
+        engine.init_schema().await.unwrap();
+        (engine, path)
+    }
+
+    async fn seed_page(engine: &LibsqlEngine, slug: &str) -> u64 {
+        engine
+            .put_page(
+                slug,
+                Some("default"),
+                &PageInput {
+                    title: slug.to_string(),
+                    compiled_truth: format!("truth for {slug}"),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .id
+    }
+
+    async fn set_last_retrieved_at(engine: &LibsqlEngine, page_id: u64, ts: &str) {
+        let conn = engine.conn().await.unwrap();
+        conn.execute(
+            "UPDATE pages SET last_retrieved_at = ?1 WHERE id = ?2",
+            ::libsql::params![ts, page_id as i64],
+        )
+        .await
+        .unwrap();
+    }
+
+    async fn seed_link(engine: &LibsqlEngine, from_page_id: u64, to_page_id: u64, link_type: &str) {
+        let conn = engine.conn().await.unwrap();
+        conn.execute(
+            "INSERT INTO links (from_page_id, to_page_id, link_type) VALUES (?1, ?2, ?3)",
+            ::libsql::params![from_page_id as i64, to_page_id as i64, link_type],
+        )
+        .await
+        .unwrap();
+    }
+
+    fn f32_blob(v: &[f32]) -> Vec<u8> {
+        v.iter().flat_map(|f| f.to_le_bytes()).collect()
+    }
+
+    async fn seed_chunk(
+        engine: &LibsqlEngine,
+        page_id: u64,
+        chunk_index: usize,
+        embedding: Option<Vec<f32>>,
+    ) -> u64 {
+        let conn = engine.conn().await.unwrap();
+        let emb_val: ::libsql::Value = match embedding {
+            Some(v) => ::libsql::Value::Blob(f32_blob(&v)),
+            None => ::libsql::Value::Null,
+        };
+        let params: Vec<::libsql::Value> = vec![
+            ::libsql::Value::Integer(page_id as i64),
+            ::libsql::Value::Integer(chunk_index as i64),
+            ::libsql::Value::Text(format!("chunk {chunk_index}")),
+            emb_val,
+        ];
+        conn.execute(
+            "INSERT INTO content_chunks (page_id, chunk_index, chunk_text, chunk_source, embedding) \
+             VALUES (?1, ?2, ?3, 'compiled_truth', ?4)",
+            ::libsql::params_from_iter(params),
+        )
+        .await
+        .unwrap();
+        last_insert_rowid(&conn).await.unwrap() as u64
+    }
+
+    // ── list_prefix_sampled_pages ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn libsql_prefix_sample_one_per_prefix_and_chunk() {
+        let (engine, _p) = setup().await;
+        let geo = seed_page(&engine, "facts/geo/capital").await;
+        let maria = seed_page(&engine, "people/maria/notes").await;
+        // maria gets a representative chunk (lowest chunk_index w/ embedding);
+        // geo has none.
+        let cid = seed_chunk(&engine, maria, 1, Some(vec![0.1f32, 0.2f32])).await;
+        let _ = geo;
+
+        let rows = engine
+            .list_prefix_sampled_pages(DomainBankSampleOpts {
+                prefixes: vec!["facts/geo".into(), "people/maria".into()],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].slug, "facts/geo/capital");
+        assert!(rows[0].representative_chunk_id.is_none());
+        assert_eq!(rows[1].slug, "people/maria/notes");
+        assert_eq!(rows[1].representative_chunk_id, Some(cid));
+    }
+
+    #[tokio::test]
+    async fn libsql_prefix_sample_connection_count_tiebreak() {
+        let (engine, _p) = setup().await;
+        let a = seed_page(&engine, "people/maria/notes").await;
+        let b = seed_page(&engine, "people/maria/other").await;
+        // one linker page; `a` gets two distinct links (different link_type),
+        // `b` gets one → `a` wins the tiebreak.
+        let linker = seed_page(&engine, "hub/home").await;
+        seed_link(&engine, linker, a, "wikilink").await;
+        seed_link(&engine, linker, a, "mention").await;
+        seed_link(&engine, linker, b, "wikilink").await;
+
+        let rows = engine
+            .list_prefix_sampled_pages(DomainBankSampleOpts {
+                prefixes: vec!["people/maria".into()],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].slug, "people/maria/notes");
+        assert_eq!(rows[0].connection_count, 2);
+    }
+
+    #[tokio::test]
+    async fn libsql_prefix_sample_excludes_close_set() {
+        let (engine, _p) = setup().await;
+        seed_page(&engine, "people/maria/notes").await;
+        seed_page(&engine, "people/maria/other").await;
+        let rows = engine
+            .list_prefix_sampled_pages(DomainBankSampleOpts {
+                prefixes: vec!["people/maria".into()],
+                exclude_slugs: vec!["people/maria/other".into()],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].slug, "people/maria/notes");
+    }
+
+    #[tokio::test]
+    async fn libsql_prefix_sample_stale_bias() {
+        let (engine, _p) = setup().await;
+        let capital = seed_page(&engine, "facts/geo/capital").await;
+        let history = seed_page(&engine, "facts/geo/history").await;
+        set_last_retrieved_at(&engine, capital, "2026-08-01T00:00:00Z").await;
+
+        let biased = engine
+            .list_prefix_sampled_pages(DomainBankSampleOpts {
+                prefixes: vec!["facts/geo".into()],
+                stale_bias: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(biased[0].slug, "facts/geo/history");
+        let _ = history;
+    }
+
+    // ── list_corpus_sample ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn libsql_corpus_sample_seed_is_deterministic() {
+        let (engine, _p) = setup().await;
+        for s in ["a/x", "b/y", "c/z", "d/w", "e/v"] {
+            seed_page(&engine, s).await;
+        }
+        let opts = CorpusSampleOpts {
+            n: 3,
+            seed: Some(1.0),
+            ..Default::default()
+        };
+        let first = engine.list_corpus_sample(opts.clone()).await.unwrap();
+        let second = engine.list_corpus_sample(opts.clone()).await.unwrap();
+        assert_eq!(first.len(), 3);
+        assert_eq!(first, second, "same seed → identical sample");
+    }
+
+    // ── get_embeddings_by_chunk_ids ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn libsql_get_embeddings_hydrates_real_ids() {
+        let (engine, _p) = setup().await;
+        let page = seed_page(&engine, "people/maria/notes").await;
+        let emb = vec![0.5f32, -0.25f32, 1.0f32];
+        let cid = seed_chunk(&engine, page, 3, Some(emb.clone())).await;
+
+        let map = engine
+            .get_embeddings_by_chunk_ids(&[cid], None)
+            .await
+            .unwrap();
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get(&cid), Some(&emb));
+    }
+
+    #[tokio::test]
+    async fn libsql_get_embeddings_skips_unembedded_chunks() {
+        let (engine, _p) = setup().await;
+        let page = seed_page(&engine, "people/maria/notes").await;
+        let cid = seed_chunk(&engine, page, 0, None).await;
+        let map = engine
+            .get_embeddings_by_chunk_ids(&[cid], None)
+            .await
+            .unwrap();
+        assert!(map.is_empty());
     }
 }
 

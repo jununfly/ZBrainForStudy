@@ -29,6 +29,7 @@ use zbrain_core::autopilot::cycle::{
     run_cycle, CycleOpts, CyclePhase, CycleReport, CycleStatus, PhaseResult, PhaseStatus,
 };
 use zbrain_core::engine::BrainEngine;
+use zbrain_core::eval::brainstorm::orchestrator::{BRAINSTORM_PROFILE, LSD_PROFILE};
 use zbrain_core::operation::{register_all, CliOpts, OperationContext, OperationRegistry};
 use zbrain_core::progress::{ProgressMode, ProgressReporter};
 
@@ -348,6 +349,695 @@ pub struct Cli {
     pub command: Commands,
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// brainstorm / lsd / eval-brainstorm — roadmap node 1-1-5-5
+//
+// Faithful port of `src/commands/{brainstorm,eval-brainstorm}.ts`. The
+// `brainstorm` and `lsd` verbs share `BrainstormArgs` and differ only by the
+// engine preset (BRAINSTORM_PROFILE vs LSD_PROFILE). `eval-brainstorm` is the
+// three-axis (DISTANCE + USEFULNESS + GROUNDING) gate. Resume / checkpoint
+// persistence is a Q3-MVP no-op (see zbrain_core::eval::brainstorm::checkpoint).
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Shared CLI args for `zbrain brainstorm` and `zbrain lsd`. Mirrors
+/// `BrainstormCliArgs` in `src/commands/brainstorm.ts`.
+#[derive(Debug, clap::Args)]
+pub struct BrainstormArgs {
+    /// The question to brainstorm. All positional tokens are joined with a space.
+    #[arg(value_name = "QUESTION", num_args = 1.., required = false)]
+    pub question: Vec<String>,
+
+    /// Emit the BrainstormResult as JSON (for agents).
+    #[arg(long)]
+    pub json: bool,
+
+    /// Save to wiki/ideas/<date>-<mode>-<slug>.md (overrides the per-profile default).
+    #[arg(long)]
+    pub save: bool,
+
+    /// Don't save; print only (overrides the per-profile default).
+    #[arg(long = "no-save")]
+    pub no_save: bool,
+
+    /// Skip the cost-preview notice (scripted callers / non-TTY).
+    #[arg(long, short = 'y')]
+    pub yes: bool,
+
+    /// Override the far-bank size (default 6 brainstorm / 12 lsd).
+    #[arg(long)]
+    pub limit: Option<usize>,
+
+    /// Abort if estimated cost exceeds this USD amount (default 5).
+    #[arg(long = "max-cost")]
+    pub max_cost: Option<f64>,
+
+    /// Cap domain-bank prefix sampling (default 50).
+    #[arg(long = "max-far-set")]
+    pub max_far_set: Option<usize>,
+
+    /// Abort if running cost exceeds 5× the estimate.
+    #[arg(long = "strict-budget")]
+    pub strict_budget: bool,
+
+    /// Override the judge LLM model.
+    #[arg(long = "judge-model")]
+    pub judge_model: Option<String>,
+
+    /// Max ideas per judge LLM call (default 100).
+    #[arg(long = "max-ideas-per-judge-call")]
+    pub max_ideas_per_judge_call: Option<usize>,
+
+    /// Resume a previously-crashed run by run_id (Q3: not yet wired).
+    #[arg(long)]
+    pub resume: Option<String>,
+
+    /// Bypass the 7-day staleness gate on --resume (Q3: not yet wired).
+    #[arg(long = "force-resume")]
+    pub force_resume: bool,
+
+    /// Print saved run_ids and exit (Q3: checkpoint list is a no-op stub).
+    #[arg(long = "list-runs")]
+    pub list_runs: bool,
+}
+
+/// CLI args for `zbrain eval-brainstorm`. Mirrors `EvalBrainstormCliArgs`.
+#[derive(Debug, clap::Args)]
+pub struct EvalBrainstormArgs {
+    /// Path to a JSONL fixture: one `{ "question": "..." }` object per line.
+    #[arg(value_name = "FIXTURE")]
+    pub fixture: Option<String>,
+
+    /// Emit the BrainstormEvalReport as JSON.
+    #[arg(long)]
+    pub json: bool,
+
+    /// Cap to N fixtures (default: all).
+    #[arg(long)]
+    pub limit: Option<usize>,
+
+    /// Override the distance threshold (default 0.4).
+    #[arg(long = "distance-min")]
+    pub distance_min: Option<f64>,
+
+    /// Override the usefulness threshold (default 3.5).
+    #[arg(long = "usefulness-min")]
+    pub usefulness_min: Option<f64>,
+
+    /// Override the grounding threshold (default 1.0).
+    #[arg(long = "grounding-min")]
+    pub grounding_min: Option<f64>,
+}
+
+// ── eval-brainstorm helper types (ported from src/commands/eval-brainstorm.ts) ──
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct BrainstormEvalFixture {
+    question: String,
+    #[allow(dead_code)]
+    expected_far_prefixes: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct PerFixtureResult {
+    question: String,
+    pass_count: usize,
+    total_ideas: usize,
+    mean_distance: f64,
+    mean_usefulness: f64,
+    grounding_rate: f64,
+    short_of_target: bool,
+    cost_usd: f64,
+    judge_failed: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct EvalAggregate {
+    distance: f64,
+    usefulness: f64,
+    grounding: f64,
+}
+
+fn compute_grounding_rate(
+    ideas: &[zbrain_core::eval::brainstorm::orchestrator::BrainstormIdea],
+    real_slugs: &std::collections::HashSet<String>,
+) -> f64 {
+    if ideas.is_empty() {
+        return 0.0;
+    }
+    let grounded = ideas
+        .iter()
+        .filter(|i| real_slugs.contains(&i.close_slug) || real_slugs.contains(&i.far_slug))
+        .count();
+    grounded as f64 / ideas.len() as f64
+}
+
+fn summarize_fixture(
+    question: &str,
+    result: &zbrain_core::eval::brainstorm::orchestrator::BrainstormResult,
+    real_slugs: &std::collections::HashSet<String>,
+) -> PerFixtureResult {
+    use zbrain_core::eval::brainstorm::orchestrator::BrainstormIdea;
+    let passing: Vec<&BrainstormIdea> = result.ideas.iter().filter(|i| i.passes).collect();
+    let mean_distance = if passing.is_empty() {
+        0.0
+    } else {
+        passing.iter().map(|i| i.distance_score).sum::<f64>() / passing.len() as f64
+    };
+    let judged: Vec<&BrainstormIdea> = passing
+        .iter()
+        .filter(|i| i.judge.is_some())
+        .copied()
+        .collect();
+    let mean_usefulness = if judged.is_empty() {
+        f64::NAN
+    } else {
+        judged
+            .iter()
+            .map(|i| i.judge.as_ref().unwrap().weighted_score)
+            .sum::<f64>()
+            / judged.len() as f64
+    };
+    let grounding = compute_grounding_rate(&result.ideas, real_slugs);
+    PerFixtureResult {
+        question: question.to_string(),
+        pass_count: passing.len(),
+        total_ideas: result.ideas.len(),
+        mean_distance,
+        mean_usefulness,
+        grounding_rate: grounding,
+        short_of_target: result.short_of_target,
+        cost_usd: result.cost.actual_usd,
+        judge_failed: result.judge_failed,
+    }
+}
+
+fn compute_eval_verdict(
+    per_fixture: &[PerFixtureResult],
+    distance_min: f64,
+    usefulness_min: f64,
+    grounding_min: f64,
+) -> (EvalAggregate, String, Vec<String>) {
+    let usable: Vec<&PerFixtureResult> =
+        per_fixture.iter().filter(|r| r.pass_count > 0 && !r.judge_failed).collect();
+    if usable.len() < 2 {
+        return (
+            EvalAggregate { distance: 0.0, usefulness: 0.0, grounding: 0.0 },
+            "inconclusive".to_string(),
+            vec![format!(
+                "Only {} fixture(s) produced parseable, judged ideas. Need at least 2 to compute meaningful aggregates.",
+                usable.len()
+            )],
+        );
+    }
+    let distance = usable.iter().map(|r| r.mean_distance).sum::<f64>() / usable.len() as f64;
+    let valid: Vec<f64> = usable
+        .iter()
+        .filter(|r| r.mean_usefulness.is_finite())
+        .map(|r| r.mean_usefulness)
+        .collect();
+    let usefulness = if valid.is_empty() {
+        0.0
+    } else {
+        valid.iter().sum::<f64>() / valid.len() as f64
+    };
+    let grounding = usable.iter().map(|r| r.grounding_rate).sum::<f64>() / usable.len() as f64;
+    let mut reasons: Vec<String> = Vec::new();
+    if distance < distance_min {
+        reasons.push(format!(
+            "distance {:.3} < {:.3} (ideas too close to the question — domain-bank not surfacing distant pages)",
+            distance, distance_min
+        ));
+    }
+    if usefulness < usefulness_min {
+        reasons.push(format!(
+            "usefulness {:.2} < {:.2} (ideas far but low judge score)",
+            usefulness, usefulness_min
+        ));
+    }
+    if grounding < grounding_min {
+        reasons.push(format!(
+            "grounding {:.3} < {:.3} (some ideas cite non-existent slugs — hallucination signal)",
+            grounding, grounding_min
+        ));
+    }
+    let verdict = if reasons.is_empty() { "pass" } else { "fail" };
+    (EvalAggregate { distance, usefulness, grounding }, verdict.to_string(), reasons)
+}
+
+fn build_idea_slug(question: &str, label: &str) -> String {
+    let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let stem: String = question
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    let stem: String = if stem.is_empty() {
+        "untitled".to_string()
+    } else {
+        stem.chars().take(60).collect()
+    };
+    format!("wiki/ideas/{date}-{label}-{stem}")
+}
+
+/// Handler for `zbrain brainstorm` and `zbrain lsd`. `profile` selects which
+/// engine preset (BRAINSTORM_PROFILE vs LSD_PROFILE) drives the run.
+pub async fn run_brainstorm_command(
+    args: BrainstormArgs,
+    profile: &'static zbrain_core::eval::brainstorm::orchestrator::BrainstormProfile,
+    config_path: Option<&std::path::Path>,
+) -> anyhow::Result<()> {
+    use std::sync::Arc;
+    use zbrain_core::ai::chat::{instantiate_chat, ChatProvider};
+    use zbrain_core::ai::resolver::{resolve_recipe_strict, AiConfigError};
+    use zbrain_core::embedding::EmbeddingClient;
+    use zbrain_core::engine::{BrainEngine, EngineConfig};
+    use zbrain_core::eval::brainstorm::checkpoint;
+    use zbrain_core::eval::brainstorm::orchestrator::{
+        build_brainstorm_frontmatter, format_brainstorm_markdown, run_brainstorm,
+        BrainstormOptions, FormatOpts,
+    };
+    use zbrain_core::libsql::LibsqlEngine;
+
+    // TX3 resume is a Q3 no-op; surface it honestly instead of silently.
+    if args.resume.is_some() {
+        anyhow::bail!(
+            "zbrain {}: --resume is not yet wired (Q3 MVP). Re-run the command; checkpoints are not yet persisted.",
+            profile.label
+        );
+    }
+    if args.list_runs {
+        // checkpoint::list_runs() is a stub returning [].
+        let runs = checkpoint::list_runs();
+        if runs.is_empty() {
+            println!("No saved brainstorm runs.");
+        }
+        return Ok(());
+    }
+
+    let question = args.question.join(" ");
+    if question.trim().is_empty() {
+        anyhow::bail!(
+            "zbrain {}: question required.\nUsage: zbrain {} \"<question>\" [--json] [--save] [--limit N] [--max-cost USD]",
+            profile.label, profile.label
+        );
+    }
+
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+    let engine: Arc<dyn BrainEngine> = Arc::new(engine);
+
+    // Resolve a single chat provider for the default generation model. The
+    // orchestrator forwards the model through ChatOpts; our providers strip
+    // the `provider:` prefix for the wire call, so one provider serves both
+    // generation and judge phases. Graceful no-key degradation: a missing
+    // key yields a clear message rather than a stack trace.
+    let resolved_model = "anthropic:claude-sonnet-4-6".to_string();
+    let env_lookup = |k: &str| std::env::var(k).ok();
+    let (_parsed, recipe) = resolve_recipe_strict(&resolved_model).map_err(|e: AiConfigError| {
+        anyhow::anyhow!(
+            "zbrain {}: cannot resolve model `{}`: {}. Set your provider API key (e.g. ANTHROPIC_API_KEY) or run `zbrain models doctor`.",
+            profile.label, resolved_model, e.message
+        )
+    })?;
+    let chat: Arc<dyn ChatProvider> = Arc::from(
+        instantiate_chat(recipe, &resolved_model, &env_lookup).map_err(|e: AiConfigError| {
+            anyhow::anyhow!(
+                "zbrain {}: cannot build LLM provider for `{}`: {}. Set your provider API key or run `zbrain models doctor`.",
+                profile.label, resolved_model, e.message
+            )
+        })?,
+    );
+    let embedding_client: Option<Arc<EmbeddingClient>> = EmbeddingClient::from_env().map(Arc::new);
+
+    // --limit override: replace m_far on a shallow copy of the profile.
+    let effective_profile = match args.limit {
+        Some(n) if n > 0 => {
+            let mut p = *profile;
+            p.m_far = n;
+            Some(p)
+        }
+        _ => None,
+    };
+
+    let opts = BrainstormOptions {
+        question: question.clone(),
+        profile: effective_profile,
+        model_override: None,
+        source_id: None,
+        source_ids: None,
+        max_cost_usd: args.max_cost,
+        max_far_set: args.max_far_set,
+        judge_model: args.judge_model.clone(),
+        max_ideas_per_judge_call: args.max_ideas_per_judge_call,
+        active_bias_tags: None,
+    };
+
+    if !args.yes {
+        eprintln!(
+            "[{}] brainstorm run for question: {} (pass --yes to skip this notice)",
+            profile.label, question
+        );
+    }
+
+    let result = match run_brainstorm(engine.as_ref(), &*chat, embedding_client, &opts).await {
+        Ok(r) => r,
+        Err(e) => {
+            // The orchestrator wraps SQLSTATE 57014 into a `brainstorm_timeout`
+            // StructuredError carrying a `.hint`. Print it like the TS cli block.
+            if e.code == "brainstorm_timeout" {
+                eprintln!("Error [{}]: {}", e.code, e.message);
+                if let Some(hint) = &e.hint {
+                    eprintln!("  Hint: {hint}");
+                }
+                std::process::exit(1);
+            }
+            return Err(e.into());
+        }
+    };
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+        return Ok(());
+    }
+
+    let md = format_brainstorm_markdown(
+        &result,
+        &FormatOpts { only_passed: true, include_meta: true },
+    );
+    println!("{md}");
+
+    // Save policy: brainstorm defaults to save-on; lsd to save-off. CLI flags
+    // override the default.
+    let explicit = if args.no_save {
+        Some(false)
+    } else if args.save {
+        Some(true)
+    } else {
+        None
+    };
+    let should_save = explicit.unwrap_or(profile.default_save);
+    if should_save {
+        let slug = build_idea_slug(&question, profile.label);
+        let frontmatter = build_brainstorm_frontmatter(&result, &slug);
+        let body = format_brainstorm_markdown(
+            &result,
+            &FormatOpts { only_passed: false, include_meta: true },
+        );
+        let compiled_truth = format!("{frontmatter}{body}");
+        let title = format!(
+            "{}: {}",
+            if profile.label == "lsd" { "LSD" } else { "Brainstorm" },
+            question.chars().take(100).collect::<String>()
+        );
+        let input = zbrain_core::engine::PageInput {
+            page_type: "note".to_string(),
+            title,
+            compiled_truth,
+            timeline: None,
+            frontmatter: None,
+            content_hash: None,
+            page_kind: None,
+            effective_date: None,
+            effective_date_source: None,
+            import_filename: None,
+            chunker_version: None,
+            source_path: None,
+            source_kind: None,
+            source_uri: None,
+            ingested_via: None,
+            ingested_at: None,
+            last_retrieved_at: None,
+            embedding: None,
+        };
+        match engine.put_page(&slug, None, &input).await {
+            Ok(_) => println!("\n_Saved to `{slug}`._"),
+            Err(err) => eprintln!("zbrain {}: save failed: {}", profile.label, err),
+        }
+    }
+    Ok(())
+}
+
+/// Handler for `zbrain eval-brainstorm` — the three-axis evaluation gate.
+pub async fn run_eval_brainstorm_command(
+    args: EvalBrainstormArgs,
+    config_path: Option<&std::path::Path>,
+) -> anyhow::Result<()> {
+    use std::sync::Arc;
+    use zbrain_core::ai::chat::{instantiate_chat, ChatProvider};
+    use zbrain_core::ai::resolver::{resolve_recipe_strict, AiConfigError};
+    use zbrain_core::embedding::EmbeddingClient;
+    use zbrain_core::engine::{BrainEngine, EngineConfig};
+    use zbrain_core::types::PageRef;
+    use zbrain_core::eval::brainstorm::orchestrator::{
+        run_brainstorm, BrainstormOptions, BRAINSTORM_PROFILE,
+    };
+    use zbrain_core::libsql::LibsqlEngine;
+
+    let fixture = match &args.fixture {
+        Some(f) => f.clone(),
+        None => anyhow::bail!(
+            "zbrain eval brainstorm: fixture path required (JSONL, one {{ \"question\": ... }} per line)"
+        ),
+    };
+
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+    let engine: Arc<dyn BrainEngine> = Arc::new(engine);
+
+    let resolved_model = "anthropic:claude-sonnet-4-6".to_string();
+    let env_lookup = |k: &str| std::env::var(k).ok();
+    let (_parsed, recipe) = resolve_recipe_strict(&resolved_model).map_err(|e: AiConfigError| {
+        anyhow::anyhow!(
+            "zbrain eval brainstorm: cannot resolve model `{}`: {}",
+            resolved_model, e.message
+        )
+    })?;
+    let chat: Arc<dyn ChatProvider> = Arc::from(
+        instantiate_chat(recipe, &resolved_model, &env_lookup).map_err(|e: AiConfigError| {
+            anyhow::anyhow!(
+                "zbrain eval brainstorm: cannot build LLM provider: {}",
+                e.message
+            )
+        })?,
+    );
+    let embedding_client: Option<Arc<EmbeddingClient>> =
+        EmbeddingClient::from_env().map(Arc::new);
+
+    // Read fixture JSONL (skip blank / malformed rows).
+    let text = std::fs::read_to_string(&fixture).map_err(|e| {
+        anyhow::anyhow!(
+            "zbrain eval brainstorm: cannot read fixture `{}`: {}",
+            fixture, e
+        )
+    })?;
+    let mut fixtures: Vec<BrainstormEvalFixture> = Vec::new();
+    for line in text.split('\n') {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let parsed: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let obj = match parsed.as_object() {
+            Some(o) => o,
+            None => continue,
+        };
+        let q = match obj.get("question").and_then(|v| v.as_str()) {
+            Some(q) if !q.trim().is_empty() => q.to_string(),
+            _ => continue,
+        };
+        let expected = obj
+            .get("expected_far_prefixes")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect());
+        fixtures.push(BrainstormEvalFixture { question: q, expected_far_prefixes: expected });
+    }
+    if fixtures.is_empty() {
+        anyhow::bail!("zbrain eval brainstorm: no parseable fixtures in `{}`", fixture);
+    }
+
+    let slice: Vec<BrainstormEvalFixture> = match args.limit {
+        Some(n) if n > 0 => fixtures.iter().take(n).cloned().collect(),
+        _ => fixtures.clone(),
+    };
+
+    // Real slugs for the grounding (anti-hallucination) signal.
+    let refs: Vec<PageRef> = engine.list_all_page_refs().await?;
+    let real_slugs: std::collections::HashSet<String> =
+        refs.into_iter().map(|r| r.slug).collect();
+
+    let distance_min = args.distance_min.unwrap_or(0.4);
+    let usefulness_min = args.usefulness_min.unwrap_or(3.5);
+    let grounding_min = args.grounding_min.unwrap_or(1.0);
+
+    let mut per_fixture: Vec<PerFixtureResult> = Vec::new();
+    let mut total_cost = 0.0_f64;
+
+    for (idx, fix) in slice.iter().enumerate() {
+        if !args.json {
+            eprintln!(
+                "[eval-brainstorm] {}/{}: {}",
+                idx + 1,
+                slice.len(),
+                fix.question.chars().take(60).collect::<String>()
+            );
+        }
+        let opts = BrainstormOptions {
+            question: fix.question.clone(),
+            profile: Some(BRAINSTORM_PROFILE),
+            model_override: None,
+            source_id: None,
+            source_ids: None,
+            max_cost_usd: None,
+            max_far_set: None,
+            judge_model: None,
+            max_ideas_per_judge_call: None,
+            active_bias_tags: None,
+        };
+        match run_brainstorm(engine.as_ref(), &*chat, embedding_client.clone(), &opts).await {
+            Ok(result) => {
+                let summary = summarize_fixture(&fix.question, &result, &real_slugs);
+                total_cost += summary.cost_usd;
+                per_fixture.push(summary);
+            }
+            Err(err) => {
+                if !args.json {
+                    eprintln!("[eval-brainstorm] fixture {} failed: {}", idx + 1, err);
+                }
+                per_fixture.push(PerFixtureResult {
+                    question: fix.question.clone(),
+                    pass_count: 0,
+                    total_ideas: 0,
+                    mean_distance: 0.0,
+                    mean_usefulness: f64::NAN,
+                    grounding_rate: 0.0,
+                    short_of_target: false,
+                    cost_usd: 0.0,
+                    judge_failed: true,
+                });
+            }
+        }
+    }
+
+    let (aggregate, verdict, reasons) =
+        compute_eval_verdict(&per_fixture, distance_min, usefulness_min, grounding_min);
+
+    if args.json {
+        let report = serde_json::json!({
+            "schema_version": 1,
+            "fixture_path": fixture,
+            "total_fixtures": fixtures.len(),
+            "parseable_fixtures": per_fixture.iter().filter(|r| !r.judge_failed && r.total_ideas > 0).count(),
+            "thresholds": { "distance_min": distance_min, "usefulness_min": usefulness_min, "grounding_min": grounding_min },
+            "per_fixture": per_fixture,
+            "aggregate": { "distance": aggregate.distance, "usefulness": aggregate.usefulness, "grounding": aggregate.grounding },
+            "verdict": verdict,
+            "reasons": reasons,
+            "total_cost_usd": total_cost,
+        });
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        let parseable = per_fixture
+            .iter()
+            .filter(|r| !r.judge_failed && r.total_ideas > 0)
+            .count();
+        println!("\n=== zbrain eval brainstorm ===");
+        println!("Fixture: {fixture}");
+        println!("Parseable: {parseable}/{}", fixtures.len());
+        println!("Distance:   {:.3} (threshold {:.3})", aggregate.distance, distance_min);
+        println!("Usefulness: {:.2} (threshold {:.2})", aggregate.usefulness, usefulness_min);
+        println!("Grounding:  {:.3} (threshold {:.3})", aggregate.grounding, grounding_min);
+        println!("Cost:       ${:.2}", total_cost);
+        println!("Verdict:    {}", verdict.to_uppercase());
+        for r in &reasons {
+            println!("  - {r}");
+        }
+    }
+
+    let code = match verdict.as_str() {
+        "pass" => 0,
+        "fail" => 1,
+        _ => 2,
+    };
+    std::process::exit(code);
+}
+
+#[cfg(test)]
+mod brainstorm_cli_tests {
+    use crate::Cli;
+    use clap::Parser;
+
+    #[test]
+    fn parses_brainstorm_verb() {
+        let cli = Cli::try_parse_from(["zbrain", "brainstorm", "why do tools converge?"]).unwrap();
+        match cli.command {
+            crate::Commands::Brainstorm(args) => {
+                assert_eq!(args.question.join(" "), "why do tools converge?")
+            }
+            other => panic!("expected Brainstorm, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_lsd_verb_with_flags() {
+        let cli =
+            Cli::try_parse_from(["zbrain", "lsd", "hidden assumption in pricing", "--json"]).unwrap();
+        match cli.command {
+            crate::Commands::Lsd(args) => assert!(args.json),
+            other => panic!("expected Lsd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_eval_brainstorm_verb() {
+        let cli = Cli::try_parse_from([
+            "zbrain",
+            "eval-brainstorm",
+            "fixture.jsonl",
+            "--distance-min",
+            "0.5",
+        ])
+        .unwrap();
+        match cli.command {
+            crate::Commands::EvalBrainstorm(args) => {
+                assert_eq!(args.fixture.as_deref(), Some("fixture.jsonl"));
+                assert_eq!(args.distance_min, Some(0.5));
+            }
+            other => panic!("expected EvalBrainstorm, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn brainstorm_parses_without_question() {
+        // `question` is optional at the parse layer (so --help works); the
+        // runtime handler enforces "question required". Assert the verb still
+        // parses with no positional.
+        let cli = Cli::try_parse_from(["zbrain", "brainstorm"]).unwrap();
+        match cli.command {
+            crate::Commands::Brainstorm(args) => assert!(args.question.is_empty()),
+            other => panic!("expected Brainstorm, got {other:?}"),
+        }
+    }
+}
+
 /// Available CLI commands.
 #[derive(Debug, Subcommand)]
 pub enum Commands {
@@ -493,6 +1183,18 @@ pub enum Commands {
     /// `review` are deferred (roadmap node 1-1-5-4).
     #[command(name = "eval-suspected-contradictions")]
     EvalSuspectedContradictions(EvalSuspectedContradictionsArgs),
+
+    /// Bisociation idea generator grounded in your own notes (v0.37.0 wave).
+    #[command(name = "brainstorm")]
+    Brainstorm(BrainstormArgs),
+
+    /// Lateral Synaptic Drift — the inverted-judge / stale-bias variant of `brainstorm`.
+    #[command(name = "lsd")]
+    Lsd(BrainstormArgs),
+
+    /// Three-axis evaluation gate for `zbrain brainstorm` (DISTANCE + USEFULNESS + GROUNDING).
+    #[command(name = "eval-brainstorm")]
+    EvalBrainstorm(EvalBrainstormArgs),
 
     /// Extract links / timeline entries from page bodies (TS `extract`)
     #[command(subcommand)]
@@ -2816,6 +3518,15 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Commands::EvalSuspectedContradictions(args) => {
             run_eval_suspected_contradictions_command(args, cli.config.as_deref()).await?
+        }
+        Commands::Brainstorm(args) => {
+            run_brainstorm_command(args, &BRAINSTORM_PROFILE, cli.config.as_deref()).await?
+        }
+        Commands::Lsd(args) => {
+            run_brainstorm_command(args, &LSD_PROFILE, cli.config.as_deref()).await?
+        }
+        Commands::EvalBrainstorm(args) => {
+            run_eval_brainstorm_command(args, cli.config.as_deref()).await?
         }
         Commands::Extract(action) => run_extract_command(action, cli.config.as_deref()).await?,
         Commands::Links(action) => run_links_command(action, cli.config.as_deref()).await?,

@@ -1080,6 +1080,384 @@ pub struct EvalCandidate {
     pub embedding_column: Option<String>,
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Domain-bank engine methods (1-1-5-5 / brainstorm + lsd).
+//
+// Faithful port of TS `DomainBankRow` + `DomainBankSampleOpts` +
+// `CorpusSampleOpts` (src/core/types.ts) used by the brainstorm domain-bank
+// module to sample "far" pages for bisociation. The three `BrainEngine`
+// methods (`list_prefix_sampled_pages` / `list_corpus_sample` /
+// `get_embeddings_by_chunk_ids`) are implemented in all three backends
+// (InMemory / Libsql / Postgres); the ranking/selection logic is shared via
+// the free helpers below so the backends cannot drift.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One page row returned by the domain-bank prefix/corpus sampling methods.
+/// Mirrors TS `DomainBankRow` (src/core/types.ts:381).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DomainBankRow {
+    pub slug: String,
+    pub source_id: String,
+    /// Top-level prefix (`^[^/]+/[^/]+`) or null for short slugs.
+    pub prefix: Option<String>,
+    pub page_id: u64,
+    pub title: Option<String>,
+    /// Page body — injected into the brainstorm prompt as "the user wrote...".
+    pub compiled_truth: String,
+    /// COUNT(page_links.id WHERE to_page_id = this) — inbound link count.
+    pub connection_count: i64,
+    /// ISO-8601 last read access (powers LSD stale-bias).
+    pub last_retrieved_at: Option<String>,
+    /// Lowest chunk_index with non-null embedding on the active column.
+    /// Null if no embedded chunks.
+    pub representative_chunk_id: Option<u64>,
+}
+
+/// Options for [`BrainEngine::list_prefix_sampled_pages`].
+/// Mirrors TS `DomainBankSampleOpts` (src/core/types.ts:351).
+#[derive(Debug, Clone, Default)]
+pub struct DomainBankSampleOpts {
+    /// Top-level slug prefixes to sample from.
+    pub prefixes: Vec<String>,
+    /// Slugs to exclude (typically the close-set).
+    pub exclude_slugs: Vec<String>,
+    /// When true, prefer never-retrieved / stale pages.
+    pub stale_bias: bool,
+    /// Days threshold for "stale" classification. Default 90.
+    pub stale_threshold_days: i64,
+    /// Single-source scope (scalar).
+    pub source_id: Option<String>,
+    /// Federated read scope (array, wins over scalar).
+    pub source_ids: Option<Vec<String>>,
+}
+
+/// Options for [`BrainEngine::list_corpus_sample`].
+/// Mirrors TS `CorpusSampleOpts` (src/core/types.ts:367).
+#[derive(Debug, Clone, Default)]
+pub struct CorpusSampleOpts {
+    /// Number of pages to sample.
+    pub n: i64,
+    /// Slugs to exclude.
+    pub exclude_slugs: Vec<String>,
+    /// Stable seed for deterministic sampling in tests.
+    pub seed: Option<f64>,
+    /// Single-source scope.
+    pub source_id: Option<String>,
+    /// Federated read scope.
+    pub source_ids: Option<Vec<String>>,
+}
+
+/// Options for [`BrainEngine::list_prefixes`].
+/// Mirrors TS `enumeratePrefixes`'s `{ sourceId?, sourceIds? }` — the
+/// source-scoped prefix enumeration used by the brainstorm domain-bank
+/// (D3 prefix cache + primary far-page path).
+#[derive(Debug, Clone, Default)]
+pub struct ListPrefixesOpts {
+    /// Single-source scope (scalar).
+    pub source_id: Option<String>,
+    /// Federated read scope (array, wins over scalar).
+    pub source_ids: Option<Vec<String>>,
+}
+
+/// Internal raw page tuple fetched by each backend before ranking/selection.
+pub(crate) struct DomainBankRawPage {
+    pub page_id: u64,
+    pub slug: String,
+    pub source_id: String,
+    pub title: Option<String>,
+    pub compiled_truth: String,
+    pub last_retrieved_at: Option<String>,
+    pub connection_count: i64,
+    pub representative_chunk_id: Option<u64>,
+}
+
+/// Extract the `^[^/]+/[^/]+` prefix (first two slug segments) or None.
+/// Portable replacement for Postgres `substring(slug from '^[^/]+/[^/]+')`
+/// (SQLite has no regex substring).
+///
+/// A 1-segment slug (`notes`) or a leading-slash slug (`/x`) has no prefix →
+/// None. A 2-segment slug (`people/maria`) is its own prefix (the whole
+/// slug). A deeper slug (`people/maria/notes`) yields `people/maria` — exactly
+/// the first two segments, regardless of depth, matching the TS regex.
+pub(crate) fn domain_bank_prefix(slug: &str) -> Option<String> {
+    let first = slug.find('/')?;
+    if first == 0 {
+        return None;
+    }
+    let rest = &slug[first + 1..];
+    match rest.find('/') {
+        // Deeper slug — prefix is up to and including the second segment.
+        Some(second) => Some(slug[..first + 1 + second].to_string()),
+        // Exactly two segments — the whole slug is the prefix.
+        None => {
+            if rest.is_empty() {
+                None
+            } else {
+                Some(slug.to_string())
+            }
+        }
+    }
+}
+
+/// Deterministic, process-independent id for an in-memory chunk so
+/// `representative_chunk_id` and `get_embeddings_by_chunk_ids` agree without
+/// storing an explicit id (the in-memory `ChunkInput` has no id field).
+pub(crate) fn inmemory_chunk_id(slug: &str, chunk_index: usize) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut update = |byte: u8| {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    };
+    for b in slug.as_bytes() {
+        update(*b);
+    }
+    update(0xff);
+    for b in chunk_index.to_le_bytes() {
+        update(b);
+    }
+    hash
+}
+
+/// Decode a f32 little-endian BLOB (mirrors `pages.embedding` / chunk
+/// embedding storage) into a `Vec<f32>`. Returns None on malformed length.
+pub(crate) fn decode_f32_blob(blob: &[u8]) -> Option<Vec<f32>> {
+    if blob.len() % 4 != 0 {
+        return None;
+    }
+    Some(
+        blob.chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect::<Vec<f32>>(),
+    )
+}
+
+/// Validate + return the embedding column name (D12 layer 1). Only
+/// `[a-zA-Z_][a-zA-Z0-9_]*` names are accepted; the caller must identifier-
+/// quote before interpolation (layer 2). Currently only `embedding` exists
+/// in the Rust `content_chunks` schema.
+pub(crate) fn validate_embedding_column(column: Option<&str>) -> crate::Result<String> {
+    let column = column.unwrap_or("embedding");
+    let valid = !column.is_empty()
+        && column
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !column.starts_with(|c: char| c.is_ascii_digit());
+    if !valid {
+        return Err(crate::Error::engine(format!(
+            "invalid embedding column name: {column} (must match ^[a-zA-Z_][a-zA-Z0-9_]*$)"
+        )));
+    }
+    Ok(column.to_string())
+}
+
+/// Identifier-quote a column/table name (D12 layer 2).
+pub(crate) fn quote_identifier(ident: &str) -> String {
+    format!("\"{}\"", ident.replace('"', "\"\""))
+}
+
+/// Compute the stale_score used by the prefix-stratified ranking (D5 / LSD).
+/// 2 = never retrieved, 1 = older than threshold, 0 = fresh (or no bias).
+pub(crate) fn domain_bank_stale_score(
+    last_retrieved_at: Option<&str>,
+    stale_bias: bool,
+    stale_threshold_days: i64,
+) -> i64 {
+    if !stale_bias {
+        return 0;
+    }
+    let ts = match last_retrieved_at {
+        Some(t) => t,
+        None => return 2,
+    };
+    match chrono::DateTime::parse_from_rfc3339(ts) {
+        Ok(dt) => {
+            let threshold =
+                chrono::Utc::now() - chrono::Duration::days(stale_threshold_days);
+            if dt.with_timezone(&chrono::Utc) < threshold {
+                1
+            } else {
+                0
+            }
+        }
+        Err(_) => 0,
+    }
+}
+
+/// Shared ranking for `list_prefix_sampled_pages` across all backends.
+/// Returns one `DomainBankRow` per requested prefix, tiebroken by stale_score
+/// DESC, connection_count DESC, slug ASC — matching TS
+/// `ROW_NUMBER() OVER (PARTITION BY prefix ...)`.
+pub(crate) fn rank_domain_bank_prefix_sample(
+    rows: Vec<DomainBankRawPage>,
+    prefixes: &std::collections::HashSet<String>,
+    stale_bias: bool,
+    stale_threshold_days: i64,
+) -> Vec<DomainBankRow> {
+    use std::collections::HashMap;
+    let mut groups: HashMap<String, Vec<DomainBankRawPage>> = HashMap::new();
+    for r in rows {
+        if let Some(prefix) = domain_bank_prefix(&r.slug) {
+            if prefixes.contains(&prefix) {
+                groups.entry(prefix).or_default().push(r);
+            }
+        }
+    }
+    let mut out: Vec<DomainBankRow> = Vec::new();
+    for (prefix, mut group) in groups {
+        group.sort_by(|a, b| {
+            let sa = domain_bank_stale_score(
+                a.last_retrieved_at.as_deref(),
+                stale_bias,
+                stale_threshold_days,
+            );
+            let sb = domain_bank_stale_score(
+                b.last_retrieved_at.as_deref(),
+                stale_bias,
+                stale_threshold_days,
+            );
+            sb.cmp(&sa)
+                .then_with(|| b.connection_count.cmp(&a.connection_count))
+                .then_with(|| a.slug.cmp(&b.slug))
+        });
+        if let Some(best) = group.into_iter().next() {
+            out.push(DomainBankRow {
+                slug: best.slug,
+                source_id: best.source_id,
+                prefix: Some(prefix),
+                page_id: best.page_id,
+                title: best.title,
+                compiled_truth: best.compiled_truth,
+                connection_count: best.connection_count,
+                last_retrieved_at: best.last_retrieved_at,
+                representative_chunk_id: best.representative_chunk_id,
+            });
+        }
+    }
+    out.sort_by(|a, b| a.prefix.cmp(&b.prefix));
+    out
+}
+
+/// Shared selection for `list_corpus_sample` across all backends. Picks `n`
+/// pages with a deterministic Fisher-Yates shuffle when `seed` is set,
+/// otherwise a stable slug order — so tests are reproducible without a real
+/// RNG. Mirrors TS `ORDER BY RANDOM() LIMIT n` semantics.
+pub(crate) fn pick_corpus_sample(
+    rows: Vec<DomainBankRawPage>,
+    n: i64,
+    seed: Option<f64>,
+) -> Vec<DomainBankRow> {
+    if n <= 0 {
+        return vec![];
+    }
+    let mut rows = rows;
+    match seed {
+        Some(s) => {
+            let seed_bits = s.to_bits();
+            let mut rng =
+                <rand::rngs::StdRng as rand::SeedableRng>::seed_from_u64(seed_bits);
+            for i in (1..rows.len()).rev() {
+                let j = (rand::Rng::gen::<u64>(&mut rng) as usize) % (i + 1);
+                rows.swap(i, j);
+            }
+        }
+        None => {
+            rows.sort_by(|a, b| a.slug.cmp(&b.slug));
+        }
+    }
+    rows.into_iter()
+        .take(n as usize)
+        .map(|r| DomainBankRow {
+            prefix: domain_bank_prefix(&r.slug),
+            slug: r.slug,
+            source_id: r.source_id,
+            page_id: r.page_id,
+            title: r.title,
+            compiled_truth: r.compiled_truth,
+            connection_count: r.connection_count,
+            last_retrieved_at: r.last_retrieved_at,
+            representative_chunk_id: r.representative_chunk_id,
+        })
+        .collect()
+}
+
+/// Lowest chunk_index with a non-null embedding for a slug → synthetic id.
+pub(crate) fn representative_chunk_id_for(
+    chunks: &std::collections::HashMap<String, Vec<crate::import::ChunkInput>>,
+    slug: &str,
+) -> Option<u64> {
+    let chunk_inputs = chunks.get(slug)?;
+    let mut best: Option<(usize, u64)> = None;
+    for ci in chunk_inputs.iter() {
+        if ci.embedding.is_some() {
+            let id = inmemory_chunk_id(slug, ci.chunk_index);
+            match best {
+                None => best = Some((ci.chunk_index, id)),
+                Some((min_idx, _)) if ci.chunk_index < min_idx => {
+                    best = Some((ci.chunk_index, id))
+                }
+                _ => {}
+            }
+        }
+    }
+    best.map(|(_, id)| id)
+}
+
+/// Collect raw domain-bank page tuples from the InMemory engine (shared by
+/// both sampling methods). Returns live, source-scoped, exclude-filtered
+/// pages with connection_count + representative_chunk_id resolved.
+pub(crate) fn collect_domain_bank_raw(
+    engine: &InMemoryEngine,
+    exclude: &std::collections::HashSet<String>,
+    source_ids: &Option<Vec<String>>,
+    source_id: &Option<String>,
+) -> Vec<DomainBankRawPage> {
+    let store = engine
+        .store
+        .lock()
+        .expect("InMemoryEngine store mutex poisoned");
+    let links = engine
+        .links_store
+        .lock()
+        .expect("InMemoryEngine links_store mutex poisoned");
+    let chunks = engine
+        .chunk_store
+        .lock()
+        .expect("InMemoryEngine chunk_store mutex poisoned");
+    let mut conn_counts: std::collections::HashMap<u64, i64> = std::collections::HashMap::new();
+    for l in links.iter() {
+        *conn_counts.entry(l.to_page_id).or_insert(0) += 1;
+    }
+    let mut raw = Vec::new();
+    for p in store.iter() {
+        if p.deleted_at.is_some() {
+            continue;
+        }
+        if exclude.contains(&p.slug) {
+            continue;
+        }
+        let source_ok = match (source_ids, source_id) {
+            (Some(ids), _) => ids.iter().any(|s| s == &p.source_id),
+            (None, Some(id)) => &p.source_id == id,
+            (None, None) => true,
+        };
+        if !source_ok {
+            continue;
+        }
+        let representative_chunk_id = representative_chunk_id_for(&chunks, p.slug.as_str());
+        raw.push(DomainBankRawPage {
+            page_id: p.id,
+            slug: p.slug.clone(),
+            source_id: p.source_id.clone(),
+            title: Some(p.title.clone()),
+            compiled_truth: p.compiled_truth.clone(),
+            last_retrieved_at: p.last_retrieved_at.clone(),
+            connection_count: conn_counts.get(&p.id).copied().unwrap_or(0),
+            representative_chunk_id,
+        });
+    }
+    raw
+}
+
 #[async_trait]
 pub trait BrainEngine: Send + Sync + std::fmt::Debug {
     // ── Identity ──────────────────────────────────────────────────────────
@@ -1814,6 +2192,47 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
     /// Return every live `(slug, source_id)` pair, ordered by
     /// `(source_id, slug)` ascending. Mirrors TS `listAllPageRefs`.
     async fn list_all_page_refs(&self) -> crate::Result<Vec<PageRef>>;
+
+    // ── Domain-bank (1-1-5-5: brainstorm + lsd) ──────────────────────────
+
+    /// v0.37.0 — prefix-stratified page sampling for the brainstorm domain-bank
+    /// module. Returns one page per requested prefix, tiebroken by
+    /// `connection_count` (structural centrality) and, under stale-bias, by
+    /// retrieval recency. Source-scoped; excludes the close-set slugs.
+    async fn list_prefix_sampled_pages(
+        &self,
+        opts: DomainBankSampleOpts,
+    ) -> crate::Result<Vec<DomainBankRow>>;
+
+    /// v0.37.0 — corpus-sampling fallback when prefix-stratified can't fill M.
+    /// Random sample of N pages with the same exclusion + source-scope
+    /// semantics as [`BrainEngine::list_prefix_sampled_pages`]. Deterministic
+    /// with `opts.seed` set; random otherwise.
+    async fn list_corpus_sample(
+        &self,
+        opts: CorpusSampleOpts,
+    ) -> crate::Result<Vec<DomainBankRow>>;
+
+    /// Hydrate embeddings for chunks already known by id. `column` selects the
+    /// embedding column (default `"embedding"`). Returns chunk_id → embedding.
+    /// Mirrors TS `getEmbeddingsByChunkIds` (the dynamic-column cosineReScore
+    /// path rehydrates from the active embedding space).
+    async fn get_embeddings_by_chunk_ids(
+        &self,
+        ids: &[u64],
+        column: Option<&str>,
+    ) -> crate::Result<std::collections::HashMap<u64, Vec<f32>>>;
+
+    /// Enumerate distinct top-level slug prefixes (`^[^/]+/[^/]+`) available in
+    /// the brain's source scope (after the `deleted_at` filter). Mirrors TS
+    /// `enumeratePrefixes` (which used `engine.executeRaw` with a Postgres
+    /// `substring(slug from '^[^/]+/[^/]+')`). Portable across backends: the
+    /// prefix extraction itself happens in Rust via [`domain_bank_prefix`] so
+    /// SQLite (no regex substring) stays faithful to the Postgres regex.
+    async fn list_prefixes(
+        &self,
+        opts: ListPrefixesOpts,
+    ) -> crate::Result<Vec<String>>;
 
     /// Return pages with zero inbound links from live pages. Mirrors TS
     /// `findOrphanPages` — discovered late in S6-T0 (was missing from the
@@ -5683,6 +6102,107 @@ impl BrainEngine for InMemoryEngine {
                 .then_with(|| a.slug.cmp(&b.slug))
         });
         Ok(refs)
+    }
+
+    // ── Domain-bank (1-1-5-5) ───────────────────────────────────────────────
+
+    /// InMemory `list_prefix_sampled_pages` — pure-Rust port of the SQL
+    /// prefix-stratified sampling. Delegates ranking to the shared helper so
+    /// it matches the Libsql/Postgres backends exactly.
+    async fn list_prefix_sampled_pages(
+        &self,
+        opts: DomainBankSampleOpts,
+    ) -> crate::Result<Vec<DomainBankRow>> {
+        if opts.prefixes.is_empty() {
+            return Ok(vec![]);
+        }
+        let prefixes: std::collections::HashSet<String> =
+            opts.prefixes.into_iter().collect();
+        let exclude: std::collections::HashSet<String> =
+            opts.exclude_slugs.into_iter().collect();
+        let raw = collect_domain_bank_raw(self, &exclude, &opts.source_ids, &opts.source_id);
+        Ok(rank_domain_bank_prefix_sample(
+            raw,
+            &prefixes,
+            opts.stale_bias,
+            opts.stale_threshold_days,
+        ))
+    }
+
+    /// InMemory `list_corpus_sample` — see trait docs.
+    async fn list_corpus_sample(
+        &self,
+        opts: CorpusSampleOpts,
+    ) -> crate::Result<Vec<DomainBankRow>> {
+        if opts.n <= 0 {
+            return Ok(vec![]);
+        }
+        let exclude: std::collections::HashSet<String> =
+            opts.exclude_slugs.into_iter().collect();
+        let raw = collect_domain_bank_raw(self, &exclude, &opts.source_ids, &opts.source_id);
+        Ok(pick_corpus_sample(raw, opts.n, opts.seed))
+    }
+
+    /// InMemory `get_embeddings_by_chunk_ids` — resolves the synthetic chunk id
+    /// (`inmemory_chunk_id`) back to the stored `Vec<f32>` embedding.
+    async fn get_embeddings_by_chunk_ids(
+        &self,
+        ids: &[u64],
+        _column: Option<&str>,
+    ) -> crate::Result<std::collections::HashMap<u64, Vec<f32>>> {
+        let mut out: std::collections::HashMap<u64, Vec<f32>> = std::collections::HashMap::new();
+        if ids.is_empty() {
+            return Ok(out);
+        }
+        let wanted: std::collections::HashSet<u64> = ids.iter().copied().collect();
+        let chunks = self
+            .chunk_store
+            .lock()
+            .expect("InMemoryEngine chunk_store mutex poisoned");
+        for (slug, chunk_inputs) in chunks.iter() {
+            for ci in chunk_inputs.iter() {
+                if let Some(emb) = &ci.embedding {
+                    let id = inmemory_chunk_id(slug, ci.chunk_index);
+                    if wanted.contains(&id) {
+                        out.insert(id, emb.clone());
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// InMemory `list_prefixes` — pure-Rust port of TS `enumeratePrefixes`.
+    /// Walks the live, source-scoped page set, extracts each page's
+    /// `^[^/]+/[^/]+` prefix via [`domain_bank_prefix`], dedups, and sorts.
+    async fn list_prefixes(
+        &self,
+        opts: ListPrefixesOpts,
+    ) -> crate::Result<Vec<String>> {
+        let store = self
+            .store
+            .lock()
+            .expect("InMemoryEngine store mutex poisoned");
+        let mut prefixes: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for p in store.iter() {
+            if p.deleted_at.is_some() {
+                continue;
+            }
+            if let Some(ref sid) = opts.source_id {
+                if &p.source_id != sid {
+                    continue;
+                }
+            }
+            if let Some(ref ids) = opts.source_ids {
+                if !ids.contains(&p.source_id) {
+                    continue;
+                }
+            }
+            if let Some(prefix) = domain_bank_prefix(&p.slug) {
+                prefixes.insert(prefix);
+            }
+        }
+        Ok(prefixes.into_iter().collect())
     }
 
     /// `find_orphan_pages` — no links table in `InMemory`, so ALL live pages are
@@ -11658,6 +12178,360 @@ mod budget_tests {
         let result = engine.get_budget_owner(1).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not yet implemented"));
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Domain-bank (1-1-5-5) unit tests — InMemory backend
+//
+// These exercise the three new engine methods end-to-end. The ranking /
+// selection logic lives in shared free helpers (`rank_domain_bank_prefix_sample`,
+// `pick_corpus_sample`, `domain_bank_prefix`) that the Libsql / Postgres
+// backends also call, so these tests validate the backend-agnostic contract.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod domain_bank_inmem_tests {
+    use super::*;
+    use crate::engine::{domain_bank_prefix, BrainEngine, DomainBankSampleOpts, CorpusSampleOpts};
+    use crate::import::{ChunkInput, ChunkSource};
+
+    async fn setup() -> InMemoryEngine {
+        let engine = InMemoryEngine::new();
+        engine.connect(&EngineConfig::default()).await.unwrap();
+        engine
+    }
+
+    /// Insert a live page; returns its assigned `page_id`.
+    async fn add_page(
+        engine: &InMemoryEngine,
+        slug: &str,
+        source_id: &str,
+        last_retrieved_at: Option<&str>,
+    ) -> u64 {
+        let page = engine
+            .put_page(
+                slug,
+                Some(source_id),
+                &PageInput {
+                    title: slug.to_string(),
+                    compiled_truth: format!("truth for {slug}"),
+                    last_retrieved_at: last_retrieved_at.map(|s| s.to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        page.id
+    }
+
+    /// Add an inbound link to `to_page_id` (drives `connection_count`).
+    fn add_link(engine: &InMemoryEngine, to_page_id: u64) {
+        engine.links_store_for_test().push(InternalLink {
+            from_page_id: 0,
+            to_page_id,
+            link_type: "wikilink".to_string(),
+            context: String::new(),
+            link_source: None,
+            origin_page_id: None,
+            origin_field: None,
+        });
+    }
+
+    /// Inject one chunk; `embedding = None` means the chunk has no vector
+    /// (drives `representative_chunk_id` and `get_embeddings_by_chunk_ids`).
+    async fn add_chunk(
+        engine: &InMemoryEngine,
+        slug: &str,
+        chunk_index: usize,
+        embedding: Option<Vec<f32>>,
+    ) {
+        engine
+            .upsert_chunks(
+                slug,
+                &[ChunkInput {
+                    chunk_index,
+                    chunk_text: format!("chunk {chunk_index}"),
+                    chunk_source: ChunkSource::CompiledTruth,
+                    embedding,
+                    token_count: None,
+                    language: None,
+                    symbol_name: None,
+                    symbol_type: None,
+                    start_line: None,
+                    end_line: None,
+                    parent_symbol_path: vec![],
+                    symbol_name_qualified: None,
+                }],
+            )
+            .await
+            .unwrap();
+    }
+
+    // ── domain_bank_prefix (pure) ───────────────────────────────────────────
+
+    #[test]
+    fn prefix_extraction_matches_ts_regex() {
+        assert_eq!(domain_bank_prefix("notes"), None);
+        assert_eq!(domain_bank_prefix("/leading"), None);
+        assert_eq!(domain_bank_prefix("people/maria"), Some("people/maria".to_string()));
+        assert_eq!(
+            domain_bank_prefix("people/maria/notes"),
+            Some("people/maria".to_string())
+        );
+        assert_eq!(
+            domain_bank_prefix("a/b/c/d"),
+            Some("a/b".to_string())
+        );
+        // trailing slash is ignored — regex matches "people/maria" then stops,
+        // so this is the same as the two-segment case.
+        assert_eq!(
+            domain_bank_prefix("people/maria/"),
+            Some("people/maria".to_string())
+        );
+    }
+
+    // ── list_prefix_sampled_pages ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn prefix_sample_basic_one_per_prefix() {
+        let engine = setup().await;
+        // One live page per requested prefix (no tiebreak ambiguity).
+        add_page(&engine, "people/maria/notes", "default", None).await;
+        add_page(&engine, "facts/geo/capital", "default", None).await;
+
+        let rows = engine
+            .list_prefix_sampled_pages(DomainBankSampleOpts {
+                prefixes: vec!["people/maria".into(), "facts/geo".into()],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(rows.len(), 2, "one row per requested prefix");
+        // sorted by prefix ASC: facts/geo < people/maria
+        assert_eq!(rows[0].slug, "facts/geo/capital");
+        assert_eq!(rows[0].prefix, Some("facts/geo".to_string()));
+        assert_eq!(rows[1].slug, "people/maria/notes");
+        assert_eq!(rows[1].prefix, Some("people/maria".to_string()));
+        // no chunks → no representative chunk
+        assert!(rows[0].representative_chunk_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn prefix_sample_connection_count_tiebreak() {
+        let engine = setup().await;
+        // Both pages share the requested prefix `people/maria`.
+        let notes = add_page(&engine, "people/maria/notes", "default", None).await;
+        let other = add_page(&engine, "people/maria/other", "default", None).await;
+        // `other` gets 2 inbound links, `notes` gets 1 → tiebreak picks `other`.
+        add_link(&engine, other);
+        add_link(&engine, other);
+        add_link(&engine, notes);
+
+        let rows = engine
+            .list_prefix_sampled_pages(DomainBankSampleOpts {
+                prefixes: vec!["people/maria".into()],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(rows.len(), 1, "only prefix people/maria, one winner");
+        assert_eq!(rows[0].slug, "people/maria/other");
+        assert_eq!(rows[0].connection_count, 2);
+    }
+
+    #[tokio::test]
+    async fn prefix_sample_stale_bias_prefers_never_retrieved() {
+        let engine = setup().await;
+        // Both pages share the requested prefix `facts/geo`. `capital` is
+        // recent (fresh); `history` was never retrieved.
+        add_page(&engine, "facts/geo/capital", "default", Some("2026-08-01T00:00:00Z")).await;
+        add_page(&engine, "facts/geo/history", "default", None).await;
+
+        // Without stale bias → stale_score 0 for both, connection_count 0 for
+        // both, slug ASC tiebreak picks capital.
+        let no_bias = engine
+            .list_prefix_sampled_pages(DomainBankSampleOpts {
+                prefixes: vec!["facts/geo".into()],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(no_bias[0].slug, "facts/geo/capital");
+
+        // With stale bias → never-retrieved history (score 2) wins over
+        // recently-retrieved capital (score 0).
+        let biased = engine
+            .list_prefix_sampled_pages(DomainBankSampleOpts {
+                prefixes: vec!["facts/geo".into()],
+                stale_bias: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(biased[0].slug, "facts/geo/history");
+    }
+
+    #[tokio::test]
+    async fn prefix_sample_excludes_close_set() {
+        let engine = setup().await;
+        add_page(&engine, "people/maria/notes", "default", None).await;
+        add_page(&engine, "people/luigi/notes", "default", None).await;
+
+        let rows = engine
+            .list_prefix_sampled_pages(DomainBankSampleOpts {
+                prefixes: vec!["people/maria".into()],
+                exclude_slugs: vec!["people/luigi/notes".into()],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].slug, "people/maria/notes");
+    }
+
+    #[tokio::test]
+    async fn prefix_sample_source_scope() {
+        let engine = setup().await;
+        add_page(&engine, "people/maria/notes", "default", None).await;
+        add_page(&engine, "people/maria/other", "federated", None).await;
+
+        let rows = engine
+            .list_prefix_sampled_pages(DomainBankSampleOpts {
+                prefixes: vec!["people/maria".into()],
+                source_id: Some("federated".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].slug, "people/maria/other");
+        assert_eq!(rows[0].source_id, "federated");
+    }
+
+    #[tokio::test]
+    async fn prefix_sample_representative_chunk_id() {
+        let engine = setup().await;
+        add_page(&engine, "people/maria/notes", "default", None).await;
+        // chunk 0 has no embedding; chunk 1 does → representative = chunk 1 id.
+        add_chunk(&engine, "people/maria/notes", 0, None).await;
+        let emb = vec![0.1f32, 0.2f32, 0.3f32];
+        add_chunk(&engine, "people/maria/notes", 1, Some(emb.clone())).await;
+        let expected = crate::engine::inmemory_chunk_id("people/maria/notes", 1);
+
+        let rows = engine
+            .list_prefix_sampled_pages(DomainBankSampleOpts {
+                prefixes: vec!["people/maria".into()],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].representative_chunk_id, Some(expected));
+    }
+
+    // ── list_corpus_sample ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn corpus_sample_seed_is_deterministic() {
+        let engine = setup().await;
+        for s in ["a/x", "b/y", "c/z", "d/w", "e/v"] {
+            add_page(&engine, s, "default", None).await;
+        }
+        let opts = CorpusSampleOpts {
+            n: 3,
+            seed: Some(1.0),
+            ..Default::default()
+        };
+        let first = engine.list_corpus_sample(opts.clone()).await.unwrap();
+        let second = engine.list_corpus_sample(opts.clone()).await.unwrap();
+        assert_eq!(first.len(), 3);
+        assert_eq!(first, second, "same seed → identical sample");
+    }
+
+    #[tokio::test]
+    async fn corpus_sample_no_seed_is_slug_sorted_prefix() {
+        let engine = setup().await;
+        for s in ["c/z", "a/x", "b/y"] {
+            add_page(&engine, s, "default", None).await;
+        }
+        let rows = engine
+            .list_corpus_sample(CorpusSampleOpts {
+                n: 2,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        // no seed → stable slug order: a/x, b/y
+        assert_eq!(rows[0].slug, "a/x");
+        assert_eq!(rows[1].slug, "b/y");
+    }
+
+    #[tokio::test]
+    async fn corpus_sample_respects_exclude_and_n() {
+        let engine = setup().await;
+        for s in ["a/x", "b/y", "c/z"] {
+            add_page(&engine, s, "default", None).await;
+        }
+        let rows = engine
+            .list_corpus_sample(CorpusSampleOpts {
+                n: 10, // requested more than exist
+                exclude_slugs: vec!["b/y".into()],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|r| r.slug != "b/y"));
+    }
+
+    // ── get_embeddings_by_chunk_ids ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn get_embeddings_hydrates_synthetic_ids() {
+        let engine = setup().await;
+        add_page(&engine, "people/maria/notes", "default", None).await;
+        let emb = vec![0.5f32, -0.25f32, 1.0f32];
+        add_chunk(&engine, "people/maria/notes", 3, Some(emb.clone())).await;
+        let id = crate::engine::inmemory_chunk_id("people/maria/notes", 3);
+
+        let map = engine
+            .get_embeddings_by_chunk_ids(&[id], None)
+            .await
+            .unwrap();
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get(&id), Some(&emb));
+    }
+
+    #[tokio::test]
+    async fn get_embeddings_skips_unembedded_chunks() {
+        let engine = setup().await;
+        add_page(&engine, "people/maria/notes", "default", None).await;
+        // chunk 0 has NO embedding → should never appear
+        add_chunk(&engine, "people/maria/notes", 0, None).await;
+        let id0 = crate::engine::inmemory_chunk_id("people/maria/notes", 0);
+
+        let map = engine
+            .get_embeddings_by_chunk_ids(&[id0], None)
+            .await
+            .unwrap();
+        assert!(map.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_embeddings_empty_ids_returns_empty() {
+        let engine = setup().await;
+        let map = engine
+            .get_embeddings_by_chunk_ids(&[], None)
+            .await
+            .unwrap();
+        assert!(map.is_empty());
     }
 }
 
