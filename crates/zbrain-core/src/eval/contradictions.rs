@@ -78,6 +78,19 @@ pub enum Severity {
     High,
 }
 
+impl Severity {
+    /// Severity rank for sorting/display: higher = more severe.
+    /// `info` is non-error-class (v0.34 Lane A2).
+    pub fn rank(&self) -> u8 {
+        match self {
+            Severity::Info => 0,
+            Severity::Low => 1,
+            Severity::Medium => 2,
+            Severity::High => 3,
+        }
+    }
+}
+
 /// Resolution kinds, faithful to TS `ResolutionKind`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -750,6 +763,11 @@ pub fn build_contradictions_run_row(
                 "note": result.judge_errors.note,
             },
             "findings_count": result.findings.len(),
+            // Faithful port of TS `trends.ts`: `report_json` stores the FULL
+            // ProbeReport blob (including per-pair `findings`), consumed by the
+            // `review` subcommand. Earlier the row kept only aggregates; this
+            // restores the TS contract so `review` can surface per-pair detail.
+            "findings": result.findings,
             "truncation_policy": TRUNCATION_POLICY,
         }),
     }
@@ -811,6 +829,68 @@ fn trunc_display(s: &str, max: usize) -> String {
         }
         out.push(ch);
         n += 1;
+    }
+    out
+}
+
+/// Faithful port of TS `eval-suspected-contradictions.ts` `runReview`: surface
+/// per-pair findings from a persisted run's `report_json` (the full ProbeReport
+/// blob, which now includes `findings` — see `build_contradictions_run_row`).
+///
+/// `severity_filter` (if any) restricts to that severity bucket. Findings are
+/// sorted by severity descending and grouped high→medium→low→info (worst-first,
+/// per TS Lane A2). Each finding prints `[verdict] pair_id`, the optional
+/// `axis`, and the optional `resolution_kind`.
+pub fn render_review_report(
+    report_json: &serde_json::Value,
+    severity_filter: Option<&Severity>,
+) -> String {
+    let findings_val = match report_json.get("findings") {
+        Some(v) if !v.is_null() => v,
+        _ => {
+            return "Latest run has no findings to review.".to_string();
+        }
+    };
+    let mut findings: Vec<ContradictionFinding> = match serde_json::from_value(findings_val.clone()) {
+        Ok(f) => f,
+        Err(e) => {
+            return format!("Latest run findings could not be parsed: {e}");
+        }
+    };
+    if findings.is_empty() {
+        return "Latest run has no findings to review.".to_string();
+    }
+    if let Some(s) = severity_filter {
+        findings.retain(|f| &f.severity == s);
+    }
+    if findings.is_empty() {
+        return format!(
+            "No findings{} to review.",
+            severity_filter
+                .map(|s| format!(" at severity={:?}", s))
+                .unwrap_or_default()
+        );
+    }
+    // Worst-first: high → medium → low → info.
+    findings.sort_by(|a, b| b.severity.rank().cmp(&a.severity.rank()));
+
+    let mut out = String::new();
+    for sev in [Severity::High, Severity::Medium, Severity::Low, Severity::Info] {
+        let items: Vec<&ContradictionFinding> =
+            findings.iter().filter(|f| f.severity == sev).collect();
+        if items.is_empty() {
+            continue;
+        }
+        out.push_str(&format!("\n{:?} severity ({}):\n", sev, items.len()));
+        for f in items {
+            out.push_str(&format!("  - [{:?}] {}\n", f.verdict, f.pair_id));
+            if !f.axis.is_empty() {
+                out.push_str(&format!("    axis: {}\n", f.axis));
+            }
+            if let Some(rk) = f.resolution_kind {
+                out.push_str(&format!("    -> {:?}\n", rk));
+            }
+        }
     }
     out
 }
@@ -1266,5 +1346,37 @@ mod tests {
         let trend = engine.load_contradictions_trend(30).await.unwrap();
         assert_eq!(trend.len(), 1);
         assert_eq!(trend[0].run_id, "r1");
+    }
+
+    #[test]
+    fn render_review_report_handles_empty_and_filters() {
+        // No findings key -> friendly message.
+        let empty = serde_json::json!({"verdict_breakdown": {"contradiction": 1}});
+        assert!(render_review_report(&empty, None).contains("no findings to review"));
+
+        // Build a report with mixed-severity findings.
+        let report = serde_json::json!({
+            "findings": [
+                {"pair_id": "p_low",  "kind": "Cross", "verdict": "contradiction", "severity": "low",    "axis": "temporal", "confidence": 0.7, "resolution_kind": "flag_for_review"},
+                {"pair_id": "p_high", "kind": "Cross", "verdict": "contradiction", "severity": "high",   "axis": "scope",     "confidence": 0.9, "resolution_kind": "takes_supersede"},
+                {"pair_id": "p_med",  "kind": "Intra", "verdict": "temporal_supersession", "severity": "medium", "axis": "", "confidence": 0.6, "resolution_kind": null}
+            ]
+        });
+        // Default: all three, worst-first ordering (high before low).
+        let full = render_review_report(&report, None);
+        assert!(full.contains("High severity (1):"));
+        assert!(full.contains("Medium severity (1):"));
+        assert!(full.contains("Low severity (1):"));
+        assert!(full.find("p_high").unwrap() < full.find("p_low").unwrap());
+
+        // Severity filter: only high.
+        let high_only = render_review_report(&report, Some(&Severity::High));
+        assert!(high_only.contains("p_high"));
+        assert!(!high_only.contains("p_low"));
+        assert!(!high_only.contains("p_med"));
+
+        // Severity filter with no matches -> message.
+        let info_only = render_review_report(&report, Some(&Severity::Info));
+        assert!(info_only.contains("No findings"));
     }
 }

@@ -1606,9 +1606,9 @@ pub struct EvalSuspectedContradictionsArgs {
 pub enum SuspectedContradictionsAction {
     /// Execute one contradiction probe pass over the brain's takes.
     Run(EvalSuspectedContradictionsRunArgs),
-    /// Render the ASCII trend chart from past runs (deferred in MVP).
+    /// Render the ASCII trend chart from past runs.
     Trend(EvalSuspectedContradictionsTrendArgs),
-    /// Surface findings from the most recent run (deferred in MVP).
+    /// Surface findings from a recorded run (optionally filtered by severity).
     Review(EvalSuspectedContradictionsReviewArgs),
 }
 
@@ -1679,16 +1679,25 @@ pub struct EvalSuspectedContradictionsTrendArgs {
     pub json: bool,
 }
 
-/// Args for `eval-suspected-contradictions review` (deferred in MVP).
+/// Args for `eval-suspected-contradictions review`.
 #[derive(Debug, Parser)]
 pub struct EvalSuspectedContradictionsReviewArgs {
     /// Filter findings by severity (info|low|medium|high).
     #[arg(long)]
     pub severity: Option<String>,
 
-    /// Filter findings since this date (YYYY-MM-DD).
+    /// Only review the run with this run_id (defaults to the most recent run).
+    #[arg(long)]
+    pub run_id: Option<String>,
+
+    /// Restrict candidate runs to those on/after this date (YYYY-MM-DD).
+    /// Without this, all recorded runs are candidates.
     #[arg(long)]
     pub since: Option<String>,
+
+    /// Emit the selected run's full `report_json` as JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 
@@ -9280,8 +9289,8 @@ async fn run_eval_suspected_contradictions_command(
     use zbrain_core::ai::resolver::{resolve_recipe_strict, AiConfigError};
     use zbrain_core::engine::{BrainEngine, EngineConfig};
     use zbrain_core::eval::contradictions::{
-        self, build_contradictions_run_row, render_trend_chart, ContradictionOpts,
-        DEFAULT_JUDGE_MODEL, DEFAULT_QUERY,
+        self, build_contradictions_run_row, render_review_report, render_trend_chart, Severity,
+        ContradictionOpts, DEFAULT_JUDGE_MODEL, DEFAULT_QUERY,
     };
     use zbrain_core::eval::cross_modal::ChatRequest;
     use zbrain_core::libsql::LibsqlEngine;
@@ -9486,11 +9495,90 @@ async fn run_eval_suspected_contradictions_command(
             }
             Ok(())
         }
-        SuspectedContradictionsAction::Review(_) => {
-            anyhow::bail!(
-                "eval-suspected-contradictions review: deferred in MVP (roadmap node 1-1-5-4). \
-                 Surfacing findings from the most recent run is not yet ported from TS."
-            );
+        SuspectedContradictionsAction::Review(review_args) => {
+            // Parse the optional severity filter (faithful to TS flags).
+            let severity_filter: Option<Severity> = match review_args.severity.as_deref() {
+                Some("info") => Some(Severity::Info),
+                Some("low") => Some(Severity::Low),
+                Some("medium") => Some(Severity::Medium),
+                Some("high") => Some(Severity::High),
+                Some(other) => anyhow::bail!(
+                    "eval-suspected-contradictions review: --severity must be info|low|medium|high (got `{other}`)"
+                ),
+                None => None,
+            };
+
+            // Open the engine (same boilerplate as the `trend` arm).
+            let config = crate::config::load_config(config_path)?;
+            let db_path = resolve_database_path(&config.database_url);
+            let engine_config = EngineConfig {
+                database_url: None,
+                database_path: Some(db_path),
+            };
+            let engine = LibsqlEngine::new();
+            engine.connect(&engine_config).await?;
+            engine.init_schema().await?;
+            let engine: Arc<dyn BrainEngine> = Arc::new(engine);
+
+            // Load all recorded runs, then (optionally) bound by --since and
+            // pick the target run. We sort defensively by ran_at DESC so the
+            // "latest" selection is backend-independent.
+            let mut rows = engine
+                .load_contradictions_trend(0)
+                .await
+                .map_err(|e| anyhow::anyhow!("eval-suspected-contradictions review: {e}"))?;
+            if rows.is_empty() {
+                anyhow::bail!(
+                    "eval-suspected-contradictions review: no probe runs recorded yet. \
+                     Run `zbrain eval suspected-contradictions run` first."
+                );
+            }
+            // ISO dates are zero-padded, so lexicographic compare == chronological.
+            if let Some(since) = &review_args.since {
+                if since.len() != 10
+                    || since.as_bytes()[4] != b'-'
+                    || since.as_bytes()[7] != b'-'
+                    || !since.chars().all(|c| c.is_ascii_digit() || c == '-')
+                {
+                    anyhow::bail!(
+                        "eval-suspected-contradictions review: --since must be YYYY-MM-DD (got `{since}`)"
+                    );
+                }
+                let bound = format!("{since}T");
+                rows.retain(|r| r.ran_at.as_str() >= bound.as_str());
+                if rows.is_empty() {
+                    anyhow::bail!(
+                        "eval-suspected-contradictions review: no runs on/after {since}."
+                    );
+                }
+            }
+            rows.sort_by(|a, b| b.ran_at.cmp(&a.ran_at));
+
+            let row = if let Some(rid) = &review_args.run_id {
+                match rows.into_iter().find(|r| &r.run_id == rid) {
+                    Some(r) => r,
+                    None => anyhow::bail!(
+                        "eval-suspected-contradictions review: no run with run_id `{rid}` among the loaded runs."
+                    ),
+                }
+            } else {
+                // rows are sorted DESC by ran_at; take the newest.
+                rows.remove(0)
+            };
+
+            if review_args.json {
+                println!("{}", serde_json::to_string_pretty(&row.report_json)?);
+            } else {
+                println!(
+                    "Reviewing run {} (ran_at {}, judge {}):",
+                    row.run_id, row.ran_at, row.judge_model
+                );
+                println!(
+                    "{}",
+                    render_review_report(&row.report_json, severity_filter.as_ref())
+                );
+            }
+            Ok(())
         }
     }
 }

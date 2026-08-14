@@ -362,12 +362,12 @@
           "note": "TS trends.ts 仅 118 行薄封装，依赖 engine.writeContradictionsRun + engine.loadContradictionsTrend 两方法 + ASCII 图表；'trends 子系统'=2 引擎方法+1 图表渲染器，自包含中等工作量，非大子系统"
         }
       ],
-      "notes": "策略(2026-08-13 grill Q4=A)：忠实 port TS trends.ts(118行薄封装)。三后端(InMemory/libsql/postgres)各加引擎方法 writeContradictionsRun(run_row) + loadContradictionsTrend(days)；新增 contradictions_runs 表 migration(列: id, run_at, query, n_pairs, n_judge_errors, judge_error_rate, verdict_breakdown_json, report_json)；移植 renderTrendChart 输出 ASCII 图表。run 子命令写 verdict 后调用 writeContradictionsRun 持久化该行。 完成(2026-08-11)：忠实 port 收口——0031 migration 双方言(sqlite+postgres)、三后端 write/load 实现、run 臂持久化+trend 臂 ASCII 图表、Wilson CI(Z=1.959963984540054) 与 run_id ISO 时间戳(fs-safe) 对齐 calibration 契约；5 个新单测 + 6 既有共 11 passed，离线 cargo build --offline 双 crate 0 error。"
+      "notes": "策略(2026-08-13 grill Q4=A)：忠实 port TS trends.ts(118行薄封装)。三后端(InMemory/libsql/postgres)各加引擎方法 writeContradictionsRun(run_row) + loadContradictionsTrend(days)；新增 contradictions_runs 表 migration(列: id, run_at, query, n_pairs, n_judge_errors, judge_error_rate, verdict_breakdown_json, report_json)；移植 renderTrendChart 输出 ASCII 图表。run 子命令写 verdict 后调用 writeContradictionsRun 持久化该行。 完成(2026-08-11)：忠实 port 收口——0031 migration 双方言(sqlite+postgres)、三后端 write/load 实现、run 臂持久化+trend 臂 ASCII 图表、Wilson CI(Z=1.959963984540054) 与 run_id ISO 时间戳(fs-safe) 对齐 calibration 契约；5 个新单测 + 6 既有共 11 passed，离线 cargo build --offline 双 crate 0 error。 忠实 port 修正(2026-08-14，关联 1-1-5-7 决策 A)：初版 build_contradictions_run_row 仅把聚合塞入 report_json(findings_count 只计数、丢数组)，与 TS trends.ts 注释'Full ProbeReport blob; consumed by review'不符——属忠实 port 缺口。已补 \"findings\": result.findings(ContradictionFinding 已 Serialize)，report_json 现为完整 ProbeReport blob，1-1-5-7 review 才能消费 per-pair findings。无新 migration(列已存在)。"
     },
     "1-1-5-7": {
       "id": "1-1-5-7",
       "label": "eval-suspected-contradictions review 子命令（依赖 trend store report_json viewer）",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-1-5",
       "children": [],
@@ -376,9 +376,14 @@
           "q": "Q5 review 范围",
           "answer": "review = trend store 的 report_json viewer（加载最近一次 run 的 report_json 美化打印 verdict_breakdown/配对明细）",
           "note": "TS review 依赖 trend store 已存在，仅读最近 run 的 report_json(ProbeReport blob) 展示；不膨胀为交互式标注队列"
+        },
+        {
+          "q": "A 决策：review 数据范围（per-pair findings 从哪来）",
+          "answer": "选 A：不是 roadmap scope creep——TS ProbeReport 带 per_query→contradictions(per-pair findings)，review 读 report_json.per_query.flatMap 取全部 findings；Rust 侧 ContradictionsResult.findings 运行时已有。初版 1-1-5-6 把 report_json 少存了 findings(忠实 port 缺口)，先补 1-1-5-6 把 findings 塞回 report_json，再忠实 port review",
+          "note": "severity/since 是 TS 合法忠实 flag，不是死参，保留；不需要新 migration(列已存在)；review 镜像 trend 臂 DB 连接样板"
         }
       ],
-      "notes": "策略(2026-08-13 grill Q5=A)：review = trend store 的 report_json viewer。实现 trend(1-1-5-6) 建好 contradictions_runs 表后，review 仅 loadContradictionsTrend(1)[最近一次] 取 report_json(ProbeReport blob)，美化打印 verdict_breakdown/配对明细/pairs；薄封装，不膨胀为交互式标注队列。依赖 1-1-5-6 先完成。"
+      "notes": "策略(2026-08-13 grill Q5=A)：review = trend store 的 report_json viewer。实现 trend(1-1-5-6) 建好 contradictions_runs 表后，review 仅 loadContradictionsTrend(1)[最近一次] 取 report_json(ProbeReport blob)，美化打印 verdict_breakdown/配对明细/pairs；薄封装，不膨胀为交互式标注队列。依赖 1-1-5-6 先完成。 完成(2026-08-14，决策 A)：忠实 port TS runReview——(1) 1-1-5-6 修正 build_contradictions_run_row 把 findings 塞回 report_json(完整 ProbeReport blob)；(2) contradictions.rs 加 Severity::rank()(High=3..Info=0) + 纯函数 render_review_report(report_json, severity_filter)：提取 findings→按 severity 降序分组(high→medium→low→info)→逐条 [verdict] pair_id + axis + resolution_kind，空 findings 返回友好提示，附单测；(3) cli/lib.rs review 臂实装：镜像 trend 臂 DB 样板(load_config→resolve_database_path→LibsqlEngine::new→connect→init_schema→load_contradictions_trend→防御性 ran_at 降序排序)，--run-id 选特定 row 否则最新、--since 字典序过滤(映射 loadContradictionsTrend(days))、--json 打印 report_json 否则 render_review_report；EvalSuspectedContradictionsReviewArgs 增 run_id/json 字段。12 测试全过(含新 render_review_report 单测)，离线 build 双 crate 0 error。"
     },
     "1-1-5-8": {
       "id": "1-1-5-8",

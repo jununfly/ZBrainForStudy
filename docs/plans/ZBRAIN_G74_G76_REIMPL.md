@@ -36,7 +36,7 @@
 │   ... 2 more child nodes; run tree 1-1-5-3 --depth 2 for full view
 ├── [x][X+] 1-1-5-4. eval-suspected-contradictions（#62，最大一族 judge×153）
 ├── [ ][X+] 1-1-5-5. eval-brainstorm（#63，完整 generator 移植：4 引擎方法 + orchestrator/domain-bank/judges 三模块 + search/embed）
-├── [ ][X+] 1-1-5-6. eval-suspected-contradictions trend 子命令（#62 延伸：write/loadContradictionsRun 引擎方法 + ASCII 图表）
-├── [ ][X+] 1-1-5-7. eval-suspected-contradictions review 子命令（依赖 trend store report_json viewer）
+├── [x][X+] 1-1-5-6. eval-suspected-contradictions trend 子命令（#62 延伸：write/loadContradictionsRun 引擎方法 + ASCII 图表）
+├── [x][X+] 1-1-5-7. eval-suspected-contradictions review 子命令（依赖 trend store report_json viewer）
 └── [ ][X+] 1-1-5-8. eval-suspected-contradictions JudgeCache 持久化 judge 缓存（独立性能优化，正交）
 <!-- ROADMAP_SECTION_END -->
