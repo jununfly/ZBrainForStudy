@@ -469,11 +469,37 @@
     "1-1-5-10": {
       "id": "1-1-5-10",
       "label": "eval-brainstorm review 子命令（历史 run 查看 + grounding/pass 趋势）",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-1-5",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "CLI 形态：review/trend 如何挂到 brainstorm/eval-brainstorm？",
+          "answer": "扁平 flag 扩展（沿用 1-1-5-9 的 --list-runs/--gc/--store-dir）：--list-runs 表加 pass-rate% + mean-grounding 列；新增 --review-run <run_id>（全文复用 format_brainstorm_markdown + 元信息头，--json 出原始 row）、--trend [--days N] ASCII 双轴图；三者连引擎前早退",
+          "note": "与 1-1-5-9 扁平决策一致，零 clap 重构"
+        },
+        {
+          "q": "趋势图绘哪几条线？",
+          "answer": "仅 pass-rate（n_passed/n_ideas）+ mean grounding（concrete_grounding 1-5）两轴",
+          "note": "节点名点名的 grounding/pass 趋势；cost 已在 --list-runs 表显示，不进图"
+        },
+        {
+          "q": "review-run RUN_ID 指定时打印什么？",
+          "answer": "复用 format_brainstorm_markdown(result) 出与线上 run 一致的全文报告 + 顶部元信息头（run_id/saved_at/profile/cost/store 路径）；--json 改打原始 BrainstormRunRow JSON",
+          "note": "最高保真，复用 formatter"
+        },
+        {
+          "q": "review/trend/list 作用范围（双命令还是仅 brainstorm）？",
+          "answer": "brainstorm 与 eval-brainstorm 双命令都挂（共享 store 目录，eval fixture run 也存进去）",
+          "note": "共享 store 不分裂视图"
+        },
+        {
+          "q": "trend 时间窗（--days 默认 30 还是全量）？",
+          "answer": "时间窗按 --days N（默认 30）截断；--list-runs 始终全量；review 默认最新一条，除非 --review-run 指定",
+          "note": "与 sc --days 一致"
+        }
+      ],
       "notes": ""
     },
     "1-1-5-11": {
@@ -489,7 +515,7 @@
   },
   "metadata": {
     "created": "2026-08-09 00:23:13",
-    "updated": "2026-08-15 01:31:19",
+    "updated": "2026-08-15 02:19:10",
     "md_file": "docs/plans/ZBRAIN_G74_G76_REIMPL.md"
   }
 }

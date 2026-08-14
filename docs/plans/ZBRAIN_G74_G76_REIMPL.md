@@ -1,7 +1,7 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-g74-g76-reimpl.json` | 最后更新: 2026-08-15 01:31:05
+> 数据文件: `zbrain-g74-g76-reimpl.json` | 最后更新: 2026-08-15 02:19:10
 
 [~][X+] 1. ZBrain G74/G76 eval+extract 命令 Rust 重实现
 ├── [~][X+] 1-1. G74 eval 族命令 Rust 重实现（19 命令）
