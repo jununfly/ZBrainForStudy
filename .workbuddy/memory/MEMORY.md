@@ -6,6 +6,7 @@
 - TS→Rust 迁移（ZBrain）。GBrain→ZBrain 破坏性全量改名，不留兼容别名；`brain`/`source` 领域词不改。Rust 迁成一块删一块。缺口登记 docs/plans/KNOWN-GAPS.md（双向指针 `// registered in ... (Gn)`）。
 
 ## 构建环境（WSL2 Ubuntu，无原生 cargo）
+- **【2026-08-14 关键修正】"cargo 静默 EXIT=0 零输出"根因 = WorkBuddy Bash 工具（Git Bash / MSYS2）吞掉 cargo 的 stdout/stderr，不是 stale fingerprint、也不是监视器锁死。** 现象：`cargo build/test/metadata` 在 Bash 工具里 78ms 静默 EXIT=0、零输出、不建 target/；但 `cargo --version`/`--help`/解析错误正常打印。** 绕过 = 一律用 **PowerShell 工具**跑 cargo（同一 `C:/Users/victo/.cargo/bin/cargo.exe` 二进制，正常编译链接）。lld-link 仍是测试二进制链接必需（见下）。WSL 仍不可用（无 toolchain / 空 registry cache）。** 旧笔记里的"full cargo clean 破 no-op""cat .cargo/config.toml|grep 前置解锁"都是假疗法，删掉迷信。**
 - 机器：jununfly-ROG（原生 cargo）/ jununfly-WinPC（本机 WSL2）。WSL 用普通用户 `zb`（root 下 pg-embed initdb 全报 PgInitFailure）。
 - 调用范式：`wsl -d Ubuntu -u zb -- bash /mnt/c/Users/jununfly/AppData/Local/Temp/<script>.sh`。写脚本喂路径，别命令行内联传参（引号吞噬 $var）。日志写 /mnt/c/.../Temp/*.log，别写 /tmp（VM 回收）。
 - Rust 装法（绕 rustup CA）：static.rust-lang.org tarball → --prefix=$HOME/.rust。cargo 镜像 rsproxy-sparse。**但 WSL 内 cargo 实际在 `$HOME/.cargo/bin`**（脚本 export PATH 用它，不是 .rust/bin）。
@@ -33,6 +34,7 @@
 - 所有 .json/.md 放 docs/plans/。render 只认 ROADMAP_SECTION_START/END marker（不符会追加成重复段 → 先删 md 再 render）。CLI 第一参数 JSON 完整路径。
 - **render 脚本 cwd 陷阱（2026-08-09 实测）**：`roadmap_cli.py render` 按 `metadata.md_file` 写 md，但路径相对**脚本自身 cwd** 解析。若从 `.workbuddy/skills/zj-roadmap-driven/` 内运行，会在该目录内误生成 `docs/plans/<x>.md` 副本（且**不反映** JSON 的 status/notes 变更，等于空转），而非更新仓库 `docs/plans/`。正确做法：从**仓库根**运行 `python3 .workbuddy/skills/zj-roadmap-driven/roadmap_cli.py render docs/plans/<x>.json`；或干脆手编 md（手编「当前施工」段 prose 更可靠，render 只忠实重画 tree）。阶段7 即手编 md 收口。
 - decisions 项须 {"q","answer","note?"}（用 a 会 KeyError）。路线图系统性滞后：以 HEAD+git ls-files+编译为准，节点只作索引。
+- **JSON 文件不可用 Edit 工具插入多行 notes（2026-08-13 实测）**：Edit 把多行字符串值写进 JSON 会引入裸换行（CRLF/LF）+ 未转义内部双引号，直接破坏 JSON（strict 解析报 `Invalid control character` / `Expecting ',' delimiter`；`strict=False` 只能容忍控制符、修不了未转义引号）。修复法：Python 二进制读（`open(p,'rb').read().decode()`）→ 定位坏值边界（节点 `xxx": {` → 该节点末字段 `notes` 的 `"notes": "` → 节点闭合 `    },`）→ 字符级转义（`replace('\r\n'/'\\r'/'\\n'→'\\n'`) + `re.sub(r'(?<!\\\\)"','\\\\\"',...)` 逃逸未转义引号）→ **二进制写回保 CRLF** → `json.loads` 校验。另：若早前编辑把 `\\n`（单反斜杠+n，正确换行转义）翻倍成 `\\\\n`（双反斜杠+n），用 `fixed.replace('\\\\n','\\n')` 归一（单转义不受影响）。教训：改 roadmap JSON 的 notes 一律走 Python 脚本，别用 Edit 手写多行；写文件命令要幂等（见 Git 沙箱铁律双重执行）。
 
 ## 迁移工程规则
 - TS 调 Rust：`src/cli.ts` 走 resolveZbrainBin()（$ZBRAIN_BIN→target/debug→release→PATH）。改子命令后必 cargo build -p zbrain-cli 否则测试 exit 2。
