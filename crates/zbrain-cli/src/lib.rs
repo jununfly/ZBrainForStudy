@@ -535,6 +535,63 @@ pub struct EvalBrainstormArgs {
     pub force_resume: bool,
 }
 
+/// CLI args for `zbrain eval-extract-atoms` (TS `eval-extract-atoms.ts`, G74 1-1).
+///
+/// v0.41 ships the command surface; the full parity-baseline eval against
+/// OpenClaw's existing atoms lands in a follow-up. Mirrors the TS scaffold.
+#[derive(Debug, clap::Args)]
+pub struct EvalExtractAtomsArgs {
+    /// Parity baseline path for the v0.41.1 follow-up eval.
+    #[arg(long = "parity-baseline", value_name = "PATH")]
+    pub parity_baseline: Option<String>,
+
+    /// Sample size for the parity subset.
+    #[arg(long, value_name = "N")]
+    pub sample: Option<u64>,
+
+    /// Emit the EvalExtractAtomsResult as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// CLI args for `zbrain eval-synthesize-concepts` (TS `eval-synthesize-concepts.ts`, G74 1-1).
+///
+/// v0.41 ships the command surface; the full parity-baseline eval against
+/// OpenClaw's existing concepts lands in a follow-up. Mirrors the TS scaffold.
+#[derive(Debug, clap::Args)]
+pub struct EvalSynthesizeConceptsArgs {
+    /// Parity baseline path for the v0.41.1 follow-up eval.
+    #[arg(long = "parity-baseline", value_name = "PATH")]
+    pub parity_baseline: Option<String>,
+
+    /// Sample size for the parity subset.
+    #[arg(long, value_name = "N")]
+    pub sample: Option<u64>,
+
+    /// Emit the EvalSynthesizeConceptsResult as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// CLI args for `zbrain eval-schema-authoring` (TS `eval-schema-authoring.ts`, G74 1-1).
+///
+/// Hermetic by default: without `--fixture` the verdict is `inconclusive`.
+/// The full hermetic engine harness follows the longmemeval pattern (v0.39.1).
+#[derive(Debug, clap::Args)]
+pub struct EvalSchemaAuthoringArgs {
+    /// Fixture brain directory for the hermetic harness.
+    #[arg(long, value_name = "PATH")]
+    pub fixture: Option<String>,
+
+    /// Source id to scope the harness (alias: `--source`).
+    #[arg(long = "source-id", alias = "source", value_name = "SRC")]
+    pub source: Option<String>,
+
+    /// Emit the EvalVerdict as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
 // ── eval-brainstorm helper types (ported from src/commands/eval-brainstorm.ts) ──
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -1580,6 +1637,91 @@ mod brainstorm_cli_tests {
             other => panic!("expected EvalBrainstorm, got {other:?}"),
         }
     }
+
+    #[test]
+    fn eval_extract_atoms_parses_and_is_scaffold() {
+        let cli = Cli::try_parse_from([
+            "zbrain",
+            "eval-extract-atoms",
+            "--parity-baseline",
+            "baseline.json",
+            "--sample",
+            "50",
+            "--json",
+        ])
+        .unwrap();
+        match cli.command {
+            crate::Commands::EvalExtractAtoms(args) => {
+                assert_eq!(args.parity_baseline.as_deref(), Some("baseline.json"));
+                assert_eq!(args.sample, Some(50));
+                assert!(args.json);
+            }
+            other => panic!("expected EvalExtractAtoms, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn eval_synthesize_concepts_parses_and_is_scaffold() {
+        let cli = Cli::try_parse_from([
+            "zbrain",
+            "eval-synthesize-concepts",
+            "--parity-baseline",
+            "baseline.json",
+            "--sample",
+            "25",
+        ])
+        .unwrap();
+        match cli.command {
+            crate::Commands::EvalSynthesizeConcepts(args) => {
+                assert_eq!(args.parity_baseline.as_deref(), Some("baseline.json"));
+                assert_eq!(args.sample, Some(25));
+                assert!(!args.json);
+            }
+            other => panic!("expected EvalSynthesizeConcepts, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn eval_schema_authoring_parses_source_id_alias() {
+        // `--source` and `--source-id` are aliases per the TS parser.
+        let cli = Cli::try_parse_from([
+            "zbrain",
+            "eval-schema-authoring",
+            "--fixture",
+            "fixtures/notion-refugee",
+            "--source-id",
+            "default",
+            "--json",
+        ])
+        .unwrap();
+        match cli.command {
+            crate::Commands::EvalSchemaAuthoring(args) => {
+                assert_eq!(args.fixture.as_deref(), Some("fixtures/notion-refugee"));
+                assert_eq!(args.source.as_deref(), Some("default"));
+                assert!(args.json);
+            }
+            other => panic!("expected EvalSchemaAuthoring, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn eval_schema_authoring_accepts_source_alias() {
+        // `--source` alone (no --source-id) still binds `source`.
+        let cli = Cli::try_parse_from([
+            "zbrain",
+            "eval-schema-authoring",
+            "--source",
+            "notes",
+        ])
+        .unwrap();
+        match cli.command {
+            crate::Commands::EvalSchemaAuthoring(args) => {
+                assert_eq!(args.source.as_deref(), Some("notes"));
+                assert!(args.fixture.is_none());
+            }
+            other => panic!("expected EvalSchemaAuthoring, got {other:?}"),
+        }
+    }
 }
 
 /// Available CLI commands.
@@ -1739,6 +1881,18 @@ pub enum Commands {
     /// Three-axis evaluation gate for `zbrain brainstorm` (DISTANCE + USEFULNESS + GROUNDING).
     #[command(name = "eval-brainstorm")]
     EvalBrainstorm(EvalBrainstormArgs),
+
+    /// Extract atoms from brain pages — command surface (TS `eval-extract-atoms`, G74 1-1).
+    #[command(name = "eval-extract-atoms")]
+    EvalExtractAtoms(EvalExtractAtomsArgs),
+
+    /// Synthesize concepts from atoms — command surface (TS `eval-synthesize-concepts`, G74 1-1).
+    #[command(name = "eval-synthesize-concepts")]
+    EvalSynthesizeConcepts(EvalSynthesizeConceptsArgs),
+
+    /// Schema-authoring filing-accuracy harness — command surface (TS `eval-schema-authoring`, G74 1-1).
+    #[command(name = "eval-schema-authoring")]
+    EvalSchemaAuthoring(EvalSchemaAuthoringArgs),
 
     /// Extract links / timeline entries from page bodies (TS `extract`)
     #[command(subcommand)]
@@ -4345,6 +4499,15 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Commands::EvalBrainstorm(args) => {
             run_eval_brainstorm_command(args, cli.config.as_deref()).await?
+        }
+        Commands::EvalExtractAtoms(args) => {
+            run_eval_extract_atoms_command(args).await?
+        }
+        Commands::EvalSynthesizeConcepts(args) => {
+            run_eval_synthesize_concepts_command(args).await?
+        }
+        Commands::EvalSchemaAuthoring(args) => {
+            run_eval_schema_authoring_command(args).await?
         }
         Commands::Extract(action) => run_extract_command(action, cli.config.as_deref()).await?,
         Commands::Links(action) => run_links_command(action, cli.config.as_deref()).await?,
@@ -9284,6 +9447,127 @@ fn print_eval_ab_table(
 /// Closes the CLI half of KNOWN-GAPS G74: the harness itself
 /// (`zbrain_core::search::eval`, G73) has been ported since the TS delete but
 /// had **zero callers** — the exact same shape as the `extract timeline` gap.
+/// `zbrain eval-extract-atoms` — command surface only (TS `eval-extract-atoms.ts`, G74 1-1).
+///
+/// v0.41 ships the command surface; the full parity-baseline eval against
+/// OpenClaw's atoms lands in v0.41.1. This mirrors the TS scaffold: it returns
+/// `not_yet_implemented` and never touches the brain or LLM.
+async fn run_eval_extract_atoms_command(
+    args: EvalExtractAtomsArgs,
+) -> anyhow::Result<()> {
+    let result = serde_json::json!({
+        "schema_version": 1,
+        "ok": true,
+        "reason": "v0.41 ships the command surface; full parity-baseline eval lands v0.41.1",
+        "status": "not_yet_implemented",
+        "details": {
+            "parity_baseline_path": args.parity_baseline,
+            "sample_size": args.sample,
+            "v0_41_1_followup":
+                "Compare extract_atoms output against your OpenClaw atoms/ on a sample subset; \
+                 compute precision/recall over atom_type classifications + virality_score correlation.",
+        }
+    });
+    emit_eval_scaffold(&result, args.json);
+    Ok(())
+}
+
+/// `zbrain eval-synthesize-concepts` — command surface only (TS `eval-synthesize-concepts.ts`, G74 1-1).
+///
+/// v0.41 ships the command surface; the full parity-baseline eval against
+/// OpenClaw's concepts lands in v0.41.1. Mirrors the TS scaffold.
+async fn run_eval_synthesize_concepts_command(
+    args: EvalSynthesizeConceptsArgs,
+) -> anyhow::Result<()> {
+    let result = serde_json::json!({
+        "schema_version": 1,
+        "ok": true,
+        "reason": "v0.41 ships the command surface; full parity-baseline eval lands v0.41.1",
+        "status": "not_yet_implemented",
+        "details": {
+            "parity_baseline_path": args.parity_baseline,
+            "sample_size": args.sample,
+            "v0_41_1_followup":
+                "Compare synthesize_concepts output against your OpenClaw concepts/ on a sample \
+                 subset; compute tier agreement (T1/T2/T3) + cluster stability via set Jaccard.",
+        }
+    });
+    emit_eval_scaffold(&result, args.json);
+    Ok(())
+}
+
+/// `zbrain eval-schema-authoring` — hermetic harness surface (TS `eval-schema-authoring.ts`, G74 1-1).
+///
+/// Without `--fixture` the verdict is `inconclusive` (matches TS). A missing
+/// fixture path yields `fail`; a present fixture yields `inconclusive` because
+/// the hermetic engine wiring follows the longmemeval pattern (v0.39.1). The
+/// pure `aggregate_verdict` aggregator already lives in `zbrain_core::eval::schema_authoring`.
+async fn run_eval_schema_authoring_command(
+    args: EvalSchemaAuthoringArgs,
+) -> anyhow::Result<()> {
+    let verdict = match &args.fixture {
+        None => serde_json::json!({
+            "verdict": "inconclusive",
+            "fixture": null,
+            "filing_accuracy_baseline": 0,
+            "filing_accuracy_post_suggest": 0,
+            "delta": 0,
+            "reasoning": "No fixture brain provided. Pass --fixture <path> pointing at a fixture brain directory (e.g. tests/unit/fixtures/schema-authoring/notion-refugee).",
+            "suggestion_count": 0,
+            "low_confidence_count": 0
+        }),
+        Some(fixture) => {
+            if !std::path::Path::new(fixture).exists() {
+                serde_json::json!({
+                    "verdict": "fail",
+                    "fixture": fixture,
+                    "filing_accuracy_baseline": 0,
+                    "filing_accuracy_post_suggest": 0,
+                    "delta": 0,
+                    "reasoning": format!("Fixture brain not found: {fixture}"),
+                    "suggestion_count": 0,
+                    "low_confidence_count": 0
+                })
+            } else {
+                serde_json::json!({
+                    "verdict": "inconclusive",
+                    "fixture": fixture,
+                    "filing_accuracy_baseline": 0,
+                    "filing_accuracy_post_suggest": 0,
+                    "delta": 0,
+                    "reasoning": "Hermetic engine wiring follows the longmemeval pattern; in v0.39.0.0 ship, in-process callers use aggregateVerdict() directly. Full CLI harness lands in v0.39.1.",
+                    "suggestion_count": 0,
+                    "low_confidence_count": 0
+                })
+            }
+        }
+    };
+    emit_eval_scaffold(&verdict, args.json);
+    Ok(())
+}
+
+/// Print a scaffold/harness JSON result: pretty JSON with `--json`, otherwise a
+/// compact human summary (verdict/status + reason) to stdout.
+fn emit_eval_scaffold(result: &serde_json::Value, json: bool) {
+    if json {
+        println!("{}", serde_json::to_string_pretty(result).unwrap());
+    } else {
+        if let Some(status) = result.get("status").and_then(|v| v.as_str()) {
+            println!("status: {status}");
+        }
+        if let Some(verdict) = result.get("verdict").and_then(|v| v.as_str()) {
+            println!("verdict: {verdict}");
+        }
+        if let Some(reason) = result
+            .get("reason")
+            .or_else(|| result.get("reasoning"))
+            .and_then(|v| v.as_str())
+        {
+            println!("reason: {reason}");
+        }
+    }
+}
+
 async fn run_eval_export_command(
     args: EvalExportArgs,
     config_path: Option<&Path>,
