@@ -124,7 +124,7 @@
     "1-2-4": {
       "id": "1-2-4",
       "label": "决策：minion extract job type 是否接线到新 extract verb",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-2",
       "children": [],
