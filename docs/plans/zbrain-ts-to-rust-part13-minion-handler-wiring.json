@@ -28,9 +28,9 @@
           "note": "G85 (5 think test-impl desync) + 8 pre-existing fail + G72 telemetry + G72 CLI 全部已 landed；19 桩代码层 commit 906d2762+ 后续均已 merged"
         },
         {
-          "q": "Part13 19 个 minion handler 桩是否全部抵达终态？",
-          "answer": "yes - 12 wired (1-1 cycle phases 7 + 1-2 existing-verb 3 + 1-4 LLM/embedding seam 2) + 6 wontfix (1-3) + 1 contextual_reindex (G84 resolved) — handler code 全部抵达终态，路线图状态待翻",
-          "note": "G85 (5 think test-impl desync) + 8 pre-existing fail + G72 telemetry + G72 CLI 全部已 landed；19 桩代码层 commit 906d2762+ 后续均已 merged"
+          "q": "Part13 五个 blocked 节点(1-3-1/2/4/5/6)清理？",
+          "answer": "B: 保留 blocked（留作未决标记，不重分类 completed）",
+          "note": "上轮 grill 定为 wontfix，但状态保留 blocked"
         }
       ],
       "notes": ""
@@ -376,21 +376,38 @@
     "1-6-2": {
       "id": "1-6-2",
       "label": "reconcile-links verb (md→code edges 对账)",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "exploit",
       "parent": "1-6",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "reconcile-links (1-6-2) 命运？",
+          "answer": "B: 现在从已删 TS 回捞 port（md→code edges 对账）",
+          "note": "Rust 零实现；需先 git show 回捞 TS 源评估范围"
+        }
+      ],
       "notes": ""
     },
     "1-6-3": {
       "id": "1-6-3",
-      "label": "edges-backfill verb (symbol edges 增量重跑)",
-      "status": "pending",
+      "label": "edges-backfill verb (G77 / 1-6-3): resolve_symbol_edges_incremental ported",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-6",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "edges-backfill (1-6-3) 收口方式？",
+          "answer": "A: 补 LinksAction::EdgesBackfill verb 薄包装收口（核心 resolve_symbol_edges 已 port 完，handler 注册+测试通过）",
+          "note": "CLI LinksAction 当前无该 variant；仅缺薄包装，低风险"
+        },
+        {
+          "q": "1-6-3 edges-backfill 实现方式（grill Q1=A 后前提证伪，改为真实核心 port）",
+          "answer": "implemented-core-port",
+          "note": "IMPLEMENTED (2026-08-15). Grill Q1=A assumed 'pure verb wrapper' but that was WRONG: the core resolveSymbolEdgesIncremental was missing in Rust (CyclePhase::ResolveSymbolEdges is a stub with no match arm; code_edges_symbol/edge_metadata/symbol_name_qualified already exist). Real port: migration 0035 adds content_chunks.edges_backfilled_at (dual dialect); new module crates/zbrain-core/src/symbol_edges.rs ports resolveSymbolEdgesIncremental + processChunkBatch + read_edge_resolution (dialect-neutral: $N placeholders, IN(...) literal id lists, ISO-string watermark param, edge_metadata merge done in Rust). CLI LinksAction::EdgesBackfill wired in zbrain-cli with --source/--all-sources/--max-chunks/--json. Pure unit tests pass; libsql integration covered by CI ubuntu."
+        }
+      ],
       "notes": ""
     }
   },

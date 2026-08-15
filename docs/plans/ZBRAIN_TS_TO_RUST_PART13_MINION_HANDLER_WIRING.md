@@ -29,6 +29,11 @@
 │   └── [x][Y+] 1-4-3. contextual_reindex handler → Haiku LLM + rate-lease 接线
 └── [~][Y+] 1-6. G77 图维护族 CLI verb（backfill-links / reconcile-links / edges-backfill）
     ├── [x][Y+] 1-6-1. rebuild-md-links verb (遍历 md 页重跑 markdown link 抽取→upsert page_links)
-    ├── [ ][Y+] 1-6-2. reconcile-links verb (md→code edges 对账)
-    └── [ ][Y+] 1-6-3. edges-backfill verb (symbol edges 增量重跑)
+    ├── [~][Y+] 1-6-2. reconcile-links verb (md→code edges 对账)
+    └── [x][Y+] 1-6-3. edges-backfill verb (G77 / 1-6-3): resolve_symbol_edges_incremental ported
+
+### 当前施工：1-6-2. reconcile-links verb (md→code edges 对账)
+
+**决策：**
+- Q: reconcile-links (1-6-2) 命运？ → B: 现在从已删 TS 回捞 port（md→code edges 对账） (Rust 零实现；需先 git show 回捞 TS 源评估范围)
 <!-- ROADMAP_SECTION_END -->
