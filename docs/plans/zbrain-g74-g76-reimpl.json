@@ -559,7 +559,7 @@
     "1-3": {
       "id": "1-3",
       "label": "by-mention 实体提及自动链接子系统（gazetteer，TS 独立 pass，仅 DB-source，Rust 未实现）",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [],
@@ -570,12 +570,12 @@
           "note": "TS 源 dfa15ba2:src/core/by-mention.ts 已删于 bcafcafd；Rust 零实现"
         }
       ],
-      "notes": "TS 独立 pass（src/core/by-mention.ts：buildGazetteer + findMentionedEntities，仅 DB-source，D7 禁 FS）。与 1-2-2 的 fs 路径平行，工作量≈中等子系统。拆出避免 G76 虚假完成。待定：实现 或 判 out-of-scope。"
+      "notes": "TS 独立 pass（src/core/by-mention.ts：buildGazetteer + findMentionedEntities，仅 DB-source，D7 禁 FS）。与 1-2-2 的 fs 路径平行，工作量≈中等子系统。拆出避免 G76 虚假完成。已实现（Rust port 完成）：zbrain-core/src/mentions.rs 忠实移植 buildGazetteer + findMentionedEntities（maximal-munch + self-link/cross-source/first-mention 守卫 + strip_code_blocks 长度保留）；run_by_mention 经 list_pages（D7 禁 FS）扫 scoped markdown 页写 mentions/mentioned_by 边（link_source='mentions'）。CLI `links by-mention` verb + 16 core + 2 cli 测试全绿。"
     }
   },
   "metadata": {
     "created": "2026-08-09 00:23:13",
-    "updated": "2026-08-15 20:53:53",
+    "updated": "2026-08-16 00:16:52",
     "md_file": "docs/plans/ZBRAIN_G74_G76_REIMPL.md"
   }
 }

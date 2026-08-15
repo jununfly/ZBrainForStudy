@@ -1,7 +1,7 @@
 <!-- ROADMAP_SECTION_START -->
 ## ZJ Roadmap
 
-> 数据文件: `zbrain-g74-g76-reimpl.json` | 最后更新: 2026-08-15 20:53:53
+> 数据文件: `zbrain-g74-g76-reimpl.json` | 最后更新: 2026-08-16 00:16:52
 
 [~][X+] 1. ZBrain G74/G76 eval+extract 命令 Rust 重实现
 ├── [~][X+] 1-1. G74 eval 族命令 Rust 重实现（19 命令）
@@ -15,7 +15,7 @@
 │   ├── [x][X+] 1-2-2. G76a 补齐：--source fs 文件系统抽取路径
 │   ├── [x][X+] 1-2-3. G76b：extract-conversation-facts（真 LLM，unblocked — Rust ConversationFactsBackfill 已就绪）
 │   └── [x][X+] 1-2-4. 决策：minion extract job type 是否接线到新 extract verb
-└── [~][X+] 1-3. by-mention 实体提及自动链接子系统（gazetteer，TS 独立 pass，仅 DB-source，Rust 未实现）
+└── [x][X+] 1-3. by-mention 实体提及自动链接子系统（gazetteer，TS 独立 pass，仅 DB-source，Rust 未实现）
 
 ### 当前施工：1-1. G74 eval 族命令 Rust 重实现（19 命令）
 
