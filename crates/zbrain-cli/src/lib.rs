@@ -1474,6 +1474,44 @@ mod brainstorm_cli_tests {
     }
 
     #[test]
+    fn parses_links_by_mention_verb() {
+        let cli = Cli::try_parse_from([
+            "zbrain",
+            "links",
+            "by-mention",
+            "--source",
+            "my-src",
+            "--dry-run",
+            "--json",
+            "--extra-ignore",
+            "Foo,Bar",
+        ])
+        .unwrap();
+        match cli.command {
+            crate::Commands::Links(crate::LinksAction::ByMention(args)) => {
+                assert_eq!(args.source, "my-src");
+                assert!(args.dry_run);
+                assert!(args.json);
+                assert_eq!(args.extra_ignore.as_deref(), Some("Foo,Bar"));
+            }
+            other => panic!("expected Links/ByMention, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_links_by_mention_default_source() {
+        let cli = Cli::try_parse_from(["zbrain", "links", "by-mention"]).unwrap();
+        match cli.command {
+            crate::Commands::Links(crate::LinksAction::ByMention(args)) => {
+                assert_eq!(args.source, "default");
+                assert!(!args.dry_run);
+                assert!(args.extra_ignore.is_none());
+            }
+            other => panic!("expected Links/ByMention, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn brainstorm_parses_without_question() {
         // `question` is optional at the parse layer (so --help works); the
         // runtime handler enforces "question required". Assert the verb still
@@ -3310,6 +3348,12 @@ pub enum LinksAction {
     /// matching code page (G77 / 1-6-2). Mirrors TS `reconcile-links.ts`.
     #[command(name = "reconcile")]
     Reconcile(LinksReconcileArgs),
+
+    /// Auto-link entity mentions to known entity pages (G76 / 1-3). Scans
+    /// markdown pages for gazetteer entity mentions and creates
+    /// `mentions` / `mentioned_by` edges. Mirrors TS `by-mention.ts`.
+    #[command(name = "by-mention")]
+    ByMention(LinksByMentionArgs),
 }
 
 /// Arguments for `zbrain links add`.
@@ -3464,6 +3508,31 @@ pub struct LinksReconcileArgs {
     /// Emit JSON result on stdout.
     #[arg(long)]
     pub json: bool,
+}
+
+/// Arguments for `zbrain links by-mention`.
+///
+/// Mirrors TS `by-mention.ts`. Scans every markdown page in the scoped
+/// source for gazetteer entity mentions and upserts `mentions` /
+/// `mentioned_by` edges to the matching entity page. Idempotent.
+#[derive(Debug, Parser)]
+pub struct LinksByMentionArgs {
+    /// Scope the scan to one source (default: 'default').
+    #[arg(long, default_value = "default")]
+    pub source: String,
+
+    /// Report counts without writing any edges.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Emit JSON result on stdout.
+    #[arg(long)]
+    pub json: bool,
+
+    /// Comma-separated extra ignore-list titles (case-sensitive). Merged with
+    /// the built-in ambiguous-token list.
+    #[arg(long)]
+    pub extra_ignore: Option<String>,
 }
 
 // ── Takes subcommands ──────────────────────────────────────────
@@ -11780,6 +11849,64 @@ async fn run_links_reconcile(
     Ok(())
 }
 
+async fn run_links_by_mention(
+    args: LinksByMentionArgs,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    use zbrain_core::engine::{BrainEngine, EngineConfig};
+    use zbrain_core::mentions::{run_by_mention, ByMentionOpts};
+
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    let extra_ignore = args
+        .extra_ignore
+        .as_ref()
+        .map(|s| s.split(',').map(|t| t.trim().to_string()).collect::<Vec<_>>());
+
+    let opts = ByMentionOpts {
+        source_id: Some(args.source.clone()),
+        dry_run: args.dry_run,
+        extra_ignore,
+    };
+    let result = run_by_mention(&engine, &opts).await?;
+
+    if args.json {
+        let output = serde_json::json!({
+            "status": result.status,
+            "pagesScanned": result.pages_scanned,
+            "mentionsFound": result.mentions_found,
+            "edgesAttempted": result.edges_attempted,
+            "edgesWritten": result.edges_written,
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        let header = if args.dry_run {
+            "by-mention (dry run)"
+        } else {
+            "by-mention"
+        };
+        println!(
+            "{}: scanned {} markdown pages, found {} mentions, attempted {} edges (wrote {})",
+            header,
+            result.pages_scanned,
+            result.mentions_found,
+            result.edges_attempted,
+            result.edges_written
+        );
+    }
+
+    engine.disconnect().await?;
+    Ok(())
+}
+
 async fn run_links_command(action: LinksAction, config_path: Option<&Path>) -> anyhow::Result<()> {
     match action {
         LinksAction::Add(args) => run_links_add(args, config_path).await?,
@@ -11793,6 +11920,7 @@ async fn run_links_command(action: LinksAction, config_path: Option<&Path>) -> a
             run_links_edges_backfill(args, config_path).await?
         }
         LinksAction::Reconcile(args) => run_links_reconcile(args, config_path).await?,
+        LinksAction::ByMention(args) => run_links_by_mention(args, config_path).await?,
     }
     Ok(())
 }

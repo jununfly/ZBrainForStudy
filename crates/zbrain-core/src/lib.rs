@@ -71,6 +71,7 @@ pub mod integrity;
 pub mod markdown_links;
 pub mod auto_fix;
 pub mod links;
+pub mod mentions;
 pub mod extract_fs;
 pub mod storage_status;
 pub mod publish;
