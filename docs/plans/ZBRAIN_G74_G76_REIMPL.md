@@ -26,7 +26,7 @@
 │       ├── [x][Y+] 1-1-5-9. eval-brainstorm 持久化 run store（save/list/gc，清 checkpoint stub）
 │       ├── [x][Y+] 1-1-5-10. eval-brainstorm review 子命令（历史 run 查看 + grounding/pass 趋势）
 │       └── [x][Y+] 1-1-5-11. eval-brainstorm checkpoint resume 续跑（resume playback 接入 orchestrator）
-└── [~][X+] 1-2. G76 extract 族命令 Rust 重实现
+└── [x][X+] 1-2. G76 extract 族命令 Rust 重实现
     ├── [x] 1-2-1. 修正 KNOWN-GAPS G76 描述 + 新增顶层 extract verb（links/timeline/all）
     ├── [x][X+] 1-2-2. G76a 补齐：--source fs 文件系统抽取路径（含 --by-mention）
     ├── [x][X+] 1-2-3. G76b：extract-conversation-facts（真 LLM，unblocked — Rust ConversationFactsBackfill 已就绪）

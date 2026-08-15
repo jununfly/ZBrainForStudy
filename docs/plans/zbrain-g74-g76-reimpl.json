@@ -62,7 +62,7 @@
     "1-2": {
       "id": "1-2",
       "label": "G76 extract 族命令 Rust 重实现",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [
