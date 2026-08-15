@@ -3057,11 +3057,11 @@ fn eval_longmemeval_args_to_vec(a: &EvalLongMemEvalArgs) -> Vec<String> {
 /// Subcommands for `zbrain extract`.
 ///
 /// Rust port of the TS `extract` command's `links` / `timeline` / `all`
-/// verbs (db-source path). The TS command is a pure parser — it scans page
-/// bodies for markdown/wikilinks and dated timeline lines, then batch-writes
-/// them through the engine. No LLM is involved; see KNOWN-GAPS G76a for the
-/// corrected scope note (the `--source fs` and `--by-mention` paths are still
-/// outstanding, tracked there).
+/// verbs. The TS command is a pure parser — it scans page bodies (or a
+/// markdown directory, with `--source fs --dir <path>`) for markdown/wikilinks
+/// and dated timeline lines, then batch-writes them through the engine. No LLM
+/// is involved; see KNOWN-GAPS G76a for the corrected scope note. The
+/// `--source fs` path is implemented here; `--by-mention` remains outstanding.
 #[derive(Debug, Subcommand)]
 pub enum ExtractAction {
     /// Extract markdown + wikilinks from page bodies into `page_links`
@@ -3084,6 +3084,16 @@ pub struct ExtractLinksArgs {
     /// Output as JSON.
     #[arg(long)]
     pub json: bool,
+
+    /// Data source: `db` (extract from already-synced pages) or `fs`
+    /// (walk a markdown directory). Defaults to `db` to preserve the
+    /// existing verb behavior and avoid walking cwd by accident.
+    #[arg(long, default_value = "db")]
+    pub source: String,
+
+    /// Filesystem directory to walk (required when `--source fs`).
+    #[arg(long)]
+    pub dir: Option<String>,
 }
 
 /// Arguments for `zbrain extract timeline`.
@@ -3096,6 +3106,15 @@ pub struct ExtractTimelineArgs {
     /// Output as JSON.
     #[arg(long)]
     pub json: bool,
+
+    /// Data source: `db` (extract from already-synced pages) or `fs`
+    /// (walk a markdown directory). Defaults to `db`.
+    #[arg(long, default_value = "db")]
+    pub source: String,
+
+    /// Filesystem directory to walk (required when `--source fs`).
+    #[arg(long)]
+    pub dir: Option<String>,
 }
 
 /// Arguments for `zbrain extract all`.
@@ -3108,6 +3127,15 @@ pub struct ExtractAllArgs {
     /// Output as JSON.
     #[arg(long)]
     pub json: bool,
+
+    /// Data source: `db` (extract from already-synced pages) or `fs`
+    /// (walk a markdown directory). Defaults to `db`.
+    #[arg(long, default_value = "db")]
+    pub source: String,
+
+    /// Filesystem directory to walk (required when `--source fs`).
+    #[arg(long)]
+    pub dir: Option<String>,
 }
 
 // ── Links subcommands ──────────────────────────────────────────
@@ -11250,10 +11278,20 @@ async fn run_extract_links(
 ) -> anyhow::Result<()> {
     use zbrain_core::auto_fix::{extract_links, ExtractLinksOpts};
     use zbrain_core::engine::BrainEngine;
+    use zbrain_core::extract_fs::extract_links_from_dir;
 
     let engine = connect_extract_engine(config_path).await?;
-    let opts = ExtractLinksOpts { slug: args.slug.clone() };
-    let result = extract_links(&engine, &opts).await?;
+    let result = if args.source == "fs" {
+        let dir = args.dir.as_deref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "extract --source fs requires --dir <path>; pass --dir or use --source db"
+            )
+        })?;
+        extract_links_from_dir(&engine, Path::new(dir)).await?
+    } else {
+        let opts = ExtractLinksOpts { slug: args.slug.clone() };
+        extract_links(&engine, &opts).await?
+    };
 
     if args.json {
         // `ExtractLinksResult` is a plain core value type (no serde derive);
@@ -11289,10 +11327,20 @@ async fn run_extract_timeline(
 ) -> anyhow::Result<()> {
     use zbrain_core::auto_fix::{extract_timeline, ExtractTimelineOpts};
     use zbrain_core::engine::BrainEngine;
+    use zbrain_core::extract_fs::extract_timeline_from_dir;
 
     let engine = connect_extract_engine(config_path).await?;
-    let opts = ExtractTimelineOpts { slug: args.slug.clone() };
-    let result = extract_timeline(&engine, &opts).await?;
+    let result = if args.source == "fs" {
+        let dir = args.dir.as_deref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "extract --source fs requires --dir <path>; pass --dir or use --source db"
+            )
+        })?;
+        extract_timeline_from_dir(&engine, Path::new(dir)).await?
+    } else {
+        let opts = ExtractTimelineOpts { slug: args.slug.clone() };
+        extract_timeline(&engine, &opts).await?
+    };
 
     if args.json {
         let output = serde_json::json!({
@@ -11322,11 +11370,25 @@ async fn run_extract_all(args: ExtractAllArgs, config_path: Option<&Path>) -> an
         extract_links, extract_timeline, ExtractLinksOpts, ExtractTimelineOpts,
     };
     use zbrain_core::engine::BrainEngine;
+    use zbrain_core::extract_fs::{extract_links_from_dir, extract_timeline_from_dir};
 
     let engine = connect_extract_engine(config_path).await?;
-    let links = extract_links(&engine, &ExtractLinksOpts { slug: args.slug.clone() }).await?;
-    let timeline =
-        extract_timeline(&engine, &ExtractTimelineOpts { slug: args.slug.clone() }).await?;
+    let (links, timeline) = if args.source == "fs" {
+        let dir = args.dir.as_deref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "extract --source fs requires --dir <path>; pass --dir or use --source db"
+            )
+        })?;
+        let dir_path = Path::new(dir);
+        let l = extract_links_from_dir(&engine, dir_path).await?;
+        let t = extract_timeline_from_dir(&engine, dir_path).await?;
+        (l, t)
+    } else {
+        let links = extract_links(&engine, &ExtractLinksOpts { slug: args.slug.clone() }).await?;
+        let timeline =
+            extract_timeline(&engine, &ExtractTimelineOpts { slug: args.slug.clone() }).await?;
+        (links, timeline)
+    };
 
     if args.json {
         let output = serde_json::json!({
