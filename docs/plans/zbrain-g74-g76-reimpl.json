@@ -174,7 +174,7 @@
     "1-1-5": {
       "id": "1-1-5",
       "label": "真 LLM 的 5 个 eval 命令（cross-modal / longmemeval / takes-quality / suspected-contradictions / brainstorm）",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-1",
       "children": [

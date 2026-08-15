@@ -12,7 +12,7 @@
 │   ├── [x] 1-1-2. 第一刀：zbrain eval 核心 verb（暴露已 port 的 run_eval）
 │   ├── [x][X+] 1-1-3. 判废真空壳 + 重分类 2 非空壳 eval 命令（markdown-greenfield 判废；extract-atoms/synthesize-concepts 底层 cycle phase 已在 Rust）
 │   ├── [x] 1-1-4. 非 LLM 但需新基建的 9 个 eval 命令（eval-brainstorm 复核为 LLM 已移 D 类）
-│   └── [~][X+] 1-1-5. 真 LLM 的 5 个 eval 命令（cross-modal / longmemeval / takes-quality / suspected-contradictions / brainstorm）
+│   └── [x][X+] 1-1-5. 真 LLM 的 5 个 eval 命令（cross-modal / longmemeval / takes-quality / suspected-contradictions / brainstorm）
 │       ├── [x] 1-1-5-1. eval-cross-modal（#59 全保真 port，core+CLI+e2e 全绿）
 │       ├── [x][X+] 1-1-5-2. eval-longmemeval（#60，替换 G58 占位）
 │       ├── [x][X+] 1-1-5-3. eval-takes-quality（#61，新建 EvalTakesQuality variant）
