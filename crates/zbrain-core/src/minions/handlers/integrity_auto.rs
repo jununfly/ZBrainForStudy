@@ -2,7 +2,7 @@
 //!
 //! The TS `integrity-auto` command was deleted under option C and has no Rust
 //! verb. Ad-hoc integrity is available via the wired `integrity` handler. Tracked
-//! as G83 in `docs/plans/KNOWN-GAPS.md`.
+//! as G82 in `docs/plans/KNOWN-GAPS.md`.
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -17,7 +17,7 @@ impl MinionHandler for IntegrityAutoHandler {
     async fn handle(&self, _ctx: &MinionJobContext) -> Result<Value> {
         Err(crate::minions::handlers::util::unsupported_job(
             "integrity-auto",
-            "G83",
+            "G82",
         ))
     }
 }

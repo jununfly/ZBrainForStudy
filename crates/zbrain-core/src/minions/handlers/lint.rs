@@ -1,8 +1,9 @@
 //! Lint handler — UNSUPPORTED / wontfix.
 //!
 //! The TS `lint` command was deleted under option C and has no Rust verb. The
-//! cycle's lint behavior is covered by `run_cycle` phases, not this job type.
-//! Tracked as G81 in `docs/plans/KNOWN-GAPS.md`.
+//! cycle Lint arm is honestly Skipped (G65) — not covered by `run_cycle`
+//! phases. This minion job type likewise has no Rust verb. Tracked as G80 in
+//! `docs/plans/KNOWN-GAPS.md`.
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -15,7 +16,7 @@ pub struct LintHandler;
 #[async_trait]
 impl MinionHandler for LintHandler {
     async fn handle(&self, _ctx: &MinionJobContext) -> Result<Value> {
-        Err(crate::minions::handlers::util::unsupported_job("lint", "G81"))
+        Err(crate::minions::handlers::util::unsupported_job("lint", "G80"))
     }
 }
 

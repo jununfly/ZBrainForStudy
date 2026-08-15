@@ -1,7 +1,7 @@
 //! Lint-fix handler — UNSUPPORTED / wontfix.
 //!
 //! The TS `lint-fix` command was deleted under option C and has no Rust verb.
-//! Tracked as G82 in `docs/plans/KNOWN-GAPS.md`.
+//! Tracked as G81 in `docs/plans/KNOWN-GAPS.md`.
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -14,7 +14,7 @@ pub struct LintFixHandler;
 #[async_trait]
 impl MinionHandler for LintFixHandler {
     async fn handle(&self, _ctx: &MinionJobContext) -> Result<Value> {
-        Err(crate::minions::handlers::util::unsupported_job("lint-fix", "G82"))
+        Err(crate::minions::handlers::util::unsupported_job("lint-fix", "G81"))
     }
 }
 
