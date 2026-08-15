@@ -114,7 +114,7 @@
     "1-2-3": {
       "id": "1-2-3",
       "label": "G76b：extract-conversation-facts（真 LLM，unblocked — Rust ConversationFactsBackfill 已就绪）",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-2",
       "children": [],
