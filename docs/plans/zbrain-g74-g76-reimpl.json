@@ -370,7 +370,7 @@
     "1-1-5-3-2": {
       "id": "1-1-5-3-2",
       "label": "eval-takes-quality harness: receipt/replay/regress/trend playback (356L TS)",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-1-5-3",
       "children": [],

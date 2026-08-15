@@ -17,7 +17,7 @@
 │       ├── [x][X+] 1-1-5-2. eval-longmemeval（#60，替换 G58 占位）
 │       ├── [x][X+] 1-1-5-3. eval-takes-quality（#61，新建 EvalTakesQuality variant）
 │       │   ├── [x][X+] 1-1-5-3-1. eval-takes-quality MVP: takes runner + CLI verb + honest Err(no key)
-│       │   └── [~][X+] 1-1-5-3-2. eval-takes-quality harness: receipt/replay/regress/trend playback (356L TS)
+│       │   └── [x][X+] 1-1-5-3-2. eval-takes-quality harness: receipt/replay/regress/trend playback (356L TS)
 │       ├── [x][X+] 1-1-5-4. eval-suspected-contradictions（#62，最大一族 judge×153）
 │       ├── [x][Y+] 1-1-5-5. eval-brainstorm（#63，完整 generator 移植：4 引擎方法 + orchestrator/domain-bank/judges 三模块 + search/embed）
 │       ├── [x][X+] 1-1-5-6. eval-suspected-contradictions trend 子命令（#62 延伸：write/loadContradictionsRun 引擎方法 + ASCII 图表）
