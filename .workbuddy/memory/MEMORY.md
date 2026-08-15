@@ -34,7 +34,7 @@
 - 所有 .json/.md 放 docs/plans/。render 只认 ROADMAP_SECTION_START/END marker（不符会追加成重复段 → 先删 md 再 render）。CLI 第一参数 JSON 完整路径。
 - **render 脚本 cwd 陷阱（2026-08-09 实测）**：`roadmap_cli.py render` 按 `metadata.md_file` 写 md，但路径相对**脚本自身 cwd** 解析。若从 `.workbuddy/skills/zj-roadmap-driven/` 内运行，会在该目录内误生成 `docs/plans/<x>.md` 副本（且**不反映** JSON 的 status/notes 变更，等于空转），而非更新仓库 `docs/plans/`。正确做法：从**仓库根**运行 `python3 .workbuddy/skills/zj-roadmap-driven/roadmap_cli.py render docs/plans/<x>.json`；或干脆手编 md（手编「当前施工」段 prose 更可靠，render 只忠实重画 tree）。阶段7 即手编 md 收口。
 - decisions 项须 {"q","answer","note?"}（用 a 会 KeyError）。路线图系统性滞后：以 HEAD+git ls-files+编译为准，节点只作索引。
-- **JSON 文件不可用 Edit 工具插入多行 notes（2026-08-13 实测）**：Edit 把多行字符串值写进 JSON 会引入裸换行（CRLF/LF）+ 未转义内部双引号，直接破坏 JSON（strict 解析报 `Invalid control character` / `Expecting ',' delimiter`；`strict=False` 只能容忍控制符、修不了未转义引号）。修复法：Python 二进制读（`open(p,'rb').read().decode()`）→ 定位坏值边界（节点 `xxx": {` → 该节点末字段 `notes` 的 `"notes": "` → 节点闭合 `    },`）→ 字符级转义（`replace('\r\n'/'\\r'/'\\n'→'\\n'`) + `re.sub(r'(?<!\\\\)"','\\\\\"',...)` 逃逸未转义引号）→ **二进制写回保 CRLF** → `json.loads` 校验。另：若早前编辑把 `\\n`（单反斜杠+n，正确换行转义）翻倍成 `\\\\n`（双反斜杠+n），用 `fixed.replace('\\\\n','\\n')` 归一（单转义不受影响）。教训：改 roadmap JSON 的 notes 一律走 Python 脚本，别用 Edit 手写多行；写文件命令要幂等（见 Git 沙箱铁律双重执行）。
+- **JSON 文件不可用 Edit 工具插入多行 notes（2026-08-13 实测）**：Edit 把多行字符串值写进 JSON 会引入裸换行（CRLF/LF）+ 未转义内部双引号，直接破坏 JSON（strict 解析报 `Invalid control character` / `Expecting ',' delimiter`；`strict=False` 只能容忍控制符、修不了未转义引号）。修复法：Python 二进制读（`open(p,'rb').read().decode()`）→ 定位坏值边界（节点 `xxx": {` → 该节点末字段 `notes` 的 `"notes": "` → 节点闭合 `    },`）→ 字符级转义（`replace('\r\n'/'\\r'/'\\n'→'\\n'`) + `re.sub(r'(?<!\\\\)"','\\\\\"',...)` 逃逸未转义引号）→ **二进制写回保 CRLF** → `json.loads` 校验。另：若早前编辑把 `\\n`（单反斜杠+n，正确换行转义）翻倍成 `\\\\n`（双反斜杠+n），用 `fixed.replace('\\\\n','\\n')` 归一（单转义不受影响）。教训：改 roadmap JSON 的 notes 一律走 Python 脚本，别用 Edit 手写多行；写文件命令要幂等（见 Git 沙箱铁律双重执行）。**另：roadmap JSON 统一 2-space indent；用正则检测缩进会误抓 depth-2 的 `"id"` 行（4 空格）导致整文件重排成 4-space、炸出百行 diff——直接 `indent=2` 硬编码，别靠检测。**
 
 ## 迁移工程规则
 - TS 调 Rust：`src/cli.ts` 走 resolveZbrainBin()（$ZBRAIN_BIN→target/debug→release→PATH）。改子命令后必 cargo build -p zbrain-cli 否则测试 exit 2。
@@ -45,6 +45,9 @@
 - 新增 DB migration 三件事：双 dialect 00NN_*.sql + include_str! const + registry.add + 测试 EXPECTED_VERSION bump。
 - 参数加宽坑：&Arc<dyn T>→&dyn T 不自动 coerce（调用方 &*engine）。opts 覆盖逐字段 or_else 保留优先级。
 - crate::Result = Result<T, StructuredError>；serde_json::Error 不能 ? 须 map_err。
+
+## 已决架构决策
+- **Legacy GBrain 资产退役重评估（2026-08-15 收口）**：原 "132 文件批量删" 前提 stale——核心 TS→Rust 已落地（413 .rs、0 TS in crates/），仅剩 ~26 活 TS/TSX。**结论：范围极简（仅删明确死亡碎屑 src/version.ts、src/types/image-decoders.d.ts），接受 hybrid（node 分发 + Rust 核心）为长期状态**；node 基础设施（bin/zbrain-rs.js 是 zbrain CLI 入口，spawn Rust 二进制；package.json bin 指向它）不可删，删则断 `zbrain` 入口。删除动作 defer 至单独 chore（按 Q2=A）。
 
 ## 其他
 - Admin 路由 Rust 在 /*、TS 在 /admin/api/*（保持）。skillpack 测试仅 --all-features 下编译。
