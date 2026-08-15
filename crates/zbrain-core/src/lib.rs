@@ -57,6 +57,7 @@ pub mod rerank_client;
 pub mod search;
 pub mod sources_ops;
 pub mod sync;
+pub mod symbol_edges;
 pub mod sync_freshness;
 pub mod takes_fence;
 pub mod think;

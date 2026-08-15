@@ -1403,6 +1403,43 @@ mod brainstorm_cli_tests {
     }
 
     #[test]
+    fn parses_links_edges_backfill_verb() {
+        let cli = Cli::try_parse_from([
+            "zbrain",
+            "links",
+            "edges-backfill",
+            "--source",
+            "my-src",
+            "--max-chunks",
+            "500",
+            "--json",
+        ])
+        .unwrap();
+        match cli.command {
+            crate::Commands::Links(crate::LinksAction::EdgesBackfill(args)) => {
+                assert_eq!(args.source.as_deref(), Some("my-src"));
+                assert_eq!(args.max_chunks, Some(500));
+                assert!(args.json);
+                assert!(!args.all_sources);
+            }
+            other => panic!("expected Links/EdgesBackfill, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_links_edges_backfill_all_sources() {
+        let cli =
+            Cli::try_parse_from(["zbrain", "links", "edges-backfill", "--all-sources"]).unwrap();
+        match cli.command {
+            crate::Commands::Links(crate::LinksAction::EdgesBackfill(args)) => {
+                assert!(args.all_sources);
+                assert!(args.source.is_none());
+            }
+            other => panic!("expected Links/EdgesBackfill, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn brainstorm_parses_without_question() {
         // `question` is optional at the parse layer (so --help works); the
         // runtime handler enforces "question required". Assert the verb still
@@ -3227,6 +3264,12 @@ pub enum LinksAction {
     /// Remove a link
     #[command(name = "rm")]
     Remove(LinksRemoveArgs),
+
+    /// Resumable symbol-resolution backfill (G77 / 1-6-3). Resolves emitted
+    /// `code_edges_symbol` rows against same-page `symbol_name_qualified`
+    /// candidates, recording outcomes in `edge_metadata`.
+    #[command(name = "edges-backfill")]
+    EdgesBackfill(LinksEdgesBackfillArgs),
 }
 
 /// Arguments for `zbrain links add`.
@@ -3334,6 +3377,31 @@ pub struct LinksRemoveArgs {
     pub to_source: String,
 
     /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `zbrain links edges-backfill`.
+///
+/// Mirrors TS `edges-backfill.ts`. Resumable via `content_chunks
+/// .edges_backfilled_at`; each BATCH_SIZE (200) chunk batch is its own
+/// transaction, so a Ctrl-C mid-run loses at most one batch and a re-run
+/// resumes cleanly.
+#[derive(Debug, Parser)]
+pub struct LinksEdgesBackfillArgs {
+    /// Scope to one source (default: 'default').
+    #[arg(long)]
+    pub source: Option<String>,
+
+    /// Iterate every non-archived registered source.
+    #[arg(long)]
+    pub all_sources: bool,
+
+    /// Cap on chunks walked per source (default: 2000).
+    #[arg(long)]
+    pub max_chunks: Option<usize>,
+
+    /// Emit JSON result on stdout.
     #[arg(long)]
     pub json: bool,
 }
@@ -11595,6 +11663,9 @@ async fn run_links_command(action: LinksAction, config_path: Option<&Path>) -> a
             run_links_rebuild_md_links(args, config_path).await?
         }
         LinksAction::Remove(args) => run_links_remove(args, config_path).await?,
+        LinksAction::EdgesBackfill(args) => {
+            run_links_edges_backfill(args, config_path).await?
+        }
     }
     Ok(())
 }
@@ -11791,6 +11862,104 @@ async fn run_links_remove(args: LinksRemoveArgs, config_path: Option<&Path>) -> 
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         println!("Link removed: {} -> {}", args.from, args.to);
+    }
+
+    engine.disconnect().await?;
+    Ok(())
+}
+
+/// Execute `zbrain links edges-backfill` (G77 / 1-6-3).
+///
+/// Resumable symbol-resolution backfill. Walks every `content_chunks` row
+/// whose `edges_backfilled_at` is NULL or older than `EDGE_EXTRACTOR_VERSION`
+/// and resolves its emitted `code_edges_symbol` rows against same-page
+/// `symbol_name_qualified` candidates, recording the outcome in
+/// `edge_metadata`. Mirrors TS `edges-backfill.ts`.
+async fn run_links_edges_backfill(
+    args: LinksEdgesBackfillArgs,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    use zbrain_core::engine::{BrainEngine, EngineConfig};
+    use zbrain_core::symbol_edges::{resolve_symbol_edges_incremental, ResolverOpts, ResolverStats};
+    use serde_json::json;
+
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    // Build the source-id list.
+    let source_ids: Vec<String> = if args.all_sources {
+        match engine
+            .execute_raw("SELECT id FROM sources ORDER BY id", &[])
+            .await
+        {
+            Ok(rows) => {
+                let ids: Vec<String> = rows
+                    .iter()
+                    .filter_map(|r| r.get("id").and_then(|v| v.as_str()).map(String::from))
+                    .collect();
+                if ids.is_empty() {
+                    vec!["default".to_string()]
+                } else {
+                    ids
+                }
+            }
+            Err(_) => vec!["default".to_string()],
+        }
+    } else if let Some(s) = &args.source {
+        vec![s.clone()]
+    } else {
+        vec!["default".to_string()]
+    };
+
+    let mut summary: Vec<serde_json::Value> = Vec::new();
+    for source_id in &source_ids {
+        if !args.json {
+            eprintln!("[edges-backfill] source={} starting...", source_id);
+        }
+        let opts = ResolverOpts {
+            source_id: source_id.clone(),
+            max_chunks: args.max_chunks,
+        };
+        let stats: ResolverStats = match resolve_symbol_edges_incremental(&engine, &opts).await {
+            Ok(s) => s,
+            Err(e) => {
+                let msg = e.to_string();
+                eprintln!("[edges-backfill] source={} failed: {}", source_id, msg);
+                summary.push(json!({ "source_id": source_id, "error": msg }));
+                continue;
+            }
+        };
+        if !args.json {
+            eprintln!(
+                "[edges-backfill] source={} done: {} chunks walked, {} resolved, {} ambiguous, {} unmatched, {}ms",
+                source_id,
+                stats.chunks_walked,
+                stats.edges_resolved,
+                stats.edges_ambiguous,
+                stats.edges_unmatched,
+                stats.ms
+            );
+        }
+        summary.push(json!({
+            "source_id": source_id,
+            "chunks_walked": stats.chunks_walked,
+            "edges_resolved": stats.edges_resolved,
+            "edges_ambiguous": stats.edges_ambiguous,
+            "edges_unmatched": stats.edges_unmatched,
+            "batches": stats.batches,
+            "ms": stats.ms,
+        }));
+    }
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&json!(summary))?);
     }
 
     engine.disconnect().await?;
