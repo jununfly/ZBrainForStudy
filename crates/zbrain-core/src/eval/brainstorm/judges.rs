@@ -83,7 +83,7 @@ pub struct JudgeResult {
 }
 
 /// Brainstorm vs LSD config delta.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct JudgeConfig {
     /// Stable label — flows into the cache key and the run report.
     pub label: &'static str,

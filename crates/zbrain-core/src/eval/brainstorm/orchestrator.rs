@@ -14,8 +14,9 @@
 //!     hard ceiling still aborts the run. Keeps suites from hanging.
 //!   * `BudgetTracker` runtime telemetry is replaced by a single estimate-vs
 //!     ceiling check (the circuit breaker is the load-bearing guardrail).
-//!   * Checkpoint resume playback is TODO (skeleton in `checkpoint.rs`); the
-//!     run_id is still derived + reported.
+//!   * Checkpoint resume playback is implemented at 1-1-5-11: `prepare_resume`
+//!     rebuilds `BrainstormOptions` from a persisted `BrainstormResult` (with a
+//!     7-day staleness gate) so a crashed/cold run can be re-run to regenerate.
 //!   * Calibration anti-bias context is injected via
 //!     `BrainstormOptions.active_bias_tags` rather than a DB lookup
 //!     (cold-start fallback = empty → `None`).
@@ -23,7 +24,7 @@
 use crate::ai::chat::{ChatContent, ChatMessage, ChatOpts, ChatProvider, ChatRole};
 use crate::embedding::EmbeddingClient;
 use crate::engine::{domain_bank_prefix, BrainEngine, SearchResult};
-use crate::eval::brainstorm::checkpoint::compute_run_id;
+use crate::eval::brainstorm::checkpoint::{compute_run_id, STALE_MS};
 use crate::eval::brainstorm::domain_bank::{fetch_far, CloseRef, FetchFarOpts, FarPage};
 use crate::eval::brainstorm::error_classify::classify_brainstorm_error;
 use crate::eval::brainstorm::judges::{
@@ -41,7 +42,7 @@ use std::sync::LazyLock;
 const DEFAULT_PRICING: (f64, f64) = (3.0, 15.0);
 
 /// One brainstorm vs LSD config object (D1 fold).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BrainstormProfile {
     /// Stable label — used in stderr lines, frontmatter, audit.
     pub label: &'static str,
@@ -122,6 +123,91 @@ pub struct BrainstormOptions {
     pub max_ideas_per_judge_call: Option<usize>,
     /// Calibration anti-bias tags injected into the judge (cold-start = None).
     pub active_bias_tags: Option<Vec<String>>,
+}
+
+/// CLI / caller overrides that may be supplied when resuming a persisted run
+/// via [`prepare_resume`] (1-1-5-11). Any `None` field falls back to the value
+/// captured in the original [`BrainstormResult`], so a resume re-run can be
+/// tuned without re-supplying the full original argument set.
+#[derive(Debug, Clone, Default)]
+pub struct ResumeOverrides {
+    pub model_override: Option<String>,
+    pub judge_model: Option<String>,
+    pub source_id: Option<String>,
+    pub source_ids: Option<Vec<String>>,
+    pub max_cost_usd: Option<f64>,
+    pub max_far_set: Option<usize>,
+    pub max_ideas_per_judge_call: Option<usize>,
+    pub active_bias_tags: Option<Vec<String>>,
+}
+
+/// Rebuild [`BrainstormOptions`] for a `--resume` re-run from a previously
+/// persisted [`BrainstormResult`] (1-1-5-11).
+///
+/// * `result` — the rebuilt typed result from `load_run_result`.
+/// * `saved_at` — the run row's `saved_at` (RFC3339) used for the 7-day gate.
+/// * `overrides` — caller-supplied CLI overrides.
+/// * `force_resume` — bypass the 7-day staleness gate.
+///
+/// Returns `(options, orig_run_id)`. The caller re-runs [`run_brainstorm`] with
+/// the options and rewrites `result.run_id` to `<orig_run_id>~r<ts>` so the
+/// regenerated run is stored as a distinct, traceable entry.
+///
+/// The 7-day staleness gate (reuses [`STALE_MS`] from `checkpoint`) blocks
+/// resuming runs saved more than a week ago unless `force_resume` is set —
+/// old runs may reference a brain DB state that has since drifted.
+#[must_use]
+pub fn prepare_resume(
+    result: &BrainstormResult,
+    saved_at: &str,
+    overrides: &ResumeOverrides,
+    force_resume: bool,
+) -> anyhow::Result<(BrainstormOptions, String)> {
+    if !force_resume {
+        let saved = chrono::DateTime::parse_from_rfc3339(saved_at).map_err(|e| {
+            anyhow::anyhow!(
+                "zbrain resume: corrupt saved_at timestamp `{}`: {} (run {})",
+                saved_at, e, result.run_id
+            )
+        })?;
+        let saved_utc = saved.with_timezone(&chrono::Utc);
+        let age_ms = chrono::Utc::now()
+            .signed_duration_since(saved_utc)
+            .num_milliseconds()
+            .max(0) as u64;
+        if age_ms > STALE_MS {
+            let days = age_ms as f64 / (24.0 * 60.0 * 60.0 * 1000.0);
+            anyhow::bail!(
+                "zbrain resume: run {} was saved {:.1} days ago, older than the 7-day gate. \
+                 Re-run with --force-resume to bypass, or start a fresh run.",
+                result.run_id, days
+            );
+        }
+    }
+
+    let profile = if result.profile_label == "lsd" {
+        LSD_PROFILE
+    } else {
+        BRAINSTORM_PROFILE
+    };
+
+    let options = BrainstormOptions {
+        question: result.question.clone(),
+        profile: Some(profile),
+        model_override: overrides.model_override.clone(),
+        source_id: overrides.source_id.clone(),
+        source_ids: overrides.source_ids.clone(),
+        max_cost_usd: overrides.max_cost_usd,
+        max_far_set: overrides.max_far_set,
+        judge_model: overrides.judge_model.clone(),
+        max_ideas_per_judge_call: overrides.max_ideas_per_judge_call,
+        active_bias_tags: overrides
+            .active_bias_tags
+            .clone()
+            .or_else(|| result.active_bias_tags.clone()),
+    };
+
+    Ok((options, result.run_id.clone()))
 }
 
 /// One idea emitted to the user, with citation transparency (D6).
@@ -936,5 +1022,67 @@ mod tests {
         let md = format_brainstorm_markdown(&result, &FormatOpts::default());
         assert!(md.contains("idea one"));
         assert!(!md.contains("idea two")); // filtered out (not passing)
+    }
+
+    fn sample_result(profile_label: &str, run_id: &str, bias: Option<Vec<String>>) -> BrainstormResult {
+        BrainstormResult {
+            profile_label: profile_label.to_string(),
+            question: "how to reduce meeting load?".into(),
+            embedding_model: None,
+            ideas: vec![],
+            close_set: vec![],
+            far_set: vec![],
+            active_bias_tags: bias,
+            short_of_target: false,
+            judge_failed: false,
+            cost: BrainstormCost::default(),
+            run_id: run_id.to_string(),
+        }
+    }
+
+    #[test]
+    fn prepare_resume_recent_ok_and_maps_profile() {
+        let r = sample_result("brainstorm", "abc123", Some(vec!["x".into()]));
+        let saved_at = chrono::Utc::now().to_rfc3339();
+        let (opts, orig) = prepare_resume(&r, &saved_at, &ResumeOverrides::default(), false)
+            .expect("recent run should resume");
+        assert_eq!(orig, "abc123");
+        assert_eq!(opts.question, "how to reduce meeting load?");
+        assert_eq!(opts.profile, Some(BRAINSTORM_PROFILE));
+        assert_eq!(opts.active_bias_tags, Some(vec!["x".to_string()]));
+    }
+
+    #[test]
+    fn prepare_resume_stale_blocked_without_force() {
+        let r = sample_result("brainstorm", "abc123", None);
+        let stale = (chrono::Utc::now() - chrono::Duration::days(8)).to_rfc3339();
+        let err = prepare_resume(&r, &stale, &ResumeOverrides::default(), false)
+            .err()
+            .expect("stale run must be blocked by the 7-day gate");
+        assert!(err.to_string().contains("7-day gate"), "got: {err}");
+    }
+
+    #[test]
+    fn prepare_resume_stale_ok_with_force() {
+        let r = sample_result("lsd", "lsd999", None);
+        let stale = (chrono::Utc::now() - chrono::Duration::days(30)).to_rfc3339();
+        let (opts, orig) = prepare_resume(&r, &stale, &ResumeOverrides::default(), true)
+            .expect("force-resume must bypass the 7-day gate");
+        assert_eq!(orig, "lsd999");
+        assert_eq!(opts.profile, Some(LSD_PROFILE));
+    }
+
+    #[test]
+    fn prepare_resume_overrides_win() {
+        let r = sample_result("brainstorm", "abc123", None);
+        let saved_at = chrono::Utc::now().to_rfc3339();
+        let overrides = ResumeOverrides {
+            judge_model: Some("anthropic:claude-opus".into()),
+            max_cost_usd: Some(9.0),
+            ..Default::default()
+        };
+        let (opts, _) = prepare_resume(&r, &saved_at, &overrides, false).unwrap();
+        assert_eq!(opts.judge_model, Some("anthropic:claude-opus".into()));
+        assert_eq!(opts.max_cost_usd, Some(9.0));
     }
 }

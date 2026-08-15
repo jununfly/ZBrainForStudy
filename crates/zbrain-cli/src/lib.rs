@@ -28,8 +28,12 @@ use std::sync::Arc;
 use zbrain_core::autopilot::cycle::{
     run_cycle, CycleOpts, CyclePhase, CycleReport, CycleStatus, PhaseResult, PhaseStatus,
 };
+use zbrain_core::ai::chat::ChatProvider;
+use zbrain_core::embedding::EmbeddingClient;
 use zbrain_core::engine::BrainEngine;
-use zbrain_core::eval::brainstorm::orchestrator::{BRAINSTORM_PROFILE, LSD_PROFILE};
+use zbrain_core::eval::brainstorm::orchestrator::{
+    BRAINSTORM_PROFILE, BrainstormProfile, LSD_PROFILE, ResumeOverrides,
+};
 use zbrain_core::operation::{register_all, CliOpts, OperationContext, OperationRegistry};
 use zbrain_core::progress::{ProgressMode, ProgressReporter};
 
@@ -519,6 +523,16 @@ pub struct EvalBrainstormArgs {
     /// Time window in days for `--trend` (default 30).
     #[arg(long = "days")]
     pub days: Option<u64>,
+
+    /// Resume a previously-crashed run by run_id: re-run that single question
+    /// and store the regenerated run (1-1-5-11). Mirrors `zbrain brainstorm
+    /// --resume`.
+    #[arg(long)]
+    pub resume: Option<String>,
+
+    /// Bypass the 7-day staleness gate on --resume (1-1-5-11).
+    #[arg(long = "force-resume")]
+    pub force_resume: bool,
 }
 
 // ── eval-brainstorm helper types (ported from src/commands/eval-brainstorm.ts) ──
@@ -751,24 +765,9 @@ pub async fn run_brainstorm_command(
         return print_run_trend(&store_dir, args.days.unwrap_or(30));
     }
 
-    // Resume playback is wired at 1-1-5-11; runs are now persisted, but the
-    // playback merge of completed crosses is not yet implemented.
-    if args.resume.is_some() {
-        anyhow::bail!(
-            "zbrain {}: --resume is not yet wired (roadmap 1-1-5-11). Runs are now persisted to {}; resume playback is the next node.",
-            profile.label,
-            store_dir.display()
-        );
-    }
-
-    let question = args.question.join(" ");
-    if question.trim().is_empty() {
-        anyhow::bail!(
-            "zbrain {}: question required.\nUsage: zbrain {} \"<question>\" [--json] [--save] [--limit N] [--max-cost USD]",
-            profile.label, profile.label
-        );
-    }
-
+    // Build the engine / chat / embedding client up front — both the resume
+    // replay and the normal question path re-run brainstorm against the live
+    // brain DB (resume re-discovers close/far by question, 1-1-5-11).
     let config = config::load_config(config_path)?;
     let db_path = resolve_database_path(&config.database_url);
     let engine_config = EngineConfig {
@@ -802,6 +801,37 @@ pub async fn run_brainstorm_command(
         })?,
     );
     let embedding_client: Option<Arc<EmbeddingClient>> = EmbeddingClient::from_env().map(Arc::new);
+
+    // --resume <run_id>: replay a previously persisted run (1-1-5-11).
+    if let Some(run_id) = &args.resume {
+        let overrides = ResumeOverrides {
+            judge_model: args.judge_model.clone(),
+            max_cost_usd: args.max_cost,
+            max_far_set: args.max_far_set,
+            max_ideas_per_judge_call: args.max_ideas_per_judge_call,
+            ..Default::default()
+        };
+        return run_resume_playback(
+            &store_dir,
+            run_id,
+            &engine,
+            &*chat,
+            embedding_client,
+            &overrides,
+            args.force_resume,
+            profile,
+            args.json,
+        )
+        .await;
+    }
+
+    let question = args.question.join(" ");
+    if question.trim().is_empty() {
+        anyhow::bail!(
+            "zbrain {}: question required.\nUsage: zbrain {} \"<question>\" [--json] [--save] [--limit N] [--max-cost USD]",
+            profile.label, profile.label
+        );
+    }
 
     // --limit override: replace m_far on a shallow copy of the profile.
     let effective_profile = match args.limit {
@@ -933,6 +963,98 @@ pub async fn run_brainstorm_command(
     Ok(())
 }
 
+/// Resume playback for `zbrain brainstorm --resume <run_id>` / `zbrain
+/// eval-brainstorm --resume <run_id>` (1-1-5-11).
+///
+/// Loads the persisted run, applies the 7-day staleness gate, rebuilds
+/// `BrainstormOptions` via [`zbrain_core::eval::brainstorm::orchestrator::prepare_resume`],
+/// re-runs brainstorm against the live brain DB (re-discovering close/far by
+/// question), stores the regenerated run under `<orig_run_id>~r<ts>`, and
+/// prints the report.
+async fn run_resume_playback(
+    store_dir: &Path,
+    run_id: &str,
+    engine: &Arc<dyn BrainEngine>,
+    chat: &dyn ChatProvider,
+    embedding_client: Option<Arc<EmbeddingClient>>,
+    overrides: &ResumeOverrides,
+    force_resume: bool,
+    profile: &'static BrainstormProfile,
+    json: bool,
+) -> anyhow::Result<()> {
+    use serde_json;
+    use zbrain_core::eval::brainstorm::checkpoint::{
+        load_checkpoint, load_run_result, save_checkpoint,
+    };
+    use zbrain_core::eval::brainstorm::orchestrator::{
+        format_brainstorm_markdown, prepare_resume, run_brainstorm, BrainstormResult, FormatOpts,
+    };
+
+    // 1) Load the persisted row (for saved_at) + typed result.
+    let row = load_checkpoint(store_dir, run_id).ok_or_else(|| {
+        anyhow::anyhow!(
+            "zbrain {}: no persisted run with run_id `{}`. List runs with --list-runs.",
+            profile.label, run_id
+        )
+    })?;
+    let result: BrainstormResult = load_run_result(store_dir, run_id).ok_or_else(|| {
+        anyhow::anyhow!(
+            "zbrain {}: cannot deserialize run `{}` (schema drift). Re-run fresh.",
+            profile.label, run_id
+        )
+    })?;
+
+    // 2) Staleness gate + rebuild options (core, unit-tested).
+    let (opts, orig_run_id) = prepare_resume(&result, &row.saved_at, overrides, force_resume)?;
+
+    // 3) Re-run brainstorm — re-discovers close/far by question (Q6).
+    let mut regenerated = match run_brainstorm(engine.as_ref(), chat, embedding_client, &opts).await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            if e.code == "brainstorm_timeout" {
+                eprintln!("Error [{}]: {}", e.code, e.message);
+                if let Some(hint) = &e.hint {
+                    eprintln!("  Hint: {hint}");
+                }
+                std::process::exit(1);
+            }
+            return Err(e.into());
+        }
+    };
+
+    // 4) Store as a distinct, traceable resume run: `<orig>~r<ts>`.
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    regenerated.run_id = format!("{}~r{}", orig_run_id, ts);
+
+    // 5) Emit.
+    if json {
+        println!("{}", serde_json::to_string_pretty(&regenerated)?);
+    } else {
+        let md = format_brainstorm_markdown(
+            &regenerated,
+            &FormatOpts { only_passed: true, include_meta: true },
+        );
+        println!("{md}");
+    }
+
+    // 6) Persist the regenerated run (Q2: default save). Always store so the
+    //    resume is itself reviewable / trendable.
+    match save_checkpoint(&regenerated, store_dir) {
+        Ok(path) => println!(
+            "\n_Run stored: `{}` (resumed from `{}`, run_id {})._",
+            path.display(),
+            orig_run_id,
+            regenerated.run_id
+        ),
+        Err(err) => eprintln!("zbrain {}: run-store save failed: {}", profile.label, err),
+    }
+    Ok(())
+}
+
 /// Handler for `zbrain eval-brainstorm` — the three-axis evaluation gate.
 pub async fn run_eval_brainstorm_command(
     args: EvalBrainstormArgs,
@@ -1008,20 +1130,9 @@ pub async fn run_eval_brainstorm_command(
         return print_run_trend(&store_dir, args.days.unwrap_or(30));
     }
 
-    // Eval default: do NOT auto-persist (batch command — opt-in via --save-run).
-    let should_persist_run = if args.no_save_run {
-        false
-    } else {
-        args.save_run
-    };
-
-    let fixture = match &args.fixture {
-        Some(f) => f.clone(),
-        None => anyhow::bail!(
-            "zbrain eval brainstorm: fixture path required (JSONL, one {{ \"question\": ... }} per line)"
-        ),
-    };
-
+    // Build the engine / chat / embedding client up front — the resume replay
+    // and the normal fixture loop both re-run brainstorm against the live
+    // brain DB (1-1-5-11).
     let config = config::load_config(config_path)?;
     let db_path = resolve_database_path(&config.database_url);
     let engine_config = EngineConfig {
@@ -1051,6 +1162,40 @@ pub async fn run_eval_brainstorm_command(
     );
     let embedding_client: Option<Arc<EmbeddingClient>> =
         EmbeddingClient::from_env().map(Arc::new);
+
+    // --resume <run_id>: replay a previously persisted run (1-1-5-11, both
+    // brainstorm + eval-brainstorm).
+    if let Some(run_id) = &args.resume {
+        // `eval-brainstorm` does not expose the per-run LLM overrides, so resume
+        // replays the original options verbatim (Q4: both verbs accept --resume).
+        let overrides = ResumeOverrides::default();
+        return run_resume_playback(
+            &store_dir,
+            run_id,
+            &engine,
+            &*chat,
+            embedding_client,
+            &overrides,
+            args.force_resume,
+            &BRAINSTORM_PROFILE,
+            args.json,
+        )
+        .await;
+    }
+
+    // Eval default: do NOT auto-persist (batch command — opt-in via --save-run).
+    let should_persist_run = if args.no_save_run {
+        false
+    } else {
+        args.save_run
+    };
+
+    let fixture = match &args.fixture {
+        Some(f) => f.clone(),
+        None => anyhow::bail!(
+            "zbrain eval brainstorm: fixture path required (JSONL, one {{ \"question\": ... }} per line)"
+        ),
+    };
 
     // Read fixture JSONL (skip blank / malformed rows).
     let text = std::fs::read_to_string(&fixture).map_err(|e| {
@@ -1266,6 +1411,64 @@ mod brainstorm_cli_tests {
         match cli.command {
             crate::Commands::Brainstorm(args) => assert!(args.question.is_empty()),
             other => panic!("expected Brainstorm, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn brainstorm_resume_flag_parses() {
+        let cli = Cli::try_parse_from([
+            "zbrain",
+            "brainstorm",
+            "--resume",
+            "deadbeefcafe1234",
+            "why do tools converge?",
+        ])
+        .unwrap();
+        match cli.command {
+            crate::Commands::Brainstorm(args) => {
+                assert_eq!(args.resume.as_deref(), Some("deadbeefcafe1234"));
+                assert!(!args.force_resume);
+            }
+            other => panic!("expected Brainstorm, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn brainstorm_resume_force_parses() {
+        let cli = Cli::try_parse_from([
+            "zbrain",
+            "brainstorm",
+            "some question",
+            "--resume",
+            "oldrun",
+            "--force-resume",
+        ])
+        .unwrap();
+        match cli.command {
+            crate::Commands::Brainstorm(args) => {
+                assert_eq!(args.resume.as_deref(), Some("oldrun"));
+                assert!(args.force_resume);
+            }
+            other => panic!("expected Brainstorm, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn eval_brainstorm_resume_flag_parses() {
+        let cli = Cli::try_parse_from([
+            "zbrain",
+            "eval-brainstorm",
+            "fixture.jsonl",
+            "--resume",
+            "deadbeefcafe1234",
+        ])
+        .unwrap();
+        match cli.command {
+            crate::Commands::EvalBrainstorm(args) => {
+                assert_eq!(args.resume.as_deref(), Some("deadbeefcafe1234"));
+                assert!(!args.force_resume);
+            }
+            other => panic!("expected EvalBrainstorm, got {other:?}"),
         }
     }
 }
