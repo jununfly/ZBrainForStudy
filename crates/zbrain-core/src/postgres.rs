@@ -277,6 +277,7 @@ const MIGRATION_0031: &str = include_str!("../migrations/0031_eval_contradiction
 const MIGRATION_0032: &str = include_str!("../migrations/0032_eval_contradictions_cache.sql");
 /// 1-1-5-5 (brainstorm domain-bank): add content_chunks.embedding column.
 const MIGRATION_0033: &str = include_str!("../migrations/0033_content_chunks_embedding.sql");
+const MIGRATION_0034: &str = include_str!("../migrations/0034_eval_takes_quality_runs.sql");
 
 /// FNV-1a 64-bit hash of a lease key, mapped to a signed int64 for
 /// `pg_advisory_xact_lock`. Matches the TS implementation bit-for-bit.
@@ -459,6 +460,11 @@ pub static POSTGRES_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         name: "content_chunks_embedding",
         sql: MIGRATION_0033,
     }));
+    registry.add(Box::new(PostgresMigration {
+        version: 34,
+        name: "eval_takes_quality_runs",
+        sql: MIGRATION_0034,
+    }));
 
     registry
 });
@@ -560,6 +566,25 @@ impl PostgresEngine {
             duration_ms: row.try_get::<i64, _>("duration_ms").map_err(|e| Error::engine(format!("ec dur: {e}")))? as u64,
             source_tier_breakdown: serde_json::from_value(source_tier).unwrap_or_default(),
             report_json,
+        })
+    }
+
+    fn pg_row_to_takes_quality_run(row: &sqlx::postgres::PgRow) -> Result<crate::eval::takes_quality::receipt::TakesQualityRunRow> {
+        let receipt_json: serde_json::Value = row.try_get("receipt_json").unwrap_or(serde_json::Value::Null);
+        Ok(crate::eval::takes_quality::receipt::TakesQualityRunRow {
+            run_id: row.try_get("run_id").map_err(|e| Error::engine(format!("tq run_id: {e}")))?,
+            ran_at: row.try_get("ran_at").map_err(|e| Error::engine(format!("tq ran_at: {e}")))?,
+            schema_version: row.try_get::<i64, _>("schema_version").map_err(|e| Error::engine(format!("tq sv: {e}")))? as u8,
+            rubric_version: row.try_get("rubric_version").map_err(|e| Error::engine(format!("tq rv: {e}")))?,
+            verdict: row.try_get("verdict").map_err(|e| Error::engine(format!("tq verdict: {e}")))?,
+            overall_score: row.try_get("overall_score").ok().flatten(),
+            cost_usd: row.try_get("cost_usd").map_err(|e| Error::engine(format!("tq cost: {e}")))?,
+            corpus_sha8: row.try_get("corpus_sha8").map_err(|e| Error::engine(format!("tq corpus: {e}")))?,
+            receipt_sha8_corpus: row.try_get("receipt_sha8_corpus").map_err(|e| Error::engine(format!("tq sc: {e}")))?,
+            receipt_sha8_prompt: row.try_get("receipt_sha8_prompt").map_err(|e| Error::engine(format!("tq sp: {e}")))?,
+            receipt_sha8_models: row.try_get("receipt_sha8_models").map_err(|e| Error::engine(format!("tq sm: {e}")))?,
+            receipt_sha8_rubric: row.try_get("receipt_sha8_rubric").map_err(|e| Error::engine(format!("tq sr: {e}")))?,
+            receipt_json,
         })
     }
 
@@ -4620,6 +4645,79 @@ impl BrainEngine for PostgresEngine {
             .map_err(|e| Error::engine(format!("load_contradictions_trend: {e}")))?;
         rows.iter()
             .map(|r| Self::pg_row_to_contradictions_run(r))
+            .collect()
+    }
+
+    // ─── 1-1-5-3 (#319 A2): persist + load takes-quality run rows ──────────
+
+    async fn write_takes_quality_run(
+        &self,
+        row: &crate::eval::takes_quality::receipt::TakesQualityRunRow,
+    ) -> Result<bool> {
+        let pool = self.pool()?;
+        let inserted = sqlx::query(
+            "INSERT INTO eval_takes_quality_runs (run_id, ran_at, schema_version, rubric_version, verdict, overall_score, cost_usd, corpus_sha8, receipt_sha8_corpus, receipt_sha8_prompt, receipt_sha8_models, receipt_sha8_rubric, receipt_json) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) ON CONFLICT (run_id) DO NOTHING RETURNING run_id",
+        )
+        .bind(&row.run_id)
+        .bind(&row.ran_at)
+        .bind(row.schema_version as i32)
+        .bind(&row.rubric_version)
+        .bind(&row.verdict)
+        .bind(row.overall_score)
+        .bind(row.cost_usd)
+        .bind(&row.corpus_sha8)
+        .bind(&row.receipt_sha8_corpus)
+        .bind(&row.receipt_sha8_prompt)
+        .bind(&row.receipt_sha8_models)
+        .bind(&row.receipt_sha8_rubric)
+        .bind(&row.receipt_json)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::engine(format!("write_takes_quality_run: {e}")))?;
+        Ok(inserted.is_some())
+    }
+
+    async fn load_takes_quality_run(
+        &self,
+        identity: &crate::eval::takes_quality::receipt::ReceiptIdentity,
+    ) -> Result<Option<serde_json::Value>> {
+        let pool = self.pool()?;
+        let run_id = format!("{}-{}-{}-{}", identity.corpus_sha8, identity.prompt_sha8, identity.models_sha8, identity.rubric_sha8);
+        let row = sqlx::query("SELECT receipt_json FROM eval_takes_quality_runs WHERE run_id = $1 LIMIT 1")
+            .bind(&run_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| Error::engine(format!("load_takes_quality_run: {e}")))?;
+        match row {
+            Some(r) => {
+                let v: serde_json::Value = r.try_get("receipt_json").unwrap_or(serde_json::Value::Null);
+                Ok(Some(v))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn load_takes_quality_trend(
+        &self,
+        days: i64,
+    ) -> Result<Vec<crate::eval::takes_quality::receipt::TakesQualityRunRow>> {
+        let pool = self.pool()?;
+        let mut builder = sqlx::QueryBuilder::new(
+            "SELECT run_id, ran_at::text AS ran_at, schema_version, rubric_version, verdict, overall_score, cost_usd, corpus_sha8, receipt_sha8_corpus, receipt_sha8_prompt, receipt_sha8_models, receipt_sha8_rubric, receipt_json FROM eval_takes_quality_runs",
+        );
+        if days > 0 {
+            builder.push(" WHERE ran_at >= NOW() - make_interval(days => ");
+            builder.push_bind(days);
+            builder.push(")");
+        }
+        builder.push(" ORDER BY ran_at DESC");
+        let rows = builder
+            .build()
+            .fetch_all(pool)
+            .await
+            .map_err(|e| Error::engine(format!("load_takes_quality_trend: {e}")))?;
+        rows.iter()
+            .map(|r| Self::pg_row_to_takes_quality_run(r))
             .collect()
     }
 

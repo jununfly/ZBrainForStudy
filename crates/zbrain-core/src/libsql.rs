@@ -160,6 +160,7 @@ const MIGRATION_0031: &str = include_str!("../migrations-sqlite/0031_eval_contra
 const MIGRATION_0032: &str = include_str!("../migrations-sqlite/0032_eval_contradictions_cache.sql");
 /// 1-1-5-5 (brainstorm domain-bank): add content_chunks.embedding column.
 const MIGRATION_0033: &str = include_str!("../migrations-sqlite/0033_content_chunks_embedding.sql");
+const MIGRATION_0034: &str = include_str!("../migrations-sqlite/0034_eval_takes_quality_runs.sql");
 
 /// Legacy string array — REMOVED in favor of MigrationRegistry.
 /// Use LIBQL_MIGRATIONS instead.
@@ -350,6 +351,11 @@ pub static LIBQL_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 33,
         name: "content_chunks_embedding",
         sql: MIGRATION_0033,
+    }));
+    registry.add(Box::new(LibsqlMigration {
+        version: 34,
+        name: "eval_takes_quality_runs",
+        sql: MIGRATION_0034,
     }));
 
     registry
@@ -5670,6 +5676,109 @@ impl BrainEngine for LibsqlEngine {
             .map_err(|e| Error::engine(format!("load_contradictions_trend row: {e}")))?
         {
             out.push(Self::contradictions_run_from_row(&row)?);
+        }
+        Ok(out)
+    }
+
+    // ─── 1-1-5-3 (#319 A2): persist + load takes-quality run rows ──────────
+
+    async fn write_takes_quality_run(
+        &self,
+        row: &crate::eval::takes_quality::receipt::TakesQualityRunRow,
+    ) -> Result<bool> {
+        let conn = self.conn().await?;
+        let n = conn
+            .execute(
+                "INSERT OR IGNORE INTO eval_takes_quality_runs (run_id, ran_at, schema_version, rubric_version, verdict, overall_score, cost_usd, corpus_sha8, receipt_sha8_corpus, receipt_sha8_prompt, receipt_sha8_models, receipt_sha8_rubric, receipt_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                ::libsql::params![
+                    row.run_id.clone(),
+                    row.ran_at.clone(),
+                    row.schema_version as i64,
+                    row.rubric_version.clone(),
+                    row.verdict.clone(),
+                    row.overall_score,
+                    row.cost_usd,
+                    row.corpus_sha8.clone(),
+                    row.receipt_sha8_corpus.clone(),
+                    row.receipt_sha8_prompt.clone(),
+                    row.receipt_sha8_models.clone(),
+                    row.receipt_sha8_rubric.clone(),
+                    serde_json::to_string(&row.receipt_json).unwrap_or_else(|_| "{}".to_string()),
+                ],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("write_takes_quality_run: {e}")))?;
+        Ok(n > 0)
+    }
+
+    async fn load_takes_quality_run(
+        &self,
+        identity: &crate::eval::takes_quality::receipt::ReceiptIdentity,
+    ) -> Result<Option<serde_json::Value>> {
+        let conn = self.conn().await?;
+        let run_id = format!("{}-{}-{}-{}", identity.corpus_sha8, identity.prompt_sha8, identity.models_sha8, identity.rubric_sha8);
+        let mut rows = conn
+            .query(
+                "SELECT receipt_json FROM eval_takes_quality_runs WHERE run_id = ?1 LIMIT 1",
+                ::libsql::params![run_id],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("load_takes_quality_run: {e}")))?;
+        match rows.next().await.map_err(|e| Error::engine(format!("load_takes_quality_run row: {e}")))? {
+            Some(row) => {
+                let txt: Option<String> = row.get(0).ok().flatten();
+                match txt.and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()) {
+                    Some(v) => Ok(Some(v)),
+                    None => Ok(None),
+                }
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn load_takes_quality_trend(
+        &self,
+        days: i64,
+    ) -> Result<Vec<crate::eval::takes_quality::receipt::TakesQualityRunRow>> {
+        let conn = self.conn().await?;
+        let (sql, params): (String, Vec<::libsql::Value>) = if days <= 0 {
+            (
+                "SELECT run_id, ran_at, schema_version, rubric_version, verdict, overall_score, cost_usd, corpus_sha8, receipt_sha8_corpus, receipt_sha8_prompt, receipt_sha8_models, receipt_sha8_rubric, receipt_json FROM eval_takes_quality_runs ORDER BY ran_at DESC".to_string(),
+                Vec::new(),
+            )
+        } else {
+            (
+                "SELECT run_id, ran_at, schema_version, rubric_version, verdict, overall_score, cost_usd, corpus_sha8, receipt_sha8_corpus, receipt_sha8_prompt, receipt_sha8_models, receipt_sha8_rubric, receipt_json FROM eval_takes_quality_runs WHERE julianday('now') - julianday(ran_at) <= ?1 ORDER BY ran_at DESC".to_string(),
+                vec![::libsql::Value::from(days as f64)],
+            )
+        };
+        let mut rows = conn
+            .query(&sql, ::libsql::params::Params::Positional(params))
+            .await
+            .map_err(|e| Error::engine(format!("load_takes_quality_trend: {e}")))?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| Error::engine(format!("load_takes_quality_trend row: {e}")))? {
+            let receipt_json: serde_json::Value = row
+                .get::<Option<String>>(12)
+                .ok()
+                .flatten()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                .unwrap_or(serde_json::Value::Null);
+            out.push(crate::eval::takes_quality::receipt::TakesQualityRunRow {
+                run_id: row.get::<String>(0).map_err(|e| Error::engine(format!("tq run_id: {e}")))?,
+                ran_at: row.get::<String>(1).map_err(|e| Error::engine(format!("tq ran_at: {e}")))?,
+                schema_version: row.get::<i64>(2).map_err(|e| Error::engine(format!("tq sv: {e}")))? as u8,
+                rubric_version: row.get::<String>(3).map_err(|e| Error::engine(format!("tq rv: {e}")))?,
+                verdict: row.get::<String>(4).map_err(|e| Error::engine(format!("tq verdict: {e}")))?,
+                overall_score: row.get::<Option<f64>>(5).ok().flatten(),
+                cost_usd: row.get::<f64>(6).map_err(|e| Error::engine(format!("tq cost: {e}")))?,
+                corpus_sha8: row.get::<String>(7).map_err(|e| Error::engine(format!("tq corpus: {e}")))?,
+                receipt_sha8_corpus: row.get::<String>(8).map_err(|e| Error::engine(format!("tq sc: {e}")))?,
+                receipt_sha8_prompt: row.get::<String>(9).map_err(|e| Error::engine(format!("tq sp: {e}")))?,
+                receipt_sha8_models: row.get::<String>(10).map_err(|e| Error::engine(format!("tq sm: {e}")))?,
+                receipt_sha8_rubric: row.get::<String>(11).map_err(|e| Error::engine(format!("tq sr: {e}")))?,
+                receipt_json,
+            });
         }
         Ok(out)
     }

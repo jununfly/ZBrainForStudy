@@ -2675,14 +2675,35 @@ pub struct EvalCrossModalArgs {
 }
 
 /// Rust port of TS `src/commands/eval-takes-quality.ts` (MVP).
+/// Rust port of TS `src/commands/eval-takes-quality.ts` — A2 (1-1-5-3 / #319).
 ///
-/// Samples takes from the configured brain database and runs the shared
-/// cross-modal judge panel (3-model parallel) to score their quality.
-/// Verdict PASS(0)/FAIL(1)/INCONCLUSIVE(2). Honest degradation: if no chat
-/// provider can be resolved (no API key) we fail loudly instead of fabricating
-/// a PASS.
+/// The TS command has four sub-subcommands (`run` / `replay` / `regress` /
+/// `trend`). In the Rust port those are expressed as clap subcommands of the
+/// top-level `eval-takes-quality` verb. `run` performs a fresh eval and
+/// persists a 4-sha receipt row; `replay` re-loads a prior receipt; `regress`
+/// compares two receipts (CI gate); `trend` charts past runs from the DB.
 #[derive(Debug, Parser)]
 pub struct EvalTakesQualityArgs {
+    #[command(subcommand)]
+    pub action: TakesQualityAction,
+}
+
+/// Subcommands of `zbrain eval-takes-quality`.
+#[derive(Debug, Subcommand)]
+pub enum TakesQualityAction {
+    /// Sample takes and run the 5-dimension judge panel (persists a receipt).
+    Run(EvalTakesQualityRunArgs),
+    /// Re-load a prior receipt without running models.
+    Replay(EvalTakesQualityReplayArgs),
+    /// Compare a fresh receipt against a prior one (CI regression gate).
+    Regress(EvalTakesQualityRegressArgs),
+    /// Chart past runs from the DB (newest first).
+    Trend(EvalTakesQualityTrendArgs),
+}
+
+/// Args for `eval-takes-quality run`.
+#[derive(Debug, Parser)]
+pub struct EvalTakesQualityRunArgs {
     /// How many takes to sample from the corpus.
     #[arg(long, default_value_t = 100)]
     pub sample: usize,
@@ -2691,7 +2712,7 @@ pub struct EvalTakesQualityArgs {
     #[arg(long)]
     pub slug: Option<String>,
 
-    /// Comma-separated dimension list. Default: 4 takes-quality dimensions.
+    /// Comma-separated dimension list. Default: 5 takes-quality dimensions.
     #[arg(long, value_delimiter = ',')]
     pub dimensions: Option<Vec<String>>,
 
@@ -2723,6 +2744,76 @@ pub struct EvalTakesQualityArgs {
     #[arg(long)]
     pub json: bool,
 }
+
+/// Args for `eval-takes-quality replay`.
+#[derive(Debug, Parser)]
+pub struct EvalTakesQualityReplayArgs {
+    /// Path to a takes-quality receipt JSON written by `run`.
+    #[arg(long)]
+    pub receipt: Option<String>,
+
+    /// Load from DB by 4-sha receipt identity (e.g.
+    /// `takes-quality-<c>-<p>-<m>-<r>`). Mutually exclusive with `--receipt`.
+    #[arg(long)]
+    pub from_db: Option<String>,
+
+    /// Emit the full receipt as JSON to stdout.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Args for `eval-takes-quality regress`.
+#[derive(Debug, Parser)]
+pub struct EvalTakesQualityRegressArgs {
+    /// Current receipt: path to a takes-quality receipt JSON.
+    #[arg(long)]
+    pub current: Option<String>,
+
+    /// Current receipt from DB by 4-sha identity.
+    #[arg(long)]
+    pub current_from_db: Option<String>,
+
+    /// Prior (known-good) receipt: path.
+    #[arg(long)]
+    pub prior: Option<String>,
+
+    /// Prior receipt from DB by 4-sha identity.
+    #[arg(long)]
+    pub prior_from_db: Option<String>,
+
+    /// Per-dim mean drop threshold counting as regression. Default 0.5.
+    #[arg(long)]
+    pub threshold: Option<f64>,
+
+    /// Exit non-zero when a regression is detected (CI gate).
+    #[arg(long)]
+    pub fail_on_regress: bool,
+
+    /// Emit as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Args for `eval-takes-quality trend`.
+#[derive(Debug, Parser)]
+pub struct EvalTakesQualityTrendArgs {
+    /// Look-back window in days. Default 30.
+    #[arg(long, default_value_t = 30)]
+    pub days: i64,
+
+    /// Filter to a specific rubric version (default: all).
+    #[arg(long)]
+    pub rubric_version: Option<String>,
+
+    /// Hard cap on rows returned. Default 20, max 200.
+    #[arg(long)]
+    pub limit: Option<usize>,
+
+    /// Emit as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
 
 /// Rust port of TS `src/commands/eval-suspected-contradictions.ts` — MVP.
 ///
@@ -10278,29 +10369,15 @@ async fn run_eval_cross_modal_command(args: EvalCrossModalArgs, _timeout_ms: Opt
 ///
 /// Rust port of TS `src/commands/eval-takes-quality.ts`. Opens the configured
 /// brain database, samples takes, and delegates to
-/// [`zbrain_core::eval::takes_quality::run`] which reuses the shared
-/// cross-modal judge panel. Honest degradation: if any judge slot cannot be
-/// resolved (no API key) we fail loudly instead of fabricating a PASS.
-async fn run_eval_takes_quality_command(
-    args: EvalTakesQualityArgs,
-    config_path: Option<&Path>,
-) -> anyhow::Result<()> {
-    use std::io::IsTerminal;
+/// Open the eval engine for `eval-takes-quality` subcommands that read the DB
+/// (replay --from-db / regress --*-from-db / trend).
+async fn open_tq_engine(config_path: Option<&std::path::Path>) -> anyhow::Result<Arc<dyn BrainEngine>> {
     use std::sync::Arc;
 
-    use zbrain_core::ai::chat::{instantiate_chat, ChatMessage, ChatOpts, ChatProvider, ChatRole};
-    use zbrain_core::ai::resolver::{resolve_recipe_strict, AiConfigError};
     use zbrain_core::engine::{BrainEngine, EngineConfig};
-    use zbrain_core::eval::cross_modal::{
-        default_dimensions, default_slots, estimate_cost, ChatRequest, SlotConfig, Verdict,
-        RECEIPT_SCHEMA_VERSION,
-    };
-    use zbrain_core::eval::takes_quality::{self, TakesQualityOpts};
     use zbrain_core::libsql::LibsqlEngine;
-    use zbrain_core::paths::zbrain_path;
 
-    // Open the engine for the configured database (samples all takes).
-    let config = config::load_config(config_path)?;
+    let config = crate::config::load_config(config_path)?;
     let db_path = resolve_database_path(&config.database_url);
     let engine_config = EngineConfig {
         database_url: None,
@@ -10309,127 +10386,272 @@ async fn run_eval_takes_quality_command(
     let engine = LibsqlEngine::new();
     engine.connect(&engine_config).await?;
     engine.init_schema().await?;
-    let engine: Arc<dyn BrainEngine> = Arc::new(engine);
-
-    let cycles = args.cycles.unwrap_or(if std::io::stdout().is_terminal() { 3 } else { 1 });
-    let dimensions = args.dimensions.clone().unwrap_or_else(default_dimensions);
-    let receipt_dir = match &args.receipt_dir {
-        Some(d) => std::path::PathBuf::from(d),
-        None => zbrain_path("eval-receipts").ok_or_else(|| {
-            anyhow::anyhow!(
-                "eval-takes-quality: cannot resolve ~/.zbrain — pass --receipt-dir <path> or set ZBRAIN_HOME"
-            )
-        })?,
-    };
-    let max_tokens = args.max_tokens.unwrap_or(4000);
-
-    // Defaults come from the shared DEFAULT_SLOTS table; per-slot overrides win.
-    let defaults = default_slots();
-    let default_model = |idx: usize| -> String {
-        defaults.get(idx).map(|s| s.model.clone()).unwrap_or_default()
-    };
-    let slots: Vec<SlotConfig> = vec![
-        SlotConfig { id: "A".into(), model: args.slot_a_model.clone().unwrap_or_else(|| default_model(0)) },
-        SlotConfig { id: "B".into(), model: args.slot_b_model.clone().unwrap_or_else(|| default_model(1)) },
-        SlotConfig { id: "C".into(), model: args.slot_c_model.clone().unwrap_or_else(|| default_model(2)) },
-    ];
-
-    // Resolve each slot's ChatProvider from its `provider:model` string.
-    // Honest degradation: if any slot can't be resolved (no API key), fail
-    // loudly instead of fabricating a PASS.
-    let env_lookup = |k: &str| std::env::var(k).ok();
-    let mut resolved: Vec<(String, Arc<dyn ChatProvider>)> = vec![];
-    for slot in &slots {
-        let (_parsed, recipe) = resolve_recipe_strict(&slot.model).map_err(|e: AiConfigError| {
-            anyhow::anyhow!("eval-takes-quality: cannot resolve model `{}`: {}", slot.model, e.message)
-        })?;
-        let provider = instantiate_chat(recipe, &slot.model, &env_lookup)
-            .map_err(|e: AiConfigError| {
-                anyhow::anyhow!("eval-takes-quality: cannot build provider for `{}`: {}", slot.model, e.message)
-            })?;
-        resolved.push((slot.model.clone(), Arc::from(provider)));
-    }
-
-    // Cost estimate to stderr.
-    let cost = estimate_cost(&slots, cycles, max_tokens);
-    eprintln!(
-        "[eval-takes-quality] estimated cost: ~${:.2}/cycle, ~${:.2} max for {} cycle(s).",
-        cost.per_cycle_usd, cost.per_run_max_usd, cycles
-    );
-    for note in &cost.notes {
-        eprintln!("[eval-takes-quality] note: {note}");
-    }
-
-    // Wiring: the injected chat closure dispatches by model string to the
-    // pre-resolved provider.
-    let providers: Arc<Vec<(String, Arc<dyn ChatProvider>)>> = Arc::new(resolved);
-    let chat = move |req: ChatRequest| {
-        let providers = providers.clone();
-        async move {
-            let provider = providers
-                .iter()
-                .find(|(m, _)| m == &req.model)
-                .map(|(_, p)| p.clone())
-                .ok_or_else(|| anyhow::anyhow!("no provider resolved for model {}", req.model))?;
-            let opts = ChatOpts {
-                model: Some(req.model.clone()),
-                system: Some(req.system.clone()),
-                messages: vec![ChatMessage::text(ChatRole::User, req.prompt.clone())],
-                tools: vec![],
-                max_tokens: Some(req.max_tokens),
-                cache_system: false,
-            };
-            let result = provider.chat(opts).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
-            Ok(result.text)
-        }
-    };
-
-    let tq_opts = TakesQualityOpts {
-        engine: engine.as_ref(),
-        sample: args.sample,
-        dimensions: Some(dimensions),
-        cycles: Some(cycles),
-        max_tokens: Some(max_tokens),
-        receipt_dir,
-        slug: args.slug.clone(),
-    };
-
-    let result = takes_quality::run(&tq_opts, &chat).await?;
-
-    let verdict = result.final_aggregate.verdict;
-    eprintln!();
-    eprintln!("[eval-takes-quality] sampled {} takes", result.n_takes);
-    eprintln!("[eval-takes-quality] {}", result.final_aggregate.verdict_message);
-    eprintln!("[eval-takes-quality] receipt: {}", result.final_receipt_path);
-
-    if args.json {
-        let json_out = serde_json::json!({
-            "verdict": verdict,
-            "n_takes": result.n_takes,
-            "aggregate": result.final_aggregate,
-            "final_receipt_path": result.final_receipt_path,
-            "schema_version": RECEIPT_SCHEMA_VERSION,
-        });
-        println!("{}", serde_json::to_string_pretty(&json_out)?);
-    }
-
-    // Exit codes: PASS=0, FAIL=1, INCONCLUSIVE=2.
-    let code = match verdict {
-        Verdict::Pass => 0,
-        Verdict::Fail => 1,
-        Verdict::Inconclusive => 2,
-    };
-    std::process::exit(code);
+    Ok(Arc::new(engine))
 }
 
-/// Handler for `zbrain eval-suspected-contradictions`.
+/// Handler for `zbrain eval-takes-quality` (A2 / #319).
 ///
-/// MVP: resolves a single utility-tier judge [`ChatProvider`], opens the
-/// engine, and delegates the probe to [`zbrain_core::eval::contradictions::run`].
-/// Only the `run` subcommand does real work; `trend` / `review` return an
-/// informative deferred error (roadmap node 1-1-5-4). Honest degradation:
-/// without an API key for the judge model we fail loudly instead of
-/// fabricating a clean report.
+/// Four subcommands: `run` drives the shared cross-modal judge panel and
+/// persists a 4-sha receipt; `replay` re-loads a prior receipt; `regress`
+/// compares two receipts (CI gate); `trend` charts past runs from the DB.
+/// Honest degradation: without an API key for the judge model we fail loudly
+/// instead of fabricating a PASS.
+async fn run_eval_takes_quality_command(
+    args: EvalTakesQualityArgs,
+    config_path: Option<&std::path::Path>,
+) -> anyhow::Result<()> {
+    use std::sync::Arc;
+
+    use zbrain_core::ai::chat::{instantiate_chat, ChatMessage, ChatOpts, ChatProvider, ChatRole};
+    use zbrain_core::ai::resolver::{resolve_recipe_strict, AiConfigError};
+    use zbrain_core::eval::cross_modal::{default_slots, estimate_cost, ChatRequest, SlotConfig};
+    use zbrain_core::eval::takes_quality::receipt::{
+        parse_receipt_filename, ReceiptIdentity, RECEIPT_SCHEMA_VERSION,
+    };
+    use zbrain_core::eval::takes_quality::replay::{load_receipt_from_disk, load_receipt_from_db};
+    use zbrain_core::eval::takes_quality::regress::{compare_receipts, RegressOpts};
+    use zbrain_core::eval::takes_quality::trend::{load_trend, render_trend_table, TrendOpts};
+    use zbrain_core::eval::takes_quality::runner::{run as tq_run, TakesQualityRunOpts};
+    use zbrain_core::paths::zbrain_path;
+
+    match args.action {
+        TakesQualityAction::Run(run_args) => {
+            use std::io::IsTerminal;
+
+            let cycles = run_args
+                .cycles
+                .unwrap_or(if std::io::stdout().is_terminal() { 3 } else { 1 });
+            let receipt_dir = match &run_args.receipt_dir {
+                Some(d) => std::path::PathBuf::from(d),
+                None => zbrain_path("eval-receipts").ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "eval-takes-quality: cannot resolve ~/.zbrain — pass --receipt-dir <path> or set ZBRAIN_HOME"
+                    )
+                })?,
+            };
+            let max_tokens = run_args.max_tokens.unwrap_or(4000);
+
+            let defaults = default_slots();
+            let default_model = |idx: usize| -> String {
+                defaults.get(idx).map(|s| s.model.clone()).unwrap_or_default()
+            };
+            let slots: Vec<SlotConfig> = vec![
+                SlotConfig { id: "A".into(), model: run_args.slot_a_model.clone().unwrap_or_else(|| default_model(0)) },
+                SlotConfig { id: "B".into(), model: run_args.slot_b_model.clone().unwrap_or_else(|| default_model(1)) },
+                SlotConfig { id: "C".into(), model: run_args.slot_c_model.clone().unwrap_or_else(|| default_model(2)) },
+            ];
+
+            // Resolve each slot's ChatProvider from its `provider:model` string.
+            // Honest degradation: if any slot can't be resolved (no API key),
+            // fail loudly instead of fabricating a PASS.
+            let env_lookup = |k: &str| std::env::var(k).ok();
+            let mut resolved: Vec<(String, Arc<dyn ChatProvider>)> = vec![];
+            for slot in &slots {
+                let (_parsed, recipe) = resolve_recipe_strict(&slot.model).map_err(|e: AiConfigError| {
+                    anyhow::anyhow!("eval-takes-quality: cannot resolve model `{}`: {}", slot.model, e.message)
+                })?;
+                let provider = instantiate_chat(recipe, &slot.model, &env_lookup).map_err(|e: AiConfigError| {
+                    anyhow::anyhow!("eval-takes-quality: cannot build provider for `{}`: {}", slot.model, e.message)
+                })?;
+                resolved.push((slot.model.clone(), Arc::from(provider)));
+            }
+
+            let cost = estimate_cost(&slots, cycles, max_tokens);
+            eprintln!(
+                "[eval-takes-quality] estimated cost: ~${:.2}/cycle, ~${:.2} max for {} cycle(s).",
+                cost.per_cycle_usd, cost.per_run_max_usd, cycles
+            );
+            for note in &cost.notes {
+                eprintln!("[eval-takes-quality] note: {note}");
+            }
+
+            // Wiring: the injected chat closure dispatches by model string to
+            // the pre-resolved provider.
+            let providers: Arc<Vec<(String, Arc<dyn ChatProvider>)>> = Arc::new(resolved);
+            let chat = move |req: ChatRequest| {
+                let providers = providers.clone();
+                async move {
+                    let provider = providers
+                        .iter()
+                        .find(|(m, _)| m == &req.model)
+                        .map(|(_, p)| p.clone())
+                        .ok_or_else(|| anyhow::anyhow!("no provider resolved for model {}", req.model))?;
+                    let opts = ChatOpts {
+                        model: Some(req.model.clone()),
+                        system: Some(req.system.clone()),
+                        messages: vec![ChatMessage::text(ChatRole::User, req.prompt.clone())],
+                        tools: vec![],
+                        max_tokens: Some(req.max_tokens),
+                        cache_system: false,
+                    };
+                    let result = provider.chat(opts).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
+                    Ok(result.text)
+                }
+            };
+
+            let engine = open_tq_engine(config_path).await?;
+
+            let tq_opts = TakesQualityRunOpts {
+                engine: engine.as_ref(),
+                sample: run_args.sample,
+                slug: run_args.slug.clone(),
+                dimensions: run_args.dimensions.clone(),
+                slots: Some(slots.clone()),
+                cycles: run_args.cycles,
+                max_tokens: run_args.max_tokens,
+                receipt_dir,
+            };
+
+            let result = tq_run(&tq_opts, &chat).await?;
+
+            let verdict = result.receipt.verdict.clone();
+            eprintln!();
+            eprintln!("[eval-takes-quality] sampled {} takes", result.n_takes);
+            if let Some(msg) = &result.receipt.verdict_message {
+                eprintln!("[eval-takes-quality] {msg}");
+            }
+            eprintln!("[eval-takes-quality] receipt: {}", result.final_receipt_path);
+
+            if run_args.json {
+                let json_out = serde_json::json!({
+                    "verdict": verdict,
+                    "n_takes": result.n_takes,
+                    "overall_score": result.receipt.overall_score,
+                    "cost_usd": result.receipt.cost_usd,
+                    "scores": result.receipt.scores,
+                    "final_receipt_path": result.final_receipt_path,
+                    "schema_version": RECEIPT_SCHEMA_VERSION,
+                });
+                println!("{}", serde_json::to_string_pretty(&json_out)?);
+            }
+
+            // Exit codes: PASS=0, FAIL=1, INCONCLUSIVE=2.
+            let code = match verdict.as_str() {
+                "pass" => 0,
+                "fail" => 1,
+                _ => 2,
+            };
+            std::process::exit(code);
+        }
+        TakesQualityAction::Replay(replay_args) => {
+            let receipt = if let Some(from_db) = &replay_args.from_db {
+                let identity: ReceiptIdentity = parse_receipt_filename(from_db).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "eval-takes-quality replay: `{from_db}` is not a valid 4-sha receipt id"
+                    )
+                })?;
+                let engine = open_tq_engine(config_path).await?;
+                load_receipt_from_db(engine.as_ref(), &identity).await?
+            } else if let Some(path) = &replay_args.receipt {
+                load_receipt_from_disk(std::path::Path::new(path))?
+            } else {
+                anyhow::bail!("eval-takes-quality replay: pass --receipt <path> or --from-db <id>");
+            };
+
+            if replay_args.json {
+                println!("{}", serde_json::to_string_pretty(&receipt)?);
+            } else {
+                println!("verdict: {}", receipt.verdict);
+                println!("overall_score: {:?}", receipt.overall_score);
+                println!("rubric_version: {}", receipt.rubric_version);
+                println!("corpus_sha8: {}", receipt.corpus.corpus_sha8);
+                println!("models_sha8: {}", receipt.models_sha8);
+                println!("cost_usd: {:.2}", receipt.cost_usd);
+                println!("dimensions:");
+                for (dim, roll) in &receipt.scores {
+                    println!(
+                        "  {dim}: mean={:.1} min={:.1} max={:.1}",
+                        roll.mean, roll.min, roll.max
+                    );
+                }
+            }
+            Ok(())
+        }
+        TakesQualityAction::Regress(regress_args) => {
+            let current = if let Some(from_db) = &regress_args.current_from_db {
+                let identity: ReceiptIdentity = parse_receipt_filename(from_db).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "eval-takes-quality regress: `{from_db}` is not a valid 4-sha receipt id"
+                    )
+                })?;
+                let engine = open_tq_engine(config_path).await?;
+                load_receipt_from_db(engine.as_ref(), &identity).await?
+            } else if let Some(path) = &regress_args.current {
+                load_receipt_from_disk(std::path::Path::new(path))?
+            } else {
+                anyhow::bail!(
+                    "eval-takes-quality regress: --current (or --current-from-db) required"
+                );
+            };
+            let prior = if let Some(from_db) = &regress_args.prior_from_db {
+                let identity: ReceiptIdentity = parse_receipt_filename(from_db).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "eval-takes-quality regress: `{from_db}` is not a valid 4-sha receipt id"
+                    )
+                })?;
+                let engine = open_tq_engine(config_path).await?;
+                load_receipt_from_db(engine.as_ref(), &identity).await?
+            } else if let Some(path) = &regress_args.prior {
+                load_receipt_from_disk(std::path::Path::new(path))?
+            } else {
+                anyhow::bail!(
+                    "eval-takes-quality regress: --prior (or --prior-from-db) required"
+                );
+            };
+
+            let delta = compare_receipts(
+                &current,
+                &prior,
+                &RegressOpts {
+                    threshold: regress_args.threshold,
+                },
+            );
+
+            if regress_args.json {
+                let json_out = serde_json::json!({
+                    "regressed": delta.regressed,
+                    "overall_delta": delta.overall_delta,
+                    "threshold": delta.threshold,
+                    "inputs_differ": delta.inputs_differ,
+                    "input_diffs": delta.input_diffs,
+                    "dim_deltas": delta.dim_deltas,
+                    "summary": delta.summary,
+                });
+                println!("{}", serde_json::to_string_pretty(&json_out)?);
+            } else {
+                println!("{}", delta.summary);
+                if delta.inputs_differ {
+                    for d in &delta.input_diffs {
+                        println!("  {d}");
+                    }
+                }
+            }
+
+            if regress_args.fail_on_regress && delta.regressed {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        TakesQualityAction::Trend(trend_args) => {
+            let engine = open_tq_engine(config_path).await?;
+            let opts = TrendOpts {
+                days: Some(trend_args.days),
+                rubric_version: trend_args.rubric_version.clone(),
+                limit: trend_args.limit,
+            };
+            let rows = load_trend(engine.as_ref(), &opts)
+                .await
+                .map_err(|e| anyhow::anyhow!("eval-takes-quality trend: {e}"))?;
+            if trend_args.json {
+                println!("{}", serde_json::to_string_pretty(&rows)?);
+            } else {
+                println!("{}", render_trend_table(&rows));
+            }
+            Ok(())
+        }
+    }
+}
+
 async fn run_eval_suspected_contradictions_command(
     args: EvalSuspectedContradictionsArgs,
     config_path: Option<&Path>,
@@ -15863,22 +16085,24 @@ mod tests {
 
     #[test]
     fn eval_takes_quality_parses_minimal() {
-        // clap stays permissive: the handler owns the "seed takes first" /
-        // "no API key" honest errors, so the verb must accept with no flags.
-        let cli = Cli::try_parse_from(["zbrain", "eval-takes-quality"]).unwrap();
+        // clap stays permissive: the verb must accept `run` with no flags.
+        let cli = Cli::try_parse_from(["zbrain", "eval-takes-quality", "run"]).unwrap();
         match cli.command {
-            Commands::EvalTakesQuality(args) => {
-                assert_eq!(args.sample, 100);
-                assert!(args.slug.is_none());
-                assert!(args.dimensions.is_none());
-                assert!(args.cycles.is_none());
-                assert!(args.slot_a_model.is_none());
-                assert!(args.slot_b_model.is_none());
-                assert!(args.slot_c_model.is_none());
-                assert!(args.receipt_dir.is_none());
-                assert!(args.max_tokens.is_none());
-                assert!(!args.json);
-            }
+            Commands::EvalTakesQuality(args) => match args.action {
+                TakesQualityAction::Run(run_args) => {
+                    assert_eq!(run_args.sample, 100);
+                    assert!(run_args.slug.is_none());
+                    assert!(run_args.dimensions.is_none());
+                    assert!(run_args.cycles.is_none());
+                    assert!(run_args.slot_a_model.is_none());
+                    assert!(run_args.slot_b_model.is_none());
+                    assert!(run_args.slot_c_model.is_none());
+                    assert!(run_args.receipt_dir.is_none());
+                    assert!(run_args.max_tokens.is_none());
+                    assert!(!run_args.json);
+                }
+                _ => panic!("expected Run"),
+            },
             _ => panic!("expected EvalTakesQuality"),
         }
     }
@@ -15888,12 +16112,13 @@ mod tests {
         let cli = Cli::try_parse_from([
             "zbrain",
             "eval-takes-quality",
+            "run",
             "--sample",
             "20",
             "--slug",
             "my-brain",
             "--dimensions",
-            "insight,accuracy,clarity,actionability",
+            "accuracy,attribution",
             "--cycles",
             "2",
             "--slot-a-model",
@@ -15910,29 +16135,27 @@ mod tests {
         ])
         .unwrap();
         match cli.command {
-            Commands::EvalTakesQuality(args) => {
-                assert_eq!(args.sample, 20);
-                assert_eq!(args.slug.as_deref(), Some("my-brain"));
-                assert_eq!(
-                    args.dimensions.as_deref(),
-                    Some(
-                        [
-                            "insight".to_string(),
-                            "accuracy".to_string(),
-                            "clarity".to_string(),
-                            "actionability".to_string()
-                        ]
-                        .as_slice()
-                    )
-                );
-                assert_eq!(args.cycles, Some(2));
-                assert_eq!(args.slot_a_model.as_deref(), Some("openai:gpt-4o-mini"));
-                assert_eq!(args.slot_b_model.as_deref(), Some("anthropic:claude-sonnet-4-6"));
-                assert_eq!(args.slot_c_model.as_deref(), Some("google:gemini-2.0-flash"));
-                assert_eq!(args.receipt_dir.as_deref(), Some("/tmp/receipts"));
-                assert_eq!(args.max_tokens, Some(1500));
-                assert!(args.json);
-            }
+            Commands::EvalTakesQuality(args) => match args.action {
+                TakesQualityAction::Run(run_args) => {
+                    assert_eq!(run_args.sample, 20);
+                    assert_eq!(run_args.slug.as_deref(), Some("my-brain"));
+                    assert_eq!(
+                        run_args.dimensions.as_deref(),
+                        Some(
+                            ["accuracy".to_string(), "attribution".to_string()]
+                                .as_slice()
+                        )
+                    );
+                    assert_eq!(run_args.cycles, Some(2));
+                    assert_eq!(run_args.slot_a_model.as_deref(), Some("openai:gpt-4o-mini"));
+                    assert_eq!(run_args.slot_b_model.as_deref(), Some("anthropic:claude-sonnet-4-6"));
+                    assert_eq!(run_args.slot_c_model.as_deref(), Some("google:gemini-2.0-flash"));
+                    assert_eq!(run_args.receipt_dir.as_deref(), Some("/tmp/receipts"));
+                    assert_eq!(run_args.max_tokens, Some(1500));
+                    assert!(run_args.json);
+                }
+                _ => panic!("expected Run"),
+            },
             _ => panic!("expected EvalTakesQuality"),
         }
     }

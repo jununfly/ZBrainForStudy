@@ -2997,6 +2997,38 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
         Ok(Vec::new())
     }
 
+    /// Persist one `eval-takes-quality` run row (1-1-5-3 / #319 A2). Default
+    /// returns `false` (not recorded) so older engines compile; libsql and
+    /// postgres override with real SQL.
+    async fn write_takes_quality_run(
+        &self,
+        _row: &crate::eval::takes_quality::receipt::TakesQualityRunRow,
+    ) -> crate::Result<bool> {
+        let _ = _row;
+        Ok(false)
+    }
+
+    /// Load a single takes-quality receipt JSON by its 4-sha identity
+    /// (1-1-5-3). Used by `eval takes-quality replay --from-db`. Default
+    /// returns `None` so older engines compile; libsql and postgres override.
+    async fn load_takes_quality_run(
+        &self,
+        _identity: &crate::eval::takes_quality::receipt::ReceiptIdentity,
+    ) -> crate::Result<Option<serde_json::Value>> {
+        let _ = _identity;
+        Ok(None)
+    }
+
+    /// Load the trend of past takes-quality runs within `days` (newest first).
+    /// Default returns empty; libsql and postgres override with real SQL.
+    async fn load_takes_quality_trend(
+        &self,
+        _days: i64,
+    ) -> crate::Result<Vec<crate::eval::takes_quality::receipt::TakesQualityRunRow>> {
+        let _ = _days;
+        Ok(Vec::new())
+    }
+
     /// Persistent judge-cache entry lookup (1-1-5-8 / JudgeCache). Returns the
     /// cached verdict JSON if a row matches the key AND is non-expired; `None`
     /// otherwise (cache miss → caller performs a judge call). Default returns
@@ -4123,6 +4155,8 @@ pub struct InMemoryEngine {
     /// 1-1-5-6 (#62 trend): persisted probe run rows backing
     /// `eval suspected-contradictions trend` (in-memory, for testing).
     contradictions_runs_store: Mutex<Vec<crate::eval::contradictions::ContradictionsRunRow>>,
+    /// `eval takes-quality trend` (in-memory, for testing; 1-1-5-3 / #319 A2).
+    takes_quality_runs_store: Mutex<Vec<crate::eval::takes_quality::receipt::TakesQualityRunRow>>,
     /// 1-1-5-8 (JudgeCache): persisted judge-verdict cache rows (in-memory, for testing).
     contradictions_cache_store: Mutex<Vec<InternalContradictionCacheRow>>,
 }
@@ -4380,6 +4414,7 @@ impl InMemoryEngine {
             subagent_tool_executions_store: Mutex::new(Vec::new()),
             // 1-1-5-6 (#62 trend): probe run rows (in-memory, for testing)
             contradictions_runs_store: Mutex::new(Vec::new()),
+            takes_quality_runs_store: Mutex::new(Vec::new()),
             contradictions_cache_store: Mutex::new(Vec::new()),
         }
     }
@@ -4747,6 +4782,67 @@ impl BrainEngine for InMemoryEngine {
             .lock()
             .expect("InMemoryEngine contradictions_runs_store poisoned");
         let mut rows: Vec<crate::eval::contradictions::ContradictionsRunRow> = if days <= 0 {
+            store.clone()
+        } else {
+            let cutoff = chrono::Utc::now() - chrono::Duration::days(days);
+            store
+                .iter()
+                .filter(|r| {
+                    chrono::DateTime::parse_from_rfc3339(&r.ran_at)
+                        .map(|dt| dt.with_timezone(&chrono::Utc) >= cutoff)
+                        .unwrap_or(false)
+                })
+                .cloned()
+                .collect()
+        };
+        rows.sort_by(|a, b| b.ran_at.cmp(&a.ran_at));
+        Ok(rows)
+    }
+
+    // ─── 1-1-5-3 (#319 A2): persist + load takes-quality run rows ──────────
+
+    async fn write_takes_quality_run(
+        &self,
+        row: &crate::eval::takes_quality::receipt::TakesQualityRunRow,
+    ) -> crate::Result<bool> {
+        let mut store = self
+            .takes_quality_runs_store
+            .lock()
+            .expect("InMemoryEngine takes_quality_runs_store poisoned");
+        if store.iter().any(|r| r.run_id == row.run_id) {
+            return Ok(false);
+        }
+        store.push(row.clone());
+        Ok(true)
+    }
+
+    async fn load_takes_quality_run(
+        &self,
+        identity: &crate::eval::takes_quality::receipt::ReceiptIdentity,
+    ) -> crate::Result<Option<serde_json::Value>> {
+        let run_id = format!(
+            "{}-{}-{}-{}",
+            identity.corpus_sha8, identity.prompt_sha8, identity.models_sha8, identity.rubric_sha8
+        );
+        let store = self
+            .takes_quality_runs_store
+            .lock()
+            .expect("InMemoryEngine takes_quality_runs_store poisoned");
+        Ok(store
+            .iter()
+            .find(|r| r.run_id == run_id)
+            .map(|r| r.receipt_json.clone()))
+    }
+
+    async fn load_takes_quality_trend(
+        &self,
+        days: i64,
+    ) -> crate::Result<Vec<crate::eval::takes_quality::receipt::TakesQualityRunRow>> {
+        let store = self
+            .takes_quality_runs_store
+            .lock()
+            .expect("InMemoryEngine takes_quality_runs_store poisoned");
+        let mut rows: Vec<crate::eval::takes_quality::receipt::TakesQualityRunRow> = if days <= 0 {
             store.clone()
         } else {
             let cutoff = chrono::Utc::now() - chrono::Duration::days(days);
