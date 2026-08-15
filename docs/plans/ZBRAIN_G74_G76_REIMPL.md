@@ -28,7 +28,7 @@
 │       └── [x][Y+] 1-1-5-11. eval-brainstorm checkpoint resume 续跑（resume playback 接入 orchestrator）
 └── [~][X+] 1-2. G76 extract 族命令 Rust 重实现
     ├── [x] 1-2-1. 修正 KNOWN-GAPS G76 描述 + 新增顶层 extract verb（links/timeline/all）
-    ├── [ ][X+] 1-2-2. G76a 补齐：--source fs 文件系统抽取路径（含 --by-mention）
+    ├── [x][X+] 1-2-2. G76a 补齐：--source fs 文件系统抽取路径（含 --by-mention）
     ├── [ ][X+] 1-2-3. G76b：extract-conversation-facts（真 LLM，unblocked — Rust ConversationFactsBackfill 已就绪）
     └── [ ][X+] 1-2-4. 决策：minion extract job type 是否接线到新 extract verb
 <!-- ROADMAP_TREE_END -->

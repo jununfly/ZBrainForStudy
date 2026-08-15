@@ -104,7 +104,7 @@
     "1-2-2": {
       "id": "1-2-2",
       "label": "G76a 补齐：--source fs 文件系统抽取路径（含 --by-mention）",
-      "status": "pending",
+      "status": "completed",
       "mode": "explore",
       "parent": "1-2",
       "children": [],
