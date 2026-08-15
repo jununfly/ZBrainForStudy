@@ -3072,6 +3072,14 @@ pub enum ExtractAction {
 
     /// Run both link and timeline extraction in one pass
     All(ExtractAllArgs),
+
+    /// Extract facts from conversation pages via LLM (TS `extract-conversation-facts`).
+    ///
+    /// Wires directly to `run_extract_conversation_facts_core` — the same core
+    /// the `conversation-facts-backfill` cycle phase uses. Requires an LLM
+    /// provider; `--dry-run` still resolves the provider but writes nothing.
+    /// Closes KNOWN-GAPS G76b.
+    ConversationFacts(ExtractConversationFactsArgs),
 }
 
 /// Arguments for `zbrain extract links`.
@@ -3136,6 +3144,65 @@ pub struct ExtractAllArgs {
     /// Filesystem directory to walk (required when `--source fs`).
     #[arg(long)]
     pub dir: Option<String>,
+}
+
+/// Arguments for `zbrain extract conversation-facts` (KNOWN-GAPS G76b).
+///
+/// Faithful Rust port of the TS top-level `extract-conversation-facts`
+/// command: enumerate conversation-style pages (optionally a single `--slug`)
+/// and extract structured facts via an LLM, inserting them into the fact
+/// store with per-page checkpointing for resume. Uses the same core op the
+/// `conversation-facts-backfill` cycle phase uses.
+#[derive(Debug, Parser)]
+pub struct ExtractConversationFactsArgs {
+    /// Process a single page slug only (default: every matching page).
+    #[arg(long)]
+    pub slug: Option<String>,
+
+    /// Source id to scan (default "default").
+    #[arg(long, default_value = "default")]
+    pub source_id: String,
+
+    /// Restrict to these page types (repeatable). Defaults to all allowed
+    /// conversation types.
+    #[arg(long = "type")]
+    pub types: Vec<String>,
+
+    /// Extract facts but do not insert them into the store.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Max number of pages to process.
+    #[arg(long)]
+    pub limit: Option<usize>,
+
+    /// Only process pages changed since this ISO-8601 timestamp.
+    #[arg(long)]
+    pub since: Option<String>,
+
+    /// Clear the per-slug checkpoint before processing (re-process from start).
+    #[arg(long)]
+    pub force: bool,
+
+    /// LLM model override (default anthropic:claude-sonnet-4-6).
+    #[arg(long)]
+    pub model: Option<String>,
+
+    /// Max spend in USD for this run.
+    #[arg(long)]
+    pub max_cost: Option<f64>,
+
+    /// Sleep ms between LLM calls (throttle). Default 200.
+    #[arg(long)]
+    pub sleep_ms: Option<u64>,
+
+    /// Max segments per page (0 = no limit). Default 0.
+    #[arg(long)]
+    pub segment_limit: Option<usize>,
+
+    /// Output as JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 // ── Links subcommands ──────────────────────────────────────────
@@ -11263,6 +11330,9 @@ async fn run_extract_command(
         ExtractAction::Links(args) => run_extract_links(args, config_path).await?,
         ExtractAction::Timeline(args) => run_extract_timeline(args, config_path).await?,
         ExtractAction::All(args) => run_extract_all(args, config_path).await?,
+        ExtractAction::ConversationFacts(args) => {
+            run_extract_conversation_facts(args, config_path).await?
+        }
     }
     Ok(())
 }
@@ -11410,6 +11480,102 @@ async fn run_extract_all(args: ExtractAllArgs, config_path: Option<&Path>) -> an
             links.links_created,
             links.dangling,
             timeline.entries_added
+        );
+    }
+
+    engine.disconnect().await?;
+    Ok(())
+}
+
+/// Execute `zbrain extract conversation-facts` — Rust port of the TS
+/// top-level `extract-conversation-facts` command (KNOWN-GAPS G76b).
+///
+/// Enumerates conversation-style pages (optionally a single `--slug`) and
+/// extracts structured facts via an LLM, inserting them into the fact store
+/// with per-page checkpointing for resume. Reuses the exact core op the
+/// `conversation-facts-backfill` cycle phase uses, so behavior stays in
+/// lockstep with the autopilot path.
+async fn run_extract_conversation_facts(
+    args: ExtractConversationFactsArgs,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    use std::sync::Arc;
+    use zbrain_core::ai::chat::{instantiate_chat, ChatProvider};
+    use zbrain_core::ai::resolver::{resolve_recipe_strict, AiConfigError};
+    use zbrain_core::autopilot::phases::conversation_facts_backfill::{
+        run_extract_conversation_facts_core, ExtractConversationFactsCoreOpts,
+        DEFAULT_EXTRACT_MODEL, DEFAULT_INTER_CALL_SLEEP_MS, DEFAULT_MAX_COST_USD,
+    };
+
+    let engine = connect_extract_engine(config_path).await?;
+
+    // Build the LLM provider. Mirrors `zbrain brainstorm`: resolve the model
+    // recipe, then instantiate. A missing API key surfaces a clear message
+    // rather than a stack trace at call time.
+    let resolved_model = args
+        .model
+        .clone()
+        .unwrap_or_else(|| DEFAULT_EXTRACT_MODEL.to_string());
+    let env_lookup = |k: &str| std::env::var(k).ok();
+    let (_parsed, recipe) = resolve_recipe_strict(&resolved_model).map_err(|e: AiConfigError| {
+        anyhow::anyhow!(
+            "zbrain extract conversation-facts: cannot resolve model `{}`: {}. Set your provider API key (e.g. ANTHROPIC_API_KEY) or run `zbrain models doctor`.",
+            resolved_model, e.message
+        )
+    })?;
+    let chat: Arc<dyn ChatProvider> = Arc::from(
+        instantiate_chat(recipe, &resolved_model, &env_lookup).map_err(|e: AiConfigError| {
+            anyhow::anyhow!(
+                "zbrain extract conversation-facts: cannot build LLM provider for `{}`: {}. Set your provider API key or run `zbrain models doctor`.",
+                resolved_model, e.message
+            )
+        })?,
+    );
+
+    let opts = ExtractConversationFactsCoreOpts {
+        source_id: args.source_id.clone(),
+        types: if args.types.is_empty() { None } else { Some(args.types.clone()) },
+        slug: args.slug.clone(),
+        dry_run: args.dry_run,
+        limit: args.limit,
+        since_iso: args.since.clone(),
+        force: args.force,
+        sleep_ms: args.sleep_ms.unwrap_or(DEFAULT_INTER_CALL_SLEEP_MS),
+        segment_limit: args.segment_limit.unwrap_or(0),
+        max_cost_usd: args.max_cost.unwrap_or(DEFAULT_MAX_COST_USD),
+        model: args.model.clone(),
+        budget_tracker: None,
+    };
+
+    let result = run_extract_conversation_facts_core(&engine, &*chat, &opts).await?;
+
+    if args.json {
+        let output = serde_json::json!({
+            "pages_considered": result.pages_considered,
+            "pages_processed": result.pages_processed,
+            "pages_skipped": result.pages_skipped,
+            "pages_skipped_too_large": result.pages_skipped_too_large,
+            "pages_skipped_disappeared": result.pages_skipped_disappeared,
+            "segments_processed": result.segments_processed,
+            "facts_extracted": result.facts_extracted,
+            "facts_inserted": result.facts_inserted,
+            "budget_exhausted": result.budget_exhausted,
+            "spent_usd": result.spent_usd,
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!(
+            "extract conversation-facts: considered={} processed={} skipped={} too_large={} disappeared={} segments={} facts_extracted={} facts_inserted={} spent={:?}{}",
+            result.pages_considered,
+            result.pages_processed,
+            result.pages_skipped,
+            result.pages_skipped_too_large,
+            result.pages_skipped_disappeared,
+            result.segments_processed,
+            result.facts_extracted,
+            result.facts_inserted,
+            result.spent_usd,
+            if result.budget_exhausted { " (budget_exhausted)" } else { "" },
         );
     }
 
@@ -15599,10 +15765,47 @@ mod tests {
 
     #[test]
     fn extract_rejects_unknown_subcommand() {
-        // Guards against silently accepting the TS-only `--source fs` path
-        // (still outstanding, tracked as G76a-4) as if it were implemented.
+        // `facts` is not a valid extract subcommand (the real verb is
+        // `conversation-facts`, added in 1-2-3). `--source` is now a recognized
+        // flag on every extract subcommand (1-2-2 implemented the filesystem
+        // source), so `links --source fs` parses; it is only rejected at
+        // runtime when `--dir` is missing.
         assert!(Cli::try_parse_from(["zbrain", "extract", "facts"]).is_err());
-        assert!(Cli::try_parse_from(["zbrain", "extract", "links", "--source", "fs"]).is_err());
+        assert!(Cli::try_parse_from(["zbrain", "extract", "links", "--source", "fs"]).is_ok());
+    }
+
+    #[test]
+    fn extract_conversation_facts_parses_default_and_flags() {
+        let cli = Cli::try_parse_from([
+            "zbrain",
+            "extract",
+            "conversation-facts",
+            "--slug",
+            "page-1",
+            "--source-id",
+            "default",
+            "--type",
+            "meeting",
+            "--dry-run",
+            "--limit",
+            "5",
+            "--model",
+            "anthropic:claude-sonnet-4-6",
+            "--json",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Extract(ExtractAction::ConversationFacts(args)) => {
+                assert_eq!(args.slug.as_deref(), Some("page-1"));
+                assert_eq!(args.source_id, "default");
+                assert_eq!(args.types, vec!["meeting".to_string()]);
+                assert!(args.dry_run);
+                assert_eq!(args.limit, Some(5));
+                assert_eq!(args.model.as_deref(), Some("anthropic:claude-sonnet-4-6"));
+                assert!(args.json);
+            },
+            _ => panic!("expected Extract::ConversationFacts"),
+        }
     }
 
     // ── `zbrain eval` verb (KNOWN-GAPS G74) ──────────────────────
