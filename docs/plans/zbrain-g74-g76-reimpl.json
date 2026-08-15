@@ -505,17 +505,48 @@
     "1-1-5-11": {
       "id": "1-1-5-11",
       "label": "eval-brainstorm checkpoint resume 续跑（resume playback 接入 orchestrator）",
-      "status": "pending",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-1-5",
       "children": [],
-      "decisions": [],
+      "decisions": [
+        {
+          "q": "Resume 主轴语义（--resume 填实后做什么）",
+          "answer": "重跑再生：加载存储 run 的 question+profile+close/far 输入，重新执行 run_brainstorm 重新生成 ideas；无需 partial 持久化",
+          "note": "store 只落完整 run，原 crashed-run 增量续跑不可行，故选重跑再生贴合续跑/复现"
+        },
+        {
+          "q": "本节点是否一并给 eval-brainstorm 变体接 resume",
+          "answer": "两者同接：brainstorm 与 eval-brainstorm 命令都接 --resume/--force-resume（与 review_run/trend 对称）",
+          "note": "用户显选 B，scope 扩到 eval 变体"
+        },
+        {
+          "q": "Staleness 闸门：--force-resume 是否实现 7 天闸门？",
+          "answer": "实现 7 天闸门：resume 默认拒 7 天前 run（与 STALE_MS/GC 窗口一致），--force-resume 绕过",
+          "note": "让既有 dead flag 产生真实语义"
+        },
+        {
+          "q": "Resume 的 run_id 与保存策略：重跑后如何处理 run_id 撞原 run？",
+          "answer": "新 run_id + 默认保存：重跑后把 result.run_id 改写为 <原>~r<ts> 再落盘；原 run 保留，trend 可对比续跑 vs 原跑。",
+          "note": "避覆盖，契合 1-1-5-10 trend"
+        },
+        {
+          "q": "Resume 续跑的 close/far 页面保真度？",
+          "answer": "按 question 重新发现：调 run_brainstorm 用存储 question+profile 重跑 Phase 1-2，close/far 重新 hybrid-search 发现（DB 变化可能不同）；不改 orchestrator。",
+          "note": "exploit 取最小改动；BrainstormResult 不含正文须重取"
+        },
+        {
+          "q": "Resume 节点的测试策略？",
+          "answer": "单测 + CLI 冒烟：单测覆盖 resume 分支（mock load+orchestrator，验证 加载→重建 options→新 run_id 保存）；CLI 用隔离 config 真库冒烟 --resume 不崩、复用 question、产生新 run_id。",
+          "note": "与 1-1-5-9/10 测试风格一致"
+        }
+      ],
       "notes": ""
     }
   },
   "metadata": {
     "created": "2026-08-09 00:23:13",
-    "updated": "2026-08-15 02:19:10",
+    "updated": "2026-08-15 02:45:03",
     "md_file": "docs/plans/ZBRAIN_G74_G76_REIMPL.md"
   }
 }
