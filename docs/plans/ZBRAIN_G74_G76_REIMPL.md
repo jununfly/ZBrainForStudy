@@ -17,7 +17,7 @@
 │       ├── [x][X+] 1-1-5-2. eval-longmemeval（#60，替换 G58 占位）
 │       ├── [x][X+] 1-1-5-3. eval-takes-quality（#61，新建 EvalTakesQuality variant）
 │       │   ├── [x][X+] 1-1-5-3-1. eval-takes-quality MVP: takes runner + CLI verb + honest Err(no key)
-│       │   └── [ ][X+] 1-1-5-3-2. eval-takes-quality harness: receipt/replay/regress/trend playback (356L TS)
+│       │   └── [~][X+] 1-1-5-3-2. eval-takes-quality harness: receipt/replay/regress/trend playback (356L TS)
 │       ├── [x][X+] 1-1-5-4. eval-suspected-contradictions（#62，最大一族 judge×153）
 │       ├── [x][Y+] 1-1-5-5. eval-brainstorm（#63，完整 generator 移植：4 引擎方法 + orchestrator/domain-bank/judges 三模块 + search/embed）
 │       ├── [x][X+] 1-1-5-6. eval-suspected-contradictions trend 子命令（#62 延伸：write/loadContradictionsRun 引擎方法 + ASCII 图表）
@@ -29,7 +29,7 @@
 └── [~][X+] 1-2. G76 extract 族命令 Rust 重实现
     ├── [x] 1-2-1. 修正 KNOWN-GAPS G76 描述 + 新增顶层 extract verb（links/timeline/all）
     ├── [ ][X+] 1-2-2. G76a 补齐：--source fs 文件系统抽取路径（含 --by-mention）
-    ├── [ ][X+] 1-2-3. G76b：extract-conversation-facts（真 LLM，blocked by G35）
+    ├── [ ][X+] 1-2-3. G76b：extract-conversation-facts（真 LLM，unblocked — Rust ConversationFactsBackfill 已就绪）
     └── [ ][X+] 1-2-4. 决策：minion extract job type 是否接线到新 extract verb
 <!-- ROADMAP_TREE_END -->
 
@@ -86,5 +86,6 @@
 | 1-1-5-11 | Resume 的 run_id 与保存策略：重跑后如何处理 run_id 撞原 run？ | 新 run_id + 默认保存：重跑后把 result.run_id 改写为 <原>~r<ts> 再落盘；原 run 保留，trend 可对比续跑 vs 原跑。 | 避覆盖，契合 1-1-5-10 trend |
 | 1-1-5-11 | Resume 续跑的 close/far 页面保真度？ | 按 question 重新发现：调 run_brainstorm 用存储 question+profile 重跑 Phase 1-2，close/far 重新 hybrid-search 发现（DB 变化可能不同）；不改 orchestrator。 | exploit 取最小改动；BrainstormResult 不含正文须重取 |
 | 1-1-5-11 | Resume 节点的测试策略？ | 单测 + CLI 冒烟：单测覆盖 resume 分支（mock load+orchestrator，验证 加载→重建 options→新 run_id 保存）；CLI 用隔离 config 真库冒烟 --resume 不崩、复用 question、产生新 run_id。 | 与 1-1-5-9/10 测试风格一致 |
+| 1-1-5-3-2 | Q1-final 归宿（harness 四件套 receipt/replay/regress/trend）？ | 选 A：保真 port TS 四件套全写（~356L + 测试），自包含全 parity；不复用 eval/replay.rs + compare.rs + gate.rs 的 regression 能力 | 事实核查(2026-08-15 grill，用户 catch)：replay.rs::CapturedRow 是检索重放模型{tool_name,query,retrieved_slugs,latency_ms}、RowResult 量 jaccard/top1_match/latency_delta、ReplaySummary 报 rows_over_2x_latency——与 takes-quality 的 judge 打分 takes(insight/accuracy/clarity/actionability) 数据模型完全正交；compare.rs::compare_reports 硬耦合 RunAllReport、gate.rs 的 RegressionGateOutput 是 run-all 正确性 gate 流(cli lib.rs:8985/9066/9783/9795)，三者均 run-all 私有 machinery，takes-quality 只 emit TakesQualityResult+judge receipts 不产 RunAllReport，无法直接复用（除非方枘圆凿硬塞 RunAllReport）。唯一可复用中性辅助=replay.rs::jaccard_slugs(slug 集相似度)；brainstorm 的 summarize(store.rs:130) 同名不同型自写、未复用 replay.rs → 全仓无跨 eval 模块共享 regression 原语。故 A vs B-min 真实轴=4 件 vs 2 件领域代码（非复用 vs 不复用）；A 自包含干净全 parity，修订后推荐 A。 |
 
 <!-- ROADMAP_SECTION_END -->

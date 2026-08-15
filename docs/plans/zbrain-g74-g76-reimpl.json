@@ -113,13 +113,13 @@
     },
     "1-2-3": {
       "id": "1-2-3",
-      "label": "G76b：extract-conversation-facts（真 LLM，blocked by G35）",
+      "label": "G76b：extract-conversation-facts（真 LLM，unblocked — Rust ConversationFactsBackfill 已就绪）",
       "status": "pending",
       "mode": "explore",
       "parent": "1-2",
       "children": [],
       "decisions": [],
-      "notes": "TS 源 1115 行（git 历史 3c09a69f^ 取回，已缓存 Temp/zb_extract_src）。真依赖：isAvailable('chat') 门控(L1009)、分段 LLM 抽取 + 节流(L106)、engine.insertFacts(L570/645)、per-page TERMINAL 审计行做断点续跑(Codex C7/E16)。前置阻塞：G35（facts op/dispatch 层未移植）。这一条才是 KNOWN-GAPS 原先描述真正适用的对象。"
+      "notes": "TS 源 1115 行（git 历史 3c09a69f^ 取回，已缓存 Temp/zb_extract_src）。真依赖：isAvailable('chat') 门控(L1009)、分段 LLM 抽取 + 节流(L106)、engine.insertFacts(L570/645)、per-page TERMINAL 审计行做断点续跑(Codex C7/E16)。前置阻塞已证伪：KNOWN-GAPS 无 G35 条目；Rust 已有 CyclePhase::ConversationFactsBackfill + run_phase_conversation_facts_backfill（autopilot/cycle.rs）实现 LLM 抽取能力，仅缺独立 `extract conversation-facts` CLI verb 接线。本节点重分类为 unblocked（pending），不再作为 G76 阻塞源。"
     },
     "1-2-4": {
       "id": "1-2-4",
@@ -370,12 +370,18 @@
     "1-1-5-3-2": {
       "id": "1-1-5-3-2",
       "label": "eval-takes-quality harness: receipt/replay/regress/trend playback (356L TS)",
-      "status": "pending",
+      "status": "in_progress",
       "mode": "explore",
       "parent": "1-1-5-3",
       "children": [],
-      "decisions": [],
-      "notes": ""
+      "decisions": [
+        {
+          "q": "Q1-final: 1-1-5-3-2 归宿（takes-quality harness 四件套 receipt/replay/regress/trend）",
+          "answer": "选 A：保真 port TS 四件套全写（~356L + 测试），自包含全 parity；不复用 eval/replay.rs + compare.rs + gate.rs 的 regression 能力",
+          "note": "事实核查(2026-08-15 grill，用户 catch)：eval/replay.rs::CapturedRow(L58) 是检索重放模型{tool_name:ReplayTool, query, retrieved_slugs, latency_ms}、RowResult 量 jaccard/top1_match/latency_delta、ReplaySummary 报 rows_over_2x_latency——与 takes-quality 的 judge 打分 takes(insight/accuracy/clarity/actionability 维度) 数据模型完全正交。eval/compare.rs::compare_reports 硬耦合 RunAllReport(run_all.rs:47)，eval/gate.rs 的 RegressionGateOutput 是 run-all 正确性 gate 流(cli lib.rs:8985/9066/9783/9795)——三者均 run-all harness 私有 machinery，takes-quality 只 emit TakesQualityResult+judge receipts、不产 RunAllReport，无法直接复用（除非方枘圆凿硬塞 RunAllReport）。唯一可复用中性辅助=replay.rs::jaccard_slugs(slug 集相似度)。brainstorm 的 summarize(store.rs:130) 同名不同型自写、未复用 replay.rs → 全仓无跨 eval 模块共享 regression 原语。故 A vs B-min 真实轴=4 件 vs 2 件领域代码（非复用 vs 不复用）；A 自包含干净全 parity，修订后推荐 A（B-min 的免费复用卖点为假）。"
+        }
+      ],
+      "notes": "决策 A(2026-08-15 grill)：保真 port TS takes-quality harness 四件套（receipt/replay/regress/trend），自包含、不与 run-all generics 耦合。现状：1-1-5-3-1 MVP(takes_quality.rs,217L,runner+receipt_dir/final_receipt_path 雏形+CLI verb) 已完成并推送。本节点补 harness 四件套使 takes-quality 与 brainstorm/suspected-contradictions 在「历史回归+趋势可见性」上对等 parity。实现须按 takes-quality 自身 receipt 模型写 replay/regress（不能套 CapturedRow）；测试随件附。"
     },
     "1-1-5-6": {
       "id": "1-1-5-6",
