@@ -1440,6 +1440,40 @@ mod brainstorm_cli_tests {
     }
 
     #[test]
+    fn parses_links_reconcile_verb() {
+        let cli = Cli::try_parse_from([
+            "zbrain",
+            "links",
+            "reconcile",
+            "--source",
+            "my-src",
+            "--dry-run",
+            "--json",
+        ])
+        .unwrap();
+        match cli.command {
+            crate::Commands::Links(crate::LinksAction::Reconcile(args)) => {
+                assert_eq!(args.source, "my-src");
+                assert!(args.dry_run);
+                assert!(args.json);
+            }
+            other => panic!("expected Links/Reconcile, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_links_reconcile_default_source() {
+        let cli = Cli::try_parse_from(["zbrain", "links", "reconcile"]).unwrap();
+        match cli.command {
+            crate::Commands::Links(crate::LinksAction::Reconcile(args)) => {
+                assert_eq!(args.source, "default");
+                assert!(!args.dry_run);
+            }
+            other => panic!("expected Links/Reconcile, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn brainstorm_parses_without_question() {
         // `question` is optional at the parse layer (so --help works); the
         // runtime handler enforces "question required". Assert the verb still
@@ -3270,6 +3304,12 @@ pub enum LinksAction {
     /// candidates, recording outcomes in `edge_metadata`.
     #[command(name = "edges-backfill")]
     EdgesBackfill(LinksEdgesBackfillArgs),
+
+    /// Reconcile doc↔impl edges: scan markdown pages for code-path
+    /// references and create `documents` / `documented_by` edges to the
+    /// matching code page (G77 / 1-6-2). Mirrors TS `reconcile-links.ts`.
+    #[command(name = "reconcile")]
+    Reconcile(LinksReconcileArgs),
 }
 
 /// Arguments for `zbrain links add`.
@@ -3400,6 +3440,26 @@ pub struct LinksEdgesBackfillArgs {
     /// Cap on chunks walked per source (default: 2000).
     #[arg(long)]
     pub max_chunks: Option<usize>,
+
+    /// Emit JSON result on stdout.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `zbrain links reconcile`.
+///
+/// Mirrors TS `reconcile-links.ts`. Scans every markdown page in the scoped
+/// source for code-path references and upserts `documents` / `documented_by`
+/// edges to the matching code page. Idempotent.
+#[derive(Debug, Parser)]
+pub struct LinksReconcileArgs {
+    /// Scope reconciliation to one source (default: 'default').
+    #[arg(long, default_value = "default")]
+    pub source: String,
+
+    /// Report counts without writing any edges.
+    #[arg(long)]
+    pub dry_run: bool,
 
     /// Emit JSON result on stdout.
     #[arg(long)]
@@ -11654,6 +11714,72 @@ async fn run_extract_conversation_facts(
 // ── Links commands ──────────────────────────────────────────────
 
 /// Dispatch `zbrain links` subcommands.
+/// Execute `zbrain links reconcile` (G77 / 1-6-2).
+///
+/// Scans every markdown page in the scoped source for code-path references,
+/// then upserts bidirectional `documents` / `documented_by` edges to the
+/// matching code page. Idempotent; respects the `auto_link` config gate.
+/// Mirrors TS `reconcile-links.ts`.
+async fn run_links_reconcile(
+    args: LinksReconcileArgs,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    use zbrain_core::engine::{BrainEngine, EngineConfig};
+    use zbrain_core::links::{reconcile_links, ReconcileLinksOpts};
+
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = zbrain_core::libsql::LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    let opts = ReconcileLinksOpts {
+        source_id: Some(args.source.clone()),
+        dry_run: args.dry_run,
+    };
+    let result = reconcile_links(&engine, &opts).await?;
+
+    if args.json {
+        let output = serde_json::json!({
+            "status": result.status,
+            "markdownPagesScanned": result.markdown_pages_scanned,
+            "codeRefsFound": result.code_refs_found,
+            "edgesAttempted": result.edges_attempted,
+            "edgesTargetsMissing": result.edges_targets_missing,
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else if result.status == "auto_link_disabled" {
+        println!(
+            "[reconcile-links] auto_link is disabled in config; skipping. \
+             Set `zbrain config set auto_link true` to re-enable."
+        );
+    } else {
+        let header = if args.dry_run {
+            "reconcile-links (dry run)"
+        } else {
+            "reconcile-links"
+        };
+        print!(
+            "{}: scanned {} markdown pages, found {} code refs, attempted {} edges",
+            header,
+            result.markdown_pages_scanned,
+            result.code_refs_found,
+            result.edges_attempted
+        );
+        if result.edges_targets_missing > 0 {
+            print!(" ({} targets missing code page)", result.edges_targets_missing);
+        }
+        println!();
+    }
+
+    engine.disconnect().await?;
+    Ok(())
+}
+
 async fn run_links_command(action: LinksAction, config_path: Option<&Path>) -> anyhow::Result<()> {
     match action {
         LinksAction::Add(args) => run_links_add(args, config_path).await?,
@@ -11666,6 +11792,7 @@ async fn run_links_command(action: LinksAction, config_path: Option<&Path>) -> a
         LinksAction::EdgesBackfill(args) => {
             run_links_edges_backfill(args, config_path).await?
         }
+        LinksAction::Reconcile(args) => run_links_reconcile(args, config_path).await?,
     }
     Ok(())
 }
