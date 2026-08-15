@@ -41,7 +41,7 @@
     "1-1": {
       "id": "1-1",
       "label": "G74 eval 族命令 Rust 重实现（19 命令）",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": "1",
       "children": [
@@ -575,7 +575,7 @@
   },
   "metadata": {
     "created": "2026-08-09 00:23:13",
-    "updated": "2026-08-16 00:16:52",
+    "updated": "2026-08-16",
     "md_file": "docs/plans/ZBRAIN_G74_G76_REIMPL.md"
   }
 }

@@ -336,7 +336,7 @@
     "1-6": {
       "id": "1-6",
       "label": "G77 图维护族 CLI verb（backfill-links / reconcile-links / edges-backfill）",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1",
       "children": [
@@ -361,7 +361,7 @@
           "note": "TS backfill 命令实际无 links kind (只有 effective_date/emotional_weight/embedding_voyage). G77 实际是 3 个独立 verb (rebuild-md-links + reconcile-links + edges-backfill). zj-roadmap-driven skill 禁止直接 Edit JSON, 但命令行 decide 因嵌套引号报错, 选择 Python 改 JSON + 写理由."
         }
       ],
-      "notes": ""
+      "notes": "收口：子节点 1-6-1/1-6-2/1-6-3 全部 completed。1-6-2 reconcile-links 与 1-6-3 edges-backfill 由本轮 Rust port 落地（links.rs / symbol_edges.rs），1-6-1 reindex 早于本轮。父节点标记 completed。"
     },
     "1-6-1": {
       "id": "1-6-1",
@@ -413,7 +413,7 @@
   },
   "metadata": {
     "created": "2026-08-08 01:18:16",
-    "updated": "2026-08-15 23:40:14",
+    "updated": "2026-08-16",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART13_MINION_HANDLER_WIRING.md"
   }
 }
