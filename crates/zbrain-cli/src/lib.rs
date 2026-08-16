@@ -29,6 +29,7 @@ use zbrain_core::autopilot::cycle::{
     run_cycle, CycleOpts, CyclePhase, CycleReport, CycleStatus, PhaseResult, PhaseStatus,
 };
 use zbrain_core::ai::chat::ChatProvider;
+use zbrain_core::ai::expand::{expand_query, ChatExpansionProvider, ExpansionProvider};
 use zbrain_core::embedding::EmbeddingClient;
 use zbrain_core::engine::BrainEngine;
 use zbrain_core::eval::brainstorm::orchestrator::{
@@ -9151,6 +9152,98 @@ fn eval_dedup_opts(config: &zbrain_core::search::EvalConfig) -> zbrain_core::sea
 ///
 /// `run_eval` is deliberately embedding-free (see its module docs): it takes an
 /// async `Fn(&str) -> Future<Result<Vec<slug>>>` rather than switching on the
+/// Per-strategy retrieval for a single sub-query, carrying `rrf_k` through to
+/// the engine so `zbrain eval --rrf-k` re-ranks (KNOWN-GAPS G74b). Extracted
+/// from `run_one_eval_config`'s closure so the multi-query `--expand` path can
+/// reuse it for each expanded sub-query.
+async fn eval_retrieve_slugs(
+    engine: &dyn zbrain_core::engine::BrainEngine,
+    client: Option<std::sync::Arc<zbrain_core::embedding::EmbeddingClient>>,
+    dedup_opts: zbrain_core::search::dedup::DedupOpts,
+    strategy: zbrain_core::search::EvalStrategy,
+    rrf_k: Option<f64>,
+    sub_query: &str,
+    limit: usize,
+) -> zbrain_core::Result<Vec<String>> {
+    match strategy {
+        zbrain_core::search::EvalStrategy::Keyword => {
+            let results = engine
+                .search_pages(&zbrain_core::engine::SearchOpts {
+                    keywords: vec![sub_query.to_string()],
+                    limit: Some(limit),
+                    rrf_k,
+                    ..Default::default()
+                })
+                .await?;
+            Ok(results.into_iter().map(|r| r.page.slug).collect())
+        }
+        zbrain_core::search::EvalStrategy::Vector => {
+            let client = client.ok_or_else(|| {
+                zbrain_core::Error::new(
+                    "EvalError",
+                    "run_eval",
+                    "--strategy vector needs an embedding provider — \
+                     set ZEROENTROPY_API_KEY (or use --strategy keyword)",
+                )
+            })?;
+            let embedding = client
+                .embed_query(sub_query)
+                .await
+                .map_err(|e| zbrain_core::Error::new("EvalError", "run_eval", &e.to_string()))?;
+            let results = engine
+                .search_pages(&zbrain_core::engine::SearchOpts {
+                    query_embedding: Some(embedding),
+                    limit: Some(limit),
+                    rrf_k,
+                    ..Default::default()
+                })
+                .await?;
+            Ok(results.into_iter().map(|r| r.page.slug).collect())
+        }
+        zbrain_core::search::EvalStrategy::Hybrid => {
+            let opts = zbrain_core::search::HybridSearchOpts {
+                limit: Some(limit),
+                dedup_opts: Some(dedup_opts),
+                embedding_client: client,
+                rrf_k,
+                ..Default::default()
+            };
+            let results = zbrain_core::search::hybrid_search(engine, sub_query, &opts).await?;
+            Ok(results.into_iter().map(|r| r.page.slug).collect())
+        }
+    }
+}
+
+/// Build a chat-backed expansion provider for `zbrain eval --expand`.
+///
+/// Mirrors the model resolution used elsewhere (e.g. the nightly longmemeval
+/// probe): resolve a model via config/env with a `sonnet` fallback, construct a
+/// `ChatProvider`, and wrap it in `ChatExpansionProvider`. Returns `None` when
+/// no model/key is available, so eval degrades to single-query retrieval with a
+/// warning rather than failing (KNOWN-GAPS G74b).
+fn build_eval_expansion_provider() -> Option<Arc<dyn ExpansionProvider>> {
+    use zbrain_core::ai::{
+        instantiate_chat, resolve_model, resolve_recipe_strict, ResolveModelOpts,
+    };
+    use std::collections::HashMap;
+    let lookup: HashMap<String, String> = HashMap::new();
+    let model = resolve_model(
+        &lookup,
+        &ResolveModelOpts {
+            cli_flag: None,
+            config_key: Some("models.eval.longmemeval".into()),
+            env_var: Some("ZBRAIN_MODEL".into()),
+            tier: None,
+            fallback: "sonnet".into(),
+        },
+    );
+    let (_, recipe) = resolve_recipe_strict(&model).ok()?;
+    let env_lookup = |k: &str| std::env::var(k).ok();
+    let chat: Arc<dyn zbrain_core::ai::chat::ChatProvider> =
+        Arc::from(instantiate_chat(&recipe, &model, &env_lookup).ok()?);
+    Some(Arc::new(ChatExpansionProvider::new(chat)))
+}
+
 /// strategy internally. Composing that closure is exactly this CLI layer's job.
 async fn run_one_eval_config(
     engine: &dyn zbrain_core::engine::BrainEngine,
@@ -9159,60 +9252,58 @@ async fn run_one_eval_config(
     config: &zbrain_core::search::EvalConfig,
     k: usize,
     show_progress: bool,
+    expand_provider: Option<Arc<dyn ExpansionProvider>>,
 ) -> anyhow::Result<zbrain_core::search::EvalReport> {
-    use zbrain_core::engine::SearchOpts;
-    use zbrain_core::search::{
-        hybrid_search, keyword_search_slugs, resolve_eval_limit, run_eval, EvalStrategy,
-        HybridSearchOpts,
-    };
+    use zbrain_core::search::{resolve_eval_limit, run_eval, EvalStrategy};
 
     let limit = resolve_eval_limit(config, k);
     let strategy = config.strategy.unwrap_or_default();
     let dedup_opts = eval_dedup_opts(config);
     let client = embedding_client.cloned();
     let engine_ref = engine;
+    let rrf_k = config.rrf_k;
+    let expand = config.expand == Some(true);
 
     let query_fn = move |q: &str| {
         let q = q.to_string();
         let client = client.clone();
         let dedup_opts = dedup_opts.clone();
+        let expand_provider = expand_provider.clone();
         async move {
-            match strategy {
-                EvalStrategy::Keyword => keyword_search_slugs(engine_ref, &q, limit).await,
-                EvalStrategy::Vector => {
-                    // Pure vector axis: no keywords, so fusion runs over the
-                    // single embedding list (mirrors TS `engine.searchVector`).
-                    let client = client.ok_or_else(|| {
-                        zbrain_core::Error::new(
-                            "EvalError",
-                            "run_eval",
-                            "--strategy vector needs an embedding provider — \
-                             set ZEROENTROPY_API_KEY (or use --strategy keyword)",
+            // Multi-query expansion (KNOWN-GAPS G74b): when `--expand` is set and a
+            // chat-backed expansion provider is available, expand the query into
+            // several phrasings and merge their retrieval results by best rank.
+            if expand {
+                if let Some(provider) = expand_provider.as_ref().map(|arc| &**arc) {
+                    let expanded = expand_query(&q, Some(provider)).await;
+                    let mut best_rank: std::collections::HashMap<String, usize> =
+                        std::collections::HashMap::new();
+                    for sub in &expanded {
+                        let slugs = eval_retrieve_slugs(
+                            engine_ref,
+                            client.clone(),
+                            dedup_opts.clone(),
+                            strategy,
+                            rrf_k,
+                            sub,
+                            limit,
                         )
-                    })?;
-                    let embedding = client.embed_query(&q).await.map_err(|e| {
-                        zbrain_core::Error::new("EvalError", "run_eval", &e.to_string())
-                    })?;
-                    let results = engine_ref
-                        .search_pages(&SearchOpts {
-                            query_embedding: Some(embedding),
-                            limit: Some(limit),
-                            ..Default::default()
-                        })
                         .await?;
-                    Ok(results.into_iter().map(|r| r.page.slug).collect())
-                }
-                EvalStrategy::Hybrid => {
-                    let opts = HybridSearchOpts {
-                        limit: Some(limit),
-                        dedup_opts: Some(dedup_opts),
-                        embedding_client: client,
-                        ..Default::default()
-                    };
-                    let results = hybrid_search(engine_ref, &q, &opts).await?;
-                    Ok(results.into_iter().map(|r| r.page.slug).collect())
+                        for (rank, slug) in slugs.into_iter().enumerate() {
+                            let entry = best_rank.entry(slug).or_insert(rank);
+                            if rank < *entry {
+                                *entry = rank;
+                            }
+                        }
+                    }
+                    let mut merged: Vec<(usize, String)> =
+                        best_rank.into_iter().map(|(s, r)| (r, s)).collect();
+                    merged.sort_by_key(|(r, _)| *r);
+                    return Ok(merged.into_iter().map(|(_, s)| s).collect());
                 }
             }
+            // Default / no-provider path: single-query retrieval.
+            eval_retrieve_slugs(engine_ref, client, dedup_opts, strategy, rrf_k, &q, limit).await
         }
     };
 
@@ -11711,25 +11802,20 @@ async fn run_eval_command(args: EvalArgs, config_path: Option<&Path>) -> anyhow:
         None => None,
     };
 
-    // Honesty pass: these two knobs round-trip into the report (so the run is
-    // self-describing) but the Rust retrieval path cannot act on them yet —
-    // `RRF_K` is a `const` inside `engine::fuse_and_boost` and multi-query
-    // expansion has no Rust equivalent. Warn rather than pretend.
-    let unsupported = [
-        config_a.rrf_k.is_some() || config_b.as_ref().is_some_and(|c| c.rrf_k.is_some()),
-        config_a.expand == Some(true)
-            || config_b.as_ref().is_some_and(|c| c.expand == Some(true)),
-    ];
-    if unsupported[0] {
+    // `--rrf-k` is now honored end-to-end (plumbed into `SearchOpts::rrf_k` →
+    // `fuse_and_boost` → `rrf_fuse`), so no warning is needed there. `--expand`
+    // is honored only when a chat-backed expansion provider can be built; when
+    // `--expand` is requested but no model/key is configured we degrade to
+    // single-query retrieval and say so (KNOWN-GAPS G74b).
+    let expand_requested =
+        config_a.expand == Some(true) || config_b.as_ref().is_some_and(|c| c.expand == Some(true));
+    let expand_provider: Option<Arc<dyn ExpansionProvider>> =
+        if expand_requested { build_eval_expansion_provider() } else { None };
+    if expand_requested && expand_provider.is_none() {
         eprintln!(
-            "warning: --rrf-k is recorded in the report but not yet honored by the Rust \
-             retrieval path (RRF_K is a const in fuse_and_boost) — KNOWN-GAPS G74b"
-        );
-    }
-    if unsupported[1] {
-        eprintln!(
-            "warning: expansion is recorded in the report but multi-query expansion is not \
-             ported to Rust — KNOWN-GAPS G74b"
+            "warning: --expand requested but no chat provider is configured \
+             (set ZBRAIN_MODEL + a provider API key) — falling back to single-query \
+             retrieval. KNOWN-GAPS G74b"
         );
     }
 
@@ -11748,13 +11834,28 @@ async fn run_eval_command(args: EvalArgs, config_path: Option<&Path>) -> anyhow:
     let embedding_client = zbrain_core::embedding::EmbeddingClient::from_env().map(std::sync::Arc::new);
 
     let show_progress = !args.json;
-    let report_a =
-        run_one_eval_config(&engine, embedding_client.as_ref(), &qrels, &config_a, k, show_progress)
-            .await?;
+    let report_a = run_one_eval_config(
+        &engine,
+        embedding_client.as_ref(),
+        &qrels,
+        &config_a,
+        k,
+        show_progress,
+        expand_provider.clone(),
+    )
+    .await?;
     let report_b = match &config_b {
         Some(cfg) => Some(
-            run_one_eval_config(&engine, embedding_client.as_ref(), &qrels, cfg, k, show_progress)
-                .await?,
+            run_one_eval_config(
+                &engine,
+                embedding_client.as_ref(),
+                &qrels,
+                cfg,
+                k,
+                show_progress,
+                expand_provider.clone(),
+            )
+            .await?,
         ),
         None => None,
     };

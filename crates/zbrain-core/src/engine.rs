@@ -359,6 +359,11 @@ pub struct SearchOpts {
     /// 'off'`. Paired with `disable_salience_boost` by `whoknows`, which owns
     /// its recency-decay formula.
     pub disable_recency_boost: bool,
+    /// Override the Reciprocal Rank Fusion constant `RRF_K` (default 60.0).
+    /// `None` uses the `RRF_K` const; `Some(k)` is plumbed through to
+    /// `rrf_fuse` so `zbrain eval --rrf-k` can re-rank without recompiling
+    /// (KNOWN-GAPS G74b). Mirrors the TS `eval` `--rrf-k` knob.
+    pub rrf_k: Option<f64>,
 }
 
 /// Reciprocal Rank Fusion constant. Mirrors `RRF_K` at
@@ -430,6 +435,36 @@ fn rrf_fuse(lists: &[Vec<u64>], k: f64) -> std::collections::HashMap<u64, f64> {
         }
     }
     acc
+}
+
+#[cfg(test)]
+mod rrf_fuse_tests {
+    use super::rrf_fuse;
+
+    #[test]
+    fn rrf_fuse_is_k_sensitive() {
+        // id 2 appears in BOTH ranked lists; with a small K the top-rank
+        // contribution (1/(K+0)=1) dominates so the normalized score profile
+        // differs from a large K. This is the knob `--rrf-k` plumbed into
+        // `fuse_and_boost` controls (KNOWN-GAPS G74b).
+        let lists = vec![vec![1u64, 2], vec![2u64, 3]];
+        let big_k = rrf_fuse(&lists, 60.0);
+        let small_k = rrf_fuse(&lists, 1.0);
+        // Both variants place id 2 (in both lists) strictly above a single-list id.
+        assert!(big_k[&2] > big_k[&1]);
+        assert!(small_k[&2] > small_k[&1]);
+        // Small K weights the rank-0 hit far more heavily, changing the
+        // normalized score of the single-list id relative to big K.
+        assert_ne!(big_k[&1], small_k[&1]);
+    }
+
+    #[test]
+    fn rrf_fuse_normalizes_to_one() {
+        let lists = vec![vec![10u64, 20, 30]];
+        let fused = rrf_fuse(&lists, 60.0);
+        let max = fused.values().copied().fold(0.0f64, f64::max);
+        assert!((max - 1.0).abs() < 1e-9);
+    }
 }
 
 /// Salience-boost coefficient for strength `'on'`. Mirrors TS
@@ -601,7 +636,7 @@ pub(crate) async fn fuse_and_boost(
     // ── Fusion ──────────────────────────────────────────────────────────
     // RRF-fuse the two ranked lists into a normalized 0..1 base_score. A
     // page appearing in both lists accumulates both contributions.
-    let fused = rrf_fuse(&[lexical_ids, vector_ids], RRF_K);
+    let fused = rrf_fuse(&[lexical_ids, vector_ids], opts.rrf_k.unwrap_or(RRF_K));
 
     let mut results = Vec::new();
     for (id, base_score) in fused {

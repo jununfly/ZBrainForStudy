@@ -47,6 +47,10 @@ pub struct HybridSearchOpts {
     /// `None` → keyword-only (fusion degenerates to lexical, matching TS when
     /// no embedding provider is configured).
     pub embedding_client: Option<Arc<EmbeddingClient>>,
+    /// Override the RRF K constant (default: `engine::RRF_K` = 60.0). Plumbed
+    /// through to `SearchOpts::rrf_k` → `engine::fuse_and_boost` → `rrf_fuse`,
+    /// so `zbrain eval --rrf-k` re-ranks without recompiling (KNOWN-GAPS G74b).
+    pub rrf_k: Option<f64>,
 }
 
 impl HybridSearchOpts {
@@ -82,6 +86,7 @@ pub async fn hybrid_search(
             floor_ratio: opts.floor_ratio,
             disable_salience_boost: opts.disable_salience_boost,
             disable_recency_boost: opts.disable_recency_boost,
+            rrf_k: opts.rrf_k,
             ..Default::default()
         })
         .await?;

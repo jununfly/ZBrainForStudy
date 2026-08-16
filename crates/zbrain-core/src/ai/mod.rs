@@ -37,8 +37,8 @@ pub use chat::{
     ChatUsage, MockChatProvider, StopReason,
 };
 pub use expand::{
-    expand_query, sanitize_expansion_output, sanitize_query_for_prompt, ExpansionError,
-    ExpansionProvider,
+    expand_query, sanitize_expansion_output, sanitize_query_for_prompt, ChatExpansionProvider,
+    ExpansionError, ExpansionProvider,
 };
 pub use model_config::{
     default_alias, enforce_subagent_capable, reset_subagent_warnings_for_test, resolve_model,

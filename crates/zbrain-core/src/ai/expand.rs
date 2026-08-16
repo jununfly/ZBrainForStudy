@@ -22,10 +22,13 @@
 
 use async_trait::async_trait;
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::sync::LazyLock;
 
 use regex::Regex;
+use serde_json::Value;
 
+use crate::ai::chat::{ChatMessage, ChatOpts, ChatProvider, ChatRole};
 use crate::cjk::count_cjk_aware_words;
 
 /// Maximum queries returned by [`expand_query`] (original + alternatives).
@@ -194,11 +197,138 @@ pub async fn expand_query(
     out
 }
 
+/// Production [`ExpansionProvider`] backed by a [`ChatProvider`].
+///
+/// Mirrors TS `gateway.expand`: ships the (already-sanitized) query to an LLM
+/// with a prompt asking for alternative search phrasings, and parses the
+/// reply into `[echoed_query, ...alternatives]`. `expand_query` prepends the
+/// ORIGINAL query and `skip(1)`s this echoed entry, so returning
+/// `[input, ...alts]` matches the convention.
+///
+/// Honest degradation: any chat error or unparseable reply yields `[query]`
+/// so the caller falls back to a single-query search rather than failing or
+/// fabricating alternatives. This is the real provider the module doc
+/// describes as a known-gap (G26) — it uses the unstructured `ChatProvider`
+/// seam (free-text reply) rather than TS's `generateObject` structured seam,
+/// which is sufficient for expansion (KNOWN-GAPS G74b wires it into eval).
+pub struct ChatExpansionProvider {
+    chat: Arc<dyn ChatProvider>,
+}
+
+impl ChatExpansionProvider {
+    #[must_use]
+    pub fn new(chat: Arc<dyn ChatProvider>) -> Self {
+        Self { chat }
+    }
+}
+
+const EXPANSION_SYSTEM: &str = "You are a search query expansion assistant. \
+Given a user's search query, produce alternative phrasings that a retrieval \
+system should also try. Respond with ONLY a JSON array of strings (the \
+alternative queries), no prose and no markdown fences.";
+
+#[async_trait]
+impl ExpansionProvider for ChatExpansionProvider {
+    async fn expand(&self, query: &str) -> Result<Vec<String>, ExpansionError> {
+        let opts = ChatOpts {
+            system: Some(EXPANSION_SYSTEM.to_string()),
+            messages: vec![ChatMessage::text(
+                ChatRole::User,
+                format!("Return alternative search queries for: {query}"),
+            )],
+            max_tokens: Some(256),
+            ..Default::default()
+        };
+        let text = match self.chat.chat(opts).await {
+            Ok(result) => result.text,
+            Err(_) => return Ok(vec![query.to_string()]),
+        };
+        let mut out = vec![query.to_string()];
+        out.extend(parse_expansion_response(&text));
+        Ok(out)
+    }
+}
+
+/// Tolerant parser for an LLM expansion reply.
+///
+/// Accepts, in order: a strict JSON array of strings; the first `[ ... ]`
+/// span found inside the text (e.g. fenced or prose-wrapped); or a
+/// newline/numbered list. Always returns the cleaned alternatives (empties
+/// dropped) and never errors — a useless reply simply yields no alternatives.
+fn parse_expansion_response(text: &str) -> Vec<String> {
+    let trimmed = text.trim();
+
+    if let Ok(Value::Array(items)) = serde_json::from_str::<Value>(trimmed) {
+        return strings_from_json_array(items);
+    }
+
+    if let (Some(start), Some(end)) = (trimmed.find('['), trimmed.rfind(']')) {
+        if start < end {
+            if let Ok(Value::Array(items)) =
+                serde_json::from_str::<Value>(&trimmed[start..=end])
+            {
+                let parsed = strings_from_json_array(items);
+                if !parsed.is_empty() {
+                    return parsed;
+                }
+            }
+        }
+    }
+
+    // Newline / numbered list fallback: only treat lines that actually look
+    // like list items (leading bullet or `N.` / `N)` marker) as alternatives.
+    // Plain prose with no markers is a "useless reply" and yields nothing
+    // (honest degradation — see `parse_useless_reply_yields_nothing`).
+    trimmed
+        .lines()
+        .filter_map(|line| {
+            let t = line.trim();
+            let is_list_item = t.starts_with("- ")
+                || t.starts_with("* ")
+                || {
+                    let bytes = t.as_bytes();
+                    let mut idx = 0;
+                    while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+                        idx += 1;
+                    }
+                    idx > 0
+                        && idx < bytes.len()
+                        && (bytes[idx] == b'.' || bytes[idx] == b')')
+                        && (idx + 1 == bytes.len() || bytes[idx + 1] == b' ')
+                };
+            if !is_list_item {
+                return None;
+            }
+            let cleaned = t
+                .trim_start_matches(|c: char| {
+                    c.is_ascii_digit() || c == '-' || c == '*' || c == '.' || c == ')' || c == '('
+                })
+                .trim()
+                .trim_matches('"')
+                .trim()
+                .to_string();
+            if cleaned.is_empty() {
+                None
+            } else {
+                Some(cleaned)
+            }
+        })
+        .collect()
+}
+
+fn strings_from_json_array(items: Vec<Value>) -> Vec<String> {
+    items
+        .into_iter()
+        .filter_map(|v| v.as_str().map(ToString::to_string))
+        .filter(|s| !s.trim().is_empty())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Test mock: returns a pre-seeded [echoed_query, ...alternatives] vec,
+    /// Test mock: returns a pre-seeded [`echoed_query`, ...alternatives] vec,
     /// or an error. Records the query it was called with.
     struct MockExpansionProvider {
         result: Result<Vec<String>, ()>,
@@ -351,5 +481,72 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert_eq!(out[0], "how does tcp handshake work");
         assert_eq!(out[1], "tcp syn ack sequence explained");
+    }
+}
+
+#[cfg(test)]
+mod adapter_tests {
+    use super::*;
+    use crate::ai::chat::MockChatProvider;
+    use std::sync::Arc;
+
+    #[test]
+    fn parse_strict_json_array() {
+        let out = parse_expansion_response(r#"["tcp syn ack", "handshake steps"]"#);
+        assert_eq!(out, vec!["tcp syn ack", "handshake steps"]);
+    }
+
+    #[test]
+    fn parse_json_array_inside_prose() {
+        let out = parse_expansion_response("Here you go:\n[\"alt one\", \"alt two\"]\nhope that helps");
+        assert_eq!(out, vec!["alt one", "alt two"]);
+    }
+
+    #[test]
+    fn parse_newline_list_with_markers() {
+        let out = parse_expansion_response("1. first alternative\n- second one\n3) third");
+        assert_eq!(out, vec!["first alternative", "second one", "third"]);
+    }
+
+    #[test]
+    fn parse_useless_reply_yields_nothing() {
+        let out = parse_expansion_response("I'm not sure what you mean.");
+        assert!(out.is_empty());
+    }
+
+    #[tokio::test]
+    async fn chat_provider_expands_via_json() {
+        let mock = MockChatProvider::new("");
+        mock.queue_text(r#"["tcp three way handshake", "syn ack fin explained"]"#);
+        let provider = ChatExpansionProvider::new(Arc::new(mock));
+        let out = expand_query(
+            "how does the tcp handshake actually work in detail",
+            Some(&provider),
+        )
+        .await;
+        // original first, then the two parsed alternatives.
+        assert_eq!(
+            out,
+            vec![
+                "how does the tcp handshake actually work in detail".to_string(),
+                "tcp three way handshake".to_string(),
+                "syn ack fin explained".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_provider_error_falls_back_to_original() {
+        let mock = MockChatProvider::new("");
+        mock.queue_error(crate::ai::chat::ChatError::Transient {
+            message: "injected test failure".to_string(),
+        });
+        let provider = ChatExpansionProvider::new(Arc::new(mock));
+        let out = expand_query(
+            "how does the tcp handshake actually work in detail",
+            Some(&provider),
+        )
+        .await;
+        assert_eq!(out, vec!["how does the tcp handshake actually work in detail"]);
     }
 }
