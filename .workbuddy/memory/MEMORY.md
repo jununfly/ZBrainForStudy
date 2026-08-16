@@ -4,56 +4,31 @@
 
 ## 项目方向
 - TS→Rust 迁移（ZBrain）。GBrain→ZBrain 破坏性全量改名，不留兼容别名；`brain`/`source` 领域词不改。Rust 迁成一块删一块。缺口登记 docs/plans/KNOWN-GAPS.md（双向指针 `// registered in ... (Gn)`）。
+- Legacy GBrain：仅删明确死亡碎屑（src/version.ts、image-decoders.d.ts），接受 hybrid（node 分发 + Rust 核心）长期状态；`bin/zbrain-rs.js` 是 zbrain CLI 入口（spawn Rust 二进制），不可删。`zbrain-clean` 第二 clone 已废弃（2026-08-12），恢复靠重新克隆。
 
-## 构建环境（WSL2 Ubuntu，无原生 cargo）
-- **【2026-08-14 关键修正】"cargo 静默 EXIT=0 零输出"根因 = WorkBuddy Bash 工具（Git Bash / MSYS2）吞掉 cargo 的 stdout/stderr，不是 stale fingerprint、也不是监视器锁死。** 现象：`cargo build/test/metadata` 在 Bash 工具里 78ms 静默 EXIT=0、零输出、不建 target/；但 `cargo --version`/`--help`/解析错误正常打印。** 绕过 = 一律用 **PowerShell 工具**跑 cargo（同一 `C:/Users/victo/.cargo/bin/cargo.exe` 二进制，正常编译链接）。lld-link 仍是测试二进制链接必需（见下）。WSL 仍不可用（无 toolchain / 空 registry cache）。** 旧笔记里的"full cargo clean 破 no-op""cat .cargo/config.toml|grep 前置解锁"都是假疗法，删掉迷信。**
-- 机器：jununfly-ROG（原生 cargo）/ jununfly-WinPC（本机 WSL2）。WSL 用普通用户 `zb`（root 下 pg-embed initdb 全报 PgInitFailure）。
-- 调用范式：`wsl -d Ubuntu -u zb -- bash /mnt/c/Users/jununfly/AppData/Local/Temp/<script>.sh`。写脚本喂路径，别命令行内联传参（引号吞噬 $var）。日志写 /mnt/c/.../Temp/*.log，别写 /tmp（VM 回收）。
-- Rust 装法（绕 rustup CA）：static.rust-lang.org tarball → --prefix=$HOME/.rust。cargo 镜像 rsproxy-sparse。**但 WSL 内 cargo 实际在 `$HOME/.cargo/bin`**（脚本 export PATH 用它，不是 .rust/bin）。
-- WSL 侧 `git status` 因 CRLF 差异把整树报成 modified → **判断改动范围一律以 Windows 侧 git 为准**。
-- 热缓存下 WSL 增量成本参考：`cargo check -p zbrain-cli` ~49s、`cargo test -p zbrain-cli --lib` ~54s 编译 + 30s 跑、`cargo check --workspace --all-targets` ~41s。比 Windows 快一个量级，改 Rust 优先走 WSL。
-- **Windows 构建被监视器锁死**：`CARGO_TARGET_DIR=C:/Users/<u>/AppData/Local/Temp/zb_targetN`（必须 Windows 绝对路径，/c/ 会被 MSYS 拼成 C:/c/...）。先 robocopy 旧 target 的 deps+.fingerprint+build+incremental（/XF *.lock），cache 路径无关可复用重依赖 rlib，避 53min codegen。
-- **MSVC `link.exe` 链接测试二进制被监视器杀（exit 0xc0000142）→ 用 LLVM `lld-link.exe` 当 linker 绕过**：设 `RUSTFLAGS="-C linker=C:/PROGRA~1/LLVM/bin/lld-link.exe"`（`C:/Program Files/LLVM/bin/lld-link.exe` 的 8.3 短路径，避免空格/引号问题；LLVM CLI 兼容 MSVC，复用 warm msvc target cache，只重编改动 crate）。`cargo test -p zbrain-core --lib --offline` 实测 7m 编完跑完（2524 passed），比 robocopy target 或 WSL 更快。注：rust-lld（`-C linker-features=+lld`）需 nightly + `-Z unstable-options`，stable 不可用，别走这条路；`stable-x86_64-pc-windows-gnu` 冷编全依赖太慢且要 MinGW gcc。
-- `cargo check` 不编 #[cfg(test)] → test-only 错误只有 cargo test 暴露。改测试代码必须真跑 test。
-- libsql FFI Windows 间歇 0xc0000005 代码层无解；集成测试加进程级 OnceLock<Mutex<()>> 降频，CI 跑 ubuntu。
-- workspace forbid(unsafe)：任何 libc::kill 在 Linux 双重报错（unsafe_code+E0433）→ 改 /proc/<pid> 纯 std。Windows 编不到 unix 分支。
-- 测试隔离：临时目录须加 AtomicU32 序号（pid 命名多核并行互删 fixture）。
+## 构建环境（Windows 本机，WSL 不可用）
+- 【关键】cargo 在 Bash 工具里静默 EXIT=0 零输出（WorkBuddy Bash/Git Bash 吞 stdout/stderr）。一律用 PowerShell 工具跑 cargo（同一 cargo.exe）。`cargo --version` 等正常，但 build/test 会被吞——别信 Bash 里 cargo 的"成功"。
+- Windows 构建/链接：独立 `CARGO_TARGET_DIR=C:/Users/<u>/AppData/Local/Temp/zb_targetN`（Windows 绝对路径）+ `RUSTFLAGS="-C linker=C:/PROGRA~1/LLVM/bin/lld-link.exe"`（LLVM CLI 兼容 MSVC，复用 warm cache）。MSVC `link.exe` 被监视器杀（0xc0000142）→ lld-link 绕过。
+- `cargo check` 不编 #[cfg(test)]；改测试代码必须真跑 `cargo test`。libsql FFI Windows 间歇 0xc0000005（代码层无解）→ 集成测试降频 + CI 跑 ubuntu。workspace forbid(unsafe)（Linux 用 /proc 纯 std）。测试临时目录加 AtomicU32 序号防并行互删。
 
-## Git 沙箱铁律
-- 严禁 git stash（失败 cleanup 删 .git/refs → orphan HEAD）。探 baseline 用 git show HEAD:<file>/git diff HEAD。
-- **沙箱写文件命令会双重执行**（"⚠️ Sandbox bypassed (escalation-approved)"）——`decide`/`add`/`commit` 等跑两次，曾造重复节点/决策；所有写操作须幂等（按 id/q 缺失才补）+ 事后去重。
-- **目录改名（zbrain→ZBrain，NTFS 大小写不敏感）后 cwd 路径串失效**：重命名后的会话里原生 git 偶报 "not a git repository"；用 `cd /c/workspace/github/jununfly/ZBrain && git ...`（MSYS 翻译路径）可恢复，勿用 `git -C /c/...`（小写 /c/ 被原生 git 拒）。
-- **绝不在沙箱里 `git rebase`**（交互式依赖编辑器，本机无 → 报 `could not mark as interactive` 并可能触发 safe-delete 删整个 `.git/refs`，把分支回退到 stale packed-refs 快照、孤立在途提交）。改基线用 `git reset --soft` + `git pull --ff-only`，或 `git reset --hard <远端tip-SHA>`。
-- ref 损坏修复（`.git/refs` 被删）：`mkdir -p .git/refs/{heads,remotes/origin,tags}` → `git fetch origin <branch>` 刷新远端引用 → 用 `git rev-parse <SHA>` 直接核对 commit（**勿信 `packed-refs`/`@{u}`，它们会返回陈旧值**）→ `git reset --hard <远端tip-SHA>` 对齐到权威远端态。被孤立且未推送的在途提交会被 GC 回收、**不可恢复**；故关键在途改动务必幂等脚本化，丢引用后能从对话历史确定性重建。orphan 别用 git reset HEAD（解析到 stash@0）。
-- .git/index.lock 僵尸锁：rm/os.remove 被 safe-delete 拦，唯一绕法 mv 改名。
-- 接活前必查 git status（会话中断常留大规模未提交改动）。
-- **行尾符陷阱**：本仓 core.autocrlf=false 且行尾符**混杂**（`lib.rs`/`MEMORY.md` 是 CRLF，`KNOWN-GAPS.md`/`COMMANDS_TEAR_DOWN.md`/多数 `*.rs` 是 LF）。Edit 工具会整文件改写行尾符 → `git diff --numstat` 出现 `N/N`（每行都改）即中招。**提交前必须对改动的【每个 Rust 文件】单独跑 `git diff --numstat` 确认无全文件重写**——只改几行却出现上万行 N/N 必是行尾符泄漏（docs 文件也要查，但 Rust 大文件最易炸）。异常时按 `git show HEAD:<f>` 的原始行尾符**逐文件**对齐，别一刀切 LF（会把本就 CRLF 的文件全炸）。
-- **CRLF 泄漏救回法**：若 Edit 把 LF 文件写成 CRLF，用 python `data.replace(b'\r\n', b'\n')` 改回（别用 sed 批量，易误伤）；**提交前用 `git hash-object` 验证内容无损**：`A=$(git show HEAD:<f> | tr -d '\r' | git hash-object --stdin)` 与 `B=$(git hash-object <f>)` 相等即仅行尾符差异、内容无丢。**事故档案**：2026-08-09 的 1-1-4 stages 0/1/2 提交 `92630e49` 因提交前未查 numstat，把 `engine.rs`/`libsql.rs`/`postgres.rs`/`libsql_engine_migrations.rs` 四个 LF 文件写成 CRLF 推上 `origin/rust-rewrite`，事后用修正提交 `83320030`（CRLF→LF，hash-object 验证内容无损）救回。教训：push 前必查 numstat。
-- **Bash 沙箱拦截覆写受跟踪文件（2026-08-15 实战）**：本仓库 Bash 工具沙箱会拦截对**现有受跟踪文件**的覆写（仅允许新建；`dangerouslyDisableSandbox` 无交互授权时不触发 bypass，多次被拒也不自动升级）。后果：诊断脚本用 `open(p,'wb').write(b'{}')` 覆写受跟踪文件会破坏工作树（commit 走 index 不受影响）。**法则**：① 改现有文件一律用 Edit 工具（文本层、保行尾、不受该沙箱限制）；② 需 Python 改 JSON 走 index 操作（`git cat-file` 取 HEAD blob → 改 → `hash-object -w` → `update-index --cacheinfo`）确保 commit 内容正确，工作树还原交用户在无沙箱终端 `git checkout -- <f>`；③ 严禁用 Python `open('wb')` 对受跟踪文件做测试性覆写。
+## Git / 沙箱铁律
+- 严禁 `git stash`（cleanup 删 .git/refs → orphan HEAD）；探 baseline 用 `git show HEAD:<f>` / `git diff HEAD`。
+- 绝不在沙箱 `git rebase`（触发 safe-delete 删 .git/refs）；改基线用 `reset --soft` + `pull --ff-only` 或 `reset --hard <远端tip>`。沙箱写命令双重执行 → 写操作幂等 + 事后去重。
+- 目录改名后 cwd 失效 → `cd /c/workspace/github/jununfly/ZBrain && git ...`（勿 `git -C /c/...`）。ref 损坏：`mkdir -p .git/refs/...` → `fetch` → `rev-parse <SHA>` 核对（勿信 packed-refs/@{u}）→ `reset --hard`。index.lock 僵尸锁用 mv 改名。接活前必 `git status`。
+- 行尾符陷阱：core.autocrlf=false 且混杂（多数 *.rs/KNOWN-GAPS=LF，个别文件如 lib.rs 是 CRLF）。Edit 工具整文件改写行尾 → numstat 出 N/N 即中招。提交前对每个改动文件跑 `git diff --numstat` 确认无全文件重写；异常按 `git show HEAD:<f>` 逐文件对齐，别一刀切 LF。救回：LF 文件被写成 CRLF 时 `python data.replace(b'\r\n',b'\n')`；`git hash-object` 比对 HEAD 与工作树验证内容无损。
+- Bash 沙箱拦截覆写受跟踪文件：诊断脚本 `open(p,'wb').write()` 会破坏工作树（commit 走 index 不受影响）。法则：① 改现有文件用 Edit 工具；② Python 改 JSON 走 index 操作（`git cat-file`→改→`hash-object -w`→`update-index --cacheinfo`），工作树还原交用户 `git checkout --`；③ 严禁 `open('wb')` 对受跟踪文件测试性覆写。
 
 ## Roadmap 铁律
-- 所有 .json/.md 放 docs/plans/。render 只认 ROADMAP_SECTION_START/END marker（不符会追加成重复段 → 先删 md 再 render）。CLI 第一参数 JSON 完整路径。
-- **render 脚本 cwd 陷阱（2026-08-09 实测）**：`roadmap_cli.py render` 按 `metadata.md_file` 写 md，但路径相对**脚本自身 cwd** 解析。若从 `.workbuddy/skills/zj-roadmap-driven/` 内运行，会在该目录内误生成 `docs/plans/<x>.md` 副本（且**不反映** JSON 的 status/notes 变更，等于空转），而非更新仓库 `docs/plans/`。正确做法：从**仓库根**运行 `python3 .workbuddy/skills/zj-roadmap-driven/roadmap_cli.py render docs/plans/<x>.json`；或干脆手编 md（手编「当前施工」段 prose 更可靠，render 只忠实重画 tree）。阶段7 即手编 md 收口。
-- decisions 项须 {"q","answer","note?"}（用 a 会 KeyError）。路线图系统性滞后：以 HEAD+git ls-files+编译为准，节点只作索引。
-- **JSON 文件不可用 Edit 工具插入多行 notes（2026-08-13 实测）**：Edit 把多行字符串值写进 JSON 会引入裸换行（CRLF/LF）+ 未转义内部双引号，直接破坏 JSON（strict 解析报 `Invalid control character` / `Expecting ',' delimiter`；`strict=False` 只能容忍控制符、修不了未转义引号）。修复法：Python 二进制读（`open(p,'rb').read().decode()`）→ 定位坏值边界（节点 `xxx": {` → 该节点末字段 `notes` 的 `"notes": "` → 节点闭合 `    },`）→ 字符级转义（`replace('\r\n'/'\\r'/'\\n'→'\\n'`) + `re.sub(r'(?<!\\\\)"','\\\\\"',...)` 逃逸未转义引号）→ **二进制写回保 CRLF** → `json.loads` 校验。另：若早前编辑把 `\\n`（单反斜杠+n，正确换行转义）翻倍成 `\\\\n`（双反斜杠+n），用 `fixed.replace('\\\\n','\\n')` 归一（单转义不受影响）。教训：改 roadmap JSON 的 notes 一律走 Python 脚本，别用 Edit 手写多行；写文件命令要幂等（见 Git 沙箱铁律双重执行）。**另：roadmap JSON 统一 2-space indent；用正则检测缩进会误抓 depth-2 的 `"id"` 行（4 空格）导致整文件重排成 4-space、炸出百行 diff——直接 `indent=2` 硬编码，别靠检测。**
+- .json/.md 都在 docs/plans/；render 只认 ROADMAP_SECTION_START/END marker。
+- render cwd 陷阱：`roadmap_cli.py render` 按脚本 cwd 解析 md 路径 → 必须从仓库根运行（`python3 .workbuddy/skills/zj-roadmap-driven/roadmap_cli.py render docs/plans/<x>.json`），否则在 skill 目录误生成副本空转。
+- JSON 多行 notes 别用 Edit（引入裸换行/未转义引号破坏 JSON）→ 走 Python 二进制读 → 字符级转义 → 二进制写回保 CRLF → json.loads 校验。roadmap JSON 统一 2-space indent（别用正则检测缩进）。
 
 ## 迁移工程规则
-- TS 调 Rust：`src/cli.ts` 走 resolveZbrainBin()（$ZBRAIN_BIN→target/debug→release→PATH）。改子命令后必 cargo build -p zbrain-cli 否则测试 exit 2。
-- port fidelity：Rust 测试与 TS 实现冲突优先改实装、接受 test 为规范；交叉登记 KNOWN-GAPS.md。
-- **KNOWN-GAPS 的 blocked/描述不可全信**（已连续两次证伪：G76 误标"依赖 LLM 被 G35/G60 阻塞"实为纯解析且 Rust 已实现大半；G74 误标"多数依赖 LLM + blocked by G58"实为仅 4/19=21% 依赖 LLM、核心 `run_eval` 早已 port 完只是零调用者）。**共同模式：算法层已在 Rust，缺的只是 CLI 出口** —— 对账时优先 grep Rust 侧有无同名/近义实现，别默认"没 verb 就是没实现"。动手任一 Gn 前必做「TS 源 vs Rust 现状」逐能力对账：`git show <删除commit>^:<path>` 取回 TS → grep 关键依赖 → grep Rust 侧同名/近义实现 → 列对账表。对账结论要回写 KNOWN-GAPS + COMMANDS_TEAR_DOWN + 相关代码 doc 注释（三处都可能 stale）。
-- **反向假阳性（2026-08-15 证伪 1-6-3）**：上条「有同名实现=核心在」也会反过来错——`minions/handlers/resolve_symbol_edges.rs` handler 存在，但它只调 `run_cycle(CyclePhase::ResolveSymbolEdges)`，而该 phase 在 `execute_phase` 里**无 match 分支（stub 空转）**；真正的 `edges-backfill` CLI 调的是 `resolveSymbolEdgesIncremental`（走 `content_chunks.edges_backfilled_at` 水印 + `processChunkBatch`），Rust 侧**完全缺失**（无增量函数、无该列、无 `EDGE_EXTRACTOR_VERSION_TS`）。→ 结论：**handler 存在 ≠ 核心可调用**；对账须追到「CLI 命令实际调的 TS 函数」在 Rust 是否真有等价实现，不能只看 handler 文件名。grill 标「纯补 verb 低风险」前必须先 `git show` 回捞 TS 命令源、确认其依赖的核心函数已在 Rust。
-- **`execute_raw` 在 `InMemoryEngine` 未实现（2026-08-15 实测，1-6-2）**：`BrainEngine::execute_raw` 的 trait 默认实现返回 `Err("Unsupported")`，只有 libsql/postgres 真正实现。`InMemoryEngine` 已实现 `get_page`/`get_links`/`get_backlinks`/`list_all_page_refs`/`add_links_batch`/`get_config`/`set_config`/`put_page`（`PageRef` 仅 `{slug,source_id}`，无 `page_kind`，须靠 `get_page` 取 `page_kind`/`compiled_truth`/`timeline`）。→ port TS 命令凡需直读 pages（`SELECT ... FROM pages/links`）一律用公共 API：**枚举走 `list_all_page_refs()` + `get_page()` 取内容，验边走 `get_links()`/`get_backlinks()`**，勿用 `execute_raw`，否则 InMemoryEngine 测试 `unwrap()` 全 panic。** `get_links`/`get_backlinks` 语义：前者返回 FROM=slug 的出边，后者返回 TO=slug 的入边；想验某页的「出边」用 `get_links`，验证「反向关系边」（如 code 页的 `documented_by`）也必须用 `get_links(code_slug)` 而非 `get_backlinks`（后者返回的是指向该页的入边）。** 这样模块引擎无关、可在 InMemoryEngine 上测、不依赖 libsql FFI（Windows 间歇 0xc0000005）。
-- **`list_pages` 在 `InMemoryEngine` 返回软删页 + `PageFilters` 无 `page_kind` 过滤（2026-08-16 实测，1-3 by-mention）**：`list_pages` 实现不处理 `include_deleted`（软删页照返回），且 `PageFilters` 只有 `page_type`/`source_id`/`slug_prefix`/`tag`/`limit` 等，**没有 `page_kind` 字段**。→ port 需「按 `page_type` 枚举实体（4 类）或按 `source_id` 拉全量」后，用 `page.deleted_at.is_none()` + `page.page_kind == PageKind::Markdown` 在 Rust 侧过滤。gazetteer 用 `list_pages(page_type=每种实体)` 分次调用；markdown 扫描用 `list_pages(source_id=scoped)` 再过滤 `page_kind`。注意 `Page::page_type` 是开放 `String`（person/company/organization/entity 不在 `ALL_PAGE_TYPES` 种子里，照字符串比对即可，D2 硬编码不 pack-aware）。
-- **命令族批量对账法**（19+ 文件时高效）：`git show <sha>^` 批量导出到 Temp 目录 → 写 Python 脚本一次扫全部（正则查依赖关键词 + 抽 docstring + 抽 import 列表）→ 出对账表。**grep 命中必须逐行看上下文再定性**：注释提及、fallback 模型 ID 字符串、"走 stub seam" 的说明都会假阳性（G74 三个疑似 LLM 命中全是假的）。另注意小文件（<50 行）常是 `not_yet_implemented` 空壳 scaffold，TS 自身就没实现，迁移零价值。
-- CLI 加 verb 的最小闭环：clap 结构照抄邻近 verb 模板 → Commands enum + Action enum + Args + dispatch + run_ 函数 → lib.rs 尾部 #[cfg(test)] 加 try_parse_from 解析测试（含"拒绝未实现子命令"的负向测试守住缺口）→ e2e 用隔离 config（`-c $WORK/zbrain.yml` + `init --pglite --force`）真库冒烟，必验幂等 + 范围限定 + 不存在实体不崩。
-- 新增 DB migration 三件事：双 dialect 00NN_*.sql + include_str! const + registry.add + 测试 EXPECTED_VERSION bump。
-- 参数加宽坑：&Arc<dyn T>→&dyn T 不自动 coerce（调用方 &*engine）。opts 覆盖逐字段 or_else 保留优先级。
-- crate::Result = Result<T, StructuredError>；serde_json::Error 不能 ? 须 map_err。
+- TS→Rust：`src/cli.ts` 走 resolveZbrainBin()。改子命令后必 `cargo build -p zbrain-cli` 否则测试 exit 2。port fidelity：测试与实现冲突优先改实装、接受 test 为规范；交叉登记 KNOWN-GAPS。
+- KNOWN-GAPS 不可全信（G74/G76 连续证伪）：算法层常已在 Rust，缺的只是 CLI 出口。动手任一 Gn 前必做「TS 源（`git show <删除commit>^:<path>`）vs Rust 现状」逐能力对账（grep 同名/近义实现），结论回写 KNOWN-GAPS + COMMANDS_TEAR_DOWN + 代码 doc。反向假阳性：handler 存在 ≠ 核心可调用（execute_phase 可能 stub 空转）——对账须追到「CLI 实际调的 TS 函数」是否在 Rust 有等价实现。
+- InMemoryEngine 限制：`execute_raw` 未实现（trait 默认返 Err）→ 直读 pages 一律走公共 API（`list_all_page_refs`+`get_page` 取内容，`get_links`/`get_backlinks` 验边），否则 InMemory 测试 unwrap 全 panic。`list_pages` 不过滤软删页且 `PageFilters` 无 `page_kind` → Rust 侧用 `deleted_at.is_none()` + `page_kind==Markdown` 过滤。
+- CLI 加 verb 最小闭环：clap 照抄邻近模板 → enum+Args+dispatch+run_ → 尾部 #[cfg(test)] try_parse_from 解析测试（含拒绝未实现子命令负向测试）→ e2e 用隔离 config 真库冒烟（幂等+范围+不崩）。
+- crate::Result = Result<T, StructuredError>；serde_json::Error 不能 ? 须 map_err。&Arc<dyn T>→&dyn T 需调用方 &*。
 
-## 已决架构决策
-- **Legacy GBrain 资产退役重评估（2026-08-15 收口）**：原 "132 文件批量删" 前提 stale——核心 TS→Rust 已落地（413 .rs、0 TS in crates/），仅剩 ~26 活 TS/TSX。**结论：范围极简（仅删明确死亡碎屑 src/version.ts、src/types/image-decoders.d.ts），接受 hybrid（node 分发 + Rust 核心）为长期状态**；node 基础设施（bin/zbrain-rs.js 是 zbrain CLI 入口，spawn Rust 二进制；package.json bin 指向它）不可删，删则断 `zbrain` 入口。删除动作 defer 至单独 chore（按 Q2=A）。
-
-## 其他
-- Admin 路由 Rust 在 /*、TS 在 /admin/api/*（保持）。skillpack 测试仅 --all-features 下编译。
-- **`zbrain-clean` 备份 clone 已于 2026-08-12 废弃**：用户决定不再保留第二份 clone，需要时从 `origin/rust-rewrite` 重新 `git clone`。这意味着 `docs/CROSS_OS_AGENT_GUIDE.md` §0 的"双 clone 互为健康基准 + 原地重建"恢复流程已过时，**不可再信**；当前只有 `ZBrain`（2026-08-12 由 `zbrain` 改名为大写 B，对齐 GitHub slug）一个活跃工作副本，恢复靠重新克隆而非 zbrain-clean。
-- TS 测试套件（tests/，663 文件）已于 2026-08-08 整体退役；Rust 侧 crates/*/tests/*.rs + 内联 #[cfg(test)] 为唯一测试真相源。nightly_probe.rs 的 NIGHTLY_FIXTURE_REL_PATH 死引用已清（run_long_mem_eval 现为 G58 占位、无条件返 Err）→ 全 workspace `cargo test --workspace` 已验证 green（3694 passed / 0 failed）。
+## 测试真相源
+- TS 测试套件（tests/）已于 2026-08-08 退役；Rust 侧 `crates/*/tests/*.rs` + 内联 #[cfg(test)] 为唯一真相源。全 workspace `cargo test --workspace` 已验证 green（3694 passed / 0 failed）。
