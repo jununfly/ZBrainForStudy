@@ -12,7 +12,7 @@
 //! which is skipped in this port (facts insert with `NULL` embedding; the
 //! TS fallback path is identical — `drift_score` gracefully returns null and
 //! consolidation falls back to recency). Embeddings are
-//! registered in docs/plans/KNOWN-GAPS.md (G60).
+//! registered in docs/plans/MIGRATION.md (G60).
 //!
 //! The phantom-redirect pre-pass (TS v0.35.5) is now ported — see
 //! `super::phantom_redirect::run_phantom_redirect_pass`, wired into
@@ -333,7 +333,7 @@ pub async fn run_extract_facts(
         );
 
         // Embeddings: skipped (NULL embedding fallback, matches TS fail-open
-        // path); registered in docs/plans/KNOWN-GAPS.md (G60).
+        // path); registered in docs/plans/MIGRATION.md (G60).
         for fact in &extracted {
             match engine.insert_fact(&source_id, &slug, fact).await? {
                 FactInsertStatus::Duplicate => {}

@@ -2,7 +2,7 @@
 //!
 //! The TS `repair-jsonb` command repaired PGLite-specific `jsonb` corruption.
 //! ZBrain now runs on libsql/Postgres, not PGLite, so the command has no Rust
-//! target. Tracked as G78 in `docs/plans/KNOWN-GAPS.md` (the command-level gap;
+//! target. Tracked as G78 in `docs/plans/MIGRATION.md` (the command-level gap;
 //! this minion job type shares that disposition).
 
 use async_trait::async_trait;

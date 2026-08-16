@@ -749,7 +749,7 @@ async fn libsql_get_takes_for_nonexistent_page_returns_empty() {
 // NOTE: PG has `CHECK (row_num > 0)` (migration 0012), matching the TS
 // 1-based `#row_num` display semantics; libsql lacks this CHECK and defaults
 // to 0. So PG tests below MUST use row_num >= 1. Backend divergence is
-// registered in docs/plans/KNOWN-GAPS.md (G22).
+// registered in docs/plans/MIGRATION.md (G22).
 
 async fn pg_seed_source(url: &str, id: &str) {
     let pool = sqlx::postgres::PgPoolOptions::new()

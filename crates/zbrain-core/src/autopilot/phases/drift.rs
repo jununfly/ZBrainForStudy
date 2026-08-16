@@ -94,7 +94,7 @@ fn drift_cutoff_iso(lookback_days: u32) -> String {
 ///
 /// NOTE: the SQL uses sqlite `?1` placeholders, matching the cycle's primary
 /// libsql engine. A postgres `$N` variant is a tracked portability gap
-/// (registered in docs/plans/KNOWN-GAPS.md (G64)).
+/// (registered in docs/plans/MIGRATION.md (G64)).
 pub async fn find_drift_candidates(
     engine: &dyn BrainEngine,
     lookback_days: u32,

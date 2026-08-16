@@ -13,7 +13,7 @@
 //! resolver SDK, no writes). The `auto` / `review` / `reset-progress`
 //! subcommands depend on the un-migrated resolver SDK (`x_handle_to_tweet` /
 //! `url_reachable`) and are intentionally **out of scope** — registered in
-//! `docs/plans/KNOWN-GAPS.md` (G51). Porting `check` alone already unblocks
+//! `docs/plans/MIGRATION.md` (G51). Porting `check` alone already unblocks
 //! `zbrain doctor`'s sampled integrity signal, which calls `scanIntegrity`.
 
 use crate::engine::{BrainEngine, GetPageOpts, Page};

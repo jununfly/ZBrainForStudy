@@ -1,7 +1,7 @@
 //! Retrieval Evaluation Harness (IR metrics).
 //!
 //! Ports `src/core/search/eval.ts` (deleted under `bcafcafd` — this is a
-//! "delete-then-backfill" gap, **G73** in `docs/plans/KNOWN-GAPS.md`). The
+//! "delete-then-backfill" gap, **G73** in `docs/plans/MIGRATION.md`). The
 //! four standard IR metrics (`precision@k`, `recall@k`, `mrr`, `ndcg@k`) are
 //! pure functions with zero dependencies and are fully unit-tested; `run_eval`
 //! orchestrates a search strategy against user-supplied ground truth (qrels)

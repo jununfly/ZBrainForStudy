@@ -21,7 +21,7 @@
 //! RRF-K over the lexical + vector lists, so per-list weights have no consumer
 //! yet — porting them would be dead code. `classify_query` still emits the
 //! `intent` so a future per-list-weight path can read it. registered in
-//! docs/plans/KNOWN-GAPS.md.
+//! docs/plans/MIGRATION.md.
 
 use regex::Regex;
 use std::sync::LazyLock;

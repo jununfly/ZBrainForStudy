@@ -846,7 +846,7 @@ pub async fn undo_wave(
         // Skipped in the Rust port — the external `gstack-learnings-prune`
         // binary is not spawned here. Kept as a no-op so the operator's
         // intent (passed flag) is visible in the result, but the step never
-        // executes. registered in docs/plans/KNOWN-GAPS.md (G59)
+        // executes. registered in docs/plans/MIGRATION.md (G59)
         result.gstack_scrub_attempted = false;
         result.warnings.push(
             "gstack-learnings-prune scrub is not implemented in the Rust port; run \

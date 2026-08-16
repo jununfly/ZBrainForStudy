@@ -34,7 +34,7 @@
 //! user-defined `expert_routing:` declarations. The schema-pack subsystem is
 //! not migrated yet (Part10 Phase12), so Rust uses `DEFAULT_TYPES`
 //! (person/company). Pack-aware type derivation is registered in
-//! docs/plans/KNOWN-GAPS.md and will be wired when schema-pack lands.
+//! docs/plans/MIGRATION.md and will be wired when schema-pack lands.
 
 use crate::engine::{BrainEngine, SearchOpts};
 use crate::types::PageRef;

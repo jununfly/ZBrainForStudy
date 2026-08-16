@@ -2,7 +2,7 @@
 //!
 //! The TS `sync-retry-failed` command was deleted under option C and has no
 //! Rust verb. Failed syncs can be retried via the wired `sync` handler. Tracked
-//! as G83 in `docs/plans/KNOWN-GAPS.md`.
+//! as G83 in `docs/plans/MIGRATION.md`.
 
 use async_trait::async_trait;
 use serde_json::Value;

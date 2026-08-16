@@ -285,7 +285,7 @@ pub struct SearchResult {
     /// lexical exact-match boost are NOT migrated yet; each blocks on a data
     /// layer that does not exist in Rust (backlink counts, graph edges, source
     /// weights, intent-weights). They will add their own stamp fields here when
-    /// ported. registered in docs/plans/KNOWN-GAPS.md (G13).
+    /// ported. registered in docs/plans/MIGRATION.md (G13).
     pub salience_boost: Option<f64>,
     /// Recency boost multiplier stamped ONLY when the post-fusion recency stage
     /// actually multiplied this row's score (`1 + strengthMul * coef * hl /
@@ -697,7 +697,7 @@ pub(crate) async fn fuse_and_boost(
     //
     // FUTURE(salience-strength-by-mode): TS resolves salience strength from
     // the active search mode (ModeBundle). Rust has no mode system yet, so
-    // this is pinned to 'on'. registered in docs/plans/KNOWN-GAPS.md (G13).
+    // this is pinned to 'on'. registered in docs/plans/MIGRATION.md (G13).
     if !results.is_empty() {
         let pre_boost: Vec<f64> = results.iter().map(|r| r.base_score).collect();
         let floor = compute_floor_threshold(&pre_boost, opts.floor_ratio);
@@ -782,7 +782,7 @@ pub(crate) async fn fuse_and_boost(
                 &dates_ms,
                 // Pinned to 'on': Rust has no search-mode system yet to resolve
                 // 'on'/'strong'/'off' from a ModeBundle (same gap as salience
-                // strength above). registered in docs/plans/KNOWN-GAPS.md (G13).
+                // strength above). registered in docs/plans/MIGRATION.md (G13).
                 crate::recency_decay::RecencyStrength::On,
                 &decay_map,
                 fallback,
@@ -2083,7 +2083,7 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
     /// implementation per backend. InMemory + libsql override with real
     /// lexical+vector fusion via `fuse_and_boost`; Postgres still falls back to
     /// this empty default (a PG brain returns no query results).
-    /// Postgres gap registered in docs/plans/KNOWN-GAPS.md (G23).
+    /// Postgres gap registered in docs/plans/MIGRATION.md (G23).
     async fn search_pages(&self, _opts: &SearchOpts) -> crate::Result<Vec<SearchResult>> {
         Ok(Vec::new())
     }
@@ -3657,7 +3657,7 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
     /// so an active worker's abort fires and the handler stops. No-op (`None`)
     /// for any other status. `waiting-children` is intentionally NOT pausable
     /// (pausing an aggregator parent would strand `resolve_parent` against a
-    /// paused parent — out of scope; registered in docs/plans/KNOWN-GAPS.md).
+    /// paused parent — out of scope; registered in docs/plans/MIGRATION.md).
     /// Mirrors TS `pauseJob` (`queue.ts` L1119-1128).
     async fn pause_job(
         &self,
@@ -8455,7 +8455,7 @@ impl BrainEngine for InMemoryEngine {
         // Pausable only from waiting/active/delayed; clears the lock so an
         // active worker's abort fires. waiting-children is intentionally out
         // (matches TS pauseJob WHERE); registered in
-        // docs/plans/KNOWN-GAPS.md (G28).
+        // docs/plans/MIGRATION.md (G28).
         let Some(job) = store.iter_mut().find(|j| {
             j.id == id
                 && matches!(
@@ -9194,7 +9194,7 @@ impl BrainEngine for InMemoryEngine {
             filename: att.filename.clone(),
             content_type: att.content_type.clone(),
             // Faithful to the TS port: inline content only, storage_uri unused.
-            // External-storage path registered in docs/plans/KNOWN-GAPS.md (G27).
+            // External-storage path registered in docs/plans/MIGRATION.md (G27).
             storage_uri: None,
             size_bytes: att.size_bytes,
             sha256: att.sha256.clone(),

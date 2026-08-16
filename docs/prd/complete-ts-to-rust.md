@@ -221,7 +221,7 @@ May remain React + TypeScript frontend:
 
 ## Migration Roadmap
 
-The migration roadmap has been split into smaller plan files: completed work is archived in `docs/plans/ZBRAIN_TS_TO_RUST_PART1_COMPLETED.md`, the active Config/Bootstrap/Package Entrypoint work is tracked in `docs/plans/ZBRAIN_TS_TO_RUST_PART2_CONFIG_BOOTSTRAP.md`, and remaining unfinished domains should be split into later parts before execution. The following roadmap remains the domain-level PRD inventory.
+The migration roadmap has been split into smaller plan files: completed work is archived in `docs/plans/MIGRATION.md`, the active Config/Bootstrap/Package Entrypoint work is tracked in `docs/plans/MIGRATION.md`, and remaining unfinished domains should be split into later parts before execution. The following roadmap remains the domain-level PRD inventory.
 
 ### Phase 0: Roadmap and Inventory
 

@@ -22,7 +22,7 @@
  * progress reporter, MCP per-call timeout, and search rerank/attribution.
  * They are deliberately NOT added as dead no-op flags. See the authoritative
  * flag -> subsystem -> code-anchor table in
- * docs/plans/2026-07-06-global-flag-gap-audit.md. Do NOT re-implement flag
+ * docs/plans/MIGRATION.md. Do NOT re-implement flag
  * parsing in this wrapper.
  */
 

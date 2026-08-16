@@ -16,7 +16,7 @@
 //! implementation is NOT built here — TS `gateway.expand` needs
 //! `generateObject` (structured JSON), which the slice-3 `ChatProvider` seam
 //! does not yet expose. That real provider is a registered known-gap
-//! (registered in docs/plans/KNOWN-GAPS.md (G26)); this slice ships the pure
+//! (registered in docs/plans/MIGRATION.md (G26)); this slice ships the pure
 //! layer + trait + a test mock so the whole pipeline is testable and search
 //! can wire it the moment a structured-output seam lands.
 

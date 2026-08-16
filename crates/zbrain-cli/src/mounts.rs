@@ -791,7 +791,7 @@ fn has_resolver_file(skills: &Path) -> bool {
 /// on the delayed skill/resolver stack and is parked (G52); only the
 /// repo-root skip detection is ported (honest: we never fake a published
 /// cache we cannot build).
-// registered in docs/plans/KNOWN-GAPS.md (G52)
+// registered in docs/plans/MIGRATION.md (G52)
 fn refresh_mounts_cache() {
     match find_repo_root() {
         None => {

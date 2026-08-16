@@ -474,7 +474,7 @@ pub fn build_embedding_client() -> Option<Arc<EmbeddingClient>> {
 /// scored recall as 0 for every dataset whose session ids were not already
 /// sanitize-stable. Normalizing both sides restores the intended semantics
 /// ("was the answer's session retrieved?") instead of reproducing the bug.
-/// Registered in docs/plans/KNOWN-GAPS.md (G58).
+/// Registered in docs/plans/MIGRATION.md (G58).
 fn recall_hit_against(retrieved_session_ids: &[String], ground_truth: &[String]) -> bool {
     let gt_set: HashSet<String> = ground_truth
         .iter()
@@ -556,7 +556,7 @@ async fn run_one_question(
     // (no tokenization, no stemming). Benchmarking against the in-memory
     // brain consequently under-reports recall relative to TS, which ran
     // PGLite's `websearch_to_tsquery`. Registered in
-    // docs/plans/KNOWN-GAPS.md (G58).
+    // docs/plans/MIGRATION.md (G58).
     let results = if pa.keyword_only {
         hybrid_search(
             engine,

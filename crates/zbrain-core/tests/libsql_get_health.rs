@@ -7,7 +7,7 @@
 //! unconditionally in CI with no daemon.
 //!
 //! Backend-model note (see `admin_queries::BrainStats` docs and
-//! `docs/plans/KNOWN-GAPS.md` G24/G46): Rust libsql has no `content_chunks` /
+//! `docs/plans/MIGRATION.md` G24/G46): Rust libsql has no `content_chunks` /
 //! `timeline_entries` tables. Embedding coverage is computed at the PAGE level
 //! (one embedding BLOB per page, G24), `stale_pages` is always 0 (no
 //! timeline_entries.created_at to compare), and timeline coverage parses each

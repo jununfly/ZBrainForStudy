@@ -1,7 +1,7 @@
 //! Extract handler — vault filesystem extraction, wired to `extract_fs`.
 //!
 //! Faithful Rust port of the TS `jobs.ts` `extract` minion job
-//! (see `docs/plans/zbrain-g74-g76-reimpl.json` node 1-2-4):
+//! (see `docs/plans/MIGRATION.md` node 1-2-4):
 //!
 //! ```js
 //! worker.register('extract', async (job) => {

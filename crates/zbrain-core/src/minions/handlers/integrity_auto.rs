@@ -2,7 +2,7 @@
 //!
 //! The TS `integrity-auto` command was deleted under option C and has no Rust
 //! verb. Ad-hoc integrity is available via the wired `integrity` handler. Tracked
-//! as G82 in `docs/plans/KNOWN-GAPS.md`.
+//! as G82 in `docs/plans/MIGRATION.md`.
 
 use async_trait::async_trait;
 use serde_json::Value;

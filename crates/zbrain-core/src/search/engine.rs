@@ -8,7 +8,7 @@
 //! `search_pages`, then applies the two tail stages the engine does NOT own:
 //! page-level dedup and the token budget.
 //!
-//! Deferred (registered in docs/plans/KNOWN-GAPS.md):
+//! Deferred (registered in docs/plans/MIGRATION.md):
 //!   * `cosineReScore` — **G67**: needs a new engine method
 //!     `get_embeddings_by_chunk_ids` (no backend yet); `cargo check` cannot
 //!     validate a DB round-trip.

@@ -500,7 +500,7 @@ pub struct OperationContext {
     /// `mount_resolver` / `chat_provider` injection pattern. Not
     /// serialized — carries a live writer handle wired at CLI
     /// construction or in tests via `with_telemetry_writer`. See
-    /// `docs/plans/KNOWN-GAPS.md` (G72) for the design rationale.
+    /// `docs/plans/MIGRATION.md` (G72) for the design rationale.
     #[serde(skip)]
     pub telemetry_writer: Option<std::sync::Arc<crate::search::SearchTelemetryWriter>>,
 }
@@ -646,7 +646,7 @@ impl OperationContext {
     /// every search call records one event to the writer (JSONL append
     /// to the writer's path, or a no-op if the writer was constructed
     /// with `None`). Mirrors the `with_chat_provider` / `with_embedding`
-    /// injection precedent. See `docs/plans/KNOWN-GAPS.md` (G72).
+    /// injection precedent. See `docs/plans/MIGRATION.md` (G72).
     #[must_use]
     pub fn with_telemetry_writer(
         mut self,
@@ -1889,7 +1889,7 @@ pub struct QueryParams {
     /// Salience boost axis. `'off'` disables the post-fusion salience stage;
     /// `'on'` / `'strong'` (and omit) leave it on. Rust pins strength to `'on'`
     /// because the mode-resolved strength system is not ported yet — see
-    /// docs/plans/KNOWN-GAPS.md (G13). Mirrors TS `query.salience`.
+    /// docs/plans/MIGRATION.md (G13). Mirrors TS `query.salience`.
     #[serde(default)]
     pub salience: Option<String>,
     /// Recency boost axis. `'off'` disables the post-fusion recency stage;
@@ -1954,7 +1954,7 @@ pub struct QueryOutput {
 /// the migrated stages are surfaced (base_score always present; salience /
 /// recency / reranker stamped only when their stage fired). The un-migrated
 /// boost axes (backlink / exact-match / graph / session-demote) have no data
-/// layer yet and are intentionally absent — see docs/plans/KNOWN-GAPS.md (G13).
+/// layer yet and are intentionally absent — see docs/plans/MIGRATION.md (G13).
 ///
 /// `Deserialize` is derived (with `#[serde(default)]` on the optional stamps) so
 /// the CLI can round-trip `run_operation`'s `serde_json::Value` back into this
@@ -5863,7 +5863,7 @@ impl TypedOperation for FindTrajectoryOperation {
 // NOTE: entity resolution (TS `resolveEntitySlug` — exact/fuzzy/prefix across
 // the pages table via pg_trgm) is NOT ported here; `entity` is used verbatim
 // as the entity_slug, matching the `find_trajectory` op contract. Registered
-// in docs/plans/KNOWN-GAPS.md as a facts-domain gap (G53).
+// in docs/plans/MIGRATION.md as a facts-domain gap (G53).
 
 /// Port of TS `parseSinceParam` (operations.ts). Accepts ISO 8601, a
 /// date-only `YYYY-MM-DD`, or a relative shorthand ("8 hours ago", "30m",

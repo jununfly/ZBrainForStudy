@@ -1,11 +1,11 @@
 {
-  "title": "Part14 - Remaining Known-Gaps 收尾地图（TS→Rust 迁移命令级完成后的 residue）",
-  "description": "将 docs/plans/KNOWN-GAPS.md 的 open/blocked 条目落成路线图节点，作为迁移收尾的实时索引。迁移本身以命令级完成为终点（Grilling Q1b, 2026-08-16），未结项作为 documented limitations 保留。",
+  "title": "ZBrain 迁移收尾地图 — 未完成事项（single source of truth）",
+  "description": "TS→Rust 迁移以命令级完成为终点（Grilling Q1b, 2026-08-16）。本文件是未完成事项的实时索引（zj-roadmap-driven 格式），对应长期文档 docs/plans/MIGRATION.md §4。54 叶 = 48 open + 6 blocked。",
   "version": 1,
   "nodes": {
     "1": {
       "id": "1",
-      "label": "Part14 - Remaining Known-Gaps 收尾地图（TS→Rust 迁移已完成，命令级完成）",
+      "label": "ZBrain 迁移收尾地图 — 未完成事项（TS→Rust 命令级已完成）",
       "status": "completed",
       "mode": "explore",
       "parent": null,
@@ -41,7 +41,7 @@
           "note": "与 G38 既有'保留+子gap'立场一致；operations.ts 4 个 schema 操作经 grep 零活调用方，删死代码前置门槛解除但按 Q1b 不执行删除。"
         }
       ],
-      "notes": "Roadmap-driven SSOT for the residual work after the TS→Rust migration reached command-level completion. 54 leaf nodes = KNOWN-GAPS open/blocked entries (48 open + 6 blocked). Each leaf points back to its KNOWN-GAPS G-id."
+      "notes": "zj-roadmap-driven SSOT for residual work after command-level completion. 54 leaf nodes = MIGRATION.md §4 open/blocked entries (48 open + 6 blocked). Each leaf points back to its G-id in docs/plans/MIGRATION.md."
     },
     "1-1": {
       "id": "1-1",
@@ -69,7 +69,7 @@
       "parent": "1-1",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G14)"
+      "notes": "registered in docs/plans/MIGRATION.md (G14)"
     },
     "1-1-2": {
       "id": "1-1-2",
@@ -79,7 +79,7 @@
       "parent": "1-1",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G15)"
+      "notes": "registered in docs/plans/MIGRATION.md (G15)"
     },
     "1-1-3": {
       "id": "1-1-3",
@@ -89,7 +89,7 @@
       "parent": "1-1",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G16)"
+      "notes": "registered in docs/plans/MIGRATION.md (G16)"
     },
     "1-1-4": {
       "id": "1-1-4",
@@ -99,7 +99,7 @@
       "parent": "1-1",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G17)"
+      "notes": "registered in docs/plans/MIGRATION.md (G17)"
     },
     "1-1-5": {
       "id": "1-1-5",
@@ -109,7 +109,7 @@
       "parent": "1-1",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G18)"
+      "notes": "registered in docs/plans/MIGRATION.md (G18)"
     },
     "1-1-6": {
       "id": "1-1-6",
@@ -119,7 +119,7 @@
       "parent": "1-1",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G19)"
+      "notes": "registered in docs/plans/MIGRATION.md (G19)"
     },
     "1-1-7": {
       "id": "1-1-7",
@@ -129,7 +129,7 @@
       "parent": "1-1",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G20)"
+      "notes": "registered in docs/plans/MIGRATION.md (G20)"
     },
     "1-2": {
       "id": "1-2",
@@ -157,7 +157,7 @@
       "parent": "1-2",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G5)"
+      "notes": "registered in docs/plans/MIGRATION.md (G5)"
     },
     "1-2-2": {
       "id": "1-2-2",
@@ -167,7 +167,7 @@
       "parent": "1-2",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G39)"
+      "notes": "registered in docs/plans/MIGRATION.md (G39)"
     },
     "1-2-3": {
       "id": "1-2-3",
@@ -177,7 +177,7 @@
       "parent": "1-2",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G40)"
+      "notes": "registered in docs/plans/MIGRATION.md (G40)"
     },
     "1-2-4": {
       "id": "1-2-4",
@@ -187,7 +187,7 @@
       "parent": "1-2",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G43)"
+      "notes": "registered in docs/plans/MIGRATION.md (G43)"
     },
     "1-2-5": {
       "id": "1-2-5",
@@ -197,7 +197,7 @@
       "parent": "1-2",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G44)"
+      "notes": "registered in docs/plans/MIGRATION.md (G44)"
     },
     "1-2-6": {
       "id": "1-2-6",
@@ -207,7 +207,7 @@
       "parent": "1-2",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G45)"
+      "notes": "registered in docs/plans/MIGRATION.md (G45)"
     },
     "1-2-7": {
       "id": "1-2-7",
@@ -217,7 +217,7 @@
       "parent": "1-2",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G47)"
+      "notes": "registered in docs/plans/MIGRATION.md (G47)"
     },
     "1-3": {
       "id": "1-3",
@@ -242,7 +242,7 @@
       "parent": "1-3",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G35)"
+      "notes": "registered in docs/plans/MIGRATION.md (G35)"
     },
     "1-3-2": {
       "id": "1-3-2",
@@ -252,7 +252,7 @@
       "parent": "1-3",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G53)"
+      "notes": "registered in docs/plans/MIGRATION.md (G53)"
     },
     "1-3-3": {
       "id": "1-3-3",
@@ -262,7 +262,7 @@
       "parent": "1-3",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G54)"
+      "notes": "registered in docs/plans/MIGRATION.md (G54)"
     },
     "1-3-4": {
       "id": "1-3-4",
@@ -272,7 +272,7 @@
       "parent": "1-3",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G60)"
+      "notes": "registered in docs/plans/MIGRATION.md (G60)"
     },
     "1-4": {
       "id": "1-4",
@@ -299,7 +299,7 @@
       "parent": "1-4",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G26)"
+      "notes": "registered in docs/plans/MIGRATION.md (G26)"
     },
     "1-4-2": {
       "id": "1-4-2",
@@ -309,7 +309,7 @@
       "parent": "1-4",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G67)"
+      "notes": "registered in docs/plans/MIGRATION.md (G67)"
     },
     "1-4-3": {
       "id": "1-4-3",
@@ -319,7 +319,7 @@
       "parent": "1-4",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G68)"
+      "notes": "registered in docs/plans/MIGRATION.md (G68)"
     },
     "1-4-4": {
       "id": "1-4-4",
@@ -329,7 +329,7 @@
       "parent": "1-4",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G69)"
+      "notes": "registered in docs/plans/MIGRATION.md (G69)"
     },
     "1-4-5": {
       "id": "1-4-5",
@@ -339,7 +339,7 @@
       "parent": "1-4",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G70)"
+      "notes": "registered in docs/plans/MIGRATION.md (G70)"
     },
     "1-4-6": {
       "id": "1-4-6",
@@ -349,7 +349,7 @@
       "parent": "1-4",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G71)"
+      "notes": "registered in docs/plans/MIGRATION.md (G71)"
     },
     "1-5": {
       "id": "1-5",
@@ -383,7 +383,7 @@
       "parent": "1-5",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G8)"
+      "notes": "registered in docs/plans/MIGRATION.md (G8)"
     },
     "1-5-2": {
       "id": "1-5-2",
@@ -393,7 +393,7 @@
       "parent": "1-5",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G9)"
+      "notes": "registered in docs/plans/MIGRATION.md (G9)"
     },
     "1-5-3": {
       "id": "1-5-3",
@@ -403,7 +403,7 @@
       "parent": "1-5",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G10)"
+      "notes": "registered in docs/plans/MIGRATION.md (G10)"
     },
     "1-5-4": {
       "id": "1-5-4",
@@ -413,7 +413,7 @@
       "parent": "1-5",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G11)"
+      "notes": "registered in docs/plans/MIGRATION.md (G11)"
     },
     "1-5-5": {
       "id": "1-5-5",
@@ -423,7 +423,7 @@
       "parent": "1-5",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G12)"
+      "notes": "registered in docs/plans/MIGRATION.md (G12)"
     },
     "1-5-6": {
       "id": "1-5-6",
@@ -433,7 +433,7 @@
       "parent": "1-5",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G13)"
+      "notes": "registered in docs/plans/MIGRATION.md (G13)"
     },
     "1-5-7": {
       "id": "1-5-7",
@@ -443,7 +443,7 @@
       "parent": "1-5",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G22)"
+      "notes": "registered in docs/plans/MIGRATION.md (G22)"
     },
     "1-5-8": {
       "id": "1-5-8",
@@ -453,7 +453,7 @@
       "parent": "1-5",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G30)"
+      "notes": "registered in docs/plans/MIGRATION.md (G30)"
     },
     "1-5-9": {
       "id": "1-5-9",
@@ -463,7 +463,7 @@
       "parent": "1-5",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G46)"
+      "notes": "registered in docs/plans/MIGRATION.md (G46)"
     },
     "1-5-10": {
       "id": "1-5-10",
@@ -473,7 +473,7 @@
       "parent": "1-5",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G49)"
+      "notes": "registered in docs/plans/MIGRATION.md (G49)"
     },
     "1-5-11": {
       "id": "1-5-11",
@@ -483,7 +483,7 @@
       "parent": "1-5",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G50)"
+      "notes": "registered in docs/plans/MIGRATION.md (G50)"
     },
     "1-5-12": {
       "id": "1-5-12",
@@ -493,7 +493,7 @@
       "parent": "1-5",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G64)"
+      "notes": "registered in docs/plans/MIGRATION.md (G64)"
     },
     "1-5-13": {
       "id": "1-5-13",
@@ -503,7 +503,7 @@
       "parent": "1-5",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G29)"
+      "notes": "registered in docs/plans/MIGRATION.md (G29)"
     },
     "1-6": {
       "id": "1-6",
@@ -537,7 +537,7 @@
       "parent": "1-6",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G6)"
+      "notes": "registered in docs/plans/MIGRATION.md (G6)"
     },
     "1-6-2": {
       "id": "1-6-2",
@@ -547,7 +547,7 @@
       "parent": "1-6",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G27)"
+      "notes": "registered in docs/plans/MIGRATION.md (G27)"
     },
     "1-6-3": {
       "id": "1-6-3",
@@ -557,7 +557,7 @@
       "parent": "1-6",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G28)"
+      "notes": "registered in docs/plans/MIGRATION.md (G28)"
     },
     "1-6-4": {
       "id": "1-6-4",
@@ -567,7 +567,7 @@
       "parent": "1-6",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G36)"
+      "notes": "registered in docs/plans/MIGRATION.md (G36)"
     },
     "1-6-5": {
       "id": "1-6-5",
@@ -577,7 +577,7 @@
       "parent": "1-6",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G51)"
+      "notes": "registered in docs/plans/MIGRATION.md (G51)"
     },
     "1-6-6": {
       "id": "1-6-6",
@@ -587,7 +587,7 @@
       "parent": "1-6",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G52)"
+      "notes": "registered in docs/plans/MIGRATION.md (G52)"
     },
     "1-6-7": {
       "id": "1-6-7",
@@ -597,7 +597,7 @@
       "parent": "1-6",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G57)"
+      "notes": "registered in docs/plans/MIGRATION.md (G57)"
     },
     "1-6-8": {
       "id": "1-6-8",
@@ -607,7 +607,7 @@
       "parent": "1-6",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G59)"
+      "notes": "registered in docs/plans/MIGRATION.md (G59)"
     },
     "1-6-9": {
       "id": "1-6-9",
@@ -617,7 +617,7 @@
       "parent": "1-6",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G62)"
+      "notes": "registered in docs/plans/MIGRATION.md (G62)"
     },
     "1-6-10": {
       "id": "1-6-10",
@@ -627,7 +627,7 @@
       "parent": "1-6",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G63)"
+      "notes": "registered in docs/plans/MIGRATION.md (G63)"
     },
     "1-6-11": {
       "id": "1-6-11",
@@ -637,7 +637,7 @@
       "parent": "1-6",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G65)"
+      "notes": "registered in docs/plans/MIGRATION.md (G65)"
     },
     "1-6-12": {
       "id": "1-6-12",
@@ -647,7 +647,7 @@
       "parent": "1-6",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G74)"
+      "notes": "registered in docs/plans/MIGRATION.md (G74)"
     },
     "1-6-13": {
       "id": "1-6-13",
@@ -657,7 +657,7 @@
       "parent": "1-6",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G76)"
+      "notes": "registered in docs/plans/MIGRATION.md (G76)"
     },
     "1-7": {
       "id": "1-7",
@@ -681,7 +681,7 @@
       "parent": "1-7",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G55)"
+      "notes": "registered in docs/plans/MIGRATION.md (G55)"
     },
     "1-7-2": {
       "id": "1-7-2",
@@ -691,7 +691,7 @@
       "parent": "1-7",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G31)"
+      "notes": "registered in docs/plans/MIGRATION.md (G31)"
     },
     "1-7-3": {
       "id": "1-7-3",
@@ -701,7 +701,7 @@
       "parent": "1-7",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G32)"
+      "notes": "registered in docs/plans/MIGRATION.md (G32)"
     },
     "1-8": {
       "id": "1-8",
@@ -723,7 +723,7 @@
       "parent": "1-8",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/KNOWN-GAPS.md (G38)"
+      "notes": "registered in docs/plans/MIGRATION.md (G38)"
     }
   }
 }

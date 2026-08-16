@@ -4,7 +4,7 @@
 -- (tool_name = 'brain_put_page' AND status = 'complete').
 --
 -- NOTE: FK to minion_jobs is intentionally omitted. The Rust minion does not
--- yet write this table (write path registered in docs/plans/KNOWN-GAPS.md
+-- yet write this table (write path registered in docs/plans/MIGRATION.md
 -- (G63); only the read path is wired here). Adding the FK would couple this
 -- migration to the minion_jobs schema and provide no enforcement value until
 -- the writer lands.

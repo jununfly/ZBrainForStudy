@@ -103,7 +103,7 @@ impl DoctorCheck {
 ///
 /// Hard trace: migrating a subsystem means moving its entry OUT of here into a
 /// real check — the anchor test guards against silent removal.
-/// registered in docs/plans/KNOWN-GAPS.md (G5).
+/// registered in docs/plans/MIGRATION.md (G5).
 const UNMIGRATED_TS_DOCTOR_CHECKS: &[(&str, &str)] = &[
     ("search_mode", "search modes overrides, mode drift"),
     ("federation_health", "federated source sync, mount reachability"),
@@ -4238,7 +4238,7 @@ pub struct CalibrationArgs {
 /// a human-readable per-stage scoring attribution breakdown (base_score →
 /// migrated boost multipliers → reranker rank delta → final). Only the stages
 /// with a Rust data layer are rendered (salience / recency / reranker); the
-/// un-migrated boost axes are tracked in docs/plans/KNOWN-GAPS.md (G13).
+/// un-migrated boost axes are tracked in docs/plans/MIGRATION.md (G13).
 #[derive(Debug, Parser)]
 pub struct QueryArgs {
     /// Search query text. Ignored when `--stats` is set; the stats
@@ -4428,7 +4428,7 @@ pub struct PublishArgs {
 /// Note on the type filter: TS derives expert types from the active schema
 /// pack (`expertTypesFromPack`). The schema-pack subsystem is not migrated
 /// yet, so this uses the default person/company filter — see
-/// docs/plans/KNOWN-GAPS.md.
+/// docs/plans/MIGRATION.md.
 #[derive(Debug, Parser)]
 pub struct WhoknowsArgs {
     /// Topic to route on (multiple words are joined into one query).
@@ -9524,7 +9524,7 @@ Examples:
 /// default person/company filter (`whoknows::DEFAULT_TYPES`). Thin-client
 /// remote routing (TS routes to the `find_experts` MCP op when there is no
 /// local brain) is likewise deferred. Both are registered in
-/// docs/plans/KNOWN-GAPS.md.
+/// docs/plans/MIGRATION.md.
 async fn run_whoknows_command(args: WhoknowsArgs, _config_path: Option<&Path>) -> anyhow::Result<()> {
     use zbrain_core::whoknows;
 
@@ -9669,7 +9669,7 @@ async fn run_integrity_command(
 /// it is now empty. The anchor test guards against silent re-introduction of
 /// un-migrated TS verbs — if a verb is ever found un-migrated again, re-list
 /// it here and update the test. TS source: src/commands/schema.ts @ 5d5b404~1.
-/// Full background: docs/plans/KNOWN-GAPS.md (G4, resolved).
+/// Full background: docs/plans/MIGRATION.md (G4, resolved).
 #[allow(dead_code)] // Referenced only in the anchor test (cargo test); silent in non-test builds.
 const UNMIGRATED_TS_SCHEMA_PACK_VERBS: &[&str] = &[
     // All 32 verbs migrated (1-1..1-5). Empty = G4 resolved.

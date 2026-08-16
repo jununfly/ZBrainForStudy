@@ -42,7 +42,7 @@ pub struct FullStats {
 /// `rename_all` here or the wire contract breaks.
 ///
 /// Backend-sourcing caveats (Rust storage differs from the TS `content_chunks`
-/// / `timeline_entries` tables; registered in `docs/plans/KNOWN-GAPS.md` (G46)):
+/// / `timeline_entries` tables; registered in `docs/plans/MIGRATION.md` (G46)):
 ///   - `chunk_count`: Rust has **no `content_chunks` table**. Production
 ///     backends (libsql/postgres) approximate it as the count of live pages
 ///     that carry non-empty `compiled_truth` (same proxy as `get_full_stats`).

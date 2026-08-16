@@ -6006,7 +6006,7 @@ impl BrainEngine for PostgresEngine {
 
         // No content_chunks table in Rust — approximate chunk_count as live
         // pages carrying non-empty compiled_truth. Registered in
-        // docs/plans/KNOWN-GAPS.md (G46).
+        // docs/plans/MIGRATION.md (G46).
         let chunk_count: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM pages \
              WHERE compiled_truth IS NOT NULL AND compiled_truth != '' AND deleted_at IS NULL",
@@ -6680,7 +6680,7 @@ impl BrainEngine for PostgresEngine {
         // storage_uri left to its NULL default (inline content only). size_bytes
         // and id are INT4/SERIAL → cast ::bigint so try_get::<i64> matches;
         // created_at TIMESTAMPTZ → ::text for the RFC-3339 record string.
-        // External-storage path registered in docs/plans/KNOWN-GAPS.md (G27).
+        // External-storage path registered in docs/plans/MIGRATION.md (G27).
         let row = sqlx::query(
             "INSERT INTO minion_attachments \
              (job_id, filename, content_type, content, size_bytes, sha256) \

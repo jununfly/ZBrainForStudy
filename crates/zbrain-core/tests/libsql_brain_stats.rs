@@ -5,7 +5,7 @@
 //! down on drop), so the suite runs unconditionally in CI with no daemon.
 //!
 //! Backend-sourcing note (see `admin_queries::BrainStats` docs and
-//! `docs/plans/KNOWN-GAPS.md`): Rust libsql has no `content_chunks` /
+//! `docs/plans/MIGRATION.md`): Rust libsql has no `content_chunks` /
 //! `timeline_entries` tables. `chunk_count` is the count of live pages with
 //! non-empty `compiled_truth`; `embedded_count` is live pages carrying a
 //! page-level embedding (G24); `timeline_entry_count` sums the JSON-array

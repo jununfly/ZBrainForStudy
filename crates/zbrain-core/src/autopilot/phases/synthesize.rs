@@ -15,7 +15,7 @@
 //! 5. best-effort slug collection via
 //!    [`BrainEngine::collect_child_put_page_slugs`] over the
 //!    `subagent_tool_executions` table (read side wired in 1-3-4-6; the write
-//!    side is registered in docs/plans/KNOWN-GAPS.md (G63))
+//!    side is registered in docs/plans/MIGRATION.md (G63))
 //! 6. disk dual-write: [`reverse_write_refs`] mirrors each synthesized page
 //!    back to `brainDir/<slug>.md` (or `brainDir/.sources/<id>/<slug>.md` for
 //!    non-default sources), and [`write_summary_page`] writes the
@@ -36,7 +36,7 @@
 //!   `pages_written` is harvested via `engine.collect_child_put_page_slugs`
 //!   over the `subagent_tool_executions` table (added in 1-3-4-6). The **write
 //!   path** (minion `brain_put_page` tool recording executions) is registered
-//!   in docs/plans/KNOWN-GAPS.md (G63), so the table is read but rarely
+//!   in docs/plans/MIGRATION.md (G63), so the table is read but rarely
 //!   populated until that lands — `reverse_write_refs` typically has no refs
 //!   to mirror yet.
 //! - **Cooldown (1-3-4-6, wired)**: [`check_cooldown`] reads

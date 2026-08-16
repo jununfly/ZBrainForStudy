@@ -1865,7 +1865,7 @@ impl BrainEngine for LibsqlEngine {
     /// SQL `LIKE` cannot reproduce faithfully (weighting, frontmatter JSON, the
     /// vector path). Pulling the live candidate set into memory and fusing there
     /// keeps parity exact. A future FTS5 / sqlite-vec push-down is possible but
-    /// out of scope (registered in docs/plans/KNOWN-GAPS.md).
+    /// out of scope (registered in docs/plans/MIGRATION.md).
     async fn search_pages(&self, opts: &SearchOpts) -> Result<Vec<SearchResult>> {
         let conn = self.conn().await?;
 
@@ -7148,7 +7148,7 @@ impl BrainEngine for LibsqlEngine {
 
         // No content_chunks table in Rust — approximate chunk_count as live
         // pages carrying non-empty compiled_truth (same proxy as
-        // get_full_stats). Registered in docs/plans/KNOWN-GAPS.md (G46).
+        // get_full_stats). Registered in docs/plans/MIGRATION.md (G46).
         let chunk_count = scalar_count(
             &conn,
             "SELECT COUNT(*) FROM pages \
@@ -7971,7 +7971,7 @@ impl BrainEngine for LibsqlEngine {
         }
 
         // storage_uri is always NULL for this port (inline content only).
-        // External-storage path registered in docs/plans/KNOWN-GAPS.md (G27).
+        // External-storage path registered in docs/plans/MIGRATION.md (G27).
         conn.execute(
             "INSERT INTO minion_attachments \
              (job_id, filename, content_type, content, size_bytes, sha256) \

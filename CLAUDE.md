@@ -380,7 +380,7 @@ All commands run through the `zbrain` binary (or `node bin/zbrain-rs.js`). Run
 
 The Rust port uses `cargo` as the single build/test truth source. The legacy
 TS-era `bun run test` / `scripts/*.sh` gates were retired with the `scripts/`
-directory (see `docs/plans/zbrain-legacy-retire-reassessment.json`).
+directory (see `docs/plans/MIGRATION.md`).
 
 | Command | What it runs | When to use |
 |---|---|---|

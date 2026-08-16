@@ -5,7 +5,7 @@
 //! violations, and checks for DRY issues + SKILLIFY_STUB sentinels.
 //!
 //! Not yet ported (tracked as later slices of roadmap 1-6-5, registered in
-//! `docs/plans/KNOWN-GAPS.md`): Check 5 (trigger routing eval) and Check 6
+//! `docs/plans/MIGRATION.md`): Check 5 (trigger routing eval) and Check 6
 //! (brain filing audit) surface as warnings; `--fix` auto-repair of DRY
 //! violations is a separate write path. This core covers the deterministic,
 //! read-only structural checks so `zbrain check-resolvable` is useful

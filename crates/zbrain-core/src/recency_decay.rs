@@ -40,7 +40,7 @@ pub type RecencyDecayMap = HashMap<String, RecencyDecayConfig>;
 ///
 /// Resolving which strength the active search mode wants is NOT migrated yet
 /// (the search-mode system is unported), so the engine hardcodes `On` for now —
-/// registered in docs/plans/KNOWN-GAPS.md (G13).
+/// registered in docs/plans/MIGRATION.md (G13).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecencyStrength {
     On,

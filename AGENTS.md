@@ -11,7 +11,7 @@ This is your install + operating protocol. Claude Code reads `./CLAUDE.md` autom
 - Domain terms `brain` and `source` are still valid and should not be renamed.
 - TypeScript code (`src/`, `admin/`) is legacy but not deleted mechanically. Delete TS surfaces only after a Rust replacement slice lands and the corresponding behavior is verified.
 - Do not add GBrain aliases or compatibility fallbacks in the first cleanup phase. There are no online users yet.
-- If a TS remnant is not safe to delete during Rust migration, stop and record an explicit decision (see [`docs/plans/KNOWN-GAPS.md`](docs/plans/KNOWN-GAPS.md)).
+- If a TS remnant is not safe to delete during Rust migration, stop and record an explicit decision (see [`docs/plans/MIGRATION.md`](docs/plans/MIGRATION.md)).
 
 ## Build + run (current ZBrain line)
 

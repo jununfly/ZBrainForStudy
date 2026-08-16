@@ -18,7 +18,7 @@
 //! are NOT migrated (backlink / exact-match / graph adjacency / graph
 //! cross-source / session-demote) are intentionally absent: they block on
 //! data layers that do not exist in Rust yet, so emitting placeholder lines
-//! would be dishonest. registered in docs/plans/KNOWN-GAPS.md (G13).
+//! would be dishonest. registered in docs/plans/MIGRATION.md (G13).
 
 use crate::operation::QueryResultItem;
 

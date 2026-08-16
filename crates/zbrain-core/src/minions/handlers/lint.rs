@@ -3,7 +3,7 @@
 //! The TS `lint` command was deleted under option C and has no Rust verb. The
 //! cycle Lint arm is honestly Skipped (G65) — not covered by `run_cycle`
 //! phases. This minion job type likewise has no Rust verb. Tracked as G80 in
-//! `docs/plans/KNOWN-GAPS.md`.
+//! `docs/plans/MIGRATION.md`.
 
 use async_trait::async_trait;
 use serde_json::Value;

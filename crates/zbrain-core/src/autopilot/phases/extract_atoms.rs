@@ -6,7 +6,7 @@
 //! discovered via a single NOT EXISTS SQL query (idempotent by
 //! `content_hash`); the transcript path (filesystem `discoverTranscripts` +
 //! `loadConfigWithEngine`) is **NOT** ported — registered in
-//! docs/plans/KNOWN-GAPS.md (G62).
+//! docs/plans/MIGRATION.md (G62).
 //!
 //! Unlike `extract_facts` (fence parsing, no LLM), this phase calls the
 //! chat provider. `run_extract_atoms` receives `&dyn ChatProvider` so tests
@@ -252,7 +252,7 @@ pub async fn run_extract_atoms(
     };
 
     // 1a. Transcripts path NOT ported — always empty.
-    // registered in docs/plans/KNOWN-GAPS.md (G62).
+    // registered in docs/plans/MIGRATION.md (G62).
     let transcripts: Vec<DiscoveredPage> = Vec::new();
 
     // 2-3. Dual-source merge: transcripts + pages, dedup by content_hash.

@@ -1,7 +1,7 @@
 //! Lint-fix handler — UNSUPPORTED / wontfix.
 //!
 //! The TS `lint-fix` command was deleted under option C and has no Rust verb.
-//! Tracked as G81 in `docs/plans/KNOWN-GAPS.md`.
+//! Tracked as G81 in `docs/plans/MIGRATION.md`.
 
 use async_trait::async_trait;
 use serde_json::Value;

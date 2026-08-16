@@ -477,7 +477,7 @@ pub struct NormalizedAttachment {
 ///
 /// `storage_uri` is always `None` for the current port: attachments only take
 /// the inline `content` channel (faithful to the TS behavior). External-storage
-/// routing is a reserved capability registered in docs/plans/KNOWN-GAPS.md (G27).
+/// routing is a reserved capability registered in docs/plans/MIGRATION.md (G27).
 ///
 /// ## Time representation
 /// `created_at` is `String` (RFC-3339 / ISO-8601) — a record column never used

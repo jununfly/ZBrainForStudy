@@ -635,7 +635,7 @@ impl NightlyProbeDeps for NightlyProbeRunnerDeps {
         max_usd: f64,
     ) -> Result<(i32, Option<super::nightly_probe::CrossModalSummary>), String> {
         // Native Rust port of the nightly cross-modal batch (closes G58's last
-        // stub). See docs/plans/KNOWN-GAPS.md (G58).
+        // stub). See docs/plans/MIGRATION.md (G58).
         //
         // The upstream TS batch driver fed LongMemEval output rows into the
         // cross-modal quality gate; its source was deleted during the Rust
