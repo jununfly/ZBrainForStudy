@@ -161,6 +161,8 @@ const MIGRATION_0032: &str = include_str!("../migrations-sqlite/0032_eval_contra
 /// 1-1-5-5 (brainstorm domain-bank): add content_chunks.embedding column.
 const MIGRATION_0033: &str = include_str!("../migrations-sqlite/0033_content_chunks_embedding.sql");
 const MIGRATION_0034: &str = include_str!("../migrations-sqlite/0034_eval_takes_quality_runs.sql");
+/// G75 (reindex-multimodal): add `content_chunks.embedding_multimodal` column.
+const MIGRATION_0036: &str = include_str!("../migrations-sqlite/0036_content_chunks_embedding_multimodal.sql");
 
 /// Legacy string array — REMOVED in favor of MigrationRegistry.
 /// Use LIBQL_MIGRATIONS instead.
@@ -356,6 +358,11 @@ pub static LIBQL_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 34,
         name: "eval_takes_quality_runs",
         sql: MIGRATION_0034,
+    }));
+    registry.add(Box::new(LibsqlMigration {
+        version: 36,
+        name: "content_chunks_embedding_multimodal",
+        sql: MIGRATION_0036,
     }));
 
     registry
@@ -1761,6 +1768,64 @@ impl BrainEngine for LibsqlEngine {
         )
         .await
         .map_err(|e| Error::engine(format!("put_page_embedding failed: {e}")))?;
+        Ok(())
+    }
+
+    async fn put_chunk_embedding(
+        &self,
+        slug: &str,
+        source_id: &str,
+        chunk_index: usize,
+        embedding: Vec<u8>,
+    ) -> Result<()> {
+        let conn = self.conn().await?;
+        conn.execute(
+            "UPDATE content_chunks SET embedding = ? \
+             WHERE page_id = (SELECT id FROM pages WHERE slug = ? AND source_id = ? AND deleted_at IS NULL) \
+               AND chunk_index = ?",
+            ::libsql::params![embedding, slug, source_id, chunk_index as i64],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("put_chunk_embedding failed: {e}")))?;
+        Ok(())
+    }
+
+    async fn put_chunk_multimodal_embedding(
+        &self,
+        slug: &str,
+        source_id: &str,
+        chunk_index: usize,
+        embedding: Vec<u8>,
+    ) -> Result<()> {
+        let conn = self.conn().await?;
+        conn.execute(
+            "UPDATE content_chunks SET embedding_multimodal = ? \
+             WHERE page_id = (SELECT id FROM pages WHERE slug = ? AND source_id = ? AND deleted_at IS NULL) \
+               AND chunk_index = ?",
+            ::libsql::params![embedding, slug, source_id, chunk_index as i64],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("put_chunk_multimodal_embedding failed: {e}")))?;
+        Ok(())
+    }
+
+    async fn set_page_effective_date(
+        &self,
+        slug: &str,
+        source_id: &str,
+        date: Option<chrono::DateTime<chrono::Utc>>,
+        source: Option<crate::types::EffectiveDateSource>,
+    ) -> Result<()> {
+        let conn = self.conn().await?;
+        let date_str = date.map(|d| d.to_rfc3339());
+        let source_str = source.map(encode_effective_date_source);
+        conn.execute(
+            "UPDATE pages SET effective_date = ?, effective_date_source = ? \
+             WHERE slug = ? AND source_id = ? AND deleted_at IS NULL",
+            ::libsql::params![date_str, source_str, slug, source_id],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("set_page_effective_date failed: {e}")))?;
         Ok(())
     }
 

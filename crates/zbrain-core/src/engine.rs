@@ -3985,6 +3985,62 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
         ))
     }
 
+    /// Surgically write a chunk-level embedding for one chunk of a page
+    /// (identified by `chunk_index`) without touching any other column.
+    /// Used by `reindex code` to refresh code-chunk vectors after re-chunking.
+    /// Defaults to `Err(Unsupported)`; implemented by the SQL backends.
+    async fn put_chunk_embedding(
+        &self,
+        _slug: &str,
+        _source_id: &str,
+        _chunk_index: usize,
+        _embedding: Vec<u8>,
+    ) -> crate::Result<()> {
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "put_chunk_embedding not yet implemented for this engine",
+        ))
+    }
+
+    /// Surgically write a chunk-level *multimodal* embedding for one chunk of a
+    /// page (identified by `chunk_index`) without touching any other column.
+    /// Mirrors [`BrainEngine::put_chunk_embedding`] but targets the separate
+    /// `embedding_multimodal` column (stored as f32 little-endian BLOB, same
+    /// encoding as `embedding` / `pages.embedding`). Used by
+    /// `reindex multimodal` to populate a second vector per chunk.
+    /// Defaults to `Err(Unsupported)`; implemented by the SQL backends.
+    async fn put_chunk_multimodal_embedding(
+        &self,
+        _slug: &str,
+        _source_id: &str,
+        _chunk_index: usize,
+        _embedding: Vec<u8>,
+    ) -> crate::Result<()> {
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "put_chunk_multimodal_embedding not yet implemented for this engine",
+        ))
+    }
+
+    /// Surgically write a page's `effective_date` / `effective_date_source`
+    /// without touching the rest of the row. Used by `reindex frontmatter`
+    /// to backfill the effective-date column for existing pages.
+    async fn set_page_effective_date(
+        &self,
+        _slug: &str,
+        _source_id: &str,
+        _date: Option<chrono::DateTime<chrono::Utc>>,
+        _source: Option<crate::types::EffectiveDateSource>,
+    ) -> crate::Result<()> {
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "set_page_effective_date not yet implemented for this engine",
+        ))
+    }
+
     /// Surgically overwrite a page's `timeline` TEXT column without reading or
     /// rewriting the rest of the row.
     async fn set_page_timeline(

@@ -4763,12 +4763,14 @@ pub struct RecallArgs {
 pub enum ReindexAction {
     /// Re-embed all live pages from their `compiled_truth` (page-level vector).
     Pages(ReindexPagesArgs),
-    /// Re-embed code symbols (tree-sitter edges). [not yet implemented]
-    Code,
-    /// Re-embed frontmatter. [not yet implemented]
-    Frontmatter,
-    /// Re-embed stored images (multimodal). [not yet implemented]
-    Multimodal,
+    /// Re-embed code symbols (tree-sitter edges) by re-importing each code
+    /// page's source file and re-embedding its chunks.
+    Code(ReindexCodeArgs),
+    /// Re-compute `effective_date` / `effective_date_source` for every page
+    /// via the frontmatter precedence chain (`reindex frontmatter`).
+    Frontmatter(ReindexFrontmatterArgs),
+    /// Re-embed stored chunks with the multimodal model (`reindex multimodal`).
+    Multimodal(ReindexMultimodalArgs),
 }
 
 /// Arguments for `zbrain reindex pages`.
@@ -4783,6 +4785,72 @@ pub struct ReindexPagesArgs {
     /// Page batch size per embedding call.
     #[arg(long, default_value_t = 50)]
     pub batch: usize,
+}
+
+/// Arguments for `zbrain reindex code`.
+#[derive(Debug, clap::Args)]
+pub struct ReindexCodeArgs {
+    /// Source scope; omit to re-embed every source.
+    #[arg(long)]
+    pub source_id: Option<String>,
+    /// List what would be re-embedded without writing vectors.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Skip the chunk re-embedding pass (re-chunk only).
+    #[arg(long)]
+    pub no_embed: bool,
+    /// Page batch size per import pass.
+    #[arg(long, default_value_t = 100)]
+    pub batch: usize,
+    /// Emit a machine-readable JSON result envelope.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `zbrain reindex frontmatter`.
+#[derive(Debug, clap::Args)]
+pub struct ReindexFrontmatterArgs {
+    /// Source scope; omit to re-compute every source.
+    #[arg(long)]
+    pub source_id: Option<String>,
+    /// Scope to slugs starting with this prefix (e.g. 'meetings/').
+    #[arg(long)]
+    pub slug_prefix: Option<String>,
+    /// List what would change without writing the effective_date columns.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Skip the confirmation prompt (required for non-TTY / non-JSON runs).
+    #[arg(long, short = 'y')]
+    pub yes: bool,
+    /// Re-apply even when the computed value already matches the stored value.
+    #[arg(long)]
+    pub force: bool,
+    /// Emit a machine-readable JSON result envelope.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `zbrain reindex multimodal`.
+#[derive(Debug, clap::Args)]
+pub struct ReindexMultimodalArgs {
+    /// Stop after re-embedding this many pending chunks.
+    #[arg(long)]
+    pub limit: Option<usize>,
+    /// List the pending count + cost estimate without writing vectors.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Print only the pending count + USD cost estimate and exit.
+    #[arg(long)]
+    pub cost_estimate: bool,
+    /// Skip the embedding pass (scan only).
+    #[arg(long)]
+    pub no_embed: bool,
+    /// Emit a machine-readable JSON result envelope.
+    #[arg(long)]
+    pub json: bool,
+    /// Skip the cost-grace prompt (CI / cron).
+    #[arg(long, short = 'y')]
+    pub yes: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -5082,15 +5150,9 @@ async fn run_reindex_command(
 ) -> anyhow::Result<()> {
     match action {
         ReindexAction::Pages(args) => run_reindex_pages(args, config_path).await,
-        ReindexAction::Code => anyhow::bail!(
-            "reindex code is not yet implemented (tracked as G75 in docs/plans/KNOWN-GAPS.md)"
-        ),
-        ReindexAction::Frontmatter => anyhow::bail!(
-            "reindex frontmatter is not yet implemented (tracked as G75)"
-        ),
-        ReindexAction::Multimodal => anyhow::bail!(
-            "reindex multimodal is not yet implemented (tracked as G75)"
-        ),
+        ReindexAction::Code(args) => run_reindex_code(args, config_path).await,
+        ReindexAction::Frontmatter(args) => run_reindex_frontmatter(args, config_path).await,
+        ReindexAction::Multimodal(args) => run_reindex_multimodal(args, config_path).await,
     }
 }
 
@@ -5179,6 +5241,580 @@ fn encode_embedding_le(v: &[f32]) -> Vec<u8> {
         out.extend_from_slice(&x.to_le_bytes());
     }
     out
+}
+
+/// Re-embed all live code pages by re-importing each code page's source file
+/// (re-chunk via `import_code_file`) and re-embedding its chunks. Mirrors the
+/// TS `zbrain reindex-code` backfill: a bit-identical re-walk of every
+/// `type='code'` page through the code import pipeline.
+async fn run_reindex_code(
+    args: ReindexCodeArgs,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    use zbrain_core::engine::{BrainEngine, EngineConfig, PageFilters};
+    use zbrain_core::libsql::LibsqlEngine;
+    use zbrain_core::import::import_code_file;
+    use zbrain_core::embedding::EmbeddingClient;
+
+    let client = if args.no_embed {
+        None
+    } else {
+        Some(EmbeddingClient::from_env().ok_or_else(|| {
+            anyhow::anyhow!(
+                "embedding provider not configured: set ZEROENTROPY_API_KEY to re-embed code chunks (or pass --no-embed)"
+            )
+        })?)
+    };
+
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    let batch = args.batch.max(1);
+    let mut offset: usize = 0;
+    let mut scanned = 0usize;
+    let mut reindexed = 0usize;
+    let mut skipped = 0usize;
+    let mut failed = 0usize;
+    let mut failures: Vec<(String, String)> = Vec::new();
+
+    loop {
+        let filters = PageFilters {
+            page_type: Some("code".to_string()),
+            tag: None,
+            limit: Some(batch),
+            offset: Some(offset),
+            updated_after: None,
+            slug_prefix: None,
+            include_deleted: false,
+            sort: None,
+            source_id: args.source_id.clone(),
+            source_ids: None,
+        };
+        let pages = engine.list_pages(&filters).await?;
+        if pages.is_empty() {
+            break;
+        }
+        scanned += pages.len();
+
+        if args.dry_run {
+            for p in &pages {
+                println!(
+                    "[dry-run] would re-embed code page {} (source {})",
+                    p.slug, p.source_id
+                );
+            }
+            offset += pages.len();
+            continue;
+        }
+
+        for p in &pages {
+            let rel_path = p
+                .frontmatter
+                .get("file")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let Some(rel_path) = rel_path else {
+                failed += 1;
+                failures.push((p.slug.clone(), "missing frontmatter.file".to_string()));
+                continue;
+            };
+
+            match import_code_file(&engine, &p.slug, &rel_path, "", &[]).await {
+                Ok(result) => {
+                    let wrote = result.chunks_created + result.chunks_updated;
+                    if wrote == 0 {
+                        skipped += 1;
+                    } else {
+                        reindexed += 1;
+                    }
+                    // Re-embed the freshly re-chunked chunks so the code
+                    // vector index stays current (import_code_file stores
+                    // chunks with embedding=None). Fail-open mirrors the
+                    // import pipeline's embedding tolerance.
+                    if let Some(client) = client.as_ref() {
+                        if let Ok(chunks) = engine.get_chunks(&p.slug, &p.source_id).await {
+                            if !chunks.is_empty() {
+                                let texts: Vec<String> =
+                                    chunks.iter().map(|c| c.chunk_text.clone()).collect();
+                                if let Ok(vectors) = client.embed_batch(&texts, None).await {
+                                    for (c, vec) in chunks.iter().zip(vectors.into_iter()) {
+                                        let bytes = encode_embedding_le(&vec);
+                                        let _ = engine
+                                            .put_chunk_embedding(
+                                                &p.slug,
+                                                &p.source_id,
+                                                c.chunk_index as usize,
+                                                bytes,
+                                            )
+                                            .await;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    failed += 1;
+                    failures.push((p.slug.clone(), e.to_string()));
+                }
+            }
+        }
+        offset += pages.len();
+        println!(
+            "reindex code: batch -> scanned={scanned} reindexed={reindexed} skipped={skipped} failed={failed}"
+        );
+    }
+
+    engine.disconnect().await?;
+
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "status": "ok",
+                "code_pages": scanned,
+                "reindexed": reindexed,
+                "skipped": skipped,
+                "failed": failed,
+                "failures": failures
+                    .iter()
+                    .map(|(slug, err)| serde_json::json!({"slug": slug, "error": err}))
+                    .collect::<Vec<_>>(),
+            })
+        );
+    } else {
+        println!(
+            "reindex code complete: scanned={scanned} reindexed={reindexed} skipped={skipped} failed={failed}"
+        );
+        for (slug, err) in failures.iter().take(10) {
+            println!("  {slug}: {err}");
+        }
+    }
+    Ok(())
+}
+
+/// Re-compute `effective_date` / `effective_date_source` for every live page
+/// via the frontmatter precedence chain (mirrors TS `reindex-frontmatter` /
+/// `backfill-effective-date`). Idempotent: rows whose computed value already
+/// matches the stored value are skipped unless `--force` is given.
+async fn run_reindex_frontmatter(
+    args: ReindexFrontmatterArgs,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    use chrono::{DateTime, Utc};
+    use zbrain_core::effective_date::compute_effective_date;
+    use zbrain_core::engine::{BrainEngine, EngineConfig, PageFilters};
+    use zbrain_core::libsql::LibsqlEngine;
+    use zbrain_core::types::EffectiveDateSource;
+
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    let batch: usize = 500;
+    let mut offset: usize = 0;
+    let mut examined = 0usize;
+    let mut updated = 0usize;
+    let mut fallback = 0usize;
+    let mut skipped = 0usize;
+
+    loop {
+        let filters = PageFilters {
+            page_type: None,
+            tag: None,
+            limit: Some(batch),
+            offset: Some(offset),
+            updated_after: None,
+            slug_prefix: args.slug_prefix.clone(),
+            include_deleted: false,
+            sort: None,
+            source_id: args.source_id.clone(),
+            source_ids: None,
+        };
+        let pages = engine.list_pages(&filters).await?;
+        if pages.is_empty() {
+            break;
+        }
+        examined += pages.len();
+
+        for p in &pages {
+            let filename = p
+                .import_filename
+                .clone()
+                .or_else(|| p.slug.rsplit('/').next().map(|s| s.to_string()));
+
+            let updated_at = DateTime::parse_from_rfc3339(&p.updated_at)
+                .map(|d| d.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+            let created_at = DateTime::parse_from_rfc3339(&p.created_at)
+                .map(|d| d.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+
+            let computed = compute_effective_date(
+                &p.slug,
+                &p.frontmatter,
+                filename.as_deref(),
+                updated_at,
+                created_at,
+            );
+
+            let existing_date = p
+                .effective_date
+                .as_ref()
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                .map(|d| d.with_timezone(&Utc));
+            let dates_match = existing_date == computed.date;
+            let existing_source = p.effective_date_source;
+            let sources_match = existing_source == Some(computed.source);
+
+            if !args.force && dates_match && sources_match {
+                skipped += 1;
+                continue;
+            }
+
+            if args.dry_run {
+                updated += 1;
+                if computed.source == EffectiveDateSource::Fallback {
+                    fallback += 1;
+                }
+                continue;
+            }
+
+            engine
+                .set_page_effective_date(
+                    &p.slug,
+                    &p.source_id,
+                    computed.date,
+                    Some(computed.source),
+                )
+                .await?;
+            updated += 1;
+            if computed.source == EffectiveDateSource::Fallback {
+                fallback += 1;
+            }
+        }
+
+        offset += pages.len();
+        println!(
+            "reindex frontmatter: batch -> examined={examined} updated={updated} skipped={skipped} fallback={fallback}"
+        );
+    }
+
+    engine.disconnect().await?;
+
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "status": if args.dry_run { "dry_run" } else { "ok" },
+                "examined": examined,
+                "updated": updated,
+                "skipped": skipped,
+                "fallback": fallback,
+                "source_filter": args.source_id,
+                "slug_prefix": args.slug_prefix,
+            })
+        );
+    } else {
+        let noun = if args.dry_run { "would update" } else { "updated" };
+        println!(
+            "reindex frontmatter complete: examined={examined} {noun}={updated} skipped={skipped} fallback={fallback}"
+        );
+    }
+    Ok(())
+}
+
+/// Walk `content_chunks` where `embedding_multimodal IS NULL`, embed each
+/// chunk's text with the configured multimodal model, and persist the vector
+/// to the `embedding_multimodal` column. Mirrors TS `reindex-multimodal`
+/// (minus the db-lock / checkpoint / unified-flag machinery — those are
+/// crash-recovery conveniences layered on top of the same core loop).
+async fn run_reindex_multimodal(
+    args: ReindexMultimodalArgs,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    use zbrain_core::embedding::{EmbeddingClient, EmbeddingConfig};
+    use zbrain_core::engine::{BrainEngine, EngineConfig};
+    use zbrain_core::libsql::LibsqlEngine;
+
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    let mm_model = config.embedding_multimodal_model.clone().ok_or_else(|| {
+        anyhow::anyhow!(
+            "reindex multimodal requires `embedding_multimodal_model` in config (e.g. voyage:voyage-multimodal-3); set it and re-run"
+        )
+    })?;
+
+    // Count pending chunks (embedding_multimodal IS NULL).
+    let pending_rows = engine
+        .execute_raw(
+            "SELECT COUNT(*) AS count FROM content_chunks WHERE embedding_multimodal IS NULL",
+            &[],
+        )
+        .await?;
+    let pending_before: i64 = pending_rows
+        .first()
+        .and_then(|r| r.get("count"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+
+    // Cost estimate: sum of chunk_text length → tokens (≈3.5 chars/token) →
+    // $0.18 / 1M tokens (mirrors TS Voyage multimodal-3 pricing).
+    let stats_rows = engine
+        .execute_raw(
+            "SELECT COALESCE(SUM(LENGTH(chunk_text)), 0) AS chars \
+             FROM content_chunks WHERE embedding_multimodal IS NULL",
+            &[],
+        )
+        .await?;
+    let total_chars: i64 = stats_rows
+        .first()
+        .and_then(|r| r.get("chars"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let estimated_tokens = total_chars as f64 / 3.5;
+    let cost_usd_estimate = (estimated_tokens / 1_000_000.0) * 0.18;
+
+    let print_cost_estimate = |pending: i64, cost: f64, json: bool| {
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "pending_before": pending,
+                    "pending_after": pending,
+                    "reembedded": 0,
+                    "failed": 0,
+                    "dry_run": true,
+                    "cost_usd_estimate": cost,
+                    "unified_flag_prompted": false,
+                })
+            );
+        } else {
+            println!(
+                "reindex multimodal cost estimate: pending={pending} chunks, ~{cost:.2} USD"
+            );
+        }
+    };
+
+    if args.cost_estimate {
+        engine.disconnect().await?;
+        print_cost_estimate(pending_before, cost_usd_estimate, args.json);
+        return Ok(());
+    }
+
+    if args.dry_run {
+        engine.disconnect().await?;
+        if args.json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "pending_before": pending_before,
+                    "pending_after": pending_before,
+                    "reembedded": 0,
+                    "failed": 0,
+                    "dry_run": true,
+                    "cost_usd_estimate": cost_usd_estimate,
+                    "unified_flag_prompted": false,
+                })
+            );
+        } else {
+            println!(
+                "reindex multimodal dry-run: {pending_before} chunks would be re-embedded (~{cost_usd_estimate:.2} USD)"
+            );
+        }
+        return Ok(());
+    }
+
+    if pending_before == 0 {
+        engine.disconnect().await?;
+        if args.json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "pending_before": 0,
+                    "pending_after": 0,
+                    "reembedded": 0,
+                    "failed": 0,
+                    "dry_run": false,
+                    "cost_usd_estimate": 0.0f64,
+                    "unified_flag_prompted": false,
+                })
+            );
+        } else {
+            println!("reindex multimodal: nothing to do (0 pending chunks)");
+        }
+        return Ok(());
+    }
+
+    let client = if args.no_embed {
+        None
+    } else {
+        let api_key = std::env::var("ZEROENTROPY_API_KEY")
+            .ok()
+            .filter(|k| !k.is_empty())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "embedding provider not configured: set ZEROENTROPY_API_KEY to re-embed multimodal chunks (or pass --no-embed)"
+                )
+            })?;
+        let cfg = EmbeddingConfig::builder()
+            .model(mm_model.clone())
+            .dimensions(0) // lenient: accept the provider's native dimension
+            .api_key(api_key)
+            .build()
+            .map_err(|e| anyhow::anyhow!("multimodal embedding config: {e}"))?;
+        Some(
+            EmbeddingClient::new(cfg)
+                .map_err(|e| anyhow::anyhow!("multimodal embedding client: {e}"))?,
+        )
+    };
+
+    let batch: i64 = 32;
+    let mut last_id: i64 = 0;
+    let mut processed: usize = 0;
+    let mut reembedded: usize = 0;
+    let mut failed: usize = 0;
+
+    loop {
+        if let Some(limit) = args.limit {
+            if processed >= limit {
+                break;
+            }
+        }
+        let this_batch = match args.limit {
+            Some(limit) => (batch as usize).min(limit - processed) as i64,
+            None => batch,
+        };
+        // `last_id` and `this_batch` are integers (never user-controlled text),
+        // so inlining them into the SQL is safe from injection and lets us pass
+        // `&[]` — avoiding the `erased_serde::Serialize` trait-object param type
+        // that `execute_raw` expects (which `zbrain-cli` does not depend on).
+        let rows = engine
+            .execute_raw(
+                &format!(
+                    "SELECT c.id AS id, c.chunk_text AS chunk_text, p.slug AS slug, \
+                     p.source_id AS source_id, c.chunk_index AS chunk_index \
+                     FROM content_chunks c JOIN pages p ON p.id = c.page_id \
+                     WHERE c.embedding_multimodal IS NULL AND c.id > {last_id} ORDER BY c.id LIMIT {this_batch}"
+                ),
+                &[],
+            )
+            .await?;
+        if rows.is_empty() {
+            break;
+        }
+
+        for row in &rows {
+            let id = row.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+            let chunk_text = match row.get("chunk_text").and_then(|v| v.as_str()) {
+                Some(s) if !s.is_empty() => s.to_string(),
+                _ => {
+                    last_id = id;
+                    continue;
+                }
+            };
+            let slug = match row.get("slug").and_then(|v| v.as_str()) {
+                Some(s) => s.to_string(),
+                None => {
+                    last_id = id;
+                    continue;
+                }
+            };
+            let source_id = match row.get("source_id").and_then(|v| v.as_str()) {
+                Some(s) => s.to_string(),
+                None => {
+                    last_id = id;
+                    continue;
+                }
+            };
+            let chunk_index = row.get("chunk_index").and_then(|v| v.as_i64()).unwrap_or(0);
+
+            if let Some(client) = client.as_ref() {
+                match client.embed_batch(&[chunk_text], None).await {
+                    Ok(vectors) => {
+                        if let Some(vec) = vectors.into_iter().next() {
+                            let bytes = encode_embedding_le(&vec);
+                            let _ = engine
+                                .put_chunk_multimodal_embedding(
+                                    &slug,
+                                    &source_id,
+                                    chunk_index as usize,
+                                    bytes,
+                                )
+                                .await;
+                            reembedded += 1;
+                        } else {
+                            failed += 1;
+                        }
+                    }
+                    Err(_) => {
+                        failed += 1;
+                    }
+                }
+            }
+            last_id = id;
+            processed += 1;
+        }
+
+        println!(
+            "reindex multimodal: batch -> processed={processed} reembedded={reembedded} failed={failed}"
+        );
+    }
+
+    let pending_after_rows = engine
+        .execute_raw(
+            "SELECT COUNT(*) AS count FROM content_chunks WHERE embedding_multimodal IS NULL",
+            &[],
+        )
+        .await?;
+    let pending_after: i64 = pending_after_rows
+        .first()
+        .and_then(|r| r.get("count"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+
+    engine.disconnect().await?;
+
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "pending_before": pending_before,
+                "pending_after": pending_after,
+                "reembedded": reembedded,
+                "failed": failed,
+                "dry_run": false,
+                "cost_usd_estimate": cost_usd_estimate,
+                "unified_flag_prompted": false,
+            })
+        );
+    } else {
+        println!(
+            "reindex multimodal complete: reembedded={reembedded} failed={failed} pending_before={pending_before} pending_after={pending_after}"
+        );
+    }
+    Ok(())
 }
 
 /// Execute `zbrain code-refs` command.

@@ -169,8 +169,9 @@ impl EmbeddingClient {
         let mut results = self.provider.embed(&texts, self.config.dimensions).await?;
         let embedding = results.remove(0);
         
-        // 检查维度是否匹配
-        if embedding.len() != self.config.dimensions {
+        // 检查维度是否匹配。`dimensions == 0` 是哨兵：跳过校验并原样接受
+        // provider 返回的原生维度（用于多模态列等维度不固定的场景）。
+        if self.config.dimensions != 0 && embedding.len() != self.config.dimensions {
             return Err(EmbeddingError::DimensionMismatch {
                 expected: self.config.dimensions,
                 actual: embedding.len(),
@@ -217,8 +218,8 @@ impl EmbeddingClient {
             self.config.dimensions
         ).await?;
         
-        // 检查维度是否匹配
-        if embedding.len() != self.config.dimensions {
+        // 检查维度是否匹配。`dimensions == 0` 是哨兵：跳过校验（见 embed）。
+        if self.config.dimensions != 0 && embedding.len() != self.config.dimensions {
             return Err(EmbeddingError::DimensionMismatch {
                 expected: self.config.dimensions,
                 actual: embedding.len(),
@@ -417,7 +418,7 @@ mod http_provider {
             let request = EmbeddingRequest {
                 model: self.model.clone(),
                 input: texts.to_vec(),
-                dimensions: Some(dims),
+                dimensions: if dims > 0 { Some(dims) } else { None },
             };
 
             let response = self.client
@@ -466,7 +467,7 @@ mod http_provider {
             let request = MultimodalEmbeddingRequest {
                 model: self.model.clone(),
                 inputs: vec![input],
-                dimensions: Some(dims),
+                dimensions: if dims > 0 { Some(dims) } else { None },
             };
 
             let response = self.client

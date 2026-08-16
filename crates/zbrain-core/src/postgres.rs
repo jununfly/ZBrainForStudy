@@ -278,6 +278,8 @@ const MIGRATION_0032: &str = include_str!("../migrations/0032_eval_contradiction
 /// 1-1-5-5 (brainstorm domain-bank): add content_chunks.embedding column.
 const MIGRATION_0033: &str = include_str!("../migrations/0033_content_chunks_embedding.sql");
 const MIGRATION_0034: &str = include_str!("../migrations/0034_eval_takes_quality_runs.sql");
+/// G75 (reindex-multimodal): add `content_chunks.embedding_multimodal` column.
+const MIGRATION_0036: &str = include_str!("../migrations/0036_content_chunks_embedding_multimodal.sql");
 
 /// FNV-1a 64-bit hash of a lease key, mapped to a signed int64 for
 /// `pg_advisory_xact_lock`. Matches the TS implementation bit-for-bit.
@@ -464,6 +466,11 @@ pub static POSTGRES_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 34,
         name: "eval_takes_quality_runs",
         sql: MIGRATION_0034,
+    }));
+    registry.add(Box::new(PostgresMigration {
+        version: 36,
+        name: "content_chunks_embedding_multimodal",
+        sql: MIGRATION_0036,
     }));
 
     registry
@@ -1809,6 +1816,82 @@ impl BrainEngine for PostgresEngine {
         .execute(pool)
         .await
         .map_err(|e| Error::engine(format!("put_page_embedding failed: {e}")))?;
+        Ok(())
+    }
+
+    async fn put_chunk_embedding(
+        &self,
+        slug: &str,
+        source_id: &str,
+        chunk_index: usize,
+        embedding: Vec<u8>,
+    ) -> Result<()> {
+        let pool = self.pool()?;
+        sqlx::query(
+            "UPDATE content_chunks SET embedding = $1 \
+             WHERE page_id = (SELECT id FROM pages WHERE slug = $2 AND source_id = $3 AND deleted_at IS NULL) \
+               AND chunk_index = $4",
+        )
+        .bind(embedding)
+        .bind(slug)
+        .bind(source_id)
+        .bind(chunk_index as i64)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("put_chunk_embedding failed: {e}")))?;
+        Ok(())
+    }
+
+    async fn put_chunk_multimodal_embedding(
+        &self,
+        slug: &str,
+        source_id: &str,
+        chunk_index: usize,
+        embedding: Vec<u8>,
+    ) -> Result<()> {
+        let pool = self.pool()?;
+        sqlx::query(
+            "UPDATE content_chunks SET embedding_multimodal = $1 \
+             WHERE page_id = (SELECT id FROM pages WHERE slug = $2 AND source_id = $3 AND deleted_at IS NULL) \
+               AND chunk_index = $4",
+        )
+        .bind(embedding)
+        .bind(slug)
+        .bind(source_id)
+        .bind(chunk_index as i64)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("put_chunk_multimodal_embedding failed: {e}")))?;
+        Ok(())
+    }
+
+    async fn set_page_effective_date(
+        &self,
+        slug: &str,
+        source_id: &str,
+        date: Option<chrono::DateTime<chrono::Utc>>,
+        source: Option<crate::types::EffectiveDateSource>,
+    ) -> Result<()> {
+        let pool = self.pool()?;
+        let date_str = date.map(|d| d.to_rfc3339());
+        let source_str = source.map(|s| match s {
+            crate::types::EffectiveDateSource::EventDate => "event_date",
+            crate::types::EffectiveDateSource::Date => "date",
+            crate::types::EffectiveDateSource::Published => "published",
+            crate::types::EffectiveDateSource::Filename => "filename",
+            crate::types::EffectiveDateSource::Fallback => "fallback",
+        });
+        sqlx::query(
+            "UPDATE pages SET effective_date = $1, effective_date_source = $2 \
+             WHERE slug = $3 AND source_id = $4 AND deleted_at IS NULL",
+        )
+        .bind(date_str)
+        .bind(source_str)
+        .bind(slug)
+        .bind(source_id)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("set_page_effective_date failed: {e}")))?;
         Ok(())
     }
 

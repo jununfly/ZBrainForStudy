@@ -32,6 +32,15 @@ pub struct Config {
     #[serde(default)]
     pub embedding: EmbeddingConfig,
 
+    /// Multimodal embedding model for `reindex multimodal` (e.g.
+    /// `voyage:voyage-multimodal-3`). When unset, `reindex multimodal` refuses
+    /// to run rather than silently embedding with the text model. The API key
+    /// is read from `ZEROENTROPY_API_KEY` (same as text embeddings); the
+    /// provider base URL is resolved from the model prefix / environment by the
+    /// embedding client (same as text embeddings).
+    #[serde(default)]
+    pub embedding_multimodal_model: Option<String>,
+
     /// Search behavior settings
     #[serde(default)]
     pub search: SearchConfig,
@@ -293,6 +302,7 @@ impl Default for Config {
             database_url: default_database_url(),
             providers: BTreeMap::new(),
             embedding: EmbeddingConfig::default(),
+            embedding_multimodal_model: None,
             search: SearchConfig::default(),
             agents: AgentsConfig::default(),
             logging: LoggingConfig::default(),
