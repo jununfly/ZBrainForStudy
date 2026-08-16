@@ -32,5 +32,7 @@
 - CLI 加 verb 最小闭环：clap 照抄邻近模板 → enum+Args+dispatch+run_ → 尾部 #[cfg(test)] try_parse_from 解析测试（含拒绝未实现子命令负向测试）→ e2e 用隔离 config 真库冒烟（幂等+范围+不崩）。runner 函数内部无 `.await` 不得声明 `async`（clippy `unused_async`），dispatch 调用点同步去 `.await`。
 - crate::Result = Result<T, StructuredError>；serde_json::Error 不能 ? 须 map_err。&Arc<dyn T>→&dyn T 需调用方 &*。
 
+- 【2026-08-16 裁定】**迁移完成口径 = 命令级完成**：Rust 已服务全部产品命令（CLI verb 全覆盖，含 Tier-C export/frontmatter/auth/providers/upgrade），`bin/zbrain-rs.js` 直跑 Rust 二进制、TS 运行时已死。KNOWN-GAPS 的 open/blocked 条目作为 **documented limitations** 保留，不再阻塞「迁移完成」声明。TS 死代码（schema-pack 26 文件 + operations.ts 等）**保留、不删 src/ 树**（G38 维持「保留+子gap」）。残留事项实时索引 = `docs/plans/zbrain-ts-to-rust-part14-remaining-known-gaps.json`（54 节点 = 48 open + 6 blocked）。G55（remote MCP 不透传 takes_holders）本地/受信部署维持已知缺口，非硬闸门；`serve --http` 对外暴露则升级 must-fix。
+
 ## 测试真相源
 - TS 测试套件（tests/）已于 2026-08-08 退役；Rust 侧 `crates/*/tests/*.rs` + 内联 #[cfg(test)] 为唯一真相源。全 workspace `cargo test --workspace` 已验证 green（3694 passed / 0 failed）。
