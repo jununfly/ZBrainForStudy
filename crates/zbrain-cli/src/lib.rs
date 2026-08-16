@@ -1498,6 +1498,61 @@ mod brainstorm_cli_tests {
     }
 
     #[test]
+    fn parses_backfill_list_positional() {
+        let cli = Cli::try_parse_from(["zbrain", "backfill", "list"]).unwrap();
+        match cli.command {
+            crate::Commands::Backfill(args) => {
+                assert_eq!(args.kind.as_deref(), Some("list"));
+                assert!(!args.list);
+            }
+            other => panic!("expected Backfill, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_backfill_list_flag() {
+        let cli = Cli::try_parse_from(["zbrain", "backfill", "--list"]).unwrap();
+        match cli.command {
+            crate::Commands::Backfill(args) => {
+                assert!(args.list);
+                assert!(args.kind.is_none());
+            }
+            other => panic!("expected Backfill, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_backfill_effective_date_dry_run() {
+        let cli = Cli::try_parse_from([
+            "zbrain",
+            "backfill",
+            "effective_date",
+            "--dry-run",
+            "--json",
+        ])
+        .unwrap();
+        match cli.command {
+            crate::Commands::Backfill(args) => {
+                assert_eq!(args.kind.as_deref(), Some("effective_date"));
+                assert!(args.dry_run);
+                assert!(args.json);
+            }
+            other => panic!("expected Backfill, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_backfill_embedding_voyage() {
+        let cli = Cli::try_parse_from(["zbrain", "backfill", "embedding_voyage"]).unwrap();
+        match cli.command {
+            crate::Commands::Backfill(args) => {
+                assert_eq!(args.kind.as_deref(), Some("embedding_voyage"));
+            }
+            other => panic!("expected Backfill, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parses_links_reconcile_verb() {
         let cli = Cli::try_parse_from([
             "zbrain",
@@ -2050,6 +2105,14 @@ pub enum Commands {
     /// Re-embed content to refresh the search vector index
     #[command(name = "reindex", subcommand)]
     Reindex(ReindexAction),
+
+    /// First-class bulk operations (TS `commands/backfill.ts`, G77).
+    ///
+    /// `backfill list` enumerates registered backfills; `backfill <kind>`
+    /// runs one (`effective_date`, `emotional_weight`). `embedding_voyage`
+    /// is declared-only and not yet runnable.
+    #[command(name = "backfill")]
+    Backfill(BackfillArgs),
 }
 
 /// Subcommands for `zbrain jobs`.
@@ -4593,6 +4656,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Reindex(action) => {
             run_reindex_command(action, cli.config.as_deref()).await?
         }
+        Commands::Backfill(action) => {
+            run_backfill_command(action, cli.config.as_deref()).await?
+        }
     }
     Ok(())
 }
@@ -4771,6 +4837,48 @@ pub enum ReindexAction {
     Frontmatter(ReindexFrontmatterArgs),
     /// Re-embed stored chunks with the multimodal model (`reindex multimodal`).
     Multimodal(ReindexMultimodalArgs),
+}
+
+/// First-class bulk operations (TS `commands/backfill.ts`, G77).
+///
+/// Generalizes the keyset + checkpoint pattern so future backfills reuse one
+/// tested dispatcher. Mirrors the TS shape: a positional `<kind>` selects a
+/// registered backfill, and `list` (or `--list`) enumerates them with status.
+/// (`embedding_voyage` is declared-only in v0.30.1 and is not yet runnable.)
+#[derive(Debug, clap::Args)]
+pub struct BackfillArgs {
+    /// Backfill kind to run (`effective_date`, `emotional_weight`), or `list`
+    /// to enumerate registered backfills. `--list` is an alias for listing.
+    pub kind: Option<String>,
+    /// Enumerate registered backfills and their status instead of running one.
+    #[arg(long)]
+    pub list: bool,
+    /// Initial batch size before adaptive halving (accepted for TS parity;
+    /// honored where the delegated runner exposes a batch size).
+    #[arg(long, default_value_t = 1000)]
+    pub batch_size: usize,
+    /// Parallel batches (advisory in this build; Rust runners are single-pass).
+    #[arg(long)]
+    pub concurrency: Option<usize>,
+    /// Resume from the last checkpoint (default on; no-op until checkpoint
+    /// columns land — runs are idempotent full passes today).
+    #[arg(long)]
+    pub resume: bool,
+    /// Report what WOULD happen; no writes.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Skip the HNSW drop-rebuild (advisory; libsql embedding backfills only).
+    #[arg(long)]
+    pub keep_index: bool,
+    /// Bail after N total errors (accepted; honored where the runner counts).
+    #[arg(long, default_value_t = 200)]
+    pub max_errors: usize,
+    /// Restart from id=0, ignoring any checkpoint (no-op today).
+    #[arg(long)]
+    pub fresh: bool,
+    /// Emit a machine-readable JSON result envelope.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Arguments for `zbrain reindex pages`.
@@ -14707,6 +14815,135 @@ async fn run_agent_command(
 
     engine.disconnect().await?;
     Ok(())
+}
+
+/// Execute `zbrain backfill` (G77 / 1-6).
+///
+/// Mirrors TS `commands/backfill.ts`: `list` enumerates registered backfills;
+/// `<kind>` runs one. `effective_date` delegates to `reindex frontmatter`
+/// (identical recompute logic); `emotional_weight` calls the cycle phase
+/// `recompute_emotional_weight` (exposed here as a standalone verb);
+/// `embedding_voyage` is declared-only and errors.
+async fn run_backfill_command(
+    args: BackfillArgs,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    // `list` mode — positional "list" or `--list`.
+    if args.list || args.kind.as_deref() == Some("list") {
+        print_backfill_list();
+        return Ok(());
+    }
+
+    match args.kind.as_deref() {
+        Some("effective_date") => {
+            // Delegates to `reindex frontmatter` (identical recompute logic).
+            // `force` => recompute every row (backfill semantics); `yes` skips
+            // the confirmation prompt for non-TTY / non-JSON runs.
+            let fm = ReindexFrontmatterArgs {
+                source_id: None,
+                slug_prefix: None,
+                dry_run: args.dry_run,
+                yes: true,
+                force: true,
+                json: args.json,
+            };
+            return run_reindex_frontmatter(fm, config_path).await;
+        }
+        Some("emotional_weight") => return run_backfill_emotional_weight(&args, config_path).await,
+        Some("embedding_voyage") => {
+            anyhow::bail!(
+                "Backfill \"embedding_voyage\" is declared-only in v0.30.1 — \
+                 the schema migration ships in v0.30.2."
+            );
+        }
+        Some(other) => {
+            anyhow::bail!(
+                "No backfill registered with name \"{other}\". Run `zbrain backfill list`."
+            );
+        }
+        None => {
+            anyhow::bail!("Usage: zbrain backfill <kind> [flags]   |   zbrain backfill list");
+        }
+    }
+}
+
+/// Run the `emotional_weight` backfill against the local libsql engine.
+async fn run_backfill_emotional_weight(
+    args: &BackfillArgs,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    use zbrain_core::autopilot::phases::recompute_emotional_weight::{
+        run_phase_recompute_emotional_weight, RecomputeEmotionalWeightOpts,
+    };
+    use zbrain_core::engine::{BrainEngine, EngineConfig};
+    use zbrain_core::libsql::LibsqlEngine;
+
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    let opts = RecomputeEmotionalWeightOpts {
+        dry_run: args.dry_run,
+        ..Default::default()
+    };
+
+    let result = run_phase_recompute_emotional_weight(&engine, &opts).await?;
+    engine.disconnect().await?;
+
+    if args.json {
+        let envelope = serde_json::json!({
+            "kind": "emotional_weight",
+            "status": result.status,
+            "summary": result.summary,
+            "pages_recomputed": result.pages_recomputed,
+            "mode": result.mode,
+            "dry_run": result.dry_run,
+        });
+        println!("{}", serde_json::to_string_pretty(&envelope)?);
+    } else {
+        println!("Backfill emotional_weight complete.");
+        println!("  pages_recomputed: {}", result.pages_recomputed);
+        println!("  mode:             {}", result.mode);
+        println!("  dry_run:          {}", result.dry_run);
+        if !result.summary.is_empty() {
+            println!("  summary:          {}", result.summary);
+        }
+    }
+    Ok(())
+}
+
+/// Print the registered backfills and their implementation status (TS
+/// `listBackfills`). `✓` = implemented, `⊘` = declared-only.
+fn print_backfill_list() {
+    println!("Registered backfills (v0.30.1):\n");
+    let entries: &[(&str, bool, &str)] = &[
+        (
+            "effective_date",
+            true,
+            "Compute effective_date for pages imported pre-v0.29.1.",
+        ),
+        (
+            "emotional_weight",
+            true,
+            "Recompute emotional_weight for pages with stale stamp.",
+        ),
+        (
+            "embedding_voyage",
+            false,
+            "Declared-only in v0.30.1 (multi-column embedding lands in v0.30.2).",
+        ),
+    ];
+    for (name, implemented, desc) in entries {
+        let status = if *implemented { "✓" } else { "⊘" };
+        println!("  {status} {name:<20} {desc}");
+    }
+    println!();
 }
 
 #[cfg(test)]
