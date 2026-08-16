@@ -27,6 +27,7 @@
 - TS→Rust：`src/cli.ts` 走 resolveZbrainBin()。改子命令后必 `cargo build -p zbrain-cli` 否则测试 exit 2。port fidelity：测试与实现冲突优先改实装、接受 test 为规范；交叉登记 KNOWN-GAPS。
 - KNOWN-GAPS 不可全信（G74/G76 连续证伪）：算法层常已在 Rust，缺的只是 CLI 出口。动手任一 Gn 前必做「TS 源（`git show <删除commit>^:<path>`）vs Rust 现状」逐能力对账（grep 同名/近义实现），结论回写 KNOWN-GAPS + COMMANDS_TEAR_DOWN + 代码 doc。反向假阳性：handler 存在 ≠ 核心可调用（execute_phase 可能 stub 空转）——对账须追到「CLI 实际调的 TS 函数」是否在 Rust 有等价实现。
 - InMemoryEngine 限制：`execute_raw` 未实现（trait 默认返 Err）→ 直读 pages 一律走公共 API（`list_all_page_refs`+`get_page` 取内容，`get_links`/`get_backlinks` 验边），否则 InMemory 测试 unwrap 全 panic。`list_pages` 不过滤软删页且 `PageFilters` 无 `page_kind` → Rust 侧用 `deleted_at.is_none()` + `page_kind==Markdown` 过滤。
+- `execute_raw` 形参是 `&[&(dyn erased_serde::Serialize + Sync)]`，而 `serde::Serialize` **不可作 trait object**（E0038）。`zbrain-cli` 未直依赖 erased_serde → cli 里**别构造 `dyn serde::Serialize` 切片**：标量参数优先 `format!` 内联进 SQL 传 `&[]`；确需 trait-object 参数则给 cli 的 Cargo.toml 加 `erased_serde` 依赖（参考 core consolidate.rs/symbol_edges.rs）。
 - CLI 加 verb 最小闭环：clap 照抄邻近模板 → enum+Args+dispatch+run_ → 尾部 #[cfg(test)] try_parse_from 解析测试（含拒绝未实现子命令负向测试）→ e2e 用隔离 config 真库冒烟（幂等+范围+不崩）。
 - crate::Result = Result<T, StructuredError>；serde_json::Error 不能 ? 须 map_err。&Arc<dyn T>→&dyn T 需调用方 &*。
 
