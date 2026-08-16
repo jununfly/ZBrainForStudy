@@ -6,7 +6,7 @@
     "1": {
       "id": "1",
       "label": "ZBrain G74/G76 eval+extract 命令 Rust 重实现",
-      "status": "in_progress",
+      "status": "completed",
       "mode": "explore",
       "parent": null,
       "children": [
