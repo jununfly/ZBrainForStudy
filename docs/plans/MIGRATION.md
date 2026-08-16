@@ -77,7 +77,7 @@
 - **G70** 多列 embedding 选择未移植（Rust 无 column 概念）— blocked
 - **G71** think vector-takes 流未移植（takes 表无 embedding 列）— blocked
 
-### 4.5 Engine / 保真小缺口（13 open）
+### 4.5 Engine / 保真小缺口（16 open）
 - **G8** InMemoryEngine 不存 code edges
 - **G9** InMemoryEngine api_key 增删未实现
 - **G10** `import_code_file` 空壳（需 tree-sitter chunker）
@@ -91,6 +91,9 @@
 - **G50** whoknows 两处 parity 差异（刻意不修）
 - **G64** drift phase raw 查询 sqlite/postgres 占位符不兼容
 - **G29** AI recipe 注册表（REGISTRY 已落地，待对账 gateway auth_env 硬编码）
+- **G86** libsql migration `0035_content_chunks_edges_backfilled_at` 漏注册（registry 与磁盘 sql 文件 drift；PR0 commit 1 修，仍记 open 待下轮验证）
+- **G87** `libsql_engine_migrations` `EXPECTED_VERSION` 硬编码漂移（32 不再匹配 0036；PR0 commit 1 改动态）
+- **G88** libsql migration 测试需 e2e 幂护（新增 `00NN_*.sql` 自动跟踪 EXPECTED_VERSION + registry，PR0 commit 2 加测试）
 
 ### 4.6 命令 / 作业 / Misc（13 open）
 - **G6** webhook 无 rate limiter

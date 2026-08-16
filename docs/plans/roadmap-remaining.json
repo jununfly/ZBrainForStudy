@@ -370,7 +370,10 @@
         "1-5-10",
         "1-5-11",
         "1-5-12",
-        "1-5-13"
+        "1-5-13",
+        "1-5-14",
+        "1-5-15",
+        "1-5-16"
       ],
       "decisions": [],
       "notes": ""
@@ -724,6 +727,36 @@
       "children": [],
       "decisions": [],
       "notes": "registered in docs/plans/MIGRATION.md (G38)"
+    },
+    "1-5-14": {
+      "id": "1-5-14",
+      "label": "G86: libsql migration 0035_content_chunks_edges_backfilled_at 漏注册 (registry 与磁盘 sql 文件 drift)",
+      "status": "open",
+      "mode": "exploit",
+      "parent": "1-5",
+      "children": [],
+      "decisions": [],
+      "notes": "2026-08-16 G12 baseline 浮出: 0035 sql 落盘但 libsql.rs LIBQL_MIGRATIONS 未注册, 导致 registry len=34 vs disk count=35. 已在 PR0 commit1 修. registered in docs/plans/MIGRATION.md (G86)"
+    },
+    "1-5-15": {
+      "id": "1-5-15",
+      "label": "G87: libsql_engine_migrations EXPECTED_VERSION 硬编码漂移 (32 不再匹配 0036)",
+      "status": "open",
+      "mode": "exploit",
+      "parent": "1-5",
+      "children": [],
+      "decisions": [],
+      "notes": "2026-08-16 G12 baseline 浮出: const EXPECTED_VERSION: i64 = 32 与 0033/0034/0035/0036 落盘冲突, 导致 fresh_db + idempotent 测试 left=36/right=32 失败. 已在 PR0 commit1 改为动态 expected_version() fn. registered in docs/plans/MIGRATION.md (G87)"
+    },
+    "1-5-16": {
+      "id": "1-5-16",
+      "label": "G88: libsql migration 测试需 e2e 幂护 (新增 00NN_*.sql 自动跟踪 EXPECTED_VERSION + registry)",
+      "status": "open",
+      "mode": "exploit",
+      "parent": "1-5",
+      "children": [],
+      "decisions": [],
+      "notes": "2026-08-16 G12+G16 裁定: 动态 expected_version() 已防 EXPECTED_VERSION drift, 但需 1 个 e2e 测试证明新 sql 落盘时 EXPECTED_VERSION 跟着涨, 防止后人硬编码回潮. 将在 PR0 commit2 加. registered in docs/plans/MIGRATION.md (G88)"
     }
   }
 }

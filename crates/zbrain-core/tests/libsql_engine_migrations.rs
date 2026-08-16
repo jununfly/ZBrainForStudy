@@ -56,12 +56,31 @@ async fn read_version_raw(path: &std::path::Path) -> i64 {
     rows.next().await.unwrap().unwrap().get(0).unwrap()
 }
 
-/// Current migration version. Bump when new migrations are added.
-/// 32 = through 0032_eval_contradictions_cache (latest applied migration).
-/// The actual count is derived from the on-disk migrations-sqlite/*.sql files;
-/// this constant must track the highest migration number so the fresh-db /
-/// idempotent tests assert the right version.
-const EXPECTED_VERSION: i64 = 32;
+/// Current migration version, derived dynamically from the on-disk
+/// `migrations-sqlite/*.sql` files. Adding a new `NNNN_*.sql` automatically
+/// raises the expectation, so the fresh-db / idempotent tests stay in sync
+/// without manual constant bumps (previously a `32` hardcode that silently
+/// rotted when 0033/0034/0035/0036 landed — see MIGRATION.md G86/G87).
+fn expected_version() -> i64 {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations-sqlite");
+    let mut max_v: i64 = 0;
+    for entry in std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("cannot read migration dir {:?}: {}", dir, e))
+    {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|e| e.to_str()) != Some("sql") {
+            continue;
+        }
+        let stem = path.file_stem().unwrap().to_str().unwrap();
+        let prefix: String = stem.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(v) = prefix.parse::<i64>() {
+            if v > max_v {
+                max_v = v;
+            }
+        }
+    }
+    max_v
+}
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
@@ -71,7 +90,7 @@ async fn fresh_db_runs_all_migrations_ends_at_expected_version() {
     let (_temp, engine) = temp_engine().await;
     engine.init_schema().await.unwrap();
     let version = read_version_raw(_temp.path()).await;
-    assert_eq!(version, EXPECTED_VERSION);
+    assert_eq!(version, expected_version());
 }
 
 #[tokio::test]
@@ -82,12 +101,12 @@ async fn idempotent_init_schema_applies_zero_migrations_second_run() {
     // First run - should apply all migrations
     engine.init_schema().await.unwrap();
     let v1 = read_version_raw(_temp.path()).await;
-    assert_eq!(v1, EXPECTED_VERSION);
+    assert_eq!(v1, expected_version());
 
     // Second run - should be idempotent (no migrations applied)
     engine.init_schema().await.unwrap();
     let v2 = read_version_raw(_temp.path()).await;
-    assert_eq!(v2, EXPECTED_VERSION);
+    assert_eq!(v2, expected_version());
 }
 
 #[tokio::test]
@@ -354,4 +373,64 @@ async fn collect_child_put_page_slugs_empty_and_missing_children() {
         .await
         .unwrap()
         .is_empty());
+}
+
+// ─── E2E 幂护：expected_version 永跟磁盘走 (G88) ──────────────────────────
+// 防止后人把 expected_version() 改回硬编码常量。这个测试若失败,
+// 说明 EXPECTED_VERSION 重新硬编码, 等于把 G87 引入回归。
+
+/// Local copy of the registry red-test helper. Integration test binaries in
+/// Cargo do not share modules, so each `tests/*.rs` file ships its own
+/// `scan_migration_dir`. Keep in sync with `libsql_migration_registry_red.rs`.
+fn scan_migration_dir(rel: &str) -> (usize, i64, Vec<i64>) {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
+    let mut versions: Vec<i64> = Vec::new();
+    for entry in std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("cannot read migration dir {:?}: {}", dir, e))
+    {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|e| e.to_str()) != Some("sql") {
+            continue;
+        }
+        let stem = path.file_stem().unwrap().to_str().unwrap().to_string();
+        let prefix: String = stem.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(v) = prefix.parse::<i64>() {
+            versions.push(v);
+        }
+    }
+    versions.sort_unstable();
+    let count = versions.len();
+    let max_version = versions.last().copied().unwrap_or(0);
+    (count, max_version, versions)
+}
+
+#[test]
+fn expected_version_is_dynamic_and_matches_disk() {
+    use zbrain_core::libsql::LIBQL_MIGRATIONS;
+
+    let (count, max_version, _) = scan_migration_dir("migrations-sqlite");
+
+    // 1. expected_version() 必须 = 磁盘上 NNNN_*.sql 最高 prefix。
+    assert_eq!(
+        expected_version(),
+        max_version,
+        "expected_version() must equal max disk prefix (drift detected; do NOT hardcode)"
+    );
+
+    // 2. registry 长度必须 = 磁盘 .sql 文件数。漏注册一个就是 G86 类的 drift。
+    assert_eq!(
+        LIBQL_MIGRATIONS.len(),
+        count,
+        "LIBQL_MIGRATIONS must register every .sql on disk (count={} but registry={})",
+        count,
+        LIBQL_MIGRATIONS.len()
+    );
+
+    // 3. registry.latest_version() 必须 = 磁盘最高 prefix。
+    // 三者一致 = 不存在漂移。
+    assert_eq!(
+        LIBQL_MIGRATIONS.latest_version(),
+        max_version,
+        "LIBQL_MIGRATIONS.latest_version() must equal max disk prefix"
+    );
 }

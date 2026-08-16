@@ -161,6 +161,8 @@ const MIGRATION_0032: &str = include_str!("../migrations-sqlite/0032_eval_contra
 /// 1-1-5-5 (brainstorm domain-bank): add content_chunks.embedding column.
 const MIGRATION_0033: &str = include_str!("../migrations-sqlite/0033_content_chunks_embedding.sql");
 const MIGRATION_0034: &str = include_str!("../migrations-sqlite/0034_eval_takes_quality_runs.sql");
+/// 1-6-3 / G77: resumable symbol-resolution backfill watermark column.
+const MIGRATION_0035: &str = include_str!("../migrations-sqlite/0035_content_chunks_edges_backfilled_at.sql");
 /// G75 (reindex-multimodal): add `content_chunks.embedding_multimodal` column.
 const MIGRATION_0036: &str = include_str!("../migrations-sqlite/0036_content_chunks_embedding_multimodal.sql");
 
@@ -358,6 +360,11 @@ pub static LIBQL_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 34,
         name: "eval_takes_quality_runs",
         sql: MIGRATION_0034,
+    }));
+    registry.add(Box::new(LibsqlMigration {
+        version: 35,
+        name: "content_chunks_edges_backfilled_at",
+        sql: MIGRATION_0035,
     }));
     registry.add(Box::new(LibsqlMigration {
         version: 36,
