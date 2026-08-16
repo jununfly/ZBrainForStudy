@@ -240,7 +240,7 @@
     "1-3-1": {
       "id": "1-3-1",
       "label": "lint handler — 无 Lint verb（命令未迁，需决策）",
-      "status": "blocked",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-3",
       "children": [],
@@ -250,7 +250,7 @@
     "1-3-2": {
       "id": "1-3-2",
       "label": "lint_fix handler — 无 LintFix verb（命令未迁，需决策）",
-      "status": "blocked",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-3",
       "children": [],
@@ -276,7 +276,7 @@
     "1-3-4": {
       "id": "1-3-4",
       "label": "integrity_auto handler — 无 IntegrityAuto verb（需决策）",
-      "status": "blocked",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-3",
       "children": [],
@@ -286,7 +286,7 @@
     "1-3-5": {
       "id": "1-3-5",
       "label": "sync_retry_failed handler — 无 SyncRetryFailed verb（需决策）",
-      "status": "blocked",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-3",
       "children": [],
@@ -296,7 +296,7 @@
     "1-3-6": {
       "id": "1-3-6",
       "label": "repair_jsonb handler — pglite 死技术 → wontfix 候选",
-      "status": "blocked",
+      "status": "completed",
       "mode": "exploit",
       "parent": "1-3",
       "children": [],
@@ -413,7 +413,7 @@
   },
   "metadata": {
     "created": "2026-08-08 01:18:16",
-    "updated": "2026-08-16",
+    "updated": "2026-08-16 17:31:03",
     "md_file": "docs/plans/ZBRAIN_TS_TO_RUST_PART13_MINION_HANDLER_WIRING.md"
   }
 }

@@ -22,13 +22,14 @@
 - .json/.md 都在 docs/plans/；render 只认 ROADMAP_SECTION_START/END marker。
 - render cwd 陷阱：`roadmap_cli.py render` 按脚本 cwd 解析 md 路径 → 必须从仓库根运行（`python3 .workbuddy/skills/zj-roadmap-driven/roadmap_cli.py render docs/plans/<x>.json`），否则在 skill 目录误生成副本空转。
 - JSON 多行 notes 别用 Edit（引入裸换行/未转义引号破坏 JSON）→ 走 Python 二进制读 → 字符级转义 → 二进制写回保 CRLF → json.loads 校验。roadmap JSON 统一 2-space indent（别用正则检测缩进）。
+- 【2026-08-16 修正】roadmap 模型**只有 4 状态**（`pending`/`in_progress`/`completed`/`blocked`），**无 `wontfix`**。裁定「不构建」的节点（如 part13 的 lint/lint_fix/integrity_auto/sync_retry_failed/repair_jsonb handler，decisions[] 已记 wontfix）想「闭环」时：**状态字段只能翻 `completed`**（唯一闭环终态），且**保留原 notes 里的 wontfix 说明**不覆盖（`roadmap_cli.py update <file> <id> --status completed`；父节点会级联 completed）。validate 只认 4 状态，传 `wontfix` 会 `ValueError`。
 
 ## 迁移工程规则
 - TS→Rust：`src/cli.ts` 走 resolveZbrainBin()。改子命令后必 `cargo build -p zbrain-cli` 否则测试 exit 2。port fidelity：测试与实现冲突优先改实装、接受 test 为规范；交叉登记 KNOWN-GAPS。
 - KNOWN-GAPS 不可全信（G74/G76 连续证伪）：算法层常已在 Rust，缺的只是 CLI 出口。动手任一 Gn 前必做「TS 源（`git show <删除commit>^:<path>`）vs Rust 现状」逐能力对账（grep 同名/近义实现），结论回写 KNOWN-GAPS + COMMANDS_TEAR_DOWN + 代码 doc。反向假阳性：handler 存在 ≠ 核心可调用（execute_phase 可能 stub 空转）——对账须追到「CLI 实际调的 TS 函数」是否在 Rust 有等价实现。
 - InMemoryEngine 限制：`execute_raw` 未实现（trait 默认返 Err）→ 直读 pages 一律走公共 API（`list_all_page_refs`+`get_page` 取内容，`get_links`/`get_backlinks` 验边），否则 InMemory 测试 unwrap 全 panic。`list_pages` 不过滤软删页且 `PageFilters` 无 `page_kind` → Rust 侧用 `deleted_at.is_none()` + `page_kind==Markdown` 过滤。
 - `execute_raw` 形参是 `&[&(dyn erased_serde::Serialize + Sync)]`，而 `serde::Serialize` **不可作 trait object**（E0038）。`zbrain-cli` 未直依赖 erased_serde → cli 里**别构造 `dyn serde::Serialize` 切片**：标量参数优先 `format!` 内联进 SQL 传 `&[]`；确需 trait-object 参数则给 cli 的 Cargo.toml 加 `erased_serde` 依赖（参考 core consolidate.rs/symbol_edges.rs）。
-- CLI 加 verb 最小闭环：clap 照抄邻近模板 → enum+Args+dispatch+run_ → 尾部 #[cfg(test)] try_parse_from 解析测试（含拒绝未实现子命令负向测试）→ e2e 用隔离 config 真库冒烟（幂等+范围+不崩）。
+- CLI 加 verb 最小闭环：clap 照抄邻近模板 → enum+Args+dispatch+run_ → 尾部 #[cfg(test)] try_parse_from 解析测试（含拒绝未实现子命令负向测试）→ e2e 用隔离 config 真库冒烟（幂等+范围+不崩）。runner 函数内部无 `.await` 不得声明 `async`（clippy `unused_async`），dispatch 调用点同步去 `.await`。
 - crate::Result = Result<T, StructuredError>；serde_json::Error 不能 ? 须 map_err。&Arc<dyn T>→&dyn T 需调用方 &*。
 
 ## 测试真相源
