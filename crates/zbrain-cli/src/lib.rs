@@ -1553,6 +1553,158 @@ mod brainstorm_cli_tests {
     }
 
     #[test]
+    fn parses_export_default_dir() {
+        let cli = Cli::try_parse_from(["zbrain", "export"]).unwrap();
+        match cli.command {
+            crate::Commands::Export(args) => {
+                assert_eq!(args.dir, "./export");
+                assert!(args.r#type.is_none());
+                assert!(!args.restore_only);
+            }
+            other => panic!("expected Export, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_export_with_filters() {
+        let cli = Cli::try_parse_from([
+            "zbrain",
+            "export",
+            "--dir",
+            "out",
+            "--type",
+            "markdown",
+            "--slug-prefix",
+            "notes/",
+            "--source-id",
+            "src",
+            "--json",
+        ])
+        .unwrap();
+        match cli.command {
+            crate::Commands::Export(args) => {
+                assert_eq!(args.dir, "out");
+                assert_eq!(args.r#type.as_deref(), Some("markdown"));
+                assert_eq!(args.slug_prefix.as_deref(), Some("notes/"));
+                assert_eq!(args.source_id.as_deref(), Some("src"));
+                assert!(args.json);
+            }
+            other => panic!("expected Export, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_export_restore_only_flag() {
+        let cli = Cli::try_parse_from(["zbrain", "export", "--restore-only"]).unwrap();
+        match cli.command {
+            crate::Commands::Export(args) => {
+                assert!(args.restore_only);
+            }
+            other => panic!("expected Export, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_upgrade_default() {
+        let cli = Cli::try_parse_from(["zbrain", "upgrade"]).unwrap();
+        match cli.command {
+            crate::Commands::Upgrade(args) => {
+                assert!(!args.yes);
+                assert!(!args.json);
+            }
+            other => panic!("expected Upgrade, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_post_upgrade_yes() {
+        let cli = Cli::try_parse_from(["zbrain", "post-upgrade", "--yes", "--json"]).unwrap();
+        match cli.command {
+            crate::Commands::PostUpgrade(args) => {
+                assert!(args.yes);
+                assert!(args.json);
+            }
+            other => panic!("expected PostUpgrade, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_providers_list_and_env() {
+        let cli = Cli::try_parse_from(["zbrain", "providers", "list"]).unwrap();
+        match cli.command {
+            crate::Commands::Providers(crate::ProvidersAction::List) => {}
+            other => panic!("expected Providers/List, got {other:?}"),
+        }
+        let cli = Cli::try_parse_from(["zbrain", "providers", "env", "openai"]).unwrap();
+        match cli.command {
+            crate::Commands::Providers(crate::ProvidersAction::Env(a)) => {
+                assert_eq!(a.id, "openai");
+            }
+            other => panic!("expected Providers/Env, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_frontmatter_validate_and_generate() {
+        let cli = Cli::try_parse_from(["zbrain", "frontmatter", "validate", "./docs", "--json"]).unwrap();
+        match cli.command {
+            crate::Commands::Frontmatter(crate::FrontmatterAction::Validate(a)) => {
+                assert_eq!(a.path, "./docs");
+                assert!(a.json);
+            }
+            other => panic!("expected Frontmatter/Validate, got {other:?}"),
+        }
+        let cli = Cli::try_parse_from([
+            "zbrain", "frontmatter", "generate", "./docs", "--fix", "--include-catch-all",
+        ])
+        .unwrap();
+        match cli.command {
+            crate::Commands::Frontmatter(crate::FrontmatterAction::Generate(a)) => {
+                assert_eq!(a.path, "./docs");
+                assert!(a.fix);
+                assert!(a.include_catch_all);
+            }
+            other => panic!("expected Frontmatter/Generate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_auth_create_and_register_client() {
+        let cli = Cli::try_parse_from(["zbrain", "auth", "create", "my-token"]).unwrap();
+        match cli.command {
+            crate::Commands::Auth(crate::AuthAction::Create(a)) => {
+                assert_eq!(a.name, "my-token");
+                assert!(a.takes_holders.is_none());
+            }
+            other => panic!("expected Auth/Create, got {other:?}"),
+        }
+        let cli = Cli::try_parse_from([
+            "zbrain", "auth", "register-client", "my-app",
+            "--redirect-uri", "https://x/cb",
+            "--source", "src1",
+            "--federated-read", "src1,src2",
+        ])
+        .unwrap();
+        match cli.command {
+            crate::Commands::Auth(crate::AuthAction::RegisterClient(a)) => {
+                assert_eq!(a.name, "my-app");
+                assert_eq!(a.redirect_uris, vec!["https://x/cb".to_string()]);
+                assert_eq!(a.source.as_deref(), Some("src1"));
+                assert_eq!(a.federated_read, vec!["src1".to_string(), "src2".to_string()]);
+            }
+            other => panic!("expected Auth/RegisterClient, got {other:?}"),
+        }
+        let cli = Cli::try_parse_from(["zbrain", "auth", "test", "https://x", "--token", "t"]).unwrap();
+        match cli.command {
+            crate::Commands::Auth(crate::AuthAction::Test(a)) => {
+                assert_eq!(a.url, "https://x");
+                assert_eq!(a.token, "t");
+            }
+            other => panic!("expected Auth/Test, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parses_links_reconcile_verb() {
         let cli = Cli::try_parse_from([
             "zbrain",
@@ -2009,6 +2161,27 @@ pub enum Commands {
     #[command(name = "apply-migrations")]
     ApplyMigrations(ApplyMigrationsArgs),
 
+    /// Validate / generate YAML frontmatter for markdown files on disk (TS `frontmatter`).
+    #[command(subcommand)]
+    Frontmatter(FrontmatterAction),
+
+    /// Token & OAuth 2.1 client management (TS `auth`).
+    #[command(subcommand)]
+    Auth(AuthAction),
+
+    /// Show AI provider status and env-readiness (TS `providers`). Read-only.
+    #[command(subcommand)]
+    Providers(ProvidersAction),
+
+    /// Upgrade helper — for a cargo-built binary, self-reinstall is done via the
+    /// package manager / cargo; delegates to `post-upgrade` (apply-migrations).
+    Upgrade(UpgradeArgs),
+
+    /// Apply pending migration orchestrators + surface new-version pitches
+    /// (TS `post-upgrade`). Idempotent; mirrors `apply-migrations`.
+    #[command(name = "post-upgrade")]
+    PostUpgrade(PostUpgradeArgs),
+
     /// Manage connected brains (mounts.json)
     #[command(name = "mounts", subcommand)]
     Mounts(mounts::MountsSubcommand),
@@ -2113,6 +2286,8 @@ pub enum Commands {
     /// is declared-only and not yet runnable.
     #[command(name = "backfill")]
     Backfill(BackfillArgs),
+    /// Export pages as markdown files (with optional `.raw` sidecars)
+    Export(ExportArgs),
 }
 
 /// Subcommands for `zbrain jobs`.
@@ -4659,6 +4834,24 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Backfill(action) => {
             run_backfill_command(action, cli.config.as_deref()).await?
         }
+        Commands::Export(action) => {
+            run_export_command(action, cli.config.as_deref()).await?
+        }
+        Commands::Frontmatter(action) => {
+            run_frontmatter_command(action, cli.config.as_deref())?
+        }
+        Commands::Auth(action) => {
+            run_auth_command(action, cli.config.as_deref()).await?
+        }
+        Commands::Providers(action) => {
+            run_providers_command(action, cli.config.as_deref())?
+        }
+        Commands::Upgrade(args) => {
+            run_upgrade_command(args, cli.config.as_deref()).await?
+        }
+        Commands::PostUpgrade(args) => {
+            run_post_upgrade_command(args, cli.config.as_deref()).await?
+        }
     }
     Ok(())
 }
@@ -4879,6 +5072,221 @@ pub struct BackfillArgs {
     /// Emit a machine-readable JSON result envelope.
     #[arg(long)]
     pub json: bool,
+}
+
+/// Arguments for `zbrain export`.
+#[derive(Debug, clap::Args)]
+pub struct ExportArgs {
+    /// Output directory for exported `.md` files (default `./export`).
+    #[arg(long, default_value = "./export")]
+    pub dir: String,
+    /// Only export pages whose page_type matches this string.
+    #[arg(long)]
+    pub r#type: Option<String>,
+    /// Only export pages whose slug starts with this prefix.
+    #[arg(long)]
+    pub slug_prefix: Option<String>,
+    /// Only export pages from this source id.
+    #[arg(long)]
+    pub source_id: Option<String>,
+    /// Emit a machine-readable JSON result envelope instead of human text.
+    #[arg(long)]
+    pub json: bool,
+    /// Restore-only mode (requires storage-tier config). Not yet ported to
+    /// Rust — fails clearly rather than silently dumping the whole DB.
+    #[arg(long)]
+    pub restore_only: bool,
+}
+
+// ─── upgrade / post-upgrade ───────────────────────────────────────────────
+
+/// Arguments for `zbrain upgrade`.
+#[derive(Debug, clap::Args)]
+pub struct UpgradeArgs {
+    /// Apply without prompting (passed through to apply-migrations).
+    #[arg(long, short = 'y')]
+    pub yes: bool,
+    /// Emit a machine-readable JSON result envelope.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `zbrain post-upgrade`.
+#[derive(Debug, clap::Args)]
+pub struct PostUpgradeArgs {
+    /// Apply without prompting (passed through to apply-migrations).
+    #[arg(long, short = 'y')]
+    pub yes: bool,
+    /// Emit a machine-readable JSON result envelope.
+    #[arg(long)]
+    pub json: bool,
+}
+
+// ─── providers ─────────────────────────────────────────────────────────────
+
+/// Arguments for `zbrain providers`.
+#[derive(Debug, clap::Subcommand)]
+pub enum ProvidersAction {
+    /// List all known providers + env-readiness status.
+    List,
+    /// Show env vars required/optional for a provider.
+    Env(ProvidersEnvArgs),
+    /// Emit a provider choice matrix (agent-friendly JSON).
+    Explain(ProvidersExplainArgs),
+    /// Smoke-test a provider (env + config readiness; live probe not yet ported).
+    Test(ProvidersTestArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ProvidersEnvArgs {
+    /// Provider id (e.g. `openai`, `anthropic`).
+    pub id: String,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ProvidersExplainArgs {
+    /// Emit the matrix as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ProvidersTestArgs {
+    /// Touchpoint to probe: embedding | expansion | chat | reranker.
+    #[arg(long)]
+    pub touchpoint: Option<String>,
+    /// Explicit `provider:model` to probe.
+    #[arg(long)]
+    pub model: Option<String>,
+}
+
+// ─── frontmatter ───────────────────────────────────────────────────────────
+
+/// Arguments for `zbrain frontmatter`.
+#[derive(Debug, clap::Subcommand)]
+pub enum FrontmatterAction {
+    /// Validate that frontmatter parses across a tree of `.md` files.
+    Validate(FrontmatterValidateArgs),
+    /// Infer + write missing frontmatter for `.md` files.
+    Generate(FrontmatterGenerateArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct FrontmatterValidateArgs {
+    /// Directory or file to scan.
+    pub path: String,
+    /// Emit a machine-readable JSON report.
+    #[arg(long)]
+    pub json: bool,
+    /// Attempt to fix frontmatter in place. Not yet ported to Rust — bails.
+    #[arg(long)]
+    pub fix: bool,
+    /// Report what would change without writing (no-op for validate).
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct FrontmatterGenerateArgs {
+    /// Directory or file to scan.
+    pub path: String,
+    /// Write generated frontmatter to files (without this, preview only).
+    #[arg(long)]
+    pub fix: bool,
+    /// Report what would change without writing.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Emit a machine-readable JSON report.
+    #[arg(long)]
+    pub json: bool,
+    /// Accepted for CLI parity; Rust inference is path-based, so all inferred
+    /// files are included regardless (no `(default)` catch-all distinction yet).
+    #[arg(long)]
+    pub include_catch_all: bool,
+}
+
+// ─── auth ──────────────────────────────────────────────────────────────────
+
+/// Arguments for `zbrain auth`.
+#[derive(Debug, clap::Subcommand)]
+pub enum AuthAction {
+    /// Create a legacy bearer token (prints it once).
+    Create(AuthCreateArgs),
+    /// List all tokens.
+    List,
+    /// Revoke a token by name.
+    Revoke(AuthRevokeArgs),
+    /// Update per-token visibility (takes-holders). Not supported by Rust schema.
+    Permissions(AuthPermissionsArgs),
+    /// Register an OAuth 2.1 client.
+    RegisterClient(AuthRegisterClientArgs),
+    /// Revoke an OAuth 2.1 client.
+    RevokeClient(AuthRevokeClientArgs),
+    /// Smoke-test a remote MCP server with a bearer token.
+    Test(AuthTestArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct AuthCreateArgs {
+    /// Human-readable token name.
+    pub name: String,
+    /// Per-token takes-holders allow-list. Not supported by the Rust schema.
+    #[arg(long)]
+    pub takes_holders: Option<Vec<String>>,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct AuthRevokeArgs {
+    /// Token name to revoke.
+    pub name: String,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct AuthPermissionsArgs {
+    /// Token name to update.
+    pub name: String,
+    /// Takes-holder allow-list. Not supported by the Rust schema.
+    #[arg(long, value_delimiter = ',')]
+    pub holders: Vec<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct AuthRegisterClientArgs {
+    /// Client name.
+    pub name: String,
+    /// Space-separated OAuth scopes.
+    #[arg(long, default_value = "openid profile")]
+    pub scopes: String,
+    /// Grant types (repeatable, space-separated).
+    #[arg(long, value_delimiter = ' ', default_value = "authorization_code refresh_token")]
+    pub grant_types: Vec<String>,
+    /// Redirect URIs (repeatable).
+    #[arg(long = "redirect-uri")]
+    pub redirect_uris: Vec<String>,
+    /// Source id scope.
+    #[arg(long)]
+    pub source: Option<String>,
+    /// Federated read source ids (comma-separated).
+    #[arg(long, value_delimiter = ',')]
+    pub federated_read: Vec<String>,
+    /// Token endpoint auth method.
+    #[arg(long)]
+    pub token_endpoint_auth_method: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct AuthRevokeClientArgs {
+    /// OAuth client id to revoke.
+    pub client_id: String,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct AuthTestArgs {
+    /// Remote MCP server base URL.
+    pub url: String,
+    /// Bearer token to present.
+    #[arg(long)]
+    pub token: String,
 }
 
 /// Arguments for `zbrain reindex pages`.
@@ -14944,6 +15352,657 @@ fn print_backfill_list() {
         println!("  {status} {name:<20} {desc}");
     }
     println!();
+}
+
+/// Run `zbrain export`: serialize every matching page to `<dir>/<slug>.md`,
+/// with a `.raw/<slug>.json` sidecar when raw sidecar data exists.
+async fn run_export_command(
+    args: ExportArgs,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    if args.restore_only {
+        anyhow::bail!(
+            "`export --restore-only` requires storage-tier config (db_only tiers) \
+             which is not yet ported to Rust. Use a regular export instead."
+        );
+    }
+    use zbrain_core::engine::{BrainEngine, EngineConfig, PageFilters};
+    use zbrain_core::libsql::LibsqlEngine;
+    use zbrain_core::markdown::serialize_markdown;
+
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    let filters = PageFilters {
+        page_type: args.r#type.clone(),
+        tag: None,
+        limit: Some(100_000),
+        offset: None,
+        updated_after: None,
+        slug_prefix: args.slug_prefix.clone(),
+        include_deleted: false,
+        sort: None,
+        source_id: args.source_id.clone(),
+        source_ids: None,
+    };
+
+    let pages = engine.list_pages(&filters).await?;
+    let out_dir = std::path::Path::new(&args.dir);
+    std::fs::create_dir_all(out_dir)
+        .map_err(|e| anyhow::anyhow!("create_dir {out_dir:?}: {e}"))?;
+
+    let mut exported = 0usize;
+    for page in &pages {
+        let tags = engine
+            .get_tags(&page.slug, Some(page.source_id.as_str()))
+            .await?;
+        let md = serialize_markdown(
+            &page.frontmatter,
+            &page.compiled_truth,
+            &page.timeline,
+            &tags,
+        );
+        let md_path = out_dir.join(format!("{}.md", page.slug));
+        if let Some(parent) = md_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| anyhow::anyhow!("create_dir {parent:?}: {e}"))?;
+        }
+        std::fs::write(&md_path, md)
+            .map_err(|e| anyhow::anyhow!("write {md_path:?}: {e}"))?;
+
+        let raw = engine
+            .get_raw_data(&page.slug, None, Some(page.source_id.as_str()))
+            .await?;
+        if !raw.is_empty() {
+            let mut raw_obj = serde_json::Map::new();
+            for rd in &raw {
+                raw_obj.insert(rd.source.clone(), rd.data.clone());
+            }
+            let slug_parts: Vec<&str> = page.slug.split('/').collect();
+            let raw_dir = slug_parts
+                .iter()
+                .take(slug_parts.len().saturating_sub(1))
+                .fold(out_dir.join(".raw"), |acc, p| acc.join(p));
+            std::fs::create_dir_all(&raw_dir)
+                .map_err(|e| anyhow::anyhow!("create_dir {raw_dir:?}: {e}"))?;
+            let raw_path = raw_dir.join(format!(
+                "{}.json",
+                slug_parts.last().copied().unwrap_or("")
+            ));
+            std::fs::write(
+                &raw_path,
+                serde_json::to_string_pretty(&serde_json::Value::Object(raw_obj))?,
+            )
+            .map_err(|e| anyhow::anyhow!("write {raw_path:?}: {e}"))?;
+        }
+
+        exported += 1;
+    }
+
+    if args.json {
+        let envelope = serde_json::json!({ "exported": exported, "dir": args.dir });
+        println!("{}", serde_json::to_string_pretty(&envelope)?);
+    } else {
+        println!("Exported {exported} pages to {}/", args.dir);
+    }
+
+    engine.disconnect().await?;
+    Ok(())
+}
+
+// ─── upgrade / post-upgrade ──────────────────────────────────────────────
+//
+// The TS `upgrade` flow reinstalls the bun/npm/clawhub binary and then runs
+// `post-upgrade`. A cargo-built binary is updated via the package manager /
+// cargo instead, so `upgrade` just delegates to `post-upgrade`, which runs the
+// idempotent migration orchestrator (the real, valuable work).
+
+async fn run_upgrade_command(
+    args: UpgradeArgs,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    println!("`zbrain upgrade` self-reinstall is not applicable to a cargo-built binary.");
+    println!("Update the zbrain binary via your package manager or `cargo install`, then re-run.");
+    println!("Running post-upgrade (apply-migrations) to keep the brain DB current...\n");
+    run_post_upgrade_command(
+        PostUpgradeArgs {
+            yes: args.yes,
+            json: args.json,
+        },
+        config_path,
+    )
+    .await
+}
+
+async fn run_post_upgrade_command(
+    args: PostUpgradeArgs,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    let am_args = ApplyMigrationsArgs {
+        list: false,
+        dry_run: false,
+        yes: args.yes,
+        force_retry: None,
+        force_orchestrator: false,
+        force_schema: false,
+        force_all: false,
+        skip_verify: false,
+        mode: None,
+        host_dir: None,
+        no_autopilot_install: false,
+        json: args.json,
+    };
+    apply_migrations::run_apply_migrations_command(&am_args, config_path).await
+}
+
+// ─── providers ─────────────────────────────────────────────────────────────
+
+fn provider_touchpoint_labels(r: &zbrain_core::ai::types::Recipe) -> Vec<String> {
+    use zbrain_core::ai::types::TouchpointKind;
+    let mut out = Vec::new();
+    for k in [
+        TouchpointKind::Embedding,
+        TouchpointKind::Expansion,
+        TouchpointKind::Chat,
+        TouchpointKind::Reranker,
+    ] {
+        if r.has_touchpoint(k) {
+            out.push(match k {
+                TouchpointKind::Embedding => "embedding".to_string(),
+                TouchpointKind::Expansion => "expansion".to_string(),
+                TouchpointKind::Chat => "chat".to_string(),
+                TouchpointKind::Reranker => "reranker".to_string(),
+            });
+        }
+    }
+    out
+}
+
+fn run_providers_command(
+    action: ProvidersAction,
+    _config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    use zbrain_core::ai::registry::REGISTRY;
+
+    match action {
+        ProvidersAction::List => {
+            println!("Known AI providers (env-readiness):\n");
+            println!(
+                "{:<14} {:<10} {:<32} status",
+                "ID", "TIER", "TOUCHPOINTS"
+            );
+            for r in REGISTRY.iter() {
+                let ready = r.auth_env.as_ref().map_or(true, |a| {
+                    a.required.iter().all(|v| std::env::var(v).is_ok())
+                });
+                println!(
+                    "{:<14} {:<10} {:<32} {}",
+                    r.id,
+                    format!("{:?}", r.tier),
+                    provider_touchpoint_labels(r).join(", "),
+                    if ready { "ready" } else { "missing env" }
+                );
+            }
+            Ok(())
+        }
+        ProvidersAction::Env(args) => {
+            let r = REGISTRY.iter().find(|r| r.id == args.id.as_str());
+            match r {
+                None => anyhow::bail!(
+                    "Unknown provider: {}. Run `zbrain providers list` to see known providers.",
+                    args.id
+                ),
+                Some(r) => {
+                    println!("Provider: {} ({})", r.name, r.id);
+                    match &r.auth_env {
+                        Some(a) => {
+                            println!("Required env vars:");
+                            for v in a.required {
+                                println!("  {}", v);
+                            }
+                            if !a.optional.is_empty() {
+                                println!("Optional env vars:");
+                                for v in a.optional {
+                                    println!("  {}", v);
+                                }
+                            }
+                            if let Some(u) = a.setup_url {
+                                println!("Setup: {}", u);
+                            }
+                        }
+                        None => println!("No env vars required (native provider)."),
+                    }
+                    Ok(())
+                }
+            }
+        }
+        ProvidersAction::Explain(args) => {
+            let matrix: Vec<serde_json::Value> = REGISTRY
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "id": r.id,
+                        "name": r.name,
+                        "tier": format!("{:?}", r.tier),
+                        "touchpoints": provider_touchpoint_labels(r),
+                        "authEnv": r.auth_env.as_ref().map(|a| serde_json::json!({
+                            "required": a.required,
+                            "optional": a.optional,
+                            "setupUrl": a.setup_url,
+                        })),
+                        "setupHint": r.setup_hint,
+                    })
+                })
+                .collect();
+            if args.json {
+                println!("{}", serde_json::to_string_pretty(&matrix)?);
+            } else {
+                println!("Provider matrix ({} providers):", matrix.len());
+                for r in REGISTRY.iter() {
+                    println!(
+                        "  {} — {} [{}]",
+                        r.id,
+                        r.name,
+                        provider_touchpoint_labels(r).join(", ")
+                    );
+                }
+            }
+            Ok(())
+        }
+        ProvidersAction::Test(args) => {
+            // Rust does not yet port the live embedding/chat probe (it needs the
+            // AI client + network). We surface env + config readiness, which is
+            // the part that actually catches misconfiguration before `init`.
+            let provider_id = match &args.model {
+                Some(m) => m.split_once(':').map(|(p, _)| p.to_string()).unwrap_or_else(|| m.clone()),
+                None => {
+                    println!("No --model given; live probe is not yet ported to Rust.");
+                    println!("Example: zbrain providers test --model openai:text-embedding-3-small");
+                    anyhow::bail!("providers test requires --model <provider:model>")
+                }
+            };
+            let r = REGISTRY.iter().find(|r| r.id == provider_id.as_str());
+            match r {
+                None => anyhow::bail!(
+                    "Unknown provider: {}. Run `zbrain providers list`.",
+                    provider_id
+                ),
+                Some(r) => {
+                    let ready = r.auth_env.as_ref().map_or(true, |a| {
+                        a.required.iter().all(|v| std::env::var(v).is_ok())
+                    });
+                    if ready {
+                        println!(
+                            "Provider '{}' env is ready. Live probe is not yet ported to Rust; run `zbrain init` to validate the active path.",
+                            r.id
+                        );
+                    } else {
+                        println!(
+                            "Provider '{}' is NOT ready: missing required env vars. Run `zbrain providers env {}`.",
+                            r.id, r.id
+                        );
+                    }
+                    Ok(())
+                }
+            }
+        }
+    }
+}
+
+// ─── frontmatter ───────────────────────────────────────────────────────────
+
+/// Walk `root`, collecting `.md` files while skipping vendor / hidden /
+/// generated subtrees (mirrors the TS `collectFiles` descent rules).
+fn collect_markdown_files(root: &str) -> anyhow::Result<Vec<String>> {
+    let p = std::path::Path::new(root);
+    let mut out = Vec::new();
+    if p.is_file() {
+        if p.extension().and_then(|e| e.to_str()) == Some("md") {
+            out.push(root.to_string());
+        }
+        return Ok(out);
+    }
+    if !p.is_dir() {
+        anyhow::bail!("path does not exist: {root}");
+    }
+    let skip = |name: &str| {
+        name == ".git"
+            || name == "node_modules"
+            || name == "vendor"
+            || name == "target"
+            || name.starts_with('.')
+    };
+    let mut stack = vec![p.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)
+            .map_err(|e| anyhow::anyhow!("read_dir {dir:?}: {e}"))?
+        {
+            let entry = entry.map_err(|e| anyhow::anyhow!("entry: {e}"))?;
+            let ep = entry.path();
+            if ep.is_dir() {
+                if let Some(name) = ep.file_name().and_then(|n| n.to_str()) {
+                    if skip(name) {
+                        continue;
+                    }
+                }
+                stack.push(ep);
+            } else if ep.extension().and_then(|e| e.to_str()) == Some("md") {
+                out.push(ep.to_string_lossy().to_string());
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+fn run_frontmatter_command(
+    action: FrontmatterAction,
+    _config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    use zbrain_core::capture::parse_frontmatter_from_body;
+    use zbrain_core::markdown::parse_markdown;
+
+    match action {
+        FrontmatterAction::Validate(args) => {
+            if args.fix {
+                anyhow::bail!(
+                    "`frontmatter validate --fix` is not yet ported to Rust (no in-place frontmatter rewriting yet)."
+                );
+            }
+            let files = collect_markdown_files(&args.path)?;
+            let mut errors = 0usize;
+            let mut reports = Vec::new();
+            for f in &files {
+                let content =
+                    std::fs::read_to_string(f).map_err(|e| anyhow::anyhow!("read {f}: {e}"))?;
+                match parse_frontmatter_from_body(&content) {
+                    Ok((fm, _)) => {
+                        let has_fm =
+                            fm.map_or(false, |v| !v.as_object().map_or(false, |o| o.is_empty()));
+                        if !has_fm {
+                            errors += 1;
+                            reports.push(serde_json::json!({
+                                "path": f,
+                                "ok": false,
+                                "error": "missing or empty frontmatter"
+                            }));
+                        } else {
+                            reports.push(serde_json::json!({ "path": f, "ok": true }));
+                        }
+                    }
+                    Err(e) => {
+                        errors += 1;
+                        reports.push(serde_json::json!({
+                            "path": f,
+                            "ok": false,
+                            "error": e.to_string()
+                        }));
+                    }
+                }
+            }
+            if args.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &serde_json::json!({ "scanned": files.len(), "errors": errors, "files": reports })
+                    )?
+                );
+            } else {
+                for r in &reports {
+                    if r["ok"].as_bool().unwrap_or(false) {
+                        println!("ok    {}", r["path"].as_str().unwrap_or(""));
+                    } else {
+                        println!(
+                            "FAIL  {} — {}",
+                            r["path"].as_str().unwrap_or(""),
+                            r["error"].as_str().unwrap_or("")
+                        );
+                    }
+                }
+                println!(
+                    "\nScanned {} file(s), {} with frontmatter issues.",
+                    files.len(),
+                    errors
+                );
+            }
+            if errors > 0 {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        FrontmatterAction::Generate(args) => {
+            let files = collect_markdown_files(&args.path)?;
+            let mut generated = 0usize;
+            let mut reports = Vec::new();
+            for f in &files {
+                let content =
+                    std::fs::read_to_string(f).map_err(|e| anyhow::anyhow!("read {f}: {e}"))?;
+                let (fm, body_without_fm) = parse_frontmatter_from_body(&content)
+                    .map_err(|e| anyhow::anyhow!("parse {f}: {e}"))?;
+                let already_has =
+                    fm.map_or(false, |v| !v.as_object().map_or(false, |o| o.is_empty()));
+                if already_has {
+                    reports.push(serde_json::json!({
+                        "path": f,
+                        "action": "skip",
+                        "reason": "already has frontmatter"
+                    }));
+                    continue;
+                }
+                let parsed = parse_markdown(&content, f, None);
+                let mut new_fm = serde_json::Map::new();
+                if !parsed.type_.is_empty() {
+                    new_fm.insert(
+                        "type".into(),
+                        serde_json::Value::String(parsed.type_.clone()),
+                    );
+                }
+                if !parsed.title.is_empty() {
+                    new_fm.insert("title".into(), serde_json::Value::String(parsed.title.clone()));
+                }
+                if !parsed.tags.is_empty() {
+                    new_fm.insert(
+                        "tags".into(),
+                        serde_json::Value::Array(
+                            parsed.tags.iter().cloned().map(serde_json::Value::String).collect(),
+                        ),
+                    );
+                }
+                if new_fm.is_empty() {
+                    reports.push(serde_json::json!({
+                        "path": f,
+                        "action": "skip",
+                        "reason": "nothing to infer"
+                    }));
+                    continue;
+                }
+                let yaml = serde_yaml::to_string(&serde_json::Value::Object(new_fm.clone()))
+                    .map_err(|e| anyhow::anyhow!("yaml {f}: {e}"))?;
+                let rebuilt = format!("---\n{yaml}---\n\n{body_without_fm}");
+                if args.fix {
+                    std::fs::write(f, &rebuilt).map_err(|e| anyhow::anyhow!("write {f}: {e}"))?;
+                    generated += 1;
+                    reports.push(serde_json::json!({ "path": f, "action": "wrote" }));
+                } else {
+                    generated += 1;
+                    reports.push(serde_json::json!({
+                        "path": f,
+                        "action": "preview",
+                        "frontmatter": serde_json::Value::Object(new_fm)
+                    }));
+                }
+            }
+            if args.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &serde_json::json!({ "would_generate": generated, "files": reports })
+                    )?
+                );
+            } else {
+                for r in &reports {
+                    match r["action"].as_str().unwrap_or("") {
+                        "wrote" => println!("wrote {}", r["path"].as_str().unwrap_or("")),
+                        "preview" => println!(
+                            "would write {} ({} fields)",
+                            r["path"].as_str().unwrap_or(""),
+                            r["frontmatter"].as_object().map(|o| o.len()).unwrap_or(0)
+                        ),
+                        _ => println!(
+                            "{} {} — {}",
+                            r["action"].as_str().unwrap_or(""),
+                            r["path"].as_str().unwrap_or(""),
+                            r["reason"].as_str().unwrap_or("")
+                        ),
+                    }
+                }
+                if args.fix {
+                    println!("\nGenerated frontmatter for {generated} file(s).");
+                } else {
+                    println!(
+                        "\nWould generate frontmatter for {generated} file(s). Re-run with --fix to write."
+                    );
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+// ─── auth ──────────────────────────────────────────────────────────────────
+
+fn generate_api_token() -> String {
+    use rand::Rng;
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let mut rng = rand::thread_rng();
+    (0..40)
+        .map(|_| CHARS[rng.gen_range(0..CHARS.len())] as char)
+        .collect()
+}
+
+async fn run_auth_command(
+    action: AuthAction,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    use zbrain_core::admin_queries::AdminQueries;
+    use zbrain_core::engine::{BrainEngine, EngineConfig};
+    use zbrain_core::libsql::LibsqlEngine;
+    use zbrain_core::oauth_queries::RegisterClientRequest;
+    use zbrain_core::OAuthQueries;
+
+    // Build a concrete LibsqlEngine so we can call AdminQueries / OAuthQueries /
+    // execute_raw directly (all are implemented on LibsqlEngine).
+    let config = config::load_config(config_path)?;
+    let db_path = resolve_database_path(&config.database_url);
+    let engine_config = EngineConfig {
+        database_url: None,
+        database_path: Some(db_path),
+    };
+    let engine = LibsqlEngine::new();
+    engine.connect(&engine_config).await?;
+    engine.init_schema().await?;
+
+    match action {
+        AuthAction::Create(args) => {
+            if args.takes_holders.is_some() {
+                anyhow::bail!(
+                    "`auth create --takes-holders` is not supported by the Rust `access_tokens` schema (no permissions column). Use `auth register-client` (OAuth 2.1) with --federated-read instead."
+                );
+            }
+            let token = generate_api_token();
+            let hash = {
+                use sha2::{Sha256, Digest};
+                let mut h = Sha256::new();
+                h.update(token.as_bytes());
+                hex::encode(h.finalize())
+            };
+            let id = format!("{:032x}", rand::random::<u128>());
+            let created = zbrain_core::time::current_utc_iso8601();
+            engine
+                .execute_raw(
+                    "INSERT INTO access_tokens (id, name, token_hash, created_at) VALUES (?1, ?2, ?3, ?4)",
+                    &[&id, &args.name, &hash, &created],
+                )
+                .await?;
+            println!("  {token}\n");
+            println!("Save this token — it will not be shown again.");
+            Ok(())
+        }
+        AuthAction::List => {
+            let keys = engine.list_api_keys().await?;
+            if keys.is_empty() {
+                println!("No tokens found. Create one: zbrain auth create \"my-client\"");
+            } else {
+                for k in keys {
+                    let state = if k.revoked_at.is_some() {
+                        "revoked"
+                    } else {
+                        "active"
+                    };
+                    println!("{}  {}  created {}", state, k.name, k.created_at);
+                }
+            }
+            Ok(())
+        }
+        AuthAction::Revoke(args) => {
+            engine.revoke_api_key(&args.name).await?;
+            println!("Revoked token '{}'.", args.name);
+            Ok(())
+        }
+        AuthAction::Permissions(_) => {
+            anyhow::bail!(
+                "`auth permissions` (per-token takes-holders allow-list) is not supported by the Rust `access_tokens` schema. Use `auth register-client` with --federated-read for source-scoped access."
+            );
+        }
+        AuthAction::RegisterClient(args) => {
+            let req = RegisterClientRequest {
+                name: args.name,
+                scope: args.scopes,
+                grant_types: args.grant_types,
+                redirect_uris: args.redirect_uris,
+                token_endpoint_auth_method: args.token_endpoint_auth_method,
+                token_ttl: None,
+                source_id: args.source.unwrap_or_else(|| "default".to_string()),
+                federated_read: args.federated_read,
+            };
+            let resp = engine.register_client(req).await?;
+            println!("client_id:     {}", resp.client_id);
+            println!("client_secret: {}", resp.client_secret);
+            println!("Save the client_secret — it will not be shown again.");
+            Ok(())
+        }
+        AuthAction::RevokeClient(args) => {
+            let resp = engine.revoke_client(&args.client_id).await?;
+            if resp.revoked {
+                println!("Revoked OAuth client '{}'.", args.client_id);
+            } else {
+                println!("No active OAuth client found with id '{}'.", args.client_id);
+            }
+            Ok(())
+        }
+        AuthAction::Test(args) => {
+            let client = reqwest::Client::new();
+            let url = if args.url.ends_with('/') {
+                format!("{}health", args.url)
+            } else {
+                format!("{}/health", args.url)
+            };
+            match client.get(&url).bearer_auth(&args.token).send().await {
+                Ok(r) => {
+                    println!("GET {} -> HTTP {}", url, r.status());
+                    Ok(())
+                }
+                Err(e) => anyhow::bail!("auth test failed: {e}"),
+            }
+        }
+    }
 }
 
 #[cfg(test)]
