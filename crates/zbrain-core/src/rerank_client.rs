@@ -852,6 +852,7 @@ mod tests {
             reranker_delta: None,
             salience_boost: None,
             recency_boost: None,
+            cosine_score: None,
         }
     }
 

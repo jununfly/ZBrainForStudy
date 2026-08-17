@@ -296,6 +296,19 @@ pub struct SearchResult {
     /// applied" honestly. Does NOT overwrite `base_score`. Mirrors TS
     /// `SearchResult.recency_boost` (`src/core/search/hybrid.ts:220`).
     pub recency_boost: Option<f64>,
+    /// Cosine similarity between the query embedding and the page's stored
+    /// embedding, stamped ONLY by the G67 `cosine_re_score` stage when an
+    /// embedding client is present and the page has a non-empty embedding.
+    /// Stored separately from `score` (the blended final) so `--explain` and
+    /// the rerank attribution chain can recover the raw cosine component
+    /// without re-embedding. Mirrors the TS `cosineReScore` stamp in
+    /// `src/core/search/hybrid.ts:1346` (`cosine` field). `None` when the
+    /// re-score stage is skipped (no embedding client) or the page has no
+    /// stored embedding. `score`/`base_score` are NOT overwritten by this
+    /// stamp alone — the re-score blends the cosine into `score` AND captures
+    /// the raw value here, matching the rerank-stage pattern above. See
+    /// `docs/plans/MIGRATION.md` G67.
+    pub cosine_score: Option<f64>,
 }
 
 /// Options for `search_pages`.
@@ -684,6 +697,11 @@ pub(crate) async fn fuse_and_boost(
             reranker_delta: None,
             salience_boost: None,
             recency_boost: None,
+            // G67 cosine re-score stamp: populated later by the
+            // `search::cosine_re_score` stage (page-level analog of the TS
+            // `cosineReScore`); engine never re-ranks here, so it starts
+            // as None and is set only when an embedding client is present.
+            cosine_score: None,
         });
     }
 

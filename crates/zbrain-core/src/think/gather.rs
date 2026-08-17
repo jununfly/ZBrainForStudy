@@ -361,6 +361,7 @@ mod tests {
             reranker_delta: None,
             salience_boost: None,
             recency_boost: None,
+            cosine_score: None,
         };
         let block = render_pages_block(&[result], PAGE_EXCERPT_LEN);
         assert!(block.contains("<page slug=\"people/alice\" rank=\"1\">"));
@@ -382,6 +383,7 @@ mod tests {
             reranker_delta: None,
             salience_boost: None,
             recency_boost: None,
+            cosine_score: None,
         };
         let block = render_pages_block(&[result], PAGE_EXCERPT_LEN);
         assert!(block.contains("fallback body"));
@@ -402,6 +404,7 @@ mod tests {
             reranker_delta: None,
             salience_boost: None,
             recency_boost: None,
+            cosine_score: None,
         };
         let block = render_pages_block(&[result], 10);
         // header + newline + 10 chars + newline + close == contains at most 10 excerpt chars.
