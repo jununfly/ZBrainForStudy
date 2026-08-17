@@ -27,7 +27,7 @@ use std::sync::Arc;
 
 /// Options for the thin `hybrid_search` orchestrator. A subset of the TS
 /// `HybridSearchOpts` surface — only the fields the Rust pipeline honors.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct HybridSearchOpts {
     /// Max results to return (passed through to `search_pages`).
     pub limit: Option<usize>,
@@ -54,6 +54,60 @@ pub struct HybridSearchOpts {
     /// through to `SearchOpts::rrf_k` → `engine::fuse_and_boost` → `rrf_fuse`,
     /// so `zbrain eval --rrf-k` re-ranks without recompiling (KNOWN-GAPS G74b).
     pub rrf_k: Option<f64>,
+    // ── G69 semantic query cache knobs ─────────────────────────────────
+    // The cache is consulted by `hybrid_search_cached` (see
+    // `search::cache::hybrid_search_cached`). All four knobs are SKIP
+    // triggers: when any of them is `Some(_)` or `use_cache = false`, the
+    // lookup is bypassed (mirrors the TS `query-cache.ts` skip rules).
+    // The cache write is unaffected — the orchestrator still best-effort
+    // stores fresh results so future calls can hit.
+    /// Caller-supplied knobs hash (CDX-4 in TS): scope cache rows by the
+    /// resolved mode (tokenmax vs conservative, etc.) so cross-mode
+    /// reads cannot cross-contaminate. `None` falls back to the
+    /// empty-string default, matching TS `cacheRowId(query, source, '')`.
+    pub knobs_hash: Option<String>,
+    /// Two-pass walk depth (TS `HybridSearchOpts.walkDepth`). When `Some`,
+    /// the caller is doing a follow-up expansion of an existing result
+    /// set — the cache is skipped because the embedding was derived from
+    /// a different query source.
+    pub walk_depth: Option<u32>,
+    /// Near-symbol scoping (TS `HybridSearchOpts.nearSymbol`). When `Some`,
+    /// the cache is scoped to a different effective query (the symbol
+    /// itself) and a previously cached plain query would mislead.
+    pub near_symbol: Option<String>,
+    /// Resolved embedding column (G70) — when the column is not the
+    /// default, the cache is bypassed because row-level embedding
+    /// vectors differ.
+    pub embedding_column: Option<String>,
+    /// Master switch. Defaults to `true`; set to `false` to skip the
+    /// cache entirely (TS `useCache: false`).
+    pub use_cache: bool,
+}
+
+impl Default for HybridSearchOpts {
+    fn default() -> Self {
+        Self {
+            limit: None,
+            offset: 0,
+            source_id: None,
+            floor_ratio: None,
+            disable_salience_boost: false,
+            disable_recency_boost: false,
+            dedup_opts: None,
+            token_budget: None,
+            embedding_client: None,
+            rrf_k: None,
+            knobs_hash: None,
+            walk_depth: None,
+            near_symbol: None,
+            embedding_column: None,
+            // Cache is ON by default — `hybrid_search_cached` is the
+            // blessed path; `hybrid_search` is the bypass for callers
+            // that explicitly want no caching. Mirrors the TS default
+            // where `useCache` is unset (= true).
+            use_cache: true,
+        }
+    }
 }
 
 impl HybridSearchOpts {

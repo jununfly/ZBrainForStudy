@@ -14,6 +14,7 @@
 //! does not own — page-level dedup and the token budget. `apply_recency_boost`
 //! lives in `crate::recency_decay` and is reused.
 
+pub mod cache;
 pub mod dedup;
 pub mod engine;
 pub mod eval;

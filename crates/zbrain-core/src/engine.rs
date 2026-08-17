@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use erased_serde::Serialize;
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 
 use crate::{
     calibration_queries::{aggregate_calibration_curve, aggregate_scorecard, CalibrationBucket,
@@ -241,7 +242,7 @@ pub enum PageSort {
 /// A single search result from `search_pages`.
 ///
 /// Contains the matched page and a relevance score (0..1, higher = more relevant).
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SearchResult {
     /// The matched page
     pub page: Page,
@@ -309,6 +310,114 @@ pub struct SearchResult {
     /// the raw value here, matching the rerank-stage pattern above. See
     /// `docs/plans/MIGRATION.md` G67.
     pub cosine_score: Option<f64>,
+}
+
+// ── G69 semantic query cache (slice 1-5-17) ─────────────────────
+//
+// Public types used by the trait surface below. The libsql backend
+// (G69 commit B) will write/read a real `query_cache` table; the
+// InMemory backend (this commit, A) mirrors the schema in a Vec.
+
+/// Per-call knobs for [`BrainEngine::cache_lookup`]. The orchestrator
+/// fills these from `HybridSearchOpts`; backends should treat all
+/// fields as read-only.
+#[derive(Debug, Clone)]
+pub struct CacheLookupOpts {
+    /// Multi-source isolation: brain A's "who is widget-ceo" must NOT
+    /// return brain B's cached results. `None` = "default" (TS
+    /// `query-cache.ts:134`).
+    pub source_id: String,
+    /// CDX-4: scope cache rows by resolved mode. Empty string means
+    /// "unscoped" (matches pre-v0.32.3 row shape).
+    pub knobs_hash: String,
+    /// Cosine similarity gate (0..1). Default 0.92. Distance gate is
+    /// `1 - similarity_threshold`.
+    pub similarity_threshold: f64,
+    /// Current epoch seconds — the orchestrator passes this in so
+    /// backends can do the freshness check (`created_at + ttl >
+    /// now`) without owning a clock. Avoids the `chrono::Utc::now()`
+    /// divergence between backends and the orchestrator.
+    pub now_epoch_secs: i64,
+}
+
+impl Default for CacheLookupOpts {
+    fn default() -> Self {
+        Self {
+            source_id: "default".to_string(),
+            knobs_hash: String::new(),
+            similarity_threshold: 0.92,
+            now_epoch_secs: 0,
+        }
+    }
+}
+
+/// Per-call knobs for [`BrainEngine::cache_store`].
+#[derive(Debug, Clone)]
+pub struct CacheStoreOpts {
+    /// Same isolation key as the lookup.
+    pub source_id: String,
+    /// Same mode-key as the lookup.
+    pub knobs_hash: String,
+    /// TTL in seconds. Default 3600 (1h). Capped at 30 days.
+    pub ttl_seconds: i64,
+    /// Per-page generation snapshot keyed by page id. Built by the
+    /// orchestrator via `engine::get_page(...)` (which already
+    /// surfaces `Page.generation` from the migration 0002 trigger).
+    /// The backend stores this verbatim and uses it during `lookup`
+    /// to enforce the D11 two-layer gate.
+    pub page_generations: std::collections::HashMap<i64, i64>,
+    /// Max generation across the cached result set, captured at
+    /// store-time. `lookup` rejects a hit when the live
+    /// `MAX(pages.generation)` for the same page set has moved past
+    /// this value (TS `query-cache-gate.ts:MAX_GENERATION_GATE`).
+    pub max_generation_at_store: i64,
+    /// Current epoch seconds — backend writes this as `created_at`.
+    pub now_epoch_secs: i64,
+}
+
+impl Default for CacheStoreOpts {
+    fn default() -> Self {
+        Self {
+            source_id: "default".to_string(),
+            knobs_hash: String::new(),
+            ttl_seconds: 3600,
+            page_generations: std::collections::HashMap::new(),
+            max_generation_at_store: 0,
+            now_epoch_secs: 0,
+        }
+    }
+}
+
+/// Successful cache hit. `results_json` / `meta_json` are the raw
+/// strings the backend stored (serialized `Vec<SearchResult>` and
+/// `HybridSearchMeta`); the orchestrator parses them back. We pass
+/// JSON to keep the trait backend-agnostic — libsql is a JSON TEXT
+/// column, and InMemory is `String`.
+#[derive(Debug, Clone)]
+pub struct CacheHit {
+    /// SHA-256 hex32 row id (TS `cacheRowId`). Surfaced for the
+    /// `bumpHit` background update.
+    pub row_id: String,
+    /// Serialized `Vec<SearchResult>` JSON.
+    pub results_json: String,
+    /// Serialized `HybridSearchMeta` JSON (may be `"null"` if the
+    /// orchestrator stored without meta).
+    pub meta_json: String,
+    /// Cosine similarity of the matched cached query (0..1). Already
+    /// `1 - distance` so the orchestrator can just compare to the
+    /// threshold for diagnostics.
+    pub similarity: f64,
+    /// Age of the cached entry in seconds (cached row's `now - created_at`).
+    pub age_seconds: i64,
+}
+
+/// Summary stats for `zbrain cache stats`.
+#[derive(Debug, Clone, Default)]
+pub struct CacheStatsRow {
+    pub total_rows: i64,
+    pub total_hits: i64,
+    pub fresh_rows: i64,
+    pub stale_rows: i64,
 }
 
 /// Options for `search_pages`.
@@ -399,6 +508,40 @@ pub(crate) fn decode_embedding_le(bytes: &[u8]) -> Option<Vec<f32>> {
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect(),
     )
+}
+
+/// Inverse of [`decode_embedding_le`]. Used by the G69 in-memory cache
+/// store path so the same `&[u8]` shape is used everywhere a
+/// `query_embedding` is persisted. Empty input returns an empty
+/// buffer (the cache `lookup` will then skip the row).
+pub(crate) fn f32_slice_to_le_bytes(v: &[f32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(v.len() * 4);
+    for f in v {
+        out.extend_from_slice(&f.to_le_bytes());
+    }
+    out
+}
+
+/// Deterministic 32-char hex id for a `query_cache` row. Mirrors the
+/// TS `cacheRowId` at `src/core/search/query-cache.ts:76` —
+/// `sha256(sourceId::queryText::knobsHash)` truncated to 32 hex
+/// chars (16 bytes). The truncation is the same fingerprint the TS
+/// PK uses, so a row written by the Rust port is byte-comparable
+/// to a row the legacy TS brain produced (modulo the libsql JSON
+/// column layout which lands in commit B).
+pub(crate) fn query_cache_row_id(source_id: &str, query_text: &str, knobs_hash: &str) -> String {
+    let mut h = Sha256::new();
+    h.update(source_id.as_bytes());
+    h.update(b"::");
+    h.update(query_text.as_bytes());
+    h.update(b"::");
+    h.update(knobs_hash.as_bytes());
+    let digest = h.finalize();
+    let hex = digest
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    hex[..32].to_string()
 }
 
 /// Cosine similarity of two equal-length f32 vectors. Mirrors
@@ -1835,6 +1978,87 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
             "Unsupported",
             "unsupported",
             "execute_raw not implemented for this engine",
+        ))
+    }
+
+    // ── G69 semantic query cache (slice 1-5-17) ────────────────────
+    //
+    // Per the working-memory rule "`executeRaw` 默认 Err，InMemory 测试
+    // unwrap 全 panic" + the user's chosen full D11 scope, the cache is a
+    // first-class trait surface rather than a query-time SQL call. The
+    // libsql backend persists to a real `query_cache` table (migration
+    // 0037, lands in G69 commit B); the InMemory backend mirrors the
+    // schema in a `Vec<InternalQueryCacheRow>` (this commit, A).
+    //
+    // All five methods default to `Err(Unsupported)` so non-libsql
+    // engines (postgres, sqlite-only test doubles) opt in explicitly.
+    // The orchestrator `search::cache::hybrid_search_cached` is the
+    // ONLY caller of these — see `search::cache::SemanticQueryCache`.
+
+    /// Look up a cached result set by query embedding similarity.
+    /// Returns `Ok(None)` on miss (no row, stale TTL, embedding
+    /// distance above threshold, D11 gate failure, or any storage
+    /// error — same fail-open shape as TS `query-cache.ts:127-196`).
+    async fn cache_lookup(
+        &self,
+        _query_text: &str,
+        _query_embedding: &[f32],
+        _opts: &CacheLookupOpts,
+    ) -> crate::Result<Option<CacheHit>> {
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "cache_lookup not implemented for this engine",
+        ))
+    }
+
+    /// Persist a fresh result set into the cache. Best-effort: the
+    /// orchestrator calls this after a miss, swallows the result, and
+    /// never lets a cache write error fail the search hot path
+    /// (mirrors TS `query-cache.ts:203-266`).
+    async fn cache_store(
+        &self,
+        _query_text: &str,
+        _query_embedding: &[f32],
+        _results_json: &str,
+        _meta_json: &str,
+        _opts: &CacheStoreOpts,
+    ) -> crate::Result<()> {
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "cache_store not implemented for this engine",
+        ))
+    }
+
+    /// Delete cache rows (optionally scoped by `source_id`).
+    /// Returns the number of rows deleted. Mirrors TS
+    /// `query-cache.ts:269-287` (`clear`).
+    async fn cache_clear(&self, _source_id: Option<&str>) -> crate::Result<u64> {
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "cache_clear not implemented for this engine",
+        ))
+    }
+
+    /// Delete only past-TTL rows. Returns the number of rows deleted.
+    /// Mirrors TS `query-cache.ts:290-304` (`prune`).
+    async fn cache_prune(&self, _now_epoch_secs: i64) -> crate::Result<u64> {
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "cache_prune not implemented for this engine",
+        ))
+    }
+
+    /// Summary stats for `zbrain cache stats`. Mirrors TS
+    /// `query-cache.ts:307-326` (`stats`).
+    async fn cache_stats(&self) -> crate::Result<CacheStatsRow> {
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "cache_stats not implemented for this engine",
         ))
     }
 
@@ -4193,7 +4417,7 @@ pub fn clamp_confidence(depth: usize) -> f32 {
 /// tests and integration harnesses.
 #[derive(Debug, Default)]
 pub struct InMemoryEngine {
-    store: Mutex<Vec<Page>>,
+    pub(crate) store: Mutex<Vec<Page>>,
     next_id: Mutex<u64>,
     file_store: Mutex<Vec<FileRow>>,
     next_file_id: Mutex<u64>,
@@ -4268,6 +4492,13 @@ pub struct InMemoryEngine {
     takes_quality_runs_store: Mutex<Vec<crate::eval::takes_quality::receipt::TakesQualityRunRow>>,
     /// 1-1-5-8 (JudgeCache): persisted judge-verdict cache rows (in-memory, for testing).
     contradictions_cache_store: Mutex<Vec<InternalContradictionCacheRow>>,
+    // 1-5-17 / G69: semantic query cache (in-memory, for testing).
+    // Mirrors the libsql `query_cache` table schema that lands in G69
+    // commit B. Holds a flat list so test setup can directly insert
+    // rows and assert on the result. The D11 two-layer gate
+    // (page_generations + max_generation_at_store) is enforced inside
+    // `cache_lookup` via `list_page_generations` (defined below).
+    query_cache_store: Mutex<Vec<InternalQueryCacheRow>>,
 }
 
 /// In-memory `eval_contradictions_cache` row (1-1-5-8 / JudgeCache).
@@ -4281,6 +4512,36 @@ struct InternalContradictionCacheRow {
     verdict: serde_json::Value,
     created_at: chrono::DateTime<chrono::Utc>,
     expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// In-memory `query_cache` row (1-5-17 / G69). Mirrors the libsql
+/// schema that lands in commit B — same column names, same JSON
+/// string shapes, so a round-trip between backends preserves the
+/// stored row verbatim.
+///
+/// `page_generations` is stored as a `serde_json::Value` (JSONB in
+/// the libsql backend) rather than a `HashMap` to keep this struct
+/// `Debug + Clone` without a custom impl.
+#[derive(Debug, Clone)]
+struct InternalQueryCacheRow {
+    id: String,
+    query_text: String,
+    source_id: String,
+    knobs_hash: String,
+    /// LE f32 bytes — same encoding as `Page::embedding`. Kept as
+    /// `Vec<u8>` so the cosine scan in `cache_lookup` can decode via
+    /// `decode_embedding_le` (single-source-of-truth decoder).
+    embedding: Vec<u8>,
+    results_json: String,
+    meta_json: String,
+    ttl_seconds: i64,
+    /// JSONB shape: `{ "<page_id>": <generation> }`. Built by the
+    /// orchestrator via `engine::get_page(...)` + `page.generation`.
+    page_generations: serde_json::Value,
+    max_generation_at_store: i64,
+    created_at_epoch: i64,
+    last_hit_at_epoch: Option<i64>,
+    hit_count: i64,
 }
 
 /// In-memory `subagent_tool_executions` row (1-3-4-6, read-path testing).
@@ -4525,7 +4786,64 @@ impl InMemoryEngine {
             contradictions_runs_store: Mutex::new(Vec::new()),
             takes_quality_runs_store: Mutex::new(Vec::new()),
             contradictions_cache_store: Mutex::new(Vec::new()),
+            // 1-5-17 / G69: semantic query cache (in-memory)
+            query_cache_store: Mutex::new(Vec::new()),
         }
+    }
+
+    /// 1-5-17 / G69: D11 two-layer cache invalidation gate (inherent
+    /// method, not a trait method — it touches the private `store`
+    /// field directly). Returns `true` if every page in `snapshot`
+    /// is still at-or-below the live generation (i.e. no watched
+    /// column has bumped since store) AND the max live generation
+    /// across the same set is no greater than `max_at_store` (i.e.
+    /// no new pages have been added that would extend the result
+    /// set).
+    ///
+    /// Mirrors the SQL clause at `query-cache-gate.ts:
+    /// CACHE_GATE_WHERE_CLAUSE` (the libsql backend in commit B
+    /// translates this into a real SQL predicate against `pages`).
+    ///
+    /// Snapshot shape: `serde_json::Value` of `HashMap<i64, i64>`
+    /// keyed by an FNV-1a 64 hash of `(source_id, slug)` (the
+    /// orchestrator's `stable_hash` helper in `search::cache`).
+    /// Collisions are accepted because the `source_id` is part of
+    /// the row PK anyway.
+    ///
+    /// Empty snapshot → accept (legacy pre-D11 row carve-out, same
+    /// as the TS "iron-rule compat").
+    pub(crate) fn d11_gate_passes(
+        &self,
+        snapshot: &serde_json::Value,
+        max_at_store: i64,
+    ) -> bool {
+        let expected: std::collections::HashMap<i64, i64> = match serde_json::from_value(snapshot.clone()) {
+            Ok(m) => m,
+            Err(_) => return false,
+        };
+        if expected.is_empty() {
+            return true;
+        }
+        let pages = self
+            .store
+            .lock()
+            .expect("InMemoryEngine store poisoned (D11 gate)");
+        let mut max_live: i64 = 0;
+        for (id, expected_gen) in &expected {
+            let live = pages.iter().find(|p| p.id as i64 == *id);
+            match live {
+                None => return false,
+                Some(p) => {
+                    if p.generation < *expected_gen {
+                        return false;
+                    }
+                    if p.generation > max_live {
+                        max_live = p.generation;
+                    }
+                }
+            }
+        }
+        max_live <= max_at_store
     }
 
     /// Wrap in an `Arc` for use as `Arc<dyn BrainEngine>`.
@@ -10136,6 +10454,193 @@ impl BrainEngine for InMemoryEngine {
                 terminal_nodes: Some(terminal_nodes),
             })
         }
+
+    // ─── 1-5-17 / G69: semantic query cache (in-memory) ────────────
+    //
+    // Mirrors the libsql `query_cache` table that lands in commit B.
+    // D11 two-layer gate: a hit is only returned if (a) the live
+    // generation of every page in the snapshot is ≥ the snapshot's
+    // stored value, AND (b) the max live generation across the same
+    // page set is ≤ the row's `max_generation_at_store` (no NEW pages
+    // have been added that aren't in the snapshot). Both checks fail
+    // open — the orchestrator treats the gate failure as a miss.
+
+    async fn cache_lookup(
+        &self,
+        query_text: &str,
+        query_embedding: &[f32],
+        opts: &CacheLookupOpts,
+    ) -> crate::Result<Option<CacheHit>> {
+        // Scope the candidate set first (cheap filter), then do the
+        // cosine scan in app code (SQLite has no vector op).
+        let store = self
+            .query_cache_store
+            .lock()
+            .expect("InMemoryEngine query_cache_store poisoned");
+        let distance_threshold = 1.0 - opts.similarity_threshold;
+        let mut best: Option<(f64, &InternalQueryCacheRow, i64)> = None;
+
+        for row in store.iter() {
+            if row.source_id != opts.source_id {
+                continue;
+            }
+            if row.knobs_hash != opts.knobs_hash {
+                continue;
+            }
+            if row.embedding.is_empty() {
+                continue;
+            }
+            // TTL gate: created_at + ttl_seconds > now
+            if row.created_at_epoch + row.ttl_seconds <= opts.now_epoch_secs {
+                continue;
+            }
+            let row_vec = match decode_embedding_le(&row.embedding) {
+                Some(v) => v,
+                None => continue,
+            };
+            if row_vec.len() != query_embedding.len() {
+                continue;
+            }
+            let sim = crate::search::cosine_similarity(&row_vec, query_embedding);
+            let dist = 1.0 - sim;
+            if dist >= distance_threshold {
+                continue;
+            }
+            let age = opts.now_epoch_secs - row.created_at_epoch;
+            match best {
+                Some((best_sim, _, _)) if sim <= best_sim => {}
+                _ => best = Some((sim, row, age)),
+            }
+        }
+
+        let (sim, row, age) = match best {
+            Some(b) => b,
+            None => return Ok(None),
+        };
+
+        // D11 two-layer gate. We do the gate check before bumping the
+        // hit counter, so a gate-failed lookup is invisible to stats
+        // (mirrors TS `query-cache-gate.ts`).
+        if !self.d11_gate_passes(&row.page_generations, row.max_generation_at_store) {
+            return Ok(None);
+        }
+
+        Ok(Some(CacheHit {
+            row_id: row.id.clone(),
+            results_json: row.results_json.clone(),
+            meta_json: row.meta_json.clone(),
+            similarity: sim,
+            age_seconds: age,
+        }))
+    }
+
+    async fn cache_store(
+        &self,
+        query_text: &str,
+        query_embedding: &[f32],
+        results_json: &str,
+        meta_json: &str,
+        opts: &CacheStoreOpts,
+    ) -> crate::Result<()> {
+        let mut store = self
+            .query_cache_store
+            .lock()
+            .expect("InMemoryEngine query_cache_store poisoned");
+        // PK is sha256(sourceId::queryText::knobsHash)[:32] — matches
+        // TS `cacheRowId`. Re-storing the same triple just bumps
+        // created_at + counters (idempotent ON CONFLICT).
+        let id = query_cache_row_id(&opts.source_id, query_text, &opts.knobs_hash);
+        let embedding = f32_slice_to_le_bytes(query_embedding);
+        let page_generations_json = serde_json::to_value(&opts.page_generations)
+            .map_err(|e| crate::error::StructuredError::new("Internal", "serde", e.to_string()))?;
+
+        // Upsert: replace existing row with same id, else push.
+        if let Some(existing) = store.iter_mut().find(|r| r.id == id) {
+            existing.query_text = query_text.to_string();
+            existing.knobs_hash = opts.knobs_hash.clone();
+            existing.embedding = embedding;
+            existing.results_json = results_json.to_string();
+            existing.meta_json = meta_json.to_string();
+            existing.ttl_seconds = opts.ttl_seconds;
+            existing.page_generations = page_generations_json;
+            existing.max_generation_at_store = opts.max_generation_at_store;
+            existing.created_at_epoch = opts.now_epoch_secs;
+        } else {
+            store.push(InternalQueryCacheRow {
+                id,
+                query_text: query_text.to_string(),
+                source_id: opts.source_id.clone(),
+                knobs_hash: opts.knobs_hash.clone(),
+                embedding,
+                results_json: results_json.to_string(),
+                meta_json: meta_json.to_string(),
+                ttl_seconds: opts.ttl_seconds,
+                page_generations: page_generations_json,
+                max_generation_at_store: opts.max_generation_at_store,
+                created_at_epoch: opts.now_epoch_secs,
+                last_hit_at_epoch: None,
+                hit_count: 0,
+            });
+        }
+        Ok(())
+    }
+
+    async fn cache_clear(&self, source_id: Option<&str>) -> crate::Result<u64> {
+        let mut store = self
+            .query_cache_store
+            .lock()
+            .expect("InMemoryEngine query_cache_store poisoned");
+        let before = store.len() as u64;
+        match source_id {
+            Some(sid) => store.retain(|r| r.source_id != sid),
+            None => store.clear(),
+        }
+        Ok(before - store.len() as u64)
+    }
+
+    async fn cache_prune(&self, now_epoch_secs: i64) -> crate::Result<u64> {
+        let mut store = self
+            .query_cache_store
+            .lock()
+            .expect("InMemoryEngine query_cache_store poisoned");
+        let before = store.len() as u64;
+        store.retain(|r| r.created_at_epoch + r.ttl_seconds > now_epoch_secs);
+        Ok(before - store.len() as u64)
+    }
+
+    async fn cache_stats(&self) -> crate::Result<CacheStatsRow> {
+        let store = self
+            .query_cache_store
+            .lock()
+            .expect("InMemoryEngine query_cache_store poisoned");
+        // "now" for the freshness split: we have no clock here, so use
+        // the max(created_at + ttl) as the implicit "now" — anything
+        // beyond that is stale, anything before is fresh. This is
+        // exact for a brain where every write passes through us; in
+        // production the libsql backend uses real `now()`.
+        let max_fresh_until = store
+            .iter()
+            .map(|r| r.created_at_epoch + r.ttl_seconds)
+            .max()
+            .unwrap_or(0);
+        let mut total_hits: i64 = 0;
+        let mut fresh: i64 = 0;
+        let mut stale: i64 = 0;
+        for r in store.iter() {
+            total_hits += r.hit_count;
+            if r.created_at_epoch + r.ttl_seconds > max_fresh_until {
+                fresh += 1;
+            } else {
+                stale += 1;
+            }
+        }
+        Ok(CacheStatsRow {
+            total_rows: store.len() as i64,
+            total_hits,
+            fresh_rows: fresh,
+            stale_rows: stale,
+        })
+    }
 }
 
 #[cfg(test)]
