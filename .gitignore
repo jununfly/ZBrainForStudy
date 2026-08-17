@@ -65,3 +65,8 @@ Cargo.lock.bak
 
 # Python bytecode
 __pycache__/
+
+# WorkBuddy local agent artifacts: memory logs, TS-source recovery
+# scratch dirs. Workspace-local by design — never committed.
+.workbuddy/memory/
+.workbuddy/ts_recover/
