@@ -35,7 +35,8 @@ use crate::oauth_queries::{
     UpdateClientTtlResponse,
 };
 use crate::engine::{
-    fuse_and_boost, page_sort_sql, BrainEngine, CreateSourceInput, DreamVerdict,
+    fuse_and_boost, page_sort_sql, BrainEngine, CacheHit, CacheLookupOpts, CacheStatsRow,
+    CacheStoreOpts, CreateSourceInput, DreamVerdict,
     DreamVerdictInput, EngineConfig, EvalCandidate, EvalCandidateFilter, EngineKind, EmotionalInput,
     EmotionalWeightTake,
     EmotionalWeightWrite, GetPageOpts, Page, PageFilters, PageInput, PageSort, ResolveSlugsOpts,
@@ -165,6 +166,9 @@ const MIGRATION_0034: &str = include_str!("../migrations-sqlite/0034_eval_takes_
 const MIGRATION_0035: &str = include_str!("../migrations-sqlite/0035_content_chunks_edges_backfilled_at.sql");
 /// G75 (reindex-multimodal): add `content_chunks.embedding_multimodal` column.
 const MIGRATION_0036: &str = include_str!("../migrations-sqlite/0036_content_chunks_embedding_multimodal.sql");
+/// G69-B (1-5-17): persistent semantic query cache table. See
+/// `migrations-sqlite/0037_query_cache.sql` for the column contract.
+const MIGRATION_0037: &str = include_str!("../migrations-sqlite/0037_query_cache.sql");
 
 /// Legacy string array — REMOVED in favor of MigrationRegistry.
 /// Use LIBQL_MIGRATIONS instead.
@@ -370,6 +374,11 @@ pub static LIBQL_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 36,
         name: "content_chunks_embedding_multimodal",
         sql: MIGRATION_0036,
+    }));
+    registry.add(Box::new(LibsqlMigration {
+        version: 37,
+        name: "query_cache",
+        sql: MIGRATION_0037,
     }));
 
     registry
@@ -730,6 +739,184 @@ fn take_from_row(row: &::libsql::Row) -> Result<Take> {
         created_at: row.get(19).unwrap_or_default(),
         updated_at: row.get(20).unwrap_or_default(),
     })
+}
+
+impl LibsqlEngine {
+    async fn try_cache_lookup(
+        &self,
+        _query_text: &str,
+        query_embedding: &[f32],
+        opts: &CacheLookupOpts,
+    ) -> crate::Result<Option<CacheHit>> {
+        let conn = self.conn().await?;
+        // Scope candidates by source + mode, drop expired rows and rows
+        // without an embedding (cosine needs a vector).
+        let mut rows = conn
+            .query(
+                "SELECT id, embedding, results_json, meta_json, created_at_epoch, \
+                        page_generations, max_generation_at_store \
+                 FROM query_cache \
+                 WHERE source_id = ?1 \
+                   AND knobs_hash = ?2 \
+                   AND embedding IS NOT NULL \
+                   AND created_at_epoch + ttl_seconds > ?3 \
+                 ORDER BY created_at_epoch DESC",
+                ::libsql::params![opts.source_id.clone(), opts.knobs_hash.clone(), opts.now_epoch_secs],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("cache_lookup query failed: {e}")))?;
+
+        let distance_threshold = 1.0 - opts.similarity_threshold;
+        let mut best: Option<(f64, String, String, String, i64, String, i64)> = None;
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("cache_lookup row fetch failed: {e}")))?
+        {
+            let embedding_blob: Vec<u8> = row
+                .get::<Vec<u8>>(1)
+                .map_err(|e| Error::engine(format!("cache_lookup embedding decode: {e}")))?;
+            let row_vec = match crate::engine::decode_embedding_le(&embedding_blob) {
+                Some(v) => v,
+                None => continue,
+            };
+            if row_vec.len() != query_embedding.len() {
+                continue;
+            }
+            let sim = crate::search::cosine_similarity(&row_vec, query_embedding);
+            let dist = 1.0 - sim;
+            if dist >= distance_threshold {
+                continue;
+            }
+            let created_at: i64 = row
+                .get::<i64>(4)
+                .map_err(|e| Error::engine(format!("cache_lookup created_at: {e}")))?;
+            let simf = sim;
+            match &best {
+                Some((b, _, _, _, _, _, _)) if simf <= *b => {}
+                _ => {
+                    let id = row
+                        .get::<String>(0)
+                        .map_err(|e| Error::engine(format!("cache_lookup id: {e}")))?;
+                    let results_json = row
+                        .get::<String>(2)
+                        .map_err(|e| Error::engine(format!("cache_lookup results_json: {e}")))?;
+                    let meta_json = row
+                        .get::<String>(3)
+                        .map_err(|e| Error::engine(format!("cache_lookup meta_json: {e}")))?;
+                    let page_generations = row
+                        .get::<String>(5)
+                        .map_err(|e| Error::engine(format!("cache_lookup page_generations: {e}")))?;
+                    let max_gen = row
+                        .get::<i64>(6)
+                        .map_err(|e| Error::engine(format!("cache_lookup max_gen: {e}")))?;
+                    best = Some((
+                        simf, id, results_json, meta_json, created_at, page_generations, max_gen,
+                    ));
+                }
+            }
+        }
+
+        let (sim, id, results_json, meta_json, created_at, page_generations, max_gen) = match best {
+            Some(b) => b,
+            None => return Ok(None),
+        };
+
+        // D11 two-layer gate (fail-open: a gate failure is an invisible miss).
+        if !self
+            .d11_gate_passes_libsql(&page_generations, max_gen, &opts.source_id)
+            .await
+            .unwrap_or(false)
+        {
+            return Ok(None);
+        }
+
+        // Best-effort hit bump; failure here is non-fatal.
+        let now = crate::time::now_epoch_ms() / 1000;
+        let _ = conn
+            .execute(
+                "UPDATE query_cache SET hit_count = hit_count + 1, last_hit_at_epoch = ?1 WHERE id = ?2",
+                ::libsql::params![now, id.clone()],
+            )
+            .await;
+
+        Ok(Some(CacheHit {
+            row_id: id,
+            results_json,
+            meta_json,
+            similarity: sim,
+            age_seconds: opts.now_epoch_secs - created_at,
+        }))
+    }
+
+    /// G69-B D11 two-layer gate, resolved at the `(source_id, slug)` layer.
+    /// Recomputes `stable_hash("{source_id}::{slug}")` for each live,
+    /// non-deleted page and compares against the orchestrator's snapshot
+    /// (keyed by that same hash). Empty snapshot → accept (legacy pre-D11
+    /// carve-out, same as InMemory `d11_gate_passes`).
+    async fn d11_gate_passes_libsql(
+        &self,
+        snapshot_json: &str,
+        max_at_store: i64,
+        source_id: &str,
+    ) -> crate::Result<bool> {
+        let expected: std::collections::HashMap<i64, i64> =
+            match serde_json::from_str::<std::collections::HashMap<i64, i64>>(snapshot_json) {
+                Ok(m) => m,
+                // Malformed snapshot → treat as invalid (fail closed).
+                Err(_) => return Ok(false),
+            };
+        if expected.is_empty() {
+            return Ok(true);
+        }
+        let conn = self.conn().await?;
+        let mut rows = conn
+            .query(
+                "SELECT source_id, slug, generation FROM pages \
+                 WHERE source_id = ?1 AND deleted_at IS NULL",
+                ::libsql::params![source_id],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("d11 gate page query failed: {e}")))?;
+
+        let mut live: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("d11 gate row fetch failed: {e}")))?
+        {
+            let sid: String = row
+                .get::<String>(0)
+                .map_err(|e| Error::engine(format!("d11 gate source_id: {e}")))?;
+            let slug: String = row
+                .get::<String>(1)
+                .map_err(|e| Error::engine(format!("d11 gate slug: {e}")))?;
+            let gen: i64 = row
+                .get::<i64>(2)
+                .map_err(|e| Error::engine(format!("d11 gate generation: {e}")))?;
+            let h = crate::search::cache::stable_hash(&format!("{sid}::{slug}"));
+            live.insert(h, gen);
+        }
+
+        let mut max_live: i64 = 0;
+        for (key, exp_gen) in &expected {
+            match live.get(key) {
+                // Page missing or hard-deleted since store → invalidate.
+                None => return Ok(false),
+                Some(&live_gen) => {
+                    // A watched column was bumped past the snapshot → invalidate.
+                    if live_gen < *exp_gen {
+                        return Ok(false);
+                    }
+                    if live_gen > max_live {
+                        max_live = live_gen;
+                    }
+                }
+            }
+        }
+        // A new page extended the result set → invalidate.
+        Ok(max_live <= max_at_store)
+    }
 }
 
 #[async_trait]
@@ -1363,6 +1550,150 @@ impl BrainEngine for LibsqlEngine {
             None => Ok(None),
         }
     }
+
+    // ── G69-B: semantic query cache (libsql persistence) ──────────────
+    //
+    // Mirrors the InMemoryEngine implementation in `engine.rs` (the trait
+    // default is `Err(Unsupported)`). The D11 two-layer gate runs at the
+    // `(source_id, slug)` layer: `pages.id` is an autoincrement PK (NOT the
+    // `stable_hash` the orchestrator keys the snapshot by), so at lookup we
+    // recompute `stable_hash("{source_id}::{slug}")` for each live,
+    // non-deleted page and compare against the snapshot — exactly the
+    // InMemory `d11_gate_passes` contract, just resolved at the SQL layer.
+
+    async fn cache_lookup(
+        &self,
+        query_text: &str,
+        query_embedding: &[f32],
+        opts: &CacheLookupOpts,
+    ) -> crate::Result<Option<CacheHit>> {
+        // Fail-open: any storage / parse error is treated as a miss, mirroring
+        // TS `query-cache.ts:127-196`. The D11 gate failing also yields a miss.
+        Ok(self
+            .try_cache_lookup(query_text, query_embedding, opts)
+            .await
+            .unwrap_or(None))
+    }
+
+
+    async fn cache_store(
+        &self,
+        query_text: &str,
+        query_embedding: &[f32],
+        results_json: &str,
+        meta_json: &str,
+        opts: &CacheStoreOpts,
+    ) -> crate::Result<()> {
+        let conn = self.conn().await?;
+        let id = crate::engine::query_cache_row_id(&opts.source_id, query_text, &opts.knobs_hash);
+        let embedding = crate::engine::f32_slice_to_le_bytes(query_embedding);
+        let page_generations_json = serde_json::to_string(&opts.page_generations)
+            .map_err(|e| Error::engine(format!("cache_store page_generations encode: {e}")))?;
+
+        conn.execute(
+            "INSERT INTO query_cache (\
+                id, query_text, source_id, knobs_hash, embedding, results_json, meta_json, \
+                ttl_seconds, page_generations, max_generation_at_store, created_at_epoch, \
+                last_hit_at_epoch, hit_count\
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13) \
+            ON CONFLICT(id) DO UPDATE SET \
+                query_text = excluded.query_text, \
+                source_id = excluded.source_id, \
+                knobs_hash = excluded.knobs_hash, \
+                embedding = excluded.embedding, \
+                results_json = excluded.results_json, \
+                meta_json = excluded.meta_json, \
+                ttl_seconds = excluded.ttl_seconds, \
+                page_generations = excluded.page_generations, \
+                max_generation_at_store = excluded.max_generation_at_store, \
+                created_at_epoch = excluded.created_at_epoch",
+            ::libsql::params![
+                id,
+                query_text,
+                opts.source_id.clone(),
+                opts.knobs_hash.clone(),
+                embedding,
+                results_json,
+                meta_json,
+                opts.ttl_seconds,
+                page_generations_json,
+                opts.max_generation_at_store,
+                opts.now_epoch_secs,
+                Option::<i64>::None,
+                0i64,
+            ],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("cache_store insert failed: {e}")))?;
+        Ok(())
+    }
+
+    async fn cache_clear(&self, source_id: Option<&str>) -> crate::Result<u64> {
+        let conn = self.conn().await?;
+        let n = match source_id {
+            Some(sid) => conn
+                .execute(
+                    "DELETE FROM query_cache WHERE source_id = ?1",
+                    ::libsql::params![sid],
+                )
+                .await
+                .map_err(|e| Error::engine(format!("cache_clear failed: {e}")))?,
+            None => conn
+                .execute("DELETE FROM query_cache", ())
+                .await
+                .map_err(|e| Error::engine(format!("cache_clear failed: {e}")))?,
+        };
+        Ok(n)
+    }
+
+    async fn cache_prune(&self, now_epoch_secs: i64) -> crate::Result<u64> {
+        let conn = self.conn().await?;
+        let n = conn
+            .execute(
+                "DELETE FROM query_cache WHERE created_at_epoch + ttl_seconds <= ?1",
+                ::libsql::params![now_epoch_secs],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("cache_prune failed: {e}")))?;
+        Ok(n)
+    }
+
+    async fn cache_stats(&self) -> crate::Result<CacheStatsRow> {
+        let conn = self.conn().await?;
+        let now = crate::time::now_epoch_ms() / 1000;
+        let mut rows = conn
+            .query(
+                "SELECT COUNT(*), COALESCE(SUM(hit_count), 0), \
+                        COALESCE(SUM(CASE WHEN created_at_epoch + ttl_seconds > ?1 THEN 1 ELSE 0 END), 0), \
+                        COALESCE(SUM(CASE WHEN created_at_epoch + ttl_seconds <= ?1 THEN 1 ELSE 0 END), 0) \
+                 FROM query_cache",
+                ::libsql::params![now],
+            )
+            .await
+            .map_err(|e| Error::engine(format!("cache_stats failed: {e}")))?;
+        match rows
+            .next()
+            .await
+            .map_err(|e| Error::engine(format!("cache_stats row fetch failed: {e}")))?
+        {
+            Some(row) => Ok(CacheStatsRow {
+                total_rows: row
+                    .get::<i64>(0)
+                    .map_err(|e| Error::engine(format!("cache_stats total_rows: {e}")))?,
+                total_hits: row
+                    .get::<i64>(1)
+                    .map_err(|e| Error::engine(format!("cache_stats total_hits: {e}")))?,
+                fresh_rows: row
+                    .get::<i64>(2)
+                    .map_err(|e| Error::engine(format!("cache_stats fresh_rows: {e}")))?,
+                stale_rows: row
+                    .get::<i64>(3)
+                    .map_err(|e| Error::engine(format!("cache_stats stale_rows: {e}")))?,
+            }),
+            None => Ok(CacheStatsRow::default()),
+        }
+    }
+
 
     async fn put_page(
         &self,

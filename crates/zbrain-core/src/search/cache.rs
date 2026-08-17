@@ -284,7 +284,11 @@ async fn try_store(
 /// acceptable — the gate only requires that the per-key
 /// generation value is correctly associated, and the source
 /// scope is part of the row PK anyway.
-fn stable_hash(s: &str) -> i64 {
+/// Stable 64-bit hash of a string (FNV-1a 64). Exposed as `pub` so the
+/// libsql `cache_lookup` D11 gate can recompute the same `(source_id, slug)`
+/// → key the orchestrator uses when keying `page_generations`, keeping the
+/// two backends' snapshot semantics byte-identical.
+pub fn stable_hash(s: &str) -> i64 {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in s.as_bytes() {
         h ^= *b as u64;
