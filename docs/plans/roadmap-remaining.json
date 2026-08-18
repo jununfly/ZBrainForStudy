@@ -1,6 +1,6 @@
 {
   "title": "ZBrain 迁移收尾地图 — 未完成事项（single source of truth）",
-  "description": "TS→Rust 迁移以命令级完成为终点（Grilling Q1b, 2026-08-16）。本文件是未完成事项的实时索引（zj-roadmap-driven 格式），对应长期文档 docs/plans/MIGRATION.md §4。54 叶 = 48 open + 6 blocked。",
+  "description": "TS→Rust 迁移以命令级完成为终点（Grilling Q1b, 2026-08-16）。本文件是未完成事项的实时索引（zj-roadmap-driven 格式），对应长期文档 docs/plans/MIGRATION.md §4。64 叶 = 59 open + 5 blocked。",
   "version": 1,
   "nodes": {
     "1": {
@@ -240,6 +240,62 @@
       "status": "open",
       "mode": "exploit",
       "parent": "1-3",
+      "children": [
+        "1-3-1-1",
+        "1-3-1-2",
+        "1-3-1-3",
+        "1-3-1-4",
+        "1-3-1-5"
+      ],
+      "decisions": [],
+      "notes": "registered in docs/plans/MIGRATION.md (G35)"
+    },
+    "1-3-1-1": {
+      "id": "1-3-1-1",
+      "label": "G35a: facts MCP op extract_facts 未移植",
+      "status": "open",
+      "mode": "exploit",
+      "parent": "1-3-1",
+      "children": [],
+      "decisions": [],
+      "notes": "registered in docs/plans/MIGRATION.md (G35)"
+    },
+    "1-3-1-2": {
+      "id": "1-3-1-2",
+      "label": "G35b: facts MCP op recall 未移植",
+      "status": "open",
+      "mode": "exploit",
+      "parent": "1-3-1",
+      "children": [],
+      "decisions": [],
+      "notes": "registered in docs/plans/MIGRATION.md (G35)"
+    },
+    "1-3-1-3": {
+      "id": "1-3-1-3",
+      "label": "G35c: facts MCP op forget_fact 未移植",
+      "status": "open",
+      "mode": "exploit",
+      "parent": "1-3-1",
+      "children": [],
+      "decisions": [],
+      "notes": "registered in docs/plans/MIGRATION.md (G35)"
+    },
+    "1-3-1-4": {
+      "id": "1-3-1-4",
+      "label": "G35d: facts MCP op anti-loop 未移植",
+      "status": "open",
+      "mode": "exploit",
+      "parent": "1-3-1",
+      "children": [],
+      "decisions": [],
+      "notes": "registered in docs/plans/MIGRATION.md (G35)"
+    },
+    "1-3-1-5": {
+      "id": "1-3-1-5",
+      "label": "G35e: facts MCP op backstop 未移植",
+      "status": "open",
+      "mode": "exploit",
+      "parent": "1-3-1",
       "children": [],
       "decisions": [],
       "notes": "registered in docs/plans/MIGRATION.md (G35)"
@@ -260,6 +316,29 @@
       "status": "open",
       "mode": "exploit",
       "parent": "1-3",
+      "children": [
+        "1-3-3-1",
+        "1-3-3-2"
+      ],
+      "decisions": [],
+      "notes": "registered in docs/plans/MIGRATION.md (G54)"
+    },
+    "1-3-3-1": {
+      "id": "1-3-3-1",
+      "label": "G54a: facts 自动抽取子系统缺失（extract_facts phase 触发自动抽取 + 注入）",
+      "status": "open",
+      "mode": "exploit",
+      "parent": "1-3-3",
+      "children": [],
+      "decisions": [],
+      "notes": "registered in docs/plans/MIGRATION.md (G54)"
+    },
+    "1-3-3-2": {
+      "id": "1-3-3-2",
+      "label": "G54b: hot-memory `_meta` 注入子系统缺失（与 G32/1-7-3 同义，依赖 G35）",
+      "status": "open",
+      "mode": "exploit",
+      "parent": "1-3-3",
       "children": [],
       "decisions": [],
       "notes": "registered in docs/plans/MIGRATION.md (G54)"
@@ -578,6 +657,40 @@
       "status": "open",
       "mode": "exploit",
       "parent": "1-6",
+      "children": [
+        "1-6-5-1",
+        "1-6-5-2",
+        "1-6-5-3"
+      ],
+      "decisions": [],
+      "notes": "registered in docs/plans/MIGRATION.md (G51)"
+    },
+    "1-6-5-1": {
+      "id": "1-6-5-1",
+      "label": "G51a: integrity auto 子命令未迁",
+      "status": "open",
+      "mode": "exploit",
+      "parent": "1-6-5",
+      "children": [],
+      "decisions": [],
+      "notes": "registered in docs/plans/MIGRATION.md (G51)"
+    },
+    "1-6-5-2": {
+      "id": "1-6-5-2",
+      "label": "G51b: integrity review 子命令未迁",
+      "status": "open",
+      "mode": "exploit",
+      "parent": "1-6-5",
+      "children": [],
+      "decisions": [],
+      "notes": "registered in docs/plans/MIGRATION.md (G51)"
+    },
+    "1-6-5-3": {
+      "id": "1-6-5-3",
+      "label": "G51c: integrity reset-progress 子命令未迁",
+      "status": "open",
+      "mode": "exploit",
+      "parent": "1-6-5",
       "children": [],
       "decisions": [],
       "notes": "registered in docs/plans/MIGRATION.md (G51)"
@@ -648,6 +761,29 @@
       "status": "open",
       "mode": "exploit",
       "parent": "1-6",
+      "children": [
+        "1-6-12-1",
+        "1-6-12-2"
+      ],
+      "decisions": [],
+      "notes": "registered in docs/plans/MIGRATION.md (G74)"
+    },
+    "1-6-12-1": {
+      "id": "1-6-12-1",
+      "label": "G74a: eval 评测族 CLI 出口框架（clap verb + dispatch + run_ 骨架 + 参数/配置读取）",
+      "status": "open",
+      "mode": "exploit",
+      "parent": "1-6-12",
+      "children": [],
+      "decisions": [],
+      "notes": "registered in docs/plans/MIGRATION.md (G74)"
+    },
+    "1-6-12-2": {
+      "id": "1-6-12-2",
+      "label": "G74b: eval 评测族 非 LLM 子命令逐个接线（B 类；对账 TS 源，去重 G74b 已解决部分）",
+      "status": "open",
+      "mode": "exploit",
+      "parent": "1-6-12",
       "children": [],
       "decisions": [],
       "notes": "registered in docs/plans/MIGRATION.md (G74)"
