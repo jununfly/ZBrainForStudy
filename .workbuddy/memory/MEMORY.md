@@ -9,6 +9,7 @@
 ## 构建环境（Windows 本机，WSL 不可用）
 - 【关键】cargo 在 Bash 工具里静默 EXIT=0 零输出（WorkBuddy Bash/Git Bash 吞 stdout/stderr）。一律用 PowerShell 工具跑 cargo（同一 cargo.exe）。`cargo --version` 等正常，但 build/test 会被吞——别信 Bash 里 cargo 的"成功"。
 - Windows 构建/链接：独立 `CARGO_TARGET_DIR=C:/Users/<u>/AppData/Local/Temp/zb_targetN`（Windows 绝对路径）+ `RUSTFLAGS="-C linker=C:/PROGRA~1/LLVM/bin/lld-link.exe"`（LLVM CLI 兼容 MSVC，复用 warm cache）。MSVC `link.exe` 被监视器杀（0xc0000142）→ lld-link 绕过。
+- 【关键】PowerShell 后台/前台跑 cargo 并把输出落盘日志时，`Out-File` 编码名**必须用 `-Encoding unicode`**（= UTF-16 LE 带 BOM），**绝对不能写 `utf16`**——本机 PowerShell 的合法集合是 `unicode/utf8/utf7/utf32/ascii/...`，没有 `utf16`，写错会 `ParameterBindingValidationException` 让整条管道静默失败（`cargo` 根本没执行，无日志、无完成通知，表现为"假启动"）。读日志：`python -c "open(p,'rb').read().decode('utf-16-le')"`。
 - `cargo check` 不编 #[cfg(test)]；改测试代码必须真跑 `cargo test`。libsql FFI Windows 间歇 0xc0000005（代码层无解）→ 集成测试降频 + CI 跑 ubuntu。workspace forbid(unsafe)（Linux 用 /proc 纯 std）。测试临时目录加 AtomicU32 序号防并行互删。
 
 ## Git / 沙箱铁律
