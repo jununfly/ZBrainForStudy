@@ -147,6 +147,7 @@ pub async fn hybrid_search(
             disable_salience_boost: opts.disable_salience_boost,
             disable_recency_boost: opts.disable_recency_boost,
             rrf_k: opts.rrf_k,
+            embedding_column: opts.embedding_column.clone(),
             ..Default::default()
         })
         .await?;

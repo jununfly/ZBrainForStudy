@@ -144,6 +144,7 @@ pub async fn import_one_path(
             chunk_text: chunk.text,
             chunk_source: ChunkSource::CompiledTruth,
             embedding: None,
+            embedding_multimodal: None,
             language: None,
             symbol_name: None,
             symbol_type: None,

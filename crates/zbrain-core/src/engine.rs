@@ -169,6 +169,13 @@ pub struct Page {
     /// array vs f16 vs other) is deferred to slice 6e per C4; this slice
     /// only carries the column.
     pub embedding: Option<Vec<u8>>,
+    /// Multimodal vector embedding bytes (page-level mean-pool of
+    /// `content_chunks.embedding_multimodal`, G70). `None` until
+    /// `reindex multimodal` / the embedding worker backfills it. Selected
+    /// by `SearchOpts.embedding_column` / `HybridSearchOpts.embedding_column`
+    /// so the main search can retrieve against the multimodal space instead
+    /// of the default text `embedding`.
+    pub embedding_multimodal: Option<Vec<u8>>,
 
     // ── chunker + source path ───────────────────────────────────────────
     /// Chunker generation marker (`NOT NULL DEFAULT 1`). Bumped when the
@@ -486,6 +493,12 @@ pub struct SearchOpts {
     /// `rrf_fuse` so `zbrain eval --rrf-k` can re-rank without recompiling
     /// (KNOWN-GAPS G74b). Mirrors the TS `eval` `--rrf-k` knob.
     pub rrf_k: Option<f64>,
+    /// G70 — resolved embedding column for the vector-retrieval path.
+    /// `None` (or `"embedding"` / `"default"`) uses the default text
+    /// `Page::embedding`; `"embedding_multimodal"` retrieves against the
+    /// multimodal page vector. Validated by `validate_embedding_column`
+    /// (D12 layer 1) before use. Mirrors TS `resolveEmbeddingColumn`.
+    pub embedding_column: Option<String>,
 }
 
 /// Reciprocal Rank Fusion constant. Mirrors `RRF_K` at
@@ -1429,18 +1442,21 @@ pub(crate) fn decode_f32_blob(blob: &[u8]) -> Option<Vec<f32>> {
 
 /// Validate + return the embedding column name (D12 layer 1). Only
 /// `[a-zA-Z_][a-zA-Z0-9_]*` names are accepted; the caller must identifier-
-/// quote before interpolation (layer 2). Currently only `embedding` exists
-/// in the Rust `content_chunks` schema.
+/// quote before interpolation (layer 2). The Rust `pages` schema carries two
+/// searchable vector columns: `embedding` (default text space) and
+/// `embedding_multimodal` (G70 multimodal space, populated by
+/// `reindex multimodal`).
 pub(crate) fn validate_embedding_column(column: Option<&str>) -> crate::Result<String> {
     let column = column.unwrap_or("embedding");
     let valid = !column.is_empty()
         && column
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_')
-        && !column.starts_with(|c: char| c.is_ascii_digit());
+        && !column.starts_with(|c: char| c.is_ascii_digit())
+        && (column == "embedding" || column == "embedding_multimodal");
     if !valid {
         return Err(crate::Error::engine(format!(
-            "invalid embedding column name: {column} (must match ^[a-zA-Z_][a-zA-Z0-9_]*$)"
+            "invalid embedding column name: {column} (must be 'embedding' or 'embedding_multimodal')"
         )));
     }
     Ok(column.to_string())
@@ -2340,11 +2356,16 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
     /// need an implementation because their `content_chunks` table stores
     /// the embedding column for chunks when `search.unified_multimodal` is enabled.
     /// Postgres stores the embedding but vector search is not yet implemented.
+    /// `column` selects which embedding space to score against (G70):
+    /// `None`/`"embedding"` uses the text vectors; `"embedding_multimodal"`
+    /// uses the multimodal vectors (fixes the `search_by_image` dimension
+    /// mismatch where an image query was scored against text page vectors).
     async fn search_pages_by_embedding(
         &self,
         _query_embedding: &[f32],
         _limit: usize,
         _source_id: Option<&str>,
+        _column: Option<&str>,
     ) -> crate::Result<Vec<Page>> {
         Ok(Vec::new())
     }
@@ -4227,6 +4248,24 @@ pub trait BrainEngine: Send + Sync + std::fmt::Debug {
         ))
     }
 
+    /// G70 — surgically write the page-level multimodal embedding
+    /// (`embedding_multimodal`, mean-pool of `content_chunks.embedding_multimodal`)
+    /// without touching other columns. Mirrors `put_page_embedding` but for the
+    /// multimodal space. Defaults to `Err(Unsupported)`; implemented by the
+    /// SQL backends (libsql / postgres) and the InMemory engine.
+    async fn put_page_multimodal_embedding(
+        &self,
+        _slug: &str,
+        _source_id: &str,
+        _embedding: Vec<u8>,
+    ) -> crate::Result<()> {
+        Err(crate::error::StructuredError::new(
+            "Unsupported",
+            "unsupported",
+            "put_page_multimodal_embedding not yet implemented for this engine",
+        ))
+    }
+
     /// Surgically write a chunk-level embedding for one chunk of a page
     /// (identified by `chunk_index`) without touching any other column.
     /// Used by `reindex code` to refresh code-chunk vectors after re-chunking.
@@ -5659,6 +5698,7 @@ impl BrainEngine for InMemoryEngine {
             // PG `BIGINT DEFAULT 1` — fresh rows start at generation 1, not 0.
             generation: 1,
             embedding: input.embedding.clone(),
+            embedding_multimodal: None,
             // PG `INT NOT NULL DEFAULT 1` — fresh rows start at chunker v1
             // unless the caller pins an explicit version.
             chunker_version: input.chunker_version.unwrap_or(1),
@@ -6226,6 +6266,24 @@ impl BrainEngine for InMemoryEngine {
                 .collect()
         }; // store lock dropped here
 
+        // G70 — if a non-default embedding column was requested, swap that
+        // vector into `embedding` so the shared `fuse_and_boost` fusion and the
+        // G67 cosine re-score read the intended space without further branching.
+        let column = validate_embedding_column(opts.embedding_column.as_deref()).ok();
+        let candidates: Vec<Page> = if column.as_deref() == Some("embedding_multimodal") {
+            candidates
+                .into_iter()
+                .map(|mut p| {
+                    if p.embedding_multimodal.is_some() {
+                        p.embedding = p.embedding_multimodal.take();
+                    }
+                    p
+                })
+                .collect()
+        } else {
+            candidates
+        };
+
         fuse_and_boost(self, &candidates, opts).await
     }
 
@@ -6234,9 +6292,16 @@ impl BrainEngine for InMemoryEngine {
         query_embedding: &[f32],
         limit: usize,
         source_id: Option<&str>,
+        column: Option<&str>,
     ) -> crate::Result<Vec<Page>> {
         let store = self.store.lock().expect("InMemoryEngine store mutex poisoned");
         let chunk_store = self.chunk_store.lock().expect("InMemoryEngine chunk_store mutex poisoned");
+
+        // G70 — select the embedding space (text vs multimodal). An invalid
+        // column name gracefully falls back to the text `embedding`.
+        let use_multimodal = validate_embedding_column(column)
+            .map(|c| c == "embedding_multimodal")
+            .unwrap_or(false);
 
         // Score each live page by its best chunk embedding similarity.
         let mut scored: Vec<(Page, f64)> = Vec::new();
@@ -6254,7 +6319,13 @@ impl BrainEngine for InMemoryEngine {
                 .map(|chunks| {
                     chunks
                         .iter()
-                        .filter_map(|c| c.embedding.as_deref())
+                        .filter_map(|c| {
+                            if use_multimodal {
+                                c.embedding_multimodal.as_deref()
+                            } else {
+                                c.embedding.as_deref()
+                            }
+                        })
                         .map(|emb| cosine_similarity(query_embedding, emb))
                         .fold(0.0_f64, f64::max)
                 })
@@ -10671,6 +10742,7 @@ mod tests {
             salience_score: None,
             generation: 1,
             embedding: None,
+            embedding_multimodal: None,
             chunker_version: 1,
             source_path: None,
             source_id: "default".to_string(),
@@ -12964,6 +13036,7 @@ mod domain_bank_inmem_tests {
                     chunk_text: format!("chunk {chunk_index}"),
                     chunk_source: ChunkSource::CompiledTruth,
                     embedding,
+                    embedding_multimodal: None,
                     token_count: None,
                     language: None,
                     symbol_name: None,

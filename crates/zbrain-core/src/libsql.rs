@@ -35,7 +35,8 @@ use crate::oauth_queries::{
     UpdateClientTtlResponse,
 };
 use crate::engine::{
-    fuse_and_boost, page_sort_sql, BrainEngine, CacheHit, CacheLookupOpts, CacheStatsRow,
+    fuse_and_boost, page_sort_sql, validate_embedding_column, BrainEngine, CacheHit, CacheLookupOpts,
+    CacheStatsRow,
     CacheStoreOpts, CreateSourceInput, DreamVerdict,
     DreamVerdictInput, EngineConfig, EvalCandidate, EvalCandidateFilter, EngineKind, EmotionalInput,
     EmotionalWeightTake,
@@ -169,6 +170,9 @@ const MIGRATION_0036: &str = include_str!("../migrations-sqlite/0036_content_chu
 /// G69-B (1-5-17): persistent semantic query cache table. See
 /// `migrations-sqlite/0037_query_cache.sql` for the column contract.
 const MIGRATION_0037: &str = include_str!("../migrations-sqlite/0037_query_cache.sql");
+/// G70 (1-4-5): add `pages.embedding_multimodal` for page-level multimodal
+/// (image) vector retrieval, mirroring `content_chunks.embedding_multimodal`.
+const MIGRATION_0038: &str = include_str!("../migrations-sqlite/0038_pages_embedding_multimodal.sql");
 
 /// Legacy string array — REMOVED in favor of MigrationRegistry.
 /// Use LIBQL_MIGRATIONS instead.
@@ -379,6 +383,11 @@ pub static LIBQL_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         version: 37,
         name: "query_cache",
         sql: MIGRATION_0037,
+    }));
+    registry.add(Box::new(LibsqlMigration {
+        version: 38,
+        name: "pages_embedding_multimodal",
+        sql: MIGRATION_0038,
     }));
 
     registry
@@ -1528,8 +1537,8 @@ impl BrainEngine for LibsqlEngine {
                         deleted_at, last_retrieved_at, effective_date, effective_date_source, \
                         import_filename, salience_touched_at, salience_score, generation, \
                         embedding, chunker_version, source_path, source_id, source_kind, \
-                        source_uri, ingested_via, ingested_at, contextual_retrieval_mode, \
-                        corpus_generation \
+                        source_uri,                         ingested_via, ingested_at, contextual_retrieval_mode, \
+                        corpus_generation, embedding_multimodal \
                  FROM pages \
                  WHERE slug = ?1 \
                    AND (?2 IS NULL OR source_id = ?2) \
@@ -1787,8 +1796,8 @@ impl BrainEngine for LibsqlEngine {
                 deleted_at, last_retrieved_at, effective_date, effective_date_source, \
                 import_filename, salience_touched_at, salience_score, generation, \
                 embedding, chunker_version, source_path, source_id, source_kind, \
-                source_uri, ingested_via, ingested_at, contextual_retrieval_mode, \
-                corpus_generation";
+                source_uri,                 ingested_via, ingested_at, contextual_retrieval_mode, \
+                corpus_generation, embedding_multimodal";
 
         let now = current_utc_iso8601();
         let mut rows = conn
@@ -1864,7 +1873,7 @@ impl BrainEngine for LibsqlEngine {
                        p.salience_touched_at, p.salience_score, p.generation, p.embedding, \
                        p.chunker_version, p.source_path, p.source_id, p.source_kind, \
                        p.source_uri, p.ingested_via, p.ingested_at, \
-                       p.contextual_retrieval_mode, p.corpus_generation \
+                       p.contextual_retrieval_mode, p.corpus_generation, p.embedding_multimodal \
                        FROM pages AS p"
             .to_owned();
 
@@ -2069,8 +2078,8 @@ impl BrainEngine for LibsqlEngine {
                         deleted_at, last_retrieved_at, effective_date, effective_date_source, \
                         import_filename, salience_touched_at, salience_score, generation, \
                         embedding, chunker_version, source_path, source_id, source_kind, \
-                        source_uri, ingested_via, ingested_at, contextual_retrieval_mode, \
-                        corpus_generation \
+                        source_uri,                         ingested_via, ingested_at, contextual_retrieval_mode, \
+                        corpus_generation, embedding_multimodal \
                  FROM pages \
                  WHERE deleted_at IS NULL AND embedding IS NULL \
                  ORDER BY slug",
@@ -2106,6 +2115,22 @@ impl BrainEngine for LibsqlEngine {
         )
         .await
         .map_err(|e| Error::engine(format!("put_page_embedding failed: {e}")))?;
+        Ok(())
+    }
+
+    async fn put_page_multimodal_embedding(
+        &self,
+        slug: &str,
+        source_id: &str,
+        embedding: Vec<u8>,
+    ) -> Result<()> {
+        let conn = self.conn().await?;
+        conn.execute(
+            "UPDATE pages SET embedding_multimodal = ? WHERE slug = ? AND source_id = ? AND deleted_at IS NULL",
+            ::libsql::params![embedding, slug, source_id],
+        )
+        .await
+        .map_err(|e| Error::engine(format!("put_page_multimodal_embedding failed: {e}")))?;
         Ok(())
     }
 
@@ -2219,8 +2244,8 @@ impl BrainEngine for LibsqlEngine {
                         deleted_at, last_retrieved_at, effective_date, effective_date_source, \
                         import_filename, salience_touched_at, salience_score, generation, \
                         embedding, chunker_version, source_path, source_id, source_kind, \
-                        source_uri, ingested_via, ingested_at, contextual_retrieval_mode, \
-                        corpus_generation \
+                        source_uri,                         ingested_via, ingested_at, contextual_retrieval_mode, \
+                        corpus_generation, embedding_multimodal \
                  FROM pages \
                  WHERE deleted_at IS NULL \
                    AND (?1 IS NULL OR source_id = ?1)",
@@ -2241,6 +2266,26 @@ impl BrainEngine for LibsqlEngine {
             }
         }
 
+        // G70 — if a non-default embedding column was requested, swap that
+        // vector into `embedding` so the shared `fuse_and_boost` fusion and the
+        // G67 cosine re-score read the intended space without further branching.
+        let candidates: Vec<Page> = if validate_embedding_column(opts.embedding_column.as_deref())
+            .map(|c| c == "embedding_multimodal")
+            .unwrap_or(false)
+        {
+            candidates
+                .into_iter()
+                .map(|mut p| {
+                    if p.embedding_multimodal.is_some() {
+                        p.embedding = p.embedding_multimodal.take();
+                    }
+                    p
+                })
+                .collect()
+        } else {
+            candidates
+        };
+
         fuse_and_boost(self, &candidates, opts).await
     }
 
@@ -2249,11 +2294,20 @@ impl BrainEngine for LibsqlEngine {
         query_embedding: &[f32],
         limit: usize,
         source_id: Option<&str>,
+        column: Option<&str>,
     ) -> Result<Vec<Page>> {
-        use crate::engine::{cosine_similarity, decode_embedding_le};
+        use crate::engine::{cosine_similarity, decode_embedding_le, validate_embedding_column};
 
         let conn = self.conn().await?;
         let source_id_param = source_id;
+
+        // G70 — resolve the requested embedding column; default to text `embedding`.
+        // The per-row vector selection (text vs multimodal) happens below in Rust,
+        // so the literal projection (both columns) and the `embedding IS NOT NULL`
+        // filter remain valid; pages missing the selected vector are skipped.
+        let use_multimodal = validate_embedding_column(column)
+            .map(|c| c == "embedding_multimodal")
+            .unwrap_or(false);
 
         // Fetch all live pages with non-null embeddings, optionally source-scoped.
         let mut rows = conn
@@ -2263,8 +2317,8 @@ impl BrainEngine for LibsqlEngine {
                         deleted_at, last_retrieved_at, effective_date, effective_date_source, \
                         import_filename, salience_touched_at, salience_score, generation, \
                         embedding, chunker_version, source_path, source_id, source_kind, \
-                        source_uri, ingested_via, ingested_at, contextual_retrieval_mode, \
-                        corpus_generation \
+                        source_uri,                         ingested_via, ingested_at, contextual_retrieval_mode, \
+                        corpus_generation, embedding_multimodal \
                  FROM pages \
                  WHERE embedding IS NOT NULL \
                    AND deleted_at IS NULL \
@@ -2284,10 +2338,18 @@ impl BrainEngine for LibsqlEngine {
             match next {
                 Some(row) => {
                     let page = full_row_to_page(&row)?;
-                    let score = page
-                        .embedding
-                        .as_deref()
-                        .and_then(decode_embedding_le)
+                    // G70 — select the requested vector space; skip pages that
+                    // lack it (e.g. a page without a multimodal vector when the
+                    // multimodal column was requested).
+                    let vec = if use_multimodal {
+                        page.embedding_multimodal.as_deref()
+                    } else {
+                        page.embedding.as_deref()
+                    };
+                    let Some(vec) = vec else {
+                        continue;
+                    };
+                    let score = decode_embedding_le(vec)
                         .map(|emb| cosine_similarity(query_embedding, &emb))
                         .unwrap_or(0.0);
                     scored.push((page, score));
@@ -10425,6 +10487,8 @@ fn full_row_to_page(row: &::libsql::Row) -> Result<Page> {
     let ingested_at = get_col!(27, "ingested_at", Option<String>);
     let contextual_retrieval_mode_raw = get_col!(28, "contextual_retrieval_mode", Option<String>);
     let corpus_generation = get_col!(29, "corpus_generation", Option<String>);
+    // G70 — page-level multimodal vector (mean-pool of chunk multimodal).
+    let embedding_multimodal = get_col!(30, "embedding_multimodal", Option<Vec<u8>>);
 
     let page_kind = decode_page_kind(&page_kind_str)?;
     let id_u64 = u64::try_from(id)
@@ -10474,6 +10538,7 @@ fn full_row_to_page(row: &::libsql::Row) -> Result<Page> {
         ingested_at,
         contextual_retrieval_mode,
         corpus_generation,
+        embedding_multimodal,
     })
 }
 

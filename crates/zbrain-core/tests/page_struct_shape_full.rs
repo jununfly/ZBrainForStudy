@@ -73,6 +73,7 @@ fn page_struct_has_all_30_fields_including_s5_additions() {
         generation: 3,
         // embedding: vector blob. Encoding deferred to slice 6e (C4).
         embedding: Some(vec![0x00, 0x01, 0x02, 0x03]),
+        embedding_multimodal: None,
 
         // ── chunker + source path (NEW IN S5) ──────────────────────────
         chunker_version: 2,

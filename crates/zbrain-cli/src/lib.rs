@@ -32,6 +32,7 @@ use zbrain_core::ai::chat::ChatProvider;
 use zbrain_core::ai::expand::{expand_query, ChatExpansionProvider, ExpansionProvider};
 use zbrain_core::embedding::EmbeddingClient;
 use zbrain_core::engine::BrainEngine;
+use zbrain_core::libsql::LibsqlEngine;
 use zbrain_core::eval::brainstorm::orchestrator::{
     BRAINSTORM_PROFILE, BrainstormProfile, LSD_PROFILE, ResumeOverrides,
 };
@@ -4277,6 +4278,13 @@ pub struct QueryArgs {
     /// `StatsWindow` enum in `zbrain-core/src/search/telemetry.rs`.
     #[arg(long, default_value = "day", requires = "stats")]
     pub stats_window: Option<String>,
+
+    /// G70 — embedding column for the vector-retrieval path. `embedding`
+    /// (default) scores against the text page vectors; `embedding_multimodal`
+    /// scores against the multimodal (image) page vectors. Falls back to the
+    /// `search.embedding_column` config key when omitted.
+    #[arg(long)]
+    pub embedding_column: Option<String>,
 }
 
 /// Arguments for `zbrain init` command.
@@ -6310,6 +6318,15 @@ async fn run_reindex_multimodal(
         .and_then(|v| v.as_i64())
         .unwrap_or(0);
 
+    // G70 — backfill page-level multimodal vectors by mean-pooling each page's
+    // chunk multimodal embeddings. Done after the chunk loop so every touched
+    // page ends up with `pages.embedding_multimodal`, which the hybrid search
+    // path reads when `embedding_column = "embedding_multimodal"`. Recomputed
+    // from stored chunk vectors, so it is correct regardless of `--limit`.
+    if let Err(e) = backfill_page_multimodal_embeddings(&engine).await {
+        eprintln!("reindex multimodal: page-level backfill failed: {e}");
+    }
+
     engine.disconnect().await?;
 
     if args.json {
@@ -6331,6 +6348,142 @@ async fn run_reindex_multimodal(
         );
     }
     Ok(())
+}
+
+/// G70 — mean-pool each page's chunk multimodal embeddings into
+/// `pages.embedding_multimodal`. Called by `reindex multimodal` after the
+/// chunk vectors are written. Recomputed from the stored chunk vectors (not
+/// just the chunks embedded in the current run), so it stays correct even when
+/// `--limit` splits a page's chunks across batches.
+async fn backfill_page_multimodal_embeddings(engine: &LibsqlEngine) -> anyhow::Result<()> {
+    // Pages that have at least one multimodal chunk.
+    let pages = engine
+        .execute_raw(
+            "SELECT DISTINCT p.slug AS slug, p.source_id AS source_id \
+             FROM content_chunks c JOIN pages p ON p.id = c.page_id \
+             WHERE c.embedding_multimodal IS NOT NULL",
+            &[],
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("list multimodal pages: {e}"))?;
+
+    let mut backfilled: usize = 0;
+    for page in &pages {
+        let slug = match page.get("slug").and_then(|v| v.as_str()) {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        let source_id = match page.get("source_id").and_then(|v| v.as_str()) {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        // D12: slug/source_id originate from our own DB; escape single quotes
+        // before inlining (execute_raw here only accepts `&[]`).
+        let slug_q = slug.replace('\'', "''");
+        let source_q = source_id.replace('\'', "''");
+        let chunk_rows = engine
+            .execute_raw(
+                &format!(
+                    "SELECT embedding_multimodal FROM content_chunks \
+                     WHERE page_id = (SELECT id FROM pages WHERE slug = '{slug_q}' AND source_id = '{source_q}') \
+                       AND embedding_multimodal IS NOT NULL ORDER BY chunk_index"
+                ),
+                &[],
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("read chunk multimodal for {slug}: {e}"))?;
+
+        let mut vectors: Vec<Vec<f32>> = Vec::new();
+        for cr in &chunk_rows {
+            if let Some(val) = cr.get("embedding_multimodal") {
+                if let Some(blob) = blob_to_bytes(val) {
+                    if let Some(v) = decode_f32_le(&blob) {
+                        vectors.push(v);
+                    }
+                }
+            }
+        }
+        if vectors.is_empty() {
+            continue;
+        }
+        let pooled = mean_pool_vectors(&vectors);
+        let bytes = encode_f32_le(&pooled);
+        engine
+            .put_page_multimodal_embedding(&slug, &source_id, bytes)
+            .await
+            .map_err(|e| anyhow::anyhow!("write page multimodal for {slug}: {e}"))?;
+        backfilled += 1;
+    }
+
+    if backfilled > 0 {
+        println!("reindex multimodal: backfilled page-level multimodal vectors for {backfilled} pages");
+    }
+    Ok(())
+}
+
+/// Reconstruct a `Vec<u8>` BLOB from the JSON-array encoding that `execute_raw`
+/// uses for SQLite BLOB columns (each byte becomes a JSON number 0–255).
+fn blob_to_bytes(v: &serde_json::Value) -> Option<Vec<u8>> {
+    match v {
+        serde_json::Value::Array(arr) => {
+            let mut out = Vec::with_capacity(arr.len());
+            for x in arr {
+                match x.as_u64() {
+                    Some(n) if n <= 255 => out.push(n as u8),
+                    _ => return None,
+                }
+            }
+            Some(out)
+        }
+        _ => None,
+    }
+}
+
+/// Element-wise mean of equal-length `f32` vectors (dims are validated).
+fn mean_pool_vectors(vectors: &[Vec<f32>]) -> Vec<f32> {
+    if vectors.is_empty() {
+        return Vec::new();
+    }
+    let dim = vectors[0].len();
+    let mut acc = vec![0.0f64; dim];
+    let mut count = 0usize;
+    for v in vectors {
+        if v.len() != dim {
+            continue;
+        }
+        for (i, x) in v.iter().enumerate() {
+            acc[i] += *x as f64;
+        }
+        count += 1;
+    }
+    if count == 0 {
+        return Vec::new();
+    }
+    acc.iter().map(|s| (s / count as f64) as f32).collect()
+}
+
+/// G70 — little-endian `f32` BLOB decode. Mirrors
+/// `zbrain_core::engine::decode_embedding_le`, duplicated here because that
+/// helper is crate-private (not exported to this binary).
+fn decode_f32_le(bytes: &[u8]) -> Option<Vec<f32>> {
+    if bytes.is_empty() || bytes.len() % 4 != 0 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(bytes.len() / 4);
+    for chunk in bytes.chunks_exact(4) {
+        out.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+    }
+    Some(out)
+}
+
+/// G70 — little-endian `f32` vector -> BLOB encode. Mirrors
+/// `zbrain_core::engine::encode_embedding_le`.
+fn encode_f32_le(vec: &[f32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(vec.len() * 4);
+    for f in vec {
+        out.extend_from_slice(&f.to_le_bytes());
+    }
+    out
 }
 
 /// Execute `zbrain code-refs` command.
@@ -7095,11 +7248,20 @@ async fn run_query_command(args: QueryArgs, config_path: Option<&Path>, timeout_
     let query = args.query.as_deref().ok_or_else(|| {
         anyhow::anyhow!("query text is required unless --stats is set")
     })?;
+    // G70 — resolve the embedding column: explicit `--embedding-column` wins;
+    // otherwise fall back to the `search.embedding_column` config default.
+    // A missing/invalid config is non-fatal (the engine defaults to text).
+    let config = config::load_config(config_path).ok();
+    let embedding_column = args
+        .embedding_column
+        .clone()
+        .or_else(|| config.and_then(|c| c.search.embedding_column.clone()));
     let params = serde_json::json!({
         "query": query,
         "limit": args.limit,
         "offset": args.offset,
         "source_id": args.source_id,
+        "embedding_column": embedding_column,
     });
 
     let output = run_operation("query", params, config_path, timeout_ms).await?;

@@ -333,13 +333,13 @@
     },
     "1-4-5": {
       "id": "1-4-5",
-      "label": "G70: 多列 embedding 选择未移植 (Rust 无 column 概念)",
-      "status": "blocked",
-      "mode": "explore",
+      "label": "G70: 多列 embedding 选择 + 主搜索接线 (page 级完整移植)",
+      "status": "completed",
+      "mode": "exploit",
       "parent": "1-4",
       "children": [],
       "decisions": [],
-      "notes": "registered in docs/plans/MIGRATION.md (G70)"
+      "notes": "DONE (2026-08-18): migration 0038 adds pages.embedding_multimodal (sqlite+postgres); Page/ChunkInput gain the field; libsql/postgres/InMemory read it; search_pages_by_embedding(column) + search_pages column-swap route text vs multimodal; put_page_multimodal_embedding on all 3 backends; reindex multimodal backfills page vector via mean-pool; validate_embedding_column accepts embedding_multimodal (QueryParams::validate hard-rejects others); CLI --embedding-column + search.embedding_column config; e2e multimodal_embedding_column_e2e passes (3 tests)."
     },
     "1-4-6": {
       "id": "1-4-6",

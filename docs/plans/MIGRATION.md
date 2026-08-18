@@ -74,7 +74,7 @@
 - **G67** cosineReScore 阶段未移植（需 chunk 级 embedding）— blocked
 - **G68** LLM 模态意图分类未移植（需 chat seam）— blocked
 - **G69** hybridSearchCached 语义查询缓存未移植（需 pgvector）— blocked
-- **G70** 多列 embedding 选择未移植（Rust 无 column 概念）— blocked
+- **G70** 多列 embedding 选择 — done (2026-08-18): page-level `embedding_multimodal` (migration 0038, sqlite+postgres); `Page`/`ChunkInput` gain the field; `search_pages_by_embedding(column)` + `search_pages` column-swap route text vs multimodal on all 3 backends; `put_page_multimodal_embedding` on all 3 backends; reindex multimodal backfills page vector via mean-pool; `validate_embedding_column` accepts `embedding_multimodal` (`QueryParams::validate` hard-rejects others); CLI `--embedding-column` + `search.embedding_column` config; e2e `multimodal_embedding_column_e2e` passes.
 - **G71** think vector-takes 流未移植（takes 表无 embedding 列）— blocked
 
 ### 4.5 Engine / 保真小缺口（16 open）

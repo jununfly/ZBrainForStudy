@@ -1157,6 +1157,7 @@ mod tests {
                             chunk_text: "text1".into(),
                             chunk_source: crate::import::ChunkSource::CompiledTruth,
                             embedding: Some(vec![0.1, 0.2]),
+                            embedding_multimodal: None,
                             token_count: None,
                             language: None,
                             symbol_name: None,
@@ -1171,6 +1172,7 @@ mod tests {
                             chunk_text: "text2".into(),
                             chunk_source: crate::import::ChunkSource::CompiledTruth,
                             embedding: Some(vec![0.3, 0.4]),
+                            embedding_multimodal: None,
                             token_count: None,
                             language: None,
                             symbol_name: None,
@@ -1185,6 +1187,7 @@ mod tests {
                             chunk_text: "text3".into(),
                             chunk_source: crate::import::ChunkSource::CompiledTruth,
                             embedding: None, // missing!
+                            embedding_multimodal: None,
                             token_count: None,
                             language: None,
                             symbol_name: None,

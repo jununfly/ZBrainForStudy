@@ -57,6 +57,7 @@ fn page_has_full_column_projection() {
         last_retrieved_at: Some("2026-05-28T02:00:00Z".to_string()),
         generation: 1,
         embedding: None,
+        embedding_multimodal: None,
         chunker_version: 1,
         source_path: Some("notes/alpha.md".to_string()),
     };

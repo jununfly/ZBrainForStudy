@@ -43,6 +43,7 @@ use crate::engine::{
     EngineKind, GetPageOpts, Page,
     TakeProposalInput, TakeGradeCacheInput, PageFilters, PageInput, PageSort, ResolveSlugsOpts,
     SearchOpts, SearchResult, SourceRow, UpdateSourceInput, fuse_and_boost, is_valid_source_id,
+    validate_embedding_column,
 };
 use crate::calibration_queries::{
     aggregate_calibration_curve, aggregate_scorecard, CalibrationBucket, CalibrationCurveQuery,
@@ -280,6 +281,9 @@ const MIGRATION_0033: &str = include_str!("../migrations/0033_content_chunks_emb
 const MIGRATION_0034: &str = include_str!("../migrations/0034_eval_takes_quality_runs.sql");
 /// G75 (reindex-multimodal): add `content_chunks.embedding_multimodal` column.
 const MIGRATION_0036: &str = include_str!("../migrations/0036_content_chunks_embedding_multimodal.sql");
+/// G70 (1-4-5): add `pages.embedding_multimodal` for page-level multimodal
+/// (image) vector retrieval, mirroring `content_chunks.embedding_multimodal`.
+const MIGRATION_0038: &str = include_str!("../migrations/0038_pages_embedding_multimodal.sql");
 
 /// FNV-1a 64-bit hash of a lease key, mapped to a signed int64 for
 /// `pg_advisory_xact_lock`. Matches the TS implementation bit-for-bit.
@@ -472,6 +476,11 @@ pub static POSTGRES_MIGRATIONS: LazyLock<MigrationRegistry> = LazyLock::new(|| {
         name: "content_chunks_embedding_multimodal",
         sql: MIGRATION_0036,
     }));
+    registry.add(Box::new(PostgresMigration {
+        version: 38,
+        name: "pages_embedding_multimodal",
+        sql: MIGRATION_0038,
+    }));
 
     registry
 });
@@ -489,7 +498,7 @@ const FULL_PAGE_PROJECTION: &str = "id, slug, type, page_kind, title, compiled_t
      effective_date, effective_date_source, import_filename, \
      salience_touched_at, salience_score, generation, chunker_version, \
      source_path, source_id, source_kind, source_uri, ingested_via, ingested_at, \
-     contextual_retrieval_mode, corpus_generation, embedding";
+     contextual_retrieval_mode, corpus_generation, embedding, embedding_multimodal";
 
 /// Connection-pool-backed engine for `PostgreSQL`.
 ///
@@ -1788,7 +1797,7 @@ impl BrainEngine for PostgresEngine {
                     import_filename, salience_touched_at, salience_score, generation, \
                     embedding, chunker_version, source_path, source_id, source_kind, \
                     source_uri, ingested_via, ingested_at, contextual_retrieval_mode, \
-                    corpus_generation \
+                    corpus_generation, embedding_multimodal \
              FROM pages \
              WHERE deleted_at IS NULL AND embedding IS NULL \
              ORDER BY slug",
@@ -1816,6 +1825,26 @@ impl BrainEngine for PostgresEngine {
         .execute(pool)
         .await
         .map_err(|e| Error::engine(format!("put_page_embedding failed: {e}")))?;
+        Ok(())
+    }
+
+    async fn put_page_multimodal_embedding(
+        &self,
+        slug: &str,
+        source_id: &str,
+        embedding: Vec<u8>,
+    ) -> Result<()> {
+        let pool = self.pool()?;
+        sqlx::query(
+            "UPDATE pages SET embedding_multimodal = $1 \
+             WHERE slug = $2 AND source_id = $3 AND deleted_at IS NULL",
+        )
+        .bind(embedding)
+        .bind(slug)
+        .bind(source_id)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::engine(format!("put_page_multimodal_embedding failed: {e}")))?;
         Ok(())
     }
 
@@ -1941,6 +1970,26 @@ impl BrainEngine for PostgresEngine {
             .map_err(|e| Error::engine(format!("search_pages candidate query failed: {e}")))?;
 
         let candidates: Vec<Page> = rows.iter().map(row_to_page).collect::<Result<Vec<_>>>()?;
+
+        // G70 — if a non-default embedding column was requested, swap that
+        // vector into `embedding` so the shared `fuse_and_boost` fusion and the
+        // G67 cosine re-score read the intended space without further branching.
+        let candidates: Vec<Page> = if validate_embedding_column(opts.embedding_column.as_deref())
+            .map(|c| c == "embedding_multimodal")
+            .unwrap_or(false)
+        {
+            candidates
+                .into_iter()
+                .map(|mut p| {
+                    if p.embedding_multimodal.is_some() {
+                        p.embedding = p.embedding_multimodal.take();
+                    }
+                    p
+                })
+                .collect()
+        } else {
+            candidates
+        };
 
         fuse_and_boost(self, &candidates, opts).await
     }
@@ -7616,6 +7665,10 @@ fn row_to_page(row: &sqlx::postgres::PgRow) -> Result<Page> {
     let corpus_generation: Option<String> = row
         .try_get("corpus_generation")
         .map_err(|e| Error::engine(format!("row decode corpus_generation: {e}")))?;
+    // G70 — page-level multimodal vector (mean-pool of chunk multimodal).
+    let embedding_multimodal: Option<Vec<u8>> = row
+        .try_get("embedding_multimodal")
+        .map_err(|e| Error::engine(format!("row decode embedding_multimodal: {e}")))?;
 
     Ok(Page {
         id: id_u64,
@@ -7648,6 +7701,7 @@ fn row_to_page(row: &sqlx::postgres::PgRow) -> Result<Page> {
         ingested_at: ingested_at.map(|ts| ts.to_rfc3339()),
         contextual_retrieval_mode,
         corpus_generation,
+        embedding_multimodal,
     })
 }
 

@@ -163,6 +163,7 @@ mod tests {
                 salience_score: None,
                 generation: 1,
                 embedding: None,
+                embedding_multimodal: None,
                 chunker_version: 1,
                 source_path: None,
                 source_id: "default".to_string(),

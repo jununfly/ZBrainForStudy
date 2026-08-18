@@ -204,6 +204,13 @@ pub struct SearchConfig {
     /// on a single file plane; the TS DB-plane key is not migrated).
     #[serde(default)]
     pub reranker_enabled: bool,
+
+    /// G70 — default embedding column for the vector-retrieval path. `None`
+    /// (default) or `"embedding"` scores against the text page vectors;
+    /// `"embedding_multimodal"` selects the multimodal (image) page vectors.
+    /// The `zbrain query --embedding-column` flag overrides this per call.
+    #[serde(default)]
+    pub embedding_column: Option<String>,
 }
 
 /// Agent and worker configuration.
@@ -336,6 +343,7 @@ impl Default for SearchConfig {
             include_facts: true,
             hybrid_search: true,
             reranker_enabled: false,
+            embedding_column: None,
         }
     }
 }

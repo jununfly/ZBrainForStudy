@@ -1903,6 +1903,12 @@ pub struct QueryParams {
     /// `query.types` (v0.33) — pushed to the fusion layer for `whoknows`.
     #[serde(default)]
     pub types: Option<Vec<String>>,
+    /// G70 — embedding column for the vector-retrieval path. `None` or
+    /// `"embedding"` (default) scores against the text page vectors;
+    /// `"embedding_multimodal"` scores against the multimodal (image) page
+    /// vectors. Other values are rejected by validation.
+    #[serde(default)]
+    pub embedding_column: Option<String>,
 }
 
 impl ValidateParams for QueryParams {
@@ -1917,6 +1923,15 @@ impl ValidateParams for QueryParams {
             if limit > 100 {
                 return Err(OperationError::invalid_params(
                     "limit cannot exceed 100",
+                ));
+            }
+        }
+        // G70 — only the two known embedding columns are allowed; anything
+        // else is a caller mistake, not a silent fallback to the text column.
+        if let Some(col) = self.embedding_column.as_deref() {
+            if col != "embedding" && col != "embedding_multimodal" {
+                return Err(OperationError::invalid_params(
+                    "embedding_column must be 'embedding' or 'embedding_multimodal'",
                 ));
             }
         }
@@ -2103,6 +2118,7 @@ impl TypedOperation for QueryOperation {
                 disable_salience_boost: params.salience.as_deref() == Some("off"),
                 disable_recency_boost: params.recency.as_deref() == Some("off"),
                 types: params.types.clone(),
+                embedding_column: params.embedding_column.clone(),
                 ..Default::default()
             })
             .await?;
@@ -2534,7 +2550,12 @@ impl TypedOperation for SearchByImageOperation {
         // 1) Chunk-level cosine retrieval → over-fetch candidates, then the
         //    fusion step trims to `limit` (mirrors query's rerank-before-paginate).
         let candidates = engine
-            .search_pages_by_embedding(&embedding, limit * 3, source_id.as_deref())
+            .search_pages_by_embedding(
+                &embedding,
+                limit * 3,
+                source_id.as_deref(),
+                Some("embedding_multimodal"),
+            )
             .await
             .map_err(|e| {
                 OperationError::new(
@@ -11241,6 +11262,7 @@ mod tests {
             chunk_text: "x".to_string(),
             chunk_source: ChunkSource::CompiledTruth,
             embedding: Some(vec![0.1, 0.2]),
+            embedding_multimodal: None,
             token_count: None,
             language: None,
             symbol_name: None,
@@ -13479,6 +13501,7 @@ Outro."#;
                         chunk_text: "cat photo".to_string(),
                         chunk_source: ChunkSource::CompiledTruth,
                         embedding: Some(vec![0.5, 0.5, 0.5, 0.5]),
+                        embedding_multimodal: None,
                         token_count: None,
                         language: None,
                         symbol_name: None,
