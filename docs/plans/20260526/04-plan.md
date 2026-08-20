@@ -97,46 +97,143 @@
 
 ---
 
-### 切片 4: 单例引擎模式
+### 切片 4: PostgreSQL 引擎
+
+> ⚠️ 切片号已按 `11-execution-decisions.md` 决策 5 重排：Postgres 先做（比 libsql 简单），单例后做。
+> 4780 行 TS 源码不一次性迁完，按"小切片原则"拆成 4a/4b/4c 三个子切片。
+
+**目标**: 转换 `src/core/postgres-engine.ts` 中切片 3 已定义的 9 个 BrainEngine 方法
+
+**子切片**:
+- **4a**: sqlx 依赖 + Postgres 连接 + init_schema（pages 表 DDL）+ docker-compose
+- **4b**: Page CRUD 5 方法 SQL 实现 + impl BrainEngine for PostgresEngine
+- **4c**: edge cases + 错误映射到 zbrain-core::Error
+
+**文件**:
+- `crates/zbrain-core/src/postgres.rs`
+- `crates/zbrain-core/migrations/0001_init.sql`
+- `docker-compose.test.yml`
+
+**验收标准**:
+- [ ] 实现 BrainEngine trait（仅切片 3 已定义的 9 个方法）
+- [ ] 使用 sqlx 进行数据库操作
+- [ ] 集成测试与 InMemoryEngine 行为对齐（复用切片 3 的 8 个测试）
+- [ ] 每个子切片独立三连绿 + tag
+
+---
+
+### 切片 5: libsql 引擎（嵌入式数据库）
+
+**目标**: 实现 libsql 嵌入式引擎，替代原 PGLite（WASM-Postgres）
+
+**文件**:
+- `crates/zbrain-core/src/libsql.rs`
+- `crates/zbrain-core/migrations-sqlite/0001_init.sql`
+
+**验收标准**:
+- [ ] 实现 BrainEngine trait（9 方法）
+- [ ] SQL 方言适配 SQLite（从 Postgres 调整）
+- [ ] 集成测试通过
+
+---
+
+### 切片 6: 单例引擎模式
 
 **目标**: 实现全局唯一引擎实例
 
 **文件**:
-- `src/core/singleton.rs`
+- `crates/zbrain-core/src/singleton.rs`
 
 **验收标准**:
-- [ ] 使用 OnceCell + Arc<Mutex<Engine>>
-- [ ] 线程安全
-- [ ] 防止重复初始化
-- [ ] 测试通过
+- [ ] 使用 OnceCell + Arc<Mutex<dyn BrainEngine>>
+- [ ] init_engine / get_engine / is_initialized API
+- [ ] 防止重复初始化（Error::AlreadyInitialized）
+- [ ] 线程安全 + 并发访问测试通过
 
 ---
 
-### 切片 5: PostgreSQL 引擎
+### 切片 6.5a: BrainEngine trait 扩展（批次 1）—— sourceId opt + soft-delete
 
-**目标**: 转换 `src/core/postgres-engine.ts`
+> 📌 起源：切片 4b 范围切分时，决定先严格遵循切片 3 trait 签名实现 Page CRUD，把 trait 扩展统一推迟到两个引擎都就位之后再做。此切片为承接位置。
+
+**目标**: 扩展 BrainEngine trait 加入多 source 隔离与软删除能力，Postgres + libsql 双引擎同步升级。
+
+**Trait 变更（append-only）**:
+- `GetPageOpts` 新增字段已在切片 3 就位（`source_id` / `include_deleted`），此切片让 `include_deleted` 在引擎层"真实生效"
+- 新增 `async fn soft_delete_page(&self, slug: &str) -> Result<()>;`
+- `PutPageInput` 增加 `source_id: Option<String>`（如尚未具备）
+
+**Schema 变更**:
+- `crates/zbrain-core/migrations/0002_soft_delete.sql` —— `ALTER TABLE pages ADD COLUMN deleted_at TIMESTAMPTZ`
+- `crates/zbrain-core/migrations-sqlite/0002_soft_delete.sql` —— libsql 对应
 
 **文件**:
-- `src/core/postgres_engine.rs`
+- `crates/zbrain-core/src/engine.rs`（trait 扩展 + InMemoryEngine 实现）
+- `crates/zbrain-core/src/postgres.rs`（put/get/list/softDelete 升级）
+- `crates/zbrain-core/src/libsql.rs`（同步升级）
+- 上述 2 个 migration 文件
+- `crates/zbrain-core/tests/soft_delete.rs`（新集成测试）
 
 **验收标准**:
-- [ ] 实现 BrainEngine trait
-- [ ] 使用 sqlx 进行数据库操作
-- [ ] 单元测试通过
+- [ ] 旧测试不破（append-only）
+- [ ] `getPage(slug, { include_deleted: false })` 默认隐藏 soft-deleted（两引擎一致）
+- [ ] `getPage(slug, { include_deleted: true })` 能取回 soft-deleted
+- [ ] `softDeletePage` 幂等（重复调用不报错）
+- [ ] `sourceId` 过滤生效（put/get/list 三方法）
+- [ ] 三连绿 + tag `rust-slice-6-5a`
 
 ---
 
-### 切片 6: PGLite 引擎替代
+### 切片 6.5b: BrainEngine trait 扩展（批次 2）—— provenance schema
 
-**目标**: 实现嵌入式数据库引擎
+**目标**: 扩展 pages 表 provenance 列，让 putPage UPSERT 完整 COALESCE 行为对齐 TS 版。
+
+**Trait 变更（append-only）**:
+- `PageInput` 增加 `frontmatter: Option<Value>` / `content_hash: Option<String>` / `effective_date: Option<DateTime>` / `effective_date_source: Option<EffectiveDateSource>`
+- 新增 `async fn find_duplicate_page(&self, content_hash: &str) -> Result<Option<Page>>;`
+- 新增 `async fn get_all_slugs(&self) -> Result<Vec<String>>;`
+- 新增 `async fn list_all_page_refs(&self) -> Result<Vec<PageRef>>;`
+
+**Schema 变更**:
+- `crates/zbrain-core/migrations/0003_provenance.sql` —— `ALTER TABLE pages ADD COLUMN frontmatter JSONB, content_hash TEXT, effective_date TIMESTAMPTZ, effective_date_source TEXT`
+- `crates/zbrain-core/migrations-sqlite/0003_provenance.sql` —— libsql 对应（JSONB → TEXT）
 
 **文件**:
-- `src/core/pglite_engine.rs` (或 `libsql_engine.rs`)
+- `crates/zbrain-core/src/engine.rs`
+- `crates/zbrain-core/src/postgres.rs`（putPage 完整 COALESCE UPSERT）
+- `crates/zbrain-core/src/libsql.rs`
+- 上述 2 个 migration 文件
+- `crates/zbrain-core/tests/provenance.rs`
 
 **验收标准**:
-- [ ] 实现 BrainEngine trait
-- [ ] 嵌入式数据库工作正常
-- [ ] 单元测试通过
+- [ ] `putPage` UPSERT 用 `COALESCE(EXCLUDED.col, pages.col)` 保留旧值
+- [ ] `findDuplicatePage` 按 content_hash 找到已存在页面
+- [ ] `getAllSlugs` / `listAllPageRefs` 两引擎结果一致
+- [ ] 三连绿 + tag `rust-slice-6-5b`
+
+---
+
+### 切片 6.5c: resolveSlugs 模糊匹配
+
+**目标**: 让 `resolveSlugs` 支持 exact match → 模糊匹配的二段策略，对齐 TS 版（postgres-engine.ts:1301-1330）。
+
+**Trait 变更**: 无（沿用切片 3 签名 `async fn resolve_slugs(&self, partial: &str) -> Result<Vec<String>>;`）
+
+**Schema 变更**:
+- `crates/zbrain-core/migrations/0004_pg_trgm.sql` —— `CREATE EXTENSION IF NOT EXISTS pg_trgm;` + `CREATE INDEX pages_slug_trgm_idx ON pages USING gin (slug gin_trgm_ops);`
+- libsql 侧：FTS5 或退化为 `LIKE %partial%`（决策见下）
+
+**文件**:
+- `crates/zbrain-core/src/postgres.rs`（resolve_slugs 升级 pg_trgm）
+- `crates/zbrain-core/src/libsql.rs`（FTS5 或 LIKE）
+- `crates/zbrain-core/migrations/0004_pg_trgm.sql`
+- `crates/zbrain-core/tests/resolve_slugs_fuzzy.rs`
+
+**验收标准**:
+- [ ] Postgres: exact → trigram 二段策略，相似度阈值与 TS 版对齐
+- [ ] libsql: 至少 LIKE 模糊（FTS5 视复杂度）
+- [ ] 两引擎对相同输入返回顺序一致的候选集
+- [ ] 三连绿 + tag `rust-slice-6-5c`
 
 ---
 
